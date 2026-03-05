@@ -4,6 +4,7 @@ import { BrowserWindow } from 'electron'
 import { queue } from './queue'
 import { logEntry } from './db'
 import { IPC, OperatorRequest } from '../shared/types'
+import { updateTrayBadge } from './tray'
 
 const PORT = 47821
 
@@ -30,9 +31,15 @@ export function startServer(getWindow: () => BrowserWindow | null): void {
       win.webContents.send(IPC.NEW_REQUEST, request)
       win.show()
     }
+    updateTrayBadge()
 
     const response = await queue.add(request)
     logEntry(request, response)
+    updateTrayBadge()
+
+    if (win && queue.size === 0) {
+      win.hide()
+    }
 
     res.json(response)
   })
@@ -52,4 +59,9 @@ export function startServer(getWindow: () => BrowserWindow | null): void {
       console.error('Server error:', err)
     }
   })
+
+  // Graceful shutdown so electron-vite auto-restart doesn't hit EADDRINUSE
+  process.on('exit', () => server.close())
+  process.on('SIGTERM', () => { server.close(); process.exit(0) })
+  process.on('SIGINT', () => { server.close(); process.exit(0) })
 }

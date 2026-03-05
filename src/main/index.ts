@@ -3,6 +3,7 @@ import { join } from 'path'
 import { startServer } from './server'
 import { setupIpc } from './ipc'
 import { initDb } from './db'
+import { createTray } from './tray'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -44,8 +45,11 @@ app.whenReady().then(() => {
   initDb()
   setupIpc()
   createWindow()
+  createTray(() => mainWindow)
   startServer(() => mainWindow)
 })
+
+app.dock?.hide()
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
