@@ -3,9 +3,10 @@ import { queue } from './queue'
 import { IPC, OperatorResponse } from '../shared/types'
 
 export function setupIpc(): void {
-  ipcMain.handle(IPC.RESPOND, (_event, id: string, approved: boolean) => {
+  ipcMain.handle(IPC.RESPOND, (_event, id: string, value: string) => {
     const response: OperatorResponse = {
-      approved,
+      approved: value !== 'deny' && value !== 'n',
+      value,
       modifiedContext: null,
       respondedAt: new Date().toISOString(),
       respondedBy: 'user'

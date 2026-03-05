@@ -14,6 +14,7 @@ class RequestQueue {
       const timer = setTimeout(() => {
         this.respond(request.id, {
           approved: false,
+          value: 'timeout',
           modifiedContext: null,
           respondedAt: new Date().toISOString(),
           respondedBy: 'timeout'

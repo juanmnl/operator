@@ -9,8 +9,8 @@ let mainWindow: BrowserWindow | null = null
 function createWindow(): void {
   const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize
 
-  const winWidth = 400
-  const winHeight = 100
+  const winWidth = 516
+  const winHeight = 72
 
   mainWindow = new BrowserWindow({
     width: winWidth,

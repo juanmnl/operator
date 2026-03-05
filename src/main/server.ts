@@ -20,6 +20,7 @@ export function startServer(getWindow: () => BrowserWindow | null): void {
       message: body.message || '',
       context: body.context || {},
       severity: body.severity || 'medium',
+      options: body.options || undefined,
       expiresIn: body.expiresIn || 60,
       timestamp: body.timestamp || new Date().toISOString()
     }

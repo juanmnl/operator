@@ -15,14 +15,14 @@ export default function App() {
 
   const current = requests[0]
 
-  const handleRespond = async (id: string, approved: boolean) => {
-    await window.operator.respond(id, approved)
+  const handleRespond = async (id: string, value: string) => {
+    await window.operator.respond(id, value)
     setRequests((prev) => prev.filter((r) => r.id !== id))
   }
 
-  const handleAcceptAll = async () => {
+  const handleRespondAll = async (value: string) => {
     for (const r of requests) {
-      await window.operator.respond(r.id, true)
+      await window.operator.respond(r.id, value)
     }
     setRequests([])
   }
@@ -33,9 +33,8 @@ export default function App() {
     <NotificationWidget
       request={current}
       queueSize={requests.length}
-      onAccept={() => handleRespond(current.id, true)}
-      onDeny={() => handleRespond(current.id, false)}
-      onAcceptAll={handleAcceptAll}
+      onRespond={(value) => handleRespond(current.id, value)}
+      onRespondAll={handleRespondAll}
     />
   )
 }
