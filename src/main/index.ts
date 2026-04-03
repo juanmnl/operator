@@ -1,55 +1,52 @@
-import { app, BrowserWindow, screen } from 'electron'
+import { app, nativeImage } from 'electron'
 import { join } from 'path'
 import { startServer } from './server'
 import { setupIpc } from './ipc'
 import { initDb } from './db'
-import { createTray } from './tray'
+import { createTray, updateTrayBadge } from './tray'
+import { sessions } from './sessions'
+import { WindowManager } from './window/window-manager'
+import { PtyManager } from './terminal/pty-manager'
+import { TerminalRegistry } from './terminal/terminal-registry'
+import { ensureHooksConfigured } from './hooks-config'
 
-let mainWindow: BrowserWindow | null = null
-
-function createWindow(): void {
-  const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize
-
-  const winWidth = 516
-  const winHeight = 72
-
-  mainWindow = new BrowserWindow({
-    width: winWidth,
-    height: winHeight,
-    x: Math.round((screenWidth - winWidth) / 2),
-    y: 54,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    resizable: false,
-    skipTaskbar: true,
-    hasShadow: false,
-    show: false,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
-
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
-}
+const windowManager = new WindowManager()
+let ptyManager: PtyManager
 
 app.whenReady().then(() => {
   initDb()
-  setupIpc()
-  createWindow()
-  createTray(() => mainWindow)
-  startServer(() => mainWindow)
+  ensureHooksConfigured()
+  windowManager.init()
+  ptyManager = new PtyManager(windowManager)
+  const terminalRegistry = new TerminalRegistry()
+  setupIpc(ptyManager, windowManager)
+  createTray(windowManager)
+  startServer(windowManager, terminalRegistry)
+
+  // When a terminal exits, mark its session as ended
+  ptyManager.onTerminalExitHook((terminalId) => {
+    const sessionId = terminalRegistry.getSessionId(terminalId)
+    if (sessionId) {
+      const session = sessions.getSession(sessionId)
+      if (session && session.status === 'active') {
+        session.status = 'ended'
+        session.phase = 'idle'
+      }
+      terminalRegistry.unlink(terminalId)
+    }
+    windowManager.sendSessionUpdate(sessions.getActive())
+    updateTrayBadge()
+  })
+
+  // Show in dock and Cmd+Tab switcher with rounded icon
+  const icon = nativeImage.createFromPath(join(__dirname, '../../assets/logo-64.png'))
+  app.dock?.setIcon(icon)
+  app.dock?.show()
 })
 
-app.dock?.hide()
+app.on('before-quit', () => {
+  ptyManager?.killAll()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

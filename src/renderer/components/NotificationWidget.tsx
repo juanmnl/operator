@@ -6,10 +6,6 @@ const DEFAULT_OPTIONS: RequestOption[] = [
   { label: 'N', value: 'deny', color: '#ef5252' },
 ]
 
-const OperatorLogo = () => (
-  <img src={logoUrl} width="24" height="24" alt="" style={{ borderRadius: 9999, marginLeft: 1 }} />
-)
-
 interface Props {
   request: OperatorRequest
   queueSize: number
@@ -19,18 +15,19 @@ interface Props {
 
 export function NotificationWidget({ request, queueSize, onRespond, onRespondAll }: Props) {
   const options = request.options || DEFAULT_OPTIONS
+  const projectName = request.context.workingDirectory?.split('/').pop() || 'Unknown'
 
   return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        width: 500,
+        gap: 15,
+        width: 556,
         borderRadius: 78,
         background: 'rgba(24, 24, 24, 0.98)',
         paddingLeft: 10,
-        paddingRight: 16,
+        paddingRight: 20,
         paddingTop: 10,
         paddingBottom: 10,
         fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
@@ -40,16 +37,16 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
       <div
         style={{
           flexShrink: 0,
-          width: 42,
-          height: 42,
-          borderRadius: 9999,
-          background: 'rgba(255, 255, 255, 0.08)',
+          width: 48,
+          height: 48,
+          borderRadius: 45,
+          background: 'rgba(217, 119, 87, 0.19)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
         }}
       >
-        <OperatorLogo />
+        <img src={logoUrl} width="31" height="31" alt="" />
       </div>
 
       {/* Location and message */}
@@ -58,14 +55,15 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
           flex: '1 1 0',
           display: 'flex',
           flexDirection: 'column',
-          gap: 2,
+          gap: 6,
           minWidth: 0,
+          height: 48,
           justifyContent: 'center',
         }}
       >
         <p
           style={{
-            fontSize: 9,
+            fontSize: 8,
             lineHeight: 'normal',
             color: '#adadad',
             fontWeight: 400,
@@ -75,16 +73,19 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
             margin: 0,
           }}
         >
-          {request.context.workingDirectory || request.agentId}
+          {request.context.workingDirectory || projectName}
         </p>
         <p
           style={{
             overflow: 'hidden',
             fontSize: 12,
-            lineHeight: '15px',
+            lineHeight: 'normal',
             color: 'white',
             fontWeight: 400,
             margin: 0,
+            flex: '1 1 0',
+            minHeight: 1,
+            minWidth: 1,
             display: '-webkit-box',
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical' as const,
@@ -94,11 +95,6 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
         >
           {request.message}
         </p>
-        {queueSize > 1 && (
-          <p style={{ fontSize: 8, lineHeight: 'normal', color: '#555', margin: 0 }}>
-            +{queueSize - 1} more
-          </p>
-        )}
       </div>
 
       {/* Actions */}
@@ -106,42 +102,28 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
         style={{
           flexShrink: 0,
           display: 'flex',
-          flexDirection: 'column',
-          gap: 3,
+          gap: 5,
           alignItems: 'center',
         }}
       >
-        <div style={{ display: 'flex', gap: 4 }}>
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => onRespond(opt.value)}
-              style={circleBtn(opt.color || '#555')}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => onRespond(opt.value)}
+            style={circleBtn(opt.color || '#555')}
+          >
+            {opt.label}
+          </button>
+        ))}
         {queueSize > 1 && (
           <button
             onClick={() => onRespondAll(options[0]?.value || 'approve')}
-            style={{
-              background: 'rgba(217, 110, 110, 0.2)',
-              color: 'white',
-              fontSize: 7,
-              fontWeight: 400,
-              fontFamily: 'inherit',
-              textTransform: 'uppercase' as const,
-              padding: '1px 6px',
-              height: 12,
-              borderRadius: 10,
-              border: 'none',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-              lineHeight: 1,
-            }}
+            style={circleBtn('rgba(239, 82, 82, 0.33)')}
           >
-            {options[0]?.label || 'Y'}(all)
+            <span style={{ lineHeight: '9px', fontSize: 10, textAlign: 'center' }}>
+              <span style={{ display: 'block' }}>Y</span>
+              <span style={{ display: 'block' }}>(all)</span>
+            </span>
           </button>
         )}
       </div>
@@ -153,18 +135,18 @@ function circleBtn(bg: string): React.CSSProperties {
   return {
     background: bg,
     color: 'white',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: 400,
     fontFamily: 'inherit',
-    width: 26,
-    height: 26,
-    borderRadius: 9999,
+    width: 32,
+    height: 32,
+    borderRadius: 90,
     border: 'none',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 0,
+    padding: '2px 0',
     lineHeight: 1,
   }
 }

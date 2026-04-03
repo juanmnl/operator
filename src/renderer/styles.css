@@ -8,7 +8,39 @@
 }
 
 html, body, #root {
-  background: transparent;
   overflow: hidden;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  height: 100%;
+  width: 100%;
+}
+
+/* Widget view needs transparent bg */
+body.widget-bg {
+  background: transparent;
+}
+
+/* Dashboard view uses theme bg */
+body {
+  background: var(--bg-terminal, #22222A);
+  color: var(--fg, #F6F8F7);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border, #2a2a35);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted, #555);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }

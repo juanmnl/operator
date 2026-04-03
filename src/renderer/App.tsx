@@ -1,40 +1,31 @@
 import { useEffect, useState } from 'react'
-import { OperatorRequest } from '../shared/types'
-import { NotificationWidget } from './components/NotificationWidget'
+import { DashboardView } from './views/DashboardView'
+import { WidgetView } from './views/WidgetView'
+import { applyTheme, defaultTheme } from './themes'
+
+function getRoute(): string {
+  const hash = window.location.hash.replace('#', '')
+  return hash || '/dashboard'
+}
 
 export default function App() {
-  const [requests, setRequests] = useState<OperatorRequest[]>([])
+  const [route, setRoute] = useState(getRoute)
 
   useEffect(() => {
-    window.operator.getQueue().then(setRequests)
-
-    window.operator.onNewRequest((request) => {
-      setRequests((prev) => [...prev, request])
-    })
+    applyTheme(defaultTheme)
   }, [])
 
-  const current = requests[0]
+  useEffect(() => {
+    const onHashChange = () => setRoute(getRoute())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
 
-  const handleRespond = async (id: string, value: string) => {
-    await window.operator.respond(id, value)
-    setRequests((prev) => prev.filter((r) => r.id !== id))
+  switch (route) {
+    case '/widget':
+      return <WidgetView />
+    case '/dashboard':
+    default:
+      return <DashboardView />
   }
-
-  const handleRespondAll = async (value: string) => {
-    for (const r of requests) {
-      await window.operator.respond(r.id, value)
-    }
-    setRequests([])
-  }
-
-  if (!current) return null
-
-  return (
-    <NotificationWidget
-      request={current}
-      queueSize={requests.length}
-      onRespond={(value) => handleRespond(current.id, value)}
-      onRespondAll={handleRespondAll}
-    />
-  )
 }
