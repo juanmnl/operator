@@ -4,7 +4,7 @@ import { queue } from './queue'
 import { sessions } from './sessions'
 import { IPC, OperatorResponse, ClaudeSettings } from '../shared/types'
 import { PtyManager } from './terminal/pty-manager'
-import { launchClaudeCode } from './terminal/agent-launcher'
+import { launchClaudeCode, LaunchOptions } from './terminal/agent-launcher'
 import { WindowManager } from './window/window-manager'
 import { loadFolderPreferences, saveSettingsFile, saveMdFile, createFile, getMcpServers } from './folder-prefs'
 
@@ -30,7 +30,7 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
   })
 
   // Terminal management
-  ipcMain.handle(IPC.TERMINAL_SPAWN, async (_event, cwd?: string) => {
+  ipcMain.handle(IPC.TERMINAL_SPAWN, async (_event, cwd?: string, launchOptions?: LaunchOptions) => {
     let targetCwd = cwd
     if (!targetCwd) {
       const result = await dialog.showOpenDialog({
@@ -40,7 +40,7 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
       if (result.canceled || result.filePaths.length === 0) return null
       targetCwd = result.filePaths[0]
     }
-    const terminalId = launchClaudeCode(ptyManager, targetCwd)
+    const terminalId = launchClaudeCode(ptyManager, targetCwd, launchOptions)
     return { terminalId, cwd: targetCwd }
   })
 

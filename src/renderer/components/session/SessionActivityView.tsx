@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AgentSession, OperatorRequest } from '../../../shared/types'
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
 
 export function SessionActivityView({ session, pendingRequests }: Props) {
   const timelineRef = useRef<HTMLDivElement>(null)
+  const [showDetails, setShowDetails] = useState(false)
   const activity = session.activity || []
 
   useEffect(() => {
@@ -30,26 +31,74 @@ export function SessionActivityView({ session, pendingRequests }: Props) {
         minHeight: 0,
       }}
     >
-      {/* Header */}
-      <div style={{ padding: '0 20px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <StatusDot phase={session.phase} />
-          <span style={{ fontSize: 14, fontWeight: 500 }}>{session.projectName}</span>
-          {session.activeSubagents > 0 && (
-            <span style={{ fontSize: 10, color: 'var(--fg-muted)', background: 'var(--bg-surface)', borderRadius: 8, padding: '1px 6px' }}>
-              {session.activeSubagents} subagent{session.activeSubagents > 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--fg-muted)', display: 'flex', gap: 16 }}>
+      {/* Compact header — click to expand details */}
+      <button
+        onClick={() => setShowDetails(!showDetails)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '8px 20px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+          background: 'none',
+          border: 'none',
+          borderBottomStyle: 'solid',
+          borderBottomWidth: 1,
+          borderBottomColor: 'var(--border)',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          textAlign: 'left',
+          width: '100%',
+        }}
+      >
+        <StatusDot phase={session.phase} />
+        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg)' }}>{session.projectName}</span>
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
+          {started}
+        </span>
+        {session.lastToolName && (
+          <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
+            — {session.lastToolName}
+          </span>
+        )}
+        {session.activeSubagents > 0 && (
+          <span style={{ fontSize: 9, color: 'var(--fg-muted)', background: 'var(--bg-surface)', borderRadius: 8, padding: '1px 6px' }}>
+            {session.activeSubagents} sub
+          </span>
+        )}
+        <span style={{
+          marginLeft: 'auto',
+          fontSize: 7,
+          color: 'var(--fg-muted)',
+          opacity: 0.3,
+          transform: showDetails ? 'rotate(180deg)' : 'none',
+          transition: 'transform 0.15s',
+          display: 'inline-block',
+        }}>
+          &#9660;
+        </span>
+      </button>
+
+      {/* Expandable details */}
+      {showDetails && (
+        <div style={{
+          padding: '8px 20px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+          fontSize: 10,
+          color: 'var(--fg-muted)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+        }}>
           <span>{session.workingDirectory}</span>
+          <div style={{ display: 'flex', gap: 16 }}>
+            <span>Started {started}</span>
+            <span>Last activity {lastActivity}</span>
+          </div>
         </div>
-        <div style={{ fontSize: 10, color: 'var(--fg-muted)', marginTop: 4, display: 'flex', gap: 16 }}>
-          <span>Started {started}</span>
-          <span>Last activity {lastActivity}</span>
-          {session.lastToolName && <span>Tool: {session.lastToolName}</span>}
-        </div>
-      </div>
+      )}
 
       {/* Activity timeline */}
       <div
@@ -64,9 +113,15 @@ export function SessionActivityView({ session, pendingRequests }: Props) {
         }}
       >
         {activity.length === 0 && pendingRequests.length === 0 && (
-          <p style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', marginTop: 40 }}>
-            Waiting for activity...
-          </p>
+          <div style={{ textAlign: 'center', marginTop: 40 }}>
+            <p style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+              No activity recorded yet
+            </p>
+            <p style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 8, lineHeight: 1.6 }}>
+              This session was likely started before Operator launched.<br />
+              Restart the Claude Code process to enable activity tracking.
+            </p>
+          </div>
         )}
         {activity.map((entry, i) => {
           const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -110,6 +165,7 @@ function StatusDot({ phase }: { phase: string }) {
       width: 7, height: 7, borderRadius: '50%',
       background: 'transparent', border: `1.5px solid ${color}`,
       boxSizing: 'border-box',
+      flexShrink: 0,
       animation: isRunning ? 'pulse 1.5s ease-in-out infinite' : undefined,
     }} />
   )

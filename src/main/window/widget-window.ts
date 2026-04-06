@@ -5,7 +5,7 @@ export function createWidgetWindow(): BrowserWindow {
   const { width: screenWidth } = screen.getPrimaryDisplay().workAreaSize
 
   const winWidth = 572
-  const winHeight = 84
+  const winHeight = 64
 
   const win = new BrowserWindow({
     width: winWidth,

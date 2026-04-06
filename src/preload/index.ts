@@ -24,8 +24,8 @@ contextBridge.exposeInMainWorld('operator', {
   },
 
   // Terminal management
-  terminalSpawn: (cwd?: string): Promise<{ terminalId: string; cwd: string } | null> => {
-    return ipcRenderer.invoke(IPC.TERMINAL_SPAWN, cwd)
+  terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>): Promise<{ terminalId: string; cwd: string } | null> => {
+    return ipcRenderer.invoke(IPC.TERMINAL_SPAWN, cwd, launchOptions)
   },
   terminalWrite: (id: string, data: string) => {
     ipcRenderer.send(IPC.TERMINAL_WRITE, id, data)

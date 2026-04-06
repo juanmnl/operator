@@ -6,14 +6,17 @@ import { InlinePermission } from '../components/terminal/InlinePermission'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
-import { NewSessionPanel } from '../components/session/NewSessionPanel'
-import { defaultTheme } from '../themes'
+import { SessionInfoBar } from '../components/session/SessionInfoBar'
+import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
+import { themes, defaultTheme, applyTheme } from '../themes'
+import type { OperatorTheme } from '../themes'
 import logoUrl from '../../../assets/logo-light-64.png'
 
 interface TerminalTab {
   id: string
   cwd: string
   effortLevel?: 'high' | 'normal' | 'low'
+  permissionMode?: string
 }
 
 export function DashboardView() {
@@ -25,6 +28,7 @@ export function DashboardView() {
   const [customNames, setCustomNames] = useState<Record<string, string>>({})
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [pendingSession, setPendingSession] = useState<string | null>(null) // cwd awaiting launch
+  const [currentTheme, setCurrentTheme] = useState<OperatorTheme>(defaultTheme)
   const [hookPath, setHookPath] = useState<string | null>(null)
   const [showSetup, setShowSetup] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -42,6 +46,12 @@ export function DashboardView() {
     const unsubRequest = window.operator.onNewRequest((request) => {
       setPendingRequests((prev) => [...prev, request])
     })
+
+    // Poll sessions every 1s for responsive status updates
+    const pollInterval = setInterval(() => {
+      window.operator.getSessions().then(setSessions)
+      window.operator.getQueue().then(setPendingRequests)
+    }, 1000)
     const unsubExit = window.operator.onTerminalExit((id) => {
       setTerminals((prev) => prev.filter((t) => t.id !== id))
       setActiveTerminalId((current) => (current === id ? null : current))
@@ -52,7 +62,7 @@ export function DashboardView() {
       })
     })
 
-    return () => { unsubSession(); unsubRequest(); unsubExit() }
+    return () => { unsubSession(); unsubRequest(); unsubExit(); clearInterval(pollInterval) }
   }, [])
 
   const handleNewSession = useCallback(async () => {
@@ -65,18 +75,27 @@ export function DashboardView() {
     }
   }, [])
 
-  const handleLaunchSession = useCallback(async (cwd: string, effortLevel: 'high' | 'normal' | 'low') => {
-    // Write effort level to both global and project-local settings
-    // Global settings take priority in Claude Code's cascade for effortLevel
+  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig) => {
+    // Write effort level to global settings (Claude Code reads it from there)
     const prefs = await window.operator.folderPrefsLoad(cwd)
     const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
     if (globalFile) {
-      await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel })
+      await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: config.effortLevel })
     }
 
-    const result = await window.operator.terminalSpawn(cwd)
+    const launchOptions: Record<string, unknown> = {}
+    if (config.permissionMode !== 'default') launchOptions.permissionMode = config.permissionMode
+    if (config.model) launchOptions.model = config.model
+    if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
+
+    const result = await window.operator.terminalSpawn(cwd, launchOptions)
     if (result) {
-      const tab: TerminalTab = { id: result.terminalId, cwd: result.cwd, effortLevel }
+      const tab: TerminalTab = {
+        id: result.terminalId,
+        cwd: result.cwd,
+        effortLevel: config.effortLevel,
+        permissionMode: config.permissionMode,
+      }
       setTerminals((prev) => [...prev, tab])
       setActiveTerminalId(result.terminalId)
       setActiveSessionId(`local-${result.terminalId}`)
@@ -95,6 +114,18 @@ export function DashboardView() {
       setActiveTerminalId(null)
     }
   }, [terminals])
+
+  const handleToggleTheme = useCallback(() => {
+    const next = currentTheme.isDark ? themes['light'] : themes['mr-pink']
+    setCurrentTheme(next)
+    applyTheme(next)
+  }, [currentTheme])
+
+  // Build effort level map from terminal tabs (keyed by terminalId)
+  const effortLevels: Record<string, string> = {}
+  for (const t of terminals) {
+    if (t.effortLevel) effortLevels[t.id] = t.effortLevel
+  }
 
   const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string) => {
     setActiveFolderPrefs({ projectPath, projectName })
@@ -193,19 +224,24 @@ export function DashboardView() {
         customNames={customNames}
         pendingRequests={pendingRequests}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
+        effortLevels={effortLevels}
+        isDark={currentTheme.isDark}
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
+        onToggleTheme={handleToggleTheme}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        {/* Drag region at top */}
-        <div style={{ height: 40,
-          // @ts-expect-error Electron-specific CSS property
-          WebkitAppRegion: 'drag',
-          flexShrink: 0,
-        }} />
+        {/* Drag region — only show full height when no toolbar is visible */}
+        {(pendingSession || activeFolderPrefs || !activeSession) && (
+          <div style={{ height: 40,
+            // @ts-expect-error Electron-specific CSS property
+            WebkitAppRegion: 'drag',
+            flexShrink: 0,
+          }} />
+        )}
 
         {/* Pre-launch session config */}
         {pendingSession && (
@@ -223,6 +259,8 @@ export function DashboardView() {
             projectPath={activeSession.workingDirectory}
             projectName={activeSession.projectName}
             effortLevel={terminals.find((t) => t.id === activeTerminalId)?.effortLevel}
+            permissionMode={terminals.find((t) => t.id === activeTerminalId)?.permissionMode || activeSession.permissionMode}
+            lastToolName={activeSession.lastToolName}
           />
         )}
 
@@ -232,6 +270,11 @@ export function DashboardView() {
             projectPath={activeFolderPrefs.projectPath}
             projectName={activeFolderPrefs.projectName}
           />
+        )}
+
+        {/* Session info bar for local sessions */}
+        {!pendingSession && !activeFolderPrefs && activeSession && activeTerminalId && (
+          <SessionInfoBar session={activeSession} />
         )}
 
         {/* Terminal panes — all stay mounted, only active is visible */}
@@ -248,7 +291,7 @@ export function DashboardView() {
               >
                 <TerminalPane
                   terminalId={t.id}
-                  theme={defaultTheme.xterm}
+                  theme={currentTheme.xterm}
                   active={t.id === activeTerminalId}
                 />
               </div>
@@ -282,12 +325,14 @@ export function DashboardView() {
               alignItems: 'center',
               justifyContent: 'center',
               fontFamily: "'Inter', system-ui, sans-serif",
-              padding: '0 40px',
+              padding: '40px 40px',
+              overflow: 'auto',
+              minHeight: 0,
               maxWidth: 480,
               margin: '0 auto',
             }}
           >
-            <img src={logoUrl} width={64} height={64} alt="" style={{ marginBottom: 20 }} />
+            <img src={logoUrl} width={64} height={64} alt="" style={{ marginBottom: 20, filter: currentTheme.isDark ? 'none' : 'invert(1)' }} />
             <div style={{ textAlign: 'center', marginBottom: 32 }}>
               <p style={{
                 fontSize: 13,
@@ -324,8 +369,8 @@ export function DashboardView() {
               onClick={handleNewSession}
               style={{
                 padding: '7px 20px',
-                background: '#1C1C24',
-                border: '1px solid rgba(0,0,0,0.4)',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
                 borderRadius: 6,
                 color: 'var(--fg)',
                 fontSize: 12,

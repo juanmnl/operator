@@ -27,6 +27,7 @@ export interface HookEvent {
   permission_mode?: string
   last_assistant_message?: string
   terminal_id?: string
+  term_program?: string
 }
 
 export interface OperatorRequest {
@@ -87,6 +88,8 @@ export interface AgentSession {
   startedAt: string
   lastActivityAt: string
   terminalId?: string
+  termProgram?: string
+  permissionMode?: string
 }
 
 export interface ManagedTerminal {
@@ -189,4 +192,5 @@ export const IPC = {
   FOLDER_PREFS_CREATE_FILE: 'folder-prefs:create-file',
   GET_MCP_SERVERS: 'operator:get-mcp-servers',
   PICK_FOLDER: 'operator:pick-folder',
+  GET_USAGE_STATS: 'operator:get-usage-stats',
 } as const

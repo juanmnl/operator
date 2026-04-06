@@ -1,9 +1,8 @@
 import { OperatorRequest, RequestOption } from '../../shared/types'
-import logoUrl from '../../../assets/logo-light-64.png'
 
 const DEFAULT_OPTIONS: RequestOption[] = [
-  { label: 'Y', value: 'approve', color: '#ef7b55' },
-  { label: 'N', value: 'deny', color: '#ef5252' },
+  { label: 'Y', value: 'approve' },
+  { label: 'N', value: 'deny' },
 ]
 
 interface Props {
@@ -15,138 +14,119 @@ interface Props {
 
 export function NotificationWidget({ request, queueSize, onRespond, onRespondAll }: Props) {
   const options = request.options || DEFAULT_OPTIONS
-  const projectName = request.context.workingDirectory?.split('/').pop() || 'Unknown'
+  const severity = request.severity
+  const severityColor = severity === 'high' ? '#ef5252' : severity === 'medium' ? '#f59e0b' : '#6b6b6b'
+
+  // Extract a short action label
+  const toolName = request.action || 'Tool'
+  const target = request.context.target || ''
+  const shortTarget = target.split('/').pop() || ''
 
   return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 15,
-        width: 556,
-        borderRadius: 78,
-        background: 'rgba(24, 24, 24, 0.98)',
-        paddingLeft: 10,
-        paddingRight: 20,
-        paddingTop: 10,
-        paddingBottom: 10,
+        gap: 12,
+        width: 540,
+        borderRadius: 12,
+        background: 'rgba(20, 20, 22, 0.95)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        padding: '10px 14px',
         fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+        border: '1px solid rgba(255,255,255,0.06)',
       }}
     >
-      {/* Agent icon */}
-      <div
-        style={{
-          flexShrink: 0,
-          width: 48,
-          height: 48,
-          borderRadius: 45,
-          background: 'rgba(217, 119, 87, 0.19)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <img src={logoUrl} width="31" height="31" alt="" />
-      </div>
+      {/* Severity dot */}
+      <div style={{
+        width: 6,
+        height: 6,
+        borderRadius: '50%',
+        background: severityColor,
+        flexShrink: 0,
+      }} />
 
-      {/* Location and message */}
-      <div
-        style={{
-          flex: '1 1 0',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-          minWidth: 0,
-          height: 48,
-          justifyContent: 'center',
-        }}
-      >
-        <p
-          style={{
-            fontSize: 8,
-            lineHeight: 'normal',
-            color: '#adadad',
-            fontWeight: 400,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            margin: 0,
-          }}
-        >
-          {request.context.workingDirectory || projectName}
-        </p>
-        <p
-          style={{
-            overflow: 'hidden',
-            fontSize: 12,
-            lineHeight: 'normal',
-            color: 'white',
-            fontWeight: 400,
-            margin: 0,
-            flex: '1 1 0',
-            minHeight: 1,
-            minWidth: 1,
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical' as const,
-            textOverflow: 'ellipsis',
-            wordBreak: 'break-word',
-          }}
-        >
-          {request.message}
+      {/* Content */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: '#f0f0f0' }}>
+            {toolName}
+          </span>
+          {shortTarget && (
+            <span style={{ fontSize: 10, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {shortTarget}
+            </span>
+          )}
+        </div>
+        <p style={{
+          fontSize: 10,
+          color: '#777',
+          margin: 0,
+          overflow: 'hidden',
+          whiteSpace: 'nowrap',
+          textOverflow: 'ellipsis',
+        }}>
+          {request.context.workingDirectory?.split('/').pop() || ''}
+          {queueSize > 1 && (
+            <span style={{ marginLeft: 8, opacity: 0.5 }}>+{queueSize - 1} more</span>
+          )}
         </p>
       </div>
 
       {/* Actions */}
-      <div
-        style={{
-          flexShrink: 0,
-          display: 'flex',
-          gap: 5,
-          alignItems: 'center',
-        }}
-      >
-        {options.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onRespond(opt.value)}
-            style={circleBtn(opt.color || '#555')}
-          >
-            {opt.label}
-          </button>
-        ))}
+      <div style={{ flexShrink: 0, display: 'flex', gap: 4, alignItems: 'center' }}>
+        <button
+          onClick={() => onRespond(options[0]?.value || 'approve')}
+          style={{
+            padding: '4px 12px',
+            fontSize: 11,
+            fontWeight: 500,
+            fontFamily: 'inherit',
+            background: 'rgba(74, 222, 128, 0.15)',
+            color: '#4ade80',
+            border: 'none',
+            borderRadius: 6,
+            cursor: 'pointer',
+          }}
+        >
+          Allow
+        </button>
+        <button
+          onClick={() => onRespond(options[1]?.value || 'deny')}
+          style={{
+            padding: '4px 12px',
+            fontSize: 11,
+            fontWeight: 500,
+            fontFamily: 'inherit',
+            background: 'rgba(239, 82, 82, 0.15)',
+            color: '#ef5252',
+            border: 'none',
+            borderRadius: 6,
+            cursor: 'pointer',
+          }}
+        >
+          Deny
+        </button>
         {queueSize > 1 && (
           <button
             onClick={() => onRespondAll(options[0]?.value || 'approve')}
-            style={circleBtn('rgba(239, 82, 82, 0.33)')}
+            style={{
+              padding: '4px 8px',
+              fontSize: 10,
+              fontWeight: 500,
+              fontFamily: 'inherit',
+              background: 'rgba(255,255,255,0.04)',
+              color: '#666',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+            }}
           >
-            <span style={{ lineHeight: '9px', fontSize: 10, textAlign: 'center' }}>
-              <span style={{ display: 'block' }}>Y</span>
-              <span style={{ display: 'block' }}>(all)</span>
-            </span>
+            All
           </button>
         )}
       </div>
     </div>
   )
-}
-
-function circleBtn(bg: string): React.CSSProperties {
-  return {
-    background: bg,
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 400,
-    fontFamily: 'inherit',
-    width: 32,
-    height: 32,
-    borderRadius: 90,
-    border: 'none',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '2px 0',
-    lineHeight: 1,
-  }
 }

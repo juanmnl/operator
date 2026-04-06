@@ -13,10 +13,17 @@ fi
 # Read event JSON from stdin
 INPUT=$(cat)
 
-# Inject hook_event_name and terminal_id from env vars (set by Claude Code / Operator)
-EVENT_NAME="${CLAUDE_HOOK_EVENT_NAME:-unknown}"
+# Inject hook_event_name, terminal_id, and terminal app
+# Claude Code provides event name via CLAUDE_HOOK_EVENT_NAME env var or in the JSON payload as hook_event_name
+EVENT_NAME="${CLAUDE_HOOK_EVENT_NAME:-}"
+# Fallback: read event name from JSON input if env var is empty
+if [ -z "$EVENT_NAME" ]; then
+  EVENT_NAME=$(echo "$INPUT" | jq -r '.hook_event_name // .event // "unknown"')
+fi
 TERMINAL_ID="${OPERATOR_TERMINAL_ID:-}"
-PAYLOAD=$(echo "$INPUT" | jq --arg event "$EVENT_NAME" --arg tid "$TERMINAL_ID" '. + {hook_event_name: $event} + (if $tid != "" then {terminal_id: $tid} else {} end)')
+TERM_APP="${TERM_PROGRAM:-}"
+PAYLOAD=$(echo "$INPUT" | jq --arg event "$EVENT_NAME" --arg tid "$TERMINAL_ID" --arg tapp "$TERM_APP" \
+  '. + {hook_event_name: $event} + (if $tid != "" then {terminal_id: $tid} else {} end) + (if $tapp != "" then {term_program: $tapp} else {} end)')
 
 case "$EVENT_NAME" in
   PreToolUse)

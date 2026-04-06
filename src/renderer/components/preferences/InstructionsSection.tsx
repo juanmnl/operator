@@ -119,8 +119,8 @@ function MdFileCard({ file, onSave, onCreate }: { file: ClaudeMdFile; onSave: (p
             onClick={() => onCreate(file.path)}
             style={{
               padding: '5px 14px',
-              background: '#1C1C24',
-              border: '1px solid rgba(0,0,0,0.4)',
+              background: 'var(--btn-bg)',
+              border: '1px solid var(--border)',
               borderRadius: 5,
               color: 'var(--fg)',
               fontSize: 11,

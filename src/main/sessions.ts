@@ -35,7 +35,8 @@ class SessionManager {
         lastToolName: null,
         startedAt: now,
         lastActivityAt: now,
-        terminalId: event.terminal_id
+        terminalId: event.terminal_id,
+        termProgram: event.term_program,
       }
       this.sessions.set(sessionId, session)
     }
@@ -45,6 +46,16 @@ class SessionManager {
     // Link terminal if provided and not yet linked
     if (event.terminal_id && !session.terminalId) {
       session.terminalId = event.terminal_id
+    }
+
+    // Capture terminal app name if not yet set
+    if (event.term_program && !session.termProgram) {
+      session.termProgram = event.term_program
+    }
+
+    // Track permission mode from the CC process
+    if (event.permission_mode) {
+      session.permissionMode = event.permission_mode
     }
 
     // Update cwd if provided and session didn't have one
@@ -80,7 +91,7 @@ class SessionManager {
           const toolInput = event.tool_input || {}
           session.activity.push({
             toolName: event.tool_name,
-            target: (toolInput.file_path as string) || (toolInput.command as string) || (toolInput.pattern as string) || undefined,
+            target: (toolInput.file_path as string) || (toolInput.command as string) || (toolInput.pattern as string) || (toolInput.description as string) || (toolInput.prompt as string)?.slice(0, 120) || undefined,
             timestamp: now,
             status: 'auto',
           })

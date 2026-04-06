@@ -26,9 +26,8 @@ export function InlinePermission({ request, onRespond }: InlinePermissionProps) 
   }, [onRespond])
 
   const target = request.context.target
-  const label = target
-    ? `${request.action}: ${target}`
-    : request.action
+  const preview = request.context.preview
+  const severityColor = request.severity === 'high' ? 'var(--red)' : request.severity === 'medium' ? 'var(--yellow)' : 'var(--fg-muted)'
 
   return (
     <div
@@ -38,34 +37,43 @@ export function InlinePermission({ request, onRespond }: InlinePermissionProps) 
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        padding: '6px 12px',
+        padding: '8px 14px',
         background: 'var(--bg-surface)',
         borderTop: '1px solid var(--border)',
         fontFamily: "'Inter', system-ui, sans-serif",
-        fontSize: 12,
-        color: 'var(--fg)',
         outline: 'none',
       }}
     >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: request.severity === 'high' ? 'var(--red)' : 'var(--yellow)',
-          flexShrink: 0,
-        }}
-      />
-      <span
-        style={{
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {label}
-      </span>
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%',
+        background: severityColor, flexShrink: 0,
+      }} />
+
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)' }}>
+            {request.action}
+          </span>
+          {target && (
+            <span style={{
+              fontSize: 11, color: 'var(--fg-muted)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+            }}>
+              {target.length > 80 ? target.slice(0, 80) + '...' : target}
+            </span>
+          )}
+        </div>
+        {preview && !target && (
+          <span style={{
+            fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {preview.slice(0, 120)}
+          </span>
+        )}
+      </div>
+
       <button onClick={() => onRespond('approve')} style={btnStyle('var(--green)')}>
         Allow
       </button>
@@ -87,5 +95,6 @@ function btnStyle(color: string): React.CSSProperties {
     fontFamily: 'inherit',
     cursor: 'pointer',
     lineHeight: '18px',
+    flexShrink: 0,
   }
 }

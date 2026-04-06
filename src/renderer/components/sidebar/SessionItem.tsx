@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
 
-type DotStatus = 'running' | 'waiting' | 'compacting' | 'error' | 'idle'
+type DotStatus = 'running' | 'waiting' | 'compacting' | 'error' | 'idle' | 'ended'
 
 interface SessionItemProps {
   session: AgentSession
@@ -9,26 +9,24 @@ interface SessionItemProps {
   active: boolean
   hasPending: boolean
   isExternal?: boolean
+  effortLevel?: string | null
   onClick: () => void
   onRename: (newName: string) => void
 }
 
-const dotConfig: Record<DotStatus, { color: string; animation?: string }> = {
+const dotConfig: Record<DotStatus, { color: string; opacity?: number; animation?: string }> = {
   running:    { color: 'var(--green)',  animation: 'pulse 1.5s ease-in-out infinite' },
   waiting:    { color: 'var(--yellow)', animation: 'pulse 1s ease-in-out infinite' },
   compacting: { color: 'var(--cyan)' },
   error:      { color: 'var(--red)' },
-  idle:       { color: 'var(--fg-muted)' },
+  idle:       { color: 'var(--fg-muted)', opacity: 0.4 },
+  ended:      { color: 'var(--fg-muted)', opacity: 0.15 },
 }
 
 function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
-  // Pending permission requests take priority — agent is blocked
   if (hasPending) return 'waiting'
+  if (session.status === 'ended') return 'ended'
 
-  // Session ended or errored
-  if (session.status === 'ended') return 'idle'
-
-  // Phase-based
   switch (session.phase) {
     case 'running': return 'running'
     case 'compacting': return 'compacting'
@@ -36,11 +34,13 @@ function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
   }
 }
 
-export function SessionItem({ session, label, active, hasPending, isExternal, onClick, onRename }: SessionItemProps) {
+export function SessionItem({ session, label, active, hasPending, isExternal, effortLevel, onClick, onRename }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const inputRef = useRef<HTMLInputElement>(null)
-  const toolLabel = session.lastToolName ? ` — ${session.lastToolName}` : ''
+  const toolLabel = session.lastToolName
+    ? ` — ${session.lastToolName}`
+    : session.phase === 'running' ? ' — processing' : ''
 
   const status = getDotStatus(session, hasPending)
   const dot = dotConfig[status]
@@ -88,14 +88,16 @@ export function SessionItem({ session, label, active, hasPending, isExternal, on
     >
       <span
         style={{
-          width: 7,
-          height: 7,
+          width: 6,
+          height: 6,
           borderRadius: '50%',
           background: isExternal ? 'transparent' : dot.color,
           border: isExternal ? `1.5px solid ${dot.color}` : 'none',
           boxSizing: 'border-box',
           flexShrink: 0,
+          opacity: dot.opacity ?? 1,
           animation: dot.animation,
+          transition: 'background 0.3s, opacity 0.3s',
         }}
       />
       <span
@@ -120,7 +122,7 @@ export function SessionItem({ session, label, active, hasPending, isExternal, on
             }}
             onClick={(e) => e.stopPropagation()}
             style={{
-              background: 'var(--bg-terminal)',
+              background: 'transparent',
               color: 'var(--fg)',
               border: '1px solid var(--border)',
               borderRadius: 3,
@@ -140,17 +142,44 @@ export function SessionItem({ session, label, active, hasPending, isExternal, on
           </>
         )}
       </span>
+      {!editing && isExternal && (
+        <span style={{
+          fontSize: 8,
+          fontWeight: 500,
+          color: 'var(--fg-muted)',
+          opacity: 0.4,
+          flexShrink: 0,
+          letterSpacing: 0.3,
+          textTransform: 'uppercase',
+        }}>
+          ext
+        </span>
+      )}
       {!editing && session.activeSubagents > 0 && (
         <span
           style={{
             fontSize: 9,
             color: 'var(--fg-muted)',
-            background: 'var(--bg-terminal)',
+            background: 'transparent',
             borderRadius: 8,
             padding: '1px 5px',
           }}
         >
           {session.activeSubagents}
+        </span>
+      )}
+      {!editing && effortLevel && (
+        <span
+          style={{
+            fontSize: 8,
+            fontWeight: 600,
+            color: 'var(--fg-muted)',
+            opacity: 0.5,
+            flexShrink: 0,
+            textTransform: 'uppercase',
+          }}
+        >
+          {effortLevel[0]}
         </span>
       )}
     </button>

@@ -3,6 +3,21 @@ import { AgentSession, OperatorRequest } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import logoUrl from '../../../../assets/logo-light-64.png'
 
+const TERM_NAMES: Record<string, string> = {
+  'iTerm.app': 'iTerm',
+  'Apple_Terminal': 'Terminal',
+  'vscode': 'VS Code',
+  'WarpTerminal': 'Warp',
+  'Hyper': 'Hyper',
+  'Alacritty': 'Alacritty',
+  'tmux': 'tmux',
+  'ghostty': 'Ghostty',
+}
+
+function formatTermProgram(raw: string): string {
+  return TERM_NAMES[raw] || raw.replace(/\.app$/, '')
+}
+
 interface SidebarProps {
   sessions: AgentSession[]
   activeSessionId: string | null
@@ -10,13 +25,16 @@ interface SidebarProps {
   customNames: Record<string, string>
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
+  effortLevels: Record<string, string>
+  isDark: boolean
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
+  onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNames, pendingRequests, activeFolderPrefs, onSelectSession, onRenameSession, onNewSession, onOpenFolderPrefs }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNames, pendingRequests, activeFolderPrefs, effortLevels, isDark, onSelectSession, onRenameSession, onNewSession, onOpenFolderPrefs, onToggleTheme  }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -55,7 +73,7 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
           paddingTop: 40,
         }}
       >
-        <img src={logoUrl} width={20} height={20} alt="" />
+        <img src={logoUrl} width={20} height={20} alt="" style={{ filter: isDark ? 'none' : 'invert(1)' }} />
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
           Operator
         </span>
@@ -86,6 +104,7 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
             customNames={customNames}
             pendingRequests={pendingRequests}
             activeFolderPrefs={activeFolderPrefs}
+            effortLevels={effortLevels}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
             onOpenFolderPrefs={onOpenFolderPrefs}
@@ -93,26 +112,57 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
         ))}
       </div>
 
-      {/* New Session button */}
-      <div style={{ padding: '8px 10px',
+      {/* Bottom bar */}
+      <div style={{
+        padding: '6px 14px 10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
         <button
           onClick={onNewSession}
           style={{
-            width: '100%',
-            padding: '7px 0',
-            background: '#1C1C24',
-            border: '1px solid rgba(0,0,0,0.4)',
-            borderRadius: 6,
-            color: 'var(--fg)',
-            fontSize: 12,
+            background: 'none',
+            border: 'none',
+            color: 'var(--fg-muted)',
+            fontSize: 16,
+            fontWeight: 300,
             fontFamily: 'inherit',
             cursor: 'pointer',
+            padding: 0,
+            lineHeight: 1,
+            opacity: 0.5,
           }}
+          title="New Session"
         >
-          + New Session
+          +
+        </button>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={onToggleTheme}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 0,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: 0.4,
+          }}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {isDark ? (
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
+              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
+            </svg>
+          )}
         </button>
       </div>
     </div>
@@ -127,6 +177,7 @@ function FolderGroup({
   customNames,
   pendingRequests,
   activeFolderPrefs,
+  effortLevels,
   onSelectSession,
   onRenameSession,
   onOpenFolderPrefs,
@@ -138,6 +189,7 @@ function FolderGroup({
   customNames: Record<string, string>
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
+  effortLevels: Record<string, string>
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
@@ -185,21 +237,25 @@ function FolderGroup({
             flexShrink: 0,
           }}
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ display: 'block' }}>
-            <path
-              d="M6.5 1.75a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0ZM6.5 8a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0ZM8 14.25a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"
-              fill="var(--fg-muted)"
-            />
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ display: 'block' }}>
+            <circle cx="5" cy="2" r="1" fill="var(--fg-muted)" />
+            <circle cx="5" cy="5" r="1" fill="var(--fg-muted)" />
+            <circle cx="5" cy="8" r="1" fill="var(--fg-muted)" />
           </svg>
         </button>
       </div>
       {group.map((session, i) => {
         const customName = customNames[session.id]
         const isExternal = !session.terminalId || !localTerminalIds.has(session.terminalId)
-        const defaultLabel = group.length > 1 ? `Session ${i + 1}` : 'Session'
+        const autoName = isExternal
+          ? (session.termProgram ? formatTermProgram(session.termProgram) : 'External')
+          : (group.length > 1 ? `Session ${i + 1}` : 'Session')
+        const defaultLabel = autoName
         const hasPending = pendingRequests.some(
           (r) => r.terminalId === session.terminalId || r.sessionId === session.id
         )
+        // Get effort level from terminal tab (keyed by terminalId)
+        const effort = session.terminalId ? effortLevels[session.terminalId] : null
         return (
           <SessionItem
             key={session.id}
@@ -208,6 +264,7 @@ function FolderGroup({
             active={session.id === activeSessionId}
             hasPending={hasPending}
             isExternal={isExternal}
+            effortLevel={effort}
             onClick={() => onSelectSession(session)}
             onRename={(name) => onRenameSession(session.id, name)}
           />

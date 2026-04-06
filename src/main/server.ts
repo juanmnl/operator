@@ -18,12 +18,22 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
   app.post('/hook', async (req, res) => {
     const event: HookEvent = req.body
 
+    // Infer event name if missing — if tool_name is present, it's likely PreToolUse
+    if (!event.hook_event_name || event.hook_event_name === 'unknown') {
+      if (event.tool_name) {
+        event.hook_event_name = 'PreToolUse'
+      }
+    }
+
     // Link terminal_id from env if present
     if (event.terminal_id && event.session_id) {
       terminalRegistry.link(event.terminal_id, event.session_id)
     }
 
     const session = sessions.recordEvent(event)
+
+    // Log hook events for debugging
+    console.log(`Hook: ${event.hook_event_name} | session=${event.session_id?.slice(0, 8)} | phase=${session?.phase} | tool=${event.tool_name || '-'}`)
 
     // Broadcast session update
     if (session) {
@@ -44,11 +54,28 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
       return
     }
 
+    // Auto-approve for sessions in auto/bypass permission mode
+    const sessionPermMode = session?.permissionMode || event.permission_mode
+    if (sessionPermMode === 'auto' || sessionPermMode === 'bypassPermissions') {
+      res.json({ decision: 'approve' })
+      return
+    }
+
     // PreToolUse — blocking permission flow
     const toolInput = event.tool_input || {}
     const inputSummary = Object.entries(toolInput)
       .map(([k, v]) => `${k}: ${String(v).slice(0, 120)}`)
       .join(', ')
+
+    // Extract meaningful target and preview from tool input
+    const target = (toolInput.file_path as string)
+      || (toolInput.command as string)
+      || (toolInput.pattern as string)
+      || (toolInput.description as string)
+      || (toolInput.prompt as string)?.slice(0, 200)
+      || undefined
+
+    const preview = inputSummary.slice(0, 300)
 
     const request: OperatorRequest = {
       id: uuidv4(),
@@ -57,7 +84,8 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
       message: `${event.tool_name || 'Tool'}: ${inputSummary}`,
       context: {
         workingDirectory: event.cwd || '',
-        target: toolInput.file_path as string || toolInput.command as string || undefined,
+        target,
+        preview,
       },
       severity: getSeverity(event.tool_name),
       expiresIn: 300,

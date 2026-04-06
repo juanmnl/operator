@@ -1,16 +1,29 @@
 import { useEffect, useState } from 'react'
 import type { McpServerInfo } from '../../../shared/types'
 
+const TYPE_COLORS: Record<string, string> = {
+  stdio: '#4ade80',
+  http: '#46BDFF',
+  cloud: '#D58FDB',
+}
+
+function typeColor(type?: string): string {
+  return (type && TYPE_COLORS[type]) || 'var(--fg-muted)'
+}
+
 interface SessionToolbarProps {
   projectPath: string
   projectName: string
   effortLevel?: 'high' | 'normal' | 'low' | null
+  permissionMode?: string | null
+  lastToolName?: string | null
 }
 
-export function SessionToolbar({ projectPath, projectName, effortLevel: effortLevelProp }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, effortLevel: effortLevelProp, permissionMode, lastToolName }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
+  const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
 
   useEffect(() => {
     // Only read from disk if no prop was provided
@@ -39,25 +52,38 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
 
   return (
     <div style={{ position: 'relative' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 12px',
-          height: 28,
-          flexShrink: 0,
-          borderBottom: '1px solid var(--border)',
-          fontFamily: "'Inter', system-ui, sans-serif",
+      {/* Draggable title bar area */}
+      <div style={{
+        // @ts-expect-error Electron-specific CSS property
+        WebkitAppRegion: 'drag',
+        display: 'flex',
+        alignItems: 'flex-end',
+        justifyContent: 'space-between',
+        padding: '10px 12px 6px',
+        flexShrink: 0,
+        borderBottom: '1px solid var(--border)',
+        fontFamily: "'Inter', system-ui, sans-serif",
+      }}>
+        <span style={{
+          fontSize: 10,
+          color: 'var(--fg-muted)',
+          opacity: 0.6,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
-        }}
-      >
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        }}>
           {projectName}
         </span>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          // @ts-expect-error Electron-specific CSS property
+          WebkitAppRegion: 'no-drag',
+        }}>
           {/* MCP indicator */}
           {mcpServers.length > 0 && (
             <button
@@ -70,7 +96,7 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
                 fontSize: 9,
                 fontWeight: 500,
                 fontFamily: 'inherit',
-                background: mcpExpanded ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)',
+                background: mcpExpanded ? 'rgba(255,255,255,0.06)' : 'transparent',
                 color: 'var(--fg-muted)',
                 border: 'none',
                 borderRadius: 3,
@@ -79,9 +105,9 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
               }}
             >
               <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
-                <circle cx="4" cy="8" r="2" fill="var(--fg-muted)" opacity="0.6" />
-                <circle cx="12" cy="8" r="2" fill="var(--fg-muted)" opacity="0.6" />
-                <path d="M6 8h4" stroke="var(--fg-muted)" strokeWidth="1" opacity="0.4" />
+                <circle cx="4" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
+                <circle cx="12" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[1]?.type || mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
+                <path d="M6 8h4" stroke="var(--fg-muted)" strokeWidth="1" opacity="0.2" />
               </svg>
               {mcpServers.length} MCP
             </button>
@@ -96,13 +122,32 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
                 fontWeight: 500,
                 fontFamily: 'inherit',
                 textTransform: 'capitalize',
-                background: 'rgba(255,255,255,0.06)',
+                background: 'transparent',
                 color: 'var(--fg-muted)',
                 borderRadius: 3,
                 lineHeight: '16px',
               }}
             >
               {effortLevel}
+            </span>
+          )}
+
+          {/* Permission mode badge */}
+          {permissionMode && permissionMode !== 'default' && (
+            <span
+              style={{
+                padding: '2px 8px',
+                fontSize: 9,
+                fontWeight: 500,
+                fontFamily: 'inherit',
+                background: 'transparent',
+                color: permissionMode === 'bypassPermissions' ? 'var(--red)' : 'var(--yellow)',
+                borderRadius: 3,
+                lineHeight: '16px',
+                opacity: 0.7,
+              }}
+            >
+              {permissionMode === 'bypassPermissions' ? 'No Perms' : permissionMode}
             </span>
           )}
         </div>
@@ -117,11 +162,6 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
 }
 
 function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: () => void }) {
-  const typeColors: Record<string, string> = {
-    stdio: '#4ade80',
-    http: '#46BDFF',
-    cloud: '#D58FDB',
-  }
 
   return (
     <>
@@ -133,7 +173,7 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
       <div
         style={{
           position: 'absolute',
-          top: 28,
+          top: '100%',
           right: 12,
           zIndex: 100,
           width: 220,
@@ -173,7 +213,7 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
               fontSize: 8,
               fontWeight: 600,
               textTransform: 'uppercase',
-              color: typeColors[server.type] || 'var(--fg-muted)',
+              color: typeColor(server.type),
               letterSpacing: 0.3,
               flexShrink: 0,
               marginLeft: 8,

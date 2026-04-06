@@ -21,6 +21,13 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
 
+  // Set transparent bg class for widget window
+  useEffect(() => {
+    if (route === '/widget') {
+      document.body.classList.add('widget-bg')
+    }
+  }, [route])
+
   switch (route) {
     case '/widget':
       return <WidgetView />

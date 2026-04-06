@@ -13,7 +13,7 @@ declare global {
       respond: (id: string, value: string) => Promise<boolean>
       getQueue: () => Promise<OperatorRequest[]>
       getSessions: () => Promise<AgentSession[]>
-      terminalSpawn: (cwd?: string) => Promise<{ terminalId: string; cwd: string } | null>
+      terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
       terminalWrite: (id: string, data: string) => void
       terminalResize: (id: string, cols: number, rows: number) => void
       terminalKill: (id: string) => Promise<void>
