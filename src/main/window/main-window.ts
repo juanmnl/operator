@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 
 export function createMainWindow(): BrowserWindow {
@@ -16,6 +16,21 @@ export function createMainWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  })
+
+  // Route any window.open / target=_blank / xterm link clicks through the
+  // OS so URLs open in the user's default browser instead of a new Electron window.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  // Same for cmd-click / direct navigation attempts within the window.
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url === win.webContents.getURL()) return
+    if (/^https?:/i.test(url)) {
+      event.preventDefault()
+      shell.openExternal(url)
+    }
   })
 
   const url = process.env['ELECTRON_RENDERER_URL']

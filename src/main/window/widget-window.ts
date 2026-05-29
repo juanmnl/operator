@@ -1,4 +1,4 @@
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 
 export function createWidgetWindow(): BrowserWindow {
@@ -27,6 +27,11 @@ export function createWidgetWindow(): BrowserWindow {
   })
 
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
 
   const url = process.env['ELECTRON_RENDERER_URL']
   if (url) {
