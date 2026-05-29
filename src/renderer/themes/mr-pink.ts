@@ -41,4 +41,13 @@ export const mrPinkVars = {
   '--cyan': '#8FC8FF',
   '--selection': '#ffffff3b',
   '--border': '#2a2a35',
+  '--color-success': '#84eea7',
+  '--color-error': '#ff6057',
+  '--color-warning': '#FAD481',
+  '--mcp-stdio': '#84eea7',
+  '--mcp-http': '#4095ff',
+  '--mcp-cloud': '#D58FDB',
+  '--fg-on-accent': '#1E1E25',
+  '--overlay-subtle': 'rgba(255,255,255,0.06)',
+  '--overlay-medium': 'rgba(255,255,255,0.12)',
 } as const

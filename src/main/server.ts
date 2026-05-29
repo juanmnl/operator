@@ -7,10 +7,15 @@ import { updateTrayBadge } from './tray'
 import { sessions } from './sessions'
 import { WindowManager } from './window/window-manager'
 import { TerminalRegistry } from './terminal/terminal-registry'
+import { summarizeTool, summaryMessage } from './tool-summary'
+import { rules } from './rules'
 
 const PORT = 47821
 
 export function startServer(windowManager: WindowManager, terminalRegistry: TerminalRegistry): void {
+  // Preload rules so the first incoming request can be matched without a load delay.
+  rules.ready().catch((err) => console.error('rules load failed:', err))
+
   const app = express()
   app.use(express.json())
 
@@ -32,8 +37,12 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
 
     const session = sessions.recordEvent(event)
 
-    // Log hook events for debugging
-    console.log(`Hook: ${event.hook_event_name} | session=${event.session_id?.slice(0, 8)} | phase=${session?.phase} | tool=${event.tool_name || '-'}`)
+    if (process.env.OPERATOR_DEBUG) {
+      const sid = event.session_id?.slice(0, 4) ?? '----'
+      const evt = event.hook_event_name?.padEnd(14) ?? '-'.padEnd(14)
+      const tool = event.tool_name ? ` ${event.tool_name}` : ''
+      console.log(`hook ${evt} s/${sid} ${session?.phase || '-'}${tool}`)
+    }
 
     // Broadcast session update
     if (session) {
@@ -47,9 +56,10 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
       return
     }
 
-    // Read-only tools: track for session state but skip permission flow
-    const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Skill', 'ToolSearch', 'LSP'])
-    if (READ_ONLY_TOOLS.has(event.tool_name || '')) {
+    // Non-destructive tools — auto-approve silently. The user only cares about
+    // tools that touch the filesystem, run shell, hit the network with side effects,
+    // or invoke arbitrary MCP servers. Everything else is "Claude thinking out loud."
+    if (isAutoApprovedTool(event.tool_name)) {
       res.json({ decision: 'approve' })
       return
     }
@@ -61,33 +71,29 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
       return
     }
 
+    // User-defined auto-approve / auto-deny rules
+    const ruleHit = rules.evaluate(event.tool_name, event.tool_input)
+    if (ruleHit) {
+      console.log(`rule ${ruleHit.decision}: ${event.tool_name}${ruleHit.matched.pattern ? `(${ruleHit.matched.pattern})` : ''} — s/${event.session_id?.slice(0, 4)}`)
+      res.json({ decision: ruleHit.decision === 'approve' ? 'approve' : 'deny' })
+      return
+    }
+
     // PreToolUse — blocking permission flow
-    const toolInput = event.tool_input || {}
-    const inputSummary = Object.entries(toolInput)
-      .map(([k, v]) => `${k}: ${String(v).slice(0, 120)}`)
-      .join(', ')
-
-    // Extract meaningful target and preview from tool input
-    const target = (toolInput.file_path as string)
-      || (toolInput.command as string)
-      || (toolInput.pattern as string)
-      || (toolInput.description as string)
-      || (toolInput.prompt as string)?.slice(0, 200)
-      || undefined
-
-    const preview = inputSummary.slice(0, 300)
+    const summary = summarizeTool(event.tool_name, event.tool_input)
 
     const request: OperatorRequest = {
       id: uuidv4(),
       agentId: event.agent_id || 'claude-code',
-      action: event.tool_name || 'unknown',
-      message: `${event.tool_name || 'Tool'}: ${inputSummary}`,
+      action: summary.action,
+      toolName: event.tool_name,
+      message: summaryMessage(summary),
       context: {
         workingDirectory: event.cwd || '',
-        target,
-        preview,
+        target: summary.target,
+        preview: summary.preview,
       },
-      severity: getSeverity(event.tool_name),
+      severity: summary.severity,
       expiresIn: 300,
       timestamp: new Date().toISOString(),
       sessionId: event.session_id,
@@ -98,7 +104,8 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
       sessions.trackRequest(session.id, request)
     }
 
-    console.log(`Operator: permission request — ${request.action} from ${request.sessionId || 'unknown'} (terminal: ${request.terminalId || 'none'})`)
+    const sid = request.sessionId?.slice(0, 4) || '----'
+    console.log(`permission needed: ${request.action}${request.context.target ? ` (${request.context.target})` : ''} — s/${sid}`)
     windowManager.sendNewRequest(request)
     windowManager.sendSessionUpdate(sessions.getActive())
 
@@ -175,15 +182,24 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
   process.on('SIGINT', () => { server.close(); process.exit(0) })
 }
 
-function getSeverity(toolName: string | undefined): 'low' | 'medium' | 'high' {
-  switch (toolName) {
-    case 'Bash':
-    case 'Write':
-      return 'high'
-    case 'Edit':
-    case 'NotebookEdit':
-      return 'medium'
-    default:
-      return 'low'
-  }
+// Tools that never need user approval — read-only, internal state, or read-only network.
+// Anything not on this list and not auto-approved by session permission mode goes through
+// the blocking permission flow.
+const AUTO_APPROVED_TOOLS = new Set([
+  // Read-only filesystem / search
+  'Read', 'Glob', 'Grep',
+  // Claude internal state / planning
+  'Skill', 'ToolSearch', 'LSP', 'TodoWrite',
+  'EnterPlanMode', 'ExitPlanMode',
+  // Task management (queue local to Claude — no side effects on user systems)
+  'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop',
+  // Read-only network
+  'WebFetch', 'WebSearch',
+  // Notifications & scheduling (no destructive effect)
+  'PushNotification', 'ScheduleWakeup',
+])
+
+function isAutoApprovedTool(toolName: string | undefined): boolean {
+  if (!toolName) return false
+  return AUTO_APPROVED_TOOLS.has(toolName)
 }

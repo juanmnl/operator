@@ -9,19 +9,23 @@ import { PluginsSection } from './PluginsSection'
 interface FolderPreferencesViewProps {
   projectPath: string
   projectName: string
+  /** When true, loads global-only files (~/.claude/*) and hides project tabs context. */
+  globalOnly?: boolean
 }
 
 const TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins'] as const
 type Tab = (typeof TABS)[number]
 
-export function FolderPreferencesView({ projectPath, projectName }: FolderPreferencesViewProps) {
+export function FolderPreferencesView({ projectPath, projectName, globalOnly = false }: FolderPreferencesViewProps) {
   const [prefs, setPrefs] = useState<FolderPreferences | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('Instructions')
 
   const load = useCallback(async () => {
-    const data = await window.operator.folderPrefsLoad(projectPath)
+    const data = globalOnly
+      ? await window.operator.folderPrefsLoadGlobal()
+      : await window.operator.folderPrefsLoad(projectPath)
     setPrefs(data)
-  }, [projectPath])
+  }, [projectPath, globalOnly])
 
   useEffect(() => {
     load()

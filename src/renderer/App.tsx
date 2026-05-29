@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { DashboardView } from './views/DashboardView'
 import { WidgetView } from './views/WidgetView'
-import { applyTheme, defaultTheme } from './themes'
+import { applyTheme, defaultTheme, themes } from './themes'
 
 function getRoute(): string {
   const hash = window.location.hash.replace('#', '')
@@ -12,7 +12,8 @@ export default function App() {
   const [route, setRoute] = useState(getRoute)
 
   useEffect(() => {
-    applyTheme(defaultTheme)
+    const saved = localStorage.getItem('operator.theme')
+    applyTheme((saved && themes[saved]) || defaultTheme)
   }, [])
 
   useEffect(() => {

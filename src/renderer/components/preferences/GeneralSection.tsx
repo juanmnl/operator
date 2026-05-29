@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react'
 import type { SettingsFile, ClaudeSettings } from '../../../shared/types'
 import { SettingsFileTabBar } from './SettingsFileTabBar'
+import { useSettingsScope } from './useSettingsScope'
+import { ListEditor } from './ListEditor'
 
 interface GeneralSectionProps {
   settingsFiles: SettingsFile[]
@@ -11,18 +12,7 @@ interface GeneralSectionProps {
 const EFFORT_LEVELS = ['high', 'normal', 'low'] as const
 
 export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSectionProps) {
-  const writableFiles = settingsFiles.filter((f) => !f.readOnly)
-  const [activeScope, setActiveScope] = useState(() => {
-    const existing = writableFiles.find((f) => f.exists)
-    return existing?.scope || writableFiles[0]?.scope || 'project-local'
-  })
-
-  const activeFile = settingsFiles.find((f) => f.scope === activeScope)
-
-  const handleCreateFile = useCallback((file: SettingsFile) => {
-    onCreate(file.path)
-    setActiveScope(file.scope)
-  }, [onCreate])
+  const { activeScope, setActiveScope, activeFile, handleCreateFile } = useSettingsScope(settingsFiles, onCreate)
 
   if (!activeFile || !activeFile.exists) {
     return (
@@ -105,7 +95,7 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
                   fontFamily: 'inherit',
                   textTransform: 'capitalize',
                   background: settings.effortLevel === level ? 'var(--accent)' : 'transparent',
-                  color: settings.effortLevel === level ? '#fff' : 'var(--fg-muted)',
+                  color: settings.effortLevel === level ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
                   border: 'none',
                   cursor: isReadOnly ? 'default' : 'pointer',
                   borderRight: level !== 'low' ? '1px solid var(--border)' : 'none',
@@ -145,11 +135,16 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
           <p style={{ fontSize: 10, color: 'var(--fg-muted)', margin: '0 0 8px' }}>
             MCP servers that are explicitly blocked from connecting.
           </p>
-          <StringListEditor
+          <ListEditor
             items={settings.deniedMcpServers || []}
             placeholder="server-name"
             disabled={isReadOnly}
-            onChange={(items) => handleUpdate({ deniedMcpServers: items })}
+            onAdd={(value) => handleUpdate({ deniedMcpServers: [...(settings.deniedMcpServers || []), value] })}
+            onRemove={(index) => {
+              const updated = [...(settings.deniedMcpServers || [])]
+              updated.splice(index, 1)
+              handleUpdate({ deniedMcpServers: updated })
+            }}
           />
         </div>
       </div>
@@ -166,7 +161,7 @@ function ToggleSwitch({ checked, disabled, onChange }: { checked: boolean; disab
         height: 20,
         borderRadius: 10,
         border: 'none',
-        background: checked ? 'var(--accent)' : 'rgba(255,255,255,0.12)',
+        background: checked ? 'var(--accent)' : 'var(--overlay-medium)',
         cursor: disabled ? 'default' : 'pointer',
         position: 'relative',
         transition: 'background 0.15s',
@@ -178,109 +173,12 @@ function ToggleSwitch({ checked, disabled, onChange }: { checked: boolean; disab
         width: 14,
         height: 14,
         borderRadius: '50%',
-        background: '#fff',
+        background: 'var(--fg-on-accent)',
         position: 'absolute',
         top: 3,
         left: checked ? 19 : 3,
         transition: 'left 0.15s',
       }} />
     </button>
-  )
-}
-
-function StringListEditor({ items, placeholder, disabled, onChange }: {
-  items: string[]
-  placeholder: string
-  disabled: boolean
-  onChange: (items: string[]) => void
-}) {
-  const [input, setInput] = useState('')
-
-  const handleAdd = () => {
-    if (!input.trim() || items.includes(input.trim())) return
-    onChange([...items, input.trim()])
-    setInput('')
-  }
-
-  const handleRemove = (index: number) => {
-    const updated = [...items]
-    updated.splice(index, 1)
-    onChange(updated)
-  }
-
-  return (
-    <div style={{
-      background: 'var(--bg-surface)',
-      border: '1px solid var(--border)',
-      borderRadius: 6,
-      overflow: 'hidden',
-    }}>
-      {items.length === 0 && (
-        <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--fg-muted)', opacity: 0.5 }}>
-          None configured
-        </div>
-      )}
-      {items.map((item, i) => (
-        <div
-          key={`${item}-${i}`}
-          style={{
-            padding: '6px 12px',
-            fontSize: 12,
-            color: 'var(--fg)',
-            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderBottom: i < items.length - 1 ? '1px solid var(--border)' : 'none',
-          }}
-        >
-          <span>{item}</span>
-          {!disabled && (
-            <button
-              onClick={() => handleRemove(i)}
-              style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: 14, padding: '0 4px', opacity: 0.5, lineHeight: 1 }}
-            >
-              x
-            </button>
-          )}
-        </div>
-      ))}
-      {!disabled && (
-        <div style={{ display: 'flex', borderTop: items.length > 0 ? '1px solid var(--border)' : 'none' }}>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-            placeholder={placeholder}
-            style={{
-              flex: 1,
-              padding: '6px 12px',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: 'var(--fg)',
-              fontSize: 11,
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-            }}
-          />
-          <button
-            onClick={handleAdd}
-            style={{
-              padding: '4px 10px',
-              background: 'none',
-              border: 'none',
-              borderLeft: '1px solid var(--border)',
-              color: 'var(--fg-muted)',
-              fontSize: 11,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-            }}
-          >
-            Add
-          </button>
-        </div>
-      )}
-    </div>
   )
 }

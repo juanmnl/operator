@@ -1,11 +1,17 @@
 #!/bin/bash
 # Operator hook for Claude Code
-# Unified handler for all hook event types
-# Forwards events to the Operator gateway for session tracking and permission handling
+# Only handles events from Claude Code processes spawned by Operator itself —
+# identified by the OPERATOR_TERMINAL_ID env var set in the pty environment.
+# External Claude Code sessions (run in iTerm, VS Code, etc.) hit this hook
+# but exit immediately. Operator is a session manager, not a global gateway.
+
+if [ -z "$OPERATOR_TERMINAL_ID" ]; then
+  exit 0
+fi
 
 OPERATOR_URL="http://127.0.0.1:47821"
 
-# Check if Operator is running
+# Operator not running — fail open so Claude Code keeps working.
 if ! curl -s --max-time 1 "$OPERATOR_URL/health" > /dev/null 2>&1; then
   exit 0
 fi
@@ -29,10 +35,12 @@ case "$EVENT_NAME" in
   PreToolUse)
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
 
-    # Skip read-only tools
+    # Non-destructive tools — forward for session tracking but don't block.
+    # Keep this list in sync with AUTO_APPROVED_TOOLS in src/main/server.ts.
     case "$TOOL_NAME" in
-      Read|Glob|Grep|Skill|ToolSearch|LSP)
-        # Still forward for session tracking, but non-blocking
+      Read|Glob|Grep|Skill|ToolSearch|LSP|TodoWrite|EnterPlanMode|ExitPlanMode|\
+TaskCreate|TaskUpdate|TaskGet|TaskList|TaskOutput|TaskStop|\
+WebFetch|WebSearch|PushNotification|ScheduleWakeup)
         curl -s --max-time 2 -X POST "$OPERATOR_URL/hook" \
           -H "Content-Type: application/json" \
           -d "$PAYLOAD" > /dev/null 2>&1 &

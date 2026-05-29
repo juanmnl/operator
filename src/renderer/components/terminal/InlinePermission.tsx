@@ -4,9 +4,10 @@ import { useEffect, useRef } from 'react'
 interface InlinePermissionProps {
   request: OperatorRequest
   onRespond: (value: string) => void
+  onRespondAndRemember?: (value: 'approve' | 'deny') => void
 }
 
-export function InlinePermission({ request, onRespond }: InlinePermissionProps) {
+export function InlinePermission({ request, onRespond, onRespondAndRemember }: InlinePermissionProps) {
   const barRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -59,25 +60,35 @@ export function InlinePermission({ request, onRespond }: InlinePermissionProps) 
               fontSize: 11, color: 'var(--fg-muted)',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+              minWidth: 0,
             }}>
-              {target.length > 80 ? target.slice(0, 80) + '...' : target}
+              {target}
             </span>
           )}
         </div>
-        {preview && !target && (
+        {preview && preview !== target && (
           <span style={{
             fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {preview.slice(0, 120)}
+            {preview}
           </span>
         )}
       </div>
 
-      <button onClick={() => onRespond('approve')} style={btnStyle('var(--green)')}>
+      <button onClick={() => onRespond('approve')} style={btnStyle('var(--color-success)')}>
         Allow
       </button>
-      <button onClick={() => onRespond('deny')} style={btnStyle('var(--red)')}>
+      {onRespondAndRemember && (
+        <button
+          onClick={() => onRespondAndRemember('approve')}
+          style={ghostBtnStyle('var(--color-success)')}
+          title={`Always allow ${request.toolName || request.action}${request.context.target ? ` matching ${request.context.target}` : ''}`}
+        >
+          Always
+        </button>
+      )}
+      <button onClick={() => onRespond('deny')} style={btnStyle('var(--color-error)')}>
         Deny
       </button>
     </div>
@@ -96,5 +107,23 @@ function btnStyle(color: string): React.CSSProperties {
     cursor: 'pointer',
     lineHeight: '18px',
     flexShrink: 0,
+  }
+}
+
+function ghostBtnStyle(color: string): React.CSSProperties {
+  return {
+    background: 'transparent',
+    color,
+    border: 'none',
+    padding: '2px 6px',
+    fontSize: 10,
+    fontFamily: 'inherit',
+    fontWeight: 500,
+    cursor: 'pointer',
+    lineHeight: '18px',
+    flexShrink: 0,
+    opacity: 0.7,
+    textDecoration: 'underline dotted',
+    textUnderlineOffset: 2,
   }
 }

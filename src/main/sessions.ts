@@ -7,6 +7,7 @@ import {
   SessionEntry,
   SessionPhase
 } from '../shared/types'
+import { summarizeTool } from './tool-summary'
 
 class SessionManager {
   private sessions = new Map<string, AgentSession>()
@@ -75,6 +76,17 @@ class SessionManager {
         session.status = 'active'
         if (isNew) session.phase = 'idle'
         break
+      case 'UserPromptSubmit':
+        // Capture the first user prompt as the session summary — used as the
+        // default label everywhere a session is shown.
+        if (!session.summary) {
+          const prompt = event.prompt || event.user_prompt || event.message
+          if (prompt) {
+            const line = prompt.split('\n')[0].trim()
+            session.summary = line.length > 60 ? line.slice(0, 59) + '…' : line
+          }
+        }
+        break
       case 'SessionEnd':
         session.status = 'ended'
         break
@@ -88,10 +100,10 @@ class SessionManager {
         session.lastToolName = event.tool_name || null
         if (event.tool_name) {
           if (!session.activity) session.activity = []
-          const toolInput = event.tool_input || {}
+          const summary = summarizeTool(event.tool_name, event.tool_input)
           session.activity.push({
             toolName: event.tool_name,
-            target: (toolInput.file_path as string) || (toolInput.command as string) || (toolInput.pattern as string) || (toolInput.description as string) || (toolInput.prompt as string)?.slice(0, 120) || undefined,
+            target: summary.target,
             timestamp: now,
             status: 'auto',
           })
@@ -132,26 +144,21 @@ class SessionManager {
 
   trackRequest(sessionId: string, request: OperatorRequest): void {
     const session = this.sessions.get(sessionId)
-    if (session) {
-      session.entries.push({ request, response: null })
-      // Mark the last activity entry for this tool as pending
-      const last = [...session.activity].reverse().find((a) => a.toolName === request.action && a.status === 'auto')
-      if (last) last.status = 'pending'
-    }
+    if (!session) return
+    session.entries.push({ request, response: null })
+    const last = [...session.activity].reverse().find((a) => a.toolName === request.toolName && a.status === 'auto')
+    if (last) last.status = 'pending'
   }
 
   resolveRequest(requestId: string, response: OperatorResponse): void {
-    const all = Array.from(this.sessions.values())
-    for (const session of all) {
+    for (const session of Array.from(this.sessions.values())) {
       const entry = session.entries.find((e: SessionEntry) => e.request.id === requestId)
-      if (entry) {
-        entry.response = response
-        session.lastActivityAt = new Date().toISOString()
-        // Update matching activity entry
-        const act = [...session.activity].reverse().find((a) => a.toolName === entry.request.action && a.status === 'pending')
-        if (act) act.status = response.approved ? 'approved' : 'denied'
-        break
-      }
+      if (!entry) continue
+      entry.response = response
+      session.lastActivityAt = new Date().toISOString()
+      const act = [...session.activity].reverse().find((a) => a.toolName === entry.request.toolName && a.status === 'pending')
+      if (act) act.status = response.approved ? 'approved' : 'denied'
+      return
     }
   }
 
@@ -173,7 +180,7 @@ class SessionManager {
   reconcile(): boolean {
     const cutoff = Date.now() - 10 * 60 * 1000
     let changed = false
-    for (const session of this.sessions.values()) {
+    for (const session of Array.from(this.sessions.values())) {
       if (
         session.status === 'active' &&
         new Date(session.lastActivityAt).getTime() < cutoff

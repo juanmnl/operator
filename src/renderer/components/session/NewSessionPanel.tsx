@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { RepoInfo } from '../../../shared/types'
 
 export interface SessionConfig {
   effortLevel: 'high' | 'normal' | 'low'
   permissionMode: 'default' | 'auto' | 'bypassPermissions'
   model: string
   allowedTools: string
+  useWorktree: boolean
 }
 
 interface NewSessionPanelProps {
@@ -26,10 +28,23 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
   const [model, setModel] = useState('')
   const [allowedTools, setAllowedTools] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
+  const [useWorktree, setUseWorktree] = useState(false)
   const projectName = cwd.split('/').pop() || cwd
 
+  useEffect(() => {
+    let cancelled = false
+    window.operator.inspectRepo(cwd).then((info) => {
+      if (cancelled) return
+      setRepoInfo(info)
+      // Default ON when it's a git repo with commits — parallel-safe by default.
+      if (info.isRepo) setUseWorktree(true)
+    })
+    return () => { cancelled = true }
+  }, [cwd])
+
   const handleLaunch = () => {
-    onLaunch(cwd, { effortLevel, permissionMode, model, allowedTools })
+    onLaunch(cwd, { effortLevel, permissionMode, model, allowedTools, useWorktree: useWorktree && !!repoInfo?.isRepo })
   }
 
   return (
@@ -100,6 +115,53 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
             {PERMISSION_MODES.find((m) => m.value === permissionMode)?.desc}
           </p>
         </div>
+
+        {/* Isolated worktree (git repos only) */}
+        {repoInfo?.isRepo && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Isolation</label>
+            <button
+              onClick={() => setUseWorktree(!useWorktree)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '8px 10px',
+                background: useWorktree ? 'var(--overlay-subtle)' : 'var(--bg-terminal)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                cursor: 'pointer',
+                textAlign: 'left',
+                fontFamily: 'inherit',
+              }}
+            >
+              <div style={{
+                width: 14, height: 14, borderRadius: 3,
+                background: useWorktree ? 'var(--accent)' : 'transparent',
+                border: useWorktree ? 'none' : '1px solid var(--border)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                {useWorktree && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2 5l2 2 4-4" stroke="var(--fg-on-accent)" strokeWidth="1.6" fill="none" />
+                  </svg>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>
+                  Isolated worktree
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, marginTop: 1 }}>
+                  {useWorktree
+                    ? `New branch off ${repoInfo.branch || 'HEAD'} in ~/.operator/worktrees`
+                    : `Run directly in ${repoInfo.branch || 'this branch'} — shared with other agents`}
+                </div>
+              </div>
+            </button>
+          </div>
+        )}
 
         {/* Advanced toggle */}
         <button

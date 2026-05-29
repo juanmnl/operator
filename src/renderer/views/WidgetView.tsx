@@ -28,6 +28,22 @@ export function WidgetView() {
     setRequests([])
   }
 
+  const handleRespondAndRemember = async (action: 'approve' | 'deny') => {
+    if (!current) return
+    const toolName = current.toolName || current.action
+    let pattern: string | undefined
+    if (toolName === 'Bash') {
+      const command = current.context.target || ''
+      const firstWord = command.split(/\s+/)[0]
+      pattern = firstWord ? `${firstWord} *` : undefined
+    } else if (current.context.target) {
+      pattern = current.context.target
+    }
+    await window.operator.rulesAdd({ tool: toolName, pattern, action })
+    await window.operator.respond(current.id, action)
+    setRequests((prev) => prev.filter((r) => r.id !== current.id))
+  }
+
   if (!current) return null
 
   return (
@@ -36,6 +52,7 @@ export function WidgetView() {
       queueSize={requests.length}
       onRespond={(value) => handleRespond(current.id, value)}
       onRespondAll={handleRespondAll}
+      onRespondAndRemember={handleRespondAndRemember}
     />
   )
 }

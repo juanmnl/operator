@@ -19,10 +19,15 @@ export function createTray(wm: WindowManager): void {
 }
 
 export function updateTrayBadge(): void {
-  if (!tray) return
   const count = queue.size
-  tray.setTitle(count > 0 ? ` ${count}` : '')
-  tray.setContextMenu(buildMenu())
+  if (tray) {
+    tray.setTitle(count > 0 ? ` ${count}` : '')
+    tray.setContextMenu(buildMenu())
+  }
+  // Mirror to macOS dock badge so the user can see pending count even with tray collapsed
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setBadge(count > 0 ? String(count) : '')
+  }
 }
 
 function phaseLabel(phase: string): string {

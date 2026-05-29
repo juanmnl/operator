@@ -41,4 +41,13 @@ export const nineteen84Vars = {
   '--cyan': '#59E1E3',
   '--selection': '#ffffff3b',
   '--border': '#1a1c50',
+  '--color-success': '#B3F361',
+  '--color-error': '#FF16B0',
+  '--color-warning': '#FFEA16',
+  '--mcp-stdio': '#B3F361',
+  '--mcp-http': '#46BDFF',
+  '--mcp-cloud': '#F806FA',
+  '--fg-on-accent': '#070825',
+  '--overlay-subtle': 'rgba(255,255,255,0.06)',
+  '--overlay-medium': 'rgba(255,255,255,0.12)',
 } as const

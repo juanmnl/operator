@@ -41,4 +41,13 @@ export const lightVars = {
   '--cyan': '#0e7490',
   '--selection': '#8e44ad22',
   '--border': '#d0d0cc',
+  '--color-success': '#27ae60',
+  '--color-error': '#c0392b',
+  '--color-warning': '#b8860b',
+  '--mcp-stdio': '#27ae60',
+  '--mcp-http': '#2563eb',
+  '--mcp-cloud': '#8e44ad',
+  '--fg-on-accent': '#F7F7F5',
+  '--overlay-subtle': 'rgba(0,0,0,0.05)',
+  '--overlay-medium': 'rgba(0,0,0,0.10)',
 } as const

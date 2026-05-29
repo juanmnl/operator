@@ -26,6 +26,9 @@ export interface HookEvent {
   transcript_path?: string
   permission_mode?: string
   last_assistant_message?: string
+  /** UserPromptSubmit hook: the prompt the user typed. Field name per Claude Code hook spec. */
+  prompt?: string
+  user_prompt?: string
   terminal_id?: string
   term_program?: string
 }
@@ -33,7 +36,10 @@ export interface HookEvent {
 export interface OperatorRequest {
   id: string
   agentId: string
+  /** Humanized verb shown in the UI, e.g. "Run command", "Edit file". */
   action: string
+  /** Raw underlying tool name (e.g. "Bash", "Edit") for matching and rules. */
+  toolName?: string
   message: string
   context: {
     workingDirectory?: string
@@ -79,6 +85,8 @@ export interface AgentSession {
   agentId: string
   workingDirectory: string
   projectName: string
+  /** Short summary derived from the first user prompt, shown as the default label. */
+  summary?: string
   status: SessionStatus
   phase: SessionPhase
   entries: SessionEntry[]
@@ -168,6 +176,49 @@ export interface McpServersResult {
   servers: McpServerInfo[]
 }
 
+export type RuleAction = 'approve' | 'deny'
+
+export interface Rule {
+  id: string
+  /** Tool name (e.g. "Bash", "Edit") or "*" for any tool. */
+  tool: string
+  /** Optional glob (`*` wildcards) matched against the tool's primary input field. */
+  pattern?: string
+  action: RuleAction
+  createdAt: string
+}
+
+export interface RepoInfo {
+  isRepo: boolean
+  root?: string
+  branch?: string
+}
+
+export interface WorktreeCreateResult {
+  path: string
+  branch: string
+  baseBranch?: string
+}
+
+export interface WorktreeStatus {
+  branch?: string
+  changes: number
+  valid: boolean
+}
+
+export interface FileChange {
+  path: string
+  status: string
+  added: number
+  removed: number
+}
+
+export interface WorktreeDiff {
+  branch?: string
+  files: FileChange[]
+  diff: string
+}
+
 export const IPC = {
   NEW_REQUEST: 'operator:new-request',
   RESPOND: 'operator:respond',
@@ -186,11 +237,35 @@ export const IPC = {
   SHOW_MAIN_WINDOW: 'operator:show-main-window',
   GET_HOOK_PATH: 'operator:get-hook-path',
   SET_ACTIVE_SESSION: 'operator:set-active-session',
+  FOCUS_SESSION: 'operator:focus-session',
   FOLDER_PREFS_LOAD: 'folder-prefs:load',
+  FOLDER_PREFS_LOAD_GLOBAL: 'folder-prefs:load-global',
   FOLDER_PREFS_SAVE_SETTINGS: 'folder-prefs:save-settings',
   FOLDER_PREFS_SAVE_MD: 'folder-prefs:save-md',
   FOLDER_PREFS_CREATE_FILE: 'folder-prefs:create-file',
   GET_MCP_SERVERS: 'operator:get-mcp-servers',
   PICK_FOLDER: 'operator:pick-folder',
   GET_USAGE_STATS: 'operator:get-usage-stats',
+  REPO_INSPECT: 'git:inspect-repo',
+  WORKTREE_CREATE: 'worktree:create',
+  WORKTREE_STATUS: 'worktree:status',
+  WORKTREE_REMOVE: 'worktree:remove',
+  WORKTREE_DIFF: 'worktree:diff',
+  WORKTREE_COMMIT: 'worktree:commit',
+  WORKTREE_MERGE: 'worktree:merge',
+  WORKTREE_DISCARD: 'worktree:discard',
+  RULES_LIST: 'rules:list',
+  RULES_ADD: 'rules:add',
+  RULES_REMOVE: 'rules:remove',
+  PREFS_UPDATE: 'operator:prefs-update',
 } as const
+
+export interface OperatorPrefs {
+  nativeNotifications: boolean
+  autoFocusPending: boolean
+}
+
+export const DEFAULT_PREFS: OperatorPrefs = {
+  nativeNotifications: true,
+  autoFocusPending: false,
+}

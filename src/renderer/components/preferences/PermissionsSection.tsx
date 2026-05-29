@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react'
 import type { SettingsFile, ClaudeSettings } from '../../../shared/types'
 import { SettingsFileTabBar } from './SettingsFileTabBar'
+import { useSettingsScope } from './useSettingsScope'
+import { ListEditor } from './ListEditor'
 
 interface PermissionsSectionProps {
   settingsFiles: SettingsFile[]
@@ -8,19 +9,14 @@ interface PermissionsSectionProps {
   onCreate: (path: string) => void
 }
 
+const RULE_KINDS = [
+  { key: 'allow' as const, title: 'Allow', description: 'Tools and patterns automatically approved', color: 'var(--color-success)' },
+  { key: 'deny' as const, title: 'Deny', description: 'Tools and patterns automatically blocked', color: 'var(--color-error)' },
+  { key: 'ask' as const, title: 'Ask', description: 'Tools and patterns that require approval each time', color: 'var(--color-warning)' },
+]
+
 export function PermissionsSection({ settingsFiles, onSave, onCreate }: PermissionsSectionProps) {
-  const writableFiles = settingsFiles.filter((f) => !f.readOnly)
-  const [activeScope, setActiveScope] = useState(() => {
-    const existing = writableFiles.find((f) => f.exists)
-    return existing?.scope || writableFiles[0]?.scope || 'project-local'
-  })
-
-  const activeFile = settingsFiles.find((f) => f.scope === activeScope)
-
-  const handleCreateFile = useCallback((file: SettingsFile) => {
-    onCreate(file.path)
-    setActiveScope(file.scope)
-  }, [onCreate])
+  const { activeScope, setActiveScope, activeFile, handleCreateFile } = useSettingsScope(settingsFiles, onCreate)
 
   return (
     <div>
@@ -51,8 +47,7 @@ function PermissionRulesEditor({ file, onSave }: { file: SettingsFile; onSave: (
 
   const handleAdd = (key: 'allow' | 'deny' | 'ask', value: string) => {
     const current = permissions[key] || []
-    if (!value.trim() || current.includes(value.trim())) return
-    const updated = { ...permissions, [key]: [...current, value.trim()] }
+    const updated = { ...permissions, [key]: [...current, value] }
     onSave(file.path, { permissions: updated })
   }
 
@@ -65,35 +60,22 @@ function PermissionRulesEditor({ file, onSave }: { file: SettingsFile; onSave: (
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <RuleList
-        title="Allow"
-        description="Tools and patterns automatically approved"
-        color="#4ade80"
-        rules={permissions.allow || []}
-        onAdd={(v) => handleAdd('allow', v)}
-        onRemove={(i) => handleRemove('allow', i)}
-      />
-      <RuleList
-        title="Deny"
-        description="Tools and patterns automatically blocked"
-        color="#ef5252"
-        rules={permissions.deny || []}
-        onAdd={(v) => handleAdd('deny', v)}
-        onRemove={(i) => handleRemove('deny', i)}
-      />
-      <RuleList
-        title="Ask"
-        description="Tools and patterns that require approval each time"
-        color="#f59e0b"
-        rules={permissions.ask || []}
-        onAdd={(v) => handleAdd('ask', v)}
-        onRemove={(i) => handleRemove('ask', i)}
-      />
+      {RULE_KINDS.map(({ key, title, description, color }) => (
+        <RuleListBlock
+          key={key}
+          title={title}
+          description={description}
+          color={color}
+          rules={permissions[key] || []}
+          onAdd={(v) => handleAdd(key, v)}
+          onRemove={(i) => handleRemove(key, i)}
+        />
+      ))}
     </div>
   )
 }
 
-function RuleList({ title, description, color, rules, onAdd, onRemove }: {
+function RuleListBlock({ title, description, color, rules, onAdd, onRemove }: {
   title: string
   description: string
   color: string
@@ -101,15 +83,6 @@ function RuleList({ title, description, color, rules, onAdd, onRemove }: {
   onAdd: (value: string) => void
   onRemove: (index: number) => void
 }) {
-  const [input, setInput] = useState('')
-
-  const handleSubmit = () => {
-    if (input.trim()) {
-      onAdd(input)
-      setInput('')
-    }
-  }
-
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -117,90 +90,13 @@ function RuleList({ title, description, color, rules, onAdd, onRemove }: {
         <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg)' }}>{title}</span>
         <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>{description}</span>
       </div>
-
-      <div style={{
-        background: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 6,
-        overflow: 'hidden',
-      }}>
-        {rules.length === 0 && (
-          <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--fg-muted)', opacity: 0.5 }}>
-            No rules configured
-          </div>
-        )}
-        {rules.map((rule, i) => (
-          <div
-            key={`${rule}-${i}`}
-            style={{
-              padding: '6px 12px',
-              fontSize: 12,
-              color: 'var(--fg)',
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              borderBottom: i < rules.length - 1 ? '1px solid var(--border)' : 'none',
-            }}
-          >
-            <span>{rule}</span>
-            <button
-              onClick={() => onRemove(i)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--fg-muted)',
-                cursor: 'pointer',
-                fontSize: 14,
-                padding: '0 4px',
-                opacity: 0.5,
-                lineHeight: 1,
-              }}
-            >
-              x
-            </button>
-          </div>
-        ))}
-
-        {/* Add rule input */}
-        <div style={{
-          display: 'flex',
-          borderTop: rules.length > 0 ? '1px solid var(--border)' : 'none',
-        }}>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-            placeholder='e.g. Bash(npm run *)'
-            style={{
-              flex: 1,
-              padding: '6px 12px',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: 'var(--fg)',
-              fontSize: 11,
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-            }}
-          />
-          <button
-            onClick={handleSubmit}
-            style={{
-              padding: '4px 10px',
-              background: 'none',
-              border: 'none',
-              borderLeft: '1px solid var(--border)',
-              color: 'var(--fg-muted)',
-              fontSize: 11,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-            }}
-          >
-            Add
-          </button>
-        </div>
-      </div>
+      <ListEditor
+        items={rules}
+        placeholder="e.g. Bash(npm run *)"
+        emptyLabel="No rules configured"
+        onAdd={onAdd}
+        onRemove={onRemove}
+      />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult } from '../shared/types'
+import { IPC, OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs } from '../shared/types'
 
 contextBridge.exposeInMainWorld('operator', {
   // Permission flow
@@ -64,10 +64,18 @@ contextBridge.exposeInMainWorld('operator', {
   setActiveSession: (sessionId: string | null) => {
     ipcRenderer.send(IPC.SET_ACTIVE_SESSION, sessionId)
   },
+  onFocusSession: (callback: (sessionId: string) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string) => callback(id)
+    ipcRenderer.on(IPC.FOCUS_SESSION, handler)
+    return () => ipcRenderer.removeListener(IPC.FOCUS_SESSION, handler)
+  },
 
   // Folder preferences
   folderPrefsLoad: (projectPath: string): Promise<FolderPreferences> => {
     return ipcRenderer.invoke(IPC.FOLDER_PREFS_LOAD, projectPath)
+  },
+  folderPrefsLoadGlobal: (): Promise<FolderPreferences> => {
+    return ipcRenderer.invoke(IPC.FOLDER_PREFS_LOAD_GLOBAL)
   },
   folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings): Promise<void> => {
     return ipcRenderer.invoke(IPC.FOLDER_PREFS_SAVE_SETTINGS, filePath, settings)
@@ -83,5 +91,40 @@ contextBridge.exposeInMainWorld('operator', {
   },
   pickFolder: (): Promise<string | null> => {
     return ipcRenderer.invoke(IPC.PICK_FOLDER)
+  },
+
+  // Git / worktrees
+  inspectRepo: (cwd: string): Promise<RepoInfo> => {
+    return ipcRenderer.invoke(IPC.REPO_INSPECT, cwd)
+  },
+  worktreeCreate: (cwd: string): Promise<WorktreeCreateResult | { error: string }> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_CREATE, cwd)
+  },
+  worktreeStatus: (path: string): Promise<WorktreeStatus> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_STATUS, path)
+  },
+  worktreeRemove: (path: string, sourceRoot: string): Promise<{ ok: boolean; error?: string }> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_REMOVE, path, sourceRoot)
+  },
+  worktreeDiff: (path: string): Promise<WorktreeDiff> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_DIFF, path)
+  },
+  worktreeCommit: (path: string, message: string): Promise<{ ok: boolean; sha?: string; error?: string }> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_COMMIT, path, message)
+  },
+  worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string): Promise<{ ok: boolean; message?: string }> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_MERGE, worktreePath, sourceRoot, branch, baseBranch)
+  },
+  worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string): Promise<{ ok: boolean; error?: string }> => {
+    return ipcRenderer.invoke(IPC.WORKTREE_DISCARD, worktreePath, sourceRoot, branch)
+  },
+
+  // Rules
+  rulesList: (): Promise<Rule[]> => ipcRenderer.invoke(IPC.RULES_LIST),
+  rulesAdd: (rule: { tool: string; pattern?: string; action: RuleAction }): Promise<Rule> => ipcRenderer.invoke(IPC.RULES_ADD, rule),
+  rulesRemove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.RULES_REMOVE, id),
+
+  prefsUpdate: (prefs: OperatorPrefs) => {
+    ipcRenderer.send(IPC.PREFS_UPDATE, prefs)
   },
 })

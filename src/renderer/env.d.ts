@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult } from '../shared/types'
+import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs } from '../shared/types'
 
 declare global {
   interface Window {
@@ -23,12 +23,26 @@ declare global {
       showMainWindow: () => void
       getHookPath: () => Promise<string>
       setActiveSession: (sessionId: string | null) => void
+      onFocusSession: (callback: (sessionId: string) => void) => () => void
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
+      folderPrefsLoadGlobal: () => Promise<FolderPreferences>
       folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings) => Promise<void>
       folderPrefsSaveMd: (filePath: string, content: string) => Promise<void>
       folderPrefsCreateFile: (filePath: string, type: 'settings' | 'md') => Promise<void>
       getMcpServers: (projectPath: string) => Promise<McpServersResult>
       pickFolder: () => Promise<string | null>
+      inspectRepo: (cwd: string) => Promise<RepoInfo>
+      worktreeCreate: (cwd: string) => Promise<WorktreeCreateResult | { error: string }>
+      worktreeStatus: (path: string) => Promise<WorktreeStatus>
+      worktreeRemove: (path: string, sourceRoot: string) => Promise<{ ok: boolean; error?: string }>
+      worktreeDiff: (path: string) => Promise<WorktreeDiff>
+      worktreeCommit: (path: string, message: string) => Promise<{ ok: boolean; sha?: string; error?: string }>
+      worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) => Promise<{ ok: boolean; message?: string }>
+      worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string) => Promise<{ ok: boolean; error?: string }>
+      rulesList: () => Promise<Rule[]>
+      rulesAdd: (rule: { tool: string; pattern?: string; action: RuleAction }) => Promise<Rule>
+      rulesRemove: (id: string) => Promise<void>
+      prefsUpdate: (prefs: OperatorPrefs) => void
     }
   }
 }

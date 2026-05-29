@@ -10,8 +10,12 @@ interface SessionItemProps {
   hasPending: boolean
   isExternal?: boolean
   effortLevel?: string | null
+  closable: boolean
+  /** 1-based Cmd+N hint for the first nine local sessions. */
+  shortcutIndex?: number | null
   onClick: () => void
   onRename: (newName: string) => void
+  onClose: () => void
 }
 
 const dotConfig: Record<DotStatus, { color: string; opacity?: number; animation?: string }> = {
@@ -34,10 +38,13 @@ function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
   }
 }
 
-export function SessionItem({ session, label, active, hasPending, isExternal, effortLevel, onClick, onRename }: SessionItemProps) {
+export function SessionItem({ session, label, active, hasPending, isExternal, effortLevel, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
+  const [hovered, setHovered] = useState(false)
+  const [confirmingClose, setConfirmingClose] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toolLabel = session.lastToolName
     ? ` — ${session.lastToolName}`
     : session.phase === 'running' ? ' — processing' : ''
@@ -52,6 +59,10 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
     }
   }, [editing])
 
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+  }, [])
+
   const commitRename = () => {
     const trimmed = editValue.trim()
     if (trimmed && trimmed !== label) {
@@ -62,14 +73,31 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
     setEditing(false)
   }
 
+  const handleCloseClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (confirmingClose) {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+      setConfirmingClose(false)
+      onClose()
+      return
+    }
+    setConfirmingClose(true)
+    confirmTimerRef.current = setTimeout(() => setConfirmingClose(false), 2500)
+  }
+
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
       onDoubleClick={(e) => {
         e.stopPropagation()
         setEditValue(label)
         setEditing(true)
       }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setConfirmingClose(false) }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -84,6 +112,8 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
         fontFamily: 'inherit',
         color: 'var(--fg)',
         fontSize: 12,
+        boxSizing: 'border-box',
+        outline: 'none',
       }}
     >
       <span
@@ -168,7 +198,7 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
           {session.activeSubagents}
         </span>
       )}
-      {!editing && effortLevel && (
+      {!editing && effortLevel && !(hovered && closable) && (
         <span
           style={{
             fontSize: 8,
@@ -182,6 +212,39 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
           {effortLevel[0]}
         </span>
       )}
-    </button>
+      {!editing && shortcutIndex != null && !(hovered && closable) && (
+        <span
+          style={{
+            fontSize: 9, color: 'var(--fg-muted)',
+            opacity: 0.4, flexShrink: 0,
+            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+          }}
+          title={`Switch with ⌘${shortcutIndex}`}
+        >
+          ⌘{shortcutIndex}
+        </span>
+      )}
+      {!editing && closable && (hovered || confirmingClose) && (
+        <button
+          onClick={handleCloseClick}
+          title={confirmingClose ? 'Click again to confirm' : 'Close session'}
+          style={{
+            background: confirmingClose ? 'var(--color-error)' : 'transparent',
+            color: confirmingClose ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+            border: 'none',
+            borderRadius: 3,
+            padding: '0 5px',
+            fontSize: 10,
+            fontFamily: 'inherit',
+            lineHeight: '14px',
+            cursor: 'pointer',
+            flexShrink: 0,
+            opacity: confirmingClose ? 1 : 0.5,
+          }}
+        >
+          {confirmingClose ? '×?' : '×'}
+        </button>
+      )}
+    </div>
   )
 }

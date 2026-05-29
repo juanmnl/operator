@@ -13,6 +13,8 @@ import { ensureHooksConfigured } from './hooks-config'
 const windowManager = new WindowManager()
 let ptyManager: PtyManager
 
+app.setName('Operator')
+
 app.whenReady().then(() => {
   initDb()
   ensureHooksConfigured()

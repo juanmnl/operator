@@ -10,9 +10,10 @@ interface Props {
   queueSize: number
   onRespond: (value: string) => void
   onRespondAll: (value: string) => void
+  onRespondAndRemember?: (action: 'approve' | 'deny') => void
 }
 
-export function NotificationWidget({ request, queueSize, onRespond, onRespondAll }: Props) {
+export function NotificationWidget({ request, queueSize, onRespond, onRespondAll, onRespondAndRemember }: Props) {
   const options = request.options || DEFAULT_OPTIONS
   const severity = request.severity
   const severityColor = severity === 'high' ? '#ef5252' : severity === 'medium' ? '#f59e0b' : '#6b6b6b'
@@ -92,6 +93,28 @@ export function NotificationWidget({ request, queueSize, onRespond, onRespondAll
         >
           Allow
         </button>
+        {onRespondAndRemember && (
+          <button
+            onClick={() => onRespondAndRemember('approve')}
+            title="Always allow this tool / pattern"
+            style={{
+              padding: '4px 8px',
+              fontSize: 10,
+              fontWeight: 500,
+              fontFamily: 'inherit',
+              background: 'transparent',
+              color: '#4ade80',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+              opacity: 0.7,
+              textDecoration: 'underline dotted',
+              textUnderlineOffset: 2,
+            }}
+          >
+            Always
+          </button>
+        )}
         <button
           onClick={() => onRespond(options[1]?.value || 'deny')}
           style={{

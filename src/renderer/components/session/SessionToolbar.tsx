@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
 import type { McpServerInfo } from '../../../shared/types'
 
-const TYPE_COLORS: Record<string, string> = {
-  stdio: '#4ade80',
-  http: '#46BDFF',
-  cloud: '#D58FDB',
+const TYPE_VARS: Record<string, string> = {
+  stdio: 'var(--mcp-stdio)',
+  http: 'var(--mcp-http)',
+  cloud: 'var(--mcp-cloud)',
 }
 
 function typeColor(type?: string): string {
-  return (type && TYPE_COLORS[type]) || 'var(--fg-muted)'
+  return (type && TYPE_VARS[type]) || 'var(--fg-muted)'
 }
 
 interface SessionToolbarProps {
@@ -17,9 +17,10 @@ interface SessionToolbarProps {
   effortLevel?: 'high' | 'normal' | 'low' | null
   permissionMode?: string | null
   lastToolName?: string | null
+  branch?: string | null
 }
 
-export function SessionToolbar({ projectPath, projectName, effortLevel: effortLevelProp, permissionMode, lastToolName }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -71,10 +72,33 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
-          {projectName}
+          <span>{projectName}</span>
+          {branch && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 3,
+              padding: '1px 6px',
+              borderRadius: 3,
+              background: 'var(--overlay-subtle)',
+              color: 'var(--fg)',
+              opacity: 0.8,
+            }}>
+              <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
+                <circle cx="5" cy="3.5" r="1.6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+                <circle cx="5" cy="12.5" r="1.6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+                <circle cx="11" cy="8" r="1.6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+                <path d="M5 5.2v5.6M6.4 8h3" stroke="var(--fg-muted)" strokeWidth="1.1" />
+              </svg>
+              {branch}
+            </span>
+          )}
         </span>
 
         <div style={{
@@ -96,7 +120,7 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
                 fontSize: 9,
                 fontWeight: 500,
                 fontFamily: 'inherit',
-                background: mcpExpanded ? 'rgba(255,255,255,0.06)' : 'transparent',
+                background: mcpExpanded ? 'var(--overlay-subtle)' : 'transparent',
                 color: 'var(--fg-muted)',
                 border: 'none',
                 borderRadius: 3,

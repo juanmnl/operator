@@ -6,7 +6,9 @@ import { IPC, OperatorResponse, ClaudeSettings } from '../shared/types'
 import { PtyManager } from './terminal/pty-manager'
 import { launchClaudeCode, LaunchOptions } from './terminal/agent-launcher'
 import { WindowManager } from './window/window-manager'
-import { loadFolderPreferences, saveSettingsFile, saveMdFile, createFile, getMcpServers } from './folder-prefs'
+import { loadFolderPreferences, loadGlobalPreferences, saveSettingsFile, saveMdFile, createFile, getMcpServers } from './folder-prefs'
+import { inspectRepo, createWorktree, worktreeStatus, removeWorktree, worktreeDiff, commitAll, mergeBranch, discardBranch } from './worktree'
+import { rules } from './rules'
 
 export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): void {
   // Permission flow
@@ -77,6 +79,10 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
     return loadFolderPreferences(projectPath)
   })
 
+  ipcMain.handle(IPC.FOLDER_PREFS_LOAD_GLOBAL, () => {
+    return loadGlobalPreferences()
+  })
+
   ipcMain.handle(IPC.FOLDER_PREFS_SAVE_SETTINGS, (_event, filePath: string, settings: ClaudeSettings) => {
     saveSettingsFile(filePath, settings)
   })
@@ -91,6 +97,69 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
 
   ipcMain.handle(IPC.GET_MCP_SERVERS, (_event, projectPath: string) => {
     return getMcpServers(projectPath)
+  })
+
+  // Git / worktrees
+  ipcMain.handle(IPC.REPO_INSPECT, (_event, cwd: string) => {
+    return inspectRepo(cwd)
+  })
+
+  ipcMain.handle(IPC.WORKTREE_CREATE, async (_event, cwd: string) => {
+    try {
+      return await createWorktree(cwd)
+    } catch (err) {
+      return { error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle(IPC.WORKTREE_STATUS, (_event, path: string) => {
+    return worktreeStatus(path)
+  })
+
+  ipcMain.handle(IPC.WORKTREE_REMOVE, async (_event, path: string, sourceRoot: string) => {
+    try {
+      await removeWorktree(path, sourceRoot)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle(IPC.WORKTREE_DIFF, (_event, path: string) => {
+    return worktreeDiff(path)
+  })
+
+  ipcMain.handle(IPC.WORKTREE_COMMIT, async (_event, path: string, message: string) => {
+    try {
+      const sha = await commitAll(path, message)
+      return { ok: true, sha }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle(IPC.WORKTREE_MERGE, (_event, worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) => {
+    return mergeBranch(worktreePath, sourceRoot, branch, baseBranch)
+  })
+
+  ipcMain.handle(IPC.WORKTREE_DISCARD, async (_event, worktreePath: string, sourceRoot: string, branch: string) => {
+    try {
+      await discardBranch(worktreePath, sourceRoot, branch)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  // Rules engine
+  ipcMain.handle(IPC.RULES_LIST, () => rules.list())
+  ipcMain.handle(IPC.RULES_ADD, (_event, rule: { tool: string; pattern?: string; action: 'approve' | 'deny' }) => rules.add(rule))
+  ipcMain.handle(IPC.RULES_REMOVE, (_event, id: string) => rules.remove(id))
+
+  // Renderer-driven preferences: renderer owns persistence (localStorage), main
+  // process just receives updates so it can act on flags like notification gating.
+  ipcMain.on(IPC.PREFS_UPDATE, (_event, prefs: import('../shared/types').OperatorPrefs) => {
+    windowManager.updatePrefs(prefs)
   })
 
   ipcMain.handle(IPC.PICK_FOLDER, async () => {

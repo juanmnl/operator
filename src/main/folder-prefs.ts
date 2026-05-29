@@ -22,14 +22,11 @@ function readText(path: string): string {
   }
 }
 
-export function loadFolderPreferences(projectPath: string): FolderPreferences {
+function globalSettingsFiles(): SettingsFile[] {
   const managedPath = join(claudeDir, 'managed-settings.json')
   const globalPath = join(claudeDir, 'settings.json')
   const globalLocalPath = join(claudeDir, 'settings.local.json')
-  const projectSettingsPath = join(projectPath, '.claude', 'settings.json')
-  const projectLocalPath = join(projectPath, '.claude', 'settings.local.json')
-
-  const settingsFiles: SettingsFile[] = [
+  return [
     {
       path: managedPath,
       label: 'Managed (Organization)',
@@ -54,6 +51,37 @@ export function loadFolderPreferences(projectPath: string): FolderPreferences {
       exists: existsSync(globalLocalPath),
       settings: readJson(globalLocalPath),
     },
+  ]
+}
+
+function globalMdFiles(): ClaudeMdFile[] {
+  const globalMdPath = join(claudeDir, 'CLAUDE.md')
+  return [
+    {
+      path: globalMdPath,
+      label: 'Global (~/.claude/CLAUDE.md)',
+      scope: 'global',
+      exists: existsSync(globalMdPath),
+      content: readText(globalMdPath),
+    },
+  ]
+}
+
+export function loadGlobalPreferences(): FolderPreferences {
+  return {
+    projectPath: claudeDir,
+    projectName: 'Global Claude',
+    settingsFiles: globalSettingsFiles(),
+    mdFiles: globalMdFiles(),
+  }
+}
+
+export function loadFolderPreferences(projectPath: string): FolderPreferences {
+  const projectSettingsPath = join(projectPath, '.claude', 'settings.json')
+  const projectLocalPath = join(projectPath, '.claude', 'settings.local.json')
+
+  const settingsFiles: SettingsFile[] = [
+    ...globalSettingsFiles(),
     {
       path: projectSettingsPath,
       label: 'Project (shared)',
@@ -72,18 +100,11 @@ export function loadFolderPreferences(projectPath: string): FolderPreferences {
     },
   ]
 
-  const globalMdPath = join(claudeDir, 'CLAUDE.md')
   const projectMdPath = join(projectPath, 'CLAUDE.md')
   const projectNestedMdPath = join(projectPath, '.claude', 'CLAUDE.md')
 
   const mdFiles: ClaudeMdFile[] = [
-    {
-      path: globalMdPath,
-      label: 'Global (~/.claude/CLAUDE.md)',
-      scope: 'global',
-      exists: existsSync(globalMdPath),
-      content: readText(globalMdPath),
-    },
+    ...globalMdFiles(),
     {
       path: projectNestedMdPath,
       label: 'Project (.claude/CLAUDE.md)',

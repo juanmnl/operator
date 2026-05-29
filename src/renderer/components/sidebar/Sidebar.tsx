@@ -25,16 +25,27 @@ interface SidebarProps {
   customNames: Record<string, string>
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
+  globalPrefsActive: boolean
+  rulesViewActive: boolean
+  prefsViewActive: boolean
   effortLevels: Record<string, string>
+  /** Map sessionId → 1-based Cmd+N hint for the first 9 local sessions. */
+  shortcutIndices: Record<string, number>
+  /** Counts for the bottom status row. */
+  stats: { activeSessions: number; pendingRequests: number }
   isDark: boolean
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
+  onCloseSession: (session: AgentSession) => void
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
+  onOpenGlobalPrefs: () => void
+  onOpenRules: () => void
+  onOpenPrefs: () => void
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNames, pendingRequests, activeFolderPrefs, effortLevels, isDark, onSelectSession, onRenameSession, onNewSession, onOpenFolderPrefs, onToggleTheme  }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenPrefs, onToggleTheme  }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -105,11 +116,34 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
             pendingRequests={pendingRequests}
             activeFolderPrefs={activeFolderPrefs}
             effortLevels={effortLevels}
+            shortcutIndices={shortcutIndices}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
+            onCloseSession={onCloseSession}
             onOpenFolderPrefs={onOpenFolderPrefs}
           />
         ))}
+      </div>
+
+      {/* Stats row — at-a-glance counts */}
+      <div style={{
+        padding: '4px 14px 0',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        fontSize: 10,
+        color: 'var(--fg-muted)',
+        opacity: 0.5,
+        fontVariantNumeric: 'tabular-nums',
+        // @ts-expect-error Electron-specific CSS property
+        WebkitAppRegion: 'no-drag',
+      }}>
+        <span>{stats.activeSessions} active</span>
+        {stats.pendingRequests > 0 && (
+          <span style={{ color: 'var(--color-warning)', opacity: 1 }}>
+            {stats.pendingRequests} pending
+          </span>
+        )}
       </div>
 
       {/* Bottom bar */}
@@ -138,6 +172,67 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
           title="New Session"
         >
           +
+        </button>
+        <button
+          onClick={onOpenGlobalPrefs}
+          style={{
+            background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '3px 5px',
+            borderRadius: 3,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: globalPrefsActive ? 0.9 : 0.5,
+            marginLeft: 6,
+          }}
+          title="Global Claude files (~/.claude)"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
+          </svg>
+        </button>
+        <button
+          onClick={onOpenRules}
+          style={{
+            background: rulesViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '3px 5px',
+            borderRadius: 3,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: rulesViewActive ? 0.9 : 0.5,
+            marginLeft: 4,
+          }}
+          title="Auto-approve rules"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <path d="M3 4h6M3 8h10M3 12h6" stroke="var(--fg-muted)" strokeWidth="1.2" strokeLinecap="round" />
+            <circle cx="12" cy="4" r="1.6" fill="var(--fg-muted)" />
+          </svg>
+        </button>
+        <button
+          onClick={onOpenPrefs}
+          style={{
+            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '3px 5px',
+            borderRadius: 3,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: prefsViewActive ? 0.9 : 0.5,
+            marginLeft: 4,
+          }}
+          title="Operator preferences"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="2" stroke="var(--fg-muted)" strokeWidth="1.2" />
+            <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+          </svg>
         </button>
         <div style={{ flex: 1 }} />
         <button
@@ -178,8 +273,10 @@ function FolderGroup({
   pendingRequests,
   activeFolderPrefs,
   effortLevels,
+  shortcutIndices,
   onSelectSession,
   onRenameSession,
+  onCloseSession,
   onOpenFolderPrefs,
 }: {
   projectName: string
@@ -190,8 +287,10 @@ function FolderGroup({
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
   effortLevels: Record<string, string>
+  shortcutIndices: Record<string, number>
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
+  onCloseSession: (session: AgentSession) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
 }) {
   const [hovered, setHovered] = useState(false)
@@ -250,7 +349,8 @@ function FolderGroup({
         const autoName = isExternal
           ? (session.termProgram ? formatTermProgram(session.termProgram) : 'External')
           : (group.length > 1 ? `Session ${i + 1}` : 'Session')
-        const defaultLabel = autoName
+        // Prefer the agent-derived summary (first user prompt) when no custom name is set.
+        const defaultLabel = session.summary || autoName
         const hasPending = pendingRequests.some(
           (r) => r.terminalId === session.terminalId || r.sessionId === session.id
         )
@@ -265,8 +365,11 @@ function FolderGroup({
             hasPending={hasPending}
             isExternal={isExternal}
             effortLevel={effort}
+            closable={!isExternal}
+            shortcutIndex={shortcutIndices[session.id] ?? null}
             onClick={() => onSelectSession(session)}
             onRename={(name) => onRenameSession(session.id, name)}
+            onClose={() => onCloseSession(session)}
           />
         )
       })}
