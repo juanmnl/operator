@@ -39,7 +39,9 @@ export function WidgetView() {
     } else if (current.context.target) {
       pattern = current.context.target
     }
-    await window.operator.rulesAdd({ tool: toolName, pattern, action })
+    // Scope to the session's project by default (see DashboardView for rationale).
+    const scope = current.context.workingDirectory || undefined
+    await window.operator.rulesAdd({ tool: toolName, pattern, scope, action })
     await window.operator.respond(current.id, action)
     setRequests((prev) => prev.filter((r) => r.id !== current.id))
   }

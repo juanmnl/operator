@@ -184,6 +184,11 @@ export interface Rule {
   tool: string
   /** Optional glob (`*` wildcards) matched against the tool's primary input field. */
   pattern?: string
+  /**
+   * Optional absolute project path. When set, the rule only applies to requests
+   * whose working directory is at or under this path. Undefined = global.
+   */
+  scope?: string
   action: RuleAction
   createdAt: string
 }

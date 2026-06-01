@@ -6,6 +6,7 @@ export function RulesView() {
   const [newTool, setNewTool] = useState('Bash')
   const [newPattern, setNewPattern] = useState('')
   const [newAction, setNewAction] = useState<RuleAction>('approve')
+  const [newScope, setNewScope] = useState('')
 
   const load = useCallback(async () => {
     const list = await window.operator.rulesList()
@@ -19,13 +20,23 @@ export function RulesView() {
     await window.operator.rulesAdd({
       tool: newTool.trim(),
       pattern: newPattern.trim() || undefined,
+      scope: newScope.trim() || undefined,
       action: newAction,
     })
     setNewTool('Bash')
     setNewPattern('')
     setNewAction('approve')
+    setNewScope('')
     load()
   }
+
+  const pickScope = async () => {
+    const folder = await window.operator.pickFolder()
+    if (folder) setNewScope(folder)
+  }
+
+  const scopeLabel = (path?: string) =>
+    path ? path.split('/').filter(Boolean).pop() || path : 'All projects'
 
   const handleRemove = async (id: string) => {
     await window.operator.rulesRemove(id)
@@ -82,6 +93,31 @@ export function RulesView() {
             <option value="deny">Deny</option>
           </select>
           <button
+            onClick={pickScope}
+            title={newScope ? `Scoped to ${newScope} — click to change` : 'Applies to all projects — click to scope to one'}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontFamily: 'inherit',
+              maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              background: newScope ? 'var(--btn-bg)' : 'transparent',
+              color: newScope ? 'var(--fg)' : 'var(--fg-muted)',
+              border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer',
+            }}
+          >
+            {newScope ? scopeLabel(newScope) : 'All projects'}
+          </button>
+          {newScope && (
+            <button
+              onClick={() => setNewScope('')}
+              title="Clear scope (apply globally)"
+              style={{
+                background: 'none', border: 'none', color: 'var(--fg-muted)',
+                cursor: 'pointer', fontSize: 14, padding: '0 2px', opacity: 0.6, fontFamily: 'inherit',
+              }}
+            >
+              ×
+            </button>
+          )}
+          <button
             onClick={handleAdd}
             style={{
               padding: '4px 14px', fontSize: 11, fontWeight: 500,
@@ -127,6 +163,17 @@ export function RulesView() {
               </span>
               <span style={{ color: 'var(--fg-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                 {rule.pattern || <em style={{ opacity: 0.5 }}>(any)</em>}
+              </span>
+              <span
+                title={rule.scope || 'Applies to all projects'}
+                style={{
+                  fontSize: 10, color: 'var(--fg-muted)',
+                  background: 'var(--overlay-subtle)', padding: '1px 6px', borderRadius: 4,
+                  maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  opacity: rule.scope ? 0.9 : 0.45, flexShrink: 0,
+                }}
+              >
+                {scopeLabel(rule.scope)}
               </span>
               <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
                 {rule.action}

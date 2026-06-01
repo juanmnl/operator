@@ -121,7 +121,7 @@ contextBridge.exposeInMainWorld('operator', {
 
   // Rules
   rulesList: (): Promise<Rule[]> => ipcRenderer.invoke(IPC.RULES_LIST),
-  rulesAdd: (rule: { tool: string; pattern?: string; action: RuleAction }): Promise<Rule> => ipcRenderer.invoke(IPC.RULES_ADD, rule),
+  rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: RuleAction }): Promise<Rule> => ipcRenderer.invoke(IPC.RULES_ADD, rule),
   rulesRemove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.RULES_REMOVE, id),
 
   prefsUpdate: (prefs: OperatorPrefs) => {

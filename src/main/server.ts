@@ -72,7 +72,7 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
     }
 
     // User-defined auto-approve / auto-deny rules
-    const ruleHit = rules.evaluate(event.tool_name, event.tool_input)
+    const ruleHit = rules.evaluate(event.tool_name, event.tool_input, event.cwd)
     if (ruleHit) {
       console.log(`rule ${ruleHit.decision}: ${event.tool_name}${ruleHit.matched.pattern ? `(${ruleHit.matched.pattern})` : ''} — s/${event.session_id?.slice(0, 4)}`)
       res.json({ decision: ruleHit.decision === 'approve' ? 'approve' : 'deny' })

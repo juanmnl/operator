@@ -1,6 +1,6 @@
 import { promises as fs, existsSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
-import { dirname, join } from 'path'
+import { dirname, join, sep } from 'path'
 import { randomUUID } from 'crypto'
 import type { Rule, RuleAction } from '../shared/types'
 
@@ -32,6 +32,14 @@ function primaryField(toolName: string, input: Record<string, unknown> | undefin
     default:
       return (i.file_path as string) || (i.command as string) || (i.path as string) || (i.url as string)
   }
+}
+
+/** True if `cwd` is the scope path itself or nested under it. */
+function pathWithin(cwd: string | undefined, scope: string): boolean {
+  if (!cwd) return false
+  const a = cwd.replace(/[/\\]+$/, '')
+  const b = scope.replace(/[/\\]+$/, '')
+  return a === b || a.startsWith(b + sep)
 }
 
 export interface RuleEvaluation {
@@ -69,7 +77,7 @@ class RulesManager {
     await this.ensureLoaded()
     // De-dupe: don't add an identical rule twice
     const existing = this.rules.find((r) =>
-      r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action,
+      r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action && r.scope === rule.scope,
     )
     if (existing) return existing
     const full: Rule = {
@@ -95,11 +103,16 @@ class RulesManager {
    * NOTE: synchronous behavior — callers must `await ready()` first to ensure
    * rules are loaded. We load eagerly on first IPC call and cache.
    */
-  evaluate(toolName: string | undefined, input: Record<string, unknown> | undefined): RuleEvaluation | null {
+  evaluate(
+    toolName: string | undefined,
+    input: Record<string, unknown> | undefined,
+    cwd?: string,
+  ): RuleEvaluation | null {
     if (!toolName || !this.loaded) return null
     const field = primaryField(toolName, input)
     for (const rule of this.rules) {
       if (rule.tool !== '*' && rule.tool !== toolName) continue
+      if (rule.scope && !pathWithin(cwd, rule.scope)) continue
       if (rule.pattern) {
         if (!field) continue
         if (!globToRegex(rule.pattern).test(field)) continue

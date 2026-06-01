@@ -153,7 +153,7 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
 
   // Rules engine
   ipcMain.handle(IPC.RULES_LIST, () => rules.list())
-  ipcMain.handle(IPC.RULES_ADD, (_event, rule: { tool: string; pattern?: string; action: 'approve' | 'deny' }) => rules.add(rule))
+  ipcMain.handle(IPC.RULES_ADD, (_event, rule: { tool: string; pattern?: string; scope?: string; action: 'approve' | 'deny' }) => rules.add(rule))
   ipcMain.handle(IPC.RULES_REMOVE, (_event, id: string) => rules.remove(id))
 
   // Renderer-driven preferences: renderer owns persistence (localStorage), main

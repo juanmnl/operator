@@ -321,12 +321,17 @@ export function DashboardView() {
     } else if (request.context.target) {
       pattern = request.context.target
     }
-    await window.operator.rulesAdd({ tool: toolName, pattern, action })
+    // Scope the rule to the requesting session's project by default — "always
+    // allow X" almost always means "in this project", not machine-wide. Falls
+    // back to global if we don't know the working directory.
+    const scope = request.context.workingDirectory || undefined
+    await window.operator.rulesAdd({ tool: toolName, pattern, scope, action })
     await window.operator.respond(request.id, action)
     setPendingRequests((prev) => prev.filter((r) => r.id !== request.id))
+    const scopeLabel = scope ? scope.split('/').filter(Boolean).pop() || scope : 'all projects'
     pushToast({
       text: `Rule added — ${action === 'approve' ? 'always allow' : 'always deny'} ${toolName}`,
-      detail: pattern ? `pattern: ${pattern}` : 'any input',
+      detail: `${pattern ? `pattern: ${pattern}` : 'any input'} · ${scopeLabel}`,
       kind: action === 'approve' ? 'success' : 'error',
     })
   }, [pushToast])

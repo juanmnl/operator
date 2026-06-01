@@ -40,7 +40,7 @@ declare global {
       worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) => Promise<{ ok: boolean; message?: string }>
       worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string) => Promise<{ ok: boolean; error?: string }>
       rulesList: () => Promise<Rule[]>
-      rulesAdd: (rule: { tool: string; pattern?: string; action: RuleAction }) => Promise<Rule>
+      rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: RuleAction }) => Promise<Rule>
       rulesRemove: (id: string) => Promise<void>
       prefsUpdate: (prefs: OperatorPrefs) => void
     }

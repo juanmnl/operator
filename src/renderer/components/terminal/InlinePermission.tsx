@@ -83,7 +83,7 @@ export function InlinePermission({ request, onRespond, onRespondAndRemember }: I
         <button
           onClick={() => onRespondAndRemember('approve')}
           style={ghostBtnStyle('var(--color-success)')}
-          title={`Always allow ${request.toolName || request.action}${request.context.target ? ` matching ${request.context.target}` : ''}`}
+          title={`Always allow ${request.toolName || request.action}${request.context.target ? ` matching ${request.context.target}` : ''}${request.context.workingDirectory ? ` in this project` : ''}`}
         >
           Always
         </button>
