@@ -30,7 +30,6 @@ export interface HookEvent {
   prompt?: string
   user_prompt?: string
   terminal_id?: string
-  term_program?: string
 }
 
 export interface OperatorRequest {
@@ -96,7 +95,6 @@ export interface AgentSession {
   startedAt: string
   lastActivityAt: string
   terminalId?: string
-  termProgram?: string
   permissionMode?: string
 }
 
@@ -174,6 +172,37 @@ export interface McpServerInfo {
 
 export interface McpServersResult {
   servers: McpServerInfo[]
+}
+
+export type AgentScope = 'user' | 'project'
+
+/**
+ * A Claude Code subagent definition, backed by a Markdown file with YAML
+ * frontmatter in `~/.claude/agents/` (user) or `<project>/.claude/agents/`
+ * (project). Operator is a visual editor over these files — the headline being
+ * per-agent model selection.
+ */
+export interface AgentDefinition {
+  /** Unique identifier; also the invocation name. Derives the filename. */
+  name: string
+  description: string
+  /** Model alias (`opus`/`sonnet`/`haiku`/`fable`/`opusplan`/`inherit`/`default`) or full ID. Omitted = inherit. */
+  model?: string
+  /** Allowed tool names. Empty/omitted = inherit all tools from the parent. */
+  tools?: string[]
+  /** Effort level: low | medium | high | xhigh | max. */
+  effort?: string
+  /** Max agentic turns before the subagent stops. */
+  maxTurns?: number
+  /** Display color hint (CC `/agents` UI). */
+  color?: string
+  /** The system prompt — everything below the frontmatter. */
+  prompt: string
+  scope: AgentScope
+  /** Project root when scope === 'project'. */
+  projectPath?: string
+  /** Absolute path of the backing file. Empty string for an unsaved draft. */
+  path: string
 }
 
 export type RuleAction = 'approve' | 'deny'
@@ -262,6 +291,9 @@ export const IPC = {
   RULES_LIST: 'rules:list',
   RULES_ADD: 'rules:add',
   RULES_REMOVE: 'rules:remove',
+  AGENTS_LIST: 'agents:list',
+  AGENT_SAVE: 'agents:save',
+  AGENT_DELETE: 'agents:delete',
   PREFS_UPDATE: 'operator:prefs-update',
 } as const
 

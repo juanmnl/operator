@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
+import { StatusWave } from './StatusWave'
 
 type DotStatus = 'running' | 'waiting' | 'compacting' | 'error' | 'idle' | 'ended'
 
@@ -8,7 +9,6 @@ interface SessionItemProps {
   label: string
   active: boolean
   hasPending: boolean
-  isExternal?: boolean
   effortLevel?: string | null
   closable: boolean
   /** 1-based Cmd+N hint for the first nine local sessions. */
@@ -16,15 +16,6 @@ interface SessionItemProps {
   onClick: () => void
   onRename: (newName: string) => void
   onClose: () => void
-}
-
-const dotConfig: Record<DotStatus, { color: string; opacity?: number; animation?: string }> = {
-  running:    { color: 'var(--green)',  animation: 'pulse 1.5s ease-in-out infinite' },
-  waiting:    { color: 'var(--yellow)', animation: 'pulse 1s ease-in-out infinite' },
-  compacting: { color: 'var(--cyan)' },
-  error:      { color: 'var(--red)' },
-  idle:       { color: 'var(--fg-muted)', opacity: 0.4 },
-  ended:      { color: 'var(--fg-muted)', opacity: 0.15 },
 }
 
 function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
@@ -38,7 +29,7 @@ function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
   }
 }
 
-export function SessionItem({ session, label, active, hasPending, isExternal, effortLevel, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, hasPending, effortLevel, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
@@ -50,7 +41,6 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
     : session.phase === 'running' ? ' — processing' : ''
 
   const status = getDotStatus(session, hasPending)
-  const dot = dotConfig[status]
 
   useEffect(() => {
     if (editing) {
@@ -103,7 +93,7 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
         alignItems: 'center',
         gap: 8,
         width: '100%',
-        padding: '6px 12px 6px 20px',
+        padding: '6px 12px 6px 10px',
         background: active ? 'var(--bg-surface)' : 'transparent',
         border: 'none',
         borderRadius: 4,
@@ -116,20 +106,7 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
         outline: 'none',
       }}
     >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: isExternal ? 'transparent' : dot.color,
-          border: isExternal ? `1.5px solid ${dot.color}` : 'none',
-          boxSizing: 'border-box',
-          flexShrink: 0,
-          opacity: dot.opacity ?? 1,
-          animation: dot.animation,
-          transition: 'background 0.3s, opacity 0.3s',
-        }}
-      />
+      <StatusWave status={status} />
       <span
         style={{
           flex: 1,
@@ -172,19 +149,6 @@ export function SessionItem({ session, label, active, hasPending, isExternal, ef
           </>
         )}
       </span>
-      {!editing && isExternal && (
-        <span style={{
-          fontSize: 8,
-          fontWeight: 500,
-          color: 'var(--fg-muted)',
-          opacity: 0.4,
-          flexShrink: 0,
-          letterSpacing: 0.3,
-          textTransform: 'uppercase',
-        }}>
-          ext
-        </span>
-      )}
       {!editing && session.activeSubagents > 0 && (
         <span
           style={{

@@ -22,6 +22,16 @@ const PERMISSION_MODES = [
   { value: 'bypassPermissions', label: 'Bypass', desc: 'Skip all permission checks' },
 ] as const
 
+// Lead model for the session. Empty = account default. Aliases map to `--model`.
+const MODEL_OPTIONS = [
+  { value: '', label: 'Default (account setting)' },
+  { value: 'haiku', label: 'Haiku — fast & cheap' },
+  { value: 'sonnet', label: 'Sonnet — balanced' },
+  { value: 'opus', label: 'Opus — most capable' },
+  { value: 'fable', label: 'Fable 5 — frontier' },
+  { value: 'opusplan', label: 'Opus plan / Sonnet execution' },
+] as const
+
 export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProps) {
   const [effortLevel, setEffortLevel] = useState<SessionConfig['effortLevel']>('high')
   const [permissionMode, setPermissionMode] = useState<SessionConfig['permissionMode']>('default')
@@ -116,6 +126,20 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
           </p>
         </div>
 
+        {/* Model — lead model for the session */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Model</label>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            style={selectStyle}
+          >
+            {MODEL_OPTIONS.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+
         {/* Isolated worktree (git repos only) */}
         {repoInfo?.isRepo && (
           <div style={{ marginBottom: 16 }}>
@@ -183,18 +207,6 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
 
         {showAdvanced && (
           <div style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {/* Model */}
-            <div>
-              <label style={labelStyle}>Model</label>
-              <input
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="default (opus, sonnet, haiku)"
-                style={inputStyle}
-              />
-            </div>
-
             {/* Allowed Tools */}
             <div>
               <label style={labelStyle}>Allowed Tools</label>
@@ -270,6 +282,14 @@ const inputStyle: React.CSSProperties = {
   background: 'var(--bg-terminal)', color: 'var(--fg)',
   border: '1px solid var(--border)', borderRadius: 5,
   outline: 'none', boxSizing: 'border-box',
+}
+
+const selectStyle: React.CSSProperties = {
+  width: '100%', padding: '7px 10px', fontSize: 11, fontWeight: 500,
+  fontFamily: "'Inter', system-ui, sans-serif",
+  background: 'var(--bg-terminal)', color: 'var(--fg)',
+  border: '1px solid var(--border)', borderRadius: 6,
+  outline: 'none', boxSizing: 'border-box', cursor: 'pointer',
 }
 
 const cancelBtnStyle: React.CSSProperties = {

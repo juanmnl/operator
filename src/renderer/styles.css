@@ -46,7 +46,24 @@ body.widget-bg {
   display: none;
 }
 
+/* Scrollable areas that should hide the bar (still scroll) */
+.scroll-hidden {
+  scrollbar-width: none;
+}
+.scroll-hidden::-webkit-scrollbar {
+  width: 0;
+  display: none;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* Session status — dots in a squircle that randomly twinkle: scale up and
+   shift from gray to white, each on its own offset. Kept very subtle.
+   --tw-max sets the per-state brightness ceiling. */
+@keyframes twinkle {
+  0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--fg-muted); }
+  50%      { opacity: var(--tw-max, 0.85); transform: scale(1); fill: var(--fg); }
 }

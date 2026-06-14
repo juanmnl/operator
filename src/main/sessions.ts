@@ -15,6 +15,10 @@ class SessionManager {
   recordEvent(event: HookEvent): AgentSession | null {
     const sessionId = event.session_id
     if (!sessionId) return null
+    // Only track sessions Operator launched. Events from external Claude Code
+    // processes carry no terminal_id (the hook injects it from
+    // OPERATOR_TERMINAL_ID), so they're ignored — the app shows only in-app work.
+    if (!event.terminal_id) return null
 
     const now = new Date().toISOString()
     let session = this.sessions.get(sessionId)
@@ -37,7 +41,6 @@ class SessionManager {
         startedAt: now,
         lastActivityAt: now,
         terminalId: event.terminal_id,
-        termProgram: event.term_program,
       }
       this.sessions.set(sessionId, session)
     }
@@ -47,11 +50,6 @@ class SessionManager {
     // Link terminal if provided and not yet linked
     if (event.terminal_id && !session.terminalId) {
       session.terminalId = event.terminal_id
-    }
-
-    // Capture terminal app name if not yet set
-    if (event.term_program && !session.termProgram) {
-      session.termProgram = event.term_program
     }
 
     // Track permission mode from the CC process

@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs } from '../shared/types'
+import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs, AgentDefinition } from '../shared/types'
 
 declare global {
   interface Window {
@@ -42,6 +42,9 @@ declare global {
       rulesList: () => Promise<Rule[]>
       rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: RuleAction }) => Promise<Rule>
       rulesRemove: (id: string) => Promise<void>
+      agentsList: (projectPath?: string) => Promise<AgentDefinition[]>
+      agentSave: (def: AgentDefinition, originalPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+      agentDelete: (path: string) => Promise<{ ok: boolean; error?: string }>
       prefsUpdate: (prefs: OperatorPrefs) => void
     }
   }

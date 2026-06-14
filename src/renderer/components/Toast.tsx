@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { StatusWave, WaveStatus } from './sidebar/StatusWave'
 
 export interface ToastMessage {
   id: string
@@ -13,10 +14,10 @@ interface ToastsProps {
   onDismiss: (id: string) => void
 }
 
-const COLOR_BY_KIND: Record<NonNullable<ToastMessage['kind']>, string> = {
-  info: 'var(--accent)',
-  success: 'var(--color-success)',
-  error: 'var(--color-error)',
+const STATUS_BY_KIND: Record<NonNullable<ToastMessage['kind']>, WaveStatus> = {
+  info: 'running',
+  success: 'idle',
+  error: 'error',
 }
 
 export function Toasts({ messages, onDismiss }: ToastsProps) {
@@ -35,7 +36,7 @@ export function Toasts({ messages, onDismiss }: ToastsProps) {
 
 function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () => void }) {
   const [entered, setEntered] = useState(false)
-  const color = COLOR_BY_KIND[message.kind || 'info']
+  const status = STATUS_BY_KIND[message.kind || 'info']
 
   useEffect(() => {
     const enter = requestAnimationFrame(() => setEntered(true))
@@ -52,7 +53,6 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
         padding: '8px 12px',
         background: 'var(--bg-sidebar)',
         border: '1px solid var(--border)',
-        borderLeft: `3px solid ${color}`,
         borderRadius: 6,
         boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
         fontFamily: "'Inter', system-ui, sans-serif",
@@ -63,6 +63,9 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
         transition: 'transform 0.18s, opacity 0.18s',
       }}
     >
+      <span style={{ flexShrink: 0, alignSelf: 'flex-start', marginTop: 1 }}>
+        <StatusWave status={status} size={13} />
+      </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, color: 'var(--fg)', fontWeight: 500 }}>
           {message.text}

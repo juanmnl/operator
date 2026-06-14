@@ -4,10 +4,16 @@ export interface LaunchOptions {
   permissionMode?: string
   model?: string
   allowedTools?: string
+  /** Resume a specific prior Claude Code session by id (`claude --resume <id>`). */
+  resumeSessionId?: string
 }
 
 export function launchClaudeCode(ptyManager: PtyManager, cwd: string, options?: LaunchOptions): string {
   const args: string[] = []
+
+  if (options?.resumeSessionId) {
+    args.push('--resume', options.resumeSessionId)
+  }
 
   if (options?.permissionMode && options.permissionMode !== 'default') {
     if (options.permissionMode === 'bypassPermissions') {

@@ -11,6 +11,7 @@ import { NewSessionPanel, SessionConfig } from '../components/session/NewSession
 import { DiffPanel } from '../components/session/DiffPanel'
 import { PromptBar } from '../components/session/PromptBar'
 import { RulesView } from '../components/rules/RulesView'
+import { AgentLibraryView } from '../components/agents/AgentLibraryView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
@@ -21,12 +22,32 @@ import logoUrl from '../../../assets/logo-light-64.png'
 
 interface TerminalTab {
   id: string
+  /** Stable key that survives restart, used to persist & restore this session. */
+  key: string
   cwd: string
+  model?: string
   effortLevel?: 'high' | 'normal' | 'low'
   permissionMode?: string
   worktreeBranch?: string
   worktreeBase?: string
   sourceCwd?: string
+}
+
+/** A session's restorable config, persisted to localStorage across restarts. */
+interface SavedSession {
+  key: string
+  cwd: string
+  projectName: string
+  customName?: string
+  model?: string
+  effortLevel?: 'high' | 'normal' | 'low'
+  permissionMode?: string
+  worktreeBranch?: string
+  worktreeBase?: string
+  sourceCwd?: string
+  /** Latest Claude Code session id seen — enables "resume conversation". */
+  claudeSessionId?: string
+  lastActiveAt: string
 }
 
 export function DashboardView() {
@@ -44,6 +65,7 @@ export function DashboardView() {
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [rulesViewActive, setRulesViewActive] = useState(false)
+  const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
   const [prefs, setPrefs] = useState<OperatorPrefs>(() => {
     try {
@@ -130,6 +152,7 @@ export function DashboardView() {
       setActiveFolderPrefs(null)
       setGlobalPrefsActive(false)
       setRulesViewActive(false)
+      setAgentsViewActive(false)
       setPrefsViewActive(false)
     }
   }, [])
@@ -141,12 +164,14 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
+    setAgentsViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
     setRulesViewActive(false)
+    setAgentsViewActive(false)
     setPrefsViewActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -156,6 +181,18 @@ export function DashboardView() {
 
   const handleOpenRules = useCallback(() => {
     setRulesViewActive(true)
+    setPrefsViewActive(false)
+    setAgentsViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+    setPendingSession(null)
+  }, [])
+
+  const handleOpenAgents = useCallback(() => {
+    setAgentsViewActive(true)
+    setRulesViewActive(false)
     setPrefsViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
@@ -167,6 +204,7 @@ export function DashboardView() {
   const handleOpenPrefs = useCallback(() => {
     setPrefsViewActive(true)
     setRulesViewActive(false)
+    setAgentsViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -188,6 +226,14 @@ export function DashboardView() {
   const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string; lastUsedAt: string }>>(() => {
     try {
       const raw = localStorage.getItem('operator.recentProjects')
+      return raw ? JSON.parse(raw) : []
+    } catch { return [] }
+  })
+
+  // Sessions that were open in a previous run, restorable on this launch.
+  const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => {
+    try {
+      const raw = localStorage.getItem('operator.savedSessions')
       return raw ? JSON.parse(raw) : []
     } catch { return [] }
   })
@@ -225,7 +271,9 @@ export function DashboardView() {
     if (result) {
       const tab: TerminalTab = {
         id: result.terminalId,
+        key: crypto.randomUUID(),
         cwd: result.cwd,
+        model: config.model || undefined,
         effortLevel: config.effortLevel,
         permissionMode: config.permissionMode,
         worktreeBranch,
@@ -245,6 +293,64 @@ export function DashboardView() {
     setPendingSession(null)
   }, [rememberRecent])
 
+  // Re-open a previously saved session. `resume` continues the prior Claude
+  // conversation (--resume); otherwise it starts the agent clean in the same
+  // folder/worktree with the same config.
+  const handleRestoreSession = useCallback(async (saved: SavedSession, resume: boolean) => {
+    if (saved.effortLevel) {
+      const fp = await window.operator.folderPrefsLoad(saved.cwd)
+      const globalFile = fp.settingsFiles.find((f) => f.scope === 'global')
+      if (globalFile) await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: saved.effortLevel })
+    }
+
+    const launchOptions: Record<string, unknown> = {}
+    if (saved.permissionMode && saved.permissionMode !== 'default') launchOptions.permissionMode = saved.permissionMode
+    if (saved.model) launchOptions.model = saved.model
+    if (resume && saved.claudeSessionId) launchOptions.resumeSessionId = saved.claudeSessionId
+
+    // Restore spawns directly into the saved cwd (the worktree path persists
+    // across quits), so no new worktree is created.
+    const result = await window.operator.terminalSpawn(saved.cwd, launchOptions)
+    if (!result) return
+
+    const tab: TerminalTab = {
+      id: result.terminalId,
+      key: saved.key,
+      cwd: result.cwd,
+      model: saved.model,
+      effortLevel: saved.effortLevel,
+      permissionMode: saved.permissionMode,
+      worktreeBranch: saved.worktreeBranch,
+      worktreeBase: saved.worktreeBase,
+      sourceCwd: saved.sourceCwd,
+    }
+    setTerminals((prev) => [...prev, tab])
+    setActiveTerminalId(result.terminalId)
+    setActiveSessionId(`local-${result.terminalId}`)
+    if (saved.customName) {
+      setCustomNames((prev) => {
+        const next = { ...prev, [`local-${result.terminalId}`]: saved.customName! }
+        try { localStorage.setItem('operator.customNames', JSON.stringify(next)) } catch { /* quota */ }
+        return next
+      })
+    }
+    rememberRecent(saved.cwd)
+    setPendingSession(null)
+    setActiveFolderPrefs(null)
+    setGlobalPrefsActive(false)
+    setRulesViewActive(false)
+    setAgentsViewActive(false)
+    setPrefsViewActive(false)
+  }, [rememberRecent])
+
+  const forgetSavedSession = useCallback((key: string) => {
+    setSavedSessions((prev) => {
+      const next = prev.filter((s) => s.key !== key)
+      try { localStorage.setItem('operator.savedSessions', JSON.stringify(next)) } catch { /* quota */ }
+      return next
+    })
+  }, [])
+
   const handleCloseSession = useCallback(async (session: AgentSession) => {
     const terminalId = session.terminalId
     if (!terminalId) return
@@ -258,6 +364,8 @@ export function DashboardView() {
       if (!result.ok) console.warn('Worktree removal failed:', result.error)
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
+    // Closing is intentional — forget the saved session so it won't offer to restore.
+    if (tab) forgetSavedSession(tab.key)
     setTerminals((prev) => prev.filter((t) => t.id !== terminalId))
     setActiveTerminalId((current) => (current === terminalId ? null : current))
     setActiveSessionId((current) => {
@@ -265,7 +373,7 @@ export function DashboardView() {
       if (current === `local-${terminalId}`) return null
       return current
     })
-  }, [terminals])
+  }, [terminals, forgetSavedSession])
 
   const handleSelectSession = useCallback((session: AgentSession) => {
     const localTerminalIds = new Set(terminals.map((t) => t.id))
@@ -273,6 +381,7 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
+    setAgentsViewActive(false)
     setPrefsViewActive(false)
     setPendingSession(null)
     if (session.terminalId && localTerminalIds.has(session.terminalId)) {
@@ -303,6 +412,7 @@ export function DashboardView() {
     setPendingSession(null)
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
+    setAgentsViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -336,7 +446,9 @@ export function DashboardView() {
     })
   }, [pushToast])
 
-  // Build sidebar entries: local terminals + external sessions
+  // Sidebar entries are only the sessions Operator launched in-app. External
+  // Claude Code processes are intentionally not tracked — the hook no-ops for
+  // them (no OPERATOR_TERMINAL_ID), so nothing arrives without a managed pty.
   const localTerminalIds = new Set(terminals.map((t) => t.id))
 
   const localSessions: AgentSession[] = terminals.map((t) => {
@@ -359,11 +471,7 @@ export function DashboardView() {
     }
   })
 
-  const externalSessions = sessions.filter(
-    (s) => s.status === 'active' && (!s.terminalId || !localTerminalIds.has(s.terminalId))
-  )
-
-  const allSidebarSessions = [...localSessions, ...externalSessions]
+  const allSidebarSessions = localSessions
 
   // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.
   const shortcutIndices = useMemo(() => {
@@ -394,14 +502,63 @@ export function DashboardView() {
         setActiveSessionId(hookSession.id)
       }
     }
-    // If active external session ended, clear selection
-    if (activeSessionId && !activeTerminalId) {
-      const extSession = sessions.find((s) => s.id === activeSessionId)
-      if (extSession && extSession.status === 'ended') {
-        setActiveSessionId(null)
+  }, [sessions, activeSessionId])
+
+  // Migrate a custom name from the local-* placeholder to the real Claude
+  // session id once it arrives, so renames survive the id handoff.
+  useEffect(() => {
+    setCustomNames((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const t of terminals) {
+        const localKey = `local-${t.id}`
+        if (next[localKey] === undefined) continue
+        const hook = sessions.find((s) => s.terminalId === t.id)
+        if (hook && next[hook.id] === undefined) {
+          next[hook.id] = next[localKey]
+          delete next[localKey]
+          changed = true
+        }
       }
-    }
-  }, [sessions, activeSessionId, activeTerminalId])
+      if (!changed) return prev
+      try { localStorage.setItem('operator.customNames', JSON.stringify(next)) } catch { /* quota */ }
+      return next
+    })
+  }, [sessions, terminals])
+
+  // Persist open sessions (merged over previously-saved ones) so they survive a
+  // restart. Enriched with the live Claude session id to enable resume.
+  const savedSerRef = useRef<string>('')
+  useEffect(() => {
+    setSavedSessions((prev) => {
+      const liveByKey = new Map<string, SavedSession>()
+      for (const t of terminals) {
+        const hook = sessions.find((s) => s.terminalId === t.id)
+        const nameKey = hook?.id ?? `local-${t.id}`
+        liveByKey.set(t.key, {
+          key: t.key,
+          cwd: t.cwd,
+          projectName: t.cwd.split('/').pop() || t.cwd,
+          customName: customNames[nameKey] || customNames[`local-${t.id}`],
+          model: t.model,
+          effortLevel: t.effortLevel,
+          permissionMode: t.permissionMode,
+          worktreeBranch: t.worktreeBranch,
+          worktreeBase: t.worktreeBase,
+          sourceCwd: t.sourceCwd,
+          claudeSessionId: hook?.id,
+          lastActiveAt: hook?.lastActivityAt || new Date().toISOString(),
+        })
+      }
+      const merged = [...prev.filter((s) => !liveByKey.has(s.key)), ...liveByKey.values()]
+      // Compare ignoring the volatile timestamp to avoid churning localStorage.
+      const ser = JSON.stringify(merged.map(({ lastActiveAt: _omit, ...rest }) => rest))
+      if (ser === savedSerRef.current) return prev
+      savedSerRef.current = ser
+      try { localStorage.setItem('operator.savedSessions', JSON.stringify(merged)) } catch { /* quota */ }
+      return merged
+    })
+  }, [terminals, sessions, customNames])
 
   // Reset "Copied!" label 2s after a copy, with cleanup on unmount / re-copy
   useEffect(() => {
@@ -486,6 +643,14 @@ export function DashboardView() {
     return () => window.removeEventListener('keydown', onKey)
   }, [handleNewSession, handleCloseSession, handleSelectSession, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
 
+  // Saved sessions not currently open — offered for restore on the splash & palette.
+  const restorableSessions = useMemo(() => {
+    const liveKeys = new Set(terminals.map((t) => t.key))
+    return savedSessions
+      .filter((s) => !liveKeys.has(s.key))
+      .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
+  }, [savedSessions, terminals])
+
   // Find pending requests for the active session
   const activeSession = allSidebarSessions.find((s) => s.id === activeSessionId)
   const activeRequests = pendingRequests.filter(
@@ -493,20 +658,16 @@ export function DashboardView() {
   )
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'rules' | 'prefs' | 'localTerminal' | 'externalSession' | 'splash' = useMemo(() => {
+  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'rules' | 'agents' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
     if (pendingSession) return 'pendingSession'
     if (prefsViewActive) return 'prefs'
     if (rulesViewActive) return 'rules'
+    if (agentsViewActive) return 'agents'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     if (activeTerminalId) return 'localTerminal'
-    if (activeSessionId) return 'externalSession'
     return 'splash'
-  }, [pendingSession, prefsViewActive, rulesViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, activeSessionId])
-
-  const externalActiveSession = contentMode === 'externalSession'
-    ? sessions.find((s) => s.id === activeSessionId) ?? null
-    : null
+  }, [pendingSession, prefsViewActive, rulesViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -537,6 +698,27 @@ export function DashboardView() {
       })
     }
 
+    // Saved sessions — resume the prior conversation or start clean
+    restorableSessions.slice(0, 8).forEach((s) => {
+      const name = s.customName || s.projectName
+      if (s.claudeSessionId) {
+        actions.push({
+          id: `resume-${s.key}`,
+          group: 'Continue',
+          label: `Resume ${name}`,
+          detail: s.worktreeBranch || s.cwd,
+          run: () => handleRestoreSession(s, true),
+        })
+      }
+      actions.push({
+        id: `reopen-${s.key}`,
+        group: 'Continue',
+        label: `${s.claudeSessionId ? 'Reopen' : 'Open'} ${name} (clean)`,
+        detail: s.worktreeBranch || s.cwd,
+        run: () => handleRestoreSession(s, false),
+      })
+    })
+
     // Recent projects — one-click relaunch
     recentProjects.slice(0, 8).forEach((p) => {
       actions.push({
@@ -551,6 +733,7 @@ export function DashboardView() {
     // Static entries
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
+      { id: 'agents', group: 'Settings', label: 'Agents — configure models per task', run: handleOpenAgents },
       { id: 'rules', group: 'Settings', label: 'Auto-approve rules', run: handleOpenRules },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
@@ -558,7 +741,7 @@ export function DashboardView() {
     )
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleOpenRules, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenRules, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
 
   const hookConfigSnippet = hookPath
     ? `{
@@ -577,12 +760,12 @@ export function DashboardView() {
       <Sidebar
         sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
-        localTerminalIds={localTerminalIds}
         customNames={customNames}
         pendingRequests={pendingRequests}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
         rulesViewActive={rulesViewActive}
+        agentsViewActive={agentsViewActive}
         prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
         shortcutIndices={shortcutIndices}
@@ -595,13 +778,14 @@ export function DashboardView() {
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
         onOpenRules={handleOpenRules}
+        onOpenAgents={handleOpenAgents}
         onOpenPrefs={handleOpenPrefs}
         onToggleTheme={handleToggleTheme}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
-        {contentMode !== 'localTerminal' && contentMode !== 'externalSession' && (
+        {contentMode !== 'localTerminal' && (
           <div style={{ height: 40,
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'drag',
@@ -634,11 +818,13 @@ export function DashboardView() {
 
         {contentMode === 'rules' && <RulesView />}
 
+        {contentMode === 'agents' && <AgentLibraryView />}
+
         {contentMode === 'prefs' && (
           <PrefsView prefs={prefs} onChange={setPrefs} />
         )}
 
-        {(contentMode === 'localTerminal' || contentMode === 'externalSession') && activeSession && (() => {
+        {contentMode === 'localTerminal' && activeSession && (() => {
           const tab = terminals.find((t) => t.id === activeTerminalId)
           return (
             <SessionToolbar
@@ -746,14 +932,7 @@ export function DashboardView() {
           </div>
         )}
 
-        {contentMode === 'externalSession' && externalActiveSession && (
-          <SessionActivityView
-            session={externalActiveSession}
-            pendingRequests={activeRequests}
-          />
-        )}
-
-        {(contentMode === 'localTerminal' || contentMode === 'externalSession') && activeRequests.length > 0 && (
+        {contentMode === 'localTerminal' && activeRequests.length > 0 && (
           <InlinePermission
             request={activeRequests[0]}
             onRespond={(value) => handleRespond(activeRequests[0].id, value)}
@@ -773,6 +952,7 @@ export function DashboardView() {
 
         {contentMode === 'splash' && allSidebarSessions.length === 0 && (
           <div
+            className="scroll-hidden"
             style={{
               flex: 1,
               display: 'flex',
@@ -796,7 +976,7 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: 0,
               }}>
-                Mission control for your AI coding sessions.
+                Mission control for orchestrating AI coding agents.
               </p>
               <p style={{
                 fontSize: 12,
@@ -804,10 +984,10 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: '12px 0 0',
               }}>
-                Launch Claude Code sessions in isolated worktrees, watch what
-                they do, and approve or deny anything they want to touch —
-                inline here while you're working, or as a notification pill
-                when you're somewhere else.
+                Define agents and pick which model handles each task, then
+                launch Claude Code sessions that delegate to them. Watch agents
+                and their subagents work in isolated worktrees, and approve or
+                deny anything they touch — inline or from a notification pill.
               </p>
               <p style={{
                 fontSize: 11,
@@ -838,6 +1018,71 @@ export function DashboardView() {
             <p style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 8 }}>
               Cmd+N · Cmd+K for command palette
             </p>
+
+            {restorableSessions.length > 0 && (
+              <div style={{ width: '100%', marginTop: 24 }}>
+                <p style={{
+                  fontSize: 9, fontWeight: 600, textTransform: 'uppercase',
+                  letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.5,
+                  margin: '0 0 8px', textAlign: 'left',
+                }}>
+                  Continue where you left off
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {restorableSessions.slice(0, 6).map((s) => (
+                    <div
+                      key={s.key}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        width: '100%', padding: '6px 6px 6px 10px',
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 5,
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                        <div style={{ fontSize: 11, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {s.customName || s.projectName}
+                        </div>
+                        <div style={{
+                          fontSize: 9, color: 'var(--fg-muted)', opacity: 0.55, marginTop: 1,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+                        }}>
+                          {s.worktreeBranch ? `⎇ ${s.worktreeBranch}` : s.cwd.replace(/^\/Users\/[^/]+/, '~')}
+                        </div>
+                      </div>
+                      {s.claudeSessionId && (
+                        <button
+                          onClick={() => handleRestoreSession(s, true)}
+                          title="Resume the previous Claude conversation"
+                          style={restoreBtnStyle(true)}
+                        >
+                          Resume
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleRestoreSession(s, false)}
+                        title="Start the agent clean in this session"
+                        style={restoreBtnStyle(false)}
+                      >
+                        {s.claudeSessionId ? 'Clean' : 'Open'}
+                      </button>
+                      <button
+                        onClick={() => forgetSavedSession(s.key)}
+                        title="Forget this session"
+                        style={{
+                          background: 'none', border: 'none', color: 'var(--fg-muted)',
+                          cursor: 'pointer', fontSize: 13, padding: '0 4px', opacity: 0.4, fontFamily: 'inherit',
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {recentProjects.length > 0 && (
               <div style={{ width: '100%', marginTop: 24 }}>
@@ -954,4 +1199,19 @@ export function DashboardView() {
       <Toasts messages={toasts} onDismiss={dismissToast} />
     </div>
   )
+}
+
+function restoreBtnStyle(primary: boolean): React.CSSProperties {
+  return {
+    padding: '3px 9px',
+    fontSize: 10,
+    fontWeight: 500,
+    fontFamily: 'inherit',
+    background: primary ? 'var(--btn-bg)' : 'transparent',
+    color: primary ? 'var(--fg)' : 'var(--fg-muted)',
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    cursor: 'pointer',
+    flexShrink: 0,
+  }
 }

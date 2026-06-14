@@ -3,30 +3,15 @@ import { AgentSession, OperatorRequest } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import logoUrl from '../../../../assets/logo-light-64.png'
 
-const TERM_NAMES: Record<string, string> = {
-  'iTerm.app': 'iTerm',
-  'Apple_Terminal': 'Terminal',
-  'vscode': 'VS Code',
-  'WarpTerminal': 'Warp',
-  'Hyper': 'Hyper',
-  'Alacritty': 'Alacritty',
-  'tmux': 'tmux',
-  'ghostty': 'Ghostty',
-}
-
-function formatTermProgram(raw: string): string {
-  return TERM_NAMES[raw] || raw.replace(/\.app$/, '')
-}
-
 interface SidebarProps {
   sessions: AgentSession[]
   activeSessionId: string | null
-  localTerminalIds: Set<string>
   customNames: Record<string, string>
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
   globalPrefsActive: boolean
   rulesViewActive: boolean
+  agentsViewActive: boolean
   prefsViewActive: boolean
   effortLevels: Record<string, string>
   /** Map sessionId → 1-based Cmd+N hint for the first 9 local sessions. */
@@ -41,11 +26,12 @@ interface SidebarProps {
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
   onOpenRules: () => void
+  onOpenAgents: () => void
   onOpenPrefs: () => void
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenPrefs, onToggleTheme  }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenPrefs, onToggleTheme  }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -111,7 +97,6 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
             projectName={projectName}
             group={group}
             activeSessionId={activeSessionId}
-            localTerminalIds={localTerminalIds}
             customNames={customNames}
             pendingRequests={pendingRequests}
             activeFolderPrefs={activeFolderPrefs}
@@ -172,6 +157,29 @@ export function Sidebar({ sessions, activeSessionId, localTerminalIds, customNam
           title="New Session"
         >
           +
+        </button>
+        <button
+          onClick={onOpenAgents}
+          style={{
+            background: agentsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '3px 5px',
+            borderRadius: 3,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: agentsViewActive ? 0.9 : 0.5,
+            marginLeft: 6,
+          }}
+          title="Agents — configure models per task"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="3" y="5.5" width="10" height="7.5" rx="2" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <path d="M8 3v2.5" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+            <circle cx="8" cy="2.5" r="1" fill="var(--fg-muted)" />
+            <circle cx="6" cy="9" r="0.9" fill="var(--fg-muted)" />
+            <circle cx="10" cy="9" r="0.9" fill="var(--fg-muted)" />
+          </svg>
         </button>
         <button
           onClick={onOpenGlobalPrefs}
@@ -268,7 +276,6 @@ function FolderGroup({
   projectName,
   group,
   activeSessionId,
-  localTerminalIds,
   customNames,
   pendingRequests,
   activeFolderPrefs,
@@ -282,7 +289,6 @@ function FolderGroup({
   projectName: string
   group: AgentSession[]
   activeSessionId: string | null
-  localTerminalIds: Set<string>
   customNames: Record<string, string>
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
@@ -345,10 +351,7 @@ function FolderGroup({
       </div>
       {group.map((session, i) => {
         const customName = customNames[session.id]
-        const isExternal = !session.terminalId || !localTerminalIds.has(session.terminalId)
-        const autoName = isExternal
-          ? (session.termProgram ? formatTermProgram(session.termProgram) : 'External')
-          : (group.length > 1 ? `Session ${i + 1}` : 'Session')
+        const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
         // Prefer the agent-derived summary (first user prompt) when no custom name is set.
         const defaultLabel = session.summary || autoName
         const hasPending = pendingRequests.some(
@@ -363,9 +366,8 @@ function FolderGroup({
             label={customName || defaultLabel}
             active={session.id === activeSessionId}
             hasPending={hasPending}
-            isExternal={isExternal}
             effortLevel={effort}
-            closable={!isExternal}
+            closable
             shortcutIndex={shortcutIndices[session.id] ?? null}
             onClick={() => onSelectSession(session)}
             onRename={(name) => onRenameSession(session.id, name)}

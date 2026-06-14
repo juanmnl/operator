@@ -13,6 +13,15 @@ interface TerminalPaneProps {
   onTitleChange?: (title: string) => void
 }
 
+/** Rough perceived lightness of a #rrggbb background. */
+function isLightBackground(bg?: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(bg || '')
+  if (!m) return false
+  const n = parseInt(m[1], 16)
+  const lum = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)
+  return lum > 140
+}
+
 export function TerminalPane({ terminalId, theme, active = true, onTitleChange }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -41,6 +50,9 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       allowProposedApi: true,
       macOptionIsMeta: true,
       scrollback: 10000,
+      // Claude Code emits dim/gray secondary text tuned for dark terminals; on a
+      // light background that washes out. Force a readable contrast in light mode.
+      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
     })
 
     const fitAddon = new FitAddon()
@@ -59,18 +71,24 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     // Re-assert cursorBlink after WebGL addon (can reset it)
     term.options.cursorBlink = true
 
-    fitAddon.fit()
-    // Re-fit after layout settles (initial fit can measure 0-width container)
-    requestAnimationFrame(() => {
-      try { fitAddon.fit() } catch { /* */ }
-    })
-    term.focus()
-
     termRef.current = term
     fitRef.current = fitAddon
 
-    // Send initial size
-    window.operator.terminalResize(terminalId, term.cols, term.rows)
+    // Fit only once the container actually has width. Fitting against a 0/tiny
+    // container sends a tiny column count to the pty, so Claude Code renders its
+    // TUI at ~10 cols and that wrapping gets baked into the scrollback.
+    const ensureInitialFit = () => {
+      const el = containerRef.current
+      if (!el) return
+      if (el.offsetWidth < 50) {
+        requestAnimationFrame(ensureInitialFit)
+        return
+      }
+      try { fitAddon.fit() } catch { /* */ }
+      window.operator.terminalResize(terminalId, term.cols, term.rows)
+    }
+    ensureInitialFit()
+    term.focus()
 
     // Forward keystrokes to pty
     term.onData((data) => {
@@ -98,14 +116,41 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     const observer = new ResizeObserver(handleResize)
     observer.observe(containerRef.current)
 
+    // Claude Code enables mouse tracking, which makes xterm forward the wheel to
+    // the app instead of scrolling. When that's on (and we're not in an
+    // alt-screen app that owns the screen), scroll the scrollback ourselves.
+    const container = containerRef.current
+    const onWheelCapture = (e: WheelEvent) => {
+      const t = termRef.current
+      if (!t || t.modes.mouseTrackingMode === 'none') return
+      if (t.buffer.active.type !== 'normal') return
+      const lines = e.deltaMode === 1 ? e.deltaY : e.deltaY / 24
+      t.scrollLines(Math.round(lines) || (e.deltaY > 0 ? 1 : -1))
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    container.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
+
     return () => {
       unsubData()
       observer.disconnect()
+      container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
       term.dispose()
       termRef.current = null
       fitRef.current = null
     }
-  }, [terminalId, theme, onTitleChange, handleResize])
+    // `theme` is intentionally excluded — recreating the terminal on a theme
+    // change would wipe the scrollback. It's applied in place below instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalId, onTitleChange, handleResize])
+
+  // Apply theme/contrast changes to the live terminal without recreating it.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.theme = theme
+    term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1
+  }, [theme])
 
   // Focus/blur and refit when active state changes
   useEffect(() => {

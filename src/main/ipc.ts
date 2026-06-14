@@ -9,6 +9,8 @@ import { WindowManager } from './window/window-manager'
 import { loadFolderPreferences, loadGlobalPreferences, saveSettingsFile, saveMdFile, createFile, getMcpServers } from './folder-prefs'
 import { inspectRepo, createWorktree, worktreeStatus, removeWorktree, worktreeDiff, commitAll, mergeBranch, discardBranch } from './worktree'
 import { rules } from './rules'
+import { listAgents, saveAgent, deleteAgent } from './agents'
+import type { AgentDefinition } from '../shared/types'
 
 export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): void {
   // Permission flow
@@ -155,6 +157,11 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
   ipcMain.handle(IPC.RULES_LIST, () => rules.list())
   ipcMain.handle(IPC.RULES_ADD, (_event, rule: { tool: string; pattern?: string; scope?: string; action: 'approve' | 'deny' }) => rules.add(rule))
   ipcMain.handle(IPC.RULES_REMOVE, (_event, id: string) => rules.remove(id))
+
+  // Agent library — subagent definition files (.claude/agents/*.md)
+  ipcMain.handle(IPC.AGENTS_LIST, (_event, projectPath?: string) => listAgents(projectPath))
+  ipcMain.handle(IPC.AGENT_SAVE, (_event, def: AgentDefinition, originalPath?: string) => saveAgent(def, originalPath))
+  ipcMain.handle(IPC.AGENT_DELETE, (_event, path: string) => deleteAgent(path))
 
   // Renderer-driven preferences: renderer owns persistence (localStorage), main
   // process just receives updates so it can act on flags like notification gating.

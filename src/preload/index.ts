@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs } from '../shared/types'
+import { IPC, OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs, AgentDefinition } from '../shared/types'
 
 contextBridge.exposeInMainWorld('operator', {
   // Permission flow
@@ -123,6 +123,12 @@ contextBridge.exposeInMainWorld('operator', {
   rulesList: (): Promise<Rule[]> => ipcRenderer.invoke(IPC.RULES_LIST),
   rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: RuleAction }): Promise<Rule> => ipcRenderer.invoke(IPC.RULES_ADD, rule),
   rulesRemove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.RULES_REMOVE, id),
+
+  // Agent library
+  agentsList: (projectPath?: string): Promise<AgentDefinition[]> => ipcRenderer.invoke(IPC.AGENTS_LIST, projectPath),
+  agentSave: (def: AgentDefinition, originalPath?: string): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke(IPC.AGENT_SAVE, def, originalPath),
+  agentDelete: (path: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke(IPC.AGENT_DELETE, path),
 
   prefsUpdate: (prefs: OperatorPrefs) => {
     ipcRenderer.send(IPC.PREFS_UPDATE, prefs)
