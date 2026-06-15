@@ -11,6 +11,8 @@ mod agents;
 mod usage;
 #[path = "folderprefs.rs"]
 mod folderprefs;
+#[path = "transcript.rs"]
+mod transcript;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -24,7 +26,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
 use backend::{
-    evaluate_rules, is_auto_approved, load_rules, make_request, response, rules_add, rules_list,
+    evaluate_rules, is_auto_approved, load_rules, make_request, rules_add, rules_list,
     rules_remove, summarize, AgentSession, HookEvent, OperatorRequest, Rule, Sessions,
 };
 
@@ -38,9 +40,16 @@ struct Pty {
 }
 
 #[derive(Default)]
-struct PtyManager {
+pub struct PtyManager {
     ptys: Mutex<HashMap<String, Pty>>,
     next: AtomicU64,
+}
+
+impl PtyManager {
+    /// Whether a terminal's pty is still open (removed on exit).
+    pub fn alive(&self, id: &str) -> bool {
+        self.ptys.lock().unwrap().contains_key(id)
+    }
 }
 
 #[derive(Default)]
@@ -62,7 +71,10 @@ fn terminal_spawn(
     app: tauri::AppHandle,
     cwd: String,
     args: Vec<String>,
+    session_id: String,
+    permission_mode: Option<String>,
     mgr: State<Arc<PtyManager>>,
+    reg: State<transcript::TrackRegistry>,
 ) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
@@ -93,6 +105,14 @@ fn terminal_spawn(
     mgr.ptys.lock().unwrap().insert(
         id.clone(),
         Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
+    );
+
+    // Register so the transcript tailer watches this session's JSONL and the
+    // hook can look up its permission mode. session_id is the forced
+    // `--session-id` (or the resumed id), so transcript mapping is exact.
+    reg.register(
+        id.clone(),
+        transcript::NewTrack { claude_session_id: session_id, cwd: cwd.clone(), permission_mode },
     );
 
     let emit_id = id.clone();
@@ -325,9 +345,14 @@ fn handle_hook(app: &tauri::AppHandle, body: &str) -> String {
         }
     }
 
-    let sessions = app.state::<Sessions>();
-    let perm_mode = sessions.record_event(&event);
-    let _ = app.emit("session:update", sessions.get_active());
+    // The timeline is transcript-driven now; the hook is purely a permission
+    // gate. Look up the session's launch-time permission mode by terminal id.
+    let registry = app.state::<transcript::TrackRegistry>();
+    let perm_mode = event
+        .terminal_id
+        .as_deref()
+        .and_then(|t| registry.permission_mode(t))
+        .or_else(|| event.permission_mode.clone());
 
     if event.hook_event_name != "PreToolUse" {
         return "{\"status\":\"ok\"}".into();
@@ -345,14 +370,11 @@ fn handle_hook(app: &tauri::AppHandle, body: &str) -> String {
         return format!("{{\"decision\":\"{}\"}}", if action == "approve" { "approve" } else { "deny" });
     }
 
-    // Blocking permission flow.
+    // Blocking permission flow. The request is surfaced to the UI via the queue
+    // (getQueue / hook:new-request); the timeline itself stays transcript-driven.
     let summary = summarize(tool.unwrap_or("Tool"), event.tool_input.as_ref().unwrap_or(&serde_json::Value::Null));
     let id = format!("op-{}", now_counter());
     let request = make_request(&event, &summary, id.clone());
-
-    if let Some(sid) = &event.session_id {
-        sessions.track_request(sid, &request);
-    }
 
     let hook = app.state::<HookState>();
     let (tx, rx) = channel::<bool>();
@@ -360,14 +382,11 @@ fn handle_hook(app: &tauri::AppHandle, body: &str) -> String {
     hook.queue.lock().unwrap().push(request.clone());
 
     let _ = app.emit("hook:new-request", request.clone());
-    let _ = app.emit("session:update", sessions.get_active());
 
     let approve = rx.recv_timeout(Duration::from_secs(300)).unwrap_or(true);
 
     hook.pending.lock().unwrap().remove(&id);
     hook.queue.lock().unwrap().retain(|r| r.id != id);
-    sessions.resolve_request(&id, response(approve));
-    let _ = app.emit("session:update", sessions.get_active());
 
     format!("{{\"decision\":\"{}\"}}", if approve { "approve" } else { "deny" })
 }
@@ -389,8 +408,10 @@ pub fn run() {
         .manage(Arc::new(PtyManager::default()))
         .manage(HookState::default())
         .manage(Sessions::default())
+        .manage(transcript::TrackRegistry::default())
         .setup(|app| {
             start_hook_server(app.handle().clone());
+            transcript::start_tailer(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -10,6 +10,7 @@ use serde_json::Value;
 
 // --- Hook event (incoming JSON from operator-hook.sh) -----------------------
 
+#[allow(dead_code)] // several fields are deserialized for completeness but unused post permission-only hook
 #[derive(Debug, Default, Deserialize)]
 pub struct HookEvent {
     #[serde(default)]
@@ -63,6 +64,7 @@ pub struct OperatorResponse {
     pub responded_by: String,
 }
 
+#[allow(dead_code)] // entries is always empty now that activity is transcript-driven
 #[derive(Clone, Serialize)]
 struct SessionEntry {
     request: OperatorRequest,
@@ -71,7 +73,7 @@ struct SessionEntry {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ActivityEntry {
+pub struct ActivityEntry {
     tool_name: String,
     target: Option<String>,
     timestamp: String,
@@ -80,6 +82,13 @@ struct ActivityEntry {
     kind: Option<String>, // tool | delegate | subagent
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+}
+
+impl ActivityEntry {
+    /// Construct a timeline entry sourced from a transcript line.
+    pub fn make(tool_name: String, target: Option<String>, timestamp: String, kind: &str, detail: Option<String>) -> ActivityEntry {
+        ActivityEntry { tool_name, target, timestamp, status: "auto".into(), kind: Some(kind.to_string()), detail }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -141,7 +150,7 @@ pub struct ToolSummary {
     pub severity: String,
 }
 
-fn first_line(s: &str, max: usize) -> String {
+pub fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     if line.chars().count() > max {
         format!("{}…", line.chars().take(max - 1).collect::<String>())
@@ -348,139 +357,55 @@ pub fn is_auto_approved(tool: Option<&str>) -> bool {
     tool.map(|t| AUTO_APPROVED.contains(&t)).unwrap_or(false)
 }
 
-fn next_phase(event: &str, current: &str) -> Option<&'static str> {
-    match event {
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => Some("running"),
-        "PreCompact" => Some("compacting"),
-        "Stop" | "TaskCompleted" | "SessionEnd" => Some("idle"),
-        _ => {
-            let _ = current;
-            None
+#[allow(clippy::too_many_arguments)]
+impl AgentSession {
+    /// Build a session from parsed transcript state. The timeline is now
+    /// transcript-driven (see transcript.rs), so this is the only constructor.
+    pub fn from_transcript(
+        id: String,
+        terminal_id: String,
+        cwd: String,
+        permission_mode: Option<String>,
+        summary: Option<String>,
+        ended: bool,
+        phase: &str,
+        activity: Vec<ActivityEntry>,
+        active_subagents: i32,
+        last_tool_name: Option<String>,
+        started_at: String,
+        last_activity_at: String,
+    ) -> AgentSession {
+        let project_name = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
+        AgentSession {
+            id,
+            agent_id: "claude-code".into(),
+            project_name,
+            working_directory: cwd,
+            summary,
+            status: if ended { "ended".into() } else { "active".into() },
+            phase: phase.to_string(),
+            entries: vec![],
+            activity,
+            active_subagents,
+            last_tool_name,
+            started_at,
+            last_activity_at,
+            terminal_id: Some(terminal_id),
+            permission_mode,
         }
     }
 }
 
 impl Sessions {
-    /// Returns (permission_mode of the session) for decision-making.
-    pub fn record_event(&self, e: &HookEvent) -> Option<String> {
-        let session_id = e.session_id.clone()?;
-        e.terminal_id.as_ref()?; // in-app sessions only
-        let now = now_iso();
-        let mut map = self.map.lock().unwrap();
-        let is_new = !map.contains_key(&session_id);
-        let s = map.entry(session_id.clone()).or_insert_with(|| {
-            let wd = e.cwd.clone().unwrap_or_default();
-            AgentSession {
-                id: session_id.clone(),
-                agent_id: e.agent_id.clone().unwrap_or_else(|| "claude-code".into()),
-                project_name: wd.rsplit('/').next().unwrap_or(&wd).to_string(),
-                working_directory: wd,
-                summary: None,
-                status: "active".into(),
-                phase: "idle".into(),
-                entries: vec![],
-                activity: vec![],
-                active_subagents: 0,
-                last_tool_name: None,
-                started_at: now.clone(),
-                last_activity_at: now.clone(),
-                terminal_id: e.terminal_id.clone(),
-                permission_mode: None,
-            }
-        });
-        s.last_activity_at = now.clone();
-        if s.terminal_id.is_none() {
-            s.terminal_id = e.terminal_id.clone();
-        }
-        if let Some(pm) = &e.permission_mode {
-            s.permission_mode = Some(pm.clone());
-        }
-        if let Some(p) = next_phase(&e.hook_event_name, &s.phase) {
-            s.phase = p.into();
-        }
-        match e.hook_event_name.as_str() {
-            "SessionStart" => {
-                s.status = "active".into();
-                if is_new {
-                    s.phase = "idle".into();
-                }
-            }
-            "UserPromptSubmit" => {
-                if s.summary.is_none() {
-                    let p = e.prompt.clone().or_else(|| e.user_prompt.clone()).or_else(|| e.message.clone());
-                    if let Some(p) = p {
-                        let line = first_line(&p, 60);
-                        s.summary = Some(line);
-                    }
-                }
-            }
-            "SessionEnd" => s.status = "ended".into(),
-            "SubagentStart" => {
-                s.active_subagents += 1;
-                s.activity.push(ActivityEntry { tool_name: "Subagent started".into(), target: e.agent_type.clone(), detail: e.agent_type.clone(), kind: Some("subagent".into()), timestamp: now.clone(), status: "auto".into() });
-            }
-            "SubagentStop" => {
-                s.active_subagents = (s.active_subagents - 1).max(0);
-                s.activity.push(ActivityEntry { tool_name: "Subagent finished".into(), target: e.agent_type.clone(), detail: e.agent_type.clone(), kind: Some("subagent".into()), timestamp: now.clone(), status: "auto".into() });
-            }
-            "PreToolUse" => {
-                if let Some(tool) = &e.tool_name {
-                    s.last_tool_name = Some(tool.clone());
-                    let summary = summarize(tool, e.tool_input.as_ref().unwrap_or(&Value::Null));
-                    let is_delegate = tool == "Task" || tool == "Agent";
-                    s.activity.push(ActivityEntry {
-                        tool_name: tool.clone(),
-                        target: summary.target.clone(),
-                        detail: if is_delegate { summary.preview.clone() } else { None },
-                        kind: Some(if is_delegate { "delegate".into() } else { "tool".into() }),
-                        timestamp: now.clone(),
-                        status: "auto".into(),
-                    });
-                }
-            }
-            "PostToolUse" | "PostToolUseFailure" => {
-                s.last_tool_name = None;
-                if let Some(tool) = &e.tool_name {
-                    if let Some(a) = s.activity.iter_mut().rev().find(|a| &a.tool_name == tool && a.status == "auto") {
-                        a.status = "approved".into();
-                    }
-                }
-            }
-            _ => {}
-        }
-        s.permission_mode.clone()
+    /// Insert or replace a session (the transcript tailer owns the entry).
+    pub fn upsert(&self, s: AgentSession) {
+        self.map.lock().unwrap().insert(s.id.clone(), s);
     }
 
     pub fn get_active(&self) -> Vec<AgentSession> {
         let mut v: Vec<AgentSession> = self.map.lock().unwrap().values().filter(|s| s.status == "active").cloned().collect();
         v.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
         v
-    }
-
-    pub fn track_request(&self, session_id: &str, req: &OperatorRequest) {
-        let mut map = self.map.lock().unwrap();
-        if let Some(s) = map.get_mut(session_id) {
-            s.entries.push(SessionEntry { request: req.clone(), response: None });
-            if let Some(a) = s.activity.iter_mut().rev().find(|a| a.tool_name.as_str() == req.tool_name.as_deref().unwrap_or("") && a.status == "auto") {
-                a.status = "pending".into();
-            }
-        }
-    }
-
-    pub fn resolve_request(&self, req_id: &str, response: OperatorResponse) {
-        let mut map = self.map.lock().unwrap();
-        for s in map.values_mut() {
-            if let Some(entry) = s.entries.iter_mut().find(|e| e.request.id == req_id) {
-                let tool = entry.request.tool_name.clone();
-                let approved = response.approved;
-                entry.response = Some(response);
-                s.last_activity_at = now_iso();
-                if let Some(a) = s.activity.iter_mut().rev().find(|a| Some(&a.tool_name) == tool.as_ref() && a.status == "pending") {
-                    a.status = if approved { "approved".into() } else { "denied".into() };
-                }
-                return;
-            }
-        }
     }
 }
 
@@ -506,6 +431,7 @@ pub fn make_request(e: &HookEvent, summary: &ToolSummary, id: String) -> Operato
     }
 }
 
+#[allow(dead_code)] // permission-entry scaffolding; entries are no longer tracked per-session
 pub fn response(approved: bool) -> OperatorResponse {
     OperatorResponse {
         approved,

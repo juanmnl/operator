@@ -12,9 +12,12 @@ import { open } from '@tauri-apps/plugin-dialog'
 
 type Unsub = () => void
 
-function buildArgs(o: Record<string, unknown> = {}): string[] {
+function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): string[] {
   const args: string[] = []
+  // Resume keeps the prior session id; a new session is pinned to a known uuid
+  // so the backend can read exactly that transcript file.
   if (o.resumeSessionId) args.push('--resume', String(o.resumeSessionId))
+  else if (sessionId) args.push('--session-id', sessionId)
   if (o.permissionMode && o.permissionMode !== 'default') {
     if (o.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions')
     else args.push('--permission-mode', String(o.permissionMode))
@@ -37,7 +40,14 @@ export function installBridge(): void {
         if (!picked || Array.isArray(picked)) return null
         target = picked
       }
-      const id = await invoke<string>('terminal_spawn', { cwd: target, args: buildArgs(launchOptions) })
+      const resumeId = launchOptions?.resumeSessionId
+      const sessionId = resumeId ? String(resumeId) : crypto.randomUUID()
+      const id = await invoke<string>('terminal_spawn', {
+        cwd: target,
+        args: buildArgs(launchOptions, sessionId),
+        sessionId,
+        permissionMode: (launchOptions?.permissionMode as string) ?? null,
+      })
       return { terminalId: id, cwd: target }
     },
     terminalWrite: (id: string, data: string) => { void invoke('terminal_write', { id, data }) },
