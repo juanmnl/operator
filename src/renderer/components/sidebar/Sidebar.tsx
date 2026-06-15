@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AgentSession, OperatorRequest } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
-import logoUrl from '../../../../assets/logo-light-64.png'
+import logoUrl from '../../../../assets/logos/logo-light-64.png'
 
 interface SidebarProps {
   sessions: AgentSession[]

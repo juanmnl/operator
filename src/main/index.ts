@@ -41,7 +41,7 @@ app.whenReady().then(() => {
   })
 
   // Show in dock and Cmd+Tab switcher with rounded icon
-  const icon = nativeImage.createFromPath(join(__dirname, '../../assets/logo-64.png'))
+  const icon = nativeImage.createFromPath(join(__dirname, '../../assets/logos/logo-64.png'))
   app.dock?.setIcon(icon)
   app.dock?.show()
 })

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Operator — logo proposal</title>
+<style>
+  :root { --slate: #24292F; --light-bg: #f4f1ec; --dark-bg: #1b1f24; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, 'Inter', system-ui, sans-serif;
+    background: #e8e6e1; color: #24292F; padding: 40px;
+  }
+  h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+  p.sub { margin: 0 0 32px; color: #6a7178; font-size: 13px; max-width: 640px; line-height: 1.6; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #8a9098; margin: 36px 0 12px; font-weight: 600; }
+  .row { display: grid; grid-template-columns: 150px 1fr 1fr; gap: 16px; align-items: stretch; margin-bottom: 14px; }
+  .label { display: flex; flex-direction: column; justify-content: center; }
+  .label .name { font-size: 14px; font-weight: 600; }
+  .label .desc { font-size: 11px; color: #6a7178; line-height: 1.4; margin-top: 3px; }
+  .tile {
+    border-radius: 14px; padding: 22px; display: flex; align-items: center; gap: 28px;
+    justify-content: center; min-height: 132px;
+  }
+  .tile.light { background: var(--light-bg); border: 1px solid #00000010; }
+  .tile.dark  { background: var(--dark-bg); }
+  .tag { position: absolute; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.4; }
+  .stack { display: flex; align-items: center; gap: 24px; }
+  .cap { font-size: 9px; text-align: center; margin-top: 8px; opacity: 0.45; }
+  .light .cap { color: #24292F; } .dark .cap { color: #fff; }
+  .hero { grid-template-columns: 1fr 1fr; }
+  .hero .tile { min-height: 240px; }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+  <h1>Operator — logo proposal</h1>
+  <p class="sub">
+    Turning the status indicator (the dot-circle) into the brand mark, in the current logo's
+    single color (<code>#24292F</code>) with the same graduated-opacity feel. Each row shows
+    <strong>positive</strong> (dark on light) and <strong>negative</strong> (light on dark) for light/dark modes.
+    The last block is the smooth, subtle <strong>animated</strong> mark — the splash-screen candidate.
+  </p>
+
+  <div id="board"></div>
+
+  <h2 style="margin-top:48px">Animated — splash logo candidate</h2>
+  <div class="row hero" id="hero"></div>
+
+<script>
+// --- StatusWave geometry (mirrors src/renderer/components/sidebar/StatusWave.tsx) ---
+const CELLS = 7, CENTER = (CELLS-1)/2 + 0.5, RADIUS = 3.4, R = 0.5;
+const MAXD = RADIUS*RADIUS*1.04;
+const DOTS = [];
+for (let c=0;c<CELLS;c++) for (let r=0;r<CELLS;r++){
+  const cx=c+0.5, cy=r+0.5, dx=cx-CENTER, dy=cy-CENTER;
+  if (dx*dx+dy*dy<=MAXD) DOTS.push({cx,cy,dx,dy,col:c,row:r,dist:Math.sqrt(dx*dx+dy*dy)});
+}
+const MAXDIST = Math.max(...DOTS.map(d=>d.dist));
+// stable pseudo-random per index
+const rand = s => { const x=Math.sin(s*12.9898)*43758.5453; return x-Math.floor(x); };
+
+// Build one SVG mark. opts: fill, opacity(d,i)->[0..1], scale(d,i)->[0..1], animated
+function mark(size, {fill, opacity, scale, animated}){
+  const ns='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('width',size); svg.setAttribute('height',size);
+  svg.setAttribute('viewBox',`0 0 ${CELLS} ${CELLS}`);
+  DOTS.forEach((d,i)=>{
+    const cir=document.createElementNS(ns,'circle');
+    cir.setAttribute('cx',d.cx); cir.setAttribute('cy',d.cy);
+    const sc = scale ? scale(d,i) : 1;
+    cir.setAttribute('r',(R*sc).toFixed(3));
+    cir.setAttribute('fill',fill);
+    if (animated){
+      const dur=(2.8 + rand(i+1)*1.8).toFixed(2);          // slow = smooth
+      const delay=(-rand(i+7)*dur).toFixed(2);             // desync, start mid-cycle
+      const lo=(0.30+rand(i+3)*0.18).toFixed(2);
+      const hi=(0.72+rand(i+5)*0.23).toFixed(2);
+      cir.style.cssText=`transform-box:fill-box;transform-origin:center;`+
+        `--lo:${lo};--hi:${hi};animation:tw ${dur}s ease-in-out ${delay}s infinite`;
+    } else {
+      cir.setAttribute('opacity',(opacity?opacity(d,i):1).toFixed(3));
+    }
+    svg.appendChild(cir);
+  });
+  return svg;
+}
+
+// keyframes for the animated mark
+const style=document.createElement('style');
+style.textContent=`@keyframes tw{0%,100%{opacity:var(--lo);transform:scale(0.84)}50%{opacity:var(--hi);transform:scale(1)}}`;
+document.head.appendChild(style);
+
+// --- current logo (bars-in-circle), parameterized by color ---
+function currentLogo(size, color){
+  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <mask id="m${size}${color.replace('#','')}" maskUnits="userSpaceOnUse" x="2" y="2" width="60" height="60">
+      <circle cx="32" cy="32" r="30" fill="#fff"/></mask>
+    <g mask="url(#m${size}${color.replace('#','')})">
+      <rect width="60" height="13" transform="translate(60 64) rotate(180)" fill="${color}"/>
+      <path d="M56 40.5C56 44.0899 53.0899 47 49.5 47L0 47L0 34L49.5 34C53.0899 34 56 36.9101 56 40.5Z" fill="${color}"/>
+      <path d="M48 23.5C48 27.0899 45.0899 30 41.5 30L0 30L0 17L41.5 17C45.0899 17 48 19.9101 48 23.5Z" fill="${color}" fill-opacity="0.4"/>
+      <path d="M32 6.5C32 10.0899 29.0899 13 25.5 13L0 13L0 0L25.5 0C29.0899 0 32 2.91 32 6.5Z" fill="${color}" fill-opacity="0.2"/>
+    </g></svg>`;
+}
+
+// Iteration recipes (color filled in per positive/negative)
+const RECIPES = {
+  uniform:  { name:'A · Uniform',     desc:'All dots equal — solid, confident.',
+              opacity:()=>0.92 },
+  vfade:    { name:'B · Top-down fade', desc:"Opacity ramps top→bottom, echoing the current mark's stacked bars.",
+              opacity:(d)=>0.25+0.7*(d.row/(CELLS-1)) },
+  radial:   { name:'C · Radial',      desc:'Bright core fading out — reads as a soft orb.',
+              opacity:(d)=>0.95-0.6*(d.dist/MAXDIST) },
+  twinkle:  { name:'D · Frozen twinkle', desc:'Varied size + opacity — the live indicator, paused.',
+              opacity:(d,i)=>0.4+0.55*rand(i+11), scale:(d,i)=>0.55+0.45*rand(i+11) },
+  ramp:     { name:'E · Left ramp',   desc:'Opacity ramps left→right, directly echoing the bars.',
+              opacity:(d)=>0.22+0.73*(d.col/(CELLS-1)) },
+};
+
+const POS = '#24292F', NEG = '#eef2f5';
+const board=document.getElementById('board');
+
+function tile(cls, color, recipe){
+  const t=document.createElement('div'); t.className='tile '+cls;
+  [64,28].forEach(sz=>{
+    const fig=document.createElement('figure');
+    fig.appendChild(mark(sz,{fill:color, opacity:recipe.opacity, scale:recipe.scale}));
+    const cap=document.createElement('div'); cap.className='cap'; cap.textContent=sz+'px';
+    fig.appendChild(cap); t.appendChild(fig);
+  });
+  return t;
+}
+
+// Current logo row
+(function(){
+  const row=document.createElement('div'); row.className='row';
+  row.innerHTML=`<div class="label"><div class="name">Current</div><div class="desc">Bars-in-circle, #24292F.</div></div>`;
+  const lt=document.createElement('div'); lt.className='tile light';
+  const dt=document.createElement('div'); dt.className='tile dark';
+  [64,28].forEach(sz=>{
+    lt.insertAdjacentHTML('beforeend',`<figure>${currentLogo(sz,POS)}<div class="cap">${sz}px</div></figure>`);
+    dt.insertAdjacentHTML('beforeend',`<figure>${currentLogo(sz,NEG)}<div class="cap">${sz}px</div></figure>`);
+  });
+  row.appendChild(lt); row.appendChild(dt); board.appendChild(row);
+})();
+
+// New iterations
+Object.values(RECIPES).forEach(rec=>{
+  const row=document.createElement('div'); row.className='row';
+  const label=document.createElement('div'); label.className='label';
+  label.innerHTML=`<div class="name">${rec.name}</div><div class="desc">${rec.desc}</div>`;
+  row.appendChild(label);
+  row.appendChild(tile('light',POS,rec));
+  row.appendChild(tile('dark',NEG,rec));
+  board.appendChild(row);
+});
+
+// Animated hero (positive + negative), big
+const hero=document.getElementById('hero');
+[['light',POS],['dark',NEG]].forEach(([cls,color])=>{
+  const t=document.createElement('div'); t.className='tile '+cls;
+  const fig=document.createElement('figure');
+  fig.appendChild(mark(140,{fill:color, animated:true}));
+  const cap=document.createElement('div'); cap.className='cap'; cap.style.marginTop='14px';
+  cap.textContent = cls==='light'?'positive · light mode':'negative · dark mode';
+  fig.appendChild(cap); t.appendChild(fig); hero.appendChild(t);
+});
+</script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" width="120" alt="Operator" />
+  <img src="assets/logos/logo.svg" width="120" alt="Operator" />
 </p>
 
 <h1 align="center">Operator</h1>

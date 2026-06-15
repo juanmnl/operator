@@ -19,7 +19,7 @@ import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme } from '../themes'
 import type { OperatorTheme } from '../themes'
-import logoUrl from '../../../assets/logo-light-64.png'
+import { LogoMark } from '../components/LogoMark'
 
 interface TerminalTab {
   id: string
@@ -1011,7 +1011,7 @@ export function DashboardView() {
           >
             {/* margin-top:auto on first + margin-bottom:auto on last child centers the
                 block when it fits, but keeps the top reachable/scrollable when it overflows. */}
-            <img src={logoUrl} width={64} height={64} alt="" style={{ marginTop: 'auto', marginBottom: 20, filter: currentTheme.isDark ? 'none' : 'invert(1)' }} />
+            <div style={{ marginTop: 'auto', marginBottom: 20 }}><LogoMark size={64} /></div>
             <div style={{ textAlign: 'center', marginBottom: 32 }}>
               <p style={{
                 fontSize: 13,
