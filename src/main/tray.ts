@@ -9,7 +9,7 @@ let windowMgr: WindowManager | null = null
 
 export function createTray(wm: WindowManager): void {
   windowMgr = wm
-  const iconPath = join(__dirname, '../../assets/trayTemplate.png')
+  const iconPath = join(__dirname, '../../assets/logos/trayTemplate.png')
   const icon = nativeImage.createFromPath(iconPath)
   icon.setTemplateImage(true)
 

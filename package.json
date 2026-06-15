@@ -37,7 +37,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dmg",
-      "icon": "build/icon.icns",
+      "icon": "assets/logos/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
