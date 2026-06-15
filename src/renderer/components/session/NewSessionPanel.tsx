@@ -32,6 +32,16 @@ const MODEL_OPTIONS = [
   { value: 'opusplan', label: 'Opus plan / Sonnet execution' },
 ] as const
 
+// Per-model cost hint (public per-MTok input/output rates).
+const MODEL_COST: Record<string, string> = {
+  '': 'Your account default model',
+  haiku: '$1 / $5 per Mtok — cheapest & fastest',
+  sonnet: '$3 / $15 per Mtok — balanced',
+  opus: '$5 / $25 per Mtok — most capable',
+  fable: '$10 / $50 per Mtok — frontier',
+  opusplan: 'Opus rates while planning, Sonnet while executing',
+}
+
 export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProps) {
   const [effortLevel, setEffortLevel] = useState<SessionConfig['effortLevel']>('high')
   const [permissionMode, setPermissionMode] = useState<SessionConfig['permissionMode']>('default')
@@ -138,6 +148,9 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
               <option key={m.value} value={m.value}>{m.label}</option>
             ))}
           </select>
+          <p style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5, margin: '4px 0 0' }}>
+            {MODEL_COST[model] ?? ''}
+          </p>
         </div>
 
         {/* Isolated worktree (git repos only) */}

@@ -22,6 +22,19 @@ const EFFORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'max', label: 'Max' },
 ]
 
+// Per-model cost hint shown at the point of choosing — routing intelligence:
+// pick the cheap model for grunt work, the expensive one only where it pays off.
+// Rates are public per-MTok input/output (see usage dashboard for the math).
+const MODEL_COST: Record<string, string> = {
+  '': 'Runs on whatever model the session uses.',
+  haiku: '$1 in · $5 out per Mtok — cheapest & fastest. Good for extraction, search, simple edits.',
+  sonnet: '$3 in · $15 out per Mtok — balanced. Good default for most coding.',
+  opus: '$5 in · $25 out per Mtok — most capable. Reserve for hard reasoning & review.',
+  fable: '$10 in · $50 out per Mtok — frontier. Only for the most demanding work.',
+  opusplan: 'Opus while planning, Sonnet while executing — Opus rates for the plan only.',
+  default: 'Falls back to your account default model.',
+}
+
 // Common tools. Empty selection = inherit all tools from the parent.
 const TOOL_OPTIONS = ['Read', 'Edit', 'Write', 'Bash', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite', 'Agent']
 
@@ -274,7 +287,7 @@ function Editor({ agent, isNew, dirty, error, onPatch, onToggleTool, onPickProje
         />
       </Field>
 
-      <Field label="Model" hint="Which model runs this agent — the headline of its config.">
+      <Field label="Model" hint={MODEL_COST[agent.model || ''] ?? 'Which model runs this agent — the headline of its config.'}>
         <select value={agent.model || ''} onChange={(e) => onPatch({ model: e.target.value })} style={{ ...textInput, cursor: 'pointer' }}>
           {MODEL_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>

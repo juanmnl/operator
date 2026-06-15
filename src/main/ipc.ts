@@ -10,6 +10,7 @@ import { inspectRepo, createWorktree, worktreeStatus, removeWorktree, worktreeDi
 import { rules } from './rules'
 import { hookScriptPath } from './hooks-config'
 import { listAgents, saveAgent, deleteAgent } from './agents'
+import { computeUsage } from './usage'
 import type { AgentDefinition } from '../shared/types'
 
 export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): void {
@@ -162,6 +163,9 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
   ipcMain.handle(IPC.AGENTS_LIST, (_event, projectPath?: string) => listAgents(projectPath))
   ipcMain.handle(IPC.AGENT_SAVE, (_event, def: AgentDefinition, originalPath?: string) => saveAgent(def, originalPath))
   ipcMain.handle(IPC.AGENT_DELETE, (_event, path: string) => deleteAgent(path))
+
+  // Usage & cost dashboard — parses ~/.claude transcripts
+  ipcMain.handle(IPC.GET_USAGE_STATS, (_event, days?: number) => computeUsage(days ?? 30))
 
   // Renderer-driven preferences: renderer owns persistence (localStorage), main
   // process just receives updates so it can act on flags like notification gating.

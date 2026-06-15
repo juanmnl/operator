@@ -12,6 +12,7 @@ import { DiffPanel } from '../components/session/DiffPanel'
 import { PromptBar } from '../components/session/PromptBar'
 import { RulesView } from '../components/rules/RulesView'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
+import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
@@ -66,6 +67,7 @@ export function DashboardView() {
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [rulesViewActive, setRulesViewActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
+  const [usageViewActive, setUsageViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
   const [prefs, setPrefs] = useState<OperatorPrefs>(() => {
     try {
@@ -153,6 +155,7 @@ export function DashboardView() {
       setGlobalPrefsActive(false)
       setRulesViewActive(false)
       setAgentsViewActive(false)
+      setUsageViewActive(false)
       setPrefsViewActive(false)
     }
   }, [])
@@ -165,6 +168,7 @@ export function DashboardView() {
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -172,6 +176,7 @@ export function DashboardView() {
     setGlobalPrefsActive(true)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setPrefsViewActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -183,6 +188,7 @@ export function DashboardView() {
     setRulesViewActive(true)
     setPrefsViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -192,6 +198,19 @@ export function DashboardView() {
 
   const handleOpenAgents = useCallback(() => {
     setAgentsViewActive(true)
+    setRulesViewActive(false)
+    setPrefsViewActive(false)
+    setUsageViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+    setPendingSession(null)
+  }, [])
+
+  const handleOpenUsage = useCallback(() => {
+    setUsageViewActive(true)
+    setAgentsViewActive(false)
     setRulesViewActive(false)
     setPrefsViewActive(false)
     setGlobalPrefsActive(false)
@@ -205,6 +224,7 @@ export function DashboardView() {
     setPrefsViewActive(true)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -340,6 +360,7 @@ export function DashboardView() {
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [rememberRecent])
 
@@ -382,6 +403,7 @@ export function DashboardView() {
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setPrefsViewActive(false)
     setPendingSession(null)
     if (session.terminalId && localTerminalIds.has(session.terminalId)) {
@@ -413,6 +435,7 @@ export function DashboardView() {
     setGlobalPrefsActive(false)
     setRulesViewActive(false)
     setAgentsViewActive(false)
+    setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -658,16 +681,17 @@ export function DashboardView() {
   )
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'rules' | 'agents' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
+  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'rules' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
     if (pendingSession) return 'pendingSession'
     if (prefsViewActive) return 'prefs'
     if (rulesViewActive) return 'rules'
     if (agentsViewActive) return 'agents'
+    if (usageViewActive) return 'usage'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     if (activeTerminalId) return 'localTerminal'
     return 'splash'
-  }, [pendingSession, prefsViewActive, rulesViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
+  }, [pendingSession, prefsViewActive, rulesViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -734,6 +758,7 @@ export function DashboardView() {
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
       { id: 'agents', group: 'Settings', label: 'Agents — configure models per task', run: handleOpenAgents },
+      { id: 'usage', group: 'Settings', label: 'Usage & cost', run: handleOpenUsage },
       { id: 'rules', group: 'Settings', label: 'Auto-approve rules', run: handleOpenRules },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
@@ -741,7 +766,7 @@ export function DashboardView() {
     )
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenRules, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenRules, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
 
   const hookConfigSnippet = hookPath
     ? `{
@@ -766,6 +791,7 @@ export function DashboardView() {
         globalPrefsActive={globalPrefsActive}
         rulesViewActive={rulesViewActive}
         agentsViewActive={agentsViewActive}
+        usageViewActive={usageViewActive}
         prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
         shortcutIndices={shortcutIndices}
@@ -779,6 +805,7 @@ export function DashboardView() {
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
         onOpenRules={handleOpenRules}
         onOpenAgents={handleOpenAgents}
+        onOpenUsage={handleOpenUsage}
         onOpenPrefs={handleOpenPrefs}
         onToggleTheme={handleToggleTheme}
       />
@@ -819,6 +846,8 @@ export function DashboardView() {
         {contentMode === 'rules' && <RulesView />}
 
         {contentMode === 'agents' && <AgentLibraryView />}
+
+        {contentMode === 'usage' && <UsageView />}
 
         {contentMode === 'prefs' && (
           <PrefsView prefs={prefs} onChange={setPrefs} />
@@ -958,7 +987,7 @@ export function DashboardView() {
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
-              justifyContent: 'center',
+              justifyContent: 'flex-start',
               fontFamily: "'Inter', system-ui, sans-serif",
               padding: '40px 40px',
               overflow: 'auto',
@@ -967,7 +996,9 @@ export function DashboardView() {
               margin: '0 auto',
             }}
           >
-            <img src={logoUrl} width={64} height={64} alt="" style={{ marginBottom: 20, filter: currentTheme.isDark ? 'none' : 'invert(1)' }} />
+            {/* margin-top:auto on first + margin-bottom:auto on last child centers the
+                block when it fits, but keeps the top reachable/scrollable when it overflows. */}
+            <img src={logoUrl} width={64} height={64} alt="" style={{ marginTop: 'auto', marginBottom: 20, filter: currentTheme.isDark ? 'none' : 'invert(1)' }} />
             <div style={{ textAlign: 'center', marginBottom: 32 }}>
               <p style={{
                 fontSize: 13,
@@ -1122,7 +1153,7 @@ export function DashboardView() {
             )}
 
             {/* Hook config (collapsible) */}
-            <div style={{ marginTop: 28, width: '100%' }}>
+            <div style={{ marginTop: 28, marginBottom: 'auto', width: '100%' }}>
               <button
                 onClick={() => setShowSetup(!showSetup)}
                 style={{

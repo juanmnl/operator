@@ -111,6 +111,19 @@ export function summarizeTool(toolName: string | undefined, toolInput: Record<st
       }
     }
 
+    case 'Task':
+    case 'Agent': {
+      // Subagent dispatch — tool_input carries the subagent type + a description/prompt.
+      const subagentType = (input.subagent_type as string) || (input.agent_type as string) || 'agent'
+      const description = (input.description as string) || (input.prompt as string)
+      return {
+        action: 'Delegate',
+        target: subagentType,
+        preview: firstLine(description, 200),
+        severity: 'medium',
+      }
+    }
+
     default: {
       // MCP server tools: mcp__<server>__<tool>
       if (name.startsWith('mcp__')) {

@@ -90,18 +90,39 @@ class SessionManager {
         break
       case 'SubagentStart':
         session.activeSubagents++
+        if (!session.activity) session.activity = []
+        session.activity.push({
+          toolName: 'Subagent started',
+          target: event.agent_type,
+          detail: event.agent_type,
+          kind: 'subagent',
+          timestamp: now,
+          status: 'auto',
+        })
         break
       case 'SubagentStop':
         session.activeSubagents = Math.max(0, session.activeSubagents - 1)
+        if (!session.activity) session.activity = []
+        session.activity.push({
+          toolName: 'Subagent finished',
+          target: event.agent_type,
+          detail: event.agent_type,
+          kind: 'subagent',
+          timestamp: now,
+          status: 'auto',
+        })
         break
       case 'PreToolUse':
         session.lastToolName = event.tool_name || null
         if (event.tool_name) {
           if (!session.activity) session.activity = []
           const summary = summarizeTool(event.tool_name, event.tool_input)
+          const isDelegate = event.tool_name === 'Task' || event.tool_name === 'Agent'
           session.activity.push({
             toolName: event.tool_name,
             target: summary.target,
+            detail: isDelegate ? summary.preview : undefined,
+            kind: isDelegate ? 'delegate' : 'tool',
             timestamp: now,
             status: 'auto',
           })

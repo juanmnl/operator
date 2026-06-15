@@ -77,6 +77,15 @@ export interface ActivityEntry {
   target?: string
   timestamp: string
   status: 'approved' | 'denied' | 'pending' | 'auto'
+  /**
+   * What kind of timeline event this is:
+   * - 'tool': an ordinary tool call (default)
+   * - 'delegate': the lead agent dispatched a subagent (Agent/Task tool)
+   * - 'subagent': a SubagentStart/SubagentStop lifecycle marker
+   */
+  kind?: 'tool' | 'delegate' | 'subagent'
+  /** Secondary line, e.g. a delegation's description/prompt or subagent type. */
+  detail?: string
 }
 
 export interface AgentSession {
@@ -251,6 +260,43 @@ export interface WorktreeDiff {
   branch?: string
   files: FileChange[]
   diff: string
+}
+
+// Usage & cost (parsed from ~/.claude transcripts)
+
+export interface ModelUsage {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheWriteTokens: number
+  cacheReadTokens: number
+  cost: number
+  messages: number
+}
+
+export interface ProjectUsage {
+  slug: string
+  name: string
+  cost: number
+  tokens: number
+  messages: number
+}
+
+export interface DayUsage {
+  date: string
+  cost: number
+  tokens: number
+}
+
+export interface UsageStats {
+  totalCost: number
+  totalTokens: number
+  byModel: ModelUsage[]
+  byProject: ProjectUsage[]
+  byDay: DayUsage[]
+  /** ISO start of the window, if filtered. */
+  since?: string
+  generatedAt: string
 }
 
 export const IPC = {

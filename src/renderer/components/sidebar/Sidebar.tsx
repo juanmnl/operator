@@ -12,6 +12,7 @@ interface SidebarProps {
   globalPrefsActive: boolean
   rulesViewActive: boolean
   agentsViewActive: boolean
+  usageViewActive: boolean
   prefsViewActive: boolean
   effortLevels: Record<string, string>
   /** Map sessionId → 1-based Cmd+N hint for the first 9 local sessions. */
@@ -27,11 +28,12 @@ interface SidebarProps {
   onOpenGlobalPrefs: () => void
   onOpenRules: () => void
   onOpenAgents: () => void
+  onOpenUsage: () => void
   onOpenPrefs: () => void
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenPrefs, onToggleTheme  }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -74,6 +76,28 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
           Operator
         </span>
+        <button
+          onClick={onToggleTheme}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          style={{
+            marginLeft: 'auto',
+            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+            display: 'flex', alignItems: 'center', opacity: 0.4,
+            // @ts-expect-error Electron-specific CSS property
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          {isDark ? (
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
+              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
+            </svg>
+          )}
+        </button>
       </div>
 
       {/* Sessions list */}
@@ -182,6 +206,29 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
           </svg>
         </button>
         <button
+          onClick={onOpenUsage}
+          style={{
+            background: usageViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '3px 5px',
+            borderRadius: 3,
+            display: 'flex',
+            alignItems: 'center',
+            opacity: usageViewActive ? 0.9 : 0.5,
+            marginLeft: 4,
+          }}
+          title="Usage & cost"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <path d="M2 14V2" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+            <path d="M2 14h12" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+            <rect x="4.5" y="8" width="2.2" height="4" rx="0.5" fill="var(--fg-muted)" />
+            <rect x="8" y="5" width="2.2" height="7" rx="0.5" fill="var(--fg-muted)" />
+            <rect x="11.5" y="9.5" width="2.2" height="2.5" rx="0.5" fill="var(--fg-muted)" />
+          </svg>
+        </button>
+        <button
           onClick={onOpenGlobalPrefs}
           style={{
             background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
@@ -241,31 +288,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-        </button>
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={onToggleTheme}
-          style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: 0,
-            display: 'flex',
-            alignItems: 'center',
-            opacity: 0.4,
-          }}
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {isDark ? (
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
-              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
-            </svg>
-          )}
         </button>
       </div>
     </div>
