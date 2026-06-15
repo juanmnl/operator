@@ -103,21 +103,23 @@ export function installBridge(): void {
       try { await invoke('worktree_discard', { worktreePath, sourceRoot, branch }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
     },
 
-    // --- still stubbed (agents, usage, folder-prefs) ---
+    // --- rules engine (real) ---
     rulesList: () => invoke('rules_list_cmd'),
     rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: string }) =>
       invoke('rules_add_cmd', { tool: rule.tool, pattern: rule.pattern ?? null, scope: rule.scope ?? null, action: rule.action }),
     rulesRemove: (id: string) => invoke('rules_remove_cmd', { id }).then(() => undefined),
-    agentsList: async () => [],
-    agentSave: async () => ({ ok: false, error: 'not ported' }),
-    agentDelete: async () => ({ ok: false, error: 'not ported' }),
-    getUsageStats: async () => ({ totalCost: 0, totalTokens: 0, byModel: [], byProject: [], byDay: [], generatedAt: new Date().toISOString() }),
-    folderPrefsLoad: async (projectPath: string) => ({ projectPath, projectName: projectPath.split('/').pop() || projectPath, settingsFiles: [{ path: '', label: 'Global', scope: 'global', readOnly: false, exists: false, settings: {} }], mdFiles: [] }),
-    folderPrefsLoadGlobal: async () => ({ projectPath: '', projectName: 'Global', settingsFiles: [], mdFiles: [] }),
-    folderPrefsSaveSettings: async () => {},
-    folderPrefsSaveMd: async () => {},
-    folderPrefsCreateFile: async () => {},
-    getMcpServers: async () => ({ servers: [] }),
+
+    // --- agents, usage, folder-prefs (real) ---
+    agentsList: (projectPath?: string) => invoke('agents_list', { projectPath: projectPath ?? null }),
+    agentSave: (def: unknown, originalPath?: string) => invoke('agent_save', { def, originalPath: originalPath ?? null }),
+    agentDelete: (path: string) => invoke('agent_delete', { path }),
+    getUsageStats: (days?: number) => invoke('get_usage_stats', { days: days ?? null }),
+    folderPrefsLoad: (projectPath: string) => invoke('folder_prefs_load', { projectPath }),
+    folderPrefsLoadGlobal: () => invoke('folder_prefs_load_global'),
+    folderPrefsSaveSettings: (filePath: string, settings: unknown) => invoke('folder_prefs_save_settings', { path: filePath, settings }).then(() => undefined),
+    folderPrefsSaveMd: (filePath: string, content: string) => invoke('folder_prefs_save_md', { path: filePath, content }).then(() => undefined),
+    folderPrefsCreateFile: (filePath: string, type: string) => invoke('folder_prefs_create_file', { path: filePath, kind: type }).then(() => undefined),
+    getMcpServers: (projectPath: string) => invoke('get_mcp_servers', { projectPath }),
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -5,6 +5,12 @@
 mod backend;
 #[path = "worktree.rs"]
 mod worktree;
+#[path = "agents.rs"]
+mod agents;
+#[path = "usage.rs"]
+mod usage;
+#[path = "folderprefs.rs"]
+mod folderprefs;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -218,6 +224,58 @@ fn respond(id: String, approve: bool, hook: State<HookState>) {
     }
 }
 
+// --- Agents / usage / folder-prefs commands ---------------------------------
+
+#[tauri::command]
+fn agents_list(project_path: Option<String>) -> Vec<agents::AgentDefinition> {
+    agents::list_agents(project_path.as_deref())
+}
+
+#[tauri::command]
+fn agent_save(def: agents::AgentDefinition, original_path: Option<String>) -> agents::SaveResult {
+    agents::save_agent(&def, original_path.as_deref())
+}
+
+#[tauri::command]
+fn agent_delete(path: String) -> agents::OkResult {
+    agents::delete_agent(&path)
+}
+
+#[tauri::command]
+fn get_usage_stats(days: Option<i64>) -> usage::UsageStats {
+    usage::compute_usage(days.unwrap_or(30))
+}
+
+#[tauri::command]
+fn folder_prefs_load(project_path: String) -> folderprefs::FolderPreferences {
+    folderprefs::load_folder_preferences(&project_path)
+}
+
+#[tauri::command]
+fn folder_prefs_load_global() -> folderprefs::FolderPreferences {
+    folderprefs::load_global_preferences()
+}
+
+#[tauri::command]
+fn folder_prefs_save_settings(path: String, settings: serde_json::Value) {
+    folderprefs::save_settings_file(&path, settings)
+}
+
+#[tauri::command]
+fn folder_prefs_save_md(path: String, content: String) {
+    folderprefs::save_md_file(&path, &content)
+}
+
+#[tauri::command]
+fn folder_prefs_create_file(path: String, kind: String) {
+    folderprefs::create_file(&path, &kind)
+}
+
+#[tauri::command]
+fn get_mcp_servers(project_path: String) -> folderprefs::McpServersResult {
+    folderprefs::get_mcp_servers(&project_path)
+}
+
 // --- Hook server (port of server.ts /hook) ----------------------------------
 
 fn start_hook_server(app: tauri::AppHandle) {
@@ -344,6 +402,16 @@ pub fn run() {
             worktree_commit,
             worktree_merge,
             worktree_discard,
+            agents_list,
+            agent_save,
+            agent_delete,
+            get_usage_stats,
+            folder_prefs_load,
+            folder_prefs_load_global,
+            folder_prefs_save_settings,
+            folder_prefs_save_md,
+            folder_prefs_create_file,
+            get_mcp_servers,
             respond
         ])
         .run(tauri::generate_context!())

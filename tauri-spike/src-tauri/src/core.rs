@@ -105,16 +105,14 @@ pub struct AgentSession {
     permission_mode: Option<String>,
 }
 
-fn now_iso() -> String {
-    // Avoid pulling chrono; a coarse ISO-ish timestamp is enough for the UI.
+pub fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-    // Render as epoch-ms inside an ISO string the JS `new Date(...)` tolerates.
-    format!("{}", chrono_like(ms))
+    iso_from_ms(ms)
 }
 
 // Minimal epoch-ms -> ISO 8601 (UTC) without external crates.
-fn chrono_like(ms: u128) -> String {
+pub fn iso_from_ms(ms: u128) -> String {
     let secs = (ms / 1000) as i64;
     let millis = (ms % 1000) as u32;
     let days = secs.div_euclid(86400);
