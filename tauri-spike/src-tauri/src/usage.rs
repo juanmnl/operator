@@ -24,11 +24,45 @@ struct Record {
     day: String, // YYYY-MM-DD (ISO dates sort lexicographically)
     model: String,
     slug: String,
+    session: String,
+    ts_ms: i64,
+    context: u64, // total prompt size = input + cache_read + cache_creation
+    sidechain: bool,
+    skill: Option<String>,
     input: u64,
     output: u64,
     cache_read: u64,
     cache5m: u64,
     cache1h: u64,
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn parse_iso_ms(s: &str) -> i64 {
+    // "YYYY-MM-DDTHH:MM:SS(.mmm)?Z" — best-effort, no external crate.
+    let bytes: Vec<&str> = s.splitn(2, 'T').collect();
+    let date = bytes.first().copied().unwrap_or("");
+    let dp: Vec<i64> = date.split('-').filter_map(|x| x.parse().ok()).collect();
+    if dp.len() != 3 {
+        return 0;
+    }
+    let days = days_from_civil(dp[0], dp[1], dp[2]);
+    let (mut h, mut mi, mut sec) = (0i64, 0i64, 0i64);
+    if let Some(time) = bytes.get(1) {
+        let t = time.trim_end_matches('Z');
+        let tp: Vec<&str> = t.split(':').collect();
+        h = tp.first().and_then(|x| x.parse().ok()).unwrap_or(0);
+        mi = tp.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+        sec = tp.get(2).map(|x| x.split('.').next().unwrap_or("0")).and_then(|x| x.parse().ok()).unwrap_or(0);
+    }
+    (days * 86400 + h * 3600 + mi * 60 + sec) * 1000
 }
 
 impl Record {
@@ -81,6 +115,7 @@ fn load_records() -> Vec<Record> {
             if path.extension().map(|e| e != "jsonl").unwrap_or(true) {
                 continue;
             }
+            let session = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             let Ok(raw) = std::fs::read_to_string(&path) else { continue };
             for line in raw.lines() {
                 if line.is_empty() {
@@ -107,14 +142,22 @@ fn load_records() -> Vec<Record> {
                     }
                     _ => (cc_total, 0),
                 };
-                let day = obj.get("timestamp").and_then(|v| v.as_str()).map(|s| s.chars().take(10).collect::<String>()).unwrap_or_default();
+                let ts = obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                let day = ts.chars().take(10).collect::<String>();
+                let input = g(usage, "input_tokens");
+                let cache_read = g(usage, "cache_read_input_tokens");
                 out.push(Record {
                     day,
                     model,
                     slug: slug.clone(),
-                    input: g(usage, "input_tokens"),
+                    session: session.clone(),
+                    ts_ms: parse_iso_ms(ts),
+                    context: input + cache_read + cache5m + cache1h,
+                    sidechain: obj.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false),
+                    skill: obj.get("attributionSkill").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+                    input,
                     output: g(usage, "output_tokens"),
-                    cache_read: g(usage, "cache_read_input_tokens"),
+                    cache_read,
                     cache5m,
                     cache1h,
                 });
@@ -211,4 +254,87 @@ pub fn compute_usage(days: i64) -> UsageStats {
     by_day.sort_by(|a, b| a.date.cmp(&b.date));
 
     UsageStats { total_cost, total_tokens, by_model, by_project, by_day, since, generated_at }
+}
+
+// --- "What's contributing to your limits usage?" (local, approximate) -------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillUsage {
+    name: String,
+    pct: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Insights {
+    total_cost: f64,
+    high_context_pct: f64,   // share of cost at >150k context
+    subagent_pct: f64,       // share of cost from sessions that used subagents
+    long_session_pct: f64,   // share of cost from sessions active 8h+
+    skills: Vec<SkillUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    since: Option<String>,
+    generated_at: String,
+}
+
+pub fn compute_insights(days: i64) -> Insights {
+    let generated_at = now_iso();
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+    let (cutoff_day, since) = if days > 0 {
+        let cutoff_ms = now_ms.saturating_sub((days as u128) * 86_400_000);
+        let iso = iso_from_ms(cutoff_ms);
+        (iso.chars().take(10).collect::<String>(), Some(iso))
+    } else {
+        (String::new(), None)
+    };
+
+    let recs = records();
+    let mut total = 0.0;
+    let mut high_context = 0.0;
+    let mut by_session: HashMap<String, (f64, bool, i64, i64)> = HashMap::new(); // cost, sidechain, min_ts, max_ts
+    let mut by_skill: HashMap<String, f64> = HashMap::new();
+
+    for r in recs.iter() {
+        if !cutoff_day.is_empty() && !r.day.is_empty() && r.day < cutoff_day {
+            continue;
+        }
+        let cost = r.cost();
+        total += cost;
+        if r.context > 150_000 {
+            high_context += cost;
+        }
+        let e = by_session.entry(r.session.clone()).or_insert((0.0, false, i64::MAX, i64::MIN));
+        e.0 += cost;
+        e.1 = e.1 || r.sidechain;
+        if r.ts_ms > 0 {
+            e.2 = e.2.min(r.ts_ms);
+            e.3 = e.3.max(r.ts_ms);
+        }
+        if let Some(s) = &r.skill {
+            *by_skill.entry(s.clone()).or_insert(0.0) += cost;
+        }
+    }
+
+    let subagent: f64 = by_session.values().filter(|(_, sc, _, _)| *sc).map(|(c, ..)| *c).sum();
+    let long: f64 = by_session
+        .values()
+        .filter(|(_, _, min, max)| *min != i64::MAX && *max - *min >= 8 * 3_600_000)
+        .map(|(c, ..)| *c)
+        .sum();
+
+    let pct = |x: f64| if total > 0.0 { x / total * 100.0 } else { 0.0 };
+    let mut skills: Vec<SkillUsage> = by_skill.into_iter().map(|(name, c)| SkillUsage { name, pct: pct(c) }).collect();
+    skills.sort_by(|a, b| b.pct.partial_cmp(&a.pct).unwrap_or(std::cmp::Ordering::Equal));
+    skills.truncate(8);
+
+    Insights {
+        total_cost: total,
+        high_context_pct: pct(high_context),
+        subagent_pct: pct(subagent),
+        long_session_pct: pct(long),
+        skills,
+        since,
+        generated_at,
+    }
 }

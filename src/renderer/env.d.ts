@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs, AgentDefinition, UsageStats } from '../shared/types'
+import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs, AgentDefinition, UsageStats, UsageInsights } from '../shared/types'
 
 declare global {
   interface Window {
@@ -46,6 +46,7 @@ declare global {
       agentSave: (def: AgentDefinition, originalPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
       agentDelete: (path: string) => Promise<{ ok: boolean; error?: string }>
       getUsageStats: (days?: number) => Promise<UsageStats>
+      getUsageInsights: (days?: number) => Promise<UsageInsights>
       prefsUpdate: (prefs: OperatorPrefs) => void
     }
   }

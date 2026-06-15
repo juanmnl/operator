@@ -250,6 +250,13 @@ async fn get_usage_stats(days: Option<i64>) -> Result<usage::UsageStats, String>
 }
 
 #[tauri::command]
+async fn get_usage_insights(days: Option<i64>) -> Result<usage::Insights, String> {
+    tauri::async_runtime::spawn_blocking(move || usage::compute_insights(days.unwrap_or(7)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn folder_prefs_load(project_path: String) -> folderprefs::FolderPreferences {
     folderprefs::load_folder_preferences(&project_path)
 }
@@ -409,6 +416,7 @@ pub fn run() {
             agent_save,
             agent_delete,
             get_usage_stats,
+            get_usage_insights,
             folder_prefs_load,
             folder_prefs_load_global,
             folder_prefs_save_settings,

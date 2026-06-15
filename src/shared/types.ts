@@ -299,6 +299,26 @@ export interface UsageStats {
   generatedAt: string
 }
 
+export interface SkillUsage {
+  name: string
+  pct: number
+}
+
+/**
+ * "What's contributing to your limits usage?" — approximate, derived from local
+ * transcripts. (The session/week rate-limit % bars come from Anthropic's
+ * servers and aren't reproducible locally.)
+ */
+export interface UsageInsights {
+  totalCost: number
+  highContextPct: number
+  subagentPct: number
+  longSessionPct: number
+  skills: SkillUsage[]
+  since?: string
+  generatedAt: string
+}
+
 export const IPC = {
   NEW_REQUEST: 'operator:new-request',
   RESPOND: 'operator:respond',
