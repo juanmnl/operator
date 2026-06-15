@@ -32,11 +32,12 @@ function rand(seed: number): number {
 
 export function LogoMark({ size = 64, animated = true }: { size?: number; animated?: boolean }) {
   const dots = useMemo(() => DOTS.map((d, i) => {
-    const baseScale = 0.5 + 0.5 * rand(i + 11) // frozen-twinkle: varied dot sizes
-    const r = (R * baseScale).toFixed(3)
+    const v = rand(i + 11) // frozen-twinkle: varied dot sizes (bigger = more opaque)
     if (!animated) {
-      return { ...d, r, style: { opacity: 0.4 + 0.55 * rand(i + 11), fill: 'var(--fg)' } as React.CSSProperties }
+      // Static mark — matches the app icon's dot weighting (see assets/logos/icon-source.svg).
+      return { ...d, r: (R * (0.62 + 0.38 * v)).toFixed(3), style: { opacity: 0.62 + 0.38 * v, fill: 'var(--fg)' } as React.CSSProperties }
     }
+    const r = (R * (0.5 + 0.5 * v)).toFixed(3)
     const dur = 3.0 + rand(i + 1) * 2.0      // 3–5s — slow & smooth
     const delay = -rand(i + 7) * dur         // desync, start mid-cycle
     return {

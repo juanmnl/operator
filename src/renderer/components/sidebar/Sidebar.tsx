@@ -74,7 +74,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
           paddingTop: 40,
         }}
       >
-        <LogoMark size={20} />
+        <LogoMark size={20} animated={false} />
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
           Operator
         </span>
