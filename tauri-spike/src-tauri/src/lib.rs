@@ -3,6 +3,8 @@
 
 #[path = "core.rs"]
 mod backend;
+#[path = "worktree.rs"]
+mod worktree;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -166,6 +168,48 @@ fn rules_remove_cmd(id: String) {
     rules_remove(&id)
 }
 
+// --- Worktree commands ------------------------------------------------------
+
+#[tauri::command]
+fn inspect_repo(cwd: String) -> worktree::RepoInfo {
+    worktree::inspect_repo(&cwd)
+}
+
+#[tauri::command]
+fn worktree_create(cwd: String) -> Result<worktree::WorktreeCreateResult, String> {
+    worktree::create_worktree(&cwd)
+}
+
+#[tauri::command]
+fn worktree_status(path: String) -> worktree::WorktreeStatus {
+    worktree::worktree_status(&path)
+}
+
+#[tauri::command]
+fn worktree_diff(path: String) -> worktree::WorktreeDiff {
+    worktree::worktree_diff(&path)
+}
+
+#[tauri::command]
+fn worktree_remove(path: String, source_root: String) -> Result<(), String> {
+    worktree::remove_worktree(&path, &source_root)
+}
+
+#[tauri::command]
+fn worktree_commit(path: String, message: String) -> Result<String, String> {
+    worktree::commit_all(&path, &message)
+}
+
+#[tauri::command]
+fn worktree_merge(worktree_path: String, source_root: String, branch: String, base_branch: String) -> worktree::MergeResult {
+    worktree::merge_branch(&worktree_path, &source_root, &branch, &base_branch)
+}
+
+#[tauri::command]
+fn worktree_discard(worktree_path: String, source_root: String, branch: String) -> Result<(), String> {
+    worktree::discard_branch(&worktree_path, &source_root, &branch)
+}
+
 /// Resolve a blocking hook request the UI was prompted about.
 #[tauri::command]
 fn respond(id: String, approve: bool, hook: State<HookState>) {
@@ -292,6 +336,14 @@ pub fn run() {
             rules_list_cmd,
             rules_add_cmd,
             rules_remove_cmd,
+            inspect_repo,
+            worktree_create,
+            worktree_status,
+            worktree_diff,
+            worktree_remove,
+            worktree_commit,
+            worktree_merge,
+            worktree_discard,
             respond
         ])
         .run(tauri::generate_context!())

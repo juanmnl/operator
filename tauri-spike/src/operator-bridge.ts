@@ -84,15 +84,26 @@ export function installBridge(): void {
     showMainWindow: () => {},
     prefsUpdate: () => {},
 
-    // --- not yet ported: safe empties so the UI renders ---
-    inspectRepo: async () => ({ isRepo: false }),
-    worktreeCreate: async () => ({ error: 'worktrees not ported yet' }),
-    worktreeStatus: async () => ({ changes: 0, valid: false }),
-    worktreeRemove: async () => ({ ok: false, error: 'not ported' }),
-    worktreeDiff: async () => ({ files: [], diff: '' }),
-    worktreeCommit: async () => ({ ok: false, error: 'not ported' }),
-    worktreeMerge: async () => ({ ok: false }),
-    worktreeDiscard: async () => ({ ok: false, error: 'not ported' }),
+    // --- git worktrees (real) ---
+    inspectRepo: (cwd: string) => invoke('inspect_repo', { cwd }),
+    worktreeCreate: async (cwd: string) => {
+      try { return await invoke('worktree_create', { cwd }) } catch (e) { return { error: String(e) } }
+    },
+    worktreeStatus: (path: string) => invoke('worktree_status', { path }),
+    worktreeRemove: async (path: string, sourceRoot: string) => {
+      try { await invoke('worktree_remove', { path, sourceRoot }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+    },
+    worktreeDiff: (path: string) => invoke('worktree_diff', { path }),
+    worktreeCommit: async (path: string, message: string) => {
+      try { const sha = await invoke<string>('worktree_commit', { path, message }); return { ok: true, sha } } catch (e) { return { ok: false, error: String(e) } }
+    },
+    worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) =>
+      invoke('worktree_merge', { worktreePath, sourceRoot, branch, baseBranch }),
+    worktreeDiscard: async (worktreePath: string, sourceRoot: string, branch: string) => {
+      try { await invoke('worktree_discard', { worktreePath, sourceRoot, branch }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+    },
+
+    // --- still stubbed (agents, usage, folder-prefs) ---
     rulesList: () => invoke('rules_list_cmd'),
     rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: string }) =>
       invoke('rules_add_cmd', { tool: rule.tool, pattern: rule.pattern ?? null, scope: rule.scope ?? null, action: rule.action }),
