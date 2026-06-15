@@ -1028,10 +1028,11 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: '12px 0 0',
               }}>
-                Define agents and pick which model handles each task, then
-                launch Claude Code sessions that delegate to them. Watch agents
-                and their subagents work in isolated worktrees, and approve or
-                deny anything they touch, inline as they go.
+                Define agents and the model each task should use, then launch
+                Claude Code sessions that delegate to them. Follow every tool
+                call and subagent live on the orchestration timeline, each in
+                its own git worktree — and approve or deny anything they touch,
+                inline as they go.
               </p>
               <p style={{
                 fontSize: 11,
@@ -1040,7 +1041,8 @@ export function DashboardView() {
                 margin: '10px 0 0',
                 opacity: 0.6,
               }}>
-                Run agents in parallel without them stepping on each other.
+                Fan one task out across parallel agents, and see exactly what
+                each is doing — and what it costs.
               </p>
             </div>
 
