@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AgentSession, OperatorRequest, ActivityEntry } from '../../../shared/types'
+
+/** A timeline entry augmented with a computed duration. */
+type TimedEntry = ActivityEntry & { durMs?: number; live?: boolean }
 
 interface Props {
   session: AgentSession
@@ -9,8 +12,30 @@ interface Props {
 export function SessionActivityView({ session, pendingRequests }: Props) {
   const timelineRef = useRef<HTMLDivElement>(null)
   const [showDetails, setShowDetails] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
   const activity = session.activity || []
   const delegations = activity.filter((a) => a.kind === 'delegate').length
+
+  // Tick once a second while the agent is working so the in-flight tool's
+  // elapsed time updates live.
+  useEffect(() => {
+    if (session.phase !== 'running') return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [session.phase])
+
+  // Each tool's duration is approximated by the gap until the next event; the
+  // last event, while the agent is running, ticks live.
+  const timed = useMemo<TimedEntry[]>(() => activity.map((e, i) => {
+    const t = Date.parse(e.timestamp)
+    if (!isFinite(t)) return e
+    if (i < activity.length - 1) {
+      const tn = Date.parse(activity[i + 1].timestamp)
+      return isFinite(tn) && tn >= t ? { ...e, durMs: tn - t } : e
+    }
+    if (session.phase === 'running') return { ...e, durMs: Math.max(0, now - t), live: true }
+    return e
+  }), [activity, session.phase, now])
 
   useEffect(() => {
     if (timelineRef.current) {
@@ -125,13 +150,34 @@ export function SessionActivityView({ session, pendingRequests }: Props) {
             </p>
           </div>
         )}
-        {renderNodes(buildTree(activity), 0)}
+        {renderNodes(buildTree(timed), 0)}
       </div>
     </div>
   )
 }
 
-interface TreeNode { entry: ActivityEntry; children: TreeNode[] }
+interface TreeNode { entry: TimedEntry; children: TreeNode[] }
+
+function fmtDur(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
+  const m = Math.floor(ms / 60_000)
+  const s = Math.round((ms % 60_000) / 1000)
+  return s ? `${m}m ${s}s` : `${m}m`
+}
+
+function DurationTag({ entry }: { entry: TimedEntry }) {
+  if (entry.durMs === undefined) return null
+  return (
+    <span style={{
+      marginLeft: 'auto', flexShrink: 0, fontSize: 10, fontVariantNumeric: 'tabular-nums',
+      color: entry.live ? 'var(--accent)' : 'var(--fg-muted)',
+      opacity: entry.live ? 0.9 : 0.45,
+    }}>
+      {fmtDur(entry.durMs)}{entry.live ? '…' : ''}
+    </span>
+  )
+}
 
 /**
  * Build a nesting tree from the flat timeline (best-effort, heuristic):
@@ -140,7 +186,7 @@ interface TreeNode { entry: ActivityEntry; children: TreeNode[] }
  * parallel subagents this is LIFO and may mis-attribute siblings — it's an
  * approximation, since hooks don't tag tool calls with a subagent id.
  */
-function buildTree(activity: ActivityEntry[]): TreeNode[] {
+function buildTree(activity: TimedEntry[]): TreeNode[] {
   const root: TreeNode[] = []
   const stack: TreeNode[][] = [root] // top of stack = current insertion list
   let pendingDelegate: TreeNode | null = null
@@ -182,7 +228,7 @@ function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {
   ))
 }
 
-function TimelineRow({ entry }: { entry: ActivityEntry }) {
+function TimelineRow({ entry }: { entry: TimedEntry }) {
   const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
   // Subagent group header (SubagentStart). Its tool calls nest beneath it.
@@ -194,6 +240,7 @@ function TimelineRow({ entry }: { entry: ActivityEntry }) {
         <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>
           Subagent{entry.detail ? ` · ${entry.detail}` : ' running'}
         </span>
+        <DurationTag entry={entry} />
       </div>
     )
   }
@@ -218,6 +265,7 @@ function TimelineRow({ entry }: { entry: ActivityEntry }) {
             </div>
           )}
         </div>
+        <DurationTag entry={entry} />
         <StatusTag status={entry.status} />
       </div>
     )
@@ -243,6 +291,7 @@ function TimelineRow({ entry }: { entry: ActivityEntry }) {
           {entry.target}
         </span>
       )}
+      <DurationTag entry={entry} />
       <StatusTag status={entry.status} />
     </div>
   )

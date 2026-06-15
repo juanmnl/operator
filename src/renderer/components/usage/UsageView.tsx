@@ -37,9 +37,17 @@ function fmtDuration(ms: number): string {
 
 type Tab = 'usage' | 'cost'
 
+const DAYS_KEY = 'operator.usage.days'
+
 export function UsageView() {
   const [tab, setTab] = useState<Tab>('usage')
-  const [days, setDays] = useState(7)
+  const [days, setDays] = useState(() => {
+    const raw = localStorage.getItem(DAYS_KEY)
+    const saved = raw === null ? NaN : Number(raw)
+    return RANGES.some((r) => r.days === saved) ? saved : 7
+  })
+
+  useEffect(() => { localStorage.setItem(DAYS_KEY, String(days)) }, [days])
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>

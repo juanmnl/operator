@@ -313,7 +313,7 @@ export interface SkillUsage {
  * servers and aren't reproducible locally.)
  */
 export interface UsageInsights {
-  totalCost: number
+  totalTokens: number
   highContextPct: number
   subagentPct: number
   longSessionPct: number

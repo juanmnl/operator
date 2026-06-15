@@ -10,6 +10,8 @@ interface SessionItemProps {
   active: boolean
   hasPending: boolean
   effortLevel?: string | null
+  /** Fan-out membership: this agent's position within a parallel launch. */
+  fanInfo?: { index: number; total: number }
   closable: boolean
   /** 1-based Cmd+N hint for the first nine local sessions. */
   shortcutIndex?: number | null
@@ -29,7 +31,7 @@ function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
   }
 }
 
-export function SessionItem({ session, label, active, hasPending, effortLevel, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, hasPending, effortLevel, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
@@ -149,6 +151,24 @@ export function SessionItem({ session, label, active, hasPending, effortLevel, c
           </>
         )}
       </span>
+      {!editing && fanInfo && (
+        <span
+          title={`Agent ${fanInfo.index} of ${fanInfo.total} in a parallel fan-out`}
+          style={{
+            fontSize: 8,
+            fontWeight: 600,
+            color: 'var(--accent)',
+            background: 'var(--overlay-subtle)',
+            borderRadius: 8,
+            padding: '1px 5px',
+            flexShrink: 0,
+            fontVariantNumeric: 'tabular-nums',
+            letterSpacing: 0.2,
+          }}
+        >
+          ⑂{fanInfo.index}/{fanInfo.total}
+        </span>
+      )}
       {!editing && session.activeSubagents > 0 && (
         <span
           style={{

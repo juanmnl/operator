@@ -32,6 +32,11 @@ interface TerminalTab {
   worktreeBranch?: string
   worktreeBase?: string
   sourceCwd?: string
+  /** Shared id across the N agents of one fan-out launch (undefined = solo). */
+  fanGroup?: string
+  /** 1-based position within the fan-out group, and the group size. */
+  fanIndex?: number
+  fanTotal?: number
 }
 
 /** A session's restorable config, persisted to localStorage across restarts. */
@@ -259,6 +264,7 @@ export function DashboardView() {
 
     // Fan-out: launch the same task on N agents, each in its own worktree.
     const count = Math.max(1, config.count || 1)
+    const fanGroup = count > 1 ? crypto.randomUUID() : undefined
 
     for (let i = 0; i < count; i++) {
       // Each agent gets an isolated git worktree (forced on for fan-out).
@@ -295,6 +301,9 @@ export function DashboardView() {
         worktreeBranch,
         worktreeBase,
         sourceCwd: worktreeBranch ? cwd : undefined,
+        fanGroup,
+        fanIndex: fanGroup ? i + 1 : undefined,
+        fanTotal: fanGroup ? count : undefined,
       }
       setTerminals((prev) => [...prev, tab])
       // Focus the first agent; the rest run in the background.
@@ -423,8 +432,11 @@ export function DashboardView() {
 
   // Build effort level map from terminal tabs (keyed by terminalId)
   const effortLevels: Record<string, string> = {}
+  // Fan-out membership map (keyed by terminalId) for the per-agent badge.
+  const fanInfo: Record<string, { index: number; total: number }> = {}
   for (const t of terminals) {
     if (t.effortLevel) effortLevels[t.id] = t.effortLevel
+    if (t.fanGroup && t.fanIndex && t.fanTotal) fanInfo[t.id] = { index: t.fanIndex, total: t.fanTotal }
   }
 
   const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string) => {
@@ -794,6 +806,7 @@ export function DashboardView() {
         usageViewActive={usageViewActive}
         prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
+        fanInfo={fanInfo}
         shortcutIndices={shortcutIndices}
         stats={sidebarStats}
         isDark={currentTheme.isDark}

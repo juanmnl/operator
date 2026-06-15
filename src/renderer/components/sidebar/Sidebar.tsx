@@ -15,6 +15,8 @@ interface SidebarProps {
   usageViewActive: boolean
   prefsViewActive: boolean
   effortLevels: Record<string, string>
+  /** Map terminalId → fan-out position for the per-agent badge. */
+  fanInfo: Record<string, { index: number; total: number }>
   /** Map sessionId → 1-based Cmd+N hint for the first 9 local sessions. */
   shortcutIndices: Record<string, number>
   /** Counts for the bottom status row. */
@@ -33,7 +35,7 @@ interface SidebarProps {
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -125,6 +127,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
             pendingRequests={pendingRequests}
             activeFolderPrefs={activeFolderPrefs}
             effortLevels={effortLevels}
+            fanInfo={fanInfo}
             shortcutIndices={shortcutIndices}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
@@ -302,6 +305,7 @@ function FolderGroup({
   pendingRequests,
   activeFolderPrefs,
   effortLevels,
+  fanInfo,
   shortcutIndices,
   onSelectSession,
   onRenameSession,
@@ -315,6 +319,7 @@ function FolderGroup({
   pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
   effortLevels: Record<string, string>
+  fanInfo: Record<string, { index: number; total: number }>
   shortcutIndices: Record<string, number>
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
@@ -381,6 +386,7 @@ function FolderGroup({
         )
         // Get effort level from terminal tab (keyed by terminalId)
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
+        const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
         return (
           <SessionItem
             key={session.id}
@@ -389,6 +395,7 @@ function FolderGroup({
             active={session.id === activeSessionId}
             hasPending={hasPending}
             effortLevel={effort}
+            fanInfo={fan}
             closable
             shortcutIndex={shortcutIndices[session.id] ?? null}
             onClick={() => onSelectSession(session)}

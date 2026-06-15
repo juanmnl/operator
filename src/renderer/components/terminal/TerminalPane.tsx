@@ -180,7 +180,9 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
-    const paths = files.map((f) => f.path).filter(Boolean)
+    // `File.path` is a non-standard Electron augmentation; absent in standard
+    // (Tauri) webviews, where dropped-file paths simply aren't available.
+    const paths = files.map((f) => (f as File & { path?: string }).path).filter(Boolean)
     if (paths.length > 0) {
       // Paste file paths into the terminal
       window.operator.terminalWrite(terminalId, paths.join(' '))
