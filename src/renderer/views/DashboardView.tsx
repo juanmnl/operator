@@ -257,29 +257,34 @@ export function DashboardView() {
       await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: config.effortLevel })
     }
 
-    // Optionally create an isolated git worktree before spawning the agent
-    let spawnCwd = cwd
-    let worktreeBranch: string | undefined
-    let worktreeBase: string | undefined
-    if (config.useWorktree) {
-      const result = await window.operator.worktreeCreate(cwd)
-      if ('error' in result) {
-        // Surface the failure; fall back to launching in the original folder
-        console.warn('Worktree creation failed:', result.error)
-      } else {
-        spawnCwd = result.path
-        worktreeBranch = result.branch
-        worktreeBase = result.baseBranch
+    // Fan-out: launch the same task on N agents, each in its own worktree.
+    const count = Math.max(1, config.count || 1)
+
+    for (let i = 0; i < count; i++) {
+      // Each agent gets an isolated git worktree (forced on for fan-out).
+      let spawnCwd = cwd
+      let worktreeBranch: string | undefined
+      let worktreeBase: string | undefined
+      if (config.useWorktree) {
+        const result = await window.operator.worktreeCreate(cwd)
+        if ('error' in result) {
+          console.warn('Worktree creation failed:', result.error)
+        } else {
+          spawnCwd = result.path
+          worktreeBranch = result.branch
+          worktreeBase = result.baseBranch
+        }
       }
-    }
 
-    const launchOptions: Record<string, unknown> = {}
-    if (config.permissionMode !== 'default') launchOptions.permissionMode = config.permissionMode
-    if (config.model) launchOptions.model = config.model
-    if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
+      const launchOptions: Record<string, unknown> = {}
+      if (config.permissionMode !== 'default') launchOptions.permissionMode = config.permissionMode
+      if (config.model) launchOptions.model = config.model
+      if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
+      if (config.prompt) launchOptions.initialPrompt = config.prompt
 
-    const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
-    if (result) {
+      const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
+      if (!result) continue
+
       const tab: TerminalTab = {
         id: result.terminalId,
         key: crypto.randomUUID(),
@@ -292,15 +297,19 @@ export function DashboardView() {
         sourceCwd: worktreeBranch ? cwd : undefined,
       }
       setTerminals((prev) => [...prev, tab])
-      setActiveTerminalId(result.terminalId)
-      setActiveSessionId(`local-${result.terminalId}`)
-      rememberRecent(cwd)
-      setRecentProjects((prev) => {
-        const name = cwd.split('/').pop() || cwd
-        const filtered = prev.filter((p) => p.path !== cwd)
-        return [{ path: cwd, name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
-      })
+      // Focus the first agent; the rest run in the background.
+      if (i === 0) {
+        setActiveTerminalId(result.terminalId)
+        setActiveSessionId(`local-${result.terminalId}`)
+      }
     }
+
+    rememberRecent(cwd)
+    setRecentProjects((prev) => {
+      const name = cwd.split('/').pop() || cwd
+      const filtered = prev.filter((p) => p.path !== cwd)
+      return [{ path: cwd, name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
+    })
     setPendingSession(null)
   }, [rememberRecent])
 

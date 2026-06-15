@@ -7,6 +7,10 @@ export interface SessionConfig {
   model: string
   allowedTools: string
   useWorktree: boolean
+  /** Number of parallel agents to fan the task out to (1 = a single session). */
+  count: number
+  /** Initial task submitted to every agent on launch (required when count > 1). */
+  prompt: string
 }
 
 interface NewSessionPanelProps {
@@ -50,7 +54,10 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
+  const [count, setCount] = useState(1)
+  const [prompt, setPrompt] = useState('')
   const projectName = cwd.split('/').pop() || cwd
+  const fanning = count > 1
 
   useEffect(() => {
     let cancelled = false
@@ -64,7 +71,13 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
   }, [cwd])
 
   const handleLaunch = () => {
-    onLaunch(cwd, { effortLevel, permissionMode, model, allowedTools, useWorktree: useWorktree && !!repoInfo?.isRepo })
+    if (fanning && !prompt.trim()) return
+    onLaunch(cwd, {
+      effortLevel, permissionMode, model, allowedTools,
+      // Fan-out requires per-agent isolation, so worktrees are forced on.
+      useWorktree: (useWorktree || fanning) && !!repoInfo?.isRepo,
+      count, prompt: prompt.trim(),
+    })
   }
 
   return (
@@ -200,6 +213,36 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
           </div>
         )}
 
+        {/* Fan-out: run the same task on N parallel agents (git repos only) */}
+        {repoInfo?.isRepo && (
+          <div style={{ marginBottom: 16 }}>
+            <SegmentedControl
+              label="Agents"
+              options={['1', '2', '3', '4'].map((n) => ({ value: n, label: n }))}
+              value={String(count)}
+              onChange={(v) => setCount(parseInt(v, 10))}
+            />
+            <p style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5, margin: '4px 0 0' }}>
+              {fanning
+                ? `Run the same task on ${count} agents in parallel, each in its own worktree.`
+                : 'Run a single session.'}
+            </p>
+          </div>
+        )}
+
+        {fanning && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Task for all agents</label>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="What should every agent work on? Each gets this as its first prompt."
+              rows={3}
+              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, fontFamily: "'Inter', system-ui, sans-serif" }}
+            />
+          </div>
+        )}
+
         {/* Advanced toggle */}
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
@@ -239,8 +282,12 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
           <button onClick={onCancel} style={cancelBtnStyle}>
             Cancel
           </button>
-          <button onClick={handleLaunch} style={launchBtnStyle}>
-            Launch {projectName}
+          <button
+            onClick={handleLaunch}
+            disabled={fanning && !prompt.trim()}
+            style={{ ...launchBtnStyle, opacity: fanning && !prompt.trim() ? 0.5 : 1, cursor: fanning && !prompt.trim() ? 'default' : 'pointer' }}
+          >
+            {fanning ? `Launch ${count} agents` : `Launch ${projectName}`}
           </button>
         </div>
       </div>

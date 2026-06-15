@@ -6,6 +6,8 @@ export interface LaunchOptions {
   allowedTools?: string
   /** Resume a specific prior Claude Code session by id (`claude --resume <id>`). */
   resumeSessionId?: string
+  /** Initial prompt submitted on launch (`claude "<prompt>"`) — used for fan-out. */
+  initialPrompt?: string
 }
 
 export function launchClaudeCode(ptyManager: PtyManager, cwd: string, options?: LaunchOptions): string {
@@ -29,6 +31,11 @@ export function launchClaudeCode(ptyManager: PtyManager, cwd: string, options?: 
 
   if (options?.allowedTools) {
     args.push('--allowedTools', ...options.allowedTools.split(/\s+/).filter(Boolean))
+  }
+
+  // Positional initial prompt — submitted automatically on launch.
+  if (options?.initialPrompt && options.initialPrompt.trim()) {
+    args.push(options.initialPrompt.trim())
   }
 
   // Launch through an interactive login shell so the user's real PATH (and
