@@ -242,8 +242,11 @@ fn agent_delete(path: String) -> agents::OkResult {
 }
 
 #[tauri::command]
-fn get_usage_stats(days: Option<i64>) -> usage::UsageStats {
-    usage::compute_usage(days.unwrap_or(30))
+async fn get_usage_stats(days: Option<i64>) -> Result<usage::UsageStats, String> {
+    // Heavy transcript scan — run off the main thread so the UI stays responsive.
+    tauri::async_runtime::spawn_blocking(move || usage::compute_usage(days.unwrap_or(30)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
