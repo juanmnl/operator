@@ -28,10 +28,6 @@ function buildArgs(o: Record<string, unknown> = {}): string[] {
 const decoders = new Map<string, TextDecoder>()
 
 export function installBridge(): void {
-  // Temporary: until the decision pipeline is ported, auto-approve hook requests
-  // so Claude Code isn't blocked. (The blocking round-trip itself is proven.)
-  listen<{ id: string }>('hook:request', (e) => { void invoke('respond', { id: e.payload.id, approve: true }) })
-
   const bridge = {
     // --- terminals (real) ---
     terminalSpawn: async (cwd?: string, launchOptions?: Record<string, unknown>) => {
@@ -64,13 +60,19 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
 
-    // --- permission flow (events not emitted yet — pipeline not ported) ---
-    onNewRequest: (): Unsub => () => {},
-    onSessionUpdate: (): Unsub => () => {},
+    // --- permission flow + sessions (real) ---
+    onNewRequest: (cb: (req: unknown) => void): Unsub => {
+      const p = listen('hook:new-request', (e) => cb(e.payload))
+      return () => { void p.then((f) => f()) }
+    },
+    onSessionUpdate: (cb: (sessions: unknown) => void): Unsub => {
+      const p = listen('session:update', (e) => cb(e.payload))
+      return () => { void p.then((f) => f()) }
+    },
     onFocusSession: (): Unsub => () => {},
     respond: (id: string, value: string) => invoke('respond', { id, approve: value !== 'deny' && value !== 'n' }).then(() => true),
-    getQueue: async () => [],
-    getSessions: async () => [],
+    getQueue: () => invoke('get_queue'),
+    getSessions: () => invoke('get_sessions'),
 
     // --- misc ---
     pickFolder: async () => {
@@ -91,9 +93,10 @@ export function installBridge(): void {
     worktreeCommit: async () => ({ ok: false, error: 'not ported' }),
     worktreeMerge: async () => ({ ok: false }),
     worktreeDiscard: async () => ({ ok: false, error: 'not ported' }),
-    rulesList: async () => [],
-    rulesAdd: async (rule: unknown) => ({ id: 'stub', createdAt: new Date().toISOString(), ...(rule as object) }),
-    rulesRemove: async () => {},
+    rulesList: () => invoke('rules_list_cmd'),
+    rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: string }) =>
+      invoke('rules_add_cmd', { tool: rule.tool, pattern: rule.pattern ?? null, scope: rule.scope ?? null, action: rule.action }),
+    rulesRemove: (id: string) => invoke('rules_remove_cmd', { id }).then(() => undefined),
     agentsList: async () => [],
     agentSave: async () => ({ ok: false, error: 'not ported' }),
     agentDelete: async () => ({ ok: false, error: 'not ported' }),
