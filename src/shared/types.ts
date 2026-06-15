@@ -291,6 +291,9 @@ export interface DayUsage {
 export interface UsageStats {
   totalCost: number
   totalTokens: number
+  /** Summed API call duration (ms) and wall-clock span (ms) over the window. */
+  apiMs: number
+  wallMs: number
   byModel: ModelUsage[]
   byProject: ProjectUsage[]
   byDay: DayUsage[]

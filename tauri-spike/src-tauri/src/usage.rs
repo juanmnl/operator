@@ -26,6 +26,7 @@ struct Record {
     slug: String,
     session: String,
     ts_ms: i64,
+    duration_ms: i64,
     context: u64, // total prompt size = input + cache_read + cache_creation
     sidechain: bool,
     skill: Option<String>,
@@ -152,6 +153,7 @@ fn load_records() -> Vec<Record> {
                     slug: slug.clone(),
                     session: session.clone(),
                     ts_ms: parse_iso_ms(ts),
+                    duration_ms: obj.get("durationMs").and_then(|v| v.as_i64()).unwrap_or(0),
                     context: input + cache_read + cache5m + cache1h,
                     sidechain: obj.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false),
                     skill: obj.get("attributionSkill").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
@@ -194,6 +196,8 @@ pub struct DayUsage { date: String, cost: f64, tokens: u64 }
 pub struct UsageStats {
     total_cost: f64,
     total_tokens: u64,
+    api_ms: i64,
+    wall_ms: i64,
     by_model: Vec<ModelUsage>,
     by_project: Vec<ProjectUsage>,
     by_day: Vec<DayUsage>,
@@ -223,6 +227,8 @@ pub fn compute_usage(days: i64) -> UsageStats {
     let mut by_day: HashMap<String, (f64, u64)> = HashMap::new();
     let mut total_cost = 0.0;
     let mut total_tokens: u64 = 0;
+    let mut api_ms: i64 = 0;
+    let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
 
     for r in recs.iter() {
         if !cutoff_day.is_empty() && !r.day.is_empty() && r.day < cutoff_day {
@@ -233,6 +239,11 @@ pub fn compute_usage(days: i64) -> UsageStats {
         let cache_write = r.cache5m + r.cache1h;
         total_cost += cost;
         total_tokens += tokens;
+        api_ms += r.duration_ms.max(0);
+        if r.ts_ms > 0 {
+            min_ts = min_ts.min(r.ts_ms);
+            max_ts = max_ts.max(r.ts_ms);
+        }
 
         let m = by_model.entry(r.model.clone()).or_default();
         m.input += r.input; m.output += r.output; m.cache_write += cache_write; m.cache_read += r.cache_read; m.cost += cost; m.messages += 1;
@@ -253,7 +264,8 @@ pub fn compute_usage(days: i64) -> UsageStats {
     let mut by_day: Vec<DayUsage> = by_day.into_iter().map(|(date, (cost, tokens))| DayUsage { date, cost, tokens }).collect();
     by_day.sort_by(|a, b| a.date.cmp(&b.date));
 
-    UsageStats { total_cost, total_tokens, by_model, by_project, by_day, since, generated_at }
+    let wall_ms = if max_ts > min_ts { max_ts - min_ts } else { 0 };
+    UsageStats { total_cost, total_tokens, api_ms, wall_ms, by_model, by_project, by_day, since, generated_at }
 }
 
 // --- "What's contributing to your limits usage?" (local, approximate) -------
@@ -268,10 +280,10 @@ pub struct SkillUsage {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Insights {
-    total_cost: f64,
-    high_context_pct: f64,   // share of cost at >150k context
-    subagent_pct: f64,       // share of cost from sessions that used subagents
-    long_session_pct: f64,   // share of cost from sessions active 8h+
+    total_tokens: u64,
+    high_context_pct: f64,   // share of tokens at >150k context
+    subagent_pct: f64,       // share of tokens from sessions that used subagents
+    long_session_pct: f64,   // share of tokens from sessions active 8h+
     skills: Vec<SkillUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     since: Option<String>,
@@ -290,46 +302,46 @@ pub fn compute_insights(days: i64) -> Insights {
     };
 
     let recs = records();
-    let mut total = 0.0;
-    let mut high_context = 0.0;
-    let mut by_session: HashMap<String, (f64, bool, i64, i64)> = HashMap::new(); // cost, sidechain, min_ts, max_ts
-    let mut by_skill: HashMap<String, f64> = HashMap::new();
+    let mut total: u64 = 0;
+    let mut high_context: u64 = 0;
+    let mut by_session: HashMap<String, (u64, bool, i64, i64)> = HashMap::new(); // tokens, sidechain, min_ts, max_ts
+    let mut by_skill: HashMap<String, u64> = HashMap::new();
 
     for r in recs.iter() {
         if !cutoff_day.is_empty() && !r.day.is_empty() && r.day < cutoff_day {
             continue;
         }
-        let cost = r.cost();
-        total += cost;
+        let tokens = r.tokens();
+        total += tokens;
         if r.context > 150_000 {
-            high_context += cost;
+            high_context += tokens;
         }
-        let e = by_session.entry(r.session.clone()).or_insert((0.0, false, i64::MAX, i64::MIN));
-        e.0 += cost;
+        let e = by_session.entry(r.session.clone()).or_insert((0, false, i64::MAX, i64::MIN));
+        e.0 += tokens;
         e.1 = e.1 || r.sidechain;
         if r.ts_ms > 0 {
             e.2 = e.2.min(r.ts_ms);
             e.3 = e.3.max(r.ts_ms);
         }
         if let Some(s) = &r.skill {
-            *by_skill.entry(s.clone()).or_insert(0.0) += cost;
+            *by_skill.entry(s.clone()).or_insert(0) += tokens;
         }
     }
 
-    let subagent: f64 = by_session.values().filter(|(_, sc, _, _)| *sc).map(|(c, ..)| *c).sum();
-    let long: f64 = by_session
+    let subagent: u64 = by_session.values().filter(|(_, sc, _, _)| *sc).map(|(t, ..)| *t).sum();
+    let long: u64 = by_session
         .values()
         .filter(|(_, _, min, max)| *min != i64::MAX && *max - *min >= 8 * 3_600_000)
-        .map(|(c, ..)| *c)
+        .map(|(t, ..)| *t)
         .sum();
 
-    let pct = |x: f64| if total > 0.0 { x / total * 100.0 } else { 0.0 };
-    let mut skills: Vec<SkillUsage> = by_skill.into_iter().map(|(name, c)| SkillUsage { name, pct: pct(c) }).collect();
+    let pct = |x: u64| if total > 0 { x as f64 / total as f64 * 100.0 } else { 0.0 };
+    let mut skills: Vec<SkillUsage> = by_skill.into_iter().map(|(name, t)| SkillUsage { name, pct: pct(t) }).collect();
     skills.sort_by(|a, b| b.pct.partial_cmp(&a.pct).unwrap_or(std::cmp::Ordering::Equal));
     skills.truncate(8);
 
     Insights {
-        total_cost: total,
+        total_tokens: total,
         high_context_pct: pct(high_context),
         subagent_pct: pct(subagent),
         long_session_pct: pct(long),

@@ -25,6 +25,16 @@ function modelLabel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-/g, ' ')
 }
 
+function fmtDuration(ms: number): string {
+  if (ms <= 0) return '—'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
+}
+
 type Tab = 'usage' | 'cost'
 
 export function UsageView() {
@@ -81,12 +91,12 @@ function InsightsTab({ days }: { days: number }) {
   }, [days])
 
   if (loading) return <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6 }}>Reading transcripts…</p>
-  if (!data || data.totalCost === 0) return <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, textAlign: 'center', padding: '40px 0' }}>No usage in this window.</p>
+  if (!data || data.totalTokens === 0) return <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, textAlign: 'center', padding: '40px 0' }}>No usage in this window.</p>
 
   return (
     <>
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.6, margin: '0 0 18px', lineHeight: 1.6 }}>
-        Approximate, based on local sessions on this machine — independent characteristics of your usage, not a breakdown.
+        Approximate, based on local sessions on this machine — what's driving your <strong style={{ color: 'var(--fg)', fontWeight: 600 }}>token</strong> usage (<span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtTokens(data.totalTokens)}</span> total), not cost.
         (Session/weekly rate-limit bars live in Claude Code's <code style={{ background: 'var(--bg-surface)', padding: '0 4px', borderRadius: 3 }}>/usage</code> — they come from Anthropic's servers, not local data.)
       </p>
 
@@ -155,10 +165,12 @@ function CostTab({ days }: { days: number }) {
 
   return (
     <>
-      <div style={{ display: 'flex', gap: 24, marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 24, marginBottom: 20, flexWrap: 'wrap' }}>
         <Stat label="Total cost" value={fmtCost(stats.totalCost)} big />
         <Stat label="Tokens" value={fmtTokens(stats.totalTokens)} />
         <Stat label="Messages" value={stats.byModel.reduce((s, m) => s + m.messages, 0).toLocaleString()} />
+        <Stat label="API time" value={fmtDuration(stats.apiMs)} />
+        <Stat label="Wall time" value={fmtDuration(stats.wallMs)} />
       </div>
 
       {stats.byDay.length > 1 && (
@@ -173,10 +185,21 @@ function CostTab({ days }: { days: number }) {
       )}
 
       <SectionTitle>By model</SectionTitle>
-      <div style={{ marginTop: 8, marginBottom: 24, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-        <Row header cols={['Model', 'Msgs', 'In', 'Out', 'Cache', 'Cost']} />
+      <div style={{ marginTop: 8, marginBottom: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {stats.byModel.map((m) => (
-          <Row key={m.model} cols={[modelLabel(m.model), m.messages.toLocaleString(), fmtTokens(m.inputTokens), fmtTokens(m.outputTokens), fmtTokens(m.cacheReadTokens + m.cacheWriteTokens), fmtCost(m.cost)]} emphasizeFirst />
+          <div key={m.model} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', textTransform: 'capitalize' }}>{modelLabel(m.model)}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{fmtCost(m.cost)}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
+              <TokenStat label="Input" value={m.inputTokens} />
+              <TokenStat label="Output" value={m.outputTokens} />
+              <TokenStat label="Cache write" value={m.cacheWriteTokens} />
+              <TokenStat label="Cache read" value={m.cacheReadTokens} />
+              <TokenStat label="Messages" value={m.messages} raw />
+            </div>
+          </div>
         ))}
       </div>
 
@@ -216,17 +239,11 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.6, margin: 0 }}>{children}</p>
 }
 
-function Row({ cols, header, emphasizeFirst }: { cols: string[]; header?: boolean; emphasizeFirst?: boolean }) {
+function TokenStat({ label, value, raw }: { label: string; value: number; raw?: boolean }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', padding: '7px 12px', borderBottom: header ? '1px solid var(--border)' : 'none', background: header ? 'var(--bg-surface)' : 'transparent', fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>
-      {cols.map((c, i) => (
-        <span key={i} style={{
-          flex: i === 0 ? 1 : 0, width: i === 0 ? undefined : 64, textAlign: i === 0 ? 'left' : 'right',
-          color: header ? 'var(--fg-muted)' : (i === 0 && emphasizeFirst ? 'var(--fg)' : i === cols.length - 1 ? 'var(--fg)' : 'var(--fg-muted)'),
-          fontWeight: header || (i === 0 && emphasizeFirst) || i === cols.length - 1 ? 500 : 400,
-          textTransform: i === 0 && !header && emphasizeFirst ? 'capitalize' : undefined, flexShrink: 0,
-        }}>{c}</span>
-      ))}
+    <div>
+      <div style={{ fontSize: 13, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{raw ? value.toLocaleString() : fmtTokens(value)}</div>
+      <div style={{ fontSize: 9, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 2, opacity: 0.6 }}>{label}</div>
     </div>
   )
 }
