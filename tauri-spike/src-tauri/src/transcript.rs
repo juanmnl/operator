@@ -123,6 +123,7 @@ impl Track {
             return;
         }
         let mut consumed: u64 = 0;
+        let mut processed = false;
         for chunk in buf.split_inclusive('\n') {
             if !chunk.ends_with('\n') {
                 break; // partial trailing line — wait for the rest next tick
@@ -134,9 +135,15 @@ impl Track {
             }
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 self.apply(&v);
+                processed = true;
             }
         }
         self.offset += consumed;
+        // Any new line can change the derived phase (e.g. a new prompt flips the
+        // session to "running"), so always re-emit when the transcript advanced.
+        if processed {
+            self.dirty = true;
+        }
     }
 
     fn apply(&mut self, v: &Value) {
