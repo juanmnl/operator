@@ -1,24 +1,31 @@
-// Tauri 2 migration spike. Proves the two risky pieces from docs/tauri-migration.md:
-//   1. A Rust pty (portable-pty) streaming raw bytes to xterm.js in the webview.
-//   2. A blocking local HTTP "hook" server that round-trips an approve/deny
-//      decision back to the renderer (the heart of Operator's permission flow).
+// Tauri 2 backend for Operator (Phase 1). Multi-terminal pty manager + the
+// blocking hook HTTP server. Other backend modules (sessions, rules, worktree,
+// agents, usage, folder-prefs) are ported incrementally on top of this.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
-const HOOK_PORT: u16 = 47822; // 47821 belongs to the running Electron app; avoid clashing.
+const HOOK_PORT: u16 = 47821;
+
+struct Pty {
+    writer: Box<dyn Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    cwd: String,
+}
 
 #[derive(Default)]
-struct PtyState {
-    writer: Mutex<Option<Box<dyn Write + Send>>>,
-    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+struct PtyManager {
+    ptys: Mutex<HashMap<String, Pty>>,
+    next: AtomicU64,
 }
 
 #[derive(Default)]
@@ -27,65 +34,112 @@ struct HookState {
     next_id: AtomicU64,
 }
 
-// --- Pty (risk #2) ----------------------------------------------------------
+#[derive(Clone, Serialize)]
+struct TerminalDataPayload {
+    id: String,
+    data: Vec<u8>,
+}
 
+// --- Terminal commands ------------------------------------------------------
+
+/// Spawn a pty running `claude` (with args) through an interactive login shell.
+/// Returns the new terminal id. Output streams via the `terminal:data` event.
 #[tauri::command]
-fn pty_spawn(app: tauri::AppHandle, state: State<PtyState>) -> Result<(), String> {
+fn terminal_spawn(
+    app: tauri::AppHandle,
+    cwd: String,
+    args: Vec<String>,
+    mgr: State<Arc<PtyManager>>,
+) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
-    // Interactive login shell so the user's real PATH is loaded (the Finder-PATH fix).
+    // `zsh -ilc 'claude <args>'` — login shell loads the real PATH (Finder fix).
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.args(["-il"]);
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
-    }
-    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let inner = std::iter::once("claude".to_string())
+        .chain(args.into_iter())
+        .map(|a| shell_quote(&a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.args(["-ilc", &inner]);
+    cmd.cwd(&cwd);
+
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    *state.writer.lock().unwrap() = Some(writer);
-    *state.master.lock().unwrap() = Some(pair.master);
 
-    // Stream raw bytes — no lossy UTF-8 decode, so multibyte chars split across
-    // reads stay intact; xterm.js decodes the Uint8Array itself.
+    let id = format!("t{}", mgr.next.fetch_add(1, Ordering::Relaxed));
+    mgr.ptys.lock().unwrap().insert(
+        id.clone(),
+        Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
+    );
+
+    let emit_id = id.clone();
+    let mgr_arc = mgr.inner().clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let _ = app.emit("pty-data", buf[..n].to_vec());
+                    let _ = app.emit(
+                        "terminal:data",
+                        TerminalDataPayload { id: emit_id.clone(), data: buf[..n].to_vec() },
+                    );
                 }
             }
         }
-        let _ = app.emit("pty-exit", ());
+        mgr_arc.ptys.lock().unwrap().remove(&emit_id);
+        let _ = app.emit("terminal:exit", emit_id.clone());
     });
-    Ok(())
+
+    Ok(id)
 }
 
 #[tauri::command]
-fn pty_write(data: String, state: State<PtyState>) -> Result<(), String> {
-    if let Some(w) = state.writer.lock().unwrap().as_mut() {
-        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-        w.flush().ok();
+fn terminal_write(id: String, data: String, mgr: State<Arc<PtyManager>>) {
+    if let Some(p) = mgr.ptys.lock().unwrap().get_mut(&id) {
+        let _ = p.writer.write_all(data.as_bytes());
+        let _ = p.writer.flush();
     }
-    Ok(())
 }
 
 #[tauri::command]
-fn pty_resize(rows: u16, cols: u16, state: State<PtyState>) -> Result<(), String> {
-    if let Some(m) = state.master.lock().unwrap().as_ref() {
-        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .map_err(|e| e.to_string())?;
+fn terminal_resize(id: String, cols: u16, rows: u16, mgr: State<Arc<PtyManager>>) {
+    if let Some(p) = mgr.ptys.lock().unwrap().get(&id) {
+        let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
-    Ok(())
 }
 
-// --- Blocking hook server (risk #1) -----------------------------------------
+#[tauri::command]
+fn terminal_kill(id: String, mgr: State<Arc<PtyManager>>) {
+    if let Some(mut p) = mgr.ptys.lock().unwrap().remove(&id) {
+        let _ = p.killer.kill();
+    }
+}
+
+#[derive(Serialize)]
+struct TerminalInfo {
+    id: String,
+    cwd: String,
+}
+
+#[tauri::command]
+fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
+    mgr.ptys
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone() })
+        .collect()
+}
+
+// --- Misc commands ----------------------------------------------------------
 
 #[tauri::command]
 fn respond(id: String, approve: bool, state: State<HookState>) {
@@ -93,6 +147,8 @@ fn respond(id: String, approve: bool, state: State<HookState>) {
         let _ = tx.send(approve);
     }
 }
+
+// --- Hook server ------------------------------------------------------------
 
 fn start_hook_server(app: tauri::AppHandle) {
     std::thread::spawn(move || {
@@ -103,32 +159,25 @@ fn start_hook_server(app: tauri::AppHandle) {
                 return;
             }
         };
-        println!("spike hook server on http://127.0.0.1:{HOOK_PORT}");
+        println!("Operator (tauri) hook server on http://127.0.0.1:{HOOK_PORT}");
         for mut req in server.incoming_requests() {
             if req.url() == "/health" {
                 let _ = req.respond(tiny_http::Response::from_string("{\"status\":\"ok\"}"));
                 continue;
             }
-            // Each request blocks until the user decides, so handle it on its own
-            // thread to keep accepting (mirrors the per-request oneshot in the plan).
             let app = app.clone();
             std::thread::spawn(move || {
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
-
                 let id = {
                     let st = app.state::<HookState>();
-                    let n = st.next_id.fetch_add(1, Ordering::Relaxed);
-                    format!("req-{n}")
+                    format!("req-{}", st.next_id.fetch_add(1, Ordering::Relaxed))
                 };
                 let (tx, rx) = channel::<bool>();
                 app.state::<HookState>().pending.lock().unwrap().insert(id.clone(), tx);
-
-                let _ = app.emit("hook-request", serde_json::json!({ "id": id, "body": body }));
-
+                let _ = app.emit("hook:request", serde_json::json!({ "id": id, "body": body }));
                 let approve = rx.recv_timeout(Duration::from_secs(300)).unwrap_or(true);
                 app.state::<HookState>().pending.lock().unwrap().remove(&id);
-
                 let decision = if approve { "approve" } else { "deny" };
                 let _ = req.respond(tiny_http::Response::from_string(format!(
                     "{{\"decision\":\"{decision}\"}}"
@@ -138,17 +187,30 @@ fn start_hook_server(app: tauri::AppHandle) {
     });
 }
 
+/// Single-quote a shell argument, escaping embedded single quotes.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(PtyState::default())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(Arc::new(PtyManager::default()))
         .manage(HookState::default())
         .setup(|app| {
             start_hook_server(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, respond])
+        .invoke_handler(tauri::generate_handler![
+            terminal_spawn,
+            terminal_write,
+            terminal_resize,
+            terminal_kill,
+            terminal_list,
+            respond
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
