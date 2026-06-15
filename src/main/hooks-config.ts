@@ -4,12 +4,23 @@ import { homedir } from 'os'
 import { app } from 'electron'
 
 /**
+ * Absolute path to the hook script. Claude Code executes this as an external
+ * command, so it must be a real file on disk — in a packaged app it ships via
+ * extraResources (Contents/Resources/scripts), not inside the asar archive.
+ */
+export function hookScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'scripts', 'operator-hook.sh')
+    : join(app.getAppPath(), 'scripts', 'operator-hook.sh')
+}
+
+/**
  * Ensures Claude Code's ~/.claude/settings.json has hooks pointing to Operator.
  * Merges non-destructively — preserves existing settings and non-Operator hook entries.
  * Also cleans up malformed entries from previous versions.
  */
 export function ensureHooksConfigured(): void {
-  const hookPath = join(app.getAppPath(), 'scripts/operator-hook.sh')
+  const hookPath = hookScriptPath()
   const claudeDir = join(homedir(), '.claude')
   const settingsPath = join(claudeDir, 'settings.json')
 

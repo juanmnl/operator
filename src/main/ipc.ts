@@ -1,5 +1,4 @@
-import { ipcMain, dialog, app } from 'electron'
-import { join } from 'path'
+import { ipcMain, dialog } from 'electron'
 import { queue } from './queue'
 import { sessions } from './sessions'
 import { IPC, OperatorResponse, ClaudeSettings } from '../shared/types'
@@ -9,6 +8,7 @@ import { WindowManager } from './window/window-manager'
 import { loadFolderPreferences, loadGlobalPreferences, saveSettingsFile, saveMdFile, createFile, getMcpServers } from './folder-prefs'
 import { inspectRepo, createWorktree, worktreeStatus, removeWorktree, worktreeDiff, commitAll, mergeBranch, discardBranch } from './worktree'
 import { rules } from './rules'
+import { hookScriptPath } from './hooks-config'
 import { listAgents, saveAgent, deleteAgent } from './agents'
 import type { AgentDefinition } from '../shared/types'
 
@@ -69,7 +69,7 @@ export function setupIpc(ptyManager: PtyManager, windowManager: WindowManager): 
   })
 
   ipcMain.handle(IPC.GET_HOOK_PATH, () => {
-    return join(app.getAppPath(), 'scripts/operator-hook.sh')
+    return hookScriptPath()
   })
 
   ipcMain.on(IPC.SET_ACTIVE_SESSION, (_event, sessionId: string | null) => {

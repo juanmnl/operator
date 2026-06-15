@@ -2,12 +2,52 @@
   "name": "operator",
   "version": "0.1.0",
   "description": "Agent Permission Monitor & Notification Gateway",
+  "author": "Juan Manuel Cornejo",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
     "postinstall": "electron-rebuild -f -w better-sqlite3,node-pty"
+  },
+  "build": {
+    "appId": "com.operator.app",
+    "productName": "Operator",
+    "copyright": "Copyright © 2026 Juan Manuel Cornejo",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/operator-hook.sh",
+        "to": "scripts/operator-hook.sh"
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "Juan Cornejo (UJS4C5GUCW)",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Operator ${version}"
+    }
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -30,6 +70,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^34.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
