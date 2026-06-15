@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AgentSession, OperatorRequest } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
-import logoUrl from '../../../../assets/logos/logo-light-64.png'
+import { LogoMark } from '../LogoMark'
 
 interface SidebarProps {
   sessions: AgentSession[]
@@ -74,7 +74,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
           paddingTop: 40,
         }}
       >
-        <img src={logoUrl} width={20} height={20} alt="" style={{ filter: isDark ? 'none' : 'invert(1)' }} />
+        <LogoMark size={20} />
         <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
           Operator
         </span>
