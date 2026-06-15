@@ -27,16 +27,9 @@ export function PrefsView({ prefs, onChange }: PrefsViewProps) {
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 560 }}>
         <ToggleRow
           label="Native notifications"
-          description="Show a macOS notification when an agent needs approval (only while Operator is unfocused)."
+          description="Ping with a macOS notification when an agent needs approval, only while Operator is unfocused. Click it to jump to that session."
           checked={prefs.nativeNotifications}
           onChange={(v) => set('nativeNotifications', v)}
-        />
-
-        <ToggleRow
-          label="Auto-focus session on pending request"
-          description="When an agent needs approval, automatically switch to that session in the main window."
-          checked={prefs.autoFocusPending}
-          onChange={(v) => set('autoFocusPending', v)}
         />
       </div>
     </div>

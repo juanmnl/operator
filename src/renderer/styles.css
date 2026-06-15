@@ -14,15 +14,9 @@ html, body, #root {
   width: 100%;
 }
 
-/* Dashboard view uses theme bg */
 body {
   background: var(--bg-terminal, #22222A);
   color: var(--fg, #F6F8F7);
-}
-
-/* Widget view needs transparent bg — must come after body rule */
-body.widget-bg {
-  background: transparent !important;
 }
 
 /* Scrollbar styling */

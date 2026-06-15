@@ -118,15 +118,6 @@ export function DashboardView() {
     const unsubSession = window.operator.onSessionUpdate(setSessions)
     const unsubRequest = window.operator.onNewRequest((request) => {
       setPendingRequests((prev) => [...prev, request])
-      // Pref-gated: auto-switch to the requesting session if it isn't already active.
-      const prefsRaw = localStorage.getItem('operator.prefs')
-      const autoFocus = (() => {
-        try { return prefsRaw ? !!JSON.parse(prefsRaw).autoFocusPending : false } catch { return false }
-      })()
-      if (autoFocus && request.sessionId) {
-        setActiveSessionId((current) => current === request.sessionId ? current : request.sessionId!)
-        if (request.terminalId) setActiveTerminalId(request.terminalId)
-      }
     })
 
     // Poll sessions every 1s for responsive status updates
@@ -1018,7 +1009,7 @@ export function DashboardView() {
                 Define agents and pick which model handles each task, then
                 launch Claude Code sessions that delegate to them. Watch agents
                 and their subagents work in isolated worktrees, and approve or
-                deny anything they touch — inline or from a notification pill.
+                deny anything they touch, inline as they go.
               </p>
               <p style={{
                 fontSize: 11,

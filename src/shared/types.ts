@@ -305,7 +305,6 @@ export const IPC = {
   GET_QUEUE: 'operator:get-queue',
   GET_SESSIONS: 'operator:get-sessions',
   SESSION_UPDATE: 'operator:session-update',
-  HIDE_WIDGET: 'operator:hide-widget',
   QUEUE_UPDATE: 'operator:queue-update',
   TERMINAL_SPAWN: 'terminal:spawn',
   TERMINAL_WRITE: 'terminal:write',
@@ -345,10 +344,8 @@ export const IPC = {
 
 export interface OperatorPrefs {
   nativeNotifications: boolean
-  autoFocusPending: boolean
 }
 
 export const DEFAULT_PREFS: OperatorPrefs = {
   nativeNotifications: true,
-  autoFocusPending: false,
 }

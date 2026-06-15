@@ -31,7 +31,19 @@ export function launchClaudeCode(ptyManager: PtyManager, cwd: string, options?: 
     args.push('--allowedTools', ...options.allowedTools.split(/\s+/).filter(Boolean))
   }
 
-  return ptyManager.spawn(cwd, 'claude', args, {
+  // Launch through an interactive login shell so the user's real PATH (and
+  // node/nvm setup) is loaded. When the app is launched from Finder it inherits
+  // only a minimal PATH, so spawning `claude` directly fails with ENOENT and the
+  // pty exits instantly. `zsh -ilc '<cmd>'` sources the user's profile first.
+  const shell = process.env.SHELL || '/bin/zsh'
+  const cmdline = ['claude', ...args].map(shellQuote).join(' ')
+
+  return ptyManager.spawn(cwd, shell, ['-ilc', cmdline], {
     FORCE_COLOR: '1',
   })
+}
+
+/** Single-quote a shell argument, escaping embedded single quotes. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
 }

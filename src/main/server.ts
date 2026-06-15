@@ -115,41 +115,8 @@ export function startServer(windowManager: WindowManager, terminalRegistry: Term
     updateTrayBadge()
 
     windowManager.sendSessionUpdate(sessions.getActive())
-    if (queue.size === 0) {
-      windowManager.hideWidget()
-    }
 
     res.json({ decision: response.approved ? 'approve' : 'deny' })
-  })
-
-  // Legacy endpoint — direct HTTP requests (curl testing, non-hook agents)
-  app.post('/request', async (req, res) => {
-    const body = req.body
-    const request: OperatorRequest = {
-      id: body.id || uuidv4(),
-      agentId: body.agentId || 'unknown',
-      action: body.action || 'unknown',
-      message: body.message || '',
-      context: body.context || {},
-      severity: body.severity || 'medium',
-      options: body.options || undefined,
-      expiresIn: body.expiresIn || 60,
-      timestamp: body.timestamp || new Date().toISOString(),
-      sessionId: body.sessionId
-    }
-
-    windowManager.sendNewRequest(request)
-    updateTrayBadge()
-
-    const response = await queue.add(request)
-    logEntry(request, response)
-    updateTrayBadge()
-
-    if (queue.size === 0) {
-      windowManager.hideWidget()
-    }
-
-    res.json(response)
   })
 
   app.get('/health', (_req, res) => {
