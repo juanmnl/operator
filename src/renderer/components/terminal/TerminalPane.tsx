@@ -28,6 +28,11 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
   const fitRef = useRef<FitAddon | null>(null)
 
   const handleResize = useCallback(() => {
+    // Never fit against a hidden/collapsed container (display:none → 0 width).
+    // Doing so would send a ~1-column size to the pty and make Claude Code
+    // re-render its TUI narrow, which then sticks in the scrollback.
+    const el = containerRef.current
+    if (!el || el.offsetWidth < 50 || el.offsetHeight < 20) return
     if (fitRef.current) {
       try {
         fitRef.current.fit()
