@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { McpServerInfo } from '../../../shared/types'
+import { DragRegion } from '../DragRegion'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -53,8 +54,8 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* Draggable title bar area (Tauri: data-tauri-drag-region) */}
-      <div data-tauri-drag-region style={{
+      {/* Draggable title bar area */}
+      <DragRegion style={{
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'space-between',
@@ -173,7 +174,7 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
             </span>
           )}
         </div>
-      </div>
+      </DragRegion>
 
       {/* MCP expanded dropdown */}
       {mcpExpanded && mcpServers.length > 0 && (

@@ -43,10 +43,15 @@ export const missionControlVars = {
   '--magenta': '#c98bff',
   '--cyan': '#3fd9c9',
   '--selection': '#ffffff2e',
-  '--border': '#21272f',
+  '--border': '#2a323c',
   '--color-success': '#2fe39a',
   '--color-error': '#ff5f56',
   '--color-warning': '#ffb454',
+  // Per-session status hues — the colour the status dots bloom into. Accent is
+  // green here, so running uses blue to stay distinct from waiting.
+  '--status-running': '#58b2ff',
+  '--status-compacting': '#ffb454',
+  '--status-waiting': '#2fe39a',
   '--mcp-stdio': '#2fe39a',
   '--mcp-http': '#58b2ff',
   '--mcp-cloud': '#c98bff',

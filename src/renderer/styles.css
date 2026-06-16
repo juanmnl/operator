@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Corner-radius scale — softens the layout's hard edges. Theme-independent. */
+:root {
+  --radius-lg: 12px;  /* floating panels / content card */
+  --radius-md: 8px;   /* cards, dropdowns, list rows */
+  --radius-sm: 6px;   /* buttons, badges, inputs */
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -15,8 +22,8 @@ html, body, #root {
 }
 
 body {
-  background: var(--bg-terminal, #22222A);
-  color: var(--fg, #F6F8F7);
+  background: var(--bg-terminal, #0b0d10);
+  color: var(--fg, #eef1f3);
 }
 
 /* Scrollbar styling */
@@ -55,7 +62,8 @@ body {
 }
 
 /* Session status — dots in a squircle that randomly twinkle: scale up and
-   shift from gray to white, each on its own offset. Kept very subtle.
+   bloom from a muted gray trough into the status hue (--tw-fill-peak), each on
+   its own offset and seeded per-session so no two shimmer alike. Kept subtle.
    --tw-max sets the per-state brightness ceiling. */
 @keyframes twinkle {
   0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--tw-fill, var(--fg-muted)); }

@@ -18,6 +18,7 @@ import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme } from '../themes'
 import type { OperatorTheme } from '../themes'
 import { LogoMark } from '../components/LogoMark'
+import { DragRegion } from '../components/DragRegion'
 
 interface TerminalTab {
   id: string
@@ -422,7 +423,7 @@ export function DashboardView() {
   }, [terminals])
 
   const handleToggleTheme = useCallback(() => {
-    const nextKey = currentTheme.isDark ? 'light' : 'mr-pink'
+    const nextKey = currentTheme.isDark ? 'light' : 'mission-control'
     const next = themes[nextKey]
     setCurrentTheme(next)
     applyTheme(next)
@@ -777,7 +778,7 @@ export function DashboardView() {
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck])
 
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-terminal)' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       <Sidebar
         sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
@@ -805,10 +806,10 @@ export function DashboardView() {
         onToggleTheme={handleToggleTheme}
       />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
-          <div data-tauri-drag-region style={{ height: 40, flexShrink: 0 }} />
+          <DragRegion style={{ height: 40, flexShrink: 0 }} />
         )}
 
         {contentMode === 'pendingSession' && pendingSession && (
