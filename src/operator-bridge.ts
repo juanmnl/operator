@@ -64,10 +64,16 @@ export function installBridge(): void {
     // The dev-server port registry: terminal id → port Operator reserved for it.
     getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
     onTerminalData: (cb: (id: string, data: string) => void): Unsub => {
-      const p = listen<{ id: string; data: number[] }>('terminal:data', (e) => {
+      const p = listen<{ id: string; data: string }>('terminal:data', (e) => {
         let d = decoders.get(e.payload.id)
         if (!d) { d = new TextDecoder(); decoders.set(e.payload.id, d) }
-        cb(e.payload.id, d.decode(new Uint8Array(e.payload.data), { stream: true }))
+        // Backend ships base64 (see TerminalDataPayload). Native atob → bytes →
+        // streaming UTF-8 decode (stream:true stitches multibyte chars split
+        // across reads, same as before).
+        const bin = atob(e.payload.data)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        cb(e.payload.id, d.decode(bytes, { stream: true }))
       })
       return () => { void p.then((f) => f()) }
     },

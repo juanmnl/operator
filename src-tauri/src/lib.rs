@@ -93,7 +93,11 @@ impl PtyManager {
 #[derive(Clone, Serialize)]
 struct TerminalDataPayload {
     id: String,
-    data: Vec<u8>,
+    /// pty output as base64. Shipping raw `Vec<u8>` over Tauri's JSON event
+    /// channel expands each byte to "NNN," (~4 chars) and makes V8 parse every
+    /// number — brutal at Claude Code's redraw volume. base64 is ~1.33 chars/byte
+    /// and decodes via native atob, so the hot path stays cheap.
+    data: String,
 }
 
 // --- Terminal commands ------------------------------------------------------
@@ -167,7 +171,9 @@ fn terminal_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
-                    let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data: buf[..n].to_vec() });
+                    use base64::Engine;
+                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
                 }
             }
         }
