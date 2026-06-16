@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* Window drag strips signal draggability with a grab cursor (grabbing on press).
+   Interactive children (buttons/inputs) override with their own pointer cursor. */
+.drag-region { cursor: grab; }
+.drag-region:active { cursor: grabbing; }
+
 /* Corner-radius scale — softens the layout's hard edges. Theme-independent. */
 :root {
   --radius-lg: 12px;  /* floating panels / content card */
