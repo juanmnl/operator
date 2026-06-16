@@ -48,6 +48,9 @@ declare global {
       agentDelete: (path: string) => Promise<{ ok: boolean; error?: string }>
       getUsageStats: (days?: number) => Promise<UsageStats>
       getUsageInsights: (days?: number) => Promise<UsageInsights>
+      /** Durable, crash-safe session snapshot (~/.operator/sessions.json). */
+      saveSessions: (sessions: unknown[]) => void
+      loadSessions: () => Promise<unknown[]>
     }
   }
 }

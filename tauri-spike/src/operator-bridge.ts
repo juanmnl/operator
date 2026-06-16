@@ -136,6 +136,8 @@ export function installBridge(): void {
     agentDelete: (path: string) => invoke('agent_delete', { path }),
     getUsageStats: (days?: number) => invoke('get_usage_stats', { days: days ?? null }),
     getUsageInsights: (days?: number) => invoke('get_usage_insights', { days: days ?? null }),
+    saveSessions: (sessions: unknown[]) => { void invoke('save_sessions', { sessions }) },
+    loadSessions: () => invoke('load_sessions') as Promise<unknown[]>,
     folderPrefsLoad: (projectPath: string) => invoke('folder_prefs_load', { projectPath }),
     folderPrefsLoadGlobal: () => invoke('folder_prefs_load_global'),
     folderPrefsSaveSettings: (filePath: string, settings: unknown) => invoke('folder_prefs_save_settings', { path: filePath, settings }).then(() => undefined),

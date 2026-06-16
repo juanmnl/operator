@@ -247,12 +247,28 @@ export function DashboardView() {
   })
 
   // Sessions that were open in a previous run, restorable on this launch.
+  // Seeded from localStorage for instant render, then reconciled against the
+  // durable file store (~/.operator/sessions.json) once hydrated below.
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => {
     try {
       const raw = localStorage.getItem('operator.savedSessions')
       return raw ? JSON.parse(raw) : []
     } catch { return [] }
   })
+  // Block file-writes until the durable store has been read, so we never clobber
+  // it with the (possibly staler) localStorage seed on launch.
+  const [savedHydrated, setSavedHydrated] = useState(false)
+  useEffect(() => {
+    const p = window.operator.loadSessions?.()
+    if (p) {
+      p.then((list) => {
+        if (Array.isArray(list) && list.length) setSavedSessions(list as SavedSession[])
+        setSavedHydrated(true)
+      }).catch(() => setSavedHydrated(true))
+    } else {
+      setSavedHydrated(true) // no file store (e.g. Electron) — localStorage only
+    }
+  }, [])
 
   const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig) => {
     // Write effort level to global settings (Claude Code reads it from there)
@@ -377,6 +393,7 @@ export function DashboardView() {
     setSavedSessions((prev) => {
       const next = prev.filter((s) => s.key !== key)
       try { localStorage.setItem('operator.savedSessions', JSON.stringify(next)) } catch { /* quota */ }
+      window.operator.saveSessions?.(next) // keep the durable store in sync
       return next
     })
   }, [])
@@ -565,6 +582,7 @@ export function DashboardView() {
   // restart. Enriched with the live Claude session id to enable resume.
   const savedSerRef = useRef<string>('')
   useEffect(() => {
+    if (!savedHydrated) return // wait for the durable store so we don't overwrite it
     setSavedSessions((prev) => {
       const liveByKey = new Map<string, SavedSession>()
       for (const t of terminals) {
@@ -591,9 +609,10 @@ export function DashboardView() {
       if (ser === savedSerRef.current) return prev
       savedSerRef.current = ser
       try { localStorage.setItem('operator.savedSessions', JSON.stringify(merged)) } catch { /* quota */ }
+      window.operator.saveSessions?.(merged) // durable, crash-safe file write
       return merged
     })
-  }, [terminals, sessions, customNames])
+  }, [terminals, sessions, customNames, savedHydrated])
 
   // Reset "Copied!" label 2s after a copy, with cleanup on unmount / re-copy
   useEffect(() => {

@@ -257,6 +257,38 @@ fn respond(id: String, approve: bool, hook: State<HookState>) {
     }
 }
 
+// --- Durable session snapshot (~/.operator/sessions.json) --------------------
+// A crash-safe source of truth for "continue where you left off", written
+// synchronously (atomic temp+rename) on every change — unlike webview
+// localStorage, which can lazily persist and lose the last writes on a hard kill.
+
+fn sessions_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::Path::new(&home).join(".operator").join("sessions.json")
+}
+
+#[tauri::command]
+fn save_sessions(sessions: serde_json::Value) {
+    let path = sessions_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&sessions) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, &path); // atomic swap
+        }
+    }
+}
+
+#[tauri::command]
+fn load_sessions() -> serde_json::Value {
+    std::fs::read_to_string(sessions_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::Value::Array(vec![]))
+}
+
 // --- Agents / usage / folder-prefs commands ---------------------------------
 
 #[tauri::command]
@@ -496,7 +528,9 @@ pub fn run() {
             folder_prefs_save_md,
             folder_prefs_create_file,
             get_mcp_servers,
-            respond
+            respond,
+            save_sessions,
+            load_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
