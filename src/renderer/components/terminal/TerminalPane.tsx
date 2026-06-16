@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -26,7 +26,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
-  const webglRef = useRef<WebglAddon | null>(null)
+  const webglRef = useRef<CanvasAddon | null>(null)
   const atlasTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // The WebGL renderer caches rasterized glyphs in a GPU texture atlas. In
@@ -78,8 +78,14 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       // SF Mono's 700 bold reads chunky next to its regular; 600 keeps Claude
       // Code's frequent bold emphasis distinct without the clobbered look. Bold
       // stays in the same hue (no bright-colour shift) so it reads as weight only.
-      fontWeight: 400,
-      fontWeightBold: 600,
+      // The canvas renderer rasterizes glyphs heavier than the old WebGL atlas
+      // (WebKit's canvas fillText is darker), so the SAME font reads bold/muddy
+      // here at the weight that looked crisp under WebGL. Push normal text right
+      // down to 100 to net out near the old WebGL-400 crispness; bold stays at 500
+      // so emphasis still reads as weight without going chunky next to the lighter
+      // body.
+      fontWeight: 100,
+      fontWeightBold: 500,
       drawBoldTextInBrightColors: false,
       cursorBlink: true,
       cursorStyle: 'bar',
@@ -87,9 +93,10 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       macOptionIsMeta: true,
       scrollback: 10000,
       // Claude Code emits dim/gray secondary text (rendered at reduced alpha). On
-      // a light background that washes out, and even on dark the dimmest grays can
-      // drop below legibility — lift the floor a touch on dark, push to AA on light.
-      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1.15,
+      // a light background that washes out, so push to AA there. On dark, drop the
+      // boost entirely (1 = off): the canvas renderer already darkens glyphs, and
+      // any contrast lift whitens/thickens the dim text, compounding the bold look.
+      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
     })
 
     const fitAddon = new FitAddon()
@@ -103,19 +110,17 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     term.open(containerRef.current)
 
-    // Use the WebGL renderer: it draws box-drawing/block characters as seamless
-    // custom glyphs (the input-box borders and separators render as continuous
-    // lines, not dashes — the DOM renderer can't do this) and rasterizes glyphs
-    // through the font stack so the emoji fallback applies. The context-loss
-    // handler disposes the addon if the GL context drops, so xterm falls back to
-    // the DOM renderer instead of drawing into a dead context (stale/garbled cells).
+    // SPIKE: Canvas renderer instead of WebGL. The WebGL atlas corrupts in
+    // WKWebView (tofu/garbled cells near the input); the 2D-canvas renderer keeps
+    // box-drawing/block characters as seamless custom glyphs and rasterizes
+    // through the font stack (emoji fallback) WITHOUT a GPU glyph atlas, so it
+    // can't hit the atlas-corruption bug at all.
     try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => { webgl.dispose(); webglRef.current = null })
-      term.loadAddon(webgl)
-      webglRef.current = webgl
+      const canvas = new CanvasAddon()
+      term.loadAddon(canvas)
+      webglRef.current = canvas
     } catch {
-      // WebGL unavailable — xterm keeps the DOM renderer.
+      // Canvas unavailable — xterm keeps the DOM renderer.
     }
 
     // Re-assert cursorBlink (loading a renderer addon can reset terminal options).
