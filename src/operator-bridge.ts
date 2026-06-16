@@ -11,8 +11,13 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { check, type Update } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
 
 type Unsub = () => void
+
+// The pending update found by checkUpdate(), installed by installUpdate().
+let pendingUpdate: Update | null = null
 
 function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): string[] {
   const args: string[] = []
@@ -138,6 +143,19 @@ export function installBridge(): void {
     getUsageInsights: (days?: number) => invoke('get_usage_insights', { days: days ?? null }),
     saveSessions: (sessions: unknown[]) => { void invoke('save_sessions', { sessions }) },
     loadSessions: () => invoke('load_sessions') as Promise<unknown[]>,
+
+    // Auto-update: check the public releases feed; install + relaunch on demand.
+    checkUpdate: async () => {
+      try {
+        pendingUpdate = await check()
+        return pendingUpdate ? { version: pendingUpdate.version } : null
+      } catch { return null }
+    },
+    installUpdate: async () => {
+      if (!pendingUpdate) return
+      await pendingUpdate.downloadAndInstall()
+      await relaunch()
+    },
     folderPrefsLoad: (projectPath: string) => invoke('folder_prefs_load', { projectPath }),
     folderPrefsLoadGlobal: () => invoke('folder_prefs_load_global'),
     folderPrefsSaveSettings: (filePath: string, settings: unknown) => invoke('folder_prefs_save_settings', { path: filePath, settings }).then(() => undefined),

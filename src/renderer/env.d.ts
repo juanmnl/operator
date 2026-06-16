@@ -51,6 +51,9 @@ declare global {
       /** Durable, crash-safe session snapshot (~/.operator/sessions.json). */
       saveSessions: (sessions: unknown[]) => void
       loadSessions: () => Promise<unknown[]>
+      /** Auto-update against the public releases feed. */
+      checkUpdate: () => Promise<{ version: string } | null>
+      installUpdate: () => Promise<void>
     }
   }
 }

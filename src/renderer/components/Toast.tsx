@@ -7,6 +7,8 @@ export interface ToastMessage {
   kind?: 'info' | 'success' | 'error'
   /** Optional small detail line under the main text. */
   detail?: string
+  /** Optional action button; while present the toast stays until acted on/dismissed. */
+  action?: { label: string; run: () => void }
 }
 
 interface ToastsProps {
@@ -40,9 +42,10 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
 
   useEffect(() => {
     const enter = requestAnimationFrame(() => setEntered(true))
-    const exit = setTimeout(onDismiss, 3500)
-    return () => { cancelAnimationFrame(enter); clearTimeout(exit) }
-  }, [onDismiss])
+    // Actionable toasts stay until the user acts or dismisses.
+    const exit = message.action ? undefined : setTimeout(onDismiss, 3500)
+    return () => { cancelAnimationFrame(enter); if (exit) clearTimeout(exit) }
+  }, [onDismiss, message.action])
 
   return (
     <div
@@ -80,6 +83,18 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
           </div>
         )}
       </div>
+      {message.action && (
+        <button
+          onClick={(e) => { e.stopPropagation(); message.action!.run() }}
+          style={{
+            flexShrink: 0, alignSelf: 'center', padding: '4px 10px', fontSize: 11, fontWeight: 500,
+            fontFamily: 'inherit', cursor: 'pointer', borderRadius: 5,
+            background: 'var(--accent)', color: 'var(--fg-on-accent)', border: 'none',
+          }}
+        >
+          {message.action.label}
+        </button>
+      )}
     </div>
   )
 }

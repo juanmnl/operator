@@ -47,6 +47,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Updater bundle signing (createUpdaterArtifacts).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # Just build + sign + notarize here; publishing is handled below so the
           # release lands in the PUBLIC repo, not this private one.
@@ -69,10 +72,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
         run: |
-          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)
-          echo "Publishing $DMG to operator-releases @ ${GITHUB_REF_NAME}"
-          gh release create "$GITHUB_REF_NAME" "$DMG" \
+          BUNDLE=src-tauri/target/aarch64-apple-darwin/release/bundle
+          DMG=$(ls "$BUNDLE"/dmg/*.dmg | head -1)
+          TARGZ=$(ls "$BUNDLE"/macos/*.app.tar.gz | head -1)
+          SIG=$(cat "$BUNDLE"/macos/*.app.tar.gz.sig)
+          VERSION=${GITHUB_REF_NAME#v}
+          # latest.json drives the in-app auto-updater (endpoint = this repo's latest release).
+          jq -n --arg v "$VERSION" --arg sig "$SIG" \
+            --arg url "https://github.com/juanmnl/operator-releases/releases/download/${GITHUB_REF_NAME}/Operator.app.tar.gz" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version:$v, notes:("Operator " + $v), pub_date:$date, platforms:{"darwin-aarch64":{signature:$sig, url:$url}}}' \
+            > latest.json
+          echo "Publishing $DMG + updater bundle to operator-releases @ ${GITHUB_REF_NAME}"
+          gh release create "$GITHUB_REF_NAME" "$DMG" "$TARGZ" latest.json \
             --repo juanmnl/operator-releases \
             --title "Operator ${GITHUB_REF_NAME}" \
-            --notes "Signed & notarized macOS build (Apple Silicon). Download the .dmg below." \
+            --notes "Signed & notarized macOS build (Apple Silicon). Auto-update enabled." \
             --verify-tag=false

@@ -354,14 +354,36 @@ pub fn start_tailer(app: tauri::AppHandle) {
             }
 
             if any_dirty {
-                let active = sessions.get_active();
-                // Menu-bar tray shows the live active-session count.
-                if let Some(tray) = app.tray_by_id("operator") {
-                    let n = active.len();
-                    let _ = tray.set_title(Some(if n > 0 { n.to_string() } else { String::new() }));
-                }
-                let _ = app.emit("session:update", active);
+                // Tray menu: one item per active session showing its state.
+                let entries: Vec<(String, String)> = tracks
+                    .values()
+                    .filter(|t| !t.ended)
+                    .map(|t| {
+                        let proj = t.cwd.rsplit('/').next().unwrap_or(&t.cwd);
+                        (format!("session:{}", t.terminal_id), format!("{}  ·  {}", proj, t.last_phase))
+                    })
+                    .collect();
+                refresh_tray_menu(&app, &entries);
+                let _ = app.emit("session:update", sessions.get_active());
             }
         }
     });
+}
+
+/// Rebuild the tray's menu to list the active sessions and their states.
+fn refresh_tray_menu(app: &tauri::AppHandle, sessions: &[(String, String)]) {
+    use tauri::menu::MenuBuilder;
+    let Some(tray) = app.tray_by_id("operator") else { return };
+    let mut b = MenuBuilder::new(app).text("show", "Show Operator").separator();
+    if sessions.is_empty() {
+        b = b.text("none", "No active sessions").separator();
+    } else {
+        for (id, label) in sessions {
+            b = b.text(id, label);
+        }
+        b = b.separator();
+    }
+    if let Ok(menu) = b.quit().build() {
+        let _ = tray.set_menu(Some(menu));
+    }
 }

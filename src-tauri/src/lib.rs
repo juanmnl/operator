@@ -445,35 +445,28 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-// Menu-bar tray icon (the active-session count is set by the transcript tailer).
+// Menu-bar tray icon: the dot-circle logo (no count). Clicking it opens a menu
+// listing the active sessions and their states — rebuilt by the transcript
+// tailer via transcript::refresh_tray_menu. Clicking an item focuses the app.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::image::Image;
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::menu::MenuBuilder;
+    use tauri::tray::TrayIconBuilder;
 
     let h = app.handle();
-    let show = MenuItem::with_id(h, "show", "Show Operator", true, None::<&str>)?;
-    let quit = PredefinedMenuItem::quit(h, Some("Quit Operator"))?;
-    let menu = Menu::with_items(h, &[&show, &quit])?;
+    let menu = MenuBuilder::new(h).text("show", "Show Operator").separator().quit().build()?;
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
     TrayIconBuilder::with_id("operator")
         .icon(icon)
         .icon_as_template(true)
-        .tooltip("Operator — active sessions")
+        .tooltip("Operator")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(true) // click → show active sessions + states
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "show" {
+            let id = event.id().as_ref();
+            if id == "show" || id.starts_with("session:") {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                if let Some(w) = tray.app_handle().get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
@@ -488,6 +481,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Arc::new(PtyManager::default()))
         .manage(HookState::default())
         .manage(Sessions::default())

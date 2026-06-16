@@ -624,6 +624,18 @@ export function DashboardView() {
     return () => clearTimeout(t)
   }, [copied])
 
+  // Check for an app update on launch; prompt to install + restart if available.
+  useEffect(() => {
+    window.operator.checkUpdate?.().then((u) => {
+      if (!u) return
+      pushToast({
+        text: `Update ${u.version} available`,
+        detail: 'Install and restart Operator.',
+        action: { label: 'Install & Restart', run: () => { void window.operator.installUpdate() } },
+      })
+    }).catch(() => { /* offline / no updater */ })
+  }, [pushToast])
+
   // "Ready for review" detection — watch worktree sessions transitioning to idle
   // with uncommitted changes. Show one in-app toast per (terminalId, idle-arrival).
   const lastPhaseRef = useRef<Record<string, string>>({})
