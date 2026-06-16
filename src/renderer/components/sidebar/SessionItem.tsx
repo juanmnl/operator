@@ -107,7 +107,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         outline: 'none',
       }}
     >
-      <StatusWave status={status} />
+      <StatusWave status={status} seed={session.id} />
       <span
         style={{
           flex: 1,

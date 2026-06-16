@@ -42,24 +42,40 @@ function rand(seed: number): number {
   return x - Math.floor(x)
 }
 
-export function StatusWave({ status, size = 13 }: { status: WaveStatus; size?: number }) {
+// Fold a session id (or any string) into a stable numeric offset. Sessions with
+// different ids land on different parts of the sine curve, so their dot timings
+// diverge — each session's wave gets its own rhythm instead of marching in sync.
+function hashSeed(seed: string | number): number {
+  if (typeof seed === 'number') return seed
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1000003
+  return h
+}
+
+export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus; size?: number; seed?: string | number }) {
   const cfg = config[status]
 
-  const dots = useMemo(() => DOTS.map((d, i) => {
-    if (!cfg.animate) {
-      return { ...d, style: { opacity: cfg.staticOp, fill: 'var(--fg-muted)' } as React.CSSProperties }
-    }
-    const dur = cfg.durMin + rand(i + 1) * (cfg.durMax - cfg.durMin)
-    const delay = -rand(i + 7) * dur // negative → start mid-cycle, desynced
-    return {
-      ...d,
-      style: {
-        transformBox: 'fill-box',
-        transformOrigin: 'center',
-        animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
-      } as React.CSSProperties,
-    }
-  }), [status]) // eslint-disable-line react-hooks/exhaustive-deps
+  const dots = useMemo(() => {
+    const s = hashSeed(seed)
+    // A gentle per-session tempo so two running sessions don't pulse in lockstep:
+    // some breathe a touch faster, some slower.
+    const tempo = 0.82 + rand(s + 0.5) * 0.42 // ~[0.82, 1.24]
+    return DOTS.map((d, i) => {
+      if (!cfg.animate) {
+        return { ...d, style: { opacity: cfg.staticOp, fill: 'var(--fg-muted)' } as React.CSSProperties }
+      }
+      const dur = (cfg.durMin + rand(i + 1 + s) * (cfg.durMax - cfg.durMin)) * tempo
+      const delay = -rand(i + 7 + s * 1.7) * dur // negative → start mid-cycle, desynced
+      return {
+        ...d,
+        style: {
+          transformBox: 'fill-box',
+          transformOrigin: 'center',
+          animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
+        } as React.CSSProperties,
+      }
+    })
+  }, [status, seed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <span style={{

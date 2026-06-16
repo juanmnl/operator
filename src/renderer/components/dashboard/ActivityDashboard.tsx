@@ -83,7 +83,7 @@ export function ActivityDashboard({ sessions, customNames, onSelectSession, onNe
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-surface)' }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
             >
-              <StatusWave status={waveStatus(session)} size={15} />
+              <StatusWave status={waveStatus(session)} size={15} seed={session.id} />
 
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
