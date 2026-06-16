@@ -10,13 +10,18 @@ const CENTER = (CELLS - 1) / 2 + 0.5 // grid centre in dot-centre coords
 const RADIUS = 3.4 // circle radius in cell units
 const R = 0.5 // dot radius in cell units
 
-const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string }> = {
+// `fill` tints the resting dots; `fillPeak` tints the dots as they scale up (the
+// twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
+const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
   // Activity → twinkle. Everything at rest (idle/error/ended) → static dots.
-  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5 },
-  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5 },
-  // Waiting for the user's reply → twinkle in the accent colour so it reads as
-  // "your turn" rather than the neutral gray shimmer of Claude working.
-  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, fill: 'var(--accent)' },
+  // Each active state owns a colour for the dots that scale up, so a glance at
+  // the sidebar reads the state: green = Claude working, amber = compacting,
+  // accent = your turn. Resting dots stay neutral gray; only the peak is tinted.
+  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
+  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
+  // Waiting for the user's reply → twinkle in the waiting hue (both resting and
+  // peak) so it reads as "your turn" and stands apart from Claude's working shimmer.
+  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, fill: 'var(--status-waiting, var(--accent))', fillPeak: 'var(--status-waiting, var(--accent))' },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
@@ -81,9 +86,11 @@ export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus
     <span style={{
       flexShrink: 0, display: 'inline-flex', lineHeight: 0,
       ['--tw-max' as string]: cfg.maxOp,
-      // The twinkle keyframe reads fill from --tw-fill/--tw-fill-peak; set them so
-      // an animated state (e.g. waiting) tints accent instead of the gray→white default.
-      ...(cfg.fill ? { ['--tw-fill' as string]: cfg.fill, ['--tw-fill-peak' as string]: cfg.fill } : null),
+      // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
+      // (scaled-up). Set per state: resting tint only for waiting, peak tint for any
+      // active state so the dots that grow take on the status colour.
+      ...(cfg.fill ? { ['--tw-fill' as string]: cfg.fill } : null),
+      ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: cfg.fillPeak } : null),
     }}>
       <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
         <g fill="var(--fg)">
