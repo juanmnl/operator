@@ -28,6 +28,12 @@ jobs:
         working-directory: tauri-spike
         run: npm ci
 
+      # The shared renderer lives at repo root (src/renderer) but its deps are in
+      # tauri-spike/node_modules; point the root's node_modules there so tsc/vite
+      # resolve react, xterm, etc. (Removed once the renderer is consolidated.)
+      - name: Link node_modules for the shared renderer
+        run: ln -sfn tauri-spike/node_modules node_modules
+
       # Decode the App Store Connect API key (.p8) for notarization, if present.
       - name: Prepare notarization key
         if: ${{ env.KEY_B64 != '' }}
