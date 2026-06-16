@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
 
-type DotStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended'
+type DotStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
 
 interface SessionItemProps {
   session: AgentSession
@@ -25,6 +25,7 @@ function getDotStatus(session: AgentSession): DotStatus {
   switch (session.phase) {
     case 'running': return 'running'
     case 'compacting': return 'compacting'
+    case 'waiting': return 'waiting'
     default: return 'idle'
   }
 }
@@ -142,7 +143,11 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           />
         ) : (
           <>
-            {label}
+            {/* Waiting for a reply → tint the name the same accent as its status
+                dot so the eye is drawn to the session that needs you. */}
+            <span style={status === 'waiting' ? { color: 'var(--accent)', fontWeight: 600 } : undefined}>
+              {label}
+            </span>
             {toolLabel && (
               <span style={{ color: 'var(--fg-muted)', fontSize: 10 }}>{toolLabel}</span>
             )}

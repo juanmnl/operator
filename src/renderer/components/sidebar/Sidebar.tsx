@@ -20,6 +20,7 @@ interface SidebarProps {
   /** Counts for the bottom status row. */
   stats: { activeSessions: number }
   isDark: boolean
+  onShowDashboard: () => void
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
@@ -32,7 +33,7 @@ interface SidebarProps {
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -71,10 +72,22 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           paddingTop: 40,
         }}
       >
-        <LogoMark size={16} animated={false} />
-        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
-          Operator
-        </span>
+        <button
+          onClick={onShowDashboard}
+          title="Active sessions"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: 'none', border: 'none', padding: 0, margin: 0,
+            cursor: 'pointer', fontFamily: 'inherit',
+            // @ts-expect-error Electron-specific CSS property
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          <LogoMark size={16} animated={false} />
+          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
+            Operator
+          </span>
+        </button>
         <button
           onClick={onToggleTheme}
           title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}

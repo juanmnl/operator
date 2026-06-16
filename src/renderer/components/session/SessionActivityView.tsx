@@ -308,14 +308,15 @@ function StatusTag({ status }: { status: ActivityEntry['status'] }) {
 function StatusDot({ phase }: { phase: string }) {
   const isRunning = phase === 'running'
   const isCompacting = phase === 'compacting'
-  const color = isRunning ? 'var(--green)' : isCompacting ? 'var(--cyan)' : 'var(--fg-muted)'
+  const isWaiting = phase === 'waiting'
+  const color = isRunning ? 'var(--green)' : isCompacting ? 'var(--cyan)' : isWaiting ? 'var(--accent)' : 'var(--fg-muted)'
   return (
     <span style={{
       width: 7, height: 7, borderRadius: '50%',
       background: 'transparent', border: `1.5px solid ${color}`,
       boxSizing: 'border-box',
       flexShrink: 0,
-      animation: isRunning ? 'pulse 1.5s ease-in-out infinite' : undefined,
+      animation: isRunning || isWaiting ? 'pulse 1.5s ease-in-out infinite' : undefined,
     }} />
   )
 }

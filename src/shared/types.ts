@@ -1,6 +1,6 @@
 export type Severity = 'low' | 'medium' | 'high'
 
-export type SessionPhase = 'idle' | 'running' | 'compacting'
+export type SessionPhase = 'idle' | 'running' | 'compacting' | 'waiting'
 export type SessionStatus = 'active' | 'ended'
 
 export interface RequestOption {

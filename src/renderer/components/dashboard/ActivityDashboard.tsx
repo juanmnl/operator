@@ -1,4 +1,5 @@
 import type { AgentSession } from '../../../shared/types'
+import { StatusWave, WaveStatus } from '../sidebar/StatusWave'
 
 interface ActivityDashboardProps {
   sessions: AgentSession[]
@@ -18,11 +19,13 @@ function relativeTime(iso: string): string {
   return `${Math.round(h / 24)}d ago`
 }
 
-function phaseColor(phase: string): string {
-  switch (phase) {
-    case 'running': return 'var(--color-success)'
-    case 'compacting': return 'var(--cyan)'
-    default: return 'var(--fg-muted)'
+function waveStatus(session: AgentSession): WaveStatus {
+  if (session.status === 'ended') return 'ended'
+  switch (session.phase) {
+    case 'running': return 'running'
+    case 'compacting': return 'compacting'
+    case 'waiting': return 'waiting'
+    default: return 'idle'
   }
 }
 
@@ -64,7 +67,6 @@ export function ActivityDashboard({ sessions, customNames, onSelectSession, onNe
           const lastActivity = session.activity?.length
             ? session.activity[session.activity.length - 1]
             : null
-          const isRunning = session.phase === 'running'
 
           return (
             <button
@@ -81,13 +83,7 @@ export function ActivityDashboard({ sessions, customNames, onSelectSession, onNe
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-surface)' }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
             >
-              <span style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: phaseColor(session.phase),
-                opacity: session.phase === 'idle' ? 0.4 : 1,
-                animation: isRunning ? 'pulse 1.5s ease-in-out infinite' : undefined,
-                flexShrink: 0,
-              }} />
+              <StatusWave status={waveStatus(session)} size={15} />
 
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

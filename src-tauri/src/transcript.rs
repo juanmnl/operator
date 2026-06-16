@@ -247,7 +247,9 @@ impl Track {
         if self.last_was_user_prompt {
             return "running"; // prompt sent, response not started yet
         }
-        "idle"
+        // Called only while the pty is quiet: the assistant turn has ended and
+        // nothing is streaming, so the session is waiting for the user's reply.
+        "waiting"
     }
 
     fn to_session(&self, phase: &str) -> AgentSession {

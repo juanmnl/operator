@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended'
+export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
 
 // A circle of grid dots. Active states twinkle at random — scaling and shifting
 // gray→white — for a subtle "thinking" shimmer; resting states show the same
@@ -10,10 +10,13 @@ const CENTER = (CELLS - 1) / 2 + 0.5 // grid centre in dot-centre coords
 const RADIUS = 3.4 // circle radius in cell units
 const R = 0.5 // dot radius in cell units
 
-const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number }> = {
+const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string }> = {
   // Activity → twinkle. Everything at rest (idle/error/ended) → static dots.
   running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5 },
   compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5 },
+  // Waiting for the user's reply → twinkle in the accent colour so it reads as
+  // "your turn" rather than the neutral gray shimmer of Claude working.
+  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, fill: 'var(--accent)' },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
@@ -54,6 +57,7 @@ export function StatusWave({ status, size = 13 }: { status: WaveStatus; size?: n
         transformBox: 'fill-box',
         transformOrigin: 'center',
         animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
+        ...(cfg.fill ? { fill: cfg.fill } : null),
       } as React.CSSProperties,
     }
   }), [status]) // eslint-disable-line react-hooks/exhaustive-deps

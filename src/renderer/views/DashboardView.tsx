@@ -196,6 +196,19 @@ export function DashboardView() {
     setPendingSession(null)
   }, [])
 
+  // Clicking the "Operator" header clears every view so the content area falls
+  // through to the splash — the live active-sessions dashboard.
+  const handleShowDashboard = useCallback(() => {
+    setPrefsViewActive(false)
+    setAgentsViewActive(false)
+    setUsageViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+    setPendingSession(null)
+  }, [])
+
   const rememberRecent = useCallback((cwd: string) => {
     try {
       const raw = localStorage.getItem('operator.recentProjects')
@@ -416,6 +429,14 @@ export function DashboardView() {
     localStorage.setItem('operator.theme', nextKey)
   }, [currentTheme])
 
+  const handleSelectTheme = useCallback((key: string) => {
+    const next = themes[key]
+    if (!next) return
+    setCurrentTheme(next)
+    applyTheme(next)
+    localStorage.setItem('operator.theme', key)
+  }, [])
+
   // Build effort level map from terminal tabs (keyed by terminalId)
   const effortLevels: Record<string, string> = {}
   // Fan-out membership map (keyed by terminalId) for the per-agent badge.
@@ -573,7 +594,7 @@ export function DashboardView() {
       if (!session) continue
       const prevPhase = lastPhaseRef.current[tab.id]
       lastPhaseRef.current[tab.id] = session.phase
-      if (prevPhase === 'running' && session.phase === 'idle') {
+      if (prevPhase === 'running' && session.phase === 'waiting') {
         // Verify changes exist before notifying; key by terminal+timestamp so each idle arrival fires once.
         const key = `${tab.id}-${session.lastActivityAt}`
         if (notifiedRef.current.has(key)) continue
@@ -723,8 +744,20 @@ export function DashboardView() {
       { id: 'theme', group: 'View', label: currentTheme.isDark ? 'Switch to light mode' : 'Switch to dark mode', run: handleToggleTheme },
     )
 
+    // One entry per registered theme, so every palette (incl. Mission Control
+    // and 1984) is reachable — not just the binary light/dark toggle.
+    Object.entries(themes).forEach(([key, theme]) => {
+      actions.push({
+        id: `theme-${key}`,
+        group: 'View',
+        label: `Theme: ${theme.name}${theme === currentTheme ? ' ✓' : ''}`,
+        detail: theme.isDark ? 'Dark' : 'Light',
+        run: () => handleSelectTheme(key),
+      })
+    })
+
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme])
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-terminal)' }}>
@@ -742,6 +775,7 @@ export function DashboardView() {
         shortcutIndices={shortcutIndices}
         stats={sidebarStats}
         isDark={currentTheme.isDark}
+        onShowDashboard={handleShowDashboard}
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}

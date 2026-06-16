@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -71,15 +70,12 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     term.open(containerRef.current)
 
-    // Try WebGL, fall back to canvas
-    try {
-      term.loadAddon(new WebglAddon())
-    } catch {
-      // WebGL not available, using canvas renderer
-    }
-
-    // Re-assert cursorBlink after WebGL addon (can reset it)
-    term.options.cursorBlink = true
+    // Intentionally NOT loading the WebGL renderer. In a Tauri/WKWebView window
+    // its texture-atlas + cell-clear path drops glyphs and leaves stale cells
+    // behind (truncated text, leftover gutter marks, garbled redraws, tofu for
+    // emoji it can't rasterize). The default DOM renderer repaints through the
+    // browser's text pipeline — slightly less GPU-efficient, but correct and
+    // smooth enough for a TUI, and it inherits system font fallback for emoji.
 
     termRef.current = term
     fitRef.current = fitAddon

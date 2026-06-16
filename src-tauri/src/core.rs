@@ -40,7 +40,7 @@ pub struct AgentSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     status: String, // active | ended
-    phase: String,  // idle | running | compacting
+    phase: String,  // idle | running | compacting | waiting
     activity: Vec<ActivityEntry>,
     active_subagents: i32,
     last_tool_name: Option<String>,

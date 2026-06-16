@@ -83,6 +83,45 @@ Without those variables the build still produces a signed (un-notarized) `.app` 
 
 React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, a transcript tailer that rebuilds the session timeline, an optional `tiny_http` server for the permission hook, and `serde`/`serde_yaml` for rules, the agent library, and the durable session store. The build produces a ~10 MB signed app.
 
+### Brand & assets
+
+All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circle — a "frozen twinkle" (each dot a different size/opacity) — the same geometry the app animates live in the sidebar (`LogoMark`) and per-session status (`StatusWave`).
+
+<table>
+  <tr>
+    <th align="left">Asset</th>
+    <th align="center">Preview</th>
+    <th align="left">Files</th>
+  </tr>
+  <tr>
+    <td><strong>App icon</strong><br/>macOS app / Dock icon — cream rounded-rect, dark dot-circle.</td>
+    <td align="center"><img src="assets/logos/icon-source.svg" width="72" alt="Operator app icon" /></td>
+    <td><code>logos/icon-source.svg</code><br/><code>logos/icon-source.png</code> (1024²)<br/><code>logos/icon.icns</code></td>
+  </tr>
+  <tr>
+    <td><strong>Sidebar mark</strong><br/>The dot-circle on its own, transparent. Light dots for dark UI, dark dots for light UI.</td>
+    <td align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/logos/mark-128.png" />
+        <img src="assets/logos/mark-light-64.png" width="64" alt="Operator sidebar mark" />
+      </picture>
+    </td>
+    <td><code>logos/mark.svg</code> · <code>mark-light.svg</code><br/><code>logos/mark-64.png</code> · <code>mark-128.png</code><br/><code>logos/mark-light-64.png</code></td>
+  </tr>
+  <tr>
+    <td><strong>Menu-bar tray icon</strong><br/>Monochrome macOS template (auto light/dark).</td>
+    <td align="center"><img src="assets/logos/trayTemplate@2x.png" width="22" alt="Operator tray icon" /></td>
+    <td><code>logos/trayTemplate.png</code><br/><code>logos/trayTemplate@2x.png</code></td>
+  </tr>
+  <tr>
+    <td><strong>Status indicator</strong><br/>The six "thinking" shimmer frames behind the live session status.</td>
+    <td align="center"><img src="assets/status-indicator/state-1.svg" width="36" alt="Operator status indicator" /></td>
+    <td><code>status-indicator/state-1.svg</code> … <code>state-6.svg</code></td>
+  </tr>
+</table>
+
+> The dot-circle mark is generated from the same algorithm as the in-app `LogoMark` (37 dots, deterministic frozen-twinkle weighting). The older bars-in-circle logo (`logos/logo.svg`, `logo-64.png`, `logo-light-64.png`) is retained for reference but no longer used in the UI.
+
 ### License
 
 Private

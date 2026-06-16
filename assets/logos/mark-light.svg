@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 7 7">
+  <title>Operator mark</title>
+  <circle cx="0.5" cy="2.5" r="0.466" fill="#24292F" opacity="0.932"/>
+  <circle cx="0.5" cy="3.5" r="0.344" fill="#24292F" opacity="0.688"/>
+  <circle cx="0.5" cy="4.5" r="0.499" fill="#24292F" opacity="0.998"/>
+  <circle cx="1.5" cy="1.5" r="0.465" fill="#24292F" opacity="0.930"/>
+  <circle cx="1.5" cy="2.5" r="0.394" fill="#24292F" opacity="0.788"/>
+  <circle cx="1.5" cy="3.5" r="0.486" fill="#24292F" opacity="0.972"/>
+  <circle cx="1.5" cy="4.5" r="0.392" fill="#24292F" opacity="0.785"/>
+  <circle cx="1.5" cy="5.5" r="0.432" fill="#24292F" opacity="0.865"/>
+  <circle cx="2.5" cy="0.5" r="0.371" fill="#24292F" opacity="0.743"/>
+  <circle cx="2.5" cy="1.5" r="0.454" fill="#24292F" opacity="0.909"/>
+  <circle cx="2.5" cy="2.5" r="0.416" fill="#24292F" opacity="0.831"/>
+  <circle cx="2.5" cy="3.5" r="0.436" fill="#24292F" opacity="0.871"/>
+  <circle cx="2.5" cy="4.5" r="0.390" fill="#24292F" opacity="0.779"/>
+  <circle cx="2.5" cy="5.5" r="0.336" fill="#24292F" opacity="0.672"/>
+  <circle cx="2.5" cy="6.5" r="0.373" fill="#24292F" opacity="0.746"/>
+  <circle cx="3.5" cy="0.5" r="0.404" fill="#24292F" opacity="0.808"/>
+  <circle cx="3.5" cy="1.5" r="0.310" fill="#24292F" opacity="0.620"/>
+  <circle cx="3.5" cy="2.5" r="0.341" fill="#24292F" opacity="0.682"/>
+  <circle cx="3.5" cy="3.5" r="0.390" fill="#24292F" opacity="0.780"/>
+  <circle cx="3.5" cy="4.5" r="0.497" fill="#24292F" opacity="0.994"/>
+  <circle cx="3.5" cy="5.5" r="0.447" fill="#24292F" opacity="0.895"/>
+  <circle cx="3.5" cy="6.5" r="0.364" fill="#24292F" opacity="0.729"/>
+  <circle cx="4.5" cy="0.5" r="0.389" fill="#24292F" opacity="0.779"/>
+  <circle cx="4.5" cy="1.5" r="0.348" fill="#24292F" opacity="0.696"/>
+  <circle cx="4.5" cy="2.5" r="0.419" fill="#24292F" opacity="0.839"/>
+  <circle cx="4.5" cy="3.5" r="0.496" fill="#24292F" opacity="0.993"/>
+  <circle cx="4.5" cy="4.5" r="0.485" fill="#24292F" opacity="0.970"/>
+  <circle cx="4.5" cy="5.5" r="0.399" fill="#24292F" opacity="0.799"/>
+  <circle cx="4.5" cy="6.5" r="0.456" fill="#24292F" opacity="0.912"/>
+  <circle cx="5.5" cy="1.5" r="0.423" fill="#24292F" opacity="0.847"/>
+  <circle cx="5.5" cy="2.5" r="0.488" fill="#24292F" opacity="0.975"/>
+  <circle cx="5.5" cy="3.5" r="0.396" fill="#24292F" opacity="0.792"/>
+  <circle cx="5.5" cy="4.5" r="0.351" fill="#24292F" opacity="0.702"/>
+  <circle cx="5.5" cy="5.5" r="0.442" fill="#24292F" opacity="0.884"/>
+  <circle cx="6.5" cy="2.5" r="0.461" fill="#24292F" opacity="0.922"/>
+  <circle cx="6.5" cy="3.5" r="0.364" fill="#24292F" opacity="0.728"/>
+  <circle cx="6.5" cy="4.5" r="0.408" fill="#24292F" opacity="0.815"/>
+</svg>

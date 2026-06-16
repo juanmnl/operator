@@ -94,6 +94,13 @@ fn terminal_spawn(
     cmd.env("OPERATOR_TERMINAL_ID", &id);
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    // Claude Code gates its inline "prompt suggestions" (ghost-text you accept
+    // with Tab/Enter) on recognising the host terminal via TERM_PROGRAM, which a
+    // bare pty leaves unset. Identify as iTerm so the feature turns on; xterm.js
+    // handles the common iTerm sequences, and we only ever paste image *paths*
+    // (never the inline-image protocol), so impersonating it is safe here.
+    cmd.env("TERM_PROGRAM", "iTerm.app");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
