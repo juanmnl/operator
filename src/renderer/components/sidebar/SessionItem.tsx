@@ -97,7 +97,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         padding: '6px 12px 6px 10px',
         background: active ? 'var(--bg-surface)' : 'transparent',
         border: 'none',
-        borderRadius: 4,
+        borderRadius: 8,
         cursor: 'pointer',
         textAlign: 'left',
         fontFamily: 'inherit',
@@ -145,7 +145,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           <>
             {/* Waiting for a reply → tint the name the same accent as its status
                 dot so the eye is drawn to the session that needs you. */}
-            <span style={status === 'waiting' ? { color: 'var(--accent)' } : undefined}>
+            <span style={status === 'waiting' ? { color: 'var(--status-waiting)' } : undefined}>
               {label}
             </span>
             {toolLabel && (

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AgentSession } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
+import { DragRegion } from '../DragRegion'
 
 interface SidebarProps {
   sessions: AgentSession[]
@@ -53,7 +54,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         minWidth: 180,
         height: '100%',
         background: 'var(--bg-sidebar)',
-        borderRight: '1px solid var(--border)',
         display: 'flex',
         flexDirection: 'column',
         fontFamily: "'Inter', system-ui, sans-serif",
@@ -62,10 +62,10 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         WebkitAppRegion: 'drag',
       }}
     >
-      {/* Header — also the window drag handle (Tauri honors data-tauri-drag-region,
-          not Electron's -webkit-app-region; the buttons below stay clickable). */}
-      <div
-        data-tauri-drag-region
+      {/* Header — also the window drag handle. DragRegion drives startDragging()
+          on mousedown; the buttons below stay clickable (DragRegion ignores
+          presses that land on interactive children). */}
+      <DragRegion
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -112,7 +112,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             </svg>
           )}
         </button>
-      </div>
+      </DragRegion>
 
       {/* Sessions list */}
       <div
@@ -198,7 +198,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             border: 'none',
             cursor: 'pointer',
             padding: '3px 5px',
-            borderRadius: 3,
+            borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
             opacity: agentsViewActive ? 0.9 : 0.5,
@@ -221,7 +221,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             border: 'none',
             cursor: 'pointer',
             padding: '3px 5px',
-            borderRadius: 3,
+            borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
             opacity: usageViewActive ? 0.9 : 0.5,
@@ -244,7 +244,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             border: 'none',
             cursor: 'pointer',
             padding: '3px 5px',
-            borderRadius: 3,
+            borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
             opacity: globalPrefsActive ? 0.9 : 0.5,
@@ -265,7 +265,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             border: 'none',
             cursor: 'pointer',
             padding: '3px 5px',
-            borderRadius: 3,
+            borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
             opacity: prefsViewActive ? 0.9 : 0.5,
@@ -344,7 +344,7 @@ function FolderGroup({
             background: isPrefsActive ? 'rgba(255,255,255,0.08)' : 'none',
             border: 'none',
             padding: '2px 4px',
-            borderRadius: 3,
+            borderRadius: 8,
             cursor: 'pointer',
             opacity: hovered || isPrefsActive ? 0.8 : 0,
             transition: 'opacity 0.15s',

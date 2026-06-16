@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
@@ -87,6 +88,12 @@ export function installBridge(): void {
     },
     setActiveSession: () => {},
     showMainWindow: () => {},
+    // Start an OS window drag for the current gesture. Called from a mousedown on
+    // a titlebar/drag strip. We invoke startDragging() explicitly rather than rely
+    // on the data-tauri-drag-region attribute, whose handler goes dead on macOS
+    // after the first drag (the OS drag loop eats the mouseup) or after the strip
+    // remounts on a view switch — the exact "drag once, then nothing" symptom.
+    startWindowDrag: () => { void getCurrentWindow().startDragging() },
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },

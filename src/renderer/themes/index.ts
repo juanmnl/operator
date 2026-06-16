@@ -23,7 +23,7 @@ export const themes: Record<string, OperatorTheme> = {
   'mission-control': missionControl,
 }
 
-export const defaultTheme = mrPink
+export const defaultTheme = missionControl
 
 export function applyTheme(theme: OperatorTheme): void {
   const root = document.documentElement

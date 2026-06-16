@@ -26,6 +26,22 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const webglRef = useRef<WebglAddon | null>(null)
+  const atlasTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // The WebGL renderer caches rasterized glyphs in a GPU texture atlas. In
+  // WKWebView that atlas intermittently corrupts — on reflow, on a DPR change
+  // (moving the window between monitors), or as it fills with a long paragraph —
+  // which surfaces as stray tofu glyphs and garbled cells near the newest
+  // content (the input). clearTextureAtlas() rebuilds it from scratch, so we
+  // call it whenever those triggers fire. Debounced so a drag-resize that emits
+  // a ResizeObserver tick per frame doesn't re-rasterize every frame.
+  const clearAtlasSoon = useCallback(() => {
+    if (atlasTimerRef.current) clearTimeout(atlasTimerRef.current)
+    atlasTimerRef.current = setTimeout(() => {
+      try { webglRef.current?.clearTextureAtlas() } catch { /* renderer gone */ }
+    }, 200)
+  }, [])
 
   const handleResize = useCallback(() => {
     // Never fit against a hidden/collapsed container (display:none → 0 width).
@@ -40,7 +56,10 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
         // ignore fit errors during teardown
       }
     }
-  }, [])
+    // The reflow can leave atlas pages keyed to the old geometry; refresh once
+    // the resize settles.
+    clearAtlasSoon()
+  }, [clearAtlasSoon])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -92,8 +111,9 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     // the DOM renderer instead of drawing into a dead context (stale/garbled cells).
     try {
       const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
+      webgl.onContextLoss(() => { webgl.dispose(); webglRef.current = null })
       term.loadAddon(webgl)
+      webglRef.current = webgl
     } catch {
       // WebGL unavailable — xterm keeps the DOM renderer.
     }
@@ -146,6 +166,18 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     const observer = new ResizeObserver(handleResize)
     observer.observe(containerRef.current)
 
+    // A devicePixelRatio change (window dragged to a monitor with a different
+    // scale factor) invalidates the GPU glyph atlas — the classic WKWebView
+    // corruption trigger. matchMedia on the current resolution fires once when
+    // it changes; re-arm after each to keep watching.
+    let dprQuery: MediaQueryList | null = null
+    const onDprChange = () => { clearAtlasSoon(); watchDpr() }
+    const watchDpr = () => {
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      dprQuery.addEventListener('change', onDprChange, { once: true })
+    }
+    watchDpr()
+
     // Claude Code enables mouse tracking, which makes xterm forward the wheel to
     // the app instead of scrolling. When that's on (and we're not in an
     // alt-screen app that owns the screen), scroll the scrollback ourselves.
@@ -164,15 +196,18 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     return () => {
       unsubData()
       observer.disconnect()
+      dprQuery?.removeEventListener('change', onDprChange)
+      if (atlasTimerRef.current) clearTimeout(atlasTimerRef.current)
       container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      webglRef.current = null
     }
     // `theme` is intentionally excluded — recreating the terminal on a theme
     // change would wipe the scrollback. It's applied in place below instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalId, onTitleChange, handleResize])
+  }, [terminalId, onTitleChange, handleResize, clearAtlasSoon])
 
   // Apply theme/contrast changes to the live terminal without recreating it.
   useEffect(() => {
@@ -180,7 +215,10 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     if (!term) return
     term.options.theme = theme
     term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1.15
-  }, [theme])
+    // Atlas glyphs were rasterized in the old palette; rebuild so cached cells
+    // don't linger in stale colours.
+    clearAtlasSoon()
+  }, [theme, clearAtlasSoon])
 
   // Focus/blur and refit when active state changes
   useEffect(() => {

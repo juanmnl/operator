@@ -18,6 +18,8 @@ declare global {
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
       onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
       showMainWindow: () => void
+      /** Begin dragging the OS window for the current mousedown gesture. */
+      startWindowDrag: () => void
       openExternal: (url: string) => void
       onFileDrop: (callback: (paths: string[]) => void) => () => void
       setActiveSession: (sessionId: string | null) => void
