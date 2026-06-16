@@ -51,7 +51,11 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       // spinner symbols, emoji) fall back to a real glyph instead of tofu (□/??).
       fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', 'Apple Symbols', monospace",
       fontSize: 13,
-      lineHeight: 1.2,
+      // Keep this an integer. The WebGL renderer rasterizes glyphs at the font
+      // cell height but clears cells at a fractional offset when lineHeight isn't
+      // a whole number, so previous rows bleed into new ones (text ghosts/overlaps
+      // on every redraw). 1.0 is the only value the GL renderer positions correctly.
+      lineHeight: 1.0,
       // SF Mono's 700 bold reads chunky next to its regular; 600 keeps Claude
       // Code's frequent bold emphasis distinct without the clobbered look. Bold
       // stays in the same hue (no bright-colour shift) so it reads as weight only.
