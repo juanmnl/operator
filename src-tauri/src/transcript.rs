@@ -315,6 +315,7 @@ fn user_prompt_text(content: Option<&Value>) -> Option<String> {
 pub fn start_tailer(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut tracks: HashMap<String, Track> = HashMap::new();
+        let mut last_tray_entries: Vec<(String, String)> = Vec::new();
         loop {
             std::thread::sleep(Duration::from_secs(1));
 
@@ -350,17 +351,25 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 }
             }
 
-            if any_dirty {
-                // Tray menu: one item per active session showing its state.
-                let entries: Vec<(String, String)> = tracks
-                    .values()
-                    .filter(|t| !t.ended)
-                    .map(|t| {
-                        let proj = t.cwd.rsplit('/').next().unwrap_or(&t.cwd);
-                        (format!("session:{}", t.terminal_id), format!("{}  ·  {}", proj, t.last_phase))
-                    })
-                    .collect();
+            // Tray menu: one item per OPEN session (pty still alive) + its state.
+            // Keyed on pty liveness, not turn-ended, so a closed/killed session
+            // drops off the moment its pty is gone. Sorted + diffed so we only
+            // rebuild the menu when the set or a label actually changes.
+            let mut entries: Vec<(String, String)> = tracks
+                .values()
+                .filter(|t| mgr.alive(&t.terminal_id))
+                .map(|t| {
+                    let proj = t.cwd.rsplit('/').next().unwrap_or(&t.cwd);
+                    (format!("session:{}", t.terminal_id), format!("{}  ·  {}", proj, t.last_phase))
+                })
+                .collect();
+            entries.sort();
+            if entries != last_tray_entries {
                 refresh_tray_menu(&app, &entries);
+                last_tray_entries = entries;
+            }
+
+            if any_dirty {
                 let _ = app.emit("session:update", sessions.get_active());
             }
         }
