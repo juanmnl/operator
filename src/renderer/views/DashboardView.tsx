@@ -871,6 +871,7 @@ export function DashboardView() {
               key={activeSession.workingDirectory}
               projectPath={activeSession.workingDirectory}
               projectName={activeSession.projectName}
+              terminalId={activeTerminalId}
               effortLevel={tab?.effortLevel}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}

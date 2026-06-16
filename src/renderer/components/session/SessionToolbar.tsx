@@ -15,16 +15,19 @@ function typeColor(type?: string): string {
 interface SessionToolbarProps {
   projectPath: string
   projectName: string
+  /** Terminal id of the active session — used to resolve its reserved dev port. */
+  terminalId?: string | null
   effortLevel?: 'high' | 'normal' | 'low' | null
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
 }
 
-export function SessionToolbar({ projectPath, projectName, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, terminalId, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
+  const [devPort, setDevPort] = useState<number | null>(null)
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
 
   useEffect(() => {
@@ -46,6 +49,16 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
       setMcpServers(result.servers)
     })
   }, [projectPath, effortLevelProp])
+
+  // Resolve this session's reserved dev-server port (OPERATOR_DEV_PORT). The
+  // backend allocates one per session; a project that honours the env var serves
+  // on it, so the toolbar can offer a one-click "open in browser".
+  useEffect(() => {
+    if (!terminalId) { setDevPort(null); return }
+    window.operator.getDevPorts().then((map) => {
+      setDevPort(map[terminalId] ?? null)
+    })
+  }, [terminalId])
 
   // Keep in sync with prop changes
   useEffect(() => {
@@ -114,6 +127,36 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
+          {/* Dev-server quick-open: opens this session's reserved port in the browser */}
+          {devPort && (
+            <button
+              onClick={() => window.operator.openExternal(`http://localhost:${devPort}`)}
+              title={`Open http://localhost:${devPort} in your browser`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '2px 7px',
+                fontSize: 9,
+                fontWeight: 500,
+                fontFamily: 'inherit',
+                background: 'transparent',
+                color: 'var(--accent)',
+                border: '1px solid var(--accent)',
+                borderRadius: 3,
+                cursor: 'pointer',
+                lineHeight: '16px',
+                opacity: 0.85,
+              }}
+            >
+              <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
+                <path d="M9 3h4v4M13 3l-6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M11 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              localhost:{devPort}
+            </button>
+          )}
+
           {/* MCP indicator */}
           {mcpServers.length > 0 && (
             <button
