@@ -52,6 +52,13 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
     if (effortLevelProp) setEffortLevel(effortLevelProp)
   }, [effortLevelProp])
 
+  // A worktree's folder is named after its branch (operator-990540 ↔
+  // operator/990540), so showing both the project name and the branch reads as
+  // two near-identical labels. When the branch already covers the project name,
+  // show only the branch.
+  const norm = (s: string) => s.replace(/[^a-z0-9]/gi, '').toLowerCase()
+  const branchCoversProject = !!branch && !!projectName && norm(branch).includes(norm(projectName))
+
   return (
     <div style={{ position: 'relative' }}>
       {/* Draggable title bar area */}
@@ -77,7 +84,7 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
-          <span>{projectName}</span>
+          {!branchCoversProject && <span>{projectName}</span>}
           {branch && (
             <span style={{
               display: 'inline-flex',
