@@ -442,9 +442,18 @@ export function DashboardView() {
   const effortLevels: Record<string, string> = {}
   // Fan-out membership map (keyed by terminalId) for the per-agent badge.
   const fanInfo: Record<string, { index: number; total: number }> = {}
+  // Recompute fan-out membership from the terminals that are still open, rather
+  // than the count baked in at launch: closing siblings shrinks the total, and a
+  // lone survivor drops the badge entirely (a "1 of 1" fan-out isn't one).
+  const fanGroups: Record<string, typeof terminals> = {}
   for (const t of terminals) {
     if (t.effortLevel) effortLevels[t.id] = t.effortLevel
-    if (t.fanGroup && t.fanIndex && t.fanTotal) fanInfo[t.id] = { index: t.fanIndex, total: t.fanTotal }
+    if (t.fanGroup) (fanGroups[t.fanGroup] ??= []).push(t)
+  }
+  for (const members of Object.values(fanGroups)) {
+    if (members.length < 2) continue // lone survivor → no fan-out badge
+    members.sort((a, b) => (a.fanIndex ?? 0) - (b.fanIndex ?? 0))
+    members.forEach((t, i) => { fanInfo[t.id] = { index: i + 1, total: members.length } })
   }
 
   const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string) => {
