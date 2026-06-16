@@ -64,7 +64,7 @@ Click **+ New Session**, pick a folder, and start. If the folder is a git repo, 
 
 ### Building a signed & notarized release
 
-The Tauri build (`tauri-spike/`) is configured to sign with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`). Signing happens automatically; notarization runs too if Apple credentials are present in the environment:
+The build is configured to sign with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`). Signing happens automatically; notarization runs too if Apple credentials are present in the environment:
 
 ```bash
 # one-time: generate an app-specific password at appleid.apple.com
@@ -72,7 +72,7 @@ export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
 export APPLE_TEAM_ID="UJS4C5GUCW"
 
-cd tauri-spike && npm run tauri build         # signs, notarizes, and staples
+npm run tauri build                           # signs, notarizes, and staples
 ```
 
 Without those variables the build still produces a signed (un-notarized) `.app` + `.dmg` — fine for local use, but Gatekeeper will warn on other machines. App Store Connect API keys (`APPLE_API_KEY` / `APPLE_API_ISSUER` / `APPLE_API_KEY_PATH`) work as an alternative to the Apple ID variables.
@@ -88,7 +88,7 @@ Without those variables the build still produces a signed (un-notarized) `.app` 
 
 ### Stack
 
-React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, a transcript tailer that rebuilds the session timeline, an optional `tiny_http` server for the permission hook, and `serde`/`serde_yaml` for rules, the agent library, and the durable session store. The build (`tauri-spike/`) produces a ~10 MB signed app.
+React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, a transcript tailer that rebuilds the session timeline, an optional `tiny_http` server for the permission hook, and `serde`/`serde_yaml` for rules, the agent library, and the durable session store. The build produces a ~10 MB signed app.
 
 ### License
 

@@ -29,7 +29,5 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
-    // 4. the real renderer + assets live in the repo root (one level up); allow it
-    fs: { allow: [".."] },
   },
 }));

@@ -22,17 +22,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tauri-spike/src-tauri
+          workspaces: src-tauri
 
       - name: Install frontend deps
-        working-directory: tauri-spike
         run: npm ci
-
-      # The shared renderer lives at repo root (src/renderer) but its deps are in
-      # tauri-spike/node_modules; point the root's node_modules there so tsc/vite
-      # resolve react, xterm, etc. (Removed once the renderer is consolidated.)
-      - name: Link node_modules for the shared renderer
-        run: ln -sfn tauri-spike/node_modules node_modules
 
       # Decode the App Store Connect API key (.p8) for notarization, if present.
       - name: Prepare notarization key
@@ -55,7 +48,6 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          projectPath: tauri-spike
           args: --target aarch64-apple-darwin
           # Create a GitHub Release only for version tags; branch pushes just build.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
@@ -67,6 +59,6 @@ jobs:
         with:
           name: operator-macos-aarch64
           path: |
-            tauri-spike/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            tauri-spike/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: warn
