@@ -40,6 +40,9 @@ pub struct PtyManager {
     /// Last time each terminal produced output — a real-time "actively working"
     /// signal for the status indicator (claude streams while thinking/running).
     activity: Mutex<HashMap<String, Instant>>,
+    /// Dev-server port handed to each session via OPERATOR_DEV_PORT, tracked so
+    /// parallel worktree agents never grab the same port.
+    ports: Mutex<HashMap<String, u16>>,
 }
 
 impl PtyManager {
@@ -55,6 +58,35 @@ impl PtyManager {
     /// Did this terminal emit output within `dur`? (i.e. is it actively working)
     pub fn active_within(&self, id: &str, dur: Duration) -> bool {
         self.activity.lock().unwrap().get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
+    }
+
+    /// Reserve a free localhost port for this session's dev server. Scans up from
+    /// 1420, skipping ports already handed to a sibling session and any the OS
+    /// reports busy right now (bind-test, dropped immediately — the dev server
+    /// binds a moment later). Returns None if the whole range is exhausted.
+    pub fn alloc_port(&self, id: &str) -> Option<u16> {
+        let mut ports = self.ports.lock().unwrap();
+        let taken: std::collections::HashSet<u16> = ports.values().copied().collect();
+        for port in 1420u16..1520 {
+            if taken.contains(&port) {
+                continue;
+            }
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                ports.insert(id.to_string(), port);
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    /// Hand the port back when its session ends, so it can be reused.
+    pub fn release_port(&self, id: &str) {
+        self.ports.lock().unwrap().remove(id);
+    }
+
+    /// Snapshot of every live session's dev port (terminal id → port).
+    pub fn dev_ports(&self) -> HashMap<String, u16> {
+        self.ports.lock().unwrap().clone()
     }
 }
 
@@ -92,6 +124,11 @@ fn terminal_spawn(
     cmd.args(["-ilc", &inner]);
     cmd.cwd(&cwd);
     cmd.env("OPERATOR_TERMINAL_ID", &id);
+    // Reserve this session a unique dev-server port so parallel worktree agents
+    // don't fight over the default. The repo's vite/tauri dev tooling reads it.
+    if let Some(port) = mgr.alloc_port(&id) {
+        cmd.env("OPERATOR_DEV_PORT", port.to_string());
+    }
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -135,6 +172,7 @@ fn terminal_spawn(
             }
         }
         mgr_arc.ptys.lock().unwrap().remove(&emit_id);
+        mgr_arc.release_port(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -161,17 +199,29 @@ fn terminal_kill(id: String, mgr: State<Arc<PtyManager>>) {
     if let Some(mut p) = mgr.ptys.lock().unwrap().remove(&id) {
         let _ = p.killer.kill();
     }
+    mgr.release_port(&id);
 }
 
 #[derive(Serialize)]
 struct TerminalInfo {
     id: String,
     cwd: String,
+    dev_port: Option<u16>,
 }
 
 #[tauri::command]
 fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
-    mgr.ptys.lock().unwrap().iter().map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone() }).collect()
+    let ports = mgr.dev_ports();
+    mgr.ptys.lock().unwrap().iter()
+        .map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone(), dev_port: ports.get(id).copied() })
+        .collect()
+}
+
+/// Every live session's allocated dev port (terminal id → port) — the registry
+/// Operator uses so it's aware of every dev server it's handed out.
+#[tauri::command]
+fn get_dev_ports(mgr: State<Arc<PtyManager>>) -> HashMap<String, u16> {
+    mgr.dev_ports()
 }
 
 // --- Sessions command -------------------------------------------------------
@@ -253,6 +303,31 @@ fn load_sessions() -> serde_json::Value {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::Value::Array(vec![]))
+}
+
+/// Write a pasted image (base64) to a temp file and return its path, so the UI
+/// can hand the agent a path reference instead of inlining raw bytes — the same
+/// shape as a dropped file. Lives under $TMPDIR/operator-pastes.
+#[tauri::command]
+fn save_pasted_image(data: String, ext: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let dir = std::env::temp_dir().join("operator-pastes");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let safe_ext = if !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        ext
+    } else {
+        "png".to_string()
+    };
+    let path = dir.join(format!("paste-{nanos}.{safe_ext}"));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // --- Agents / usage / folder-prefs commands ---------------------------------
@@ -375,6 +450,7 @@ pub fn run() {
             terminal_resize,
             terminal_kill,
             terminal_list,
+            get_dev_ports,
             get_sessions,
             inspect_repo,
             worktree_create,
@@ -396,7 +472,8 @@ pub fn run() {
             folder_prefs_create_file,
             get_mcp_servers,
             save_sessions,
-            load_sessions
+            load_sessions,
+            save_pasted_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

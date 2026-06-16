@@ -72,6 +72,8 @@ export interface ManagedTerminal {
   command: string
   sessionId?: string
   alive: boolean
+  /** Dev-server port Operator reserved for this session (OPERATOR_DEV_PORT). */
+  devPort?: number
 }
 
 // Folder Preferences types

@@ -15,12 +15,16 @@ declare global {
       terminalResize: (id: string, cols: number, rows: number) => void
       terminalKill: (id: string) => Promise<void>
       terminalList: () => Promise<ManagedTerminal[]>
+      /** Dev-port registry: terminal id → reserved port (OPERATOR_DEV_PORT). */
+      getDevPorts: () => Promise<Record<string, number>>
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
       onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
       showMainWindow: () => void
       /** Begin dragging the OS window for the current mousedown gesture. */
       startWindowDrag: () => void
       openExternal: (url: string) => void
+      /** Write a pasted image (base64) to a temp file; resolves to its path. */
+      savePastedImage: (dataB64: string, ext: string) => Promise<string>
       onFileDrop: (callback: (paths: string[]) => void) => () => void
       setActiveSession: (sessionId: string | null) => void
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>

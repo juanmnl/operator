@@ -20,8 +20,10 @@ export function DragRegion({ style, children }: DragRegionProps) {
     if ((e.target as HTMLElement).closest('button, a, input, textarea, select, [role="button"]')) return
     window.operator.startWindowDrag?.()
   }
+  // `drag-region` paints a grab/grabbing cursor (see styles.css) so the strip
+  // reads as draggable; interactive children keep their own pointer cursor.
   return (
-    <div onMouseDown={onMouseDown} style={style}>
+    <div className="drag-region" onMouseDown={onMouseDown} style={style}>
       {children}
     </div>
   )

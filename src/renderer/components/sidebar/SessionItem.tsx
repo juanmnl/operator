@@ -143,9 +143,13 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           />
         ) : (
           <>
-            {/* Waiting for a reply → tint the name the same accent as its status
-                dot so the eye is drawn to the session that needs you. */}
-            <span style={status === 'waiting' ? { color: 'var(--status-waiting)' } : undefined}>
+            {/* Working states tint the name the same hue as their status dot, so
+                the actively-busy sessions stand out; quiet states stay default. */}
+            <span style={
+              status === 'running' ? { color: 'var(--status-running)' }
+                : status === 'compacting' ? { color: 'var(--status-compacting)' }
+                : undefined
+            }>
               {label}
             </span>
             {toolLabel && (

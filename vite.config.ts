@@ -4,6 +4,11 @@ import tailwindcss from "@tailwindcss/vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// Operator hands each worktree session its own dev port via OPERATOR_DEV_PORT so
+// parallel agents don't collide on 1420. The `tauri` wrapper (scripts/tauri.mjs)
+// keeps tauri's devUrl pointed at the same port. Plain `npm run dev` → 1420.
+// @ts-expect-error process is a nodejs global
+const devPort = Number(process.env.OPERATOR_DEV_PORT) || 1420;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -15,14 +20,14 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port: devPort,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: devPort + 1,
         }
       : undefined,
     watch: {

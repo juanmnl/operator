@@ -13,15 +13,15 @@ const R = 0.5 // dot radius in cell units
 // `fill` tints the resting dots; `fillPeak` tints the dots as they scale up (the
 // twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
 const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
-  // Activity → twinkle. Everything at rest (idle/error/ended) → static dots.
-  // Each active state owns a colour for the dots that scale up, so a glance at
-  // the sidebar reads the state: green = Claude working, amber = compacting,
-  // accent = your turn. Resting dots stay neutral gray; only the peak is tinted.
-  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
-  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
-  // Waiting for the user's reply → twinkle in the waiting hue (both resting and
-  // peak) so it reads as "your turn" and stands apart from Claude's working shimmer.
-  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, fill: 'var(--status-waiting, var(--accent))', fillPeak: 'var(--status-waiting, var(--accent))' },
+  // Colour rides the ACTIVE states so a glance reads "this one is working":
+  // running = green, compacting = amber — both resting and peak tinted, so they
+  // read as colour rather than a faint flicker. The quiet states (waiting for
+  // your reply, idle) stay neutral gray, so colour means "Claude is busy", not
+  // "done / your turn".
+  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fill: 'var(--status-running, var(--green))', fillPeak: 'var(--status-running, var(--green))' },
+  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fill: 'var(--status-compacting, var(--yellow))', fillPeak: 'var(--status-compacting, var(--yellow))' },
+  // Waiting for the user → gentle gray twinkle: still alive, but not coloured.
+  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 0.85, staticOp: 0.5 },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },

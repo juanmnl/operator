@@ -58,9 +58,11 @@ export function installBridge(): void {
     terminalResize: (id: string, cols: number, rows: number) => { void invoke('terminal_resize', { id, cols, rows }) },
     terminalKill: (id: string) => invoke('terminal_kill', { id }),
     terminalList: async () => {
-      const list = await invoke<{ id: string; cwd: string }[]>('terminal_list')
-      return list.map((t) => ({ id: t.id, pid: 0, cwd: t.cwd, command: 'claude', alive: true }))
+      const list = await invoke<{ id: string; cwd: string; dev_port?: number }[]>('terminal_list')
+      return list.map((t) => ({ id: t.id, pid: 0, cwd: t.cwd, command: 'claude', alive: true, devPort: t.dev_port }))
     },
+    // The dev-server port registry: terminal id → port Operator reserved for it.
+    getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
     onTerminalData: (cb: (id: string, data: string) => void): Unsub => {
       const p = listen<{ id: string; data: number[] }>('terminal:data', (e) => {
         let d = decoders.get(e.payload.id)
@@ -97,6 +99,9 @@ export function installBridge(): void {
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
+    // Persist a pasted image (base64) to a temp file; returns the path so the
+    // prompt bar can pass the agent a path reference instead of raw bytes.
+    savePastedImage: (dataB64: string, ext: string) => invoke<string>('save_pasted_image', { data: dataB64, ext }),
     // Files dropped anywhere on the window — Tauri gives real paths (the webview
     // suppresses HTML5 file drops). The renderer writes them to the active terminal.
     onFileDrop: (cb: (paths: string[]) => void): Unsub => {
