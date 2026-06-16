@@ -32,7 +32,9 @@ export const nineteen84Vars = {
   '--fg': '#f1f1f1',
   '--fg-muted': '#8888aa',
   '--accent': '#46BDFF',
-  '--btn-bg': '#46BDFF',
+  // A raised dark-blue surface (not the bright accent) — buttons use white --fg
+  // text, which was unreadable on the cyan accent. Matches the other dark themes.
+  '--btn-bg': '#1c1f54',
   '--red': '#FF16B0',
   '--green': '#B3F361',
   '--yellow': '#FFEA16',
