@@ -81,7 +81,6 @@ export function installBridge(): void {
       const p = listen('session:update', (e) => cb(e.payload))
       return () => { void p.then((f) => f()) }
     },
-    onFocusSession: (): Unsub => () => {},
     respond: (id: string, value: string) => invoke('respond', { id, approve: value !== 'deny' && value !== 'n' }).then(() => true),
     getQueue: () => invoke('get_queue'),
     getSessions: () => invoke('get_sessions'),
@@ -94,7 +93,6 @@ export function installBridge(): void {
     getHookPath: async () => '', // hooks-config not ported yet
     setActiveSession: () => {},
     showMainWindow: () => {},
-    prefsUpdate: () => {},
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },

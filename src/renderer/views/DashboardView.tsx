@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, OperatorRequest, OperatorPrefs, DEFAULT_PREFS } from '../../shared/types'
+import { AgentSession, OperatorRequest } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { TerminalPane } from '../components/terminal/TerminalPane'
 import { InlinePermission } from '../components/terminal/InlinePermission'
@@ -77,18 +77,6 @@ export function DashboardView() {
   const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [usageViewActive, setUsageViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
-  const [prefs, setPrefs] = useState<OperatorPrefs>(() => {
-    try {
-      const raw = localStorage.getItem('operator.prefs')
-      return raw ? { ...DEFAULT_PREFS, ...JSON.parse(raw) } : DEFAULT_PREFS
-    } catch { return DEFAULT_PREFS }
-  })
-
-  // Push prefs to main process on mount + every change so it can act on them.
-  useEffect(() => {
-    window.operator.prefsUpdate(prefs)
-    try { localStorage.setItem('operator.prefs', JSON.stringify(prefs)) } catch { /* quota */ }
-  }, [prefs])
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -614,16 +602,8 @@ export function DashboardView() {
     return () => clearTimeout(t)
   }, [copied])
 
-  // Native notification click → focus the requesting session
-  useEffect(() => {
-    return window.operator.onFocusSession((sessionId) => {
-      const session = allSidebarSessions.find((s) => s.id === sessionId)
-      if (session) handleSelectSession(session)
-    })
-  }, [allSidebarSessions, handleSelectSession])
-
   // "Ready for review" detection — watch worktree sessions transitioning to idle
-  // with uncommitted changes. Fire one notification per (terminalId, idle-arrival).
+  // with uncommitted changes. Show one in-app toast per (terminalId, idle-arrival).
   const lastPhaseRef = useRef<Record<string, string>>({})
   const notifiedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
@@ -875,7 +855,7 @@ export function DashboardView() {
         {contentMode === 'usage' && <UsageView />}
 
         {contentMode === 'prefs' && (
-          <PrefsView prefs={prefs} onChange={setPrefs} />
+          <PrefsView />
         )}
 
         {contentMode === 'localTerminal' && activeSession && (() => {
@@ -1040,11 +1020,10 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: '12px 0 0',
               }}>
-                Define agents and the model each task should use, then launch
-                Claude Code sessions that delegate to them. Follow every tool
-                call and subagent live on the orchestration timeline, each in
-                its own git worktree — and approve or deny anything they touch,
-                inline as they go.
+                Define agents and the model each task runs on, then launch
+                Claude Code sessions that delegate to them — each in its own
+                git worktree. Watch the work unfold live, and approve or deny
+                inline.
               </p>
               <p style={{
                 fontSize: 11,
@@ -1053,8 +1032,8 @@ export function DashboardView() {
                 margin: '10px 0 0',
                 opacity: 0.6,
               }}>
-                Fan one task out across parallel agents, and see exactly what
-                each is doing — and what it costs.
+                Fan a task across parallel agents and see what each is doing —
+                and what it costs.
               </p>
             </div>
 

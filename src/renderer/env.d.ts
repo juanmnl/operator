@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, OperatorPrefs, AgentDefinition, UsageStats, UsageInsights } from '../shared/types'
+import { OperatorRequest, AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, Rule, RuleAction, AgentDefinition, UsageStats, UsageInsights } from '../shared/types'
 
 declare global {
   interface Window {
@@ -25,7 +25,6 @@ declare global {
       onFileDrop: (callback: (paths: string[]) => void) => () => void
       getHookPath: () => Promise<string>
       setActiveSession: (sessionId: string | null) => void
-      onFocusSession: (callback: (sessionId: string) => void) => () => void
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
       folderPrefsLoadGlobal: () => Promise<FolderPreferences>
       folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings) => Promise<void>
@@ -49,7 +48,6 @@ declare global {
       agentDelete: (path: string) => Promise<{ ok: boolean; error?: string }>
       getUsageStats: (days?: number) => Promise<UsageStats>
       getUsageInsights: (days?: number) => Promise<UsageInsights>
-      prefsUpdate: (prefs: OperatorPrefs) => void
     }
   }
 }

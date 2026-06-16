@@ -19,7 +19,6 @@ export interface HookEvent {
   tool_use_id?: string
   message?: string
   title?: string
-  notification_type?: string
   reason?: string
   agent_id?: string
   agent_type?: string
@@ -364,11 +363,3 @@ export const IPC = {
   AGENT_DELETE: 'agents:delete',
   PREFS_UPDATE: 'operator:prefs-update',
 } as const
-
-export interface OperatorPrefs {
-  nativeNotifications: boolean
-}
-
-export const DEFAULT_PREFS: OperatorPrefs = {
-  nativeNotifications: true,
-}
