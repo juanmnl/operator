@@ -257,38 +257,20 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     e.dataTransfer.dropEffect = 'copy'
   }, [])
 
-  // The outer frame inset (--bg-sidebar) lets the terminal sit as a rounded card
-  // a few px in from the window edges, separated from the chrome behind it; the
-  // inner ref div is where xterm mounts and keeps its own 6px breathing room.
+  // Flush terminal — the content column already provides the rounded inset card,
+  // so the terminal just fills it with a little breathing room (no second frame).
   return (
     <div
+      ref={containerRef}
+      onClick={() => termRef.current?.focus()}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
       style={{
         width: '100%',
         height: '100%',
-        boxSizing: 'border-box',
         overflow: 'hidden',
-        background: 'var(--bg-sidebar)',
-        padding: 8,
+        padding: 6,
       }}
-    >
-      <div
-        ref={containerRef}
-        onClick={() => termRef.current?.focus()}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        style={{
-          width: '100%',
-          height: '100%',
-          boxSizing: 'border-box',
-          overflow: 'hidden',
-          padding: 6,
-          background: 'var(--bg-terminal)',
-          // Hairline only — the inset frame + radius carry the separation; a full
-          // --border line reads too heavy here.
-          border: '1px solid var(--overlay-subtle)',
-          borderRadius: 10,
-        }}
-      />
-    </div>
+    />
   )
 }
