@@ -20,7 +20,6 @@ declare global {
       showMainWindow: () => void
       openExternal: (url: string) => void
       onFileDrop: (callback: (paths: string[]) => void) => () => void
-      getHookPath: () => Promise<string>
       setActiveSession: (sessionId: string | null) => void
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
       folderPrefsLoadGlobal: () => Promise<FolderPreferences>

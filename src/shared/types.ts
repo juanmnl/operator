@@ -275,7 +275,6 @@ export const IPC = {
   TERMINAL_EXIT: 'terminal:exit',
   TERMINAL_LIST: 'terminal:list',
   SHOW_MAIN_WINDOW: 'operator:show-main-window',
-  GET_HOOK_PATH: 'operator:get-hook-path',
   SET_ACTIVE_SESSION: 'operator:set-active-session',
   FOCUS_SESSION: 'operator:focus-session',
   FOLDER_PREFS_LOAD: 'folder-prefs:load',

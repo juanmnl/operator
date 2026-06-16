@@ -90,10 +90,6 @@ export function DashboardView() {
     const saved = localStorage.getItem('operator.theme')
     return (saved && themes[saved]) || defaultTheme
   })
-  const [hookPath, setHookPath] = useState<string | null>(null)
-  const [showSetup, setShowSetup] = useState(false)
-  const [copied, setCopied] = useState(false)
-
   const handleRename = useCallback((sessionId: string, name: string) => {
     setCustomNames((prev) => {
       const next = { ...prev, [sessionId]: name }
@@ -104,7 +100,6 @@ export function DashboardView() {
 
   useEffect(() => {
     window.operator.getSessions().then(setSessions)
-    window.operator.getHookPath().then(setHookPath)
 
     const unsubSession = window.operator.onSessionUpdate(setSessions)
 
@@ -555,13 +550,6 @@ export function DashboardView() {
     })
   }, [terminals, sessions, customNames, savedHydrated])
 
-  // Reset "Copied!" label 2s after a copy, with cleanup on unmount / re-copy
-  useEffect(() => {
-    if (!copied) return
-    const t = setTimeout(() => setCopied(false), 2000)
-    return () => clearTimeout(t)
-  }, [copied])
-
   // Check for an app update on launch; prompt to install + restart if available.
   useEffect(() => {
     window.operator.checkUpdate?.().then((u) => {
@@ -737,18 +725,6 @@ export function DashboardView() {
 
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
-
-  const hookConfigSnippet = hookPath
-    ? `{
-  "hooks": {
-    "PreToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${hookPath}" }] }],
-    "PostToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${hookPath}" }] }],
-    "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${hookPath}" }] }],
-    "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${hookPath}" }] }],
-    "SubagentStop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${hookPath}" }] }]
-  }
-}`
-    : ''
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-terminal)' }}>
@@ -1109,73 +1085,8 @@ export function DashboardView() {
               </div>
             )}
 
-            {/* Hook config (collapsible) */}
-            <div style={{ marginTop: 28, marginBottom: 'auto', width: '100%' }}>
-              <button
-                onClick={() => setShowSetup(!showSetup)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--fg-muted)',
-                  fontSize: 10,
-                  fontFamily: 'inherit',
-                  cursor: 'pointer',
-                  opacity: 0.5,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  margin: '0 auto',
-                }}
-              >
-                <span style={{ transform: showSetup ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s', display: 'inline-block' }}>
-                  &#9654;
-                </span>
-                Hook configuration
-              </button>
-
-              {showSetup && hookPath && (
-                <div style={{ marginTop: 10, padding: '12px 14px', background: 'var(--bg-surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                  <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
-                    Operator configures hooks automatically on launch. If you need to set them up manually,
-                    add this to <code style={{ fontSize: 10, background: 'var(--bg-terminal)', padding: '1px 4px', borderRadius: 3 }}>~/.claude/settings.json</code>:
-                  </p>
-                  <pre
-                    style={{
-                      fontSize: 10,
-                      background: 'var(--bg-terminal)',
-                      color: 'var(--fg)',
-                      padding: '10px 12px',
-                      borderRadius: 6,
-                      overflow: 'auto',
-                      margin: '0 0 8px',
-                      lineHeight: 1.5,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {hookConfigSnippet}
-                  </pre>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(hookConfigSnippet)
-                      setCopied(true)
-                    }}
-                    style={{
-                      padding: '4px 12px',
-                      background: copied ? 'var(--color-success)' : 'var(--bg-terminal)',
-                      color: copied ? 'var(--fg-on-accent)' : 'var(--fg)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontFamily: 'inherit',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {copied ? 'Copied!' : 'Copy Config'}
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* spacer keeps the splash block vertically centered */}
+            <div style={{ marginBottom: 'auto' }} />
           </div>
         )}
       </div>

@@ -84,7 +84,6 @@ export function installBridge(): void {
       const picked = await open({ directory: true })
       return !picked || Array.isArray(picked) ? null : picked
     },
-    getHookPath: async () => '', // hooks-config not ported yet
     setActiveSession: () => {},
     showMainWindow: () => {},
 
