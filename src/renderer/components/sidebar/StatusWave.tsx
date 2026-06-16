@@ -14,14 +14,13 @@ const R = 0.5 // dot radius in cell units
 // twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
 const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
   // Colour rides the ACTIVE states so a glance reads "this one is working":
-  // running = green, compacting = amber — both resting and peak tinted, so they
-  // read as colour rather than a faint flicker. The quiet states (waiting for
-  // your reply, idle) stay neutral gray, so colour means "Claude is busy", not
-  // "done / your turn".
-  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fill: 'var(--status-running, var(--green))', fillPeak: 'var(--status-running, var(--green))' },
-  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fill: 'var(--status-compacting, var(--yellow))', fillPeak: 'var(--status-compacting, var(--yellow))' },
-  // Waiting for the user → gentle gray twinkle: still alive, but not coloured.
-  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 0.85, staticOp: 0.5 },
+  // green = Claude working, amber = compacting. Resting dots stay neutral gray;
+  // only the peak is tinted, so colour means "busy", not "done / your turn".
+  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
+  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
+  // Waiting for the user's reply → frozen, neutral gray (no twinkle). Claude has
+  // stopped working, so the dots rest like the other idle states.
+  waiting:    { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
