@@ -621,11 +621,13 @@ export function DashboardView() {
             text: `Ready for review — ${session.projectName}`,
             detail: `${status.changes} change${status.changes === 1 ? '' : 's'} on ${tab.worktreeBranch}`,
             kind: 'info',
+            // Clicking the notification jumps straight to the session it's about.
+            onClick: () => handleSelectSession(session),
           })
         })
       }
     }
-  }, [sessions, terminals, pushToast])
+  }, [sessions, terminals, pushToast, handleSelectSession])
 
   // Global keyboard shortcuts: Cmd+N new session, Cmd+W close active session,
   // Cmd+1..9 switch to local terminal by index.
