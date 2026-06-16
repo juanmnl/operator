@@ -8,7 +8,6 @@ import { SessionToolbar } from '../components/session/SessionToolbar'
 import { SessionInfoBar } from '../components/session/SessionInfoBar'
 import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
-import { PromptBar } from '../components/session/PromptBar'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
 import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
@@ -893,12 +892,6 @@ export function DashboardView() {
             />
           )
         })()}
-
-        {contentMode === 'localTerminal' && activeTerminalId
-          && reviewingTerminalId !== activeTerminalId
-          && activityViewingTerminalId !== activeTerminalId && (
-          <PromptBar terminalId={activeTerminalId} />
-        )}
 
         {/* Activity timeline — overlays the terminal when viewing activity */}
         {contentMode === 'localTerminal' && activityViewingTerminalId === activeTerminalId && activeSession && (
