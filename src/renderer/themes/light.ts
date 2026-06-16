@@ -15,7 +15,7 @@ export const lightXterm: ITheme = {
   magenta: '#8e44ad',
   cyan: '#0e7490',
   white: '#F7F7F5',
-  brightBlack: '#555555',
+  brightBlack: '#6b6b6b',
   brightRed: '#e74c3c',
   brightGreen: '#2ecc71',
   brightYellow: '#d4a017',
@@ -40,11 +40,11 @@ export const lightVars = {
   '--magenta': '#8e44ad',
   '--cyan': '#0e7490',
   '--selection': '#8e44ad22',
-  '--border': '#cdcdc7',
+  '--border': '#d0d0cc',
   '--color-success': '#27ae60',
   '--color-error': '#c0392b',
   '--color-warning': '#b8860b',
-  // Per-session status hues — the colour the status dots bloom into.
+  // Per-session status-dot bloom hues (the colour the dots take as they scale up).
   '--status-running': '#27ae60',
   '--status-compacting': '#b8860b',
   '--status-waiting': '#8e44ad',

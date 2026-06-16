@@ -10,17 +10,18 @@ const CENTER = (CELLS - 1) / 2 + 0.5 // grid centre in dot-centre coords
 const RADIUS = 3.4 // circle radius in cell units
 const R = 0.5 // dot radius in cell units
 
-// `peak` is the colour the dots bloom into at the top of the twinkle (the ones
-// that scale up). The resting trough stays muted gray, so the scaled-up dots
-// read as a coloured glow in the session's status hue. Driven by per-theme
-// --status-* tokens so each theme controls its own status palette.
-const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; peak?: string }> = {
+// `fill` tints the resting dots; `fillPeak` tints the dots as they scale up (the
+// twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
+const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
   // Activity → twinkle. Everything at rest (idle/error/ended) → static dots.
-  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, peak: 'var(--status-running)' },
-  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, peak: 'var(--status-compacting)' },
-  // Waiting for the user's reply → bloom in the accent colour so it reads as
-  // "your turn" rather than the neutral shimmer of Claude working.
-  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, peak: 'var(--status-waiting)' },
+  // Each active state owns a colour for the dots that scale up, so a glance at
+  // the sidebar reads the state: green = Claude working, amber = compacting,
+  // accent = your turn. Resting dots stay neutral gray; only the peak is tinted.
+  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
+  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
+  // Waiting for the user's reply → twinkle in the waiting hue (both resting and
+  // peak) so it reads as "your turn" and stands apart from Claude's working shimmer.
+  waiting:    { animate: true,  durMin: 1.1, durMax: 2.0, maxOp: 1,    staticOp: 0.5, fill: 'var(--status-waiting, var(--accent))', fillPeak: 'var(--status-waiting, var(--accent))' },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
@@ -40,32 +41,36 @@ const DOTS: { cx: number; cy: number }[] = (() => {
   return out
 })()
 
-// Deterministic pseudo-random in [0,1). The seed folds in a per-session offset
-// so every session's shimmer is its own — same status, different rhythm.
+// Deterministic pseudo-random in [0,1) so dot timings are stable per index.
 function rand(seed: number): number {
   const x = Math.sin(seed * 12.9898) * 43758.5453
   return x - Math.floor(x)
 }
 
-// Hash an arbitrary string (session id) into a stable numeric seed offset.
-function hashSeed(s: string): number {
+// Fold a session id (or any string) into a stable numeric offset. Sessions with
+// different ids land on different parts of the sine curve, so their dot timings
+// diverge — each session's wave gets its own rhythm instead of marching in sync.
+function hashSeed(seed: string | number): number {
+  if (typeof seed === 'number') return seed
   let h = 0
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
-  // Spread into a fractional offset large enough to fully decorrelate sessions.
-  return (Math.abs(h) % 997) * 0.61803398875
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1000003
+  return h
 }
 
-export function StatusWave({ status, seed = '', size = 13 }: { status: WaveStatus; seed?: string; size?: number }) {
+export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus; size?: number; seed?: string | number }) {
   const cfg = config[status]
 
   const dots = useMemo(() => {
-    const off = hashSeed(seed)
+    const s = hashSeed(seed)
+    // A gentle per-session tempo so two running sessions don't pulse in lockstep:
+    // some breathe a touch faster, some slower.
+    const tempo = 0.82 + rand(s + 0.5) * 0.42 // ~[0.82, 1.24]
     return DOTS.map((d, i) => {
       if (!cfg.animate) {
         return { ...d, style: { opacity: cfg.staticOp, fill: 'var(--fg-muted)' } as React.CSSProperties }
       }
-      const dur = cfg.durMin + rand(off + i + 1) * (cfg.durMax - cfg.durMin)
-      const delay = -rand(off + i + 7) * dur // negative → start mid-cycle, desynced
+      const dur = (cfg.durMin + rand(i + 1 + s) * (cfg.durMax - cfg.durMin)) * tempo
+      const delay = -rand(i + 7 + s * 1.7) * dur // negative → start mid-cycle, desynced
       return {
         ...d,
         style: {
@@ -81,10 +86,11 @@ export function StatusWave({ status, seed = '', size = 13 }: { status: WaveStatu
     <span style={{
       flexShrink: 0, display: 'inline-flex', lineHeight: 0,
       ['--tw-max' as string]: cfg.maxOp,
-      // The twinkle keyframe blooms from --tw-fill (muted trough) to --tw-fill-peak.
-      // Only the peak is tinted, so the dots that scale up glow in the status hue
-      // while the resting grid stays a neutral gray.
-      ...(cfg.peak ? { ['--tw-fill-peak' as string]: cfg.peak } : null),
+      // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
+      // (scaled-up). Set per state: resting tint only for waiting, peak tint for any
+      // active state so the dots that grow take on the status colour.
+      ...(cfg.fill ? { ['--tw-fill' as string]: cfg.fill } : null),
+      ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: cfg.fillPeak } : null),
     }}>
       <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
         <g fill="var(--fg)">

@@ -43,12 +43,12 @@ export const missionControlVars = {
   '--magenta': '#c98bff',
   '--cyan': '#3fd9c9',
   '--selection': '#ffffff2e',
-  '--border': '#2a323c',
+  '--border': '#21272f',
   '--color-success': '#2fe39a',
   '--color-error': '#ff5f56',
   '--color-warning': '#ffb454',
-  // Per-session status hues — the colour the status dots bloom into. Accent is
-  // green here, so running uses blue to stay distinct from waiting.
+  // Per-session status-dot bloom hues. Accent is the signal-green, so running
+  // takes haiku-blue to stay distinct from the green "your turn" waiting hue.
   '--status-running': '#58b2ff',
   '--status-compacting': '#ffb454',
   '--status-waiting': '#2fe39a',

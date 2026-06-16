@@ -9,6 +9,8 @@ export interface ToastMessage {
   detail?: string
   /** Optional action button; while present the toast stays until acted on/dismissed. */
   action?: { label: string; run: () => void }
+  /** Clicking the toast body runs this (then dismisses) — e.g. focus the session it's about. */
+  onClick?: () => void
 }
 
 interface ToastsProps {
@@ -49,7 +51,8 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
 
   return (
     <div
-      onClick={onDismiss}
+      onClick={() => { message.onClick?.(); onDismiss() }}
+      title={message.onClick ? 'Go to session' : undefined}
       style={{
         pointerEvents: 'auto',
         display: 'flex', alignItems: 'center', gap: 10,

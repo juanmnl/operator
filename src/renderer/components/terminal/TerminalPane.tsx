@@ -70,15 +70,26 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       // spinner symbols, emoji) fall back to a real glyph instead of tofu (□/??).
       fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', 'Apple Symbols', monospace",
       fontSize: 13,
-      lineHeight: 1.2,
+      // Keep this an integer. The WebGL renderer rasterizes glyphs at the font
+      // cell height but clears cells at a fractional offset when lineHeight isn't
+      // a whole number, so previous rows bleed into new ones (text ghosts/overlaps
+      // on every redraw). 1.0 is the only value the GL renderer positions correctly.
+      lineHeight: 1.0,
+      // SF Mono's 700 bold reads chunky next to its regular; 600 keeps Claude
+      // Code's frequent bold emphasis distinct without the clobbered look. Bold
+      // stays in the same hue (no bright-colour shift) so it reads as weight only.
+      fontWeight: 400,
+      fontWeightBold: 600,
+      drawBoldTextInBrightColors: false,
       cursorBlink: true,
       cursorStyle: 'bar',
       allowProposedApi: true,
       macOptionIsMeta: true,
       scrollback: 10000,
-      // Claude Code emits dim/gray secondary text tuned for dark terminals; on a
-      // light background that washes out. Force a readable contrast in light mode.
-      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
+      // Claude Code emits dim/gray secondary text (rendered at reduced alpha). On
+      // a light background that washes out, and even on dark the dimmest grays can
+      // drop below legibility — lift the floor a touch on dark, push to AA on light.
+      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1.15,
     })
 
     const fitAddon = new FitAddon()
@@ -203,7 +214,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     const term = termRef.current
     if (!term) return
     term.options.theme = theme
-    term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1
+    term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1.15
     // Atlas glyphs were rasterized in the old palette; rebuild so cached cells
     // don't linger in stale colours.
     clearAtlasSoon()
@@ -246,18 +257,38 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     e.dataTransfer.dropEffect = 'copy'
   }, [])
 
+  // The outer frame inset (--bg-sidebar) lets the terminal sit as a rounded card
+  // a few px in from the window edges, separated from the chrome behind it; the
+  // inner ref div is where xterm mounts and keeps its own 6px breathing room.
   return (
     <div
-      ref={containerRef}
-      onClick={() => termRef.current?.focus()}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
       style={{
         width: '100%',
         height: '100%',
+        boxSizing: 'border-box',
         overflow: 'hidden',
-        padding: 6,
+        background: 'var(--bg-sidebar)',
+        padding: 8,
       }}
-    />
+    >
+      <div
+        ref={containerRef}
+        onClick={() => termRef.current?.focus()}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        style={{
+          width: '100%',
+          height: '100%',
+          boxSizing: 'border-box',
+          overflow: 'hidden',
+          padding: 6,
+          background: 'var(--bg-terminal)',
+          // Hairline only — the inset frame + radius carry the separation; a full
+          // --border line reads too heavy here.
+          border: '1px solid var(--overlay-subtle)',
+          borderRadius: 10,
+        }}
+      />
+    </div>
   )
 }

@@ -15,7 +15,7 @@ export const nineteen84Xterm: ITheme = {
   magenta: '#F806FA',
   cyan: '#59E1E3',
   white: '#f1f1f1',
-  brightBlack: '#555555',
+  brightBlack: '#5a5a82',
   brightRed: '#FF16B0',
   brightGreen: '#B3F361',
   brightYellow: '#FFEA16',
@@ -28,7 +28,7 @@ export const nineteen84Xterm: ITheme = {
 export const nineteen84Vars = {
   '--bg-terminal': '#0d0f31',
   '--bg-sidebar': '#070825',
-  '--bg-surface': '#070825',
+  '--bg-surface': '#12143f',
   '--fg': '#f1f1f1',
   '--fg-muted': '#8888aa',
   '--accent': '#46BDFF',
@@ -40,11 +40,11 @@ export const nineteen84Vars = {
   '--magenta': '#F806FA',
   '--cyan': '#59E1E3',
   '--selection': '#ffffff3b',
-  '--border': '#2a2d6e',
+  '--border': '#1a1c50',
   '--color-success': '#B3F361',
   '--color-error': '#FF16B0',
   '--color-warning': '#FFEA16',
-  // Per-session status hues — the colour the status dots bloom into.
+  // Per-session status-dot bloom hues (the colour the dots take as they scale up).
   '--status-running': '#B3F361',
   '--status-compacting': '#FFEA16',
   '--status-waiting': '#46BDFF',

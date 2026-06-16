@@ -15,7 +15,7 @@ export const mrPinkXterm: ITheme = {
   magenta: '#F859CA',
   cyan: '#8FC8FF',
   white: '#F6F8F7',
-  brightBlack: '#555555',
+  brightBlack: '#6f6f78',
   brightRed: '#ff6057',
   brightGreen: '#84eea7',
   brightYellow: '#FAD481',
@@ -28,7 +28,7 @@ export const mrPinkXterm: ITheme = {
 export const mrPinkVars = {
   '--bg-terminal': '#22222A',
   '--bg-sidebar': '#1E1E25',
-  '--bg-surface': '#25252F',
+  '--bg-surface': '#2b2b37',
   '--fg': '#F6F8F7',
   '--fg-muted': '#adadad',
   '--accent': '#D58FDB',
@@ -40,11 +40,11 @@ export const mrPinkVars = {
   '--magenta': '#F859CA',
   '--cyan': '#8FC8FF',
   '--selection': '#ffffff3b',
-  '--border': '#34343f',
+  '--border': '#2a2a35',
   '--color-success': '#84eea7',
   '--color-error': '#ff6057',
   '--color-warning': '#FAD481',
-  // Per-session status hues — the colour the status dots bloom into.
+  // Per-session status-dot bloom hues (the colour the dots take as they scale up).
   '--status-running': '#84eea7',
   '--status-compacting': '#FAD481',
   '--status-waiting': '#D58FDB',
