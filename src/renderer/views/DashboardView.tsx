@@ -420,6 +420,9 @@ export function DashboardView() {
       if (current === `local-${terminalId}`) return null
       return current
     })
+    // Leave the session's settings view when its session is closed, so the main
+    // area returns to the workspace instead of staying stuck in settings.
+    setActiveFolderPrefs(null)
   }, [terminals, forgetSavedSession])
 
   const handleSelectSession = useCallback((session: AgentSession) => {
