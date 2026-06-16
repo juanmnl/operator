@@ -571,17 +571,33 @@ export function DashboardView() {
     })
   }, [terminals, sessions, customNames, savedHydrated])
 
-  // Check for an app update on launch; prompt to install + restart if available.
-  useEffect(() => {
+  // Check the public releases feed; prompt to install + restart if an update is
+  // available. `manual` adds feedback toasts for the no-update / error cases so
+  // an explicit "Check for updates" never looks like it did nothing.
+  const runUpdateCheck = useCallback((manual = false) => {
     window.operator.checkUpdate?.().then((u) => {
-      if (!u) return
+      if (!u) {
+        if (manual) pushToast({ text: "Operator is up to date", kind: 'success' })
+        return
+      }
       pushToast({
         text: `Update ${u.version} available`,
         detail: 'Install and restart Operator.',
         action: { label: 'Install & Restart', run: () => { void window.operator.installUpdate() } },
       })
-    }).catch(() => { /* offline / no updater */ })
+    }).catch(() => {
+      if (manual) pushToast({ text: 'Update check failed', detail: 'Could not reach the releases feed.', kind: 'error' })
+    })
   }, [pushToast])
+
+  // Check on launch, then re-check every 3h so a long-running instance still
+  // notices releases published after it started (the launch-only check missed
+  // them — see v0.1.2). Cleared on unmount.
+  useEffect(() => {
+    runUpdateCheck()
+    const id = setInterval(() => runUpdateCheck(), 1000 * 60 * 60 * 3)
+    return () => clearInterval(id)
+  }, [runUpdateCheck])
 
   // "Ready for review" detection — watch worktree sessions transitioning to idle
   // with uncommitted changes. Show one in-app toast per (terminalId, idle-arrival).
@@ -741,6 +757,7 @@ export function DashboardView() {
       { id: 'usage', group: 'Settings', label: 'Usage & cost', run: handleOpenUsage },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
+      { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
       { id: 'theme', group: 'View', label: currentTheme.isDark ? 'Switch to light mode' : 'Switch to dark mode', run: handleToggleTheme },
     )
 
@@ -757,7 +774,7 @@ export function DashboardView() {
     })
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck])
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-terminal)' }}>

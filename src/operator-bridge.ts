@@ -2,6 +2,7 @@
 // Tauri invoke()/events, so the Operator React UI runs unchanged.
 
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -127,6 +128,7 @@ export function installBridge(): void {
     loadSessions: () => invoke('load_sessions') as Promise<unknown[]>,
 
     // Auto-update: check the public releases feed; install + relaunch on demand.
+    getVersion: () => getVersion(),
     checkUpdate: async () => {
       try {
         pendingUpdate = await check()

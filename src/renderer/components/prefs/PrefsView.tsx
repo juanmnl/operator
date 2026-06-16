@@ -1,4 +1,33 @@
+import { useEffect, useState } from 'react'
+
+type CheckState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'uptodate' }
+  | { kind: 'available'; version: string }
+  | { kind: 'error' }
+
 export function PrefsView() {
+  const [version, setVersion] = useState<string | null>(null)
+  const [state, setState] = useState<CheckState>({ kind: 'idle' })
+  const [installing, setInstalling] = useState(false)
+
+  useEffect(() => {
+    window.operator.getVersion?.().then(setVersion).catch(() => { /* */ })
+  }, [])
+
+  const check = () => {
+    setState({ kind: 'checking' })
+    window.operator.checkUpdate?.().then((u) => {
+      setState(u ? { kind: 'available', version: u.version } : { kind: 'uptodate' })
+    }).catch(() => setState({ kind: 'error' }))
+  }
+
+  const install = () => {
+    setInstalling(true)
+    void window.operator.installUpdate?.() // downloads, installs, relaunches
+  }
+
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
@@ -14,9 +43,52 @@ export function PrefsView() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 560 }}>
-        <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, lineHeight: 1.6 }}>
-          No app preferences yet.
-        </p>
+        <section>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+            Updates
+          </h3>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+            Operator checks for updates on launch and every few hours.{' '}
+            {version ? <>You're on <strong style={{ color: 'var(--fg)' }}>v{version}</strong>.</> : null}
+          </p>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {state.kind === 'available' ? (
+              <button
+                onClick={install}
+                disabled={installing}
+                style={{
+                  padding: '6px 14px', fontSize: 11, fontWeight: 600,
+                  background: 'var(--accent)', border: '1px solid var(--accent)',
+                  borderRadius: 5, color: 'var(--fg-on-accent)', fontFamily: 'inherit',
+                  cursor: installing ? 'default' : 'pointer', opacity: installing ? 0.6 : 1,
+                }}
+              >
+                {installing ? 'Installing…' : `Install v${state.version} & Restart`}
+              </button>
+            ) : (
+              <button
+                onClick={check}
+                disabled={state.kind === 'checking'}
+                style={{
+                  padding: '6px 14px', fontSize: 11, fontWeight: 500,
+                  background: 'var(--btn-bg)', border: '1px solid var(--border)',
+                  borderRadius: 5, color: 'var(--fg)', fontFamily: 'inherit',
+                  cursor: state.kind === 'checking' ? 'default' : 'pointer',
+                  opacity: state.kind === 'checking' ? 0.6 : 1,
+                }}
+              >
+                {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+              </button>
+            )}
+
+            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+              {state.kind === 'uptodate' && 'You’re up to date.'}
+              {state.kind === 'available' && `Update ${state.version} available.`}
+              {state.kind === 'error' && 'Couldn’t reach the releases feed.'}
+            </span>
+          </div>
+        </section>
       </div>
     </div>
   )

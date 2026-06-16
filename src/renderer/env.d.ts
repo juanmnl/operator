@@ -45,6 +45,7 @@ declare global {
       saveSessions: (sessions: unknown[]) => void
       loadSessions: () => Promise<unknown[]>
       /** Auto-update against the public releases feed. */
+      getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>
       installUpdate: () => Promise<void>
     }
