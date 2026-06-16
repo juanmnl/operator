@@ -580,15 +580,23 @@ export function DashboardView() {
     })
   }, [terminals, sessions, customNames, savedHydrated])
 
+  // App version (shown next to the name) + a pending update (surfaced as a badge
+  // in the sidebar, in addition to the toast).
+  const [appVersion, setAppVersion] = useState('')
+  const [availableUpdate, setAvailableUpdate] = useState<{ version: string } | null>(null)
+  useEffect(() => { window.operator.getVersion?.().then(setAppVersion).catch(() => {}) }, [])
+
   // Check the public releases feed; prompt to install + restart if an update is
   // available. `manual` adds feedback toasts for the no-update / error cases so
   // an explicit "Check for updates" never looks like it did nothing.
   const runUpdateCheck = useCallback((manual = false) => {
     window.operator.checkUpdate?.().then((u) => {
       if (!u) {
+        setAvailableUpdate(null)
         if (manual) pushToast({ text: "Operator is up to date", kind: 'success' })
         return
       }
+      setAvailableUpdate(u)
       pushToast({
         text: `Update ${u.version} available`,
         detail: 'Install and restart Operator.',
@@ -814,6 +822,9 @@ export function DashboardView() {
         onOpenUsage={handleOpenUsage}
         onOpenPrefs={handleOpenPrefs}
         onToggleTheme={handleToggleTheme}
+        version={appVersion}
+        update={availableUpdate}
+        onInstallUpdate={() => { void window.operator.installUpdate() }}
       />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>

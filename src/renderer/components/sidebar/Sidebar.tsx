@@ -32,9 +32,14 @@ interface SidebarProps {
   onOpenUsage: () => void
   onOpenPrefs: () => void
   onToggleTheme: () => void
+  /** App version (e.g. "0.1.4"), shown next to the name. */
+  version?: string
+  /** A newer release found by the updater, or null. */
+  update?: { version: string } | null
+  onInstallUpdate?: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -86,31 +91,49 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           }}
         >
           <LogoMark size={16} animated={false} />
-          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
-            Operator
+          {/* Name + version share a baseline so the small version sits on the
+              same line as "Operator" instead of floating mid-height. */}
+          <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
+              Operator
+            </span>
+            {version && (
+              <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.55, fontVariantNumeric: 'tabular-nums' }}>
+                v{version}
+              </span>
+            )}
           </span>
         </button>
+        {update && (
+          <button
+            onClick={onInstallUpdate}
+            title={`Update ${update.version} available — install & restart`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+              background: 'var(--accent)', color: 'var(--fg-on-accent)',
+              border: 'none', borderRadius: 999, cursor: 'pointer',
+              fontSize: 8, fontWeight: 700, letterSpacing: 0.2,
+              padding: '1px 6px', fontFamily: 'inherit', lineHeight: '12px',
+            }}
+          >
+            ↑ Update
+          </button>
+        )}
+        {/* Settings — moved up here, replacing the theme toggle (now at the bottom). */}
         <button
-          onClick={onToggleTheme}
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          onClick={onOpenPrefs}
+          title="Operator preferences"
           style={{
             marginLeft: 'auto',
-            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-            display: 'flex', alignItems: 'center', opacity: 0.4,
-            // @ts-expect-error Electron-specific CSS property
-            WebkitAppRegion: 'no-drag',
+            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: 'pointer', padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center', opacity: prefsViewActive ? 1 : 0.6,
           }}
         >
-          {isDark ? (
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
-              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
-            </svg>
-          )}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
         </button>
       </DragRegion>
 
@@ -156,7 +179,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         gap: 10,
         fontSize: 10,
         color: 'var(--fg-muted)',
-        opacity: 0.5,
+        opacity: 0.65,
         fontVariantNumeric: 'tabular-nums',
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
@@ -185,7 +208,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             cursor: 'pointer',
             padding: 0,
             lineHeight: 1,
-            opacity: 0.5,
+            opacity: 0.85,
           }}
           title="New Session"
         >
@@ -201,7 +224,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
-            opacity: agentsViewActive ? 0.9 : 0.5,
+            opacity: agentsViewActive ? 1 : 0.85,
             marginLeft: 6,
           }}
           title="Agents — configure models per task"
@@ -224,7 +247,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
-            opacity: usageViewActive ? 0.9 : 0.5,
+            opacity: usageViewActive ? 1 : 0.85,
             marginLeft: 4,
           }}
           title="Usage & cost"
@@ -247,7 +270,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             borderRadius: 8,
             display: 'flex',
             alignItems: 'center',
-            opacity: globalPrefsActive ? 0.9 : 0.5,
+            opacity: globalPrefsActive ? 1 : 0.85,
             marginLeft: 6,
           }}
           title="Global Claude files (~/.claude)"
@@ -258,25 +281,27 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
           </svg>
         </button>
+        {/* Theme toggle — moved down here from the header (settings took its spot). */}
         <button
-          onClick={onOpenPrefs}
+          onClick={onToggleTheme}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
           style={{
-            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 5px',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
-            opacity: prefsViewActive ? 0.9 : 0.5,
-            marginLeft: 4,
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center',
+            opacity: 0.85, marginLeft: 4,
           }}
-          title="Operator preferences"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
+          {isDark ? (
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
+              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
+            </svg>
+          )}
         </button>
       </div>
     </div>
