@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -43,12 +43,24 @@ struct Pty {
 pub struct PtyManager {
     ptys: Mutex<HashMap<String, Pty>>,
     next: AtomicU64,
+    /// Last time each terminal produced output — a real-time "actively working"
+    /// signal for the status indicator (claude streams while thinking/running).
+    activity: Mutex<HashMap<String, Instant>>,
 }
 
 impl PtyManager {
     /// Whether a terminal's pty is still open (removed on exit).
     pub fn alive(&self, id: &str) -> bool {
         self.ptys.lock().unwrap().contains_key(id)
+    }
+
+    pub fn note_activity(&self, id: &str) {
+        self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
+    }
+
+    /// Did this terminal emit output within `dur`? (i.e. is it actively working)
+    pub fn active_within(&self, id: &str, dur: Duration) -> bool {
+        self.activity.lock().unwrap().get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
     }
 }
 
@@ -123,6 +135,7 @@ fn terminal_spawn(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    mgr_arc.note_activity(&emit_id);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data: buf[..n].to_vec() });
                 }
             }
@@ -400,6 +413,44 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+// Menu-bar tray icon (the active-session count is set by the transcript tailer).
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::image::Image;
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let h = app.handle();
+    let show = MenuItem::with_id(h, "show", "Show Operator", true, None::<&str>)?;
+    let quit = PredefinedMenuItem::quit(h, Some("Quit Operator"))?;
+    let menu = Menu::with_items(h, &[&show, &quit])?;
+    let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
+    TrayIconBuilder::with_id("operator")
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("Operator — active sessions")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "show" {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                if let Some(w) = tray.app_handle().get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(h)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -412,6 +463,7 @@ pub fn run() {
         .setup(|app| {
             start_hook_server(app.handle().clone());
             transcript::start_tailer(app.handle().clone());
+            build_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

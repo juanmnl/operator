@@ -70,6 +70,7 @@ struct Track {
     last_was_user_prompt: bool,
     started_at: Option<String>,
     last_activity_at: String,
+    last_phase: String,
     ended: bool,
     dirty: bool,
 }
@@ -93,6 +94,7 @@ impl Track {
             last_was_user_prompt: false,
             started_at: None,
             last_activity_at: now_iso(),
+            last_phase: String::new(),
             ended: false,
             dirty: true, // emit once so the session shell shows up promptly
         }
@@ -253,7 +255,7 @@ impl Track {
         "idle"
     }
 
-    fn to_session(&self) -> AgentSession {
+    fn to_session(&self, phase: &str) -> AgentSession {
         AgentSession::from_transcript(
             self.session_id.clone(),
             self.terminal_id.clone(),
@@ -261,7 +263,7 @@ impl Track {
             self.permission_mode.clone(),
             self.summary.clone(),
             self.ended,
-            self.phase(),
+            phase,
             self.activity.clone(),
             self.active_subagents,
             self.last_tool_name.clone(),
@@ -337,15 +339,28 @@ pub fn start_tailer(app: tauri::AppHandle) {
                     t.ended = true;
                     t.dirty = true;
                 }
-                if t.dirty {
-                    sessions.upsert(t.to_session());
+                // Effective phase: the terminal streaming output right now is the
+                // real-time signal that the agent is working; the transcript
+                // phase covers quiet stretches (e.g. a long-running tool).
+                let pty_active = !t.ended && mgr.active_within(&t.terminal_id, Duration::from_millis(1500));
+                let phase = if pty_active { "running" } else { t.phase() };
+                let phase_changed = t.last_phase != phase;
+                if t.dirty || phase_changed {
+                    t.last_phase = phase.to_string();
+                    sessions.upsert(t.to_session(phase));
                     t.dirty = false;
                     any_dirty = true;
                 }
             }
 
             if any_dirty {
-                let _ = app.emit("session:update", sessions.get_active());
+                let active = sessions.get_active();
+                // Menu-bar tray shows the live active-session count.
+                if let Some(tray) = app.tray_by_id("operator") {
+                    let n = active.len();
+                    let _ = tray.set_title(Some(if n > 0 { n.to_string() } else { String::new() }));
+                }
+                let _ = app.emit("session:update", active);
             }
         }
     });
