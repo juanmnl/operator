@@ -47,6 +47,11 @@ export const missionControlVars = {
   '--color-success': '#2fe39a',
   '--color-error': '#ff5f56',
   '--color-warning': '#ffb454',
+  // Per-session status-dot bloom hues. Accent is the signal-green, so running
+  // takes haiku-blue to stay distinct from the green "your turn" waiting hue.
+  '--status-running': '#58b2ff',
+  '--status-compacting': '#ffb454',
+  '--status-waiting': '#2fe39a',
   '--mcp-stdio': '#2fe39a',
   '--mcp-http': '#58b2ff',
   '--mcp-cloud': '#c98bff',
