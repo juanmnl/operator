@@ -145,7 +145,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           <>
             {/* Waiting for a reply → tint the name the same accent as its status
                 dot so the eye is drawn to the session that needs you. */}
-            <span style={status === 'waiting' ? { color: 'var(--accent)', fontWeight: 600 } : undefined}>
+            <span style={status === 'waiting' ? { color: 'var(--accent)' } : undefined}>
               {label}
             </span>
             {toolLabel && (

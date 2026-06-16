@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { themes, type OperatorTheme } from '../../themes'
 
 type CheckState =
   | { kind: 'idle' }
@@ -7,7 +8,10 @@ type CheckState =
   | { kind: 'available'; version: string }
   | { kind: 'error' }
 
-export function PrefsView() {
+export function PrefsView({ currentTheme, onSelectTheme }: {
+  currentTheme: OperatorTheme
+  onSelectTheme: (key: string) => void
+}) {
   const [version, setVersion] = useState<string | null>(null)
   const [state, setState] = useState<CheckState>({ kind: 'idle' })
   const [installing, setInstalling] = useState(false)
@@ -43,6 +47,44 @@ export function PrefsView() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 560 }}>
+        <section style={{ marginBottom: 28 }}>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+            Theme
+          </h3>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+            Also switchable from the command palette (⌘K → “Theme: …”).
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {Object.entries(themes).map(([key, theme]) => {
+              const active = theme === currentTheme
+              return (
+                <button
+                  key={key}
+                  onClick={() => onSelectTheme(key)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '7px 12px', borderRadius: 6, cursor: 'pointer',
+                    fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
+                    color: 'var(--fg)',
+                    background: active ? 'var(--bg-surface)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                  }}
+                >
+                  {/* swatch: the theme's own surface + accent */}
+                  <span style={{
+                    width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+                    background: theme.vars['--bg-terminal'],
+                    border: `1px solid ${theme.vars['--border']}`,
+                    boxShadow: `inset 0 0 0 3px ${theme.vars['--accent']}`,
+                  }} />
+                  {theme.name}
+                  {active && <span style={{ color: 'var(--accent)', fontSize: 10 }}>✓</span>}
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
         <section>
           <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
             Updates

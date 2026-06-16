@@ -62,8 +62,10 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         WebkitAppRegion: 'drag',
       }}
     >
-      {/* Header */}
+      {/* Header — also the window drag handle (Tauri honors data-tauri-drag-region,
+          not Electron's -webkit-app-region; the buttons below stay clickable). */}
       <div
+        data-tauri-drag-region
         style={{
           display: 'flex',
           alignItems: 'center',

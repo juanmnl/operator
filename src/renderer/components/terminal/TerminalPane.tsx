@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -46,9 +47,11 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     const term = new Terminal({
       theme,
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      // Trailing emoji/symbol families so glyphs the mono fonts lack (Claude Code's
+      // spinner symbols, emoji) fall back to a real glyph instead of tofu (□/??).
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', 'Apple Symbols', monospace",
       fontSize: 13,
-      lineHeight: 1.3,
+      lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: 'bar',
       allowProposedApi: true,
@@ -70,12 +73,22 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     term.open(containerRef.current)
 
-    // Intentionally NOT loading the WebGL renderer. In a Tauri/WKWebView window
-    // its texture-atlas + cell-clear path drops glyphs and leaves stale cells
-    // behind (truncated text, leftover gutter marks, garbled redraws, tofu for
-    // emoji it can't rasterize). The default DOM renderer repaints through the
-    // browser's text pipeline — slightly less GPU-efficient, but correct and
-    // smooth enough for a TUI, and it inherits system font fallback for emoji.
+    // Use the WebGL renderer: it draws box-drawing/block characters as seamless
+    // custom glyphs (the input-box borders and separators render as continuous
+    // lines, not dashes — the DOM renderer can't do this) and rasterizes glyphs
+    // through the font stack so the emoji fallback applies. The context-loss
+    // handler disposes the addon if the GL context drops, so xterm falls back to
+    // the DOM renderer instead of drawing into a dead context (stale/garbled cells).
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
+    } catch {
+      // WebGL unavailable — xterm keeps the DOM renderer.
+    }
+
+    // Re-assert cursorBlink (loading a renderer addon can reset terminal options).
+    term.options.cursorBlink = true
 
     termRef.current = term
     fitRef.current = fitAddon

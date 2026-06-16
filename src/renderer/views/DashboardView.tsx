@@ -808,11 +808,7 @@ export function DashboardView() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
-          <div style={{ height: 40,
-            // @ts-expect-error Electron-specific CSS property
-            WebkitAppRegion: 'drag',
-            flexShrink: 0,
-          }} />
+          <div data-tauri-drag-region style={{ height: 40, flexShrink: 0 }} />
         )}
 
         {contentMode === 'pendingSession' && pendingSession && (
@@ -843,7 +839,7 @@ export function DashboardView() {
         {contentMode === 'usage' && <UsageView />}
 
         {contentMode === 'prefs' && (
-          <PrefsView />
+          <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} />
         )}
 
         {contentMode === 'localTerminal' && activeSession && (() => {

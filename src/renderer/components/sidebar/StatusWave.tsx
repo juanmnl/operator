@@ -57,13 +57,18 @@ export function StatusWave({ status, size = 13 }: { status: WaveStatus; size?: n
         transformBox: 'fill-box',
         transformOrigin: 'center',
         animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
-        ...(cfg.fill ? { fill: cfg.fill } : null),
       } as React.CSSProperties,
     }
   }), [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <span style={{ flexShrink: 0, display: 'inline-flex', lineHeight: 0, ['--tw-max' as string]: cfg.maxOp }}>
+    <span style={{
+      flexShrink: 0, display: 'inline-flex', lineHeight: 0,
+      ['--tw-max' as string]: cfg.maxOp,
+      // The twinkle keyframe reads fill from --tw-fill/--tw-fill-peak; set them so
+      // an animated state (e.g. waiting) tints accent instead of the gray→white default.
+      ...(cfg.fill ? { ['--tw-fill' as string]: cfg.fill, ['--tw-fill-peak' as string]: cfg.fill } : null),
+    }}>
       <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
         <g fill="var(--fg)">
           {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style} />)}

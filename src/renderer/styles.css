@@ -58,6 +58,6 @@ body {
    shift from gray to white, each on its own offset. Kept very subtle.
    --tw-max sets the per-state brightness ceiling. */
 @keyframes twinkle {
-  0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--fg-muted); }
-  50%      { opacity: var(--tw-max, 0.85); transform: scale(1); fill: var(--fg); }
+  0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--tw-fill, var(--fg-muted)); }
+  50%      { opacity: var(--tw-max, 0.85); transform: scale(1); fill: var(--tw-fill-peak, var(--fg)); }
 }

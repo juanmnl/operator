@@ -109,9 +109,14 @@ All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circl
     <td><code>logos/mark.svg</code> · <code>mark-light.svg</code><br/><code>logos/mark-64.png</code> · <code>mark-128.png</code><br/><code>logos/mark-light-64.png</code></td>
   </tr>
   <tr>
-    <td><strong>Menu-bar tray icon</strong><br/>Monochrome macOS template (auto light/dark).</td>
-    <td align="center"><img src="assets/logos/trayTemplate@2x.png" width="22" alt="Operator tray icon" /></td>
-    <td><code>logos/trayTemplate.png</code><br/><code>logos/trayTemplate@2x.png</code></td>
+    <td><strong>Menu-bar tray icon</strong><br/>The dot-circle as a monochrome macOS template (auto light/dark).</td>
+    <td align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/logos/mark-64.png" />
+        <img src="assets/logos/mark-light-64.png" width="22" alt="Operator tray icon" />
+      </picture>
+    </td>
+    <td><code>src-tauri/icons/tray.png</code> (the icon the app loads)</td>
   </tr>
   <tr>
     <td><strong>Status indicator</strong><br/>The six "thinking" shimmer frames behind the live session status.</td>
@@ -120,7 +125,7 @@ All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circl
   </tr>
 </table>
 
-> The dot-circle mark is generated from the same algorithm as the in-app `LogoMark` (37 dots, deterministic frozen-twinkle weighting). The older bars-in-circle logo (`logos/logo.svg`, `logo-64.png`, `logo-light-64.png`) is retained for reference but no longer used in the UI.
+> The dot-circle mark is generated from the same algorithm as the in-app `LogoMark` (37 dots, deterministic frozen-twinkle weighting). The older bars-in-circle logo (`logos/logo.svg`, `logo-64.png`, `logo-light-64.png`, and the legacy `logos/trayTemplate*.png`) is retained for reference but no longer used in the UI.
 
 ### License
 

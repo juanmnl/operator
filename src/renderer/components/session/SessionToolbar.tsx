@@ -53,10 +53,8 @@ export function SessionToolbar({ projectPath, projectName, effortLevel: effortLe
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* Draggable title bar area */}
-      <div style={{
-        // @ts-expect-error Electron-specific CSS property
-        WebkitAppRegion: 'drag',
+      {/* Draggable title bar area (Tauri: data-tauri-drag-region) */}
+      <div data-tauri-drag-region style={{
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'space-between',
