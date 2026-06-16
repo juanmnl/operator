@@ -62,7 +62,12 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    term.loadAddon(new WebLinksAddon())
+    // Clicking a link opens it in the system browser (via Tauri's opener);
+    // falls back to window.open elsewhere.
+    term.loadAddon(new WebLinksAddon((_event, uri) => {
+      if (window.operator?.openExternal) window.operator.openExternal(uri)
+      else window.open(uri, '_blank')
+    }))
 
     term.open(containerRef.current)
 

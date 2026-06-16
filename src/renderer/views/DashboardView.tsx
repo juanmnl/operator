@@ -61,6 +61,9 @@ export function DashboardView() {
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
+  // Latest active terminal, for the (single, mount-time) file-drop listener.
+  const activeTerminalIdRef = useRef<string | null>(null)
+  useEffect(() => { activeTerminalIdRef.current = activeTerminalId }, [activeTerminalId])
   const [pendingRequests, setPendingRequests] = useState<OperatorRequest[]>([])
   const [customNames, setCustomNames] = useState<Record<string, string>>(() => {
     try {
@@ -138,7 +141,16 @@ export function DashboardView() {
       setActiveSessionId((current) => (current === `local-${id}` ? null : current))
     })
 
-    return () => { unsubSession(); unsubRequest(); unsubExit(); clearInterval(pollInterval) }
+    // Files dropped on the window → paste their paths into the active terminal,
+    // so you can drop an image straight into the conversation.
+    const unsubDrop = window.operator.onFileDrop?.((paths) => {
+      const tid = activeTerminalIdRef.current
+      if (!tid || !paths.length) return
+      const text = paths.map((p) => (/\s/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p)).join(' ') + ' '
+      window.operator.terminalWrite(tid, text)
+    }) ?? (() => {})
+
+    return () => { unsubSession(); unsubRequest(); unsubExit(); clearInterval(pollInterval); unsubDrop() }
   }, [])
 
   const handleNewSession = useCallback(async () => {

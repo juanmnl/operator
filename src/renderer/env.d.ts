@@ -21,6 +21,8 @@ declare global {
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
       onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
       showMainWindow: () => void
+      openExternal: (url: string) => void
+      onFileDrop: (callback: (paths: string[]) => void) => () => void
       getHookPath: () => Promise<string>
       setActiveSession: (sessionId: string | null) => void
       onFocusSession: (callback: (sessionId: string) => void) => () => void

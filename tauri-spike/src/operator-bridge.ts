@@ -8,7 +8,9 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open } from '@tauri-apps/plugin-dialog'
+import { openUrl } from '@tauri-apps/plugin-opener'
 
 type Unsub = () => void
 
@@ -93,6 +95,17 @@ export function installBridge(): void {
     setActiveSession: () => {},
     showMainWindow: () => {},
     prefsUpdate: () => {},
+
+    // Open a URL in the system browser (clickable terminal links).
+    openExternal: (url: string) => { void openUrl(url) },
+    // Files dropped anywhere on the window — Tauri gives real paths (the webview
+    // suppresses HTML5 file drops). The renderer writes them to the active terminal.
+    onFileDrop: (cb: (paths: string[]) => void): Unsub => {
+      const p = getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type === 'drop' && event.payload.paths.length) cb(event.payload.paths)
+      })
+      return () => { void p.then((f) => f()) }
+    },
 
     // --- git worktrees (real) ---
     inspectRepo: (cwd: string) => invoke('inspect_repo', { cwd }),
