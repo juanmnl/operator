@@ -2,13 +2,12 @@ import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
 
-type DotStatus = 'running' | 'waiting' | 'compacting' | 'error' | 'idle' | 'ended'
+type DotStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended'
 
 interface SessionItemProps {
   session: AgentSession
   label: string
   active: boolean
-  hasPending: boolean
   effortLevel?: string | null
   /** Fan-out membership: this agent's position within a parallel launch. */
   fanInfo?: { index: number; total: number }
@@ -20,8 +19,7 @@ interface SessionItemProps {
   onClose: () => void
 }
 
-function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
-  if (hasPending) return 'waiting'
+function getDotStatus(session: AgentSession): DotStatus {
   if (session.status === 'ended') return 'ended'
 
   switch (session.phase) {
@@ -31,7 +29,7 @@ function getDotStatus(session: AgentSession, hasPending: boolean): DotStatus {
   }
 }
 
-export function SessionItem({ session, label, active, hasPending, effortLevel, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
@@ -42,7 +40,7 @@ export function SessionItem({ session, label, active, hasPending, effortLevel, f
     ? ` — ${session.lastToolName}`
     : session.phase === 'running' ? ' — processing' : ''
 
-  const status = getDotStatus(session, hasPending)
+  const status = getDotStatus(session)
 
   useEffect(() => {
     if (editing) {

@@ -1,9 +1,8 @@
-import type { AgentSession, OperatorRequest } from '../../../shared/types'
+import type { AgentSession } from '../../../shared/types'
 
 interface ActivityDashboardProps {
   sessions: AgentSession[]
   customNames: Record<string, string>
-  pendingRequests: OperatorRequest[]
   onSelectSession: (s: AgentSession) => void
   onNewSession: () => void
 }
@@ -27,7 +26,7 @@ function phaseColor(phase: string): string {
   }
 }
 
-export function ActivityDashboard({ sessions, customNames, pendingRequests, onSelectSession, onNewSession }: ActivityDashboardProps) {
+export function ActivityDashboard({ sessions, customNames, onSelectSession, onNewSession }: ActivityDashboardProps) {
   const active = sessions.filter((s) => s.status === 'active')
 
   return (
@@ -62,9 +61,6 @@ export function ActivityDashboard({ sessions, customNames, pendingRequests, onSe
       <div style={{ flex: 1, overflow: 'auto', padding: '0 16px 16px' }}>
         {active.map((session) => {
           const label = customNames[session.id] || session.summary || session.projectName || 'Session'
-          const pending = pendingRequests.filter(
-            (r) => r.sessionId === session.id || (r.terminalId && r.terminalId === session.terminalId),
-          )
           const lastActivity = session.activity?.length
             ? session.activity[session.activity.length - 1]
             : null
@@ -131,16 +127,6 @@ export function ActivityDashboard({ sessions, customNames, pendingRequests, onSe
                 </div>
               </div>
 
-              {pending.length > 0 && (
-                <span style={{
-                  fontSize: 10, fontWeight: 600,
-                  color: 'var(--color-warning)',
-                  background: 'var(--overlay-subtle)',
-                  padding: '2px 8px', borderRadius: 10, flexShrink: 0,
-                }}>
-                  {pending.length} pending
-                </span>
-              )}
               <span style={{
                 fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5,
                 flexShrink: 0, width: 70, textAlign: 'right',

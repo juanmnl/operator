@@ -1,5 +1,5 @@
-// Tauri 2 backend for Operator. Multi-terminal pty manager + the hook decision
-// pipeline / session tracking / rules engine (ported in core.rs).
+// Tauri 2 backend for Operator. Multi-terminal pty manager + transcript-driven
+// session tracking (see transcript.rs / core.rs).
 
 #[path = "core.rs"]
 mod backend;
@@ -17,7 +17,6 @@ mod transcript;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,12 +24,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
-use backend::{
-    evaluate_rules, is_auto_approved, load_rules, make_request, rules_add, rules_list,
-    rules_remove, summarize, AgentSession, HookEvent, OperatorRequest, Rule, Sessions,
-};
-
-const HOOK_PORT: u16 = 47821;
+use backend::{AgentSession, Sessions};
 
 struct Pty {
     writer: Box<dyn Write + Send>,
@@ -62,12 +56,6 @@ impl PtyManager {
     pub fn active_within(&self, id: &str, dur: Duration) -> bool {
         self.activity.lock().unwrap().get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
     }
-}
-
-#[derive(Default)]
-struct HookState {
-    pending: Mutex<HashMap<String, Sender<bool>>>,
-    queue: Mutex<Vec<OperatorRequest>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -103,7 +91,6 @@ fn terminal_spawn(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.args(["-ilc", &inner]);
     cmd.cwd(&cwd);
-    // So operator-hook.sh forwards this session's events to us.
     cmd.env("OPERATOR_TERMINAL_ID", &id);
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
@@ -119,9 +106,9 @@ fn terminal_spawn(
         Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
     );
 
-    // Register so the transcript tailer watches this session's JSONL and the
-    // hook can look up its permission mode. session_id is the forced
-    // `--session-id` (or the resumed id), so transcript mapping is exact.
+    // Register so the transcript tailer watches this session's JSONL.
+    // session_id is the forced `--session-id` (or the resumed id), so the
+    // transcript mapping is exact.
     reg.register(
         id.clone(),
         transcript::NewTrack { claude_session_id: session_id, cwd: cwd.clone(), permission_mode },
@@ -180,31 +167,11 @@ fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
     mgr.ptys.lock().unwrap().iter().map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone() }).collect()
 }
 
-// --- Sessions / queue / rules commands --------------------------------------
+// --- Sessions command -------------------------------------------------------
 
 #[tauri::command]
 fn get_sessions(sessions: State<Sessions>) -> Vec<AgentSession> {
     sessions.get_active()
-}
-
-#[tauri::command]
-fn get_queue(hook: State<HookState>) -> Vec<OperatorRequest> {
-    hook.queue.lock().unwrap().clone()
-}
-
-#[tauri::command]
-fn rules_list_cmd() -> Vec<Rule> {
-    rules_list()
-}
-
-#[tauri::command]
-fn rules_add_cmd(tool: String, pattern: Option<String>, scope: Option<String>, action: String) -> Rule {
-    rules_add(tool, pattern, scope, action)
-}
-
-#[tauri::command]
-fn rules_remove_cmd(id: String) {
-    rules_remove(&id)
 }
 
 // --- Worktree commands ------------------------------------------------------
@@ -247,14 +214,6 @@ fn worktree_merge(worktree_path: String, source_root: String, branch: String, ba
 #[tauri::command]
 fn worktree_discard(worktree_path: String, source_root: String, branch: String) -> Result<(), String> {
     worktree::discard_branch(&worktree_path, &source_root, &branch)
-}
-
-/// Resolve a blocking hook request the UI was prompted about.
-#[tauri::command]
-fn respond(id: String, approve: bool, hook: State<HookState>) {
-    if let Some(tx) = hook.pending.lock().unwrap().remove(&id) {
-        let _ = tx.send(approve);
-    }
 }
 
 // --- Durable session snapshot (~/.operator/sessions.json) --------------------
@@ -351,96 +310,6 @@ fn get_mcp_servers(project_path: String) -> folderprefs::McpServersResult {
     folderprefs::get_mcp_servers(&project_path)
 }
 
-// --- Hook server (port of server.ts /hook) ----------------------------------
-
-fn start_hook_server(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        let server = match tiny_http::Server::http(("127.0.0.1", HOOK_PORT)) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("hook server failed to bind :{HOOK_PORT}: {e}");
-                return;
-            }
-        };
-        println!("Operator (tauri) hook server on http://127.0.0.1:{HOOK_PORT}");
-        for mut req in server.incoming_requests() {
-            if req.url() == "/health" {
-                let _ = req.respond(tiny_http::Response::from_string("{\"status\":\"ok\"}"));
-                continue;
-            }
-            let app = app.clone();
-            std::thread::spawn(move || {
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let decision = handle_hook(&app, &body);
-                let _ = req.respond(tiny_http::Response::from_string(decision));
-            });
-        }
-    });
-}
-
-fn handle_hook(app: &tauri::AppHandle, body: &str) -> String {
-    let mut event: HookEvent = match serde_json::from_str(body) {
-        Ok(e) => e,
-        Err(_) => return "{\"status\":\"ok\"}".into(),
-    };
-    if event.hook_event_name.is_empty() || event.hook_event_name == "unknown" {
-        if event.tool_name.is_some() {
-            event.hook_event_name = "PreToolUse".into();
-        }
-    }
-
-    // The timeline is transcript-driven now; the hook is purely a permission
-    // gate. Look up the session's launch-time permission mode by terminal id.
-    let registry = app.state::<transcript::TrackRegistry>();
-    let perm_mode = event
-        .terminal_id
-        .as_deref()
-        .and_then(|t| registry.permission_mode(t))
-        .or_else(|| event.permission_mode.clone());
-
-    if event.hook_event_name != "PreToolUse" {
-        return "{\"status\":\"ok\"}".into();
-    }
-
-    let tool = event.tool_name.as_deref();
-
-    if is_auto_approved(tool) {
-        return "{\"decision\":\"approve\"}".into();
-    }
-    if matches!(perm_mode.as_deref(), Some("auto") | Some("bypassPermissions")) {
-        return "{\"decision\":\"approve\"}".into();
-    }
-    if let Some(action) = evaluate_rules(&load_rules(), tool.unwrap_or(""), event.tool_input.as_ref().unwrap_or(&serde_json::Value::Null), event.cwd.as_deref()) {
-        return format!("{{\"decision\":\"{}\"}}", if action == "approve" { "approve" } else { "deny" });
-    }
-
-    // Blocking permission flow. The request is surfaced to the UI via the queue
-    // (getQueue / hook:new-request); the timeline itself stays transcript-driven.
-    let summary = summarize(tool.unwrap_or("Tool"), event.tool_input.as_ref().unwrap_or(&serde_json::Value::Null));
-    let id = format!("op-{}", now_counter());
-    let request = make_request(&event, &summary, id.clone());
-
-    let hook = app.state::<HookState>();
-    let (tx, rx) = channel::<bool>();
-    hook.pending.lock().unwrap().insert(id.clone(), tx);
-    hook.queue.lock().unwrap().push(request.clone());
-
-    let _ = app.emit("hook:new-request", request.clone());
-
-    let approve = rx.recv_timeout(Duration::from_secs(300)).unwrap_or(true);
-
-    hook.pending.lock().unwrap().remove(&id);
-    hook.queue.lock().unwrap().retain(|r| r.id != id);
-
-    format!("{{\"decision\":\"{}\"}}", if approve { "approve" } else { "deny" })
-}
-
-fn now_counter() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-}
-
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -484,11 +353,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(Arc::new(PtyManager::default()))
-        .manage(HookState::default())
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
         .setup(|app| {
-            start_hook_server(app.handle().clone());
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
             Ok(())
@@ -500,10 +367,6 @@ pub fn run() {
             terminal_kill,
             terminal_list,
             get_sessions,
-            get_queue,
-            rules_list_cmd,
-            rules_add_cmd,
-            rules_remove_cmd,
             inspect_repo,
             worktree_create,
             worktree_status,
@@ -523,7 +386,6 @@ pub fn run() {
             folder_prefs_save_md,
             folder_prefs_create_file,
             get_mcp_servers,
-            respond,
             save_sessions,
             load_sessions
         ])

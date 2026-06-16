@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AgentSession, OperatorRequest } from '../../../shared/types'
+import { AgentSession } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 
@@ -7,10 +7,8 @@ interface SidebarProps {
   sessions: AgentSession[]
   activeSessionId: string | null
   customNames: Record<string, string>
-  pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
   globalPrefsActive: boolean
-  rulesViewActive: boolean
   agentsViewActive: boolean
   usageViewActive: boolean
   prefsViewActive: boolean
@@ -20,7 +18,7 @@ interface SidebarProps {
   /** Map sessionId → 1-based Cmd+N hint for the first 9 local sessions. */
   shortcutIndices: Record<string, number>
   /** Counts for the bottom status row. */
-  stats: { activeSessions: number; pendingRequests: number }
+  stats: { activeSessions: number }
   isDark: boolean
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
@@ -28,14 +26,13 @@ interface SidebarProps {
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
-  onOpenRules: () => void
   onOpenAgents: () => void
   onOpenUsage: () => void
   onOpenPrefs: () => void
   onToggleTheme: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, pendingRequests, activeFolderPrefs, globalPrefsActive, rulesViewActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenRules, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme }: SidebarProps) {
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -124,7 +121,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
             group={group}
             activeSessionId={activeSessionId}
             customNames={customNames}
-            pendingRequests={pendingRequests}
             activeFolderPrefs={activeFolderPrefs}
             effortLevels={effortLevels}
             fanInfo={fanInfo}
@@ -151,11 +147,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
         WebkitAppRegion: 'no-drag',
       }}>
         <span>{stats.activeSessions} active</span>
-        {stats.pendingRequests > 0 && (
-          <span style={{ color: 'var(--color-warning)', opacity: 1 }}>
-            {stats.pendingRequests} pending
-          </span>
-        )}
       </div>
 
       {/* Bottom bar */}
@@ -253,26 +244,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, pendingRequest
           </svg>
         </button>
         <button
-          onClick={onOpenRules}
-          style={{
-            background: rulesViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 5px',
-            borderRadius: 3,
-            display: 'flex',
-            alignItems: 'center',
-            opacity: rulesViewActive ? 0.9 : 0.5,
-            marginLeft: 4,
-          }}
-          title="Auto-approve rules"
-        >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-            <path d="M3 4h6M3 8h10M3 12h6" stroke="var(--fg-muted)" strokeWidth="1.2" strokeLinecap="round" />
-            <circle cx="12" cy="4" r="1.6" fill="var(--fg-muted)" />
-          </svg>
-        </button>
-        <button
           onClick={onOpenPrefs}
           style={{
             background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
@@ -302,7 +273,6 @@ function FolderGroup({
   group,
   activeSessionId,
   customNames,
-  pendingRequests,
   activeFolderPrefs,
   effortLevels,
   fanInfo,
@@ -316,7 +286,6 @@ function FolderGroup({
   group: AgentSession[]
   activeSessionId: string | null
   customNames: Record<string, string>
-  pendingRequests: OperatorRequest[]
   activeFolderPrefs: string | null
   effortLevels: Record<string, string>
   fanInfo: Record<string, { index: number; total: number }>
@@ -381,9 +350,6 @@ function FolderGroup({
         const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
         // Prefer the agent-derived summary (first user prompt) when no custom name is set.
         const defaultLabel = session.summary || autoName
-        const hasPending = pendingRequests.some(
-          (r) => r.terminalId === session.terminalId || r.sessionId === session.id
-        )
         // Get effort level from terminal tab (keyed by terminalId)
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
@@ -393,7 +359,6 @@ function FolderGroup({
             session={session}
             label={customName || defaultLabel}
             active={session.id === activeSessionId}
-            hasPending={hasPending}
             effortLevel={effort}
             fanInfo={fan}
             closable

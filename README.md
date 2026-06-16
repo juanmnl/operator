@@ -26,15 +26,15 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 - **A live orchestration timeline.** Watch each session's tool calls and subagent delegations as they happen — nested by who-spawned-whom, with a live-ticking duration on the in-flight tool and elapsed time on finished ones. Reconstructed straight from Claude Code's own transcripts, so it needs nothing installed.
 - **Isolated worktrees + fan-out.** Run multiple agents on one repo in parallel — each gets its own git worktree, so changes never collide. Fan a single task out across N parallel agents, each badged so the group reads at a glance.
 - **In-app diff review.** See each session's changes in a built-in diff viewer, then **Commit**, **Merge** back to your base branch, or **Discard** — no terminal required.
-- **Inline permissions + auto-approve rules.** With Operator's (optional) hook installed, approve or deny an agent's action inline as it asks; one click on "Always" turns that decision into a standing rule.
 - **A usage & cost dashboard.** Token-driven insights into what's driving your usage (high-context, subagent-heavy, and long-running sessions), plus a Claude-Code-`/usage`-style per-model breakdown — input/output/cache, cost, and API vs. wall time.
 - **Drop & click.** Drop an image anywhere on the window to paste its path into the active session, and click links in the terminal to open them in your browser.
 - **Never lose your place.** Open sessions are saved continuously to a crash-safe store; relaunch and pick up under "Continue where you left off" — **Resume** the exact conversation or reopen clean.
-- **Command palette** (`Cmd+K`), themes, and a menu-bar tray showing your active-session count.
+- **Self-updating.** New tagged releases are signed, notarized, and published automatically; the app checks on launch and offers a one-click "Install & Restart".
+- **Command palette** (`Cmd+K`), themes, and a menu-bar tray whose menu lists your active sessions and their live states.
 
 ### How it works
 
-Operator pins each session's id at launch (`claude --session-id <uuid>`) and tails its transcript to rebuild the timeline live — a pure observer of the sessions it starts, with **nothing installed and no global config**:
+Operator is a **pure observer** of the sessions it launches — nothing installed, no global config, no machine-wide hooks. It pins each session's id at launch (`claude --session-id <uuid>`) and tails that session's transcript to rebuild the timeline live:
 
 ```
 Operator  ──spawns──▶  embedded terminal  ──▶  claude --session-id <id>
@@ -44,20 +44,13 @@ Operator  ──spawns──▶  embedded terminal  ──▶  claude --session-
               Operator tails it → live timeline (tools, subagents, phase, cost)
 ```
 
-**Permissions are optional.** Install Operator's hook and it gates each tool use through an inline prompt:
-
-```
-Agent wants to run a tool → hook POSTs localhost:47821 → Operator holds it
-                          → Inline prompt → You decide → Agent continues or stops
-```
-
-The hook only acts on sessions Operator started — it keys on the `OPERATOR_TERMINAL_ID` env var injected into each terminal. A `claude` you run yourself in iTerm or VS Code hits the hook but exits immediately, so Operator stays a session manager, not a machine-wide gateway. With no hook installed (or Operator not running) Claude Code works normally; you just don't get the inline approval gate.
+Permissions are handled by Claude Code itself in the terminal as usual; Operator doesn't intercept them. A `claude` you run elsewhere is completely unaffected.
 
 ### Quick start
 
 ```bash
 npm install
-npm run dev
+npm run tauri dev   # or `npm run dev` for the frontend alone
 ```
 
 Click **+ New Session**, pick a folder, and start. If the folder is a git repo, worktree isolation defaults on; bump **Agents** above 1 to fan the same task out across parallel worktree agents.

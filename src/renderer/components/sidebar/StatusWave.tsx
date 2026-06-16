@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-export type WaveStatus = 'running' | 'waiting' | 'compacting' | 'error' | 'idle' | 'ended'
+export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended'
 
 // A circle of grid dots. Active states twinkle at random — scaling and shifting
 // gray→white — for a subtle "thinking" shimmer; resting states show the same
@@ -14,7 +14,6 @@ const config: Record<WaveStatus, { animate: boolean; durMin: number; durMax: num
   // Activity → twinkle. Everything at rest (idle/error/ended) → static dots.
   running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5 },
   compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5 },
-  waiting:    { animate: true,  durMin: 1.6, durMax: 3.0, maxOp: 0.9,  staticOp: 0.5 },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },

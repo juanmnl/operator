@@ -31,46 +31,6 @@ export interface HookEvent {
   terminal_id?: string
 }
 
-export interface OperatorRequest {
-  id: string
-  agentId: string
-  /** Humanized verb shown in the UI, e.g. "Run command", "Edit file". */
-  action: string
-  /** Raw underlying tool name (e.g. "Bash", "Edit") for matching and rules. */
-  toolName?: string
-  message: string
-  context: {
-    workingDirectory?: string
-    target?: string
-    preview?: string
-  }
-  severity: Severity
-  options?: RequestOption[]
-  expiresIn: number
-  timestamp: string
-  sessionId?: string
-  terminalId?: string
-}
-
-export interface OperatorResponse {
-  approved: boolean
-  value: string
-  modifiedContext: Record<string, unknown> | null
-  respondedAt: string
-  respondedBy: 'user' | 'auto-rule' | 'timeout'
-}
-
-export interface AuditEntry {
-  id: string
-  request: OperatorRequest
-  response: OperatorResponse
-}
-
-export interface SessionEntry {
-  request: OperatorRequest
-  response: OperatorResponse | null
-}
-
 export interface ActivityEntry {
   toolName: string
   target?: string
@@ -96,7 +56,6 @@ export interface AgentSession {
   summary?: string
   status: SessionStatus
   phase: SessionPhase
-  entries: SessionEntry[]
   activity: ActivityEntry[]
   activeSubagents: number
   lastToolName: string | null
@@ -213,23 +172,6 @@ export interface AgentDefinition {
   path: string
 }
 
-export type RuleAction = 'approve' | 'deny'
-
-export interface Rule {
-  id: string
-  /** Tool name (e.g. "Bash", "Edit") or "*" for any tool. */
-  tool: string
-  /** Optional glob (`*` wildcards) matched against the tool's primary input field. */
-  pattern?: string
-  /**
-   * Optional absolute project path. When set, the rule only applies to requests
-   * whose working directory is at or under this path. Undefined = global.
-   */
-  scope?: string
-  action: RuleAction
-  createdAt: string
-}
-
 export interface RepoInfo {
   isRepo: boolean
   root?: string
@@ -322,9 +264,6 @@ export interface UsageInsights {
 }
 
 export const IPC = {
-  NEW_REQUEST: 'operator:new-request',
-  RESPOND: 'operator:respond',
-  GET_QUEUE: 'operator:get-queue',
   GET_SESSIONS: 'operator:get-sessions',
   SESSION_UPDATE: 'operator:session-update',
   QUEUE_UPDATE: 'operator:queue-update',
@@ -355,9 +294,6 @@ export const IPC = {
   WORKTREE_COMMIT: 'worktree:commit',
   WORKTREE_MERGE: 'worktree:merge',
   WORKTREE_DISCARD: 'worktree:discard',
-  RULES_LIST: 'rules:list',
-  RULES_ADD: 'rules:add',
-  RULES_REMOVE: 'rules:remove',
   AGENTS_LIST: 'agents:list',
   AGENT_SAVE: 'agents:save',
   AGENT_DELETE: 'agents:delete',

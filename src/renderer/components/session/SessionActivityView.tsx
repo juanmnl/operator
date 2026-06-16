@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AgentSession, OperatorRequest, ActivityEntry } from '../../../shared/types'
+import { AgentSession, ActivityEntry } from '../../../shared/types'
 
 /** A timeline entry augmented with a computed duration. */
 type TimedEntry = ActivityEntry & { durMs?: number; live?: boolean }
 
 interface Props {
   session: AgentSession
-  pendingRequests: OperatorRequest[]
 }
 
-export function SessionActivityView({ session, pendingRequests }: Props) {
+export function SessionActivityView({ session }: Props) {
   const timelineRef = useRef<HTMLDivElement>(null)
   const [showDetails, setShowDetails] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -140,7 +139,7 @@ export function SessionActivityView({ session, pendingRequests }: Props) {
           gap: 1,
         }}
       >
-        {activity.length === 0 && pendingRequests.length === 0 && (
+        {activity.length === 0 && (
           <div style={{ textAlign: 'center', marginTop: 40 }}>
             <p style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
               No activity yet

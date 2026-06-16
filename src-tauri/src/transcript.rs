@@ -1,12 +1,11 @@
 // Transcript-driven session timeline.
 //
-// Instead of depending on the Claude Code hook to observe activity, Operator
-// reads each launched session's JSONL transcript
+// Operator reads each launched session's JSONL transcript
 // (`~/.claude/projects/<slug>/<session-id>.jsonl`) and reconstructs the
 // orchestration timeline from it. The session id is forced at spawn
 // (`claude --session-id <uuid>`), so the mapping terminal → transcript is exact.
 // This makes Operator a pure observer of what it launched — no global config,
-// nothing installed. The hook remains, but only as an optional permission gate.
+// nothing installed.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -23,7 +22,7 @@ use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession
 use crate::PtyManager;
 
 /// Launch info recorded by `terminal_spawn` so the tailer can find and attribute
-/// a transcript, and the hook can look up the session's permission mode.
+/// a transcript. `permission_mode` is carried through to the AgentSession for display.
 #[derive(Clone)]
 pub struct NewTrack {
     pub claude_session_id: String,
@@ -32,7 +31,7 @@ pub struct NewTrack {
 }
 
 /// Persistent registry keyed by terminal id. `terminal_spawn` writes it; the
-/// tailer reads it to begin watching; `handle_hook` reads `permission_mode`.
+/// tailer reads it to begin watching.
 #[derive(Default)]
 pub struct TrackRegistry {
     map: Mutex<HashMap<String, NewTrack>>,
@@ -41,10 +40,6 @@ pub struct TrackRegistry {
 impl TrackRegistry {
     pub fn register(&self, terminal_id: String, t: NewTrack) {
         self.map.lock().unwrap().insert(terminal_id, t);
-    }
-
-    pub fn permission_mode(&self, terminal_id: &str) -> Option<String> {
-        self.map.lock().unwrap().get(terminal_id).and_then(|t| t.permission_mode.clone())
     }
 
     fn snapshot(&self) -> Vec<(String, NewTrack)> {

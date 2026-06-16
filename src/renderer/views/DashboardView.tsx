@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, OperatorRequest } from '../../shared/types'
+import { AgentSession } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { TerminalPane } from '../components/terminal/TerminalPane'
-import { InlinePermission } from '../components/terminal/InlinePermission'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
@@ -10,7 +9,6 @@ import { SessionInfoBar } from '../components/session/SessionInfoBar'
 import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
 import { PromptBar } from '../components/session/PromptBar'
-import { RulesView } from '../components/rules/RulesView'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
 import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
@@ -64,7 +62,6 @@ export function DashboardView() {
   // Latest active terminal, for the (single, mount-time) file-drop listener.
   const activeTerminalIdRef = useRef<string | null>(null)
   useEffect(() => { activeTerminalIdRef.current = activeTerminalId }, [activeTerminalId])
-  const [pendingRequests, setPendingRequests] = useState<OperatorRequest[]>([])
   const [customNames, setCustomNames] = useState<Record<string, string>>(() => {
     try {
       const raw = localStorage.getItem('operator.customNames')
@@ -73,7 +70,6 @@ export function DashboardView() {
   })
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
-  const [rulesViewActive, setRulesViewActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [usageViewActive, setUsageViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
@@ -108,24 +104,19 @@ export function DashboardView() {
 
   useEffect(() => {
     window.operator.getSessions().then(setSessions)
-    window.operator.getQueue().then(setPendingRequests)
     window.operator.getHookPath().then(setHookPath)
 
     const unsubSession = window.operator.onSessionUpdate(setSessions)
-    const unsubRequest = window.operator.onNewRequest((request) => {
-      setPendingRequests((prev) => [...prev, request])
-    })
 
     // Poll sessions every 1s for responsive status updates
     const pollInterval = setInterval(() => {
       window.operator.getSessions().then(setSessions)
-      window.operator.getQueue().then(setPendingRequests)
     }, 1000)
     const unsubExit = window.operator.onTerminalExit((id) => {
       setTerminals((prev) => prev.filter((t) => t.id !== id))
       setActiveTerminalId((current) => (current === id ? null : current))
       // Clear active session if it was the local placeholder for the dead terminal.
-      // For hook-backed sessions, the next poll will reconcile status to 'ended' and clear via the effect below.
+      // The next poll reconciles status to 'ended' and clears via the effect below.
       setActiveSessionId((current) => (current === `local-${id}` ? null : current))
     })
 
@@ -138,7 +129,7 @@ export function DashboardView() {
       window.operator.terminalWrite(tid, text)
     }) ?? (() => {})
 
-    return () => { unsubSession(); unsubRequest(); unsubExit(); clearInterval(pollInterval); unsubDrop() }
+    return () => { unsubSession(); unsubExit(); clearInterval(pollInterval); unsubDrop() }
   }, [])
 
   const handleNewSession = useCallback(async () => {
@@ -149,7 +140,6 @@ export function DashboardView() {
       setActiveTerminalId(null)
       setActiveFolderPrefs(null)
       setGlobalPrefsActive(false)
-      setRulesViewActive(false)
       setAgentsViewActive(false)
       setUsageViewActive(false)
       setPrefsViewActive(false)
@@ -162,7 +152,6 @@ export function DashboardView() {
     setActiveTerminalId(null)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
@@ -170,22 +159,9 @@ export function DashboardView() {
 
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
-    setActiveFolderPrefs(null)
-    setActiveSessionId(null)
-    setActiveTerminalId(null)
-    setPendingSession(null)
-  }, [])
-
-  const handleOpenRules = useCallback(() => {
-    setRulesViewActive(true)
-    setPrefsViewActive(false)
-    setAgentsViewActive(false)
-    setUsageViewActive(false)
-    setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
@@ -194,7 +170,6 @@ export function DashboardView() {
 
   const handleOpenAgents = useCallback(() => {
     setAgentsViewActive(true)
-    setRulesViewActive(false)
     setPrefsViewActive(false)
     setUsageViewActive(false)
     setGlobalPrefsActive(false)
@@ -207,7 +182,6 @@ export function DashboardView() {
   const handleOpenUsage = useCallback(() => {
     setUsageViewActive(true)
     setAgentsViewActive(false)
-    setRulesViewActive(false)
     setPrefsViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
@@ -218,7 +192,6 @@ export function DashboardView() {
 
   const handleOpenPrefs = useCallback(() => {
     setPrefsViewActive(true)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setGlobalPrefsActive(false)
@@ -383,7 +356,6 @@ export function DashboardView() {
     setPendingSession(null)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
@@ -430,7 +402,6 @@ export function DashboardView() {
     setActiveSessionId(session.id)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
@@ -465,45 +436,14 @@ export function DashboardView() {
     setActiveTerminalId(null)
     setPendingSession(null)
     setGlobalPrefsActive(false)
-    setRulesViewActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
-  const handleRespond = useCallback(async (id: string, value: string) => {
-    await window.operator.respond(id, value)
-    setPendingRequests((prev) => prev.filter((r) => r.id !== id))
-  }, [])
-
-  const handleRespondAndRemember = useCallback(async (request: OperatorRequest, action: 'approve' | 'deny') => {
-    const toolName = request.toolName || request.action
-    let pattern: string | undefined
-    if (toolName === 'Bash') {
-      const command = request.context.target || ''
-      const firstWord = command.split(/\s+/)[0]
-      pattern = firstWord ? `${firstWord} *` : undefined
-    } else if (request.context.target) {
-      pattern = request.context.target
-    }
-    // Scope the rule to the requesting session's project by default — "always
-    // allow X" almost always means "in this project", not machine-wide. Falls
-    // back to global if we don't know the working directory.
-    const scope = request.context.workingDirectory || undefined
-    await window.operator.rulesAdd({ tool: toolName, pattern, scope, action })
-    await window.operator.respond(request.id, action)
-    setPendingRequests((prev) => prev.filter((r) => r.id !== request.id))
-    const scopeLabel = scope ? scope.split('/').filter(Boolean).pop() || scope : 'all projects'
-    pushToast({
-      text: `Rule added — ${action === 'approve' ? 'always allow' : 'always deny'} ${toolName}`,
-      detail: `${pattern ? `pattern: ${pattern}` : 'any input'} · ${scopeLabel}`,
-      kind: action === 'approve' ? 'success' : 'error',
-    })
-  }, [pushToast])
-
   // Sidebar entries are only the sessions Operator launched in-app. External
-  // Claude Code processes are intentionally not tracked — the hook no-ops for
-  // them (no OPERATOR_TERMINAL_ID), so nothing arrives without a managed pty.
+  // Claude Code processes are intentionally not tracked — no OPERATOR_TERMINAL_ID,
+  // so nothing arrives without a managed pty.
   const localTerminalIds = new Set(terminals.map((t) => t.id))
 
   const localSessions: AgentSession[] = terminals.map((t) => {
@@ -516,7 +456,6 @@ export function DashboardView() {
       projectName: t.cwd.split('/').pop() || t.cwd,
       status: 'active' as const,
       phase: 'idle' as const,
-      entries: [],
       activity: [],
       activeSubagents: 0,
       lastToolName: null,
@@ -540,8 +479,7 @@ export function DashboardView() {
 
   const sidebarStats = useMemo(() => ({
     activeSessions: allSidebarSessions.filter((s) => s.status === 'active').length,
-    pendingRequests: pendingRequests.length,
-  }), [allSidebarSessions, pendingRequests])
+  }), [allSidebarSessions])
 
   // Notify main process of active session for widget visibility
   useEffect(() => {
@@ -712,24 +650,19 @@ export function DashboardView() {
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
   }, [savedSessions, terminals])
 
-  // Find pending requests for the active session
   const activeSession = allSidebarSessions.find((s) => s.id === activeSessionId)
-  const activeRequests = pendingRequests.filter(
-    (r) => r.terminalId === activeTerminalId || r.sessionId === activeSession?.id
-  )
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'rules' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
+  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
     if (pendingSession) return 'pendingSession'
     if (prefsViewActive) return 'prefs'
-    if (rulesViewActive) return 'rules'
     if (agentsViewActive) return 'agents'
     if (usageViewActive) return 'usage'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     if (activeTerminalId) return 'localTerminal'
     return 'splash'
-  }, [pendingSession, prefsViewActive, rulesViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
+  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -797,14 +730,13 @@ export function DashboardView() {
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
       { id: 'agents', group: 'Settings', label: 'Agents — configure models per task', run: handleOpenAgents },
       { id: 'usage', group: 'Settings', label: 'Usage & cost', run: handleOpenUsage },
-      { id: 'rules', group: 'Settings', label: 'Auto-approve rules', run: handleOpenRules },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
       { id: 'theme', group: 'View', label: currentTheme.isDark ? 'Switch to light mode' : 'Switch to dark mode', run: handleToggleTheme },
     )
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenRules, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme])
 
   const hookConfigSnippet = hookPath
     ? `{
@@ -824,10 +756,8 @@ export function DashboardView() {
         sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
         customNames={customNames}
-        pendingRequests={pendingRequests}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
-        rulesViewActive={rulesViewActive}
         agentsViewActive={agentsViewActive}
         usageViewActive={usageViewActive}
         prefsViewActive={prefsViewActive}
@@ -842,7 +772,6 @@ export function DashboardView() {
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
-        onOpenRules={handleOpenRules}
         onOpenAgents={handleOpenAgents}
         onOpenUsage={handleOpenUsage}
         onOpenPrefs={handleOpenPrefs}
@@ -881,8 +810,6 @@ export function DashboardView() {
             globalOnly
           />
         )}
-
-        {contentMode === 'rules' && <RulesView />}
 
         {contentMode === 'agents' && <AgentLibraryView />}
 
@@ -940,7 +867,7 @@ export function DashboardView() {
 
         {/* Activity timeline — overlays the terminal when viewing activity */}
         {contentMode === 'localTerminal' && activityViewingTerminalId === activeTerminalId && activeSession && (
-          <SessionActivityView session={activeSession} pendingRequests={activeRequests} />
+          <SessionActivityView session={activeSession} />
         )}
 
         {/* Diff review panel — overlays the terminal when reviewing */}
@@ -1000,19 +927,10 @@ export function DashboardView() {
           </div>
         )}
 
-        {contentMode === 'localTerminal' && activeRequests.length > 0 && (
-          <InlinePermission
-            request={activeRequests[0]}
-            onRespond={(value) => handleRespond(activeRequests[0].id, value)}
-            onRespondAndRemember={(action) => handleRespondAndRemember(activeRequests[0], action)}
-          />
-        )}
-
         {contentMode === 'splash' && allSidebarSessions.length > 0 && (
           <ActivityDashboard
             sessions={allSidebarSessions}
             customNames={customNames}
-            pendingRequests={pendingRequests}
             onSelectSession={handleSelectSession}
             onNewSession={handleNewSession}
           />
@@ -1056,8 +974,7 @@ export function DashboardView() {
               }}>
                 Define agents and the model each task runs on, then launch
                 Claude Code sessions that delegate to them — each in its own
-                git worktree. Watch the work unfold live, and approve or deny
-                inline.
+                git worktree. Watch every tool call and subagent unfold live.
               </p>
               <p style={{
                 fontSize: 11,

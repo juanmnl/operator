@@ -1,75 +1,14 @@
-// Ported from the Electron main process: the hook decision pipeline
-// (server.ts), session state machine (sessions.ts), tool humanizer
-// (tool-summary.ts), and auto-approve rules (rules.ts).
+// Ported from the Electron main process: the session state machine
+// (sessions.ts) and tool humanizer (tool-summary.ts). The timeline is
+// transcript-driven (see transcript.rs).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
-// --- Hook event (incoming JSON from operator-hook.sh) -----------------------
-
-#[allow(dead_code)] // several fields are deserialized for completeness but unused post permission-only hook
-#[derive(Debug, Default, Deserialize)]
-pub struct HookEvent {
-    #[serde(default)]
-    pub hook_event_name: String,
-    pub session_id: Option<String>,
-    pub cwd: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_input: Option<Value>,
-    pub terminal_id: Option<String>,
-    pub permission_mode: Option<String>,
-    pub agent_id: Option<String>,
-    pub agent_type: Option<String>,
-    pub prompt: Option<String>,
-    pub user_prompt: Option<String>,
-    pub message: Option<String>,
-}
-
 // --- UI-facing types (camelCase to match shared/types.ts) -------------------
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RequestContext {
-    pub working_directory: String,
-    pub target: Option<String>,
-    pub preview: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OperatorRequest {
-    pub id: String,
-    pub agent_id: String,
-    pub action: String,
-    pub tool_name: Option<String>,
-    pub message: String,
-    pub context: RequestContext,
-    pub severity: String,
-    pub expires_in: u32,
-    pub timestamp: String,
-    pub session_id: Option<String>,
-    pub terminal_id: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OperatorResponse {
-    pub approved: bool,
-    pub value: String,
-    pub modified_context: Option<Value>,
-    pub responded_at: String,
-    pub responded_by: String,
-}
-
-#[allow(dead_code)] // entries is always empty now that activity is transcript-driven
-#[derive(Clone, Serialize)]
-struct SessionEntry {
-    request: OperatorRequest,
-    response: Option<OperatorResponse>,
-}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +41,6 @@ pub struct AgentSession {
     summary: Option<String>,
     status: String, // active | ended
     phase: String,  // idle | running | compacting
-    entries: Vec<SessionEntry>,
     activity: Vec<ActivityEntry>,
     active_subagents: i32,
     last_tool_name: Option<String>,
@@ -144,9 +82,11 @@ pub fn iso_from_ms(ms: u128) -> String {
 // --- Tool humanizer (port of tool-summary.ts) -------------------------------
 
 pub struct ToolSummary {
+    #[allow(dead_code)] // produced by summarize() for completeness; the timeline uses target/preview
     pub action: String,
     pub target: Option<String>,
     pub preview: Option<String>,
+    #[allow(dead_code)] // produced by summarize() for completeness; the timeline uses target/preview
     pub severity: String,
 }
 
@@ -232,129 +172,11 @@ pub fn summarize(name: &str, input: &Value) -> ToolSummary {
     }
 }
 
-fn summary_message(s: &ToolSummary) -> String {
-    let verb = s.action.to_lowercase();
-    match &s.target {
-        Some(t) => format!("Claude wants to {verb}: {t}"),
-        None => format!("Claude wants to {verb}"),
-    }
-}
-
-// --- Auto-approve rules (port of rules.ts) ----------------------------------
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Rule {
-    pub id: String,
-    pub tool: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    pub action: String, // approve | deny
-    pub created_at: String,
-}
-
-fn rules_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::Path::new(&home).join(".operator").join("rules.json")
-}
-
-pub fn load_rules() -> Vec<Rule> {
-    std::fs::read_to_string(rules_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_rules(rules: &[Rule]) {
-    let p = rules_path();
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(s) = serde_json::to_string_pretty(rules) {
-        let _ = std::fs::write(p, s);
-    }
-}
-
-fn glob_match(pattern: &str, value: &str) -> bool {
-    // Simple `*` wildcard matcher.
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == value;
-    }
-    let mut pos = 0usize;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        if i == 0 {
-            if !value[pos..].starts_with(part) {
-                return false;
-            }
-            pos += part.len();
-        } else if i == parts.len() - 1 {
-            return value[pos..].ends_with(part);
-        } else if let Some(idx) = value[pos..].find(part) {
-            pos += idx + part.len();
-        } else {
-            return false;
-        }
-    }
-    true
-}
-
-fn path_within(scope: &str, cwd: &str) -> bool {
-    cwd == scope || cwd.starts_with(&format!("{scope}/"))
-}
-
-fn primary_input(tool: &str, input: &Value) -> String {
-    if tool == "Bash" {
-        return str_field(input, "command").unwrap_or("").to_string();
-    }
-    ["file_path", "path", "pattern", "url", "command", "query"]
-        .iter()
-        .find_map(|k| str_field(input, k))
-        .unwrap_or("")
-        .to_string()
-}
-
-pub fn evaluate_rules(rules: &[Rule], tool: &str, input: &Value, cwd: Option<&str>) -> Option<String> {
-    for r in rules {
-        if r.tool != "*" && r.tool != tool {
-            continue;
-        }
-        if let Some(scope) = &r.scope {
-            match cwd {
-                Some(c) if path_within(scope, c) => {}
-                _ => continue,
-            }
-        }
-        if let Some(pat) = &r.pattern {
-            if !glob_match(pat, &primary_input(tool, input)) {
-                continue;
-            }
-        }
-        return Some(r.action.clone());
-    }
-    None
-}
-
 // --- Session manager (port of sessions.ts) ----------------------------------
 
 #[derive(Default)]
 pub struct Sessions {
     map: Mutex<HashMap<String, AgentSession>>,
-}
-
-pub const AUTO_APPROVED: &[&str] = &[
-    "Read", "Glob", "Grep", "Skill", "ToolSearch", "LSP", "TodoWrite", "EnterPlanMode",
-    "ExitPlanMode", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput",
-    "TaskStop", "WebFetch", "WebSearch", "PushNotification", "ScheduleWakeup",
-];
-
-pub fn is_auto_approved(tool: Option<&str>) -> bool {
-    tool.map(|t| AUTO_APPROVED.contains(&t)).unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -384,7 +206,6 @@ impl AgentSession {
             summary,
             status: if ended { "ended".into() } else { "active".into() },
             phase: phase.to_string(),
-            entries: vec![],
             activity,
             active_subagents,
             last_tool_name,
@@ -407,64 +228,4 @@ impl Sessions {
         v.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
         v
     }
-}
-
-// --- helpers used by the hook handler ---------------------------------------
-
-pub fn make_request(e: &HookEvent, summary: &ToolSummary, id: String) -> OperatorRequest {
-    OperatorRequest {
-        id,
-        agent_id: e.agent_id.clone().unwrap_or_else(|| "claude-code".into()),
-        action: summary.action.clone(),
-        tool_name: e.tool_name.clone(),
-        message: summary_message(summary),
-        context: RequestContext {
-            working_directory: e.cwd.clone().unwrap_or_default(),
-            target: summary.target.clone(),
-            preview: summary.preview.clone(),
-        },
-        severity: summary.severity.clone(),
-        expires_in: 300,
-        timestamp: now_iso(),
-        session_id: e.session_id.clone(),
-        terminal_id: e.terminal_id.clone(),
-    }
-}
-
-#[allow(dead_code)] // permission-entry scaffolding; entries are no longer tracked per-session
-pub fn response(approved: bool) -> OperatorResponse {
-    OperatorResponse {
-        approved,
-        value: if approved { "approve".into() } else { "deny".into() },
-        modified_context: None,
-        responded_at: now_iso(),
-        responded_by: "user".into(),
-    }
-}
-
-// Rules commands
-
-pub fn rules_list() -> Vec<Rule> {
-    load_rules()
-}
-
-pub fn rules_add(tool: String, pattern: Option<String>, scope: Option<String>, action: String) -> Rule {
-    let mut rules = load_rules();
-    let rule = Rule {
-        id: format!("rule-{}", now_iso()),
-        tool,
-        pattern: pattern.filter(|p| !p.is_empty()),
-        scope: scope.filter(|s| !s.is_empty()),
-        action,
-        created_at: now_iso(),
-    };
-    rules.push(rule.clone());
-    save_rules(&rules);
-    rule
-}
-
-pub fn rules_remove(id: &str) {
-    let mut rules = load_rules();
-    rules.retain(|r| r.id != id);
-    save_rules(&rules);
 }

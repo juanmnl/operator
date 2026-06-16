@@ -1,10 +1,5 @@
 // Implements the `window.operator` API (defined in src/renderer/env.d.ts) over
-// Tauri invoke()/events, so the existing Operator React UI runs unchanged.
-//
-// Phase 1 status: terminal sessions are fully wired. The hook server is live but
-// auto-approves for now (the permission/session/rules pipeline — server.ts,
-// tool-summary.ts, rules.ts, sessions.ts — is the next port). Everything else
-// returns safe empties so the UI renders without crashing.
+// Tauri invoke()/events, so the Operator React UI runs unchanged.
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -77,17 +72,11 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
 
-    // --- permission flow + sessions (real) ---
-    onNewRequest: (cb: (req: unknown) => void): Unsub => {
-      const p = listen('hook:new-request', (e) => cb(e.payload))
-      return () => { void p.then((f) => f()) }
-    },
+    // --- sessions (real) ---
     onSessionUpdate: (cb: (sessions: unknown) => void): Unsub => {
       const p = listen('session:update', (e) => cb(e.payload))
       return () => { void p.then((f) => f()) }
     },
-    respond: (id: string, value: string) => invoke('respond', { id, approve: value !== 'deny' && value !== 'n' }).then(() => true),
-    getQueue: () => invoke('get_queue'),
     getSessions: () => invoke('get_sessions'),
 
     // --- misc ---
@@ -128,12 +117,6 @@ export function installBridge(): void {
     worktreeDiscard: async (worktreePath: string, sourceRoot: string, branch: string) => {
       try { await invoke('worktree_discard', { worktreePath, sourceRoot, branch }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
     },
-
-    // --- rules engine (real) ---
-    rulesList: () => invoke('rules_list_cmd'),
-    rulesAdd: (rule: { tool: string; pattern?: string; scope?: string; action: string }) =>
-      invoke('rules_add_cmd', { tool: rule.tool, pattern: rule.pattern ?? null, scope: rule.scope ?? null, action: rule.action }),
-    rulesRemove: (id: string) => invoke('rules_remove_cmd', { id }).then(() => undefined),
 
     // --- agents, usage, folder-prefs (real) ---
     agentsList: (projectPath?: string) => invoke('agents_list', { projectPath: projectPath ?? null }),
