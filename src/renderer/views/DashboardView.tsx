@@ -1031,7 +1031,7 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: 0,
               }}>
-                Mission control for orchestrating AI coding agents.
+                Mission control for working agents.
               </p>
               <p style={{
                 fontSize: 12,

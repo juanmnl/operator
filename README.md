@@ -5,7 +5,7 @@
 <h1 align="center">Operator</h1>
 
 <p align="center">
-  Mission control for orchestrating AI coding agents.
+  Mission control for working agents.
 </p>
 
 <p align="center">
