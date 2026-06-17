@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { CanvasAddon } from '@xterm/addon-canvas'
+import { CanvasAddon } from '../../vendor/addon-canvas/xterm-addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -66,9 +66,14 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
 
     const term = new Terminal({
       theme,
-      // Trailing emoji/symbol families so glyphs the mono fonts lack (Claude Code's
-      // spinner symbols, emoji) fall back to a real glyph instead of tofu (□/??).
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', 'Apple Symbols', monospace",
+      // Fallback families for glyphs the mono fonts lack. 'Apple Symbols'
+      // (monochrome TEXT presentation) is listed BEFORE 'Apple Color Emoji' so
+      // technical glyphs Claude Code uses — e.g. the ⏺ tool bullet, ● ◆ ▸ — fall
+      // back to a single-width text glyph that stays on the monospace grid,
+      // instead of a double-width COLOUR emoji that shoves the line out of
+      // alignment. True emoji (no text-presentation form) still reach Apple Color
+      // Emoji as the last resort before the generic monospace.
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
       // Keep this an integer. The WebGL renderer rasterizes glyphs at the font
       // cell height but clears cells at a fractional offset when lineHeight isn't
