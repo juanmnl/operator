@@ -14,6 +14,15 @@ const devPort = Number(process.env.OPERATOR_DEV_PORT) || 1420;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  resolve: {
+    alias: {
+      // SPIKE: @xterm/addon-canvas@0.8.0-beta.48 ships a broken package.json —
+      // its `module` field points at lib/addon-canvas.mjs but the built file is
+      // lib/xterm-addon-canvas.mjs. Point the bare specifier at the real ESM file.
+      "@xterm/addon-canvas": "@xterm/addon-canvas/lib/xterm-addon-canvas.mjs",
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

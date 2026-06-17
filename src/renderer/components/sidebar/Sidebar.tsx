@@ -119,22 +119,6 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             ↑ Update
           </button>
         )}
-        {/* Settings — moved up here, replacing the theme toggle (now at the bottom). */}
-        <button
-          onClick={onOpenPrefs}
-          title="Operator preferences"
-          style={{
-            marginLeft: 'auto',
-            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer', padding: '3px 5px', borderRadius: 8,
-            display: 'flex', alignItems: 'center', opacity: prefsViewActive ? 1 : 0.6,
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
       </DragRegion>
 
       {/* Sessions list */}
@@ -281,7 +265,24 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
           </svg>
         </button>
-        {/* Theme toggle — moved down here from the header (settings took its spot). */}
+        {/* Settings (Operator preferences) — sits in the bottom row, just before the theme toggle. */}
+        <button
+          onClick={onOpenPrefs}
+          title="Operator preferences"
+          style={{
+            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center',
+            opacity: prefsViewActive ? 1 : 0.85, marginLeft: 6,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        {/* Theme toggle — last icon in the bottom row, after settings. */}
         <button
           onClick={onToggleTheme}
           title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -294,8 +295,9 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         >
           {isDark ? (
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="3.5" stroke="var(--fg-muted)" strokeWidth="1.2" />
-              <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.76 3.76l1.06 1.06M11.18 11.18l1.06 1.06M3.76 12.24l1.06-1.06M11.18 4.82l1.06-1.06" stroke="var(--fg-muted)" strokeWidth="1" strokeLinecap="round" />
+              {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it. */}
+              <circle cx="8" cy="8" r="2.6" fill="var(--fg-muted)" />
+              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.2" strokeLinecap="round" />
             </svg>
           ) : (
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
