@@ -17,17 +17,23 @@ interface SessionToolbarProps {
   projectName: string
   /** Terminal id of the active session — used to resolve its reserved dev port. */
   terminalId?: string | null
+  /** Port sniffed from the session's actual dev-server banner; wins over the
+   *  allocated port since the project often ignores OPERATOR_DEV_PORT. */
+  detectedDevPort?: number
   effortLevel?: 'high' | 'normal' | 'low' | null
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
 }
 
-export function SessionToolbar({ projectPath, projectName, terminalId, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, terminalId, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
   const [devPort, setDevPort] = useState<number | null>(null)
+  // The port a dev server actually announced wins over the one we reserved —
+  // most projects ignore OPERATOR_DEV_PORT and bind their own default.
+  const effectiveDevPort = detectedDevPort ?? devPort
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
 
   useEffect(() => {
@@ -128,10 +134,10 @@ export function SessionToolbar({ projectPath, projectName, terminalId, effortLev
           WebkitAppRegion: 'no-drag',
         }}>
           {/* Dev-server quick-open: opens this session's reserved port in the browser */}
-          {devPort && (
+          {effectiveDevPort && (
             <button
-              onClick={() => window.operator.openExternal(`http://localhost:${devPort}`)}
-              title={`Open http://localhost:${devPort} in your browser`}
+              onClick={() => window.operator.openExternal(`http://localhost:${effectiveDevPort}`)}
+              title={`Open http://localhost:${effectiveDevPort} in your browser`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -153,7 +159,7 @@ export function SessionToolbar({ projectPath, projectName, terminalId, effortLev
                 <path d="M9 3h4v4M13 3l-6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M11 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              localhost:{devPort}
+              localhost:{effectiveDevPort}
             </button>
           )}
 

@@ -1,9 +1,15 @@
+import { useRef } from 'react'
 import type { CSSProperties, ReactNode, MouseEvent } from 'react'
 
 interface DragRegionProps {
   style?: CSSProperties
   children?: ReactNode
 }
+
+// macOS double-click threshold (ms). Native dblclick can't reach us because
+// startDragging() takes over on the first mousedown, so we time consecutive
+// presses ourselves.
+const DOUBLE_CLICK_MS = 400
 
 // A window drag handle. We drive the drag ourselves — startWindowDrag() on
 // mousedown — instead of leaning on Tauri's data-tauri-drag-region attribute.
@@ -15,9 +21,20 @@ interface DragRegionProps {
 // Interactive children (buttons, links, inputs) are left alone so their clicks
 // still work; the press only starts a drag when it lands on bare titlebar.
 export function DragRegion({ style, children }: DragRegionProps) {
+  const lastDownRef = useRef(0)
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return // left button only
     if ((e.target as HTMLElement).closest('button, a, input, textarea, select, [role="button"]')) return
+    // A second press on the bare titlebar within the threshold is a double-click:
+    // zoom the window (fill the screen ⇆ restore) like a native title bar, and
+    // skip the drag so it doesn't fight the toggle.
+    const now = e.timeStamp
+    if (now - lastDownRef.current < DOUBLE_CLICK_MS) {
+      lastDownRef.current = 0
+      window.operator.toggleWindowMaximize?.()
+      return
+    }
+    lastDownRef.current = now
     window.operator.startWindowDrag?.()
   }
   // `drag-region` paints a grab/grabbing cursor (see styles.css) so the strip

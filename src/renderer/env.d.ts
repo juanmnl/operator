@@ -22,6 +22,8 @@ declare global {
       showMainWindow: () => void
       /** Begin dragging the OS window for the current mousedown gesture. */
       startWindowDrag: () => void
+      /** Toggle window zoom (fill screen ⇆ restore) — titlebar double-click. */
+      toggleWindowMaximize: () => void
       openExternal: (url: string) => void
       /** Write a pasted image (base64) to a temp file; resolves to its path. */
       savePastedImage: (dataB64: string, ext: string) => Promise<string>

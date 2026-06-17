@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { CanvasAddon } from '../../vendor/addon-canvas/xterm-addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -11,6 +10,8 @@ interface TerminalPaneProps {
   theme: ITheme
   active?: boolean
   onTitleChange?: (title: string) => void
+  /** Fires with the port when a dev server announces itself in the output. */
+  onDevServerDetected?: (port: number) => void
 }
 
 /** Rough perceived lightness of a #rrggbb background. */
@@ -22,27 +23,24 @@ function isLightBackground(bg?: string): boolean {
   return lum > 140
 }
 
-export function TerminalPane({ terminalId, theme, active = true, onTitleChange }: TerminalPaneProps) {
+export function TerminalPane({ terminalId, theme, active = true, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
-  const webglRef = useRef<CanvasAddon | null>(null)
-  const atlasTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Latest onDevServerDetected without making it an effect dep (would re-subscribe
+  // the pty stream every render). The rolling tail lets the "Local:" banner be
+  // matched even when it's split across two pty chunks; the last port we reported
+  // is remembered so we only fire on a change.
+  const devServerCbRef = useRef<typeof onDevServerDetected>(onDevServerDetected)
+  devServerCbRef.current = onDevServerDetected
+  const outTailRef = useRef('')
+  const lastDevPortRef = useRef<number | null>(null)
 
-  // The WebGL renderer caches rasterized glyphs in a GPU texture atlas. In
-  // WKWebView that atlas intermittently corrupts — on reflow, on a DPR change
-  // (moving the window between monitors), or as it fills with a long paragraph —
-  // which surfaces as stray tofu glyphs and garbled cells near the newest
-  // content (the input). clearTextureAtlas() rebuilds it from scratch, so we
-  // call it whenever those triggers fire. Debounced so a drag-resize that emits
-  // a ResizeObserver tick per frame doesn't re-rasterize every frame.
-  const clearAtlasSoon = useCallback(() => {
-    if (atlasTimerRef.current) clearTimeout(atlasTimerRef.current)
-    atlasTimerRef.current = setTimeout(() => {
-      try { webglRef.current?.clearTextureAtlas() } catch { /* renderer gone */ }
-    }, 200)
-  }, [])
-
+  // We render with xterm's DOM renderer (each cell is a styled span). WKWebView
+  // corrupted both the WebGL texture atlas AND the 2D-canvas renderer — stray
+  // tofu cells and duplicated/garbled rows — so the only reliable path is to use
+  // neither GPU nor canvas. The DOM renderer has no glyph atlas to invalidate,
+  // so the atlas-clearing scaffolding the GPU/canvas renderers needed is gone.
   const handleResize = useCallback(() => {
     // Never fit against a hidden/collapsed container (display:none → 0 width).
     // Doing so would send a ~1-column size to the pty and make Claude Code
@@ -56,10 +54,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
         // ignore fit errors during teardown
       }
     }
-    // The reflow can leave atlas pages keyed to the old geometry; refresh once
-    // the resize settles.
-    clearAtlasSoon()
-  }, [clearAtlasSoon])
+  }, [])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -75,22 +70,16 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       // Emoji as the last resort before the generic monospace.
       fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
-      // Keep this an integer. The WebGL renderer rasterizes glyphs at the font
-      // cell height but clears cells at a fractional offset when lineHeight isn't
-      // a whole number, so previous rows bleed into new ones (text ghosts/overlaps
-      // on every redraw). 1.0 is the only value the GL renderer positions correctly.
+      // Keep this an integer — a fractional lineHeight leaves the DOM renderer's
+      // per-row spans at sub-pixel offsets, which reads as uneven line spacing.
       lineHeight: 1.0,
-      // SF Mono's 700 bold reads chunky next to its regular; 600 keeps Claude
-      // Code's frequent bold emphasis distinct without the clobbered look. Bold
-      // stays in the same hue (no bright-colour shift) so it reads as weight only.
-      // The canvas renderer rasterizes glyphs heavier than the old WebGL atlas
-      // (WebKit's canvas fillText is darker), so the SAME font reads bold/muddy
-      // here at the weight that looked crisp under WebGL. Push normal text right
-      // down to 100 to net out near the old WebGL-400 crispness; bold stays at 500
-      // so emphasis still reads as weight without going chunky next to the lighter
-      // body.
-      fontWeight: 100,
-      fontWeightBold: 500,
+      // The DOM renderer maps these straight to CSS font-weight, so they're real
+      // SF Mono weights (no canvas rasterization darkening to compensate for). 400
+      // normal / 600 bold: SF Mono's 700 reads chunky next to its regular, 600
+      // keeps Claude Code's frequent bold emphasis distinct as weight only (same
+      // hue, no bright-colour shift).
+      fontWeight: 400,
+      fontWeightBold: 600,
       drawBoldTextInBrightColors: false,
       cursorBlink: true,
       cursorStyle: 'bar',
@@ -98,9 +87,9 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       macOptionIsMeta: true,
       scrollback: 10000,
       // Claude Code emits dim/gray secondary text (rendered at reduced alpha). On
-      // a light background that washes out, so push to AA there. On dark, drop the
-      // boost entirely (1 = off): the canvas renderer already darkens glyphs, and
-      // any contrast lift whitens/thickens the dim text, compounding the bold look.
+      // a light background that washes out, so push to AA there. On dark, leave it
+      // off (1) — the DOM renderer shows true alpha and any lift just whitens the
+      // dim text.
       minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
     })
 
@@ -113,23 +102,10 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
       else window.open(uri, '_blank')
     }))
 
+    // No renderer addon: xterm falls back to its built-in DOM renderer, which
+    // sidesteps the WKWebView WebGL/canvas corruption entirely. Box-drawing
+    // borders are now drawn by the font (SF Mono) rather than custom glyphs.
     term.open(containerRef.current)
-
-    // SPIKE: Canvas renderer instead of WebGL. The WebGL atlas corrupts in
-    // WKWebView (tofu/garbled cells near the input); the 2D-canvas renderer keeps
-    // box-drawing/block characters as seamless custom glyphs and rasterizes
-    // through the font stack (emoji fallback) WITHOUT a GPU glyph atlas, so it
-    // can't hit the atlas-corruption bug at all.
-    try {
-      const canvas = new CanvasAddon()
-      term.loadAddon(canvas)
-      webglRef.current = canvas
-    } catch {
-      // Canvas unavailable — xterm keeps the DOM renderer.
-    }
-
-    // Re-assert cursorBlink (loading a renderer addon can reset terminal options).
-    term.options.cursorBlink = true
 
     termRef.current = term
     fitRef.current = fitAddon
@@ -166,27 +142,44 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     }
 
     // Receive data from pty — returns unsubscribe function
+    // Sniff a dev-server boot banner. Vite/Next/Astro/Remix/etc. all print a
+    // "Local: http://localhost:<port>" line on startup. Anchoring on "Local:"
+    // keeps this from matching prose that merely mentions a localhost URL (e.g.
+    // an agent narrating "serving at http://localhost:5173"). Keep a short tail
+    // so a banner split across two chunks still matches.
+    const DEV_RE = /Local:\s+https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i
+    // Dev servers colorize the banner (e.g. Vite: "Local\x1b[22m:  \x1b[36mhttp://…"),
+    // so strip OSC + CSI/SGR escapes before matching or "Local:" never lines up
+    // with the URL.
+    const stripAnsi = (s: string) =>
+      s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b[[(][0-9;?]*[ -/]*[@-~]/g, '')
+    const detectDevServer = (chunk: string) => {
+      const cb = devServerCbRef.current
+      if (!cb) return
+      // Keep the raw tail (escapes intact) so a sequence split across two chunks
+      // still strips cleanly next time; strip only for matching.
+      const hay = outTailRef.current + chunk
+      const m = DEV_RE.exec(stripAnsi(hay))
+      if (m) {
+        const port = parseInt(m[1], 10)
+        if (port && port !== lastDevPortRef.current) {
+          lastDevPortRef.current = port
+          cb(port)
+        }
+      }
+      outTailRef.current = hay.length > 512 ? hay.slice(-512) : hay
+    }
+
     const unsubData = window.operator.onTerminalData((id, data) => {
       if (id === terminalId) {
         term.write(data)
+        detectDevServer(data)
       }
     })
 
     // Resize observer
     const observer = new ResizeObserver(handleResize)
     observer.observe(containerRef.current)
-
-    // A devicePixelRatio change (window dragged to a monitor with a different
-    // scale factor) invalidates the GPU glyph atlas — the classic WKWebView
-    // corruption trigger. matchMedia on the current resolution fires once when
-    // it changes; re-arm after each to keep watching.
-    let dprQuery: MediaQueryList | null = null
-    const onDprChange = () => { clearAtlasSoon(); watchDpr() }
-    const watchDpr = () => {
-      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
-      dprQuery.addEventListener('change', onDprChange, { once: true })
-    }
-    watchDpr()
 
     // Claude Code enables mouse tracking, which makes xterm forward the wheel to
     // the app instead of scrolling. When that's on (and we're not in an
@@ -203,32 +196,83 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange }
     }
     container.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
 
+    // Link clicks: when Claude Code has mouse tracking on (the common case — see
+    // the wheel workaround above), xterm forwards the click to the pty as a mouse
+    // report, so WebLinksAddon's own click never fires. The link still *hovers*
+    // (decoration), but clicking does nothing. So when tracking is active we
+    // resolve the URL under the pointer ourselves and open it, swallowing the
+    // event before it becomes a mouse report. With tracking off we do nothing and
+    // let WebLinksAddon handle it normally (avoids opening twice).
+    const URL_RE = /(https?:\/\/[^\s'"`<>()\[\]]+)/g
+    const urlAtClick = (e: MouseEvent): string | null => {
+      const t = termRef.current
+      if (!t) return null
+      // xterm's measured cell box + the screen element origin (private but stable).
+      const core = (t as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } }; screenElement?: HTMLElement } })._core
+      const cell = core?._renderService?.dimensions?.css?.cell
+      const screen = core?.screenElement
+      if (!cell || !screen || !cell.width || !cell.height) return null
+      const rect = screen.getBoundingClientRect()
+      const col = Math.floor((e.clientX - rect.left) / cell.width)
+      const row = Math.floor((e.clientY - rect.top) / cell.height)
+      if (col < 0 || row < 0) return null
+      const line = t.buffer.active.getLine(t.buffer.active.viewportY + row)
+      if (!line) return null
+      const text = line.translateToString(false)
+      URL_RE.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = URL_RE.exec(text))) {
+        if (col >= m.index && col < m.index + m[0].length) return m[0]
+      }
+      return null
+    }
+    const onClickCapture = (e: MouseEvent) => {
+      const t = termRef.current
+      if (!t || t.modes.mouseTrackingMode === 'none') return // WebLinksAddon handles it
+      if (e.button !== 0) return
+      const url = urlAtClick(e)
+      if (!url) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (window.operator?.openExternal) window.operator.openExternal(url)
+      else window.open(url, '_blank')
+    }
+    // mousedown is where xterm builds the mouse report; intercept there too so the
+    // click never reaches the pty, plus click for the actual activation.
+    const swallowIfLink = (e: MouseEvent) => {
+      const t = termRef.current
+      if (!t || t.modes.mouseTrackingMode === 'none' || e.button !== 0) return
+      if (urlAtClick(e)) { e.preventDefault(); e.stopPropagation() }
+    }
+    container.addEventListener('mousedown', swallowIfLink, { capture: true })
+    container.addEventListener('mouseup', swallowIfLink, { capture: true })
+    container.addEventListener('click', onClickCapture, { capture: true })
+
     return () => {
       unsubData()
       observer.disconnect()
-      dprQuery?.removeEventListener('change', onDprChange)
-      if (atlasTimerRef.current) clearTimeout(atlasTimerRef.current)
       container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
+      container.removeEventListener('mousedown', swallowIfLink, { capture: true } as EventListenerOptions)
+      container.removeEventListener('mouseup', swallowIfLink, { capture: true } as EventListenerOptions)
+      container.removeEventListener('click', onClickCapture, { capture: true } as EventListenerOptions)
       term.dispose()
       termRef.current = null
       fitRef.current = null
-      webglRef.current = null
     }
     // `theme` is intentionally excluded — recreating the terminal on a theme
     // change would wipe the scrollback. It's applied in place below instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalId, onTitleChange, handleResize, clearAtlasSoon])
+  }, [terminalId, onTitleChange, handleResize])
 
   // Apply theme/contrast changes to the live terminal without recreating it.
+  // The DOM renderer repaints from the new palette on the next frame — no atlas
+  // to rebuild.
   useEffect(() => {
     const term = termRef.current
     if (!term) return
     term.options.theme = theme
-    term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1.15
-    // Atlas glyphs were rasterized in the old palette; rebuild so cached cells
-    // don't linger in stale colours.
-    clearAtlasSoon()
-  }, [theme, clearAtlasSoon])
+    term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1
+  }, [theme])
 
   // Focus/blur and refit when active state changes
   useEffect(() => {

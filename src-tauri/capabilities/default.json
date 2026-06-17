@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize",
     "core:event:default",
     "opener:default",
     "dialog:default",

@@ -60,6 +60,11 @@ interface SavedSession {
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
+  // Dev-server port sniffed from each session's terminal output (the "Local:"
+  // banner a dev server prints when it boots). The project usually ignores the
+  // OPERATOR_DEV_PORT we hand it and binds its own default, so this is the port
+  // that's actually serving — it takes priority over the allocated one.
+  const [detectedDevPorts, setDetectedDevPorts] = useState<Record<string, number>>({})
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
   // Latest active terminal, for the (single, mount-time) file-drop listener.
@@ -498,6 +503,28 @@ export function DashboardView() {
 
   const allSidebarSessions = localSessions
 
+  // Drag-to-reorder in the sidebar: move the dragged session's terminal to sit
+  // where the drop target's terminal is, in the canonical `terminals` order
+  // (which drives both the sidebar list and ⌘1..9). Sessions are grouped by
+  // folder in the sidebar, so dragging the only session in a folder reorders the
+  // folders too. (Order is per-run; it isn't persisted across restarts yet.)
+  const handleReorderSession = (draggedSessionId: string, targetSessionId: string) => {
+    if (draggedSessionId === targetSessionId) return
+    const tidOf = (sid: string) => allSidebarSessions.find((s) => s.id === sid)?.terminalId
+    const dTid = tidOf(draggedSessionId)
+    const tTid = tidOf(targetSessionId)
+    if (!dTid || !tTid || dTid === tTid) return
+    setTerminals((prev) => {
+      const from = prev.findIndex((t) => t.id === dTid)
+      const to = prev.findIndex((t) => t.id === tTid)
+      if (from < 0 || to < 0) return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
+
   // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.
   const shortcutIndices = useMemo(() => {
     const map: Record<string, number> = {}
@@ -821,6 +848,7 @@ export function DashboardView() {
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
+        onReorderSession={handleReorderSession}
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
@@ -867,7 +895,7 @@ export function DashboardView() {
         {contentMode === 'usage' && <UsageView />}
 
         {contentMode === 'prefs' && (
-          <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} />
+          <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} onToggleTheme={handleToggleTheme} />
         )}
 
         {contentMode === 'localTerminal' && activeSession && (() => {
@@ -878,6 +906,7 @@ export function DashboardView() {
               projectPath={activeSession.workingDirectory}
               projectName={activeSession.projectName}
               terminalId={activeTerminalId}
+              detectedDevPort={activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined}
               effortLevel={tab?.effortLevel}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
@@ -967,6 +996,9 @@ export function DashboardView() {
                   terminalId={t.id}
                   theme={currentTheme.xterm}
                   active={t.id === activeTerminalId && !t.ended}
+                  onDevServerDetected={(port) =>
+                    setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
+                  }
                 />
                 {t.ended && (
                   <EndedOverlay
@@ -1014,7 +1046,7 @@ export function DashboardView() {
           >
             {/* margin-top:auto on first + margin-bottom:auto on last child centers the
                 block when it fits, but keeps the top reachable/scrollable when it overflows. */}
-            <div style={{ marginTop: 'auto', marginBottom: 20 }}><LogoMark size={64} /></div>
+            <div style={{ marginTop: 'auto', marginBottom: 20 }}><LogoMark size={96} cells={11} /></div>
             <div style={{ textAlign: 'center', marginBottom: 32 }}>
               <p style={{
                 fontSize: 13,

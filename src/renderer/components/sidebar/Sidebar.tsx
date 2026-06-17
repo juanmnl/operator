@@ -25,6 +25,7 @@ interface SidebarProps {
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
+  onReorderSession: (draggedSessionId: string, targetSessionId: string) => void
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
@@ -39,7 +40,10 @@ interface SidebarProps {
   onInstallUpdate?: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+  // Session id currently being dragged for reorder — lifted here so a drag can
+  // cross folder-group boundaries (each FolderGroup renders its own items).
+  const [dragId, setDragId] = useState<string | null>(null)
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -151,6 +155,9 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             onRenameSession={onRenameSession}
             onCloseSession={onCloseSession}
             onOpenFolderPrefs={onOpenFolderPrefs}
+            dragId={dragId}
+            setDragId={setDragId}
+            onReorderSession={onReorderSession}
           />
         ))}
       </div>
@@ -180,36 +187,31 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
+        {/* All footer icons share one 14px box (viewBox 16, stroke 1.1) and the
+            same button padding; spacing comes from the row's `gap` alone, so they
+            read as a single uniform set. The gear keeps viewBox 24 with a
+            proportional stroke (1.6/24 ≈ 1.1/16). */}
         <button
           onClick={onNewSession}
           style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--fg-muted)',
-            fontSize: 16,
-            fontWeight: 300,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            padding: 0,
-            lineHeight: 1,
-            opacity: 0.85,
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center', opacity: 0.85,
           }}
           title="New Session"
         >
-          +
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3v10M3 8h10" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+          </svg>
         </button>
         <button
           onClick={onOpenAgents}
           style={{
             background: agentsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 5px',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center',
             opacity: agentsViewActive ? 1 : 0.85,
-            marginLeft: 6,
           }}
           title="Agents — configure models per task"
         >
@@ -225,18 +227,14 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           onClick={onOpenUsage}
           style={{
             background: usageViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 5px',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center',
             opacity: usageViewActive ? 1 : 0.85,
-            marginLeft: 4,
           }}
           title="Usage & cost"
         >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M2 14V2" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
             <path d="M2 14h12" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
             <rect x="4.5" y="8" width="2.2" height="4" rx="0.5" fill="var(--fg-muted)" />
@@ -248,18 +246,14 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           onClick={onOpenGlobalPrefs}
           style={{
             background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 5px',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 5px', borderRadius: 8,
+            display: 'flex', alignItems: 'center',
             opacity: globalPrefsActive ? 1 : 0.85,
-            marginLeft: 6,
           }}
           title="Global Claude files (~/.claude)"
         >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="8" r="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
             <ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
             <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
@@ -274,7 +268,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             border: 'none', cursor: 'pointer',
             padding: '3px 5px', borderRadius: 8,
             display: 'flex', alignItems: 'center',
-            opacity: prefsViewActive ? 1 : 0.85, marginLeft: 6,
+            opacity: prefsViewActive ? 1 : 0.85,
           }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -289,19 +283,18 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
             padding: '3px 5px', borderRadius: 8,
-            display: 'flex', alignItems: 'center',
-            opacity: 0.85, marginLeft: 4,
+            display: 'flex', alignItems: 'center', opacity: 0.85,
           }}
         >
           {isDark ? (
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it. */}
               <circle cx="8" cy="8" r="2.6" fill="var(--fg-muted)" />
-              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.2" strokeLinecap="round" />
+              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
             </svg>
           ) : (
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.2" />
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.1" />
             </svg>
           )}
         </button>
@@ -323,6 +316,9 @@ function FolderGroup({
   onRenameSession,
   onCloseSession,
   onOpenFolderPrefs,
+  dragId,
+  setDragId,
+  onReorderSession,
 }: {
   projectName: string
   group: AgentSession[]
@@ -336,8 +332,12 @@ function FolderGroup({
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
+  dragId: string | null
+  setDragId: (id: string | null) => void
+  onReorderSession: (draggedSessionId: string, targetSessionId: string) => void
 }) {
   const [hovered, setHovered] = useState(false)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const projectPath = group[0]?.workingDirectory || ''
   const isPrefsActive = activeFolderPrefs === projectPath
 
@@ -396,19 +396,43 @@ function FolderGroup({
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
         return (
-          <SessionItem
+          <div
             key={session.id}
-            session={session}
-            label={customName || defaultLabel}
-            active={session.id === activeSessionId}
-            effortLevel={effort}
-            fanInfo={fan}
-            closable
-            shortcutIndex={shortcutIndices[session.id] ?? null}
-            onClick={() => onSelectSession(session)}
-            onRename={(name) => onRenameSession(session.id, name)}
-            onClose={() => onCloseSession(session)}
-          />
+            draggable
+            onDragStart={(e) => { setDragId(session.id); e.dataTransfer.effectAllowed = 'move' }}
+            onDragEnd={() => { setDragId(null); setDropTargetId(null) }}
+            onDragOver={(e) => {
+              if (!dragId || dragId === session.id) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              setDropTargetId(session.id)
+            }}
+            onDragLeave={() => setDropTargetId((c) => (c === session.id ? null : c))}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragId && dragId !== session.id) onReorderSession(dragId, session.id)
+              setDragId(null)
+              setDropTargetId(null)
+            }}
+            style={{
+              opacity: dragId === session.id ? 0.4 : 1,
+              // Insertion marker on the cell being dropped onto.
+              boxShadow: dropTargetId === session.id ? 'inset 0 2px 0 0 var(--accent)' : 'none',
+            }}
+          >
+            <SessionItem
+              session={session}
+              label={customName || defaultLabel}
+              active={session.id === activeSessionId}
+              effortLevel={effort}
+              fanInfo={fan}
+              closable
+              shortcutIndex={shortcutIndices[session.id] ?? null}
+              onClick={() => onSelectSession(session)}
+              onRename={(name) => onRenameSession(session.id, name)}
+              onClose={() => onCloseSession(session)}
+            />
+          </div>
         )
       })}
     </div>

@@ -102,6 +102,10 @@ export function installBridge(): void {
     // after the first drag (the OS drag loop eats the mouseup) or after the strip
     // remounts on a view switch — the exact "drag once, then nothing" symptom.
     startWindowDrag: () => { void getCurrentWindow().startDragging() },
+    // Double-click on the titlebar zooms the window — fill the screen, or restore
+    // to the previous size — matching native macOS title-bar behavior. Needs the
+    // `core:window:allow-toggle-maximize` capability (core:default is getters only).
+    toggleWindowMaximize: () => { void getCurrentWindow().toggleMaximize() },
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
