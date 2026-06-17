@@ -52,6 +52,17 @@ body {
   display: none;
 }
 
+/* Force monochrome (text) presentation for the symbols Claude Code uses as
+   status/tool markers — ⏺ ● ◆ ▸ ✔ etc. Under the DOM renderer WebKit defaults
+   these emoji-capable codepoints to full-colour Apple Color Emoji, which reads
+   as garish coloured blobs in the terminal. font-variant-emoji:text picks the
+   text glyph wherever one exists (true emoji with no text form are unaffected).
+   Supported on WebKit 17.4+. */
+.xterm,
+.xterm .xterm-rows {
+  font-variant-emoji: text;
+}
+
 /* Scrollable areas that should hide the bar (still scroll) */
 .scroll-hidden {
   scrollbar-width: none;

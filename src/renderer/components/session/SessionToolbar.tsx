@@ -26,14 +26,10 @@ interface SessionToolbarProps {
   branch?: string | null
 }
 
-export function SessionToolbar({ projectPath, projectName, terminalId, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
-  const [devPort, setDevPort] = useState<number | null>(null)
-  // The port a dev server actually announced wins over the one we reserved —
-  // most projects ignore OPERATOR_DEV_PORT and bind their own default.
-  const effectiveDevPort = detectedDevPort ?? devPort
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
 
   useEffect(() => {
@@ -55,16 +51,6 @@ export function SessionToolbar({ projectPath, projectName, terminalId, detectedD
       setMcpServers(result.servers)
     })
   }, [projectPath, effortLevelProp])
-
-  // Resolve this session's reserved dev-server port (OPERATOR_DEV_PORT). The
-  // backend allocates one per session; a project that honours the env var serves
-  // on it, so the toolbar can offer a one-click "open in browser".
-  useEffect(() => {
-    if (!terminalId) { setDevPort(null); return }
-    window.operator.getDevPorts().then((map) => {
-      setDevPort(map[terminalId] ?? null)
-    })
-  }, [terminalId])
 
   // Keep in sync with prop changes
   useEffect(() => {
@@ -133,11 +119,13 @@ export function SessionToolbar({ projectPath, projectName, terminalId, detectedD
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
-          {/* Dev-server quick-open: opens this session's reserved port in the browser */}
-          {effectiveDevPort && (
+          {/* Dev-server quick-open. Only shown once a dev server has actually been
+              detected in this session's output — the reserved OPERATOR_DEV_PORT is
+              meaningless until something serves on it, so we don't surface it. */}
+          {detectedDevPort && (
             <button
-              onClick={() => window.operator.openExternal(`http://localhost:${effectiveDevPort}`)}
-              title={`Open http://localhost:${effectiveDevPort} in your browser`}
+              onClick={() => window.operator.openExternal(`http://localhost:${detectedDevPort}`)}
+              title={`Open http://localhost:${detectedDevPort} in your browser`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -159,7 +147,7 @@ export function SessionToolbar({ projectPath, projectName, terminalId, detectedD
                 <path d="M9 3h4v4M13 3l-6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M11 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              localhost:{effectiveDevPort}
+              localhost:{detectedDevPort}
             </button>
           )}
 

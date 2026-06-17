@@ -727,7 +727,13 @@ export function DashboardView() {
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
   }, [savedSessions, terminals])
 
-  const activeSession = allSidebarSessions.find((s) => s.id === activeSessionId)
+  // Match on the session id, but fall back to the active terminal: when a session
+  // ends it drops out of getSessions() and its sidebar id flips from the hook id
+  // to `local-<tid>`, which would otherwise leave activeSessionId stale and
+  // activeSession undefined (blank toolbar over a still-open terminal).
+  const activeSession =
+    allSidebarSessions.find((s) => s.id === activeSessionId) ??
+    (activeTerminalId ? allSidebarSessions.find((s) => s.terminalId === activeTerminalId) : undefined)
 
   // Single source of truth for content area routing. Order = priority.
   const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
@@ -737,9 +743,13 @@ export function DashboardView() {
     if (usageViewActive) return 'usage'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
-    if (activeTerminalId) return 'localTerminal'
+    // Only 'localTerminal' if the active id still refers to a live terminal — a
+    // stale activeTerminalId (e.g. left set after its tab was removed) would
+    // otherwise render neither the terminal container (needs terminals.length>0)
+    // nor the splash (needs contentMode==='splash'), i.e. a blank screen.
+    if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
     return 'splash'
-  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId])
+  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
