@@ -61,14 +61,15 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const term = new Terminal({
       theme,
-      // Fallback families for glyphs the mono fonts lack. 'Apple Symbols'
-      // (monochrome TEXT presentation) is listed BEFORE 'Apple Color Emoji' so
-      // technical glyphs Claude Code uses — e.g. the ⏺ tool bullet, ● ◆ ▸ — fall
-      // back to a single-width text glyph that stays on the monospace grid,
-      // instead of a double-width COLOUR emoji that shoves the line out of
-      // alignment. True emoji (no text-presentation form) still reach Apple Color
-      // Emoji as the last resort before the generic monospace.
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
+      // 'Operator Symbols' (bundled, see styles.css @font-face) goes FIRST: it
+      // supplies single-width monochrome glyphs for the Misc-Technical markers
+      // Claude Code draws — ⏺ U+23FA tool bullet, ⏸ U+23F8, ⎿ U+23BF tree — which
+      // NO other monochrome font on macOS has (they'd otherwise fall to a colour,
+      // double-width emoji that shoves the line out of alignment, or to the
+      // LastResort "tofu" box). It carries no letter glyphs, so SF Mono still wins
+      // for text. Menlo covers the dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻);
+      // Apple Color Emoji stays last for genuine emoji with no text form.
+      fontFamily: "'Operator Symbols', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', monospace",
       fontSize: 13,
       // Keep this an integer — a fractional lineHeight leaves the DOM renderer's
       // per-row spans at sub-pixel offsets, which reads as uneven line spacing.

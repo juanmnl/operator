@@ -52,6 +52,21 @@ body {
   display: none;
 }
 
+/* Bundled monochrome symbol fallback. Claude Code's TUI markers ⏺ U+23FA,
+   ⏸ U+23F8, ⎿ U+23BF (and the rest of Misc-Technical) exist in NO monochrome font
+   on macOS — only in Apple Color Emoji (double-width colour) and LastResort.otf
+   (the "tofu" box). So font-variant-emoji:text alone can't fix them; we ship a
+   subset of STIX Two Math (see scripts/gen-symbol-font.py + the LICENSE) and list
+   it FIRST in the terminal font stack so these render as single-width text glyphs.
+   font-display:block avoids a tofu flash before the (local, instant) font loads. */
+@font-face {
+  font-family: 'Operator Symbols';
+  src: url('./fonts/operator-symbols.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
 /* Force monochrome (text) presentation for the symbols Claude Code uses as
    status/tool markers — ⏺ ● ◆ ▸ ✔ etc. Under the DOM renderer WebKit defaults
    these emoji-capable codepoints to full-colour Apple Color Emoji, which reads
