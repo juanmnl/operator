@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 
@@ -61,19 +62,23 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const term = new Terminal({
       theme,
-      // 'Operator Symbols' (bundled, see styles.css @font-face) goes FIRST: it
-      // supplies single-width monochrome glyphs for the Misc-Technical markers
-      // Claude Code draws — ⏺ U+23FA tool bullet, ⏸ U+23F8, ⎿ U+23BF tree — which
-      // NO other monochrome font on macOS has (they'd otherwise fall to a colour,
-      // double-width emoji that shoves the line out of alignment, or to the
-      // LastResort "tofu" box). It carries no letter glyphs, so SF Mono still wins
-      // for text. Menlo covers the dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻);
-      // Apple Color Emoji stays last for genuine emoji with no text form.
-      fontFamily: "'Operator Symbols', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Color Emoji', monospace",
+      // Two bundled subsets go FIRST (see styles.css @font-face), supplying
+      // single-width monochrome glyphs that NO usable macOS font has, so they
+      // don't fall to a colour double-width emoji or the LastResort "tofu" box:
+      //   'Operator Symbols' — Misc-Technical/geometric markers (⏺ U+23FA tool
+      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …).
+      //   'Operator Legacy'  — Symbols for Legacy Computing (U+1FBxx) + Supplement
+      //     (U+1CCxx) that Claude Code's logo/art mosaics use.
+      // Both carry no letters, so SF Mono still wins for text. Menlo covers the
+      // dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻); 'Apple Symbols' covers Braille
+      // (U+28xx — used heavily by Claude Code's art and the ONLY system font that
+      // has it); Apple Color Emoji stays last for genuine emoji with no text form.
+      fontFamily: "'Operator Symbols', 'Operator Legacy', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
-      // Keep this an integer — a fractional lineHeight leaves the DOM renderer's
-      // per-row spans at sub-pixel offsets, which reads as uneven line spacing.
-      lineHeight: 1.0,
+      // 1.2 gives the rows breathing room. xterm rounds the cell height to an
+      // integer device pixel, so every row gets the same height — no sub-pixel
+      // drift / uneven spacing even though the multiplier is fractional.
+      lineHeight: 1.2,
       // The DOM renderer maps these straight to CSS font-weight, so they're real
       // SF Mono weights (no canvas rasterization darkening to compensate for). 400
       // normal / 600 bold: SF Mono's 700 reads chunky next to its regular, 600
@@ -96,6 +101,13 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
+    // Upgrade xterm's character-width tables from its built-in Unicode 6 to Unicode 11.
+    // Claude Code lays out its TUI with a modern wcwidth (emoji/symbols are 2 cells); with
+    // xterm on Unicode 6 those came out 1 cell, so the cursor column drifted and Claude
+    // Code's redraws (e.g. the spinner over its --agent hint) landed on the wrong row —
+    // the overlapping/garbled lines. Needs allowProposedApi (set above).
+    term.loadAddon(new Unicode11Addon())
+    term.unicode.activeVersion = '11'
     // Clicking a link opens it in the system browser (via Tauri's opener);
     // falls back to window.open elsewhere.
     term.loadAddon(new WebLinksAddon((_event, uri) => {

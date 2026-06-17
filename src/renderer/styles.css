@@ -67,6 +67,20 @@ body {
   font-display: block;
 }
 
+/* 'Operator Legacy' — Symbols for Legacy Computing (U+1FBxx) + Supplement (U+1CCxx),
+   the block-mosaic glyphs Claude Code's logo/art uses. NO macOS font but LastResort has
+   these blocks, so they tofu intermittently. Subset of GNU Unifont (see gen-symbol-font.py).
+   size-adjust 120% scales Unifont's single-width glyph (advance 0.5 em) up to fill SF Mono's
+   ~0.6 em cell in both axes so the mosaics tile without gaps; tune if they over/underfill. */
+@font-face {
+  font-family: 'Operator Legacy';
+  src: url('./fonts/operator-legacy.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+  size-adjust: 120%;
+}
+
 /* Force monochrome (text) presentation for the symbols Claude Code uses as
    status/tool markers — ⏺ ● ◆ ▸ ✔ etc. Under the DOM renderer WebKit defaults
    these emoji-capable codepoints to full-colour Apple Color Emoji, which reads

@@ -1,84 +1,80 @@
 #!/usr/bin/env python3
 """
-Generate `src/renderer/fonts/operator-symbols.ttf` — a tiny monochrome, monospace-width
-symbol font that supplies the glyphs the terminal font stack has no monochrome home for.
+Generate the two bundled monochrome symbol fonts the terminal needs:
 
-Why this exists
----------------
-Claude Code's TUI draws its tool/status markers with Misc-Technical codepoints:
-  ⏺ U+23FA (record bullet), ⏸ U+23F8 (pause / plan mode), ⎿ U+23BF (tree branch), …
-A cmap scan of every font on macOS shows these exist ONLY in Apple Color Emoji (colour,
-double-width → misaligns the grid) and LastResort.otf (the system "tofu" box). With
-`font-variant-emoji: text` set on the terminal, WebKit refuses the colour emoji and, with
-no text glyph anywhere in the stack, falls through to LastResort → the tofu boxes the user
-sees. The dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻) are already covered by Menlo and are
-fine — only the Misc-Technical block has no monochrome source.
+  src/renderer/fonts/operator-symbols.woff2  — from STIX Two Math (on macOS, SIL OFL).
+      Supplies the Misc-Technical / geometric / dingbat / arrow markers Claude Code draws
+      (⏺ U+23FA tool bullet, ⏸ U+23F8, ⎿ U+23BF tree, …) which exist on macOS ONLY in
+      Apple Color Emoji (colour, double-width) and LastResort.otf (the "tofu" box).
 
-Fix: bundle a font that supplies those glyphs as single-width text, placed FIRST in the
-stack. Source = STIX Two Math, which ships with macOS and is SIL OFL 1.1 (redistributable)
-and is confirmed to contain ⏺ ⏸ ⎿ plus the rest of the technical block.
+  src/renderer/fonts/operator-legacy.woff2   — from GNU Unifont (OFL/GPL+exception).
+      Supplies "Symbols for Legacy Computing" (U+1FB00–1FBFF) + Supplement (U+1CC00–1CEBF),
+      the block-mosaic glyphs Claude Code's logo/art uses. A binary scan of the Claude Code
+      CLI found e.g. U+1FB82 U+1FB90 U+1FBE0 U+1FBF0 U+1CD49 U+1CD6D — and NO macOS font but
+      LastResort has these blocks, so they tofu intermittently (whenever the art draws one).
 
-This script is for reproducibility — the generated .ttf is committed to the repo, so CI
-and release builds need neither Python nor network. Re-run it only to regenerate.
+Both are listed first in the terminal font stack (see TerminalPane.tsx / styles.css). They
+carry no letter glyphs, so SF Mono still wins for text. Braille (U+28xx, also heavily used
+by Claude Code) is NOT bundled — 'Apple Symbols' is in the stack and is the only system
+font that has it.
+
+The generated .woff2 files are committed, so CI/release builds need neither Python nor
+network. Re-run this only to regenerate (it will fetch Unifont into /tmp if missing).
 
 Usage: python3 scripts/gen-symbol-font.py
-Requires: fontTools (already present in the environment).
+Requires: fontTools + brotli (already present in the environment).
 """
 import os
 import sys
+import urllib.request
 
 from fontTools.ttLib import TTFont
 from fontTools.subset import Subsetter, Options
 
-SRC = "/System/Library/Fonts/Supplemental/STIXTwoMath.otf"
-OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "renderer", "fonts")
-OUT = os.path.normpath(os.path.join(OUT_DIR, "operator-symbols.woff2"))
+OUT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "src", "renderer", "fonts"))
 
-FAMILY = "Operator Symbols"
-
-# Blocks STIX covers that risk tofu/colour-emoji in the terminal. Broad on purpose so
-# future Claude Code markers in these ranges won't tofu either.
-#
-# DELIBERATELY EXCLUDED: Box Drawing (U+2500–U+257F) and Block Elements (U+2580–U+259F).
-# This font is FIRST in the stack, so anything it contains wins — and SF Mono draws the
-# continuous box borders better than a proportional math font normalised to one width.
-# Leaving those out keeps Claude Code's input box / rule borders seamless.
-RANGES = [
+# --- source 1: STIX Two Math (ships with macOS) -----------------------------------------
+STIX_SRC = "/System/Library/Fonts/Supplemental/STIXTwoMath.otf"
+# Blocks STIX covers that risk tofu/colour-emoji. Broad on purpose so future markers in
+# these ranges won't tofu. DELIBERATELY EXCLUDES Box Drawing (U+2500–U+257F) + Block
+# Elements (U+2580–U+259F): this font is first in the stack, and SF Mono draws the
+# continuous box/rule borders better than a proportional math font normalised to one width.
+STIX_RANGES = [
     (0x2190, 0x21FF),  # Arrows
     (0x2300, 0x23FF),  # Misc Technical — ⏺ U+23FA, ⏸ U+23F8, ⎿ U+23BF, media controls
     (0x25A0, 0x25FF),  # Geometric Shapes — ● ◆ ▸ ▪ ▰ …
-    (0x2600, 0x26FF),  # Misc Symbols — ⚠ ☰ ⚙ … (many are emoji-default → would tofu)
+    (0x2600, 0x26FF),  # Misc Symbols
     (0x2700, 0x27BF),  # Dingbats — ✔ ✦ ✻ ✗ …
     (0x27F0, 0x27FF),  # Supplemental Arrows-A
     (0x2900, 0x297F),  # Supplemental Arrows-B
-    (0x2B00, 0x2BFF),  # Misc Symbols and Arrows — ⬆ ⬡ ★ …
+    (0x2B00, 0x2BFF),  # Misc Symbols and Arrows
 ]
+STIX_MUST = {0x23FA: "⏺ record", 0x23F8: "⏸ pause", 0x23BF: "⎿ tree"}
 
-# Glyphs we must confirm made it into the output (the whole point of the font).
-MUST_HAVE = {0x23FA: "⏺ record", 0x23F8: "⏸ pause", 0x23BF: "⎿ tree"}
+# --- source 2: GNU Unifont upper plane (fetched) ----------------------------------------
+UNIFONT_VER = "16.0.04"
+UNIFONT_URL = (f"https://unifoundry.com/pub/unifont/unifont-{UNIFONT_VER}/"
+               f"font-builds/unifont_upper-{UNIFONT_VER}.otf")
+UNIFONT_CACHE = f"/tmp/unifont_upper-{UNIFONT_VER}.otf"
+LEGACY_RANGES = [
+    (0x1FB00, 0x1FBFF),  # Symbols for Legacy Computing
+    (0x1CC00, 0x1CEBF),  # Symbols for Legacy Computing Supplement (Unicode 16)
+]
+LEGACY_MUST = {0x1FB82: "🮂", 0x1FB90: "🮐", 0x1FBE0: "🯠", 0x1FBF0: "🯰",
+               0x1CD49: "𜵉", 0x1CD6D: "𜵭"}
 
 
-def main() -> int:
-    if not os.path.exists(SRC):
-        print(f"ERROR: source font not found: {SRC}", file=sys.stderr)
-        print("STIX Two Math ships with macOS; on other platforms point SRC at an "
-              "OFL copy of STIXTwoMath.otf.", file=sys.stderr)
-        return 1
-
-    font = TTFont(SRC)
-    src_cmap = font.getBestCmap()
+def subset_font(src_path, ranges, family, ps_name, out_name, must_have, adv_ratio):
+    """Subset `src_path` to `ranges`, normalise advances, rename, save as woff2, verify."""
+    font = TTFont(src_path)
+    cmap = font.getBestCmap()
     upem = font["head"].unitsPerEm
-
-    # Codepoints in our ranges that the source actually has.
-    wanted = sorted(
-        cp for cp in src_cmap
-        if any(lo <= cp <= hi for lo, hi in RANGES)
-    )
+    wanted = sorted(cp for cp in cmap if any(lo <= cp <= hi for lo, hi in ranges))
     if not wanted:
-        print("ERROR: source font covers none of the target ranges.", file=sys.stderr)
+        print(f"ERROR: {os.path.basename(src_path)} covers none of the target ranges.",
+              file=sys.stderr)
         return 1
 
-    # Trim to just those glyphs.
     opts = Options()
     opts.glyph_names = False
     opts.recalc_bounds = True
@@ -86,52 +82,70 @@ def main() -> int:
     opts.name_IDs = ["*"]
     opts.name_legacy = True
     opts.recommended_glyphs = True
-    # Math/layout tables are irrelevant for a fallback glyph font and bloat the file.
     opts.layout_features = []
     opts.drop_tables += ["MATH", "GPOS", "GSUB", "GDEF", "DSIG"]
+    # Don't recalc OS/2 unicode/codepage ranges: Unifont sets the newest Unicode range
+    # bit (123, Legacy Computing Supplement) which this fontTools version rejects (max 122).
+    # The ranges are cosmetic metadata for a fallback font anyway.
+    opts.prune_unicode_ranges = False
+    opts.prune_codepage_ranges = False
     sub = Subsetter(options=opts)
     sub.populate(unicodes=wanted)
     sub.subset(font)
 
-    # Normalize to monospace: STIX is proportional, so rewrite every glyph's advance to
-    # one uniform width (~0.6 em, the usual mono advance/em ratio). xterm sizes its cells
-    # from the PRIMARY font (SF Mono); this just keeps these fallback glyphs from
-    # overflowing into the neighbouring cell.
-    adv = round(upem * 0.6)
+    # Normalise every glyph to one uniform single-cell advance. xterm sizes its cells from
+    # the PRIMARY font (SF Mono); this just stops a fallback glyph overflowing its cell.
+    adv = round(upem * adv_ratio)
     hmtx = font["hmtx"]
     for name in hmtx.metrics:
         _, lsb = hmtx.metrics[name]
         hmtx.metrics[name] = (adv, lsb)
     font["hhea"].advanceWidthMax = adv
 
-    # Rename so it can't collide with anything the user has installed.
+    # Rename so it can't collide with an installed copy.
     name_tbl = font["name"]
-    for nid in (1, 3, 4, 6, 16):
-        name_tbl.setName(FAMILY if nid in (1, 16) else
-                         (FAMILY if nid == 4 else
-                          FAMILY.replace(" ", "") if nid == 6 else
-                          FAMILY), nid, 3, 1, 0x409)
-    name_tbl.setName(FAMILY, 1, 3, 1, 0x409)
+    name_tbl.setName(family, 1, 3, 1, 0x409)
     name_tbl.setName("Regular", 2, 3, 1, 0x409)
-    name_tbl.setName(FAMILY, 4, 3, 1, 0x409)
-    name_tbl.setName("OperatorSymbols-Regular", 6, 3, 1, 0x409)
+    name_tbl.setName(family, 4, 3, 1, 0x409)
+    name_tbl.setName(ps_name, 6, 3, 1, 0x409)
 
+    out = os.path.join(OUT_DIR, out_name)
     os.makedirs(OUT_DIR, exist_ok=True)
-    font.flavor = "woff2"  # brotli-compressed; ~half the size of raw ttf
-    font.save(OUT)
+    font.flavor = "woff2"
+    font.save(out)
 
-    # Verify coverage of the must-have glyphs in the OUTPUT.
-    out_cmap = TTFont(OUT).getBestCmap()
-    missing = [f"U+{cp:04X} {label}" for cp, label in MUST_HAVE.items() if cp not in out_cmap]
-    size_kb = os.path.getsize(OUT) / 1024
-
-    print(f"Wrote {OUT}  ({size_kb:.1f} KB, {len(out_cmap)} glyphs, advance={adv}/{upem} em)")
+    out_cmap = TTFont(out).getBestCmap()
+    missing = [f"U+{cp:04X} {lbl}" for cp, lbl in must_have.items() if cp not in out_cmap]
+    print(f"Wrote {out}  ({os.path.getsize(out) / 1024:.1f} KB, {len(out_cmap)} glyphs, "
+          f"advance={adv}/{upem} em)")
     if missing:
-        print("ERROR: output is missing required glyphs: " + ", ".join(missing), file=sys.stderr)
+        print("ERROR: output missing required glyphs: " + ", ".join(missing), file=sys.stderr)
         return 1
-    have = ", ".join(f"U+{cp:04X} {label}" for cp, label in MUST_HAVE.items())
-    print(f"OK: required glyphs present -> {have}")
+    print("OK: required glyphs present -> " + ", ".join(f"U+{cp:04X}{lbl}"
+                                                        for cp, lbl in must_have.items()))
     return 0
+
+
+def ensure_unifont():
+    if not os.path.exists(UNIFONT_CACHE):
+        print(f"Fetching Unifont {UNIFONT_VER} (one-time) -> {UNIFONT_CACHE}")
+        urllib.request.urlretrieve(UNIFONT_URL, UNIFONT_CACHE)
+    return UNIFONT_CACHE
+
+
+def main() -> int:
+    if not os.path.exists(STIX_SRC):
+        print(f"ERROR: STIX Two Math not found: {STIX_SRC} (ships with macOS).", file=sys.stderr)
+        return 1
+    rc = subset_font(STIX_SRC, STIX_RANGES, "Operator Symbols", "OperatorSymbols-Regular",
+                     "operator-symbols.woff2", STIX_MUST, adv_ratio=0.6)
+    if rc:
+        return rc
+    # Unifont legacy glyphs are single-width (advance 32 of a 64 em) and fill the cell;
+    # keep that 0.5 ratio. @font-face size-adjust tunes the final visual fill.
+    rc = subset_font(ensure_unifont(), LEGACY_RANGES, "Operator Legacy", "OperatorLegacy-Regular",
+                     "operator-legacy.woff2", LEGACY_MUST, adv_ratio=0.5)
+    return rc
 
 
 if __name__ == "__main__":
