@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { themes, type OperatorTheme } from '../../themes'
+import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 
 type CheckState =
   | { kind: 'idle' }
@@ -55,12 +55,16 @@ export function PrefsView({ currentTheme, onSelectTheme }: {
             Also switchable from the command palette (⌘K → “Theme: …”).
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {Object.entries(themes).map(([key, theme]) => {
-              const active = theme === currentTheme
+            {identities.map(({ id, name }) => {
+              // Preview each identity in the mode that's currently active, so the
+              // swatch matches what selecting it would actually apply.
+              const mode = currentTheme.isDark ? 'dark' : 'light'
+              const variant = themes[themeKey(id, mode)]
+              const active = currentTheme.identity === id
               return (
                 <button
-                  key={key}
-                  onClick={() => onSelectTheme(key)}
+                  key={id}
+                  onClick={() => onSelectTheme(id)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
                     padding: '7px 12px', borderRadius: 6, cursor: 'pointer',
@@ -70,14 +74,14 @@ export function PrefsView({ currentTheme, onSelectTheme }: {
                     border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
                   }}
                 >
-                  {/* swatch: the theme's own surface + accent */}
+                  {/* swatch: the identity's current-mode surface + accent */}
                   <span style={{
                     width: 14, height: 14, borderRadius: 4, flexShrink: 0,
-                    background: theme.vars['--bg-terminal'],
-                    border: `1px solid ${theme.vars['--border']}`,
-                    boxShadow: `inset 0 0 0 3px ${theme.vars['--accent']}`,
+                    background: variant.vars['--bg-terminal'],
+                    border: `1px solid ${variant.vars['--border']}`,
+                    boxShadow: `inset 0 0 0 3px ${variant.vars['--accent']}`,
                   }} />
-                  {theme.name}
+                  {name}
                   {active && <span style={{ color: 'var(--accent)', fontSize: 10 }}>✓</span>}
                 </button>
               )

@@ -14,7 +14,7 @@ import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
 import { Toasts, ToastMessage } from '../components/Toast'
-import { themes, defaultTheme, applyTheme } from '../themes'
+import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
 import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
@@ -35,6 +35,9 @@ interface TerminalTab {
   /** 1-based position within the fan-out group, and the group size. */
   fanIndex?: number
   fanTotal?: number
+  /** Pty has exited (Claude/shell finished). Pane stays mounted showing the
+   *  final frame; user dismisses it explicitly. */
+  ended?: boolean
 }
 
 /** A session's restorable config, persisted to localStorage across restarts. */
@@ -87,8 +90,7 @@ export function DashboardView() {
   }, [])
   const [pendingSession, setPendingSession] = useState<string | null>(null) // cwd awaiting launch
   const [currentTheme, setCurrentTheme] = useState<OperatorTheme>(() => {
-    const saved = localStorage.getItem('operator.theme')
-    return (saved && themes[saved]) || defaultTheme
+    return themes[resolveThemeKey(localStorage.getItem('operator.theme'))]
   })
   const handleRename = useCallback((sessionId: string, name: string) => {
     setCustomNames((prev) => {
@@ -108,11 +110,12 @@ export function DashboardView() {
       window.operator.getSessions().then(setSessions)
     }, 1000)
     const unsubExit = window.operator.onTerminalExit((id) => {
-      setTerminals((prev) => prev.filter((t) => t.id !== id))
-      setActiveTerminalId((current) => (current === id ? null : current))
-      // Clear active session if it was the local placeholder for the dead terminal.
-      // The next poll reconciles status to 'ended' and clears via the effect below.
-      setActiveSessionId((current) => (current === `local-${id}` ? null : current))
+      // Don't drop the tab — unmounting the pane blanks the final output. xterm
+      // keeps its buffer after the pty dies, so mark the tab ended and leave it
+      // mounted + active; the last frame stays on screen until the user dismisses
+      // it (Cmd+W / sidebar close / the pane's "ended" overlay). Intentional
+      // closes (handleCloseSession, worktree merge/discard) still remove the tab.
+      setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, ended: true } : t)))
     })
 
     // Files dropped on the window → paste their paths into the active terminal,
@@ -421,21 +424,24 @@ export function DashboardView() {
     }
   }, [terminals])
 
+  // The toggle swaps mode within the current identity (Mission Control dark ↔
+  // Mission Control light), instead of jumping to a different theme.
   const handleToggleTheme = useCallback(() => {
-    const nextKey = currentTheme.isDark ? 'light' : 'mission-control'
-    const next = themes[nextKey]
+    const nextKey = themeKey(currentTheme.identity, currentTheme.isDark ? 'light' : 'dark')
+    const next = themes[nextKey] ?? defaultTheme
     setCurrentTheme(next)
     applyTheme(next)
-    localStorage.setItem('operator.theme', nextKey)
+    localStorage.setItem('operator.theme', themeKey(next.identity, next.mode))
   }, [currentTheme])
 
-  const handleSelectTheme = useCallback((key: string) => {
-    const next = themes[key]
-    if (!next) return
+  // The picker selects an identity and keeps the current light/dark mode.
+  const handleSelectTheme = useCallback((identityId: string) => {
+    const mode = currentTheme.isDark ? 'dark' : 'light'
+    const next = themes[themeKey(identityId, mode)] ?? defaultTheme
     setCurrentTheme(next)
     applyTheme(next)
-    localStorage.setItem('operator.theme', key)
-  }, [])
+    localStorage.setItem('operator.theme', themeKey(next.identity, next.mode))
+  }, [currentTheme])
 
   // Build effort level map from terminal tabs (keyed by terminalId)
   const effortLevels: Record<string, string> = {}
@@ -782,13 +788,13 @@ export function DashboardView() {
 
     // One entry per registered theme, so every palette (incl. Mission Control
     // and 1984) is reachable — not just the binary light/dark toggle.
-    Object.entries(themes).forEach(([key, theme]) => {
+    identities.forEach(({ id, name }) => {
       actions.push({
-        id: `theme-${key}`,
+        id: `theme-${id}`,
         group: 'View',
-        label: `Theme: ${theme.name}${theme === currentTheme ? ' ✓' : ''}`,
-        detail: theme.isDark ? 'Dark' : 'Light',
-        run: () => handleSelectTheme(key),
+        label: `Theme: ${name}${currentTheme.identity === id ? ' ✓' : ''}`,
+        detail: currentTheme.isDark ? 'Dark' : 'Light',
+        run: () => handleSelectTheme(id),
       })
     })
 
@@ -960,8 +966,21 @@ export function DashboardView() {
                 <TerminalPane
                   terminalId={t.id}
                   theme={currentTheme.xterm}
-                  active={t.id === activeTerminalId}
+                  active={t.id === activeTerminalId && !t.ended}
                 />
+                {t.ended && (
+                  <EndedOverlay
+                    onClose={() => {
+                      const s = allSidebarSessions.find((x) => x.terminalId === t.id)
+                      if (s) handleCloseSession(s)
+                      else {
+                        setTerminals((prev) => prev.filter((x) => x.id !== t.id))
+                        setActiveTerminalId((c) => (c === t.id ? null : c))
+                        setActiveSessionId((c) => (c === `local-${t.id}` ? null : c))
+                      }
+                    }}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -1160,6 +1179,50 @@ export function DashboardView() {
       )}
 
       <Toasts messages={toasts} onDismiss={dismissToast} />
+    </div>
+  )
+}
+
+/** Floating pill shown over an ended session's pane — small enough that the
+ *  terminal's final frame stays readable behind it. The container ignores
+ *  pointer events so only the pill is interactive. */
+function EndedOverlay({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      style={{
+        position: 'absolute', left: 0, right: 0, bottom: 16,
+        display: 'flex', justifyContent: 'center',
+        pointerEvents: 'none',
+        fontFamily: "'Inter', system-ui, sans-serif",
+      }}
+    >
+      <div
+        style={{
+          pointerEvents: 'auto',
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '6px 8px 6px 12px',
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 999,
+          boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+          fontSize: 11, color: 'var(--fg-muted)',
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--fg-muted)', opacity: 0.55 }} />
+          Session ended
+        </span>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'var(--btn-bg)', color: 'var(--fg)', border: 'none',
+            borderRadius: 999, padding: '3px 12px', fontSize: 11, fontWeight: 500,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          Close
+        </button>
+      </div>
     </div>
   )
 }
