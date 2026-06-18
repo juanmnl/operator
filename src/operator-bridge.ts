@@ -109,6 +109,10 @@ export function installBridge(): void {
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
+    // Swap the live macOS dock icon between the 'light' (cream) and 'dark'
+    // variants. Only affects the running app — the renderer re-applies the saved
+    // choice on launch (see App.tsx). No-op off macOS.
+    setDockIcon: (variant: 'light' | 'dark') => { void invoke('set_dock_icon', { variant }) },
     // Persist a pasted image (base64) to a temp file; returns the path so the
     // prompt bar can pass the agent a path reference instead of raw bytes.
     savePastedImage: (dataB64: string, ext: string) => invoke<string>('save_pasted_image', { data: dataB64, ext }),

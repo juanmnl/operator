@@ -88,6 +88,7 @@ impl PtyManager {
     pub fn dev_ports(&self) -> HashMap<String, u16> {
         self.ports.lock().unwrap().clone()
     }
+
 }
 
 #[derive(Clone, Serialize)]
@@ -402,6 +403,43 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+// --- Dock icon selector (macOS) ---------------------------------------------
+// Swap the live dock/app icon between the light (cream) and dark variants. This
+// only overrides the *running* app's icon (NSApplication's applicationIconImage),
+// not the bundle's static .icns — so the frontend re-applies the saved choice on
+// every launch. No-op off macOS.
+
+#[cfg(target_os = "macos")]
+fn apply_dock_icon(variant: &str) {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let bytes: &[u8] = match variant {
+        "dark" => include_bytes!("../icons/dock-dark.png").as_slice(),
+        _ => include_bytes!("../icons/dock-light.png").as_slice(),
+    };
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(bytes);
+    let image = NSImage::initWithData(NSImage::alloc(), &data);
+    if let Some(image) = image {
+        let nsapp = NSApplication::sharedApplication(mtm);
+        unsafe { nsapp.setApplicationIconImage(Some(&image)) };
+    }
+}
+
+/// Set the running app's dock icon to the `light` or `dark` variant. Hops to the
+/// main thread (AppKit requires it).
+#[tauri::command]
+fn set_dock_icon(app: tauri::AppHandle, variant: String) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(move || apply_dock_icon(&variant));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, variant);
+}
+
 // Menu-bar tray icon: the dot-circle logo (no count). Clicking it opens a menu
 // listing the active sessions and their states — rebuilt by the transcript
 // tailer via transcript::refresh_tray_menu. Clicking an item focuses the app.
@@ -479,7 +517,8 @@ pub fn run() {
             get_mcp_servers,
             save_sessions,
             load_sessions,
-            save_pasted_image
+            save_pasted_image,
+            set_dock_icon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

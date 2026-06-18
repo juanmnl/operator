@@ -25,6 +25,8 @@ declare global {
       /** Toggle window zoom (fill screen ⇆ restore) — titlebar double-click. */
       toggleWindowMaximize: () => void
       openExternal: (url: string) => void
+      /** Swap the live macOS dock icon between the 'light' and 'dark' variants. */
+      setDockIcon: (variant: 'light' | 'dark') => void
       /** Write a pasted image (base64) to a temp file; resolves to its path. */
       savePastedImage: (dataB64: string, ext: string) => Promise<string>
       onFileDrop: (callback: (paths: string[]) => void) => () => void
