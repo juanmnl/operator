@@ -97,6 +97,17 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
       // off (1) — the DOM renderer shows true alpha and any lift just whitens the
       // dim text.
       minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
+      // OSC-8 hyperlinks (Claude Code emits them for URLs). Without our own
+      // handler xterm falls back to a default that calls confirm() — which Tauri
+      // blocks ("dialog.confirm not allowed") so the link never opens. Route them
+      // through the system opener instead.
+      linkHandler: {
+        activate: (_event, uri) => {
+          if (window.operator?.openExternal) window.operator.openExternal(uri)
+          else window.open(uri, '_blank')
+        },
+        allowNonHttpProtocols: true,
+      },
     })
 
     const fitAddon = new FitAddon()
@@ -155,12 +166,12 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     }
 
     // Receive data from pty — returns unsubscribe function
-    // Sniff a dev-server boot banner. Vite/Next/Astro/Remix/etc. all print a
-    // "Local: http://localhost:<port>" line on startup. Anchoring on "Local:"
-    // keeps this from matching prose that merely mentions a localhost URL (e.g.
-    // an agent narrating "serving at http://localhost:5173"). Keep a short tail
-    // so a banner split across two chunks still matches.
-    const DEV_RE = /Local:\s+https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i
+    // Sniff a dev-server URL. We used to anchor on a "Local:" banner, but Claude
+    // Code COLLAPSES subprocess output ("+5 lines") so that line never streams —
+    // only Claude's own prose ("Dev server is running: http://localhost:5273/")
+    // does. So match a localhost URL directly. Keep a short tail so a URL split
+    // across two chunks still matches.
+    const DEV_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i
     // Dev servers colorize the banner (e.g. Vite: "Local\x1b[22m:  \x1b[36mhttp://…"),
     // so strip OSC + CSI/SGR escapes before matching or "Local:" never lines up
     // with the URL.

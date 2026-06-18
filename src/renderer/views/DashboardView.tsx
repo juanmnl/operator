@@ -2,6 +2,15 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { TerminalPane } from '../components/terminal/TerminalPane'
+import { NativeTerminalPane } from '../components/terminal/NativeTerminalPane'
+
+// Native GPU terminal, opt-in via Preferences (persisted to localStorage; read at
+// load — toggling reloads to apply). When on, the content card goes transparent
+// and each terminal renders via the wgpu NSView behind it (NativeTerminalPane /
+// src-tauri/src/termview.rs). The old 'operator.pocTermview' key is honored for
+// back-compat with the dev flag.
+const POC_TERMVIEW = typeof localStorage !== 'undefined' &&
+  (localStorage.getItem('operator.nativeTerminal') === '1' || localStorage.getItem('operator.pocTermview') === '1')
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
@@ -13,6 +22,7 @@ import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
+import { RecentLists } from '../components/dashboard/RecentLists'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
@@ -70,6 +80,18 @@ export function DashboardView() {
   // Latest active terminal, for the (single, mount-time) file-drop listener.
   const activeTerminalIdRef = useRef<string | null>(null)
   useEffect(() => { activeTerminalIdRef.current = activeTerminalId }, [activeTerminalId])
+  // Native terminal: drop the opaque backmost layers once so the wgpu view shows
+  // through (gated on the flag; not per-pane, so closing one terminal can't strip
+  // transparency from the others).
+  useEffect(() => { if (POC_TERMVIEW) document.body.classList.add('poc-termview') }, [])
+  // Native terminal sniffs the dev-server port in Rust (no JS xterm) and emits it;
+  // mirror it into the same map the toolbar badge reads.
+  useEffect(() => {
+    if (!POC_TERMVIEW) return
+    return window.operator.onDevServerPort?.((id, port) =>
+      setDetectedDevPorts((m) => (m[id] === port ? m : { ...m, [id]: port })),
+    )
+  }, [])
   const [customNames, setCustomNames] = useState<Record<string, string>>(() => {
     try {
       const raw = localStorage.getItem('operator.customNames')
@@ -839,7 +861,7 @@ export function DashboardView() {
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck])
 
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100vh', background: POC_TERMVIEW ? 'transparent' : 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       <Sidebar
         sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
@@ -871,7 +893,7 @@ export function DashboardView() {
         onInstallUpdate={() => { void window.operator.installUpdate() }}
       />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: POC_TERMVIEW ? 'transparent' : 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', position: 'relative' }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
@@ -1002,14 +1024,22 @@ export function DashboardView() {
                   visibility: t.id === activeTerminalId ? 'visible' : 'hidden',
                 }}
               >
-                <TerminalPane
-                  terminalId={t.id}
-                  theme={currentTheme.xterm}
-                  active={t.id === activeTerminalId && !t.ended}
-                  onDevServerDetected={(port) =>
-                    setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
-                  }
-                />
+                {POC_TERMVIEW ? (
+                  <NativeTerminalPane
+                    terminalId={t.id}
+                    active={t.id === activeTerminalId && !t.ended}
+                    theme={currentTheme.xterm}
+                  />
+                ) : (
+                  <TerminalPane
+                    terminalId={t.id}
+                    theme={currentTheme.xterm}
+                    active={t.id === activeTerminalId && !t.ended}
+                    onDevServerDetected={(port) =>
+                      setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
+                    }
+                  />
+                )}
                 {t.ended && (
                   <EndedOverlay
                     onClose={() => {
@@ -1034,6 +1064,11 @@ export function DashboardView() {
             customNames={customNames}
             onSelectSession={handleSelectSession}
             onNewSession={handleNewSession}
+            restorableSessions={restorableSessions}
+            recentProjects={recentProjects}
+            onRestore={handleRestoreSession}
+            onForget={forgetSavedSession}
+            onOpenFolder={handleNewSessionInFolder}
           />
         )}
 
@@ -1065,7 +1100,7 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: 0,
               }}>
-                Mission control for working agents.
+                Welcome to your mission control.
               </p>
               <p style={{
                 fontSize: 12,
@@ -1073,9 +1108,9 @@ export function DashboardView() {
                 lineHeight: 1.7,
                 margin: '12px 0 0',
               }}>
-                Define agents and the model each task runs on, then launch
-                Claude Code sessions that delegate to them — each in its own
-                git worktree. Watch every tool call and subagent unfold live.
+                Kick off a Claude Code session, hand it to an agent and the model
+                that suit the task, and let it work in its own git worktree. You'll
+                see every tool call and subagent as it happens.
               </p>
               <p style={{
                 fontSize: 11,
@@ -1084,8 +1119,8 @@ export function DashboardView() {
                 margin: '10px 0 0',
                 opacity: 0.6,
               }}>
-                Fan a task across parallel agents and see what each is doing —
-                and what it costs.
+                Got a big job? Fan it out across as many agents as you like —
+                and keep an eye on what each one's doing, and what it costs.
               </p>
             </div>
 
@@ -1108,107 +1143,13 @@ export function DashboardView() {
               Cmd+N · Cmd+K for command palette
             </p>
 
-            {restorableSessions.length > 0 && (
-              <div style={{ width: '100%', marginTop: 24 }}>
-                <p style={{
-                  fontSize: 9, fontWeight: 600, textTransform: 'uppercase',
-                  letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.5,
-                  margin: '0 0 8px', textAlign: 'left',
-                }}>
-                  Continue where you left off
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {restorableSessions.slice(0, 6).map((s) => (
-                    <div
-                      key={s.key}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        width: '100%', padding: '6px 6px 6px 10px',
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 5,
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                        <div style={{ fontSize: 11, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {s.customName || s.projectName}
-                        </div>
-                        <div style={{
-                          fontSize: 9, color: 'var(--fg-muted)', opacity: 0.55, marginTop: 1,
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-                        }}>
-                          {s.worktreeBranch ? `⎇ ${s.worktreeBranch}` : s.cwd.replace(/^\/Users\/[^/]+/, '~')}
-                        </div>
-                      </div>
-                      {s.claudeSessionId && (
-                        <button
-                          onClick={() => handleRestoreSession(s, true)}
-                          title="Resume the previous Claude conversation"
-                          style={restoreBtnStyle(true)}
-                        >
-                          Resume
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleRestoreSession(s, false)}
-                        title="Start the agent clean in this session"
-                        style={restoreBtnStyle(false)}
-                      >
-                        {s.claudeSessionId ? 'Clean' : 'Open'}
-                      </button>
-                      <button
-                        onClick={() => forgetSavedSession(s.key)}
-                        title="Forget this session"
-                        style={{
-                          background: 'none', border: 'none', color: 'var(--fg-muted)',
-                          cursor: 'pointer', fontSize: 13, padding: '0 4px', opacity: 0.4, fontFamily: 'inherit',
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {recentProjects.length > 0 && (
-              <div style={{ width: '100%', marginTop: 24 }}>
-                <p style={{
-                  fontSize: 9, fontWeight: 600, textTransform: 'uppercase',
-                  letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.5,
-                  margin: '0 0 8px', textAlign: 'left',
-                }}>
-                  Recent
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {recentProjects.slice(0, 5).map((p) => (
-                    <button
-                      key={p.path}
-                      onClick={() => handleNewSessionInFolder(p.path)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        width: '100%', padding: '6px 10px',
-                        background: 'transparent',
-                        border: '1px solid var(--border)',
-                        borderRadius: 5,
-                        cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                      }}
-                    >
-                      <span style={{ fontSize: 11, color: 'var(--fg)', flexShrink: 0 }}>{p.name}</span>
-                      <span style={{
-                        fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
-                        fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-                      }}>
-                        {p.path.replace(/^\/Users\/[^/]+/, '~')}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            <RecentLists
+              sessions={restorableSessions}
+              projects={recentProjects}
+              onRestore={handleRestoreSession}
+              onForget={forgetSavedSession}
+              onOpenFolder={handleNewSessionInFolder}
+            />
 
             {/* spacer keeps the splash block vertically centered */}
             <div style={{ marginBottom: 'auto' }} />
@@ -1269,17 +1210,3 @@ function EndedOverlay({ onClose }: { onClose: () => void }) {
   )
 }
 
-function restoreBtnStyle(primary: boolean): React.CSSProperties {
-  return {
-    padding: '3px 9px',
-    fontSize: 10,
-    fontWeight: 500,
-    fontFamily: 'inherit',
-    background: primary ? 'var(--btn-bg)' : 'transparent',
-    color: primary ? 'var(--fg)' : 'var(--fg-muted)',
-    border: '1px solid var(--border)',
-    borderRadius: 4,
-    cursor: 'pointer',
-    flexShrink: 0,
-  }
-}

@@ -3,8 +3,6 @@ import { mrPinkXterm, mrPinkVars } from './mr-pink'
 import { mrPinkLightXterm, mrPinkLightVars } from './mr-pink-light'
 import { nineteen84Xterm, nineteen84Vars } from './1984'
 import { nineteen84LightXterm, nineteen84LightVars } from './1984-light'
-import { lightXterm, lightVars } from './light'
-import { lightDarkXterm, lightDarkVars } from './light-dark'
 import { missionControlXterm, missionControlVars } from './mission-control'
 import { missionControlLightXterm, missionControlLightVars } from './mission-control-light'
 
@@ -47,12 +45,8 @@ const IDENTITIES: Identity[] = [
     dark: { xterm: nineteen84Xterm, vars: nineteen84Vars },
     light: { xterm: nineteen84LightXterm, vars: nineteen84LightVars },
   },
-  {
-    id: 'light', name: 'Light',
-    // The 'Light' identity's primary form is light; its dark form is the new variant.
-    dark: { xterm: lightDarkXterm, vars: lightDarkVars },
-    light: { xterm: lightXterm, vars: lightVars },
-  },
+  // The standalone 'Light' identity was removed — every identity has a light/dark
+  // toggle, so it was redundant. Saved 'light-*' keys migrate below.
 ]
 
 export interface ThemeIdentity { id: string; name: string }
@@ -81,7 +75,10 @@ const LEGACY_KEYS: Record<string, string> = {
   'mission-control': 'mission-control-dark',
   'mr-pink': 'mr-pink-dark',
   '1984': '1984-dark',
-  'light': 'light-light',
+  // Removed 'Light' identity → migrate to Mission Control, preserving mode.
+  'light': 'mission-control-light',
+  'light-light': 'mission-control-light',
+  'light-dark': 'mission-control-dark',
 }
 
 export function resolveThemeKey(saved: string | null | undefined): string {

@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,4 +29,18 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 serde_yaml = "0.9"
 base64 = "0.22"
+
+# macOS dock-icon swapping + the native GPU terminal (Phase 0 compositing PoC).
+# Versions match what Tauri already pulls in (see Cargo.lock) so the objc2 tree
+# stays unified. wgpu is pinned to 29 because that's what glyphon 0.11 (added in
+# Phase 1) depends on — locking it now avoids a later bump.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSView", "NSWindow", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSGeometry"] }
+wgpu = "29"
+raw-window-handle = "0.6"
+pollster = "0.4"
+glyphon = "0.11"
+alacritty_terminal = "0.26"
 

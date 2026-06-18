@@ -25,6 +25,22 @@ declare global {
       /** Toggle window zoom (fill screen ⇆ restore) — titlebar double-click. */
       toggleWindowMaximize: () => void
       openExternal: (url: string) => void
+      /** Swap the live macOS dock icon between the 'light' and 'dark' variants. */
+      setDockIcon: (variant: 'light' | 'dark') => void
+      /** Native terminal: attach the wgpu NSView for terminal `id` behind the webview. */
+      pocAttachTermview?: (id: string, x: number, y: number, w: number, h: number, scale: number) => void
+      /** Native terminal: reposition/resize the wgpu NSView for terminal `id`. */
+      pocSetRect?: (id: string, x: number, y: number, w: number, h: number, scale: number) => void
+      /** Native terminal: set the color palette from a theme's xterm ITheme. */
+      pocSetTheme?: (theme: unknown) => void
+      /** Native terminal: scroll the active grid by `lines` (positive = into history). */
+      pocScroll?: (id: string, lines: number) => void
+      /** Native terminal: forward a mouse event (selection / tracking / opt+click). */
+      pocMouse?: (id: string, kind: 'down' | 'move' | 'up', x: number, y: number, scale: number, button: number, alt: boolean) => void
+      /** Native terminal: drop a terminal's grid when it closes. */
+      pocDetach?: (id: string) => void
+      /** Subscribe to native dev-server port detections (id, port). */
+      onDevServerPort?: (cb: (id: string, port: number) => void) => () => void
       /** Write a pasted image (base64) to a temp file; resolves to its path. */
       savePastedImage: (dataB64: string, ext: string) => Promise<string>
       onFileDrop: (callback: (paths: string[]) => void) => () => void

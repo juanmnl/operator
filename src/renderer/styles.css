@@ -31,6 +31,14 @@ body {
   color: var(--fg, #eef1f3);
 }
 
+/* Phase 0 native-terminal PoC: drop the opaque backmost layers so the wgpu
+   NSView (below the webview, above the opaque NSWindow background #0b0d10)
+   shows through the transparent content card. */
+body.poc-termview,
+body.poc-termview #root {
+  background: transparent !important;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

@@ -109,6 +109,24 @@ export function installBridge(): void {
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
+    // Swap the live macOS dock icon between the 'light' (cream) and 'dark'
+    // variants. Only affects the running app — the renderer re-applies the saved
+    // choice on launch (see App.tsx). No-op off macOS.
+    setDockIcon: (variant: 'light' | 'dark') => { void invoke('set_dock_icon', { variant }) },
+    // Native terminal (Phase 2): attach/reposition the wgpu NSView for terminal
+    // `id` behind the transparent webview at the given rect (CSS px, window-
+    // relative) + scale. The native side derives cols/rows + drives the pty resize.
+    pocAttachTermview: (id: string, x: number, y: number, w: number, h: number, scale: number) => { void invoke('poc_attach_termview', { id, x, y, w, h, scale }) },
+    pocSetRect: (id: string, x: number, y: number, w: number, h: number, scale: number) => { void invoke('poc_set_rect', { id, x, y, w, h, scale }) },
+    pocSetTheme: (theme: unknown) => { void invoke('poc_set_theme', { theme }) },
+    pocScroll: (id: string, lines: number) => { void invoke('poc_scroll', { id, lines }) },
+    pocMouse: (id: string, kind: 'down' | 'move' | 'up', x: number, y: number, scale: number, button: number, alt: boolean) => { void invoke('poc_mouse', { id, kind, x, y, scale, button, alt }) },
+    pocDetach: (id: string) => { void invoke('poc_detach', { id }) },
+    // Native terminal opt+click resolves a URL in Rust and emits it here.
+    onDevServerPort: (cb: (id: string, port: number) => void): Unsub => {
+      const p = listen<{ id: string; port: number }>('terminal:devport', (e) => cb(e.payload.id, e.payload.port))
+      return () => { void p.then((f) => f()) }
+    },
     // Persist a pasted image (base64) to a temp file; returns the path so the
     // prompt bar can pass the agent a path reference instead of raw bytes.
     savePastedImage: (dataB64: string, ext: string) => invoke<string>('save_pasted_image', { data: dataB64, ext }),
@@ -169,6 +187,10 @@ export function installBridge(): void {
     folderPrefsCreateFile: (filePath: string, type: string) => invoke('folder_prefs_create_file', { path: filePath, kind: type }).then(() => undefined),
     getMcpServers: (projectPath: string) => invoke('get_mcp_servers', { projectPath }),
   }
+
+  // Native terminal opt+click: Rust resolves the URL under the pointer and emits
+  // it here; open it in the system browser (same path as xterm link clicks).
+  void listen<string>('terminal:open-url', (e) => { if (e.payload) openUrl(e.payload) })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(window as any).operator = bridge

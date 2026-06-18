@@ -1,11 +1,19 @@
 import type { AgentSession } from '../../../shared/types'
 import { StatusWave, WaveStatus } from '../sidebar/StatusWave'
+import { RecentLists, type RecentSession, type RecentProject } from './RecentLists'
 
 interface ActivityDashboardProps {
   sessions: AgentSession[]
   customNames: Record<string, string>
   onSelectSession: (s: AgentSession) => void
   onNewSession: () => void
+  // Continuity shelf — shown below the active list so an all-ended workspace
+  // still offers a way back in.
+  restorableSessions: RecentSession[]
+  recentProjects: RecentProject[]
+  onRestore: (s: RecentSession, resume: boolean) => void
+  onForget: (key: string) => void
+  onOpenFolder: (path: string) => void
 }
 
 function relativeTime(iso: string): string {
@@ -29,7 +37,10 @@ function waveStatus(session: AgentSession): WaveStatus {
   }
 }
 
-export function ActivityDashboard({ sessions, customNames, onSelectSession, onNewSession }: ActivityDashboardProps) {
+export function ActivityDashboard({
+  sessions, customNames, onSelectSession, onNewSession,
+  restorableSessions, recentProjects, onRestore, onForget, onOpenFolder,
+}: ActivityDashboardProps) {
   const active = sessions.filter((s) => s.status === 'active')
 
   return (
@@ -43,10 +54,14 @@ export function ActivityDashboard({ sessions, customNames, onSelectSession, onNe
       }}>
         <div>
           <h2 style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
-            {active.length} active session{active.length === 1 ? '' : 's'}
+            {active.length > 0
+              ? `${active.length} agent${active.length === 1 ? '' : 's'} at work`
+              : 'All quiet for now'}
           </h2>
           <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '2px 0 0', opacity: 0.6 }}>
-            Live view of what your agents are doing.
+            {active.length > 0
+              ? "Here's what they're up to right now."
+              : 'Pick up a session below, or start something new.'}
           </p>
         </div>
         <button
@@ -133,6 +148,16 @@ export function ActivityDashboard({ sessions, customNames, onSelectSession, onNe
             </button>
           )
         })}
+
+        <div style={{ maxWidth: 480 }}>
+          <RecentLists
+            sessions={restorableSessions}
+            projects={recentProjects}
+            onRestore={onRestore}
+            onForget={onForget}
+            onOpenFolder={onOpenFolder}
+          />
+        </div>
       </div>
     </div>
   )

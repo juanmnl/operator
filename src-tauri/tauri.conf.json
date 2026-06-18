@@ -19,9 +19,11 @@
         "minHeight": 480,
         "backgroundColor": "#0b0d10",
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null
     }

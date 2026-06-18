@@ -13,6 +13,8 @@ mod usage;
 mod folderprefs;
 #[path = "transcript.rs"]
 mod transcript;
+#[path = "termview.rs"]
+mod termview;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -87,6 +89,22 @@ impl PtyManager {
     /// Snapshot of every live session's dev port (terminal id → port).
     pub fn dev_ports(&self) -> HashMap<String, u16> {
         self.ports.lock().unwrap().clone()
+    }
+
+    /// Resize a pty's window. Used by the native terminal renderer, which derives
+    /// cols/rows from its own font metrics (the xterm path uses `terminal_resize`).
+    pub fn resize_pty(&self, id: &str, cols: u16, rows: u16) {
+        if let Some(p) = self.ptys.lock().unwrap().get(id) {
+            let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        }
+    }
+
+    /// Write raw bytes to a pty (native renderer's mouse-tracking reports).
+    pub fn write_pty(&self, id: &str, data: &[u8]) {
+        if let Some(p) = self.ptys.lock().unwrap().get_mut(id) {
+            let _ = p.writer.write_all(data);
+            let _ = p.writer.flush();
+        }
     }
 }
 
@@ -171,6 +189,8 @@ fn terminal_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
+                    // Feed the native renderer (no-op unless a native view is attached).
+                    termview::on_pty_output(&app, &emit_id, &buf[..n]);
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -402,6 +422,43 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+// --- Dock icon selector (macOS) ---------------------------------------------
+// Swap the live dock/app icon between the light (cream) and dark variants. This
+// only overrides the *running* app's icon (NSApplication's applicationIconImage),
+// not the bundle's static .icns — so the frontend re-applies the saved choice on
+// every launch. No-op off macOS.
+
+#[cfg(target_os = "macos")]
+fn apply_dock_icon(variant: &str) {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let bytes: &[u8] = match variant {
+        "dark" => include_bytes!("../icons/dock-dark.png").as_slice(),
+        _ => include_bytes!("../icons/dock-light.png").as_slice(),
+    };
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(bytes);
+    let image = NSImage::initWithData(NSImage::alloc(), &data);
+    if let Some(image) = image {
+        let nsapp = NSApplication::sharedApplication(mtm);
+        unsafe { nsapp.setApplicationIconImage(Some(&image)) };
+    }
+}
+
+/// Set the running app's dock icon to the `light` or `dark` variant. Hops to the
+/// main thread (AppKit requires it).
+#[tauri::command]
+fn set_dock_icon(app: tauri::AppHandle, variant: String) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(move || apply_dock_icon(&variant));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, variant);
+}
+
 // Menu-bar tray icon: the dot-circle logo (no count). Clicking it opens a menu
 // listing the active sessions and their states — rebuilt by the transcript
 // tailer via transcript::refresh_tray_menu. Clicking an item focuses the app.
@@ -445,9 +502,15 @@ pub fn run() {
         .manage(Arc::new(PtyManager::default()))
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
+        .manage(termview::PocTerminal::default())
         .setup(|app| {
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
+            // Auto-open the web inspector in dev builds so console logs are visible.
+            #[cfg(debug_assertions)]
+            if let Some(w) = app.get_webview_window("main") {
+                w.open_devtools();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -479,7 +542,14 @@ pub fn run() {
             get_mcp_servers,
             save_sessions,
             load_sessions,
-            save_pasted_image
+            save_pasted_image,
+            set_dock_icon,
+            termview::poc_attach_termview,
+            termview::poc_set_rect,
+            termview::poc_set_theme,
+            termview::poc_scroll,
+            termview::poc_mouse,
+            termview::poc_detach
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
