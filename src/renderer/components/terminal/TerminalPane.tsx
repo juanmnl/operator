@@ -42,6 +42,17 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
   // tofu cells and duplicated/garbled rows — so the only reliable path is to use
   // neither GPU nor canvas. The DOM renderer has no glyph atlas to invalidate,
   // so the atlas-clearing scaffolding the GPU/canvas renderers needed is gone.
+  //
+  // DO NOT reintroduce a renderer addon on this stack:
+  //  - WebGL is still broken in WKWebView/Safari on the macOS 26.x line
+  //    (xtermjs/xterm.js#5816, open as of 2026-06) — corrupted output.
+  //  - canvas was REMOVED in @xterm/xterm v6; DOM and WebGL are the only two
+  //    renderers that exist, and WebGL is the broken one here.
+  //  - even if WebGL is fixed, WKWebView reports devicePixelRatio=1 on Retina
+  //    under a custom URL scheme (wailsapp/wails#5111), so canvas/WebGL render
+  //    half-res/blurry. The DOM renderer has no backing store, so it's immune.
+  // Revisit only when #5816 is fixed in a STABLE macOS 26.x (that's also the
+  // gate for chasing GPU perf again — see the shelved native-terminal branch).
   const handleResize = useCallback(() => {
     // Never fit against a hidden/collapsed container (display:none → 0 width).
     // Doing so would send a ~1-column size to the pty and make Claude Code
