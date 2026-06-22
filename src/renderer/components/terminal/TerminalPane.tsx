@@ -80,11 +80,14 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
       //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …).
       //   'Operator Legacy'  — Symbols for Legacy Computing (U+1FBxx) + Supplement
       //     (U+1CCxx) that Claude Code's logo/art mosaics use.
-      // Both carry no letters, so SF Mono still wins for text. Menlo covers the
+      //   'Operator Emoji'   — double-width emoji-pictograph ornaments with no text
+      //     form (👣 U+1F463 footprints on the composer divider) that would otherwise
+      //     tofu as a grey box under the font-variant-emoji:text rule (see styles.css).
+      // These carry no letters, so SF Mono still wins for text. Menlo covers the
       // dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻); 'Apple Symbols' covers Braille
       // (U+28xx — used heavily by Claude Code's art and the ONLY system font that
       // has it); Apple Color Emoji stays last for genuine emoji with no text form.
-      fontFamily: "'Operator Symbols', 'Operator Legacy', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
+      fontFamily: "'Operator Symbols', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
       // 1.2 gives the rows breathing room. xterm rounds the cell height to an
       // integer device pixel, so every row gets the same height — no sub-pixel

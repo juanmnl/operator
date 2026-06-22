@@ -13,6 +13,14 @@ Generate the two bundled monochrome symbol fonts the terminal needs:
       CLI found e.g. U+1FB82 U+1FB90 U+1FBE0 U+1FBF0 U+1CD49 U+1CD6D — and NO macOS font but
       LastResort has these blocks, so they tofu intermittently (whenever the art draws one).
 
+  src/renderer/fonts/operator-emoji.woff2    — from GNU Unifont (OFL/GPL+exception).
+      Monochrome glyphs for the DOUBLE-WIDTH emoji-pictographs Claude Code draws as
+      composer ornaments (👣 U+1F463 footprints, centred on the input divider). These have
+      no text-presentation form, so `font-variant-emoji: text` (which we set on .xterm to
+      keep status markers monochrome) degrades them to a grey LastResort/colour-emoji box.
+      Unlike the legacy mosaics these occupy two cells, so they get their OWN font (natural
+      double-width advance), kept separate from the single-width 'operator-legacy' subset.
+
 Both are listed first in the terminal font stack (see TerminalPane.tsx / styles.css). They
 carry no letter glyphs, so SF Mono still wins for text. Braille (U+28xx, also heavily used
 by Claude Code) is NOT bundled — 'Apple Symbols' is in the stack and is the only system
@@ -62,6 +70,12 @@ LEGACY_RANGES = [
 ]
 LEGACY_MUST = {0x1FB82: "🮂", 0x1FB90: "🮐", 0x1FBE0: "🯠", 0x1FBF0: "🯰",
                0x1CD49: "𜵉", 0x1CD6D: "𜵭"}
+
+# --- source 3: GNU Unifont — double-width emoji-pictograph ornaments ---------------------
+# Tight list (NOT a broad range) so the woff2 stays tiny and we don't override OTHER emoji
+# with Unifont's crude monochrome forms. Add codepoints here if new composer ornaments tofu.
+EMOJI_RANGES = [(0x1F463, 0x1F463)]  # 👣 footprints — Claude Code's composer-divider ornament
+EMOJI_MUST = {0x1F463: "👣 footprints"}
 
 
 def subset_font(src_path, ranges, family, ps_name, out_name, must_have, adv_ratio):
@@ -145,6 +159,12 @@ def main() -> int:
     # keep that 0.5 ratio. @font-face size-adjust tunes the final visual fill.
     rc = subset_font(ensure_unifont(), LEGACY_RANGES, "Operator Legacy", "OperatorLegacy-Regular",
                      "operator-legacy.woff2", LEGACY_MUST, adv_ratio=0.5)
+    if rc:
+        return rc
+    # Footprints & friends are DOUBLE-width (advance 64 of 64 em). Keep the full 1.0 ratio so
+    # the glyph spans both cells; @font-face size-adjust matches the legacy fill (~2 cells).
+    rc = subset_font(ensure_unifont(), EMOJI_RANGES, "Operator Emoji", "OperatorEmoji-Regular",
+                     "operator-emoji.woff2", EMOJI_MUST, adv_ratio=1.0)
     return rc
 
 

@@ -81,6 +81,21 @@ body {
   size-adjust: 120%;
 }
 
+/* 'Operator Emoji' — DOUBLE-width emoji-pictograph ornaments Claude Code draws (👣 U+1F463
+   footprints, centred on the composer divider). These have no text-presentation form, so the
+   font-variant-emoji:text rule below degrades them to a grey LastResort/colour-emoji box. This
+   Unifont subset gives them a crisp monochrome glyph. Kept separate from 'Operator Legacy' (whose
+   glyphs are single-width); size-adjust scales Unifont's full-em advance up to fill SF Mono's two
+   cells — tune if footprints over/underfills. Subset of GNU Unifont (see gen-symbol-font.py). */
+@font-face {
+  font-family: 'Operator Emoji';
+  src: url('./fonts/operator-emoji.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+  size-adjust: 120%;
+}
+
 /* Force monochrome (text) presentation for the symbols Claude Code uses as
    status/tool markers — ⏺ ● ◆ ▸ ✔ etc. Under the DOM renderer WebKit defaults
    these emoji-capable codepoints to full-colour Apple Color Emoji, which reads

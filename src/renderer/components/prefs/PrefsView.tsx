@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
+import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -144,6 +145,14 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const [dockIcon, setDockIcon] = useState<DockVariant>(
     () => (localStorage.getItem('operator.dockIcon') === 'dark' ? 'dark' : 'light'),
   )
+  const [sounds, setSounds] = useState(() => soundsEnabled())
+
+  const toggleSounds = () => {
+    const next = !sounds
+    setSounds(next)
+    setSoundsEnabled(next)
+    if (next) playYourTurnChime() // preview the cue when turning it on
+  }
 
   const selectDockIcon = (v: DockVariant) => {
     setDockIcon(v)
@@ -283,6 +292,40 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <IconCard key={v} variant={v} active={dockIcon === v} onSelect={() => selectDockIcon(v)} />
             ))}
           </div>
+        </section>
+
+        <section style={{ marginBottom: 28 }}>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+            Sounds
+          </h3>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+            A soft chime when a session finishes its turn and is waiting on you, so you can look away.
+          </p>
+          <button
+            onClick={toggleSounds}
+            role="switch"
+            aria-checked={sounds}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Your-turn chime</span>
+            {/* Pill switch — accent track when on, neutral when off. */}
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: sounds ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: sounds ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: sounds ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
         </section>
 
       </div>

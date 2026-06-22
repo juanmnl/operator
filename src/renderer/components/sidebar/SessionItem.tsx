@@ -94,7 +94,10 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         alignItems: 'center',
         gap: 8,
         width: '100%',
-        padding: '6px 12px 6px 10px',
+        // Fixed height (not padding-driven) so every row is identical regardless of
+        // its content — tool suffix, badges, shortcut hint all sit within the same box.
+        height: 32,
+        padding: '0 12px 0 10px',
         background: active ? 'var(--bg-surface)' : 'transparent',
         border: 'none',
         borderRadius: 8,

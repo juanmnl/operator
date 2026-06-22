@@ -38,9 +38,11 @@ interface SidebarProps {
   /** A newer release found by the updater, or null. */
   update?: { version: string } | null
   onInstallUpdate?: () => void
+  /** Collapse the sidebar (hide it). */
+  onToggleCollapse?: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
   // Session id currently being dragged for reorder — lifted here so a drag can
   // cross folder-group boundaries (each FolderGroup renders its own items).
   const [dragId, setDragId] = useState<string | null>(null)
@@ -121,6 +123,31 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             }}
           >
             ↑ Update
+          </button>
+        )}
+        {/* Collapse (hide) the sidebar. Right-aligned at the end of the header. */}
+        {onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            title="Hide sidebar"
+            aria-label="Hide sidebar"
+            style={{
+              marginLeft: 'auto',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 24, height: 22, padding: 0,
+              background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
+              color: 'var(--fg-muted)', opacity: 0.85, cursor: 'pointer',
+              transition: 'opacity 120ms ease, background 120ms ease',
+              // @ts-expect-error Electron-specific CSS property
+              WebkitAppRegion: 'no-drag',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.background = 'transparent' }}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
+              <line x1="6.25" y1="3.25" x2="6.25" y2="12.75" />
+            </svg>
           </button>
         )}
       </DragRegion>
@@ -350,7 +377,9 @@ function FolderGroup({
           fontSize: 10,
           fontWeight: 500,
           color: 'var(--fg-muted)',
-          padding: '4px 12px',
+          // Left-align with the session rows' dot column (their left padding) so the
+          // group label and its rows share one consistent left edge.
+          padding: '4px 12px 4px 10px',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           overflow: 'hidden',

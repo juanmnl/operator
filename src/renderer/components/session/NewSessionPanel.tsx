@@ -358,8 +358,12 @@ const cancelBtnStyle: React.CSSProperties = {
   color: 'var(--fg-muted)', fontSize: 12, fontFamily: 'inherit', cursor: 'pointer',
 }
 
+// Primary CTA — uses the theme accent (like the app's other primary buttons:
+// Toast action, the sidebar "+"), so it reads as the main action instead of
+// blending into the dark --btn-bg surface (indistinguishable from Cancel in
+// Mission Control, where --btn-bg ≈ the panel background).
 const launchBtnStyle: React.CSSProperties = {
-  flex: 2, padding: '8px 0', background: 'var(--btn-bg)',
-  border: '1px solid var(--border)', borderRadius: 6,
-  color: 'var(--fg)', fontSize: 12, fontWeight: 500, fontFamily: 'inherit', cursor: 'pointer',
+  flex: 2, padding: '8px 0', background: 'var(--accent)',
+  border: '1px solid var(--accent)', borderRadius: 6,
+  color: 'var(--fg-on-accent)', fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
 }

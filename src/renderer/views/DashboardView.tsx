@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
+import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { TerminalPane } from '../components/terminal/TerminalPane'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
@@ -17,6 +18,7 @@ import { RecentLists } from '../components/dashboard/RecentLists'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
+import { playYourTurnChime } from '../lib/sounds'
 import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
 
@@ -89,6 +91,18 @@ export function DashboardView() {
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
+  // Sidebar hide/show — persisted so it survives restarts. The collapse itself
+  // is a CSS width/opacity transition on the wrapper (see render).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('operator.sidebarCollapsed') === '1' } catch { return false }
+  })
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((c) => {
+      const next = !c
+      try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }, [])
 
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
     setToasts((prev) => [...prev, { ...message, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }])
@@ -683,6 +697,21 @@ export function DashboardView() {
     }
   }, [sessions, terminals, pushToast, handleSelectSession])
 
+  // Your-turn chime — a soft cue when ANY session finishes its turn
+  // (running/compacting → waiting). Separate from the worktree "ready for review"
+  // toast above so it fires for every session, worktree or not. The chime itself
+  // is gated on the Operator-preferences toggle (off by default).
+  const lastSoundPhaseRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    for (const s of sessions) {
+      const prev = lastSoundPhaseRef.current[s.id]
+      lastSoundPhaseRef.current[s.id] = s.phase
+      if ((prev === 'running' || prev === 'compacting') && s.phase === 'waiting') {
+        playYourTurnChime()
+      }
+    }
+  }, [sessions])
+
   // Global keyboard shortcuts: Cmd+N new session, Cmd+W close active session,
   // Cmd+1..9 switch to local terminal by index.
   useEffect(() => {
@@ -694,6 +723,9 @@ export function DashboardView() {
       } else if (e.key === 'n' || e.key === 'N') {
         e.preventDefault()
         handleNewSession()
+      } else if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault()
+        toggleSidebar()
       } else if (e.key === 'w' || e.key === 'W') {
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
@@ -721,7 +753,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
 
   // Saved sessions not currently open — offered for restore on the splash & palette.
   const restorableSessions = useMemo(() => {
@@ -844,6 +876,28 @@ export function DashboardView() {
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
+      {/* Collapsible wrapper: animates width between the full sidebar (220) and
+          the narrow quick-access rail (64). The rail always hosts the macOS
+          traffic lights, so the content card never slides under them. */}
+      <div
+        style={{
+          width: sidebarCollapsed ? 64 : 220,
+          flexShrink: 0,
+          overflow: 'hidden',
+          transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
+        }}
+      >
+      {sidebarCollapsed ? (
+        <SidebarRail
+          sessions={allSidebarSessions}
+          activeSessionId={activeSessionId}
+          customNames={customNames}
+          shortcutIndices={shortcutIndices}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+          onExpand={toggleSidebar}
+        />
+      ) : (
       <Sidebar
         sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
@@ -873,9 +927,12 @@ export function DashboardView() {
         version={appVersion}
         update={availableUpdate}
         onInstallUpdate={() => { void window.operator.installUpdate() }}
+        onToggleCollapse={toggleSidebar}
       />
+      )}
+      </div>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
