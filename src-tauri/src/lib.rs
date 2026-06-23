@@ -13,6 +13,8 @@ mod usage;
 mod folderprefs;
 #[path = "transcript.rs"]
 mod transcript;
+#[path = "tray_anim.rs"]
+mod tray_anim;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -120,7 +122,65 @@ fn terminal_spawn(
     let id = format!("t{}", mgr.next.fetch_add(1, Ordering::Relaxed));
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let inner = std::iter::once("claude".to_string())
+
+    // Reserve a unique localhost port for this session up front. The whole point
+    // of Operator's port bookkeeping is that parallel sessions don't fight over
+    // the same dev-server port — so we both hand the port to the dev tooling
+    // (OPERATOR_DEV_PORT / PORT) and *tell the agent about it* (below).
+    let dev_port = mgr.alloc_port(&id);
+    // Ports other live sessions already hold, so we can warn this agent off them.
+    let others: Vec<u16> = {
+        let mut v: Vec<u16> = mgr
+            .dev_ports()
+            .into_iter()
+            .filter(|(tid, _)| tid != &id)
+            .map(|(_, p)| p)
+            .collect();
+        v.sort_unstable();
+        v
+    };
+
+    // Force Claude Code's classic streaming renderer for sessions we launch.
+    // Its fullscreen / "no-flicker" TUI (settings `tui: fullscreen`) draws into
+    // the alternate-screen buffer and, in our DOM xterm, desyncs cursor/cell
+    // positions — corrupting box-drawing AND live input echo (a typed phrase can
+    // freeze on screen, uncopyable). The classic renderer accumulates scrollback
+    // (no self-clearing fixed view) but renders correctly, so we ship it until a
+    // native terminal can host fullscreen cleanly. The inline --settings override
+    // wins over the user's global ~/.claude/settings.json without touching it, and
+    // only for sessions Operator spawns.
+    let mut prefix: Vec<String> = vec![
+        "claude".to_string(),
+        "--settings".to_string(),
+        r#"{"tui":"default"}"#.to_string(),
+    ];
+    // Inform the agent of its reserved port and the ports other live sessions
+    // hold, so any dev server it starts avoids collisions. An appended system
+    // prompt is the reliable channel: most dev servers (Vite, etc.) won't honour
+    // a PORT env var on their own, and Claude won't read OPERATOR_DEV_PORT — but
+    // it WILL follow an instruction to bind a specific port.
+    if let Some(port) = dev_port {
+        let taken = if others.is_empty() {
+            "none".to_string()
+        } else {
+            others
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        prefix.push("--append-system-prompt".to_string());
+        prefix.push(format!(
+            "Operator (this session's manager) reserves a localhost port per session to avoid \
+             collisions between parallel agents. Your reserved dev-server port is {port}; start any \
+             local/dev server on it (pass `--port {port}`, or read it from the PORT env var). Ports \
+             already in use by other Operator sessions: {taken} — do NOT bind those. If you need \
+             more than one port, pick free ones outside that set."
+        ));
+    }
+
+    let inner = prefix
+        .into_iter()
         .chain(args)
         .map(|a| shell_quote(&a))
         .collect::<Vec<_>>()
@@ -129,10 +189,13 @@ fn terminal_spawn(
     cmd.args(["-ilc", &inner]);
     cmd.cwd(&cwd);
     cmd.env("OPERATOR_TERMINAL_ID", &id);
-    // Reserve this session a unique dev-server port so parallel worktree agents
-    // don't fight over the default. The repo's vite/tauri dev tooling reads it.
-    if let Some(port) = mgr.alloc_port(&id) {
+    // Hand the reserved port to the dev tooling too: OPERATOR_DEV_PORT (read by
+    // this repo's vite/tauri config) and PORT (honoured by Next.js, CRA, many
+    // Node servers) so frameworks that respect it bind correctly without the
+    // agent doing anything.
+    if let Some(port) = dev_port {
         cmd.env("OPERATOR_DEV_PORT", port.to_string());
+        cmd.env("PORT", port.to_string());
     }
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
@@ -483,9 +546,11 @@ pub fn run() {
         .manage(Arc::new(PtyManager::default()))
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
+        .manage(tray_anim::TrayState::default())
         .setup(|app| {
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
+            tray_anim::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -369,6 +369,30 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 last_tray_entries = entries;
             }
 
+            // Aggregate signal for the animated tray icon (crate::tray_anim):
+            // any session working → busy; else any awaiting the user → your-turn;
+            // nothing open → idle.
+            let mut busy = false;
+            let mut waiting = false;
+            for t in tracks.values() {
+                if !mgr.alive(&t.terminal_id) {
+                    continue;
+                }
+                match t.last_phase.as_str() {
+                    "running" => busy = true,
+                    "waiting" => waiting = true,
+                    _ => {}
+                }
+            }
+            let tray_state = if busy {
+                crate::tray_anim::BUSY
+            } else if waiting {
+                crate::tray_anim::YOUR_TURN
+            } else {
+                crate::tray_anim::IDLE
+            };
+            app.state::<crate::tray_anim::TrayState>().set(tray_state);
+
             if any_dirty {
                 let _ = app.emit("session:update", sessions.get_active());
             }

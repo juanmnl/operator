@@ -164,6 +164,14 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     ensureInitialFit()
     term.focus()
 
+    // The pty is opened at a default size in Rust a moment before our first fit
+    // lands, and the rounded inset card / layout can settle a frame later. Re-
+    // assert the real size a couple of beats after launch so Claude Code lays out
+    // its TUI against the correct width (avoids an initial mis-wrapped frame).
+    // Timers are cleared on unmount.
+    const kick1 = setTimeout(() => handleResize(), 250)
+    const kick2 = setTimeout(() => handleResize(), 800)
+
     // Forward keystrokes to pty
     term.onData((data) => {
       window.operator.terminalWrite(terminalId, data)
@@ -287,6 +295,8 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     container.addEventListener('click', onClickCapture, { capture: true })
 
     return () => {
+      clearTimeout(kick1)
+      clearTimeout(kick2)
       unsubData()
       observer.disconnect()
       container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
@@ -331,17 +341,39 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     }
   }, [active])
 
-  // Handle image drag and drop
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  // Handle image / file drag and drop. A dragged macOS screenshot *preview* (the
+  // one you grab before it saves to Desktop) carries image BYTES, not a file on
+  // disk — and standard (Tauri) webviews never expose `File.path` anyway. So we
+  // read the bytes and write them to a temp file via the backend, then drop that
+  // path into the terminal. This makes "screenshot → drag straight in" work like
+  // iTerm, so Claude Code can Read the image without it ever touching the Desktop.
+  // (Needs `dragDropEnabled: false` in tauri.conf so the webview gets HTML5 DnD.)
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
-    // `File.path` is a non-standard Electron augmentation; absent in standard
-    // (Tauri) webviews, where dropped-file paths simply aren't available.
-    const paths = files.map((f) => (f as File & { path?: string }).path).filter(Boolean)
-    if (paths.length > 0) {
-      // Paste file paths into the terminal
-      window.operator.terminalWrite(terminalId, paths.join(' '))
+    if (files.length === 0) return
+    const paths: string[] = []
+    for (const f of files) {
+      // Electron leftover / rare webviews that do expose a real path: use it.
+      const p = (f as File & { path?: string }).path
+      if (p) { paths.push(p); continue }
+      // Otherwise persist the bytes to a temp file (works for unsaved screenshots
+      // and any other dropped file the webview only hands us as data).
+      try {
+        const bytes = new Uint8Array(await f.arrayBuffer())
+        let bin = ''
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+        }
+        const ext = (f.name.split('.').pop() || f.type.split('/')[1] || 'png').toLowerCase()
+        const tmp = await window.operator.savePastedImage(btoa(bin), ext)
+        paths.push(tmp)
+      } catch {
+        // ignore a single unreadable drop
+      }
     }
+    // Trailing space so the path is delimited from whatever's typed next.
+    if (paths.length > 0) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
   }, [terminalId])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

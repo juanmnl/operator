@@ -77,9 +77,10 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
         fontFamily: "'Inter', system-ui, sans-serif",
       }}>
         <span style={{
-          fontSize: 10,
-          color: 'var(--fg-muted)',
-          opacity: 0.6,
+          fontSize: 12,
+          fontWeight: 500,
+          color: 'var(--fg)',
+          opacity: 0.82,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
