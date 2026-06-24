@@ -31,6 +31,15 @@ body {
   color: var(--fg, #eef1f3);
 }
 
+/* Native terminal: drop the opaque backmost layers so the wgpu NSView (below the
+   transparent webview, above the opaque NSWindow background #0b0d10) shows
+   through the content card. Toggled by DashboardView when a native session is
+   active so the xterm path / splash / prefs keep their normal opaque surface. */
+body.poc-termview,
+body.poc-termview #root {
+  background: transparent !important;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -90,6 +99,24 @@ body {
 @font-face {
   font-family: 'Operator Emoji';
   src: url('./fonts/operator-emoji.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+  size-adjust: 120%;
+}
+
+/* 'Operator Dingbats' — single-width dingbat / symbol ornaments that STIX (operator-symbols)
+   GAPS. Chiefly the EMOJI-PRESENTATION dingbats Claude Code draws on the welcome-box frame
+   (✳ U+2733 sparkle studs, ✔ U+2714, ✖ U+2716, ✨ U+2728, …). These tofu under the
+   font-variant-emoji:text rule below: the only system font with a text glyph (Menlo) is
+   reached via the emoji-text FALLBACK path, which skips it → LastResort box. A bundled
+   @font-face font wins that race (same mechanism as 'Operator Emoji' / 👣), so we ship a
+   Unifont subset of the symbol blocks. Listed AFTER 'Operator Symbols' in the stack so STIX
+   still supplies the codepoints it has (nicer glyphs); Unifont only fills the gaps. Subset of
+   GNU Unifont (see gen-symbol-font.py). size-adjust matches the legacy mosaics' cell fill. */
+@font-face {
+  font-family: 'Operator Dingbats';
+  src: url('./fonts/operator-dingbats.woff2') format('woff2');
   font-weight: normal;
   font-style: normal;
   font-display: block;

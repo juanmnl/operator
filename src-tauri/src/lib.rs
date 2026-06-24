@@ -15,6 +15,8 @@ mod folderprefs;
 mod transcript;
 #[path = "tray_anim.rs"]
 mod tray_anim;
+#[path = "termview.rs"]
+mod termview;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -91,6 +93,21 @@ impl PtyManager {
         self.ports.lock().unwrap().clone()
     }
 
+    /// Resize a pty's window. Used by the native terminal renderer, which derives
+    /// cols/rows from its own font metrics (the xterm path uses `terminal_resize`).
+    pub fn resize_pty(&self, id: &str, cols: u16, rows: u16) {
+        if let Some(p) = self.ptys.lock().unwrap().get(id) {
+            let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        }
+    }
+
+    /// Write raw bytes to a pty (the native renderer's mouse-tracking reports).
+    pub fn write_pty(&self, id: &str, data: &[u8]) {
+        if let Some(p) = self.ptys.lock().unwrap().get_mut(id) {
+            let _ = p.writer.write_all(data);
+            let _ = p.writer.flush();
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -112,6 +129,7 @@ fn terminal_spawn(
     args: Vec<String>,
     session_id: String,
     permission_mode: Option<String>,
+    native: Option<bool>,
     mgr: State<Arc<PtyManager>>,
     reg: State<transcript::TrackRegistry>,
 ) -> Result<String, String> {
@@ -140,19 +158,20 @@ fn terminal_spawn(
         v
     };
 
-    // Force Claude Code's classic streaming renderer for sessions we launch.
-    // Its fullscreen / "no-flicker" TUI (settings `tui: fullscreen`) draws into
-    // the alternate-screen buffer and, in our DOM xterm, desyncs cursor/cell
-    // positions — corrupting box-drawing AND live input echo (a typed phrase can
-    // freeze on screen, uncopyable). The classic renderer accumulates scrollback
-    // (no self-clearing fixed view) but renders correctly, so we ship it until a
-    // native terminal can host fullscreen cleanly. The inline --settings override
-    // wins over the user's global ~/.claude/settings.json without touching it, and
-    // only for sessions Operator spawns.
+    // Pick Claude Code's TUI mode by renderer. The DOM xterm can't host the
+    // fullscreen / "no-flicker" TUI (it draws into the alternate-screen buffer and
+    // desyncs cursor/cell positions in xterm — corrupting box-drawing AND freezing
+    // live input echo), so xterm sessions are forced to the classic streaming
+    // renderer. The native (alacritty) renderer is a real VT emulator that hosts
+    // fullscreen cleanly — a fixed self-clearing view with no scrollback pile-up
+    // and no redraw overlap — so native sessions get `tui: fullscreen`. The inline
+    // --settings override wins over the user's global ~/.claude/settings.json
+    // without touching it, and only for sessions Operator spawns.
+    let tui = if native.unwrap_or(false) { "fullscreen" } else { "default" };
     let mut prefix: Vec<String> = vec![
         "claude".to_string(),
         "--settings".to_string(),
-        r#"{"tui":"default"}"#.to_string(),
+        format!(r#"{{"tui":"{tui}"}}"#),
     ];
     // Inform the agent of its reserved port and the ports other live sessions
     // hold, so any dev server it starts avoids collisions. An appended system
@@ -235,6 +254,8 @@ fn terminal_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
+                    // Feed the native renderer (no-op unless a native view is attached).
+                    termview::on_pty_output(&app, &emit_id, &buf[..n]);
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -547,10 +568,16 @@ pub fn run() {
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
         .manage(tray_anim::TrayState::default())
+        .manage(termview::PocTerminal::default())
         .setup(|app| {
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
             tray_anim::start(app.handle().clone());
+            // Auto-open the web inspector in dev builds so console logs are visible.
+            #[cfg(debug_assertions)]
+            if let Some(w) = app.get_webview_window("main") {
+                w.open_devtools();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -583,7 +610,13 @@ pub fn run() {
             save_sessions,
             load_sessions,
             save_pasted_image,
-            set_dock_icon
+            set_dock_icon,
+            termview::poc_attach_termview,
+            termview::poc_set_rect,
+            termview::poc_set_theme,
+            termview::poc_scroll,
+            termview::poc_mouse,
+            termview::poc_detach
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

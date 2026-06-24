@@ -160,6 +160,16 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     window.operator.setDockIcon?.(v)
   }
 
+  // Native (GPU) terminal renderer — read at app load, so a switch reloads to apply.
+  const nativeTerminal = localStorage.getItem('operator.nativeTerminal') === '1'
+    || localStorage.getItem('operator.pocTermview') === '1'
+  const selectNativeTerminal = (on: boolean) => {
+    if (on === nativeTerminal) return
+    localStorage.setItem('operator.nativeTerminal', on ? '1' : '0')
+    localStorage.removeItem('operator.pocTermview') // retire the old dev flag
+    window.location.reload()
+  }
+
   useEffect(() => {
     window.operator.getVersion?.().then(setVersion).catch(() => { /* */ })
   }, [])
@@ -236,6 +246,38 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               {state.kind === 'error' && 'Couldn’t reach the releases feed.'}
             </span>
           </div>
+        </section>
+
+        <section style={{ marginBottom: 28 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 2 }}>
+            <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
+              Terminal
+            </h3>
+            <div style={{ display: 'flex', padding: 2, gap: 2, borderRadius: 7, background: 'var(--overlay-subtle)', border: '1px solid var(--border)' }}>
+              {([['standard', 'Standard'], ['native', 'Native']] as const).map(([val, label]) => {
+                const on = (val === 'native') === nativeTerminal
+                return (
+                  <button
+                    key={val}
+                    onClick={() => selectNativeTerminal(val === 'native')}
+                    style={{
+                      padding: '3px 11px', borderRadius: 5, cursor: on ? 'default' : 'pointer',
+                      fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
+                      border: 'none', color: on ? 'var(--fg)' : 'var(--fg-muted)',
+                      background: on ? 'var(--bg-surface)' : 'transparent',
+                    }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 0', opacity: 0.7 }}>
+            The native (GPU) renderer renders the terminal with alacritty + wgpu instead of xterm —
+            it hosts Claude Code’s fullscreen TUI cleanly (no overlap/ghosting) and avoids WebKit’s
+            glyph glitches, but it’s newer. Switching reloads the app.
+          </p>
         </section>
 
         <section style={{ marginBottom: 28 }}>

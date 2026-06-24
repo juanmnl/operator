@@ -73,21 +73,26 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const term = new Terminal({
       theme,
-      // Two bundled subsets go FIRST (see styles.css @font-face), supplying
-      // single-width monochrome glyphs that NO usable macOS font has, so they
-      // don't fall to a colour double-width emoji or the LastResort "tofu" box:
-      //   'Operator Symbols' — Misc-Technical/geometric markers (⏺ U+23FA tool
-      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …).
-      //   'Operator Legacy'  — Symbols for Legacy Computing (U+1FBxx) + Supplement
+      // Four bundled subsets go FIRST (see styles.css @font-face), supplying
+      // monochrome glyphs that NO usable macOS font reaches, so they don't fall to a
+      // colour double-width emoji or the LastResort "tofu" box:
+      //   'Operator Symbols'  — Misc-Technical/geometric markers (⏺ U+23FA tool
+      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …), from STIX Two Math.
+      //   'Operator Dingbats' — dingbat/symbol ornaments STIX GAPS, chiefly the
+      //     emoji-presentation studs on Claude Code's welcome-box frame (✳ U+2733,
+      //     ✔ U+2714, ✖ U+2716, ✨ U+2728, …). Menlo HAS these in cmap but is a SYSTEM
+      //     font — for emoji-presentation codepoints the font-variant-emoji:text path
+      //     does its own fallback and skips it → tofu; a bundled font wins (like 👣).
+      //     Listed after 'Operator Symbols' so STIX wins the codepoints it has.
+      //   'Operator Legacy'   — Symbols for Legacy Computing (U+1FBxx) + Supplement
       //     (U+1CCxx) that Claude Code's logo/art mosaics use.
-      //   'Operator Emoji'   — double-width emoji-pictograph ornaments with no text
+      //   'Operator Emoji'    — double-width emoji-pictograph ornaments with no text
       //     form (👣 U+1F463 footprints on the composer divider) that would otherwise
       //     tofu as a grey box under the font-variant-emoji:text rule (see styles.css).
-      // These carry no letters, so SF Mono still wins for text. Menlo covers the
-      // dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻); 'Apple Symbols' covers Braille
-      // (U+28xx — used heavily by Claude Code's art and the ONLY system font that
-      // has it); Apple Color Emoji stays last for genuine emoji with no text form.
-      fontFamily: "'Operator Symbols', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
+      // These carry no letters, so SF Mono still wins for text. 'Apple Symbols' covers
+      // Braille (U+28xx — used heavily by Claude Code's art and the ONLY system font
+      // that has it); Apple Color Emoji stays last for genuine emoji with no text form.
+      fontFamily: "'Operator Symbols', 'Operator Dingbats', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
       // 1.2 gives the rows breathing room. xterm rounds the cell height to an
       // integer device pixel, so every row gets the same height — no sub-pixel

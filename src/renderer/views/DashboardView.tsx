@@ -3,6 +3,7 @@ import { AgentSession } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { TerminalPane } from '../components/terminal/TerminalPane'
+import { NativeTerminalPane } from '../components/terminal/NativeTerminalPane'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
@@ -21,6 +22,13 @@ import type { OperatorTheme } from '../themes'
 import { playYourTurnChime } from '../lib/sounds'
 import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
+
+// Native GPU terminal, opt-in via Preferences (persisted to localStorage, read at
+// load — toggling reloads to apply). When on, the content card goes transparent and
+// each terminal renders via the wgpu NSView behind it (NativeTerminalPane /
+// src-tauri/src/termview.rs). The dev 'operator.pocTermview' key is also honored.
+const POC_TERMVIEW = typeof localStorage !== 'undefined' &&
+  (localStorage.getItem('operator.nativeTerminal') === '1' || localStorage.getItem('operator.pocTermview') === '1')
 
 interface TerminalTab {
   id: string
@@ -68,6 +76,18 @@ export function DashboardView() {
   // OPERATOR_DEV_PORT we hand it and binds its own default, so this is the port
   // that's actually serving — it takes priority over the allocated one.
   const [detectedDevPorts, setDetectedDevPorts] = useState<Record<string, number>>({})
+  // Native terminal: drop the opaque backmost layers once so the wgpu view shows
+  // through (gated on the flag; set once so closing one terminal can't strip
+  // transparency from the others).
+  useEffect(() => { if (POC_TERMVIEW) document.body.classList.add('poc-termview') }, [])
+  // Native terminal sniffs the dev-server port in Rust (no JS xterm) and emits it;
+  // mirror it into the same map the toolbar badge reads.
+  useEffect(() => {
+    if (!POC_TERMVIEW) return
+    return window.operator.onDevServerPort?.((id, port) =>
+      setDetectedDevPorts((m) => (m[id] === port ? m : { ...m, [id]: port })),
+    )
+  }, [])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
   // Latest active terminal, for the (single, mount-time) file-drop listener.
@@ -875,7 +895,7 @@ export function DashboardView() {
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck])
 
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100vh', background: POC_TERMVIEW ? 'transparent' : 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The rail always hosts the macOS
           traffic lights, so the content card never slides under them. */}
@@ -932,7 +952,7 @@ export function DashboardView() {
       )}
       </div>
 
-      <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: POC_TERMVIEW ? 'transparent' : 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
@@ -1063,14 +1083,22 @@ export function DashboardView() {
                   visibility: t.id === activeTerminalId ? 'visible' : 'hidden',
                 }}
               >
-                <TerminalPane
-                  terminalId={t.id}
-                  theme={currentTheme.xterm}
-                  active={t.id === activeTerminalId && !t.ended}
-                  onDevServerDetected={(port) =>
-                    setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
-                  }
-                />
+                {POC_TERMVIEW ? (
+                  <NativeTerminalPane
+                    terminalId={t.id}
+                    theme={currentTheme.xterm}
+                    active={t.id === activeTerminalId && !t.ended}
+                  />
+                ) : (
+                  <TerminalPane
+                    terminalId={t.id}
+                    theme={currentTheme.xterm}
+                    active={t.id === activeTerminalId && !t.ended}
+                    onDevServerDetected={(port) =>
+                      setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
+                    }
+                  />
+                )}
                 {t.ended && (
                   <EndedOverlay
                     onClose={() => {
