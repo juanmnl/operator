@@ -77,6 +77,28 @@ LEGACY_MUST = {0x1FB82: "🮂", 0x1FB90: "🮐", 0x1FBE0: "🯠", 0x1FBF0: "🯰
 EMOJI_RANGES = [(0x1F463, 0x1F463)]  # 👣 footprints — Claude Code's composer-divider ornament
 EMOJI_MUST = {0x1F463: "👣 footprints"}
 
+# --- source 4: GNU Unifont (BMP) — single-width dingbat / symbol ornaments ----------------
+# STIX (operator-symbols) is first in the stack and covers MOST of these blocks, but it has
+# GAPS — notably the EMOJI-PRESENTATION dingbats Claude Code draws as welcome-box ornaments
+# (✳ U+2733 sparkle studs on the box frame, ✔ U+2714, ✖ U+2716, ✨ U+2728, …). Those tofu
+# because `font-variant-emoji: text` (set on .xterm) forces text presentation, and the only
+# system font with a text glyph (Menlo) is reached via the emoji-text FALLBACK path, which
+# skips it → LastResort box. A SYSTEM font can't win that race, but a bundled @font-face one
+# CAN (proven: operator-emoji renders 👣 from 3rd in the stack). So we ship a Unifont subset
+# of the symbol blocks and list it AFTER operator-symbols — STIX still wins for the codepoints
+# it has (nicer glyphs), Unifont only fills STIX's gaps. Broad ranges on purpose so future
+# ornaments in these blocks don't tofu; overlap with STIX is harmless (STIX is earlier).
+UNIFONT_BMP_URL = (f"https://unifoundry.com/pub/unifont/unifont-{UNIFONT_VER}/"
+                   f"font-builds/unifont-{UNIFONT_VER}.otf")
+UNIFONT_BMP_CACHE = f"/tmp/unifont-{UNIFONT_VER}.otf"
+DINGBAT_RANGES = [
+    (0x2600, 0x26FF),  # Misc Symbols — ☀ ⚙ ⚠ ☢ ♠ ♥ …
+    (0x2700, 0x27BF),  # Dingbats — ✳ ✔ ✖ ✦ ✻ ✗ ❯ … (STIX has only a handful)
+    (0x2B00, 0x2BFF),  # Misc Symbols & Arrows — ⭐ ⬆ ⬇ …
+]
+DINGBAT_MUST = {0x2733: "✳ sparkle stud", 0x2714: "✔ check", 0x2716: "✖ cross",
+                0x2728: "✨ sparkles", 0x276F: "❯ chevron"}
+
 
 def subset_font(src_path, ranges, family, ps_name, out_name, must_have, adv_ratio):
     """Subset `src_path` to `ranges`, normalise advances, rename, save as woff2, verify."""
@@ -147,6 +169,13 @@ def ensure_unifont():
     return UNIFONT_CACHE
 
 
+def ensure_unifont_bmp():
+    if not os.path.exists(UNIFONT_BMP_CACHE):
+        print(f"Fetching Unifont BMP {UNIFONT_VER} (one-time) -> {UNIFONT_BMP_CACHE}")
+        urllib.request.urlretrieve(UNIFONT_BMP_URL, UNIFONT_BMP_CACHE)
+    return UNIFONT_BMP_CACHE
+
+
 def main() -> int:
     if not os.path.exists(STIX_SRC):
         print(f"ERROR: STIX Two Math not found: {STIX_SRC} (ships with macOS).", file=sys.stderr)
@@ -165,6 +194,13 @@ def main() -> int:
     # the glyph spans both cells; @font-face size-adjust matches the legacy fill (~2 cells).
     rc = subset_font(ensure_unifont(), EMOJI_RANGES, "Operator Emoji", "OperatorEmoji-Regular",
                      "operator-emoji.woff2", EMOJI_MUST, adv_ratio=1.0)
+    if rc:
+        return rc
+    # Dingbat/symbol ornaments are single-width (advance 32 of a 64 em); keep the 0.5 ratio
+    # like the legacy mosaics. @font-face size-adjust tunes the final visual fill.
+    rc = subset_font(ensure_unifont_bmp(), DINGBAT_RANGES, "Operator Dingbats",
+                     "OperatorDingbats-Regular", "operator-dingbats.woff2", DINGBAT_MUST,
+                     adv_ratio=0.5)
     return rc
 
 

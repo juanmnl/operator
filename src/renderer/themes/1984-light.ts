@@ -51,7 +51,10 @@ export const nineteen84LightVars = {
   '--color-error': '#FF16B0',
   '--color-warning': '#FF8D01',
   // Per-session status-dot bloom hues (the colour the dots take as they scale up).
-  '--status-running': '#00af4f',
+  // NB: also tints the running session NAME in the sidebar (SessionItem) — the ANSI
+  // '--green' (#00af4f) is too light to read as text on this lavender bg, so this is a
+  // darker forest green (~4.3:1 on --bg-sidebar) that still blooms vividly as a dot.
+  '--status-running': '#0a7333',
   '--status-compacting': '#FF8D01',
   '--status-waiting': '#0098fd',
   '--mcp-stdio': '#00af4f',

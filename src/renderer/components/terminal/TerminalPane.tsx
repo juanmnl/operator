@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 
@@ -73,21 +73,26 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const term = new Terminal({
       theme,
-      // Two bundled subsets go FIRST (see styles.css @font-face), supplying
-      // single-width monochrome glyphs that NO usable macOS font has, so they
-      // don't fall to a colour double-width emoji or the LastResort "tofu" box:
-      //   'Operator Symbols' — Misc-Technical/geometric markers (⏺ U+23FA tool
-      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …).
-      //   'Operator Legacy'  — Symbols for Legacy Computing (U+1FBxx) + Supplement
+      // Four bundled subsets go FIRST (see styles.css @font-face), supplying
+      // monochrome glyphs that NO usable macOS font reaches, so they don't fall to a
+      // colour double-width emoji or the LastResort "tofu" box:
+      //   'Operator Symbols'  — Misc-Technical/geometric markers (⏺ U+23FA tool
+      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …), from STIX Two Math.
+      //   'Operator Dingbats' — dingbat/symbol ornaments STIX GAPS, chiefly the
+      //     emoji-presentation studs on Claude Code's welcome-box frame (✳ U+2733,
+      //     ✔ U+2714, ✖ U+2716, ✨ U+2728, …). Menlo HAS these in cmap but is a SYSTEM
+      //     font — for emoji-presentation codepoints the font-variant-emoji:text path
+      //     does its own fallback and skips it → tofu; a bundled font wins (like 👣).
+      //     Listed after 'Operator Symbols' so STIX wins the codepoints it has.
+      //   'Operator Legacy'   — Symbols for Legacy Computing (U+1FBxx) + Supplement
       //     (U+1CCxx) that Claude Code's logo/art mosaics use.
-      //   'Operator Emoji'   — double-width emoji-pictograph ornaments with no text
+      //   'Operator Emoji'    — double-width emoji-pictograph ornaments with no text
       //     form (👣 U+1F463 footprints on the composer divider) that would otherwise
       //     tofu as a grey box under the font-variant-emoji:text rule (see styles.css).
-      // These carry no letters, so SF Mono still wins for text. Menlo covers the
-      // dingbats/geometric markers (● ◆ ▸ ✔ ✦ ✻); 'Apple Symbols' covers Braille
-      // (U+28xx — used heavily by Claude Code's art and the ONLY system font that
-      // has it); Apple Color Emoji stays last for genuine emoji with no text form.
-      fontFamily: "'Operator Symbols', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
+      // These carry no letters, so SF Mono still wins for text. 'Apple Symbols' covers
+      // Braille (U+28xx — used heavily by Claude Code's art and the ONLY system font
+      // that has it); Apple Color Emoji stays last for genuine emoji with no text form.
+      fontFamily: "'Operator Symbols', 'Operator Dingbats', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
       fontSize: 13,
       // 1.2 gives the rows breathing room. xterm rounds the cell height to an
       // integer device pixel, so every row gets the same height — no sub-pixel
@@ -126,13 +131,17 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    // Upgrade xterm's character-width tables from its built-in Unicode 6 to Unicode 11.
-    // Claude Code lays out its TUI with a modern wcwidth (emoji/symbols are 2 cells); with
-    // xterm on Unicode 6 those came out 1 cell, so the cursor column drifted and Claude
-    // Code's redraws (e.g. the spinner over its --agent hint) landed on the wrong row —
-    // the overlapping/garbled lines. Needs allowProposedApi (set above).
-    term.loadAddon(new Unicode11Addon())
-    term.unicode.activeVersion = '11'
+    // Upgrade xterm's character-width tables from its built-in Unicode 6 to a modern,
+    // grapheme-cluster-aware width model. Claude Code lays out its TUI with a modern
+    // wcwidth (string-width / Unicode 15-16: emoji & many symbols are 2 cells, ZWJ
+    // sequences cluster); on Unicode 6 those came out wrong, so the cursor column drifted
+    // and Claude Code's redraws landed on the wrong row — the overlapping/garbled lines.
+    // The graphemes addon (successor to addon-unicode11, which was really Unicode 12) is
+    // closer to Claude Code's table and adds grapheme clustering. Needs allowProposedApi.
+    term.loadAddon(new UnicodeGraphemesAddon())
+    // The addon registers '15' and '15-graphemes' and activates the latter; pin it
+    // explicitly (plain '15' would select the non-grapheme provider).
+    term.unicode.activeVersion = '15-graphemes'
     // Clicking a link opens it in the system browser (via Tauri's opener);
     // falls back to window.open elsewhere.
     term.loadAddon(new WebLinksAddon((_event, uri) => {

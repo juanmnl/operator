@@ -11,6 +11,8 @@ declare global {
       onSessionUpdate: (callback: (sessions: AgentSession[]) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
       terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
+      /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */
+      shellSpawn: (cwd: string) => Promise<string>
       terminalWrite: (id: string, data: string) => void
       terminalResize: (id: string, cols: number, rows: number) => void
       terminalKill: (id: string) => Promise<void>

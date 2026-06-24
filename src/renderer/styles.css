@@ -96,6 +96,24 @@ body {
   size-adjust: 120%;
 }
 
+/* 'Operator Dingbats' — single-width dingbat / symbol ornaments that STIX (operator-symbols)
+   GAPS. Chiefly the EMOJI-PRESENTATION dingbats Claude Code draws on the welcome-box frame
+   (✳ U+2733 sparkle studs, ✔ U+2714, ✖ U+2716, ✨ U+2728, …). These tofu under the
+   font-variant-emoji:text rule below: the only system font with a text glyph (Menlo) is
+   reached via the emoji-text FALLBACK path, which skips it → LastResort box. A bundled
+   @font-face font wins that race (same mechanism as 'Operator Emoji' / 👣), so we ship a
+   Unifont subset of the symbol blocks. Listed AFTER 'Operator Symbols' in the stack so STIX
+   still supplies the codepoints it has (nicer glyphs); Unifont only fills the gaps. Subset of
+   GNU Unifont (see gen-symbol-font.py). size-adjust matches the legacy mosaics' cell fill. */
+@font-face {
+  font-family: 'Operator Dingbats';
+  src: url('./fonts/operator-dingbats.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+  size-adjust: 120%;
+}
+
 /* Force monochrome (text) presentation for the symbols Claude Code uses as
    status/tool markers — ⏺ ● ◆ ▸ ✔ etc. Under the DOM renderer WebKit defaults
    these emoji-capable codepoints to full-colour Apple Color Emoji, which reads

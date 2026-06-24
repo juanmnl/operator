@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import type { ITheme } from '@xterm/xterm'
 import type { McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
+import { ShellModal } from '../terminal/ShellModal'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -24,12 +26,18 @@ interface SessionToolbarProps {
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
+  /** xterm palette for the scratch-terminal modal opened from the toolbar. */
+  theme: ITheme
 }
 
-export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, theme }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
+  // The scratch terminal: `shellStarted` keeps the modal MOUNTED after first open
+  // (so the shell + scrollback survive close→reopen); `shellVisible` toggles display.
+  const [shellStarted, setShellStarted] = useState(false)
+  const [shellVisible, setShellVisible] = useState(false)
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
 
   useEffect(() => {
@@ -120,6 +128,31 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
+          {/* Scratch terminal — a plain shell in this session's path, for pure
+              shell work without disturbing the Claude session. Opens as a modal. */}
+          <button
+            onClick={() => { setShellStarted(true); setShellVisible(true) }}
+            title="Open a terminal in this path"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 20,
+              padding: 0,
+              background: 'transparent',
+              color: 'var(--fg-muted)',
+              border: '1px solid var(--border)',
+              borderRadius: 3,
+              cursor: 'pointer',
+              opacity: 0.85,
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.1" />
+              <path d="M4 6l2.4 2L4 10M8.6 10.5H12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
           {/* Dev-server quick-open. Only shown once a dev server has actually been
               detected in this session's output — the reserved OPERATOR_DEV_PORT is
               meaningless until something serves on it, so we don't surface it. */}
@@ -224,6 +257,12 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
       {/* MCP expanded dropdown */}
       {mcpExpanded && mcpServers.length > 0 && (
         <McpDropdown servers={mcpServers} onClose={() => setMcpExpanded(false)} />
+      )}
+
+      {/* Scratch-terminal modal — a plain shell in this session's path. Mounted once
+          opened and only hidden on close, so reopening resumes the same shell. */}
+      {shellStarted && (
+        <ShellModal cwd={projectPath} theme={theme} visible={shellVisible} onClose={() => setShellVisible(false)} />
       )}
     </div>
   )

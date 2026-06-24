@@ -149,7 +149,7 @@ export function ActivityDashboard({
           )
         })}
 
-        <div style={{ maxWidth: 480 }}>
+        <div style={{ width: '100%' }}>
           <RecentLists
             sessions={restorableSessions}
             projects={recentProjects}

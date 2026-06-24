@@ -141,14 +141,13 @@ fn terminal_spawn(
     };
 
     // Force Claude Code's classic streaming renderer for sessions we launch.
-    // Its fullscreen / "no-flicker" TUI (settings `tui: fullscreen`) draws into
-    // the alternate-screen buffer and, in our DOM xterm, desyncs cursor/cell
-    // positions — corrupting box-drawing AND live input echo (a typed phrase can
-    // freeze on screen, uncopyable). The classic renderer accumulates scrollback
-    // (no self-clearing fixed view) but renders correctly, so we ship it until a
-    // native terminal can host fullscreen cleanly. The inline --settings override
-    // wins over the user's global ~/.claude/settings.json without touching it, and
-    // only for sessions Operator spawns.
+    // Its fullscreen / "no-flicker" TUI (settings `tui: fullscreen`) draws into the
+    // alternate-screen buffer and, in our DOM xterm, doesn't paint (blank alt-screen)
+    // and garbles the status line — re-confirmed 2026-06-23 on xterm 6 + Unicode11 +
+    // Claude Code v2.1.187. The classic renderer accumulates scrollback but renders
+    // correctly, so we ship it until a native terminal can host fullscreen cleanly.
+    // The inline --settings override wins over the user's global ~/.claude/settings.json
+    // without touching it, and only for sessions Operator spawns.
     let mut prefix: Vec<String> = vec![
         "claude".to_string(),
         "--settings".to_string(),
@@ -243,6 +242,65 @@ fn terminal_spawn(
         }
         mgr_arc.ptys.lock().unwrap().remove(&emit_id);
         mgr_arc.release_port(&emit_id);
+        let _ = app.emit("terminal:exit", emit_id.clone());
+    });
+
+    Ok(id)
+}
+
+/// Spawn a plain interactive login shell in `cwd` — a scratch terminal for pure
+/// shell work, opened from the session toolbar, separate from the Claude session.
+/// Reuses the same pty machinery + `terminal:data`/`terminal:exit` events (so the
+/// frontend renders it with the usual TerminalPane and writes/resizes/kills it via
+/// the existing `terminal_*` commands), but registers NO transcript track and
+/// reserves NO dev port — it never appears in the session list or tray.
+#[tauri::command]
+fn shell_spawn(
+    app: tauri::AppHandle,
+    cwd: String,
+    mgr: State<Arc<PtyManager>>,
+) -> Result<String, String> {
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+    let id = format!("sh{}", mgr.next.fetch_add(1, Ordering::Relaxed));
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.args(["-il"]); // interactive login shell, no command — a plain prompt
+    cmd.cwd(&cwd);
+    cmd.env("FORCE_COLOR", "1");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "iTerm.app");
+
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let killer = child.clone_killer();
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    mgr.ptys.lock().unwrap().insert(
+        id.clone(),
+        Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
+    );
+
+    let emit_id = id.clone();
+    let mgr_arc = mgr.inner().clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    mgr_arc.note_activity(&emit_id);
+                    use base64::Engine;
+                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
+                }
+            }
+        }
+        mgr_arc.ptys.lock().unwrap().remove(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -373,6 +431,26 @@ fn load_sessions() -> serde_json::Value {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::Value::Array(vec![]))
+}
+
+/// Delete pasted-image temp files older than 3 days. Nothing else ever cleans
+/// $TMPDIR/operator-pastes and macOS's tmp reaper is unreliable, so dragged
+/// screenshots (100s of KB each) pile up indefinitely. The path is consumed the
+/// moment the image is dropped (handed straight to the agent), so anything this old
+/// is dead weight. Runs off-thread at launch; best-effort (ignores all errors).
+fn prune_pasted_images() {
+    let dir = std::env::temp_dir().join("operator-pastes");
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3 * 24 * 60 * 60));
+    let Some(cutoff) = cutoff else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if modified < cutoff {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// Write a pasted image (base64) to a temp file and return its path, so the UI
@@ -548,6 +626,7 @@ pub fn run() {
         .manage(transcript::TrackRegistry::default())
         .manage(tray_anim::TrayState::default())
         .setup(|app| {
+            std::thread::spawn(prune_pasted_images);
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
             tray_anim::start(app.handle().clone());
@@ -555,6 +634,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             terminal_spawn,
+            shell_spawn,
             terminal_write,
             terminal_resize,
             terminal_kill,

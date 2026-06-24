@@ -126,12 +126,15 @@ export function DashboardView() {
   useEffect(() => {
     window.operator.getSessions().then(setSessions)
 
+    // Push-only: the transcript tailer (transcript.rs) emits `session:update`
+    // whenever anything actually changes — transcript lines AND pty-activity phase
+    // transitions (running↔idle both set `dirty`). A 1s getSessions() poll used to
+    // sit here too, but it was pure redundant overhead: an IPC round-trip + full
+    // dashboard re-render every second even when nothing changed (a real idle-energy
+    // sink). The push delivers the same updates at the same ~1s tailer cadence, only
+    // when there's something to deliver.
     const unsubSession = window.operator.onSessionUpdate(setSessions)
 
-    // Poll sessions every 1s for responsive status updates
-    const pollInterval = setInterval(() => {
-      window.operator.getSessions().then(setSessions)
-    }, 1000)
     const unsubExit = window.operator.onTerminalExit((id) => {
       // Don't drop the tab — unmounting the pane blanks the final output. xterm
       // keeps its buffer after the pty dies, so mark the tab ended and leave it
@@ -150,7 +153,7 @@ export function DashboardView() {
       window.operator.terminalWrite(tid, text)
     }) ?? (() => {})
 
-    return () => { unsubSession(); unsubExit(); clearInterval(pollInterval); unsubDrop() }
+    return () => { unsubSession(); unsubExit(); unsubDrop() }
   }, [])
 
   const handleNewSession = useCallback(async () => {
@@ -982,6 +985,7 @@ export function DashboardView() {
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
+              theme={currentTheme.xterm}
             />
           )
         })()}

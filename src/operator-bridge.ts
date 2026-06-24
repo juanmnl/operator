@@ -54,6 +54,9 @@ export function installBridge(): void {
       })
       return { terminalId: id, cwd: target }
     },
+    // Spawn a plain interactive shell in `cwd` — the toolbar's scratch terminal.
+    // Returns a terminal id usable with the normal terminal* methods + onTerminalData.
+    shellSpawn: (cwd: string) => invoke<string>('shell_spawn', { cwd }),
     terminalWrite: (id: string, data: string) => { void invoke('terminal_write', { id, data }) },
     terminalResize: (id: string, cols: number, rows: number) => { void invoke('terminal_resize', { id, cols, rows }) },
     terminalKill: (id: string) => invoke('terminal_kill', { id }),
