@@ -174,3 +174,62 @@ pub fn delete_agent(path: &str) -> OkResult {
         Err(e) => OkResult { ok: false, error: Some(e.to_string()) },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_frontmatter_extracts_yaml_and_body() {
+        let raw = "---\nname: foo\ndescription: bar\n---\nthe body\nmore";
+        let (fm, body) = split_frontmatter(raw);
+        assert_eq!(yaml_str(&fm, "name").as_deref(), Some("foo"));
+        assert_eq!(yaml_str(&fm, "description").as_deref(), Some("bar"));
+        assert_eq!(body, "the body\nmore");
+    }
+
+    #[test]
+    fn split_frontmatter_handles_crlf_prefix() {
+        let raw = "---\r\nname: foo\r\n---\r\nbody";
+        let (fm, _body) = split_frontmatter(raw);
+        assert_eq!(yaml_str(&fm, "name").as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn split_frontmatter_no_frontmatter_returns_null_and_raw() {
+        let raw = "# just markdown\nno frontmatter";
+        let (fm, body) = split_frontmatter(raw);
+        assert!(yaml_str(&fm, "name").is_none());
+        assert_eq!(body, raw);
+    }
+
+    #[test]
+    fn split_frontmatter_unterminated_returns_raw() {
+        let raw = "---\nname: foo\nnever closes";
+        let (fm, body) = split_frontmatter(raw);
+        assert!(yaml_str(&fm, "name").is_none());
+        assert_eq!(body, raw);
+    }
+
+    #[test]
+    fn yaml_str_missing_or_nonstring_is_none() {
+        let (fm, _) = split_frontmatter("---\nname: foo\ncount: 3\n---\nx");
+        assert_eq!(yaml_str(&fm, "name").as_deref(), Some("foo"));
+        assert!(yaml_str(&fm, "missing").is_none());
+        assert!(yaml_str(&fm, "count").is_none()); // a number, not a string
+    }
+
+    #[test]
+    fn file_stem_sanitizes_to_safe_slug() {
+        assert_eq!(file_stem("My Code Reviewer!"), "my-code-reviewer");
+        assert_eq!(file_stem("already-kebab"), "already-kebab");
+        assert_eq!(file_stem("  trim  "), "trim");
+    }
+
+    #[test]
+    fn file_stem_falls_back_to_agent_when_empty() {
+        assert_eq!(file_stem(""), "agent");
+        assert_eq!(file_stem("!!!"), "agent");
+        assert_eq!(file_stem("---"), "agent");
+    }
+}

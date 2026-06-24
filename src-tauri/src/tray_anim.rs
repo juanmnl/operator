@@ -187,3 +187,34 @@ pub fn start(app: tauri::AppHandle) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rand_is_deterministic_and_in_unit_range() {
+        assert_eq!(rand(0.0), 0.0); // sin(0)=0
+        for i in 0..50 {
+            let v = rand(i as f64 + 0.5);
+            assert!((0.0..1.0).contains(&v), "rand out of range: {v}");
+            assert_eq!(v, rand(i as f64 + 0.5)); // stable across calls
+        }
+    }
+
+    #[test]
+    fn build_dots_fills_the_disc_deterministically() {
+        let dots = build_dots();
+        // 7x7 grid clipped to the disc (radius 3.4, 1.04 tolerance) → 37 cells.
+        assert_eq!(dots.len(), 37);
+        let max = DISC * DISC * 1.04;
+        for d in &dots {
+            let dx = d.cx - CENTER;
+            let dy = d.cy - CENTER;
+            assert!(dx * dx + dy * dy <= max, "dot outside disc");
+            assert!((1.4..2.6).contains(&d.dur), "dur out of band: {}", d.dur);
+            assert!((0.0..1.0).contains(&d.v));
+            assert!((0.0..1.0).contains(&d.off));
+        }
+    }
+}

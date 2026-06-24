@@ -350,3 +350,103 @@ pub fn compute_insights(days: i64) -> Insights {
         generated_at,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(model: &str, input: u64, output: u64, cache_read: u64, cache5m: u64, cache1h: u64) -> Record {
+        Record {
+            day: "2024-01-01".into(),
+            model: model.into(),
+            slug: "s".into(),
+            session: "x".into(),
+            ts_ms: 0,
+            duration_ms: 0,
+            context: 0,
+            sidechain: false,
+            skill: None,
+            input,
+            output,
+            cache_read,
+            cache5m,
+            cache1h,
+        }
+    }
+
+    #[test]
+    fn rates_match_model_family() {
+        assert_eq!(rates("claude-fable-5"), (10.0, 50.0));
+        assert_eq!(rates("mythos-mini"), (10.0, 50.0));
+        assert_eq!(rates("claude-opus-4-8"), (5.0, 25.0));
+        assert_eq!(rates("claude-sonnet-4-6"), (3.0, 15.0));
+        assert_eq!(rates("claude-haiku-4-5"), (1.0, 5.0));
+    }
+
+    #[test]
+    fn rates_unknown_model_falls_back_to_opus_pricing() {
+        assert_eq!(rates("gpt-4o"), (5.0, 25.0));
+        assert_eq!(rates(""), (5.0, 25.0));
+    }
+
+    #[test]
+    fn cost_sums_every_token_tier_with_correct_multipliers() {
+        // opus rates (5/25 per Mtok); one million of every tier.
+        let r = rec("claude-opus-4", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        // 5 + 25 + 0.5(cache_read .1x) + 6.25(cache5m 1.25x) + 10(cache1h 2x)
+        assert!((r.cost() - 46.75).abs() < 1e-9, "got {}", r.cost());
+    }
+
+    #[test]
+    fn cost_is_zero_with_no_tokens() {
+        assert_eq!(rec("claude-opus-4", 0, 0, 0, 0, 0).cost(), 0.0);
+    }
+
+    #[test]
+    fn tokens_sums_all_tiers() {
+        assert_eq!(rec("x", 1, 2, 3, 4, 5).tokens(), 15);
+        assert_eq!(rec("x", 0, 0, 0, 0, 0).tokens(), 0);
+    }
+
+    #[test]
+    fn days_from_civil_known_anchors() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        assert_eq!(days_from_civil(2000, 1, 1), 10957);
+        assert_eq!(days_from_civil(2000, 3, 1), 11017); // leap-year Feb handled
+    }
+
+    #[test]
+    fn parse_iso_ms_basic_and_subsecond() {
+        assert_eq!(parse_iso_ms("1970-01-01T00:00:00.000Z"), 0);
+        assert_eq!(parse_iso_ms("1970-01-01T00:00:01Z"), 1000);
+        assert_eq!(parse_iso_ms("1970-01-02T00:00:00Z"), 86_400_000);
+        // Fractional seconds are intentionally dropped (whole-second precision).
+        assert_eq!(parse_iso_ms("1970-01-01T00:00:00.999Z"), 0);
+    }
+
+    #[test]
+    fn parse_iso_ms_tolerates_garbage_and_missing_time() {
+        assert_eq!(parse_iso_ms("not-a-date"), 0);
+        assert_eq!(parse_iso_ms(""), 0);
+        // No 'T' → time defaults to 00:00:00, date still parsed.
+        assert_eq!(parse_iso_ms("1970-01-02"), 86_400_000);
+    }
+
+    #[test]
+    fn parse_iso_ms_round_trips_through_iso_from_ms() {
+        let s = "2024-03-15T12:34:56.000Z";
+        let ms = parse_iso_ms(s);
+        assert_eq!(iso_from_ms(ms as u128), s);
+    }
+
+    #[test]
+    fn project_name_takes_last_nonempty_segment() {
+        assert_eq!(project_name("foo-bar-baz"), "baz");
+        assert_eq!(project_name("-Users-me-Developer-operator"), "operator");
+        assert_eq!(project_name("single"), "single");
+        assert_eq!(project_name("trailing-"), "trailing");
+        assert_eq!(project_name(""), "");
+    }
+}

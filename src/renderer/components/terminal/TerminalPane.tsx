@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
+import { isLightBackground, detectDevServerPort, findUrlAtColumn } from '../../lib/terminal'
 
 interface TerminalPaneProps {
   terminalId: string
@@ -13,15 +14,6 @@ interface TerminalPaneProps {
   onTitleChange?: (title: string) => void
   /** Fires with the port when a dev server announces itself in the output. */
   onDevServerDetected?: (port: number) => void
-}
-
-/** Rough perceived lightness of a #rrggbb background. */
-function isLightBackground(bg?: string): boolean {
-  const m = /^#?([0-9a-f]{6})$/i.exec(bg || '')
-  if (!m) return false
-  const n = parseInt(m[1], 16)
-  const lum = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)
-  return lum > 140
 }
 
 export function TerminalPane({ terminalId, theme, active = true, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
@@ -202,27 +194,15 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     // only Claude's own prose ("Dev server is running: http://localhost:5273/")
     // does. So match a localhost URL directly. Keep a short tail so a URL split
     // across two chunks still matches.
-    const DEV_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i
-    // Dev servers colorize the banner (e.g. Vite: "Local\x1b[22m:  \x1b[36mhttp://…"),
-    // so strip OSC + CSI/SGR escapes before matching or "Local:" never lines up
-    // with the URL.
-    const stripAnsi = (s: string) =>
-      s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b[[(][0-9;?]*[ -/]*[@-~]/g, '')
     const detectDevServer = (chunk: string) => {
       const cb = devServerCbRef.current
       if (!cb) return
-      // Keep the raw tail (escapes intact) so a sequence split across two chunks
-      // still strips cleanly next time; strip only for matching.
-      const hay = outTailRef.current + chunk
-      const m = DEV_RE.exec(stripAnsi(hay))
-      if (m) {
-        const port = parseInt(m[1], 10)
-        if (port && port !== lastDevPortRef.current) {
-          lastDevPortRef.current = port
-          cb(port)
-        }
-      }
-      outTailRef.current = hay.length > 512 ? hay.slice(-512) : hay
+      // Pure rolling-tail scan (see lib/terminal): strips colour escapes, matches a
+      // localhost URL, dedups against the last port, and returns the next 512-char
+      // tail (escapes intact) so a banner split across chunks still strips cleanly.
+      const { port, tail } = detectDevServerPort(outTailRef.current, chunk, lastDevPortRef.current)
+      outTailRef.current = tail
+      if (port !== null) { lastDevPortRef.current = port; cb(port) }
     }
 
     const unsubData = window.operator.onTerminalData((id, data) => {
@@ -258,7 +238,6 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     // resolve the URL under the pointer ourselves and open it, swallowing the
     // event before it becomes a mouse report. With tracking off we do nothing and
     // let WebLinksAddon handle it normally (avoids opening twice).
-    const URL_RE = /(https?:\/\/[^\s'"`<>()\[\]]+)/g
     const urlAtClick = (e: MouseEvent): string | null => {
       const t = termRef.current
       if (!t) return null
@@ -273,13 +252,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
       if (col < 0 || row < 0) return null
       const line = t.buffer.active.getLine(t.buffer.active.viewportY + row)
       if (!line) return null
-      const text = line.translateToString(false)
-      URL_RE.lastIndex = 0
-      let m: RegExpExecArray | null
-      while ((m = URL_RE.exec(text))) {
-        if (col >= m.index && col < m.index + m[0].length) return m[0]
-      }
-      return null
+      return findUrlAtColumn(line.translateToString(false), col)
     }
     const onClickCapture = (e: MouseEvent) => {
       const t = termRef.current

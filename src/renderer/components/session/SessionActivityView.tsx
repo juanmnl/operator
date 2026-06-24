@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AgentSession, ActivityEntry } from '../../../shared/types'
+import { fmtDur } from '../../lib/format'
+import { buildActivityTree, type TreeNode as LibTreeNode } from '../../lib/activity-tree'
 
 /** A timeline entry augmented with a computed duration. */
 type TimedEntry = ActivityEntry & { durMs?: number; live?: boolean }
+type TreeNode = LibTreeNode<TimedEntry>
 
 interface Props {
   session: AgentSession
@@ -149,20 +152,10 @@ export function SessionActivityView({ session }: Props) {
             </p>
           </div>
         )}
-        {renderNodes(buildTree(timed), 0)}
+        {renderNodes(buildActivityTree(timed), 0)}
       </div>
     </div>
   )
-}
-
-interface TreeNode { entry: TimedEntry; children: TreeNode[] }
-
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.round((ms % 60_000) / 1000)
-  return s ? `${m}m ${s}s` : `${m}m`
 }
 
 function DurationTag({ entry }: { entry: TimedEntry }) {
@@ -176,42 +169,6 @@ function DurationTag({ entry }: { entry: TimedEntry }) {
       {fmtDur(entry.durMs)}{entry.live ? '…' : ''}
     </span>
   )
-}
-
-/**
- * Build a nesting tree from the flat timeline (best-effort, heuristic):
- * a delegation owns the subagent it spawns, and a SubagentStart opens a group
- * that subsequent tool calls nest into until the matching SubagentStop. With
- * parallel subagents this is LIFO and may mis-attribute siblings — it's an
- * approximation, since hooks don't tag tool calls with a subagent id.
- */
-function buildTree(activity: TimedEntry[]): TreeNode[] {
-  const root: TreeNode[] = []
-  const stack: TreeNode[][] = [root] // top of stack = current insertion list
-  let pendingDelegate: TreeNode | null = null
-
-  for (const entry of activity) {
-    const current = stack[stack.length - 1]
-
-    if (entry.kind === 'subagent') {
-      if (entry.toolName.includes('finished')) {
-        if (stack.length > 1) stack.pop() // close the most recent group
-        pendingDelegate = null
-        continue
-      }
-      // SubagentStart — open a group, nested under the delegation that spawned it if any.
-      const node: TreeNode = { entry, children: [] }
-      if (pendingDelegate) { pendingDelegate.children.push(node); pendingDelegate = null }
-      else current.push(node)
-      stack.push(node.children)
-      continue
-    }
-
-    const node: TreeNode = { entry, children: [] }
-    current.push(node)
-    pendingDelegate = entry.kind === 'delegate' ? node : null
-  }
-  return root
 }
 
 function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {

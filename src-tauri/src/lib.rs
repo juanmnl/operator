@@ -668,3 +668,21 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_quote_wraps_in_single_quotes() {
+        assert_eq!(shell_quote("foo"), "'foo'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("/a/b c/d"), "'/a/b c/d'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        // it's  ->  'it'\''s'
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+}

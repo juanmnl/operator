@@ -238,18 +238,11 @@ impl Track {
     }
 
     fn phase(&self) -> &'static str {
-        if !self.open_tools.is_empty() {
-            return "running";
-        }
-        if self.last_stop_reason.as_deref() == Some("tool_use") {
-            return "running";
-        }
-        if self.last_was_user_prompt {
-            return "running"; // prompt sent, response not started yet
-        }
-        // Called only while the pty is quiet: the assistant turn has ended and
-        // nothing is streaming, so the session is waiting for the user's reply.
-        "waiting"
+        derive_phase(
+            !self.open_tools.is_empty(),
+            self.last_stop_reason.as_deref(),
+            self.last_was_user_prompt,
+        )
     }
 
     fn to_session(&self, phase: &str) -> AgentSession {
@@ -282,6 +275,25 @@ fn find_transcript(session_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Derive the session phase from the three signals the tailer tracks. Pure so it
+/// can be unit-tested without constructing a whole `Track`. "running" wins if a
+/// tool is open, the last assistant stop was a tool_use, or a user prompt was just
+/// sent (response not started); otherwise the turn has ended → "waiting".
+fn derive_phase(running_tools: bool, last_stop_reason: Option<&str>, last_was_user_prompt: bool) -> &'static str {
+    if running_tools {
+        return "running";
+    }
+    if last_stop_reason == Some("tool_use") {
+        return "running";
+    }
+    if last_was_user_prompt {
+        return "running"; // prompt sent, response not started yet
+    }
+    // Called only while the pty is quiet: the assistant turn has ended and
+    // nothing is streaming, so the session is waiting for the user's reply.
+    "waiting"
 }
 
 fn user_prompt_text(content: Option<&Value>) -> Option<String> {
@@ -415,5 +427,62 @@ fn refresh_tray_menu(app: &tauri::AppHandle, sessions: &[(String, String)]) {
     }
     if let Ok(menu) = b.quit().build() {
         let _ = tray.set_menu(Some(menu));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn derive_phase_running_when_tool_open() {
+        assert_eq!(derive_phase(true, None, false), "running");
+    }
+
+    #[test]
+    fn derive_phase_running_on_tool_use_stop() {
+        assert_eq!(derive_phase(false, Some("tool_use"), false), "running");
+    }
+
+    #[test]
+    fn derive_phase_running_after_user_prompt() {
+        assert_eq!(derive_phase(false, Some("end_turn"), true), "running");
+    }
+
+    #[test]
+    fn derive_phase_waiting_when_turn_ended() {
+        assert_eq!(derive_phase(false, Some("end_turn"), false), "waiting");
+        assert_eq!(derive_phase(false, None, false), "waiting");
+    }
+
+    #[test]
+    fn user_prompt_text_string_content() {
+        let v = json!("hello there");
+        assert_eq!(user_prompt_text(Some(&v)), Some("hello there".to_string()));
+    }
+
+    #[test]
+    fn user_prompt_text_concatenates_text_blocks() {
+        let v = json!([
+            { "type": "text", "text": "hi" },
+            { "type": "image" },
+            { "type": "text", "text": " there" }
+        ]);
+        assert_eq!(user_prompt_text(Some(&v)), Some("hi there".to_string()));
+    }
+
+    #[test]
+    fn user_prompt_text_skips_tool_result_arrays() {
+        let v = json!([{ "type": "tool_result", "content": "x" }]);
+        assert_eq!(user_prompt_text(Some(&v)), None);
+    }
+
+    #[test]
+    fn user_prompt_text_none_for_empty_or_non_text() {
+        assert_eq!(user_prompt_text(None), None);
+        assert_eq!(user_prompt_text(Some(&json!(42))), None);
+        let blank = json!([{ "type": "text", "text": "   " }]);
+        assert_eq!(user_prompt_text(Some(&blank)), None);
     }
 }

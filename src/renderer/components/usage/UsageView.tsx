@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { UsageStats, UsageInsights } from '../../../shared/types'
+import { fmtCost, fmtTokens, modelLabel, fmtDuration } from '../../lib/format'
 
 const RANGES = [
   { label: '7 days', days: 7 },
@@ -7,33 +8,6 @@ const RANGES = [
   { label: '90 days', days: 90 },
   { label: 'All', days: 0 },
 ]
-
-function fmtCost(n: number): string {
-  if (n >= 100) return `$${n.toFixed(0)}`
-  if (n >= 1) return `$${n.toFixed(2)}`
-  return `$${n.toFixed(3)}`
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`
-  return `${n}`
-}
-
-function modelLabel(model: string): string {
-  return model.replace(/^claude-/, '').replace(/-/g, ' ')
-}
-
-function fmtDuration(ms: number): string {
-  if (ms <= 0) return '—'
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  return `${h}h ${m % 60}m`
-}
 
 type Tab = 'usage' | 'cost'
 

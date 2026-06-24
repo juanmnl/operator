@@ -1,6 +1,8 @@
 import type { AgentSession } from '../../../shared/types'
-import { StatusWave, WaveStatus } from '../sidebar/StatusWave'
+import { StatusWave } from '../sidebar/StatusWave'
 import { RecentLists, type RecentSession, type RecentProject } from './RecentLists'
+import { relativeTime } from '../../lib/format'
+import { sessionWaveStatus } from '../../lib/session-status'
 
 interface ActivityDashboardProps {
   sessions: AgentSession[]
@@ -14,27 +16,6 @@ interface ActivityDashboardProps {
   onRestore: (s: RecentSession, resume: boolean) => void
   onForget: (key: string) => void
   onOpenFolder: (path: string) => void
-}
-
-function relativeTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime()
-  const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 60) return `${s}s ago`
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
-
-function waveStatus(session: AgentSession): WaveStatus {
-  if (session.status === 'ended') return 'ended'
-  switch (session.phase) {
-    case 'running': return 'running'
-    case 'compacting': return 'compacting'
-    case 'waiting': return 'waiting'
-    default: return 'idle'
-  }
 }
 
 export function ActivityDashboard({
@@ -98,7 +79,7 @@ export function ActivityDashboard({
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-surface)' }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
             >
-              <StatusWave status={waveStatus(session)} size={15} seed={session.id} />
+              <StatusWave status={sessionWaveStatus(session)} size={15} seed={session.id} />
 
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -143,7 +124,7 @@ export function ActivityDashboard({
                 flexShrink: 0, width: 70, textAlign: 'right',
                 fontVariantNumeric: 'tabular-nums',
               }}>
-                {relativeTime(session.lastActivityAt)}
+                {relativeTime(session.lastActivityAt, { subMinuteSeconds: true })}
               </span>
             </button>
           )

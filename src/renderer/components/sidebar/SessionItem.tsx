@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
-
-type DotStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
+import { sessionWaveStatus } from '../../lib/session-status'
 
 interface SessionItemProps {
   session: AgentSession
@@ -19,17 +18,6 @@ interface SessionItemProps {
   onClose: () => void
 }
 
-function getDotStatus(session: AgentSession): DotStatus {
-  if (session.status === 'ended') return 'ended'
-
-  switch (session.phase) {
-    case 'running': return 'running'
-    case 'compacting': return 'compacting'
-    case 'waiting': return 'waiting'
-    default: return 'idle'
-  }
-}
-
 export function SessionItem({ session, label, active, effortLevel, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
@@ -41,7 +29,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
     ? ` — ${session.lastToolName}`
     : session.phase === 'running' ? ' — processing' : ''
 
-  const status = getDotStatus(session)
+  const status = sessionWaveStatus(session)
 
   useEffect(() => {
     if (editing) {

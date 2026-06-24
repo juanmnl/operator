@@ -19,6 +19,7 @@ import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
 import { playYourTurnChime } from '../lib/sounds'
+import { computeFanMembership } from '../lib/fan-out'
 import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
 
@@ -469,23 +470,9 @@ export function DashboardView() {
     localStorage.setItem('operator.theme', themeKey(next.identity, next.mode))
   }, [currentTheme])
 
-  // Build effort level map from terminal tabs (keyed by terminalId)
-  const effortLevels: Record<string, string> = {}
-  // Fan-out membership map (keyed by terminalId) for the per-agent badge.
-  const fanInfo: Record<string, { index: number; total: number }> = {}
-  // Recompute fan-out membership from the terminals that are still open, rather
-  // than the count baked in at launch: closing siblings shrinks the total, and a
-  // lone survivor drops the badge entirely (a "1 of 1" fan-out isn't one).
-  const fanGroups: Record<string, typeof terminals> = {}
-  for (const t of terminals) {
-    if (t.effortLevel) effortLevels[t.id] = t.effortLevel
-    if (t.fanGroup) (fanGroups[t.fanGroup] ??= []).push(t)
-  }
-  for (const members of Object.values(fanGroups)) {
-    if (members.length < 2) continue // lone survivor → no fan-out badge
-    members.sort((a, b) => (a.fanIndex ?? 0) - (b.fanIndex ?? 0))
-    members.forEach((t, i) => { fanInfo[t.id] = { index: i + 1, total: members.length } })
-  }
+  // Effort map + fan-out membership (per-agent badge), recomputed from the open
+  // terminals each render so closing siblings shrinks the totals (see lib/fan-out).
+  const { effortLevels, fanInfo } = computeFanMembership(terminals)
 
   const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string) => {
     setActiveFolderPrefs({ projectPath, projectName })

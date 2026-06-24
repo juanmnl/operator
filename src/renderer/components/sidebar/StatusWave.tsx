@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { rand, hashSeed, gridPointsInDisc } from '../../lib/random'
 
 export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
 
@@ -11,7 +12,6 @@ const PULSE_SETTLE_MS = 6000
 // shimmer; the your-turn state pulses in unison as a calm beacon; truly idle
 // states show the grid as flat gray (no scale). See `config` below.
 const CELLS = 7
-const CENTER = (CELLS - 1) / 2 + 0.5 // grid centre in dot-centre coords
 const RADIUS = 3.4 // circle radius in cell units
 const R = 0.5 // dot radius in cell units
 
@@ -35,35 +35,8 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
 }
 
-// Dots that fall inside the circle, computed once.
-const DOTS: { cx: number; cy: number }[] = (() => {
-  const out: { cx: number; cy: number }[] = []
-  const max = RADIUS * RADIUS * 1.04
-  for (let c = 0; c < CELLS; c++) {
-    for (let r = 0; r < CELLS; r++) {
-      const cx = c + 0.5, cy = r + 0.5
-      const dx = cx - CENTER, dy = cy - CENTER
-      if (dx * dx + dy * dy <= max) out.push({ cx, cy })
-    }
-  }
-  return out
-})()
-
-// Deterministic pseudo-random in [0,1) so dot timings are stable per index.
-function rand(seed: number): number {
-  const x = Math.sin(seed * 12.9898) * 43758.5453
-  return x - Math.floor(x)
-}
-
-// Fold a session id (or any string) into a stable numeric offset. Sessions with
-// different ids land on different parts of the sine curve, so their dot timings
-// diverge — each session's wave gets its own rhythm instead of marching in sync.
-function hashSeed(seed: string | number): number {
-  if (typeof seed === 'number') return seed
-  let h = 0
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 1000003
-  return h
-}
+// Dots that fall inside the circle, computed once (see lib/random).
+const DOTS = gridPointsInDisc(CELLS, RADIUS)
 
 export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus; size?: number; seed?: string | number }) {
   // The your-turn pulse is a transient beacon: once a session has been waiting

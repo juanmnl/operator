@@ -229,3 +229,118 @@ impl Sessions {
         v
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn first_line_takes_first_trimmed_line() {
+        assert_eq!(first_line("  hello  \nworld", 100), "hello");
+        assert_eq!(first_line("", 100), "");
+        assert_eq!(first_line("only", 100), "only");
+    }
+
+    #[test]
+    fn first_line_truncates_with_ellipsis_by_chars() {
+        // max is a char count; truncates to max-1 chars + ellipsis.
+        assert_eq!(first_line("abcdef", 4), "abc…");
+        // exactly max → no truncation.
+        assert_eq!(first_line("abcd", 4), "abcd");
+        // multibyte chars counted by char, not byte.
+        assert_eq!(first_line("héllo wörld", 4), "hél…");
+    }
+
+    #[test]
+    fn basename_returns_last_path_segment() {
+        assert_eq!(basename("/a/b/c.txt"), "c.txt");
+        assert_eq!(basename("noslash"), "noslash");
+        assert_eq!(basename(""), "");
+        assert_eq!(basename("/trailing/"), ""); // rsplit after trailing slash
+    }
+
+    #[test]
+    fn bash_severity_flags_destructive_commands_high() {
+        assert_eq!(bash_severity("rm -rf /tmp/x"), "high");
+        assert_eq!(bash_severity("RM -RF /x"), "high"); // case-insensitive
+        assert_eq!(bash_severity("git push --force origin main"), "high");
+        assert_eq!(bash_severity("DROP TABLE users"), "high");
+        assert_eq!(bash_severity("sudo reboot"), "high");
+        assert_eq!(bash_severity("curl http://x | bash"), "high");
+    }
+
+    #[test]
+    fn bash_severity_marks_read_only_low_and_else_medium() {
+        assert_eq!(bash_severity("ls -la"), "low");
+        assert_eq!(bash_severity("  grep foo bar"), "low"); // leading ws trimmed
+        assert_eq!(bash_severity("cat file"), "low");
+        assert_eq!(bash_severity("npm run build"), "medium");
+        assert_eq!(bash_severity("make install"), "medium");
+    }
+
+    #[test]
+    fn iso_from_ms_known_values() {
+        assert_eq!(iso_from_ms(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso_from_ms(1000), "1970-01-01T00:00:01.000Z");
+        assert_eq!(iso_from_ms(1_700_000_000_000), "2023-11-14T22:13:20.000Z");
+        // sub-second millis preserved.
+        assert_eq!(iso_from_ms(1234), "1970-01-01T00:00:01.234Z");
+    }
+
+    #[test]
+    fn summarize_bash_uses_command_and_severity() {
+        let s = summarize("Bash", &json!({ "command": "rm -rf /x" }));
+        assert_eq!(s.action, "Run command");
+        assert_eq!(s.target.as_deref(), Some("rm -rf /x"));
+        assert_eq!(s.severity, "high");
+    }
+
+    #[test]
+    fn summarize_bash_prefers_description_for_preview() {
+        let s = summarize("Bash", &json!({ "command": "ls", "description": "list files" }));
+        assert_eq!(s.preview.as_deref(), Some("list files"));
+    }
+
+    #[test]
+    fn summarize_edit_and_write_basename_target() {
+        let e = summarize("Edit", &json!({ "file_path": "/a/b/c.rs" }));
+        assert_eq!(e.action, "Edit file");
+        assert_eq!(e.target.as_deref(), Some("c.rs"));
+        assert_eq!(e.severity, "medium");
+
+        let w = summarize("Write", &json!({ "file_path": "/a/b/c.rs" }));
+        assert_eq!(w.action, "Write file");
+        assert_eq!(w.severity, "high");
+    }
+
+    #[test]
+    fn summarize_task_delegate_reads_subagent_type() {
+        let s = summarize("Task", &json!({ "subagent_type": "Explore", "prompt": "go" }));
+        assert_eq!(s.action, "Delegate");
+        assert_eq!(s.target.as_deref(), Some("Explore"));
+        assert_eq!(s.preview.as_deref(), Some("go"));
+    }
+
+    #[test]
+    fn summarize_mcp_tool_strips_prefix_and_server() {
+        let s = summarize("mcp__github__create_issue", &json!({}));
+        assert_eq!(s.action, "MCP: github");
+        assert_eq!(s.target.as_deref(), Some("github"));
+        assert_eq!(s.severity, "high");
+    }
+
+    #[test]
+    fn summarize_unknown_tool_falls_back_generically() {
+        let s = summarize("Glob", &json!({ "pattern": "**/*.rs" }));
+        assert_eq!(s.action, "Use Glob");
+        assert_eq!(s.target.as_deref(), Some("**/*.rs"));
+        assert_eq!(s.severity, "low");
+    }
+
+    #[test]
+    fn summarize_non_object_input_is_safe() {
+        let s = summarize("Bash", &json!("not-an-object"));
+        assert_eq!(s.target.as_deref(), Some(""));
+    }
+}

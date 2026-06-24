@@ -10,27 +10,13 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
+import { buildArgs } from './renderer/lib/launch-args'
+import { base64ToBytes } from './renderer/lib/base64'
 
 type Unsub = () => void
 
 // The pending update found by checkUpdate(), installed by installUpdate().
 let pendingUpdate: Update | null = null
-
-function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): string[] {
-  const args: string[] = []
-  // Resume keeps the prior session id; a new session is pinned to a known uuid
-  // so the backend can read exactly that transcript file.
-  if (o.resumeSessionId) args.push('--resume', String(o.resumeSessionId))
-  else if (sessionId) args.push('--session-id', sessionId)
-  if (o.permissionMode && o.permissionMode !== 'default') {
-    if (o.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions')
-    else args.push('--permission-mode', String(o.permissionMode))
-  }
-  if (o.model) args.push('--model', String(o.model))
-  if (o.allowedTools) args.push('--allowedTools', ...String(o.allowedTools).split(/\s+/).filter(Boolean))
-  if (o.initialPrompt && String(o.initialPrompt).trim()) args.push(String(o.initialPrompt).trim())
-  return args
-}
 
 const decoders = new Map<string, TextDecoder>()
 
@@ -70,13 +56,9 @@ export function installBridge(): void {
       const p = listen<{ id: string; data: string }>('terminal:data', (e) => {
         let d = decoders.get(e.payload.id)
         if (!d) { d = new TextDecoder(); decoders.set(e.payload.id, d) }
-        // Backend ships base64 (see TerminalDataPayload). Native atob → bytes →
-        // streaming UTF-8 decode (stream:true stitches multibyte chars split
-        // across reads, same as before).
-        const bin = atob(e.payload.data)
-        const bytes = new Uint8Array(bin.length)
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-        cb(e.payload.id, d.decode(bytes, { stream: true }))
+        // Backend ships base64 (see TerminalDataPayload). atob → bytes → streaming
+        // UTF-8 decode (stream:true stitches multibyte chars split across reads).
+        cb(e.payload.id, d.decode(base64ToBytes(e.payload.data), { stream: true }))
       })
       return () => { void p.then((f) => f()) }
     },
