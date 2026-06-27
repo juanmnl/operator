@@ -23,6 +23,13 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  // Timestamp (ms) of the last pty chunk, and a pending deferred-fit timer. A
+  // fit() that changes cols/rows sends a SIGWINCH to the pty; if that lands while
+  // Claude Code is mid-redraw (between its cursor-up and the rewrite of its status
+  // block) the redraw desyncs → stacked/garbled "Infusing…" status lines. So we
+  // hold fits until output has been quiet briefly (see handleResize).
+  const lastDataAtRef = useRef(0)
+  const pendingFitRef = useRef<number | null>(null)
   // True while an IME composition is in progress — the custom key handler must not
   // intercept keys (let the textarea commit the composed text through onData).
   const isComposingRef = useRef(false)
@@ -55,7 +62,12 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
   //    half-res/blurry. The DOM renderer has no backing store, so it's immune.
   // Revisit only when #5816 is fixed in a STABLE macOS 26.x (that's also the
   // gate for chasing GPU perf again — see the shelved native-terminal branch).
-  const handleResize = useCallback(() => {
+  // Quiet window (ms) after the last pty chunk before a deferred fit is allowed.
+  // Claude's spinner updates leave gaps well over this, so fits still apply
+  // between frames; only mid-burst fits are held back.
+  const FIT_QUIET_MS = 150
+
+  const doFit = useCallback(() => {
     // Never fit against a hidden/collapsed container (display:none → 0 width).
     // Doing so would send a ~1-column size to the pty and make Claude Code
     // re-render its TUI narrow, which then sticks in the scrollback.
@@ -63,12 +75,30 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     if (!el || el.offsetWidth < 50 || el.offsetHeight < 20) return
     if (fitRef.current) {
       try {
-        fitRef.current.fit()
+        fitRef.current.fit() // no-op unless the computed cols/rows actually changed
       } catch {
         // ignore fit errors during teardown
       }
     }
   }, [])
+
+  const handleResize = useCallback(() => {
+    if (pendingFitRef.current != null) {
+      clearTimeout(pendingFitRef.current)
+      pendingFitRef.current = null
+    }
+    // If output is actively streaming, defer the fit until it quiets so a resize
+    // never interrupts an in-flight TUI redraw. Re-checks on each retry.
+    const sinceData = Date.now() - lastDataAtRef.current
+    if (sinceData < FIT_QUIET_MS) {
+      pendingFitRef.current = window.setTimeout(() => {
+        pendingFitRef.current = null
+        handleResize()
+      }, FIT_QUIET_MS - sinceData + 10)
+      return
+    }
+    doFit()
+  }, [doFit])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -219,6 +249,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     const unsubData = window.operator.onTerminalData((id, data) => {
       if (id === terminalId) {
+        lastDataAtRef.current = Date.now() // gate fits while output is streaming
         term.write(data)
         detectDevServer(data)
       }
@@ -291,6 +322,7 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     return () => {
       clearTimeout(kick1)
       clearTimeout(kick2)
+      if (pendingFitRef.current != null) clearTimeout(pendingFitRef.current)
       unsubData()
       observer.disconnect()
       container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
