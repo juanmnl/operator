@@ -43,6 +43,9 @@ interface TerminalTab {
   /** Pty has exited (Claude/shell finished). Pane stays mounted showing the
    *  final frame; user dismisses it explicitly. */
   ended?: boolean
+  /** This tab was re-attached to a surviving pty after a reload (not freshly
+   *  launched), so its pane should replay buffered scrollback on mount. */
+  reattached?: boolean
 }
 
 /** A session's restorable config, persisted to localStorage across restarts. */
@@ -59,6 +62,10 @@ interface SavedSession {
   sourceCwd?: string
   /** Latest Claude Code session id seen — enables "resume conversation". */
   claudeSessionId?: string
+  /** Live pty id from the CURRENT backend run. Stable across a renderer/webview
+   *  reload (the Rust process survives), so it's used to re-attach the sidebar to
+   *  still-running ptys. Stale (ignored) after a full app restart. */
+  terminalId?: string
   lastActiveAt: string
 }
 
@@ -281,6 +288,48 @@ export function DashboardView() {
       setSavedHydrated(true) // no file store (e.g. Electron) — localStorage only
     }
   }, [])
+
+  // Re-attach the sidebar to ptys that survived a renderer/webview reload. The Rust
+  // backend (and its running ptys) outlive a reload, but React state resets, so the
+  // sidebar would otherwise go blank. Once the durable store is hydrated, intersect
+  // the live pty list with the saved metadata (matched by the still-valid terminalId
+  // from this same backend run) and rebuild the tabs. A full app restart has no live
+  // ptys → terminal_list is empty → nothing re-attaches (the restorable-sessions
+  // splash handles cold starts instead).
+  const reattachedRef = useRef(false)
+  useEffect(() => {
+    if (!savedHydrated || reattachedRef.current) return
+    reattachedRef.current = true
+    const p = window.operator.terminalList?.()
+    if (!p) return
+    p.then((all) => {
+      // Exclude scratch shells (`sh` ids from ShellModal) — those belong to the
+      // toolbar modal, not the sidebar. Claude sessions use `t` ids.
+      const live = (Array.isArray(all) ? all : []).filter((t) => !t.id.startsWith('sh'))
+      if (live.length === 0) return
+      const byId = new Map(savedSessions.filter((s) => s.terminalId).map((s) => [s.terminalId!, s]))
+      setTerminals((prev) => {
+        if (prev.length > 0) return prev // already populated (a launch raced the re-attach)
+        return live.map((t): TerminalTab => {
+          const s = byId.get(t.id)
+          return {
+            id: t.id,
+            key: s?.key ?? crypto.randomUUID(),
+            cwd: s?.cwd ?? t.cwd,
+            model: s?.model,
+            effortLevel: s?.effortLevel,
+            permissionMode: s?.permissionMode,
+            worktreeBranch: s?.worktreeBranch,
+            worktreeBase: s?.worktreeBase,
+            sourceCwd: s?.sourceCwd,
+            reattached: true, // replay buffered scrollback on mount
+          }
+        })
+      })
+      setActiveTerminalId((cur) => cur ?? live[0].id)
+      setActiveSessionId((cur) => cur ?? `local-${live[0].id}`)
+    }).catch(() => { /* no re-attach */ })
+  }, [savedHydrated, savedSessions])
 
   const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig) => {
     // Write effort level to global settings (Claude Code reads it from there)
@@ -608,6 +657,7 @@ export function DashboardView() {
           worktreeBase: t.worktreeBase,
           sourceCwd: t.sourceCwd,
           claudeSessionId: hook?.id,
+          terminalId: t.id,
           lastActiveAt: hook?.lastActivityAt || new Date().toISOString(),
         })
       }
@@ -1060,6 +1110,7 @@ export function DashboardView() {
                 <TerminalPane
                   terminalId={t.id}
                   theme={currentTheme.xterm}
+                  replayHistory={t.reattached}
                   active={t.id === activeTerminalId && !t.ended}
                   onDevServerDetected={(port) =>
                     setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))

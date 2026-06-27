@@ -68,6 +68,9 @@ export function installBridge(): void {
     },
     // The dev-server port registry: terminal id → port Operator reserved for it.
     getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
+    // Base64 of a terminal's retained output tail — replayed when a pane re-attaches
+    // to a pty that survived a renderer reload, so it shows scrollback, not a blank.
+    terminalHistory: (id: string) => invoke<string>('terminal_history', { id }),
     onTerminalData: (cb: (id: string, data: string) => void): Unsub => {
       const p = listen<{ id: string; data: string }>('terminal:data', (e) => {
         let d = decoders.get(e.payload.id)

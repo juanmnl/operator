@@ -77,7 +77,14 @@ pub struct PtyManager {
     /// Dev-server port handed to each session via OPERATOR_DEV_PORT, tracked so
     /// parallel worktree agents never grab the same port.
     ports: Mutex<HashMap<String, u16>>,
+    /// Rolling tail of each pty's raw output (capped). The Rust backend outlives a
+    /// renderer/webview reload, so its ptys keep running — this lets a re-attaching
+    /// terminal replay recent scrollback instead of showing a blank pane.
+    history: Mutex<HashMap<String, Vec<u8>>>,
 }
+
+/// Max bytes of pty output retained per terminal for re-attach replay.
+const HISTORY_CAP: usize = 256 * 1024;
 
 impl PtyManager {
     /// Whether a terminal's pty is still open (removed on exit).
@@ -121,6 +128,34 @@ impl PtyManager {
     /// Snapshot of every live session's dev port (terminal id → port).
     pub fn dev_ports(&self) -> HashMap<String, u16> {
         lock(&self.ports).clone()
+    }
+
+    /// Append pty output to the re-attach replay buffer. Trims lazily — only once
+    /// the buffer grows past 2×HISTORY_CAP, back down to HISTORY_CAP — so the O(n)
+    /// front-drain runs about once per HISTORY_CAP of output instead of on every
+    /// chunk (avoids write amplification during heavy streaming). The front-trim may
+    /// clip a partial sequence on the oldest line — harmless, it's scrolled-away.
+    pub fn push_history(&self, id: &str, bytes: &[u8]) {
+        let mut h = lock(&self.history);
+        let buf = h.entry(id.to_string()).or_default();
+        buf.extend_from_slice(bytes);
+        if buf.len() > HISTORY_CAP * 2 {
+            let drop = buf.len() - HISTORY_CAP;
+            buf.drain(0..drop);
+        }
+    }
+
+    /// Base64 of a terminal's retained output, for replay on re-attach ("" if none).
+    pub fn history_b64(&self, id: &str) -> String {
+        use base64::Engine;
+        lock(&self.history)
+            .get(id)
+            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
+            .unwrap_or_default()
+    }
+
+    pub fn clear_history(&self, id: &str) {
+        lock(&self.history).remove(id);
     }
 
 }
@@ -273,6 +308,7 @@ fn terminal_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
+                    mgr_arc.push_history(&emit_id, &buf[..n]);
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -281,6 +317,7 @@ fn terminal_spawn(
         }
         lock(&mgr_arc.ptys).remove(&emit_id);
         mgr_arc.release_port(&emit_id);
+        mgr_arc.clear_history(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -334,6 +371,7 @@ fn shell_spawn(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
+                    mgr_arc.push_history(&emit_id, &buf[..n]);
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -341,6 +379,7 @@ fn shell_spawn(
             }
         }
         lock(&mgr_arc.ptys).remove(&emit_id);
+        mgr_arc.clear_history(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -374,6 +413,14 @@ fn terminal_kill(id: String, mgr: State<Arc<PtyManager>>) {
         let _ = p.killer.kill();
     }
     mgr.release_port(&id);
+    mgr.clear_history(&id);
+}
+
+/// Base64 of a terminal's retained output tail, for replaying scrollback when a
+/// pane re-attaches to a pty that survived a renderer reload ("" if none).
+#[tauri::command]
+fn terminal_history(id: String, mgr: State<Arc<PtyManager>>) -> String {
+    mgr.history_b64(&id)
 }
 
 #[derive(Serialize)]
@@ -685,6 +732,7 @@ pub fn run() {
             terminal_resize,
             terminal_kill,
             terminal_list,
+            terminal_history,
             get_dev_ports,
             get_sessions,
             inspect_repo,

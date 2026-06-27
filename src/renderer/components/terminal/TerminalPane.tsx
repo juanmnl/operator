@@ -9,17 +9,22 @@ import { isLightBackground, detectDevServerPort, findUrlAtColumn } from '../../l
 import { buildTerminalOptions, getMacOptionIsMeta } from '../../lib/terminal-options'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
+import { base64ToBytes } from '../../lib/base64'
 
 interface TerminalPaneProps {
   terminalId: string
   theme: ITheme
   active?: boolean
+  /** Re-attaching to a surviving pty after a reload — replay its buffered
+   *  scrollback on mount. Omitted/false for a freshly launched session (no
+   *  history to replay, and fetching it would duplicate the first bytes). */
+  replayHistory?: boolean
   onTitleChange?: (title: string) => void
   /** Fires with the port when a dev server announces itself in the output. */
   onDevServerDetected?: (port: number) => void
 }
 
-export function TerminalPane({ terminalId, theme, active = true, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
+export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -247,13 +252,45 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
       if (port !== null) { lastDevPortRef.current = port; cb(port) }
     }
 
+    const writeLive = (data: string) => {
+      lastDataAtRef.current = Date.now() // gate fits while output is streaming
+      term.write(data)
+      detectDevServer(data)
+    }
+    // On (re)attach, replay the pty's buffered output first so a session that
+    // survived a webview reload shows its prior scrollback instead of a blank pane.
+    // Subscribe to live data BEFORE fetching the snapshot so no byte is dropped;
+    // bytes that arrive before the snapshot is written are queued, then flushed.
+    // (The small [subscribe, snapshot] overlap may duplicate a few bytes — harmless
+    // and preferable to losing output. Skipped when there's no history, i.e. a fresh
+    // launch, so a normal session is unaffected.)
+    let historyDone = false
+    const pending: string[] = []
     const unsubData = window.operator.onTerminalData((id, data) => {
-      if (id === terminalId) {
-        lastDataAtRef.current = Date.now() // gate fits while output is streaming
-        term.write(data)
-        detectDevServer(data)
-      }
+      if (id !== terminalId) return
+      if (!historyDone) { pending.push(data); return }
+      writeLive(data)
     })
+    const flushPending = () => {
+      for (const d of pending) writeLive(d)
+      pending.length = 0
+      historyDone = true
+    }
+    // Only re-attached panes replay history; a fresh launch has none, and fetching
+    // it would duplicate the first bytes over the [subscribe, snapshot] window.
+    const historyP = replayHistory ? window.operator.terminalHistory?.(terminalId) : undefined
+    if (historyP) {
+      historyP.then((b64) => {
+        // termRef is nulled on unmount; guard against writing to a disposed term.
+        if (termRef.current === term && b64) {
+          try { term.write(base64ToBytes(b64)) } catch { /* ignore */ }
+        }
+      }).catch(() => { /* no history */ }).finally(() => {
+        if (termRef.current === term) flushPending()
+      })
+    } else {
+      flushPending()
+    }
 
     // Resize observer
     const observer = new ResizeObserver(handleResize)

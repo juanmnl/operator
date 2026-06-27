@@ -17,6 +17,8 @@ declare global {
       terminalResize: (id: string, cols: number, rows: number) => void
       terminalKill: (id: string) => Promise<void>
       terminalList: () => Promise<ManagedTerminal[]>
+      /** Base64 of a terminal's retained output, replayed on re-attach after reload. */
+      terminalHistory: (id: string) => Promise<string>
       /** Dev-port registry: terminal id → reserved port (OPERATOR_DEV_PORT). */
       getDevPorts: () => Promise<Record<string, number>>
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
