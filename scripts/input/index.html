@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — terminal input harness</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; }
+      #term { padding: 16px; height: 320px; }
+    </style>
+  </head>
+  <body>
+    <!-- Headless input-verification page: mounts a real xterm with Operator's
+         production terminal options + the real key-routing/composition logic, and
+         records every onData byte string into window.__inputRecorded so a headless
+         WebKit (same engine as the app's WKWebView) can drive keyboard / IME /
+         chord / paste events and assert the exact bytes that would reach the pty.
+         Driven by scripts/input/capture.mjs. -->
+    <div id="term"></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

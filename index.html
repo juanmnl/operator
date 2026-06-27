@@ -3,9 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <!-- Critical inline background. WKWebView suspends/reloads its web-content process when
+         the app sits idle (App Nap / memory pressure); on reload the fresh document paints
+         its DEFAULT (white) canvas for a frame before styles.css applies → the white flash.
+         Setting the dark bg + dark color-scheme INLINE (before the external stylesheet and
+         before React) makes that pre-CSS frame dark. #0b0d10 matches the native window
+         backgroundColor in tauri.conf.json so the seam is invisible across themes. -->
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; background: #0b0d10; }
+    </style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- Load Inter WITHOUT blocking first paint: a network stall on the webfont must not
+         hold the screen blank on reload. media=print → not render-blocking; onload swaps it
+         in. noscript path covers the (unused-in-app) no-JS case. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" />
+    </noscript>
     <title>Operator</title>
   </head>
   <body>

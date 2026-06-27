@@ -29,10 +29,42 @@ use tauri::{Emitter, Manager, State};
 use backend::{AgentSession, Sessions};
 
 struct Pty {
-    writer: Box<dyn Write + Send>,
+    /// Input is fed to the pty's writer (which lives on a dedicated thread, see
+    /// spawn_writer) through this channel, so terminal_write never holds the ptys
+    /// lock across a blocking write and bytes are applied in queue order.
+    tx: std::sync::mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     cwd: String,
+}
+
+/// Recover a Mutex guard even if a previous holder panicked (poisoning). The pty
+/// map's invariant (id → handle) survives an unrelated panic, so proceeding with
+/// the inner data is far better than letting one panic make every later
+/// terminal_write across ALL terminals fail forever.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Move a pty's writer onto its own thread fed by an mpsc channel. Returns the
+/// Sender to store in the Pty. The thread exits when the last Sender drops (on
+/// kill/exit). On a write error the pty is treated as gone — emit terminal:exit
+/// so the UI reflects it instead of silently dropping input.
+fn spawn_writer(
+    app: tauri::AppHandle,
+    id: String,
+    mut writer: Box<dyn Write + Send>,
+) -> std::sync::mpsc::Sender<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(bytes) = rx.recv() {
+            if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() {
+                let _ = app.emit("terminal:exit", id.clone());
+                break;
+            }
+        }
+    });
+    tx
 }
 
 #[derive(Default)]
@@ -50,16 +82,16 @@ pub struct PtyManager {
 impl PtyManager {
     /// Whether a terminal's pty is still open (removed on exit).
     pub fn alive(&self, id: &str) -> bool {
-        self.ptys.lock().unwrap().contains_key(id)
+        lock(&self.ptys).contains_key(id)
     }
 
     pub fn note_activity(&self, id: &str) {
-        self.activity.lock().unwrap().insert(id.to_string(), Instant::now());
+        lock(&self.activity).insert(id.to_string(), Instant::now());
     }
 
     /// Did this terminal emit output within `dur`? (i.e. is it actively working)
     pub fn active_within(&self, id: &str, dur: Duration) -> bool {
-        self.activity.lock().unwrap().get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
+        lock(&self.activity).get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
     }
 
     /// Reserve a free localhost port for this session's dev server. Scans up from
@@ -67,7 +99,7 @@ impl PtyManager {
     /// reports busy right now (bind-test, dropped immediately — the dev server
     /// binds a moment later). Returns None if the whole range is exhausted.
     pub fn alloc_port(&self, id: &str) -> Option<u16> {
-        let mut ports = self.ports.lock().unwrap();
+        let mut ports = lock(&self.ports);
         let taken: std::collections::HashSet<u16> = ports.values().copied().collect();
         for port in 1420u16..1520 {
             if taken.contains(&port) {
@@ -83,12 +115,12 @@ impl PtyManager {
 
     /// Hand the port back when its session ends, so it can be reused.
     pub fn release_port(&self, id: &str) {
-        self.ports.lock().unwrap().remove(id);
+        lock(&self.ports).remove(id);
     }
 
     /// Snapshot of every live session's dev port (terminal id → port).
     pub fn dev_ports(&self) -> HashMap<String, u16> {
-        self.ports.lock().unwrap().clone()
+        lock(&self.ports).clone()
     }
 
 }
@@ -212,9 +244,10 @@ fn terminal_spawn(
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    mgr.ptys.lock().unwrap().insert(
+    let tx = spawn_writer(app.clone(), id.clone(), writer);
+    lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
+        Pty { tx, master: pair.master, killer, cwd: cwd.clone() },
     );
 
     // Register so the transcript tailer watches this session's JSONL.
@@ -240,7 +273,7 @@ fn terminal_spawn(
                 }
             }
         }
-        mgr_arc.ptys.lock().unwrap().remove(&emit_id);
+        lock(&mgr_arc.ptys).remove(&emit_id);
         mgr_arc.release_port(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
@@ -280,9 +313,10 @@ fn shell_spawn(
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    mgr.ptys.lock().unwrap().insert(
+    let tx = spawn_writer(app.clone(), id.clone(), writer);
+    lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { writer, master: pair.master, killer, cwd: cwd.clone() },
+        Pty { tx, master: pair.master, killer, cwd: cwd.clone() },
     );
 
     let emit_id = id.clone();
@@ -300,7 +334,7 @@ fn shell_spawn(
                 }
             }
         }
-        mgr_arc.ptys.lock().unwrap().remove(&emit_id);
+        lock(&mgr_arc.ptys).remove(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -308,23 +342,29 @@ fn shell_spawn(
 }
 
 #[tauri::command]
-fn terminal_write(id: String, data: String, mgr: State<Arc<PtyManager>>) {
-    if let Some(p) = mgr.ptys.lock().unwrap().get_mut(&id) {
-        let _ = p.writer.write_all(data.as_bytes());
-        let _ = p.writer.flush();
-    }
+fn terminal_write(id: String, data: String, mgr: State<Arc<PtyManager>>) -> Result<(), String> {
+    // Hold the lock only long enough to clone the channel handle — never across
+    // the write itself (which happens on the writer thread).
+    let tx = {
+        let ptys = lock(&mgr.ptys);
+        match ptys.get(&id) {
+            Some(p) => p.tx.clone(),
+            None => return Err("terminal not found".into()),
+        }
+    };
+    tx.send(data.into_bytes()).map_err(|_| "terminal write channel closed".into())
 }
 
 #[tauri::command]
 fn terminal_resize(id: String, cols: u16, rows: u16, mgr: State<Arc<PtyManager>>) {
-    if let Some(p) = mgr.ptys.lock().unwrap().get(&id) {
+    if let Some(p) = lock(&mgr.ptys).get(&id) {
         let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
 }
 
 #[tauri::command]
 fn terminal_kill(id: String, mgr: State<Arc<PtyManager>>) {
-    if let Some(mut p) = mgr.ptys.lock().unwrap().remove(&id) {
+    if let Some(mut p) = lock(&mgr.ptys).remove(&id) {
         let _ = p.killer.kill();
     }
     mgr.release_port(&id);
@@ -340,7 +380,7 @@ struct TerminalInfo {
 #[tauri::command]
 fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
     let ports = mgr.dev_ports();
-    mgr.ptys.lock().unwrap().iter()
+    lock(&mgr.ptys).iter()
         .map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone(), dev_port: ports.get(id).copied() })
         .collect()
 }

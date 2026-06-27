@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — terminal glyph harness</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; }
+      #term { padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <!-- Standalone visual-verification page: mounts a real xterm with Operator's
+         production font stack + addons so a headless WebKit (same engine as the
+         app's WKWebView) can screenshot exactly what the terminal renders.
+         Served by `vite` and driven by scripts/visual/capture.mjs. -->
+    <div id="term"></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

@@ -81,12 +81,14 @@ body {
   size-adjust: 120%;
 }
 
-/* 'Operator Emoji' — DOUBLE-width emoji-pictograph ornaments Claude Code draws (👣 U+1F463
-   footprints, centred on the composer divider). These have no text-presentation form, so the
-   font-variant-emoji:text rule below degrades them to a grey LastResort/colour-emoji box. This
-   Unifont subset gives them a crisp monochrome glyph. Kept separate from 'Operator Legacy' (whose
-   glyphs are single-width); size-adjust scales Unifont's full-em advance up to fill SF Mono's two
-   cells — tune if footprints over/underfills. Subset of GNU Unifont (see gen-symbol-font.py). */
+/* 'Operator Emoji' — DOUBLE-width emoji-pictographs. Claude Code cycles a SET of these as
+   composer-divider ornaments (👣 U+1F463 footprints, 👀 U+1F440 eyes, …); they have no
+   text-presentation form, so the font-variant-emoji:text rule below degrades them to a grey
+   LastResort/colour-emoji box. Chasing them one codepoint at a time was whack-a-mole, so this
+   Unifont subset now covers the WHOLE pictograph plane (U+1F300–1FAFF, ~2000 glyphs ≈ 41 KB) —
+   any emoji renders as a crisp monochrome glyph, consistent with the terminal's text-emoji look.
+   Kept separate from 'Operator Legacy' (single-width); size-adjust scales Unifont's full-em
+   advance up to fill SF Mono's two cells — tune if glyphs over/underfill. See gen-symbol-font.py. */
 @font-face {
   font-family: 'Operator Emoji';
   src: url('./fonts/operator-emoji.woff2') format('woff2');

@@ -1,7 +1,7 @@
 {
   "name": "operator",
   "private": true,
-  "version": "0.2.10",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify:visual": "node scripts/visual/capture.mjs",
+    "verify:input": "node scripts/input/capture.mjs",
     "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
@@ -33,6 +35,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^25.0.1",
+    "playwright": "^1.61.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^3.2.6"

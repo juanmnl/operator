@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
+import { getMacOptionIsMeta, setMacOptionIsMeta } from '../../lib/terminal-options'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -146,12 +147,19 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     () => (localStorage.getItem('operator.dockIcon') === 'dark' ? 'dark' : 'light'),
   )
   const [sounds, setSounds] = useState(() => soundsEnabled())
+  const [optionIsMeta, setOptionIsMeta] = useState(() => getMacOptionIsMeta())
 
   const toggleSounds = () => {
     const next = !sounds
     setSounds(next)
     setSoundsEnabled(next)
     if (next) playYourTurnChime() // preview the cue when turning it on
+  }
+
+  const toggleOptionIsMeta = () => {
+    const next = !optionIsMeta
+    setOptionIsMeta(next)
+    setMacOptionIsMeta(next) // TerminalPane re-reads this when a pane reactivates
   }
 
   const selectDockIcon = (v: DockVariant) => {
@@ -322,6 +330,40 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <span style={{
                 position: 'absolute', top: 2, left: sounds ? 16 : 2, width: 14, height: 14,
                 borderRadius: '50%', background: sounds ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
+        </section>
+
+        <section style={{ marginBottom: 28 }}>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+            Terminal
+          </h3>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+            With the Option key as Meta, ⌥-combos send Esc sequences for shells and editors
+            (readline/emacs). Off (default), ⌥ composes characters — ⌥e→é, ⌥3→#, and non-US layouts.
+          </p>
+          <button
+            onClick={toggleOptionIsMeta}
+            role="switch"
+            aria-checked={optionIsMeta}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Use ⌥ Option as Meta</span>
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: optionIsMeta ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: optionIsMeta ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: optionIsMeta ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
                 transition: 'left 0.15s, background 0.15s',
               }} />
             </span>

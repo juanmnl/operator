@@ -6,6 +6,9 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn } from '../../lib/terminal'
+import { buildTerminalOptions, getMacOptionIsMeta } from '../../lib/terminal-options'
+import { isAppChord } from '../../lib/key-routing'
+import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 
 interface TerminalPaneProps {
   terminalId: string
@@ -20,6 +23,13 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  // True while an IME composition is in progress — the custom key handler must not
+  // intercept keys (let the textarea commit the composed text through onData).
+  const isComposingRef = useRef(false)
+  // Latest `active` without making it a dep of the construction effect (which must
+  // not re-run on activation). Used by the window-focus refocus guard.
+  const activeRef = useRef(active)
+  activeRef.current = active
   // Latest onDevServerDetected without making it an effect dep (would re-subscribe
   // the pty stream every render). The rolling tail lets the "Local:" banner be
   // matched even when it's split across two pty chunks; the last port we reported
@@ -64,54 +74,15 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     if (!containerRef.current) return
 
     const term = new Terminal({
-      theme,
-      // Four bundled subsets go FIRST (see styles.css @font-face), supplying
-      // monochrome glyphs that NO usable macOS font reaches, so they don't fall to a
-      // colour double-width emoji or the LastResort "tofu" box:
-      //   'Operator Symbols'  — Misc-Technical/geometric markers (⏺ U+23FA tool
-      //     bullet, ⏸ U+23F8, ⎿ U+23BF tree, …), from STIX Two Math.
-      //   'Operator Dingbats' — dingbat/symbol ornaments STIX GAPS, chiefly the
-      //     emoji-presentation studs on Claude Code's welcome-box frame (✳ U+2733,
-      //     ✔ U+2714, ✖ U+2716, ✨ U+2728, …). Menlo HAS these in cmap but is a SYSTEM
-      //     font — for emoji-presentation codepoints the font-variant-emoji:text path
-      //     does its own fallback and skips it → tofu; a bundled font wins (like 👣).
-      //     Listed after 'Operator Symbols' so STIX wins the codepoints it has.
-      //   'Operator Legacy'   — Symbols for Legacy Computing (U+1FBxx) + Supplement
-      //     (U+1CCxx) that Claude Code's logo/art mosaics use.
-      //   'Operator Emoji'    — double-width emoji-pictograph ornaments with no text
-      //     form (👣 U+1F463 footprints on the composer divider) that would otherwise
-      //     tofu as a grey box under the font-variant-emoji:text rule (see styles.css).
-      // These carry no letters, so SF Mono still wins for text. 'Apple Symbols' covers
-      // Braille (U+28xx — used heavily by Claude Code's art and the ONLY system font
-      // that has it); Apple Color Emoji stays last for genuine emoji with no text form.
-      fontFamily: "'Operator Symbols', 'Operator Dingbats', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
-      fontSize: 13,
-      // 1.2 gives the rows breathing room. xterm rounds the cell height to an
-      // integer device pixel, so every row gets the same height — no sub-pixel
-      // drift / uneven spacing even though the multiplier is fractional.
-      lineHeight: 1.2,
-      // The DOM renderer maps these straight to CSS font-weight, so they're real
-      // SF Mono weights (no canvas rasterization darkening to compensate for). 400
-      // normal / 600 bold: SF Mono's 700 reads chunky next to its regular, 600
-      // keeps Claude Code's frequent bold emphasis distinct as weight only (same
-      // hue, no bright-colour shift).
-      fontWeight: 400,
-      fontWeightBold: 600,
-      drawBoldTextInBrightColors: false,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      allowProposedApi: true,
-      macOptionIsMeta: true,
-      scrollback: 10000,
-      // Claude Code emits dim/gray secondary text (rendered at reduced alpha). On
-      // a light background that washes out, so push to AA there. On dark, leave it
-      // off (1) — the DOM renderer shows true alpha and any lift just whitens the
-      // dim text.
-      minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
+      // Shared font/behavior config (font stack, weights, unicode, scrollback, and
+      // macOptionIsMeta — now defaulting to false so ⌥ composes characters; see
+      // lib/terminal-options.ts). The harnesses build the same options so they
+      // can't drift from production.
+      ...buildTerminalOptions(theme),
       // OSC-8 hyperlinks (Claude Code emits them for URLs). Without our own
       // handler xterm falls back to a default that calls confirm() — which Tauri
       // blocks ("dialog.confirm not allowed") so the link never opens. Route them
-      // through the system opener instead.
+      // through the system opener instead. App-specific, so it stays here.
       linkHandler: {
         activate: (_event, uri) => {
           if (window.operator?.openExternal) window.operator.openExternal(uri)
@@ -148,6 +119,47 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
 
     termRef.current = term
     fitRef.current = fitAddon
+
+    // Key routing: app chords (Cmd+K/N/B/W, Cmd+1..9) are owned by the window
+    // shortcut handler in DashboardView. Decline the Cmd (meta) variants here so
+    // xterm emits no bytes for them and they bubble to that handler — Ctrl+<key>
+    // are terminal control codes (^W werase, ^K kill-line) and must reach the pty,
+    // so they're NOT declined. During IME composition decline nothing.
+    term.attachCustomKeyEventHandler((e) => {
+      if (isComposingRef.current) return true
+      if (e.type === 'keydown' && e.metaKey && isAppChord(e)) return false
+      return true
+    })
+
+    // Track IME composition on xterm's hidden textarea. xterm already commits the
+    // composed result through onData; we only need the flag for the key handler.
+    const textarea = term.textarea
+    const onCompositionStart = () => { isComposingRef.current = true }
+    const onCompositionEnd = () => { isComposingRef.current = false }
+    textarea?.addEventListener('compositionstart', onCompositionStart)
+    textarea?.addEventListener('compositionend', onCompositionEnd)
+
+    // Clipboard image paste: if the clipboard holds an image (e.g. a screenshot
+    // copied with Cmd+Ctrl+Shift+4), persist its bytes to a temp file and write
+    // the path — parity with drag-drop (handleDrop). Non-image pastes fall through
+    // to xterm untouched, so bracketed paste of text still works.
+    const onPaste = async (e: ClipboardEvent) => {
+      const images = imageFilesFrom(e.clipboardData)
+      if (images.length === 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      const paths = await persistFiles(images, window.operator.savePastedImage)
+      if (paths.length) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
+    }
+    textarea?.addEventListener('paste', onPaste, { capture: true })
+
+    // Refocus when the window regains focus (or the tab becomes visible after the
+    // idle webview reload) while this pane is active, so typing lands without a
+    // click. activeRef avoids making `active` a dependency of this effect.
+    const refocusIfActive = () => { if (activeRef.current) termRef.current?.focus() }
+    window.addEventListener('focus', refocusIfActive)
+    const onVisibility = () => { if (document.visibilityState === 'visible') refocusIfActive() }
+    document.addEventListener('visibilitychange', onVisibility)
 
     // Fit only once the container actually has width. Fitting against a 0/tiny
     // container sends a tiny column count to the pty, so Claude Code renders its
@@ -285,6 +297,11 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
       container.removeEventListener('mousedown', swallowIfLink, { capture: true } as EventListenerOptions)
       container.removeEventListener('mouseup', swallowIfLink, { capture: true } as EventListenerOptions)
       container.removeEventListener('click', onClickCapture, { capture: true } as EventListenerOptions)
+      textarea?.removeEventListener('compositionstart', onCompositionStart)
+      textarea?.removeEventListener('compositionend', onCompositionEnd)
+      textarea?.removeEventListener('paste', onPaste, { capture: true } as EventListenerOptions)
+      window.removeEventListener('focus', refocusIfActive)
+      document.removeEventListener('visibilitychange', onVisibility)
       term.dispose()
       termRef.current = null
       fitRef.current = null
@@ -308,6 +325,10 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
   useEffect(() => {
     const term = termRef.current
     if (!term) return
+
+    // Re-read the ⌥-as-Meta setting on activation so a change in Preferences takes
+    // effect when you switch back to a terminal (no terminal recreate needed).
+    term.options.macOptionIsMeta = getMacOptionIsMeta()
 
     if (active) {
       term.options.cursorBlink = true
@@ -334,26 +355,9 @@ export function TerminalPane({ terminalId, theme, active = true, onTitleChange, 
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
     if (files.length === 0) return
-    const paths: string[] = []
-    for (const f of files) {
-      // Electron leftover / rare webviews that do expose a real path: use it.
-      const p = (f as File & { path?: string }).path
-      if (p) { paths.push(p); continue }
-      // Otherwise persist the bytes to a temp file (works for unsaved screenshots
-      // and any other dropped file the webview only hands us as data).
-      try {
-        const bytes = new Uint8Array(await f.arrayBuffer())
-        let bin = ''
-        for (let i = 0; i < bytes.length; i += 0x8000) {
-          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-        }
-        const ext = (f.name.split('.').pop() || f.type.split('/')[1] || 'png').toLowerCase()
-        const tmp = await window.operator.savePastedImage(btoa(bin), ext)
-        paths.push(tmp)
-      } catch {
-        // ignore a single unreadable drop
-      }
-    }
+    // Persist each dropped file to a temp path (works for unsaved screenshots that
+    // carry bytes but no File.path). Shared with the clipboard-paste handler.
+    const paths = await persistFiles(files, window.operator.savePastedImage)
     // Trailing space so the path is delimited from whatever's typed next.
     if (paths.length > 0) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
   }, [terminalId])

@@ -20,6 +20,7 @@ import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities
 import type { OperatorTheme } from '../themes'
 import { playYourTurnChime } from '../lib/sounds'
 import { computeFanMembership } from '../lib/fan-out'
+import { isAppChord } from '../lib/key-routing'
 import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
 
@@ -706,7 +707,9 @@ export function DashboardView() {
   // Cmd+1..9 switch to local terminal by index.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return
+      // Shared predicate with the terminal's key handler (lib/key-routing) so the
+      // two can't disagree about which chords belong to the app vs the pty.
+      if (!isAppChord(e)) return
       if (e.key === 'k' || e.key === 'K') {
         e.preventDefault()
         setPaletteOpen((open) => !open)

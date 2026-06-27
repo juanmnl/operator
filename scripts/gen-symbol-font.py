@@ -72,10 +72,26 @@ LEGACY_MUST = {0x1FB82: "🮂", 0x1FB90: "🮐", 0x1FBE0: "🯠", 0x1FBF0: "🯰
                0x1CD49: "𜵉", 0x1CD6D: "𜵭"}
 
 # --- source 3: GNU Unifont — double-width emoji-pictograph ornaments ---------------------
-# Tight list (NOT a broad range) so the woff2 stays tiny and we don't override OTHER emoji
-# with Unifont's crude monochrome forms. Add codepoints here if new composer ornaments tofu.
-EMOJI_RANGES = [(0x1F463, 0x1F463)]  # 👣 footprints — Claude Code's composer-divider ornament
-EMOJI_MUST = {0x1F463: "👣 footprints"}
+# Claude Code cycles a SET of pictograph emoji as composer-divider ornaments (👣 footprints,
+# 👀 eyes, …) and we can't enumerate it from the compiled CLI. A tight per-codepoint list was
+# whack-a-mole: every new ornament fell through `font-variant-emoji: text` to a colour/tofu box
+# and we shipped a font bump to chase it. So cover the WHOLE emoji-pictograph plane once. These
+# are wcwidth==2 (double-width) cells, so they belong here (advance 1.0) not in the BMP dingbat
+# subset. ~2000 glyphs ≈ 41 KB — Unifont's monochrome forms also make ANY emoji Claude prints
+# render consistently monochrome, matching the terminal's `font-variant-emoji: text` aesthetic.
+EMOJI_RANGES = [
+    (0x1F300, 0x1F5FF),  # Misc Symbols and Pictographs — 👀 eyes, 👣-adjacent, weather, objects
+    (0x1F600, 0x1F64F),  # Emoticons — 🤔 😀 …
+    (0x1F680, 0x1F6FF),  # Transport and Map — 🚀 …
+    (0x1F700, 0x1F77F),  # Alchemical
+    (0x1F780, 0x1F7FF),  # Geometric Shapes Extended
+    (0x1F800, 0x1F8FF),  # Supplemental Arrows-C
+    (0x1F900, 0x1F9FF),  # Supplemental Symbols and Pictographs — 🦶 🧠 👋 …
+    (0x1FA00, 0x1FA6F),  # Chess / Symbols Extended-A start
+    (0x1FA70, 0x1FAFF),  # Symbols and Pictographs Extended-A
+]
+# 👣 footprints + 👀 eyes are the two ornaments confirmed in the wild — keep them as canaries.
+EMOJI_MUST = {0x1F463: "👣 footprints", 0x1F440: "👀 eyes"}
 
 # --- source 4: GNU Unifont (BMP) — single-width dingbat / symbol ornaments ----------------
 # STIX (operator-symbols) is first in the stack and covers MOST of these blocks, but it has

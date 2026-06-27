@@ -12,6 +12,7 @@ import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
+import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
 
 type Unsub = () => void
 
@@ -19,6 +20,12 @@ type Unsub = () => void
 let pendingUpdate: Update | null = null
 
 const decoders = new Map<string, TextDecoder>()
+
+// One ordered write queue per terminal id. terminalWrite chains its invokes
+// through here so the backend pty mutex sees bytes in enqueue order (a plain
+// fire-and-forget `void invoke` could reorder under fast input). Created lazily
+// on first write, torn down on terminal:exit.
+const writeQueues = new Map<string, WriteQueue>()
 
 export function installBridge(): void {
   const bridge = {
@@ -43,7 +50,14 @@ export function installBridge(): void {
     // Spawn a plain interactive shell in `cwd` — the toolbar's scratch terminal.
     // Returns a terminal id usable with the normal terminal* methods + onTerminalData.
     shellSpawn: (cwd: string) => invoke<string>('shell_spawn', { cwd }),
-    terminalWrite: (id: string, data: string) => { void invoke('terminal_write', { id, data }) },
+    terminalWrite: (id: string, data: string) => {
+      let q = writeQueues.get(id)
+      if (!q) {
+        q = createWriteQueue((d) => invoke('terminal_write', { id, data: d }).then(() => {}))
+        writeQueues.set(id, q)
+      }
+      q.write(data)
+    },
     terminalResize: (id: string, cols: number, rows: number) => { void invoke('terminal_resize', { id, cols, rows }) },
     terminalKill: (id: string) => invoke('terminal_kill', { id }),
     terminalList: async () => {
@@ -63,7 +77,7 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
     onTerminalExit: (cb: (id: string, code: number, signal: number) => void): Unsub => {
-      const p = listen<string>('terminal:exit', (e) => { decoders.delete(e.payload); cb(e.payload, 0, 0) })
+      const p = listen<string>('terminal:exit', (e) => { decoders.delete(e.payload); writeQueues.delete(e.payload); cb(e.payload, 0, 0) })
       return () => { void p.then((f) => f()) }
     },
 

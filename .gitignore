@@ -3,3 +3,6 @@ out/
 dist/
 release/
 .DS_Store
+
+# Visual-verification screenshots (scripts/visual/capture.mjs)
+scripts/visual/out/
