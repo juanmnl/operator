@@ -36,6 +36,31 @@ export function setMacOptionIsMeta(on: boolean): void {
   }
 }
 
+const TUI_MODE_KEY = 'operator.terminal.tuiMode'
+export type TuiMode = 'default' | 'fullscreen'
+
+/** Claude Code's TUI renderer for sessions Operator spawns. 'default' = classic
+ *  streaming renderer (accumulates scrollback; its in-place status redraws can
+ *  ghost/garble in the DOM xterm). 'fullscreen' = alt-screen fixed viewport
+ *  (absolute positioning, no scrollback → structurally can't ghost), but it
+ *  replaces the native scrollback with Claude's own scrolling. Default 'default'
+ *  until fullscreen is confirmed clean in the live app; opt-in via Preferences. */
+export function getTuiMode(): TuiMode {
+  try {
+    return localStorage.getItem(TUI_MODE_KEY) === 'fullscreen' ? 'fullscreen' : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+export function setTuiMode(mode: TuiMode): void {
+  try {
+    localStorage.setItem(TUI_MODE_KEY, mode)
+  } catch {
+    /* ignore */
+  }
+}
+
 export function buildTerminalOptions(
   theme: ITheme,
   opts: { macOptionIsMeta?: boolean } = {},

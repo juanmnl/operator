@@ -13,6 +13,7 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
+import { getTuiMode } from './renderer/lib/terminal-options'
 
 type Unsub = () => void
 
@@ -44,6 +45,7 @@ export function installBridge(): void {
         args: buildArgs(launchOptions, sessionId),
         sessionId,
         permissionMode: (launchOptions?.permissionMode as string) ?? null,
+        tuiMode: getTuiMode(),
       })
       return { terminalId: id, cwd: target }
     },

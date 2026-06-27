@@ -144,6 +144,7 @@ fn terminal_spawn(
     args: Vec<String>,
     session_id: String,
     permission_mode: Option<String>,
+    tui_mode: Option<String>,
     mgr: State<Arc<PtyManager>>,
     reg: State<transcript::TrackRegistry>,
 ) -> Result<String, String> {
@@ -172,18 +173,23 @@ fn terminal_spawn(
         v
     };
 
-    // Force Claude Code's classic streaming renderer for sessions we launch.
-    // Its fullscreen / "no-flicker" TUI (settings `tui: fullscreen`) draws into the
-    // alternate-screen buffer and, in our DOM xterm, doesn't paint (blank alt-screen)
-    // and garbles the status line — re-confirmed 2026-06-23 on xterm 6 + Unicode11 +
-    // Claude Code v2.1.187. The classic renderer accumulates scrollback but renders
-    // correctly, so we ship it until a native terminal can host fullscreen cleanly.
-    // The inline --settings override wins over the user's global ~/.claude/settings.json
-    // without touching it, and only for sessions Operator spawns.
+    // Pick Claude Code's TUI renderer for this session. 'default' = classic streaming
+    // renderer (accumulates scrollback; its in-place status redraws can ghost/garble in
+    // the DOM xterm). 'fullscreen' = alt-screen fixed viewport (absolute positioning, no
+    // scrollback → structurally can't ghost) — historically blanked/garbled in the DOM
+    // xterm (2026-06-23, xterm 6 + Unicode11), but a replay of the real fullscreen byte
+    // stream renders clean on the current unicode-graphemes stack, so it's exposed as an
+    // opt-in setting (default stays 'default' until confirmed in the live app). The inline
+    // --settings override wins over the user's global ~/.claude/settings.json without
+    // touching it, and only for sessions Operator spawns.
+    let tui = match tui_mode.as_deref() {
+        Some("fullscreen") => "fullscreen",
+        _ => "default",
+    };
     let mut prefix: Vec<String> = vec![
         "claude".to_string(),
         "--settings".to_string(),
-        r#"{"tui":"default"}"#.to_string(),
+        format!(r#"{{"tui":"{tui}"}}"#),
     ];
     // Inform the agent of its reserved port and the ports other live sessions
     // hold, so any dev server it starts avoids collisions. An appended system

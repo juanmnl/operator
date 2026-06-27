@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
-import { getMacOptionIsMeta, setMacOptionIsMeta } from '../../lib/terminal-options'
+import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode, type TuiMode } from '../../lib/terminal-options'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -160,6 +160,12 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     const next = !optionIsMeta
     setOptionIsMeta(next)
     setMacOptionIsMeta(next) // TerminalPane re-reads this when a pane reactivates
+  }
+
+  const [tuiMode, setTuiModeState] = useState<TuiMode>(() => getTuiMode())
+  const selectTuiMode = (m: TuiMode) => {
+    setTuiModeState(m)
+    setTuiMode(m) // takes effect on the NEXT session Operator spawns
   }
 
   const selectDockIcon = (v: DockVariant) => {
@@ -368,6 +374,33 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               }} />
             </span>
           </button>
+
+          {/* TUI renderer. Fullscreen (alt-screen) fixes the status-line ghost/garble
+              structurally but trades away native scrollback; opt-in until proven live. */}
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '16px 0 8px', opacity: 0.7 }}>
+            Rendering mode. <strong style={{ color: 'var(--fg)' }}>Fullscreen</strong> fixes the
+            duplicated/garbled status line (fixed viewport, no scrollback trail) but scrolls inside
+            Claude rather than the terminal. Applies to newly launched sessions.
+          </p>
+          <div style={{ display: 'flex', padding: 2, gap: 2, borderRadius: 7, background: 'var(--overlay-subtle)', border: '1px solid var(--border)', width: 'fit-content' }}>
+            {([['default', 'Classic'], ['fullscreen', 'Fullscreen']] as [TuiMode, string][]).map(([m, label]) => {
+              const on = tuiMode === m
+              return (
+                <button
+                  key={m}
+                  onClick={() => { if (!on) selectTuiMode(m) }}
+                  style={{
+                    padding: '4px 12px', borderRadius: 5, cursor: on ? 'default' : 'pointer',
+                    fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
+                    border: 'none', color: on ? 'var(--fg)' : 'var(--fg-muted)',
+                    background: on ? 'var(--bg-surface)' : 'transparent',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
         </section>
 
       </div>
