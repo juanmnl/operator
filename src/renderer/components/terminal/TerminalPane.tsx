@@ -11,6 +11,15 @@ import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 
+// Claude Code's composer-divider ornaments (👀 eyes / 👣 footprints) are decorative,
+// not corruption. Strip them on EVERY path that writes to xterm — live output AND
+// replayed history (an idle input box keeps the ornament from its last draw, so the
+// history path matters). Replace with 2 spaces, not nothing: they're double-width,
+// and same-width keeps Claude's cursor math aligned with xterm.
+const ORNAMENT_RE = /[\u{1F440}\u{1F463}]/gu
+const decoder = new TextDecoder()
+function stripOrnaments(s: string): string { return s.replace(ORNAMENT_RE, '  ') }
+
 interface TerminalPaneProps {
   terminalId: string
   theme: ITheme
@@ -332,10 +341,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     const writeLive = (data: string) => {
       lastDataAtRef.current = Date.now() // gate fits while output is streaming
       detectDevServer(data) // scan raw output for the dev-server banner (cheap, no render)
-      // Strip Claude's composer-divider ornaments (👀 eyes / 👣 footprints). Replace
-      // with 2 spaces, not nothing — they're double-width, so same-width keeps Claude's
-      // cursor math aligned with xterm (removing them would desync → real corruption).
-      const clean = data.replace(/[\u{1F440}\u{1F463}]/gu, '  ')
+      const clean = stripOrnaments(data) // drop Claude's 👀/👣 divider ornaments (see top)
       if (activeRef.current) {
         flushBg() // catch up anything buffered while hidden, preserving order
         term.write(clean, scheduleRepaint) // repaint after xterm parses+renders the chunk
@@ -374,7 +380,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       historyP.then((b64) => {
         // termRef is nulled on unmount; guard against writing to a disposed term.
         if (termRef.current === term && b64) {
-          try { term.write(base64ToBytes(b64)) } catch { /* ignore */ }
+          try { term.write(stripOrnaments(decoder.decode(base64ToBytes(b64)))) } catch { /* ignore */ }
         }
       }).catch(() => { /* no history */ }).finally(() => {
         if (termRef.current === term) flushPending()
