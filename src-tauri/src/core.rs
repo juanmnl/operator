@@ -30,6 +30,25 @@ impl ActivityEntry {
     }
 }
 
+/// A piece of the assistant's prose narration pulled from the transcript — either
+/// a `text` answer (rendered as markdown) or a `thinking` block (rendered as a
+/// collapsed disclosure). Feeds the reading panel.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrationEntry {
+    pub kind: String, // "text" | "thinking"
+    pub text: String,
+    pub timestamp: String,
+}
+
+/// One item of the agent's TodoWrite plan (latest snapshot), for the Plan tab.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub content: String,
+    pub status: String, // pending | in_progress | completed
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
@@ -42,6 +61,13 @@ pub struct AgentSession {
     status: String, // active | ended
     phase: String,  // idle | running | compacting | waiting
     activity: Vec<ActivityEntry>,
+    /// Assistant prose (answers + thinking) for the reading panel. Empty unless
+    /// the panel feature is consuming it; capped to the recent tail upstream.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    messages: Vec<NarrationEntry>,
+    /// Latest TodoWrite plan snapshot (Plan tab). Empty unless the agent uses it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    todos: Vec<TodoItem>,
     active_subagents: i32,
     last_tool_name: Option<String>,
     started_at: String,
@@ -192,6 +218,8 @@ impl AgentSession {
         ended: bool,
         phase: &str,
         activity: Vec<ActivityEntry>,
+        messages: Vec<NarrationEntry>,
+        todos: Vec<TodoItem>,
         active_subagents: i32,
         last_tool_name: Option<String>,
         started_at: String,
@@ -207,6 +235,8 @@ impl AgentSession {
             status: if ended { "ended".into() } else { "active".into() },
             phase: phase.to_string(),
             activity,
+            messages,
+            todos,
             active_subagents,
             last_tool_name,
             started_at,

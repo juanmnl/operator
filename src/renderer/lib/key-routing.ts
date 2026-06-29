@@ -15,7 +15,7 @@ export interface KeyChordEvent {
 export function isAppChord(e: KeyChordEvent): boolean {
   if (!(e.metaKey || e.ctrlKey)) return false
   const k = e.key.toLowerCase()
-  if (k === 'k' || k === 'n' || k === 'b' || k === 'w') return true
+  if (k === 'k' || k === 'n' || k === 'b' || k === 'w' || k === 'j') return true
   if (e.key.length === 1 && e.key >= '1' && e.key <= '9') return true
   return false
 }

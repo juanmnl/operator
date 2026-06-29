@@ -25,7 +25,7 @@ interface SidebarProps {
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
-  onReorderSession: (draggedSessionId: string, targetSessionId: string) => void
+  onReorderGroup: (draggedName: string, targetName: string, edge: 'before' | 'after') => void
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
@@ -42,10 +42,10 @@ interface SidebarProps {
   onToggleCollapse?: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
-  // Session id currently being dragged for reorder — lifted here so a drag can
-  // cross folder-group boundaries (each FolderGroup renders its own items).
-  const [dragId, setDragId] = useState<string | null>(null)
+export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
+  // Project name of the folder group currently being dragged for reorder — lifted
+  // here so a drag can target any other group (each FolderGroup is a drop zone).
+  const [dragGroup, setDragGroup] = useState<string | null>(null)
   // Group sessions by project name (last folder segment)
   const grouped = new Map<string, AgentSession[]>()
   for (const session of sessions) {
@@ -114,15 +114,21 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           <button
             onClick={onInstallUpdate}
             title={`Update ${update.version} available — install & restart`}
+            aria-label={`Install update ${update.version}`}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 3,
-              background: 'var(--accent)', color: 'var(--fg-on-accent)',
-              border: 'none', borderRadius: 999, cursor: 'pointer',
-              fontSize: 8, fontWeight: 700, letterSpacing: 0.2,
-              padding: '1px 6px', fontFamily: 'inherit', lineHeight: '12px',
+              flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 16, height: 16, padding: 0,
+              background: 'transparent', color: 'var(--accent)',
+              border: '1px solid var(--accent)', borderRadius: 999,
+              cursor: 'pointer', outline: 'none',
+              // @ts-expect-error Electron-specific CSS property
+              WebkitAppRegion: 'no-drag',
             }}
           >
-            ↑ Update
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 9.5V2.5M3 5l3-3 3 3" />
+            </svg>
           </button>
         )}
         {/* Collapse (hide) the sidebar. Right-aligned at the end of the header. */}
@@ -182,9 +188,9 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             onRenameSession={onRenameSession}
             onCloseSession={onCloseSession}
             onOpenFolderPrefs={onOpenFolderPrefs}
-            dragId={dragId}
-            setDragId={setDragId}
-            onReorderSession={onReorderSession}
+            dragGroup={dragGroup}
+            setDragGroup={setDragGroup}
+            onReorderGroup={onReorderGroup}
           />
         ))}
       </div>
@@ -343,9 +349,9 @@ function FolderGroup({
   onRenameSession,
   onCloseSession,
   onOpenFolderPrefs,
-  dragId,
-  setDragId,
-  onReorderSession,
+  dragGroup,
+  setDragGroup,
+  onReorderGroup,
 }: {
   projectName: string
   group: AgentSession[]
@@ -359,18 +365,72 @@ function FolderGroup({
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
-  dragId: string | null
-  setDragId: (id: string | null) => void
-  onReorderSession: (draggedSessionId: string, targetSessionId: string) => void
+  dragGroup: string | null
+  setDragGroup: (name: string | null) => void
+  onReorderGroup: (draggedName: string, targetName: string, edge: 'before' | 'after') => void
 }) {
   const [hovered, setHovered] = useState(false)
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  // Which edge of THIS group the dragged group is hovering — drives the drop line.
+  const [dropEdge, setDropEdge] = useState<'before' | 'after' | null>(null)
   const projectPath = group[0]?.workingDirectory || ''
   const isPrefsActive = activeFolderPrefs === projectPath
+  const isDragging = dragGroup === projectName
 
   return (
-    <div key={projectName} style={{ marginBottom: 8 }}>
+    // The whole project (title + its sessions) is one draggable/droppable unit. The
+    // group title is the drag handle; while dragging, its sessions collapse so you
+    // move a compact title; other groups show a before/after drop line.
+    <div
+      key={projectName}
+      onDragOver={(e) => {
+        if (!dragGroup || dragGroup === projectName) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        const r = e.currentTarget.getBoundingClientRect()
+        setDropEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+      }}
+      onDragLeave={(e) => {
+        // Ignore leaves into child elements (relatedTarget still inside).
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return
+        setDropEdge(null)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        if (dragGroup && dragGroup !== projectName && dropEdge) onReorderGroup(dragGroup, projectName, dropEdge)
+        setDropEdge(null)
+      }}
+      style={{
+        marginBottom: 8,
+        opacity: isDragging ? 0.5 : 1,
+        // 2px transparent borders by default so the accent drop line doesn't shift
+        // layout. No border-radius — the drop line must read as a crisp straight rule.
+        borderTop: `2px solid ${dropEdge === 'before' ? 'var(--accent)' : 'transparent'}`,
+        borderBottom: `2px solid ${dropEdge === 'after' ? 'var(--accent)' : 'transparent'}`,
+      }}
+    >
       <div
+        draggable
+        onDragStart={(e) => {
+          setDragGroup(projectName)
+          e.dataTransfer.effectAllowed = 'move'
+          // Custom drag ghost so you SEE the grabbed project follow the cursor — a
+          // floating chip with the name + session count (instead of the faint default
+          // snapshot of the title row). Off-screen until the browser captures it.
+          const ghost = document.createElement('div')
+          ghost.textContent = group.length > 1 ? `${projectName} · ${group.length}` : projectName
+          ghost.style.cssText = [
+            'position:absolute', 'top:-1000px', 'left:-1000px', 'pointer-events:none',
+            'padding:6px 12px', 'border-radius:8px',
+            'background:var(--bg-surface)', 'color:var(--fg)', 'border:1px solid var(--accent)',
+            "font:600 10px/1 'Inter',system-ui,sans-serif", 'text-transform:uppercase', 'letter-spacing:0.5px',
+            'box-shadow:0 8px 24px rgba(0,0,0,0.4)', 'white-space:nowrap',
+          ].join(';')
+          document.body.appendChild(ghost)
+          e.dataTransfer.setDragImage(ghost, 14, 16)
+          // Remove once the browser has snapshotted it for the drag.
+          setTimeout(() => ghost.remove(), 0)
+        }}
+        onDragEnd={() => { setDragGroup(null); setDropEdge(null) }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -388,6 +448,7 @@ function FolderGroup({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          cursor: 'grab',
         }}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{projectName}</span>
@@ -396,6 +457,9 @@ function FolderGroup({
             e.stopPropagation()
             onOpenFolderPrefs(projectPath, projectName)
           }}
+          // Don't start a group drag from the prefs button.
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
           style={{
             background: isPrefsActive ? 'rgba(255,255,255,0.08)' : 'none',
             border: 'none',
@@ -416,7 +480,8 @@ function FolderGroup({
           </svg>
         </button>
       </div>
-      {group.map((session, i) => {
+      {/* Sessions collapse (hide) while this group is being dragged. */}
+      {!isDragging && group.map((session, i) => {
         const customName = customNames[session.id]
         const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
         // Prefer the agent-derived summary (first user prompt) when no custom name is set.
@@ -425,43 +490,19 @@ function FolderGroup({
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
         return (
-          <div
+          <SessionItem
             key={session.id}
-            draggable
-            onDragStart={(e) => { setDragId(session.id); e.dataTransfer.effectAllowed = 'move' }}
-            onDragEnd={() => { setDragId(null); setDropTargetId(null) }}
-            onDragOver={(e) => {
-              if (!dragId || dragId === session.id) return
-              e.preventDefault()
-              e.dataTransfer.dropEffect = 'move'
-              setDropTargetId(session.id)
-            }}
-            onDragLeave={() => setDropTargetId((c) => (c === session.id ? null : c))}
-            onDrop={(e) => {
-              e.preventDefault()
-              if (dragId && dragId !== session.id) onReorderSession(dragId, session.id)
-              setDragId(null)
-              setDropTargetId(null)
-            }}
-            style={{
-              opacity: dragId === session.id ? 0.4 : 1,
-              // Insertion marker on the cell being dropped onto.
-              boxShadow: dropTargetId === session.id ? 'inset 0 2px 0 0 var(--accent)' : 'none',
-            }}
-          >
-            <SessionItem
-              session={session}
-              label={customName || defaultLabel}
-              active={session.id === activeSessionId}
-              effortLevel={effort}
-              fanInfo={fan}
-              closable
-              shortcutIndex={shortcutIndices[session.id] ?? null}
-              onClick={() => onSelectSession(session)}
-              onRename={(name) => onRenameSession(session.id, name)}
-              onClose={() => onCloseSession(session)}
-            />
-          </div>
+            session={session}
+            label={customName || defaultLabel}
+            active={session.id === activeSessionId}
+            effortLevel={effort}
+            fanInfo={fan}
+            closable
+            shortcutIndex={shortcutIndices[session.id] ?? null}
+            onClick={() => onSelectSession(session)}
+            onRename={(name) => onRenameSession(session.id, name)}
+            onClose={() => onCloseSession(session)}
+          />
         )
       })}
     </div>

@@ -28,9 +28,12 @@ interface SessionToolbarProps {
   branch?: string | null
   /** xterm palette for the scratch-terminal modal opened from the toolbar. */
   theme: ITheme
+  /** Right-side Canvas panel toggle (lives after the permission-mode badge). */
+  conversationOpen?: boolean
+  onToggleConversation?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, theme }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, theme, conversationOpen, onToggleConversation }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -250,6 +253,27 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
             >
               {permissionMode === 'bypassPermissions' ? 'No Perms' : permissionMode}
             </span>
+          )}
+
+          {/* Right-side Canvas panel toggle — accent when open, transparent always. */}
+          {onToggleConversation && (
+            <button
+              onClick={onToggleConversation}
+              title={conversationOpen ? 'Hide panel' : 'Show panel'}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 22, height: 22, padding: 0, marginLeft: 2,
+                background: 'transparent', border: 'none', borderRadius: 4,
+                cursor: 'pointer', outline: 'none',
+                color: conversationOpen ? 'var(--accent)' : 'var(--fg-muted)',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" strokeWidth="1.3" />
+                {conversationOpen && <rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" opacity="0.18" />}
+              </svg>
+            </button>
           )}
         </div>
       </DragRegion>

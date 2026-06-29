@@ -7,6 +7,7 @@ import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { SessionInfoBar } from '../components/session/SessionInfoBar'
+import { CanvasPanel } from '../components/session/CanvasPanel'
 import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
@@ -48,6 +49,9 @@ interface TerminalTab {
   reattached?: boolean
 }
 
+/** Width (CSS px) of the right-side Conversation reading panel. */
+const CONVERSATION_PANEL_W = 460
+
 /** A session's restorable config, persisted to localStorage across restarts. */
 interface SavedSession {
   key: string
@@ -77,6 +81,9 @@ export function DashboardView() {
   // OPERATOR_DEV_PORT we hand it and binds its own default, so this is the port
   // that's actually serving — it takes priority over the allocated one.
   const [detectedDevPorts, setDetectedDevPorts] = useState<Record<string, number>>({})
+  // Reserved OPERATOR_DEV_PORT per terminal — the Preview falls back to this when
+  // no dev-server banner was detected (a best-effort guess; may not be serving).
+  const [reservedDevPorts, setReservedDevPorts] = useState<Record<string, number>>({})
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
   // Latest active terminal, for the (single, mount-time) file-drop listener.
@@ -105,6 +112,68 @@ export function DashboardView() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('operator.sidebarCollapsed') === '1' } catch { return false }
   })
+  // Reading panel (ConversationPanel) — the agent's answers rendered as markdown
+  // beside the terminal. Persisted so it survives reloads.
+  const [conversationOpen, setConversationOpen] = useState(() => {
+    try { return localStorage.getItem('operator.conversationOpen') === '1' } catch { return false }
+  })
+  // User-adjustable Canvas panel width (drag handle on its left edge), persisted.
+  const [panelW, setPanelW] = useState<number>(() => {
+    try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= 300 && v <= 1000 ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
+  })
+  const panelWRef = useRef(panelW); panelWRef.current = panelW
+  // True while dragging the panel divider — the terminal suspends its fit during
+  // the drag (no per-frame reflow) and fits once on release.
+  const [resizingPanel, setResizingPanel] = useState(false)
+  const toggleConversation = useCallback(() => {
+    // Opens INSIDE the window — the panel shares the content area with the terminal
+    // (which resizes to fit). No OS-window resize.
+    setConversationOpen((c) => {
+      const next = !c
+      try { localStorage.setItem('operator.conversationOpen', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }, [])
+
+  // Drag the panel's left edge to resize it — the terminal absorbs the change.
+  // rAF-throttled so the layout updates at most once per frame, and the terminal
+  // suspends fitting until release for a smooth drag.
+  const startPanelResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = panelWRef.current
+    setResizingPanel(true)
+    let raf = 0
+    let target = startW
+    const apply = () => { raf = 0; setPanelW(target) }
+    const onMove = (ev: MouseEvent) => {
+      target = Math.min(1000, Math.max(300, Math.round(startW + (startX - ev.clientX))))
+      if (!raf) raf = requestAnimationFrame(apply)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (raf) cancelAnimationFrame(raf)
+      setPanelW(target)
+      setResizingPanel(false)
+      document.body.style.cursor = ''
+      try { localStorage.setItem('operator.canvasWidth', String(target)) } catch { /* ignore */ }
+    }
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  // Keep the reserved-port map fresh (changes as sessions spawn) so Preview can
+  // fall back to it when no dev-server banner was detected.
+  useEffect(() => {
+    let cancelled = false
+    const load = () => window.operator.getDevPorts?.().then((p) => { if (!cancelled) setReservedDevPorts(p || {}) }).catch(() => { /* */ })
+    load()
+    const iv = setInterval(load, 5000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [])
+
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c
@@ -561,24 +630,28 @@ export function DashboardView() {
 
   const allSidebarSessions = localSessions
 
-  // Drag-to-reorder in the sidebar: move the dragged session's terminal to sit
-  // where the drop target's terminal is, in the canonical `terminals` order
-  // (which drives both the sidebar list and ⌘1..9). Sessions are grouped by
-  // folder in the sidebar, so dragging the only session in a folder reorders the
-  // folders too. (Order is per-run; it isn't persisted across restarts yet.)
-  const handleReorderSession = (draggedSessionId: string, targetSessionId: string) => {
-    if (draggedSessionId === targetSessionId) return
-    const tidOf = (sid: string) => allSidebarSessions.find((s) => s.id === sid)?.terminalId
-    const dTid = tidOf(draggedSessionId)
-    const tTid = tidOf(targetSessionId)
-    if (!dTid || !tTid || dTid === tTid) return
+  // Drag-to-reorder FOLDER GROUPS in the sidebar: move the dragged project's whole
+  // block of terminals to sit before/after the drop-target project, in the canonical
+  // `terminals` order (which drives the sidebar list + ⌘1..9). `edge` is which side
+  // of the target the group was dropped on. (Per-run; not persisted across restarts.)
+  const handleReorderGroup = (draggedName: string, targetName: string, edge: 'before' | 'after') => {
+    if (draggedName === targetName) return
+    const tidsOf = (name: string) =>
+      allSidebarSessions.filter((s) => s.projectName === name).map((s) => s.terminalId).filter(Boolean) as string[]
+    const draggedTids = tidsOf(draggedName)
+    const targetTids = tidsOf(targetName)
+    if (draggedTids.length === 0 || targetTids.length === 0) return
+    const dSet = new Set(draggedTids)
     setTerminals((prev) => {
-      const from = prev.findIndex((t) => t.id === dTid)
-      const to = prev.findIndex((t) => t.id === tTid)
-      if (from < 0 || to < 0) return prev
-      const next = [...prev]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
+      const moved = prev.filter((t) => dSet.has(t.id))
+      if (moved.length === 0) return prev
+      const rest = prev.filter((t) => !dSet.has(t.id))
+      const anchor = edge === 'after' ? targetTids[targetTids.length - 1] : targetTids[0]
+      let idx = rest.findIndex((t) => t.id === anchor)
+      if (idx < 0) return prev
+      if (edge === 'after') idx += 1
+      const next = [...rest]
+      next.splice(idx, 0, ...moved)
       return next
     })
   }
@@ -769,6 +842,9 @@ export function DashboardView() {
       } else if (e.key === 'b' || e.key === 'B') {
         e.preventDefault()
         toggleSidebar()
+      } else if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault()
+        toggleConversation()
       } else if (e.key === 'w' || e.key === 'W') {
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
@@ -796,7 +872,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleConversation, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
 
   // Saved sessions not currently open — offered for restore on the splash & palette.
   const restorableSessions = useMemo(() => {
@@ -959,7 +1035,7 @@ export function DashboardView() {
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
-        onReorderSession={handleReorderSession}
+        onReorderGroup={handleReorderGroup}
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
@@ -975,7 +1051,10 @@ export function DashboardView() {
       )}
       </div>
 
-      <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+      <div style={{
+        position: 'relative', flex: 1,
+        display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden',
+      }}>
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
@@ -1026,6 +1105,8 @@ export function DashboardView() {
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
               theme={currentTheme.xterm}
+              conversationOpen={conversationOpen}
+              onToggleConversation={toggleConversation}
             />
           )
         })()}
@@ -1111,6 +1192,7 @@ export function DashboardView() {
                   terminalId={t.id}
                   theme={currentTheme.xterm}
                   replayHistory={t.reattached}
+                  suspendFit={resizingPanel}
                   active={t.id === activeTerminalId && !t.ended}
                   onDevServerDetected={(port) =>
                     setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
@@ -1232,6 +1314,42 @@ export function DashboardView() {
           </div>
         )}
       </div>
+
+      {/* Reading panel — the agent's answers as markdown, beside the terminal.
+          A sibling of the content card so it sits to its right (the root row has
+          gap: 8). Only while viewing a live session. */}
+      {contentMode === 'localTerminal' && conversationOpen && (
+        <div style={{
+          position: 'relative', width: panelW, flexShrink: 0, overflow: 'hidden',
+          background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)',
+        }}>
+          {/* Resize handle — drag the panel's left edge. */}
+          <div
+            className={`panel-resize-handle${resizingPanel ? ' is-active' : ''}`}
+            onMouseDown={startPanelResize}
+            title="Drag to resize"
+          />
+          {(() => {
+            const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
+            const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
+            const port = detected ?? reserved
+            return (
+              <CanvasPanel
+                session={activeSession}
+                devUrl={port ? `http://localhost:${port}` : null}
+                devUrlReserved={!detected && !!reserved}
+              />
+            )
+          })()}
+        </div>
+      )}
+
+      {/* Full-window capture overlay during a panel drag, so the cursor moving
+          over the terminal/iframe still delivers mousemove to the drag handler
+          (iframes & xterm otherwise swallow the events → the drag gets stuck). */}
+      {resizingPanel && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />
+      )}
 
       {paletteOpen && (
         <CommandPalette actions={paletteActions} onClose={() => setPaletteOpen(false)} />

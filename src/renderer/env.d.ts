@@ -28,6 +28,8 @@ declare global {
       startWindowDrag: () => void
       /** Toggle window zoom (fill screen ⇆ restore) — titlebar double-click. */
       toggleWindowMaximize: () => void
+      /** Grow/shrink the OS window width by `delta` CSS px (negative shrinks). */
+      growWindowWidth: (delta: number) => void
       openExternal: (url: string) => void
       /** Swap the live macOS dock icon between the 'light' and 'dark' variants. */
       setDockIcon: (variant: 'light' | 'dark') => void

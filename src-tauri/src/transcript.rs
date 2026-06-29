@@ -18,8 +18,12 @@ use std::time::Duration;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
-use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, Sessions};
+use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem};
 use crate::PtyManager;
+
+/// Recent assistant prose entries (answers + thinking) retained per session for
+/// the reading panel. Bounds the session:update payload on long sessions.
+const NARRATION_CAP: usize = 80;
 
 /// Launch info recorded by `terminal_spawn` so the tailer can find and attribute
 /// a transcript. `permission_mode` is carried through to the AgentSession for display.
@@ -56,6 +60,15 @@ struct Track {
     file: Option<PathBuf>,
     offset: u64,
     activity: Vec<ActivityEntry>,
+    /// Assistant prose (answers + thinking) for the reading panel, capped to a
+    /// recent tail so the emitted session payload stays bounded.
+    narration: Vec<NarrationEntry>,
+    /// Reconstructed plan (Plan tab) as (id, item) in order. Built from either a
+    /// TodoWrite snapshot OR the harness's incremental TaskCreate/TaskUpdate events.
+    tasks: Vec<(String, TodoItem)>,
+    /// Next id for TaskCreate — matches the harness's sequential "Task #N" since
+    /// the tailer reads the transcript from the start.
+    task_n: u32,
     summary: Option<String>,
     open_tools: HashSet<String>,
     active_subagents: i32,
@@ -80,6 +93,9 @@ impl Track {
             file: None,
             offset: 0,
             activity: vec![],
+            narration: vec![],
+            tasks: vec![],
+            task_n: 0,
             summary: None,
             open_tools: HashSet::new(),
             active_subagents: 0,
@@ -218,7 +234,29 @@ impl Track {
             None => return,
         };
         for b in blocks {
-            if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+            let btype = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            // Capture prose for the reading panel: "text" answers + "thinking".
+            // ("thinking" carries its prose under `thinking`, not `text`.)
+            if btype == "text" || btype == "thinking" {
+                let field = if btype == "thinking" { "thinking" } else { "text" };
+                if let Some(s) = b.get(field).and_then(|t| t.as_str()) {
+                    if !s.trim().is_empty() {
+                        self.narration.push(NarrationEntry {
+                            kind: btype.to_string(),
+                            text: s.to_string(),
+                            timestamp: ts.to_string(),
+                        });
+                        // Cap to the recent tail so session:update stays bounded.
+                        if self.narration.len() > NARRATION_CAP {
+                            let drop = self.narration.len() - NARRATION_CAP;
+                            self.narration.drain(0..drop);
+                        }
+                        self.dirty = true;
+                    }
+                }
+                continue;
+            }
+            if btype != "tool_use" {
                 continue;
             }
             let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("Tool").to_string();
@@ -226,6 +264,45 @@ impl Track {
             let input = b.get("input").unwrap_or(&empty);
             if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
                 self.open_tools.insert(id.to_string());
+            }
+            // The agent's plan (Plan tab) — two tool models:
+            match name.as_str() {
+                // Classic: full snapshot each call.
+                "TodoWrite" => {
+                    if let Some(arr) = input.get("todos").and_then(|t| t.as_array()) {
+                        self.tasks = arr
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, t)| {
+                                let content = t.get("content").and_then(|c| c.as_str())?;
+                                let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
+                                Some((i.to_string(), TodoItem { content: content.to_string(), status: status.to_string() }))
+                            })
+                            .collect();
+                        self.dirty = true;
+                    }
+                }
+                // Harness task tools: incremental create + update-by-id.
+                "TaskCreate" => {
+                    if let Some(subject) = input.get("subject").and_then(|s| s.as_str()) {
+                        self.task_n += 1;
+                        self.tasks.push((self.task_n.to_string(), TodoItem { content: subject.to_string(), status: "pending".into() }));
+                        self.dirty = true;
+                    }
+                }
+                "TaskUpdate" => {
+                    if let Some(id) = input.get("taskId").and_then(|t| t.as_str()) {
+                        let status = input.get("status").and_then(|s| s.as_str());
+                        if status == Some("deleted") {
+                            self.tasks.retain(|(tid, _)| tid != id);
+                        } else if let Some((_, item)) = self.tasks.iter_mut().find(|(tid, _)| tid == id) {
+                            if let Some(s) = status { item.status = s.to_string(); }
+                            if let Some(subj) = input.get("subject").and_then(|x| x.as_str()) { item.content = subj.to_string(); }
+                        }
+                        self.dirty = true;
+                    }
+                }
+                _ => {}
             }
             let summary = summarize(&name, input);
             let is_delegate = name == "Task" || name == "Agent";
@@ -255,6 +332,8 @@ impl Track {
             self.ended,
             phase,
             self.activity.clone(),
+            self.narration.clone(),
+            self.tasks.iter().map(|(_, item)| item.clone()).collect(),
             self.active_subagents,
             self.last_tool_name.clone(),
             self.started_at.clone().unwrap_or_else(|| self.last_activity_at.clone()),

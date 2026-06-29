@@ -19,12 +19,15 @@ interface TerminalPaneProps {
    *  scrollback on mount. Omitted/false for a freshly launched session (no
    *  history to replay, and fetching it would duplicate the first bytes). */
   replayHistory?: boolean
+  /** Suspend fitting while true (e.g. during a panel drag) — the terminal holds
+   *  its grid and fits once when this returns to false, for a smooth resize. */
+  suspendFit?: boolean
   onTitleChange?: (title: string) => void
   /** Fires with the port when a dev server announces itself in the output. */
   onDevServerDetected?: (port: number) => void
 }
 
-export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
+export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, suspendFit = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -35,6 +38,15 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // hold fits until output has been quiet briefly (see handleResize).
   const lastDataAtRef = useRef(0)
   const pendingFitRef = useRef<number | null>(null)
+  // WKWebView drops/mis-composites xterm's rapid partial-row repaints under Claude
+  // Code's cursor-up rewrites → stale/superimposed rows ("overprint"). xterm's
+  // BUFFER is correct, so we force a full re-render of all visible rows from the
+  // buffer — throttled during streaming + once on settle — to wipe the overprint.
+  const refreshTimerRef = useRef<number | null>(null)
+  const lastRefreshAtRef = useRef(0)
+  // Latest suspendFit without re-running the construction effect.
+  const suspendFitRef = useRef(suspendFit)
+  suspendFitRef.current = suspendFit
   // True while an IME composition is in progress — the custom key handler must not
   // intercept keys (let the textarea commit the composed text through onData).
   const isComposingRef = useRef(false)
@@ -88,6 +100,8 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   }, [])
 
   const handleResize = useCallback(() => {
+    // Held during a panel drag — the effect below fits once when it releases.
+    if (suspendFitRef.current) return
     if (pendingFitRef.current != null) {
       clearTimeout(pendingFitRef.current)
       pendingFitRef.current = null
@@ -252,9 +266,57 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (port !== null) { lastDevPortRef.current = port; cb(port) }
     }
 
+    // Force xterm to repaint every visible row from its (correct) buffer. Marks all
+    // rows dirty so the DOM renderer rebuilds them, clearing WKWebView's stale/
+    // superimposed text. Throttled (mid-stream healing) + debounced (final settle).
+    const forceRepaint = () => {
+      // Only the visible pane repaints. Hidden panes (other sessions) repainting
+      // would pile redundant term.refresh() work onto WKWebView and OVERWHELM it —
+      // that's why corruption worsened when a second session opened. They repaint
+      // on re-activation (see the active-change effect).
+      if (!activeRef.current) return
+      try { term.refresh(0, term.rows - 1) } catch { /* disposed */ }
+    }
+    // term.refresh() rewrites the row DOM, but WKWebView sometimes doesn't
+    // RECOMPOSITE the (stale) layer, so an old glyph lingers on screen even though
+    // the DOM is correct (the residual ✳/👀). Nudging an identity 3D transform on
+    // the xterm element invalidates its compositor layer → forces a real repaint.
+    // Heavier than refresh, so only on settle + the periodic heal, never per-chunk.
+    const hardRepaint = () => {
+      if (!activeRef.current) return
+      try {
+        term.refresh(0, term.rows - 1)
+        const el = term.element as HTMLElement | null
+        if (el) {
+          el.style.transform = 'translateZ(0)'
+          requestAnimationFrame(() => { if (termRef.current === term) el.style.transform = '' })
+        }
+      } catch { /* disposed */ }
+    }
+    const scheduleRepaint = () => {
+      const now = Date.now()
+      if (now - lastRefreshAtRef.current > 180) {
+        lastRefreshAtRef.current = now
+        forceRepaint()
+      }
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = window.setTimeout(() => {
+        lastRefreshAtRef.current = Date.now()
+        hardRepaint() // settle: force a real recomposite to clear lingering glyphs
+      }, 90)
+    }
+    // The throttled per-write repaint can fall behind during long, sustained
+    // output (the corruption "starts the longer the session" — drift accumulates
+    // faster than it heals). A steady low-frequency repaint, running whenever
+    // output is recent, continuously re-syncs the viewport regardless of write
+    // cadence. Cheap (≤1 viewport repaint/sec) and pauses when the session is idle.
+    const healInterval = window.setInterval(() => {
+      if (Date.now() - lastDataAtRef.current < 6000) hardRepaint()
+    }, 1000)
+
     const writeLive = (data: string) => {
       lastDataAtRef.current = Date.now() // gate fits while output is streaming
-      term.write(data)
+      term.write(data, scheduleRepaint) // repaint after xterm parses+renders the chunk
       detectDevServer(data)
     }
     // On (re)attach, replay the pty's buffered output first so a session that
@@ -292,9 +354,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       flushPending()
     }
 
-    // Resize observer
+    // Resize observer (container/layout changes) + a window resize listener
+    // (OS-window resizes, which ResizeObserver can miss under WKWebView). Both
+    // funnel through the same quiet-gated fit.
     const observer = new ResizeObserver(handleResize)
     observer.observe(containerRef.current)
+    window.addEventListener('resize', handleResize)
 
     // Claude Code enables mouse tracking, which makes xterm forward the wheel to
     // the app instead of scrolling. When that's on (and we're not in an
@@ -360,6 +425,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       clearTimeout(kick1)
       clearTimeout(kick2)
       if (pendingFitRef.current != null) clearTimeout(pendingFitRef.current)
+      if (refreshTimerRef.current != null) clearTimeout(refreshTimerRef.current)
+      clearInterval(healInterval)
+      window.removeEventListener('resize', handleResize)
       unsubData()
       observer.disconnect()
       container.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
@@ -390,6 +458,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     term.options.minimumContrastRatio = isLightBackground(theme.background) ? 4.5 : 1
   }, [theme])
 
+  // When a panel drag releases (suspendFit → false), fit once so the terminal
+  // snaps to its final size in a single pass rather than reflowing every frame.
+  useEffect(() => {
+    if (!suspendFit) handleResize()
+  }, [suspendFit, handleResize])
+
   // Focus/blur and refit when active state changes
   useEffect(() => {
     const term = termRef.current
@@ -406,6 +480,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       } catch {
         // ignore
       }
+      // Repaint on becoming visible — it skipped repaints while hidden, so re-sync
+      // the viewport to the buffer (also covers any drift from while it was backgrounded).
+      try { term.refresh(0, term.rows - 1) } catch { /* ignore */ }
       term.focus()
     } else {
       term.options.cursorBlink = false

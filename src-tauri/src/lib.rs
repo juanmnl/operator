@@ -172,6 +172,25 @@ struct TerminalDataPayload {
 
 // --- Terminal commands ------------------------------------------------------
 
+/// Strip env vars that mark a process as running INSIDE another Claude Code
+/// session. If Operator itself was launched from a Claude session (e.g. `npm run
+/// tauri dev` started from a chat), these leak in and make the `claude` WE spawn
+/// behave as a nested "child" session — which does NOT write a normal project
+/// transcript, so the transcript observer (and the reading panel / activity
+/// timeline) sees nothing. A session Operator launches must be a clean top-level
+/// session. No-op when Operator was launched normally (vars unset).
+fn strip_nested_session_env(cmd: &mut CommandBuilder) {
+    for k in [
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_EXECPATH",
+    ] {
+        cmd.env_remove(k);
+    }
+}
+
 #[tauri::command]
 fn terminal_spawn(
     app: tauri::AppHandle,
@@ -260,6 +279,7 @@ fn terminal_spawn(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.args(["-ilc", &inner]);
     cmd.cwd(&cwd);
+    strip_nested_session_env(&mut cmd);
     cmd.env("OPERATOR_TERMINAL_ID", &id);
     // Hand the reserved port to the dev tooling too: OPERATOR_DEV_PORT (read by
     // this repo's vite/tauri config) and PORT (honoured by Next.js, CRA, many
@@ -345,6 +365,7 @@ fn shell_spawn(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.args(["-il"]); // interactive login shell, no command — a plain prompt
     cmd.cwd(&cwd);
+    strip_nested_session_env(&mut cmd);
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

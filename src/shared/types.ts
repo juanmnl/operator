@@ -57,12 +57,27 @@ export interface AgentSession {
   status: SessionStatus
   phase: SessionPhase
   activity: ActivityEntry[]
+  /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
+  messages?: NarrationEntry[]
+  /** Latest TodoWrite plan snapshot (Plan tab). */
+  todos?: TodoItem[]
   activeSubagents: number
   lastToolName: string | null
   startedAt: string
   lastActivityAt: string
   terminalId?: string
   permissionMode?: string
+}
+
+export interface NarrationEntry {
+  kind: 'text' | 'thinking'
+  text: string
+  timestamp: string
+}
+
+export interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
 }
 
 export interface ManagedTerminal {

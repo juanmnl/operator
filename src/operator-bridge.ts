@@ -6,6 +6,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { LogicalSize } from '@tauri-apps/api/dpi'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
@@ -110,6 +111,19 @@ export function installBridge(): void {
     // to the previous size — matching native macOS title-bar behavior. Needs the
     // `core:window:allow-toggle-maximize` capability (core:default is getters only).
     toggleWindowMaximize: () => { void getCurrentWindow().toggleMaximize() },
+    // Grow/shrink the OS window width by `delta` CSS px (negative shrinks), so a
+    // side panel can be APPENDED to the right of the window instead of stealing
+    // width from the terminal. Clamped to a sane minimum. No-op if maximized.
+    growWindowWidth: async (delta: number) => {
+      const win = getCurrentWindow()
+      try {
+        if (await win.isMaximized()) return
+        const sf = await win.scaleFactor()
+        const inner = (await win.innerSize()).toLogical(sf)
+        const width = Math.max(720, Math.round(inner.width + delta))
+        await win.setSize(new LogicalSize(width, Math.round(inner.height)))
+      } catch { /* window ops can race teardown */ }
+    },
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
