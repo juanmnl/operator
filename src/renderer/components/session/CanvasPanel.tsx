@@ -34,7 +34,9 @@ export function CanvasPanel({ session, devUrl, devUrlReserved }: { session?: Age
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       {/* Mode switcher — text tabs, accent colour for the active one, no fills. */}
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '7px 10px', borderBottom: '1px solid var(--border)' }}>
+      {/* Same 36px height + centered content as the main panel's SessionToolbar,
+          so the tabs sit on exactly the same line as the toolbar title/icons. */}
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, height: 36, padding: '0 10px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
         {MODES.map((m) => (
           <button
             key={m.id}
@@ -47,7 +49,9 @@ export function CanvasPanel({ session, devUrl, devUrlReserved }: { session?: Age
             }}
           >
             {m.label}
-            {m.id === 'preview' && devUrl ? ' ●' : ''}
+            {/* Live dot ONLY when a dev server is actually detected/serving — not for
+                the merely-reserved port (devUrlReserved), which serves nothing yet. */}
+            {m.id === 'preview' && devUrl && !devUrlReserved ? ' ●' : ''}
             {m.id === 'plan' && (session?.todos?.length ?? 0) > 0
               ? ` ${session!.todos!.filter((t) => t.status === 'completed').length}/${session!.todos!.length}`
               : ''}

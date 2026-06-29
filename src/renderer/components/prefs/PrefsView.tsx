@@ -28,8 +28,10 @@ function IconCard({ variant, active, onSelect }: {
       style={{
         display: 'flex', flexDirection: 'column', gap: 0, padding: 0, cursor: 'pointer',
         borderRadius: 9, overflow: 'hidden', textAlign: 'left', background: 'transparent',
+        outline: 'none',
+        // Selection = accent border only (colour for meaning); no box-shadow ring
+        // and no solid-accent fill anywhere, per the global UI style rule.
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-        boxShadow: active ? '0 0 0 1px var(--accent)' : 'none',
       }}
     >
       <div style={{ background: bg, padding: '18px 0', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
@@ -51,8 +53,10 @@ function IconCard({ variant, active, onSelect }: {
           style={{
             width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 8, color: 'var(--bg-terminal)',
-            background: active ? 'var(--accent)' : 'transparent',
+            fontSize: 10, fontWeight: 700, lineHeight: 1,
+            // Accent check (colour for meaning, no fill) when selected; hollow ring otherwise.
+            color: active ? 'var(--accent)' : 'transparent',
+            background: 'transparent',
             border: active ? 'none' : '1px solid var(--border)',
           }}
         >{active ? '✓' : ''}</span>
@@ -81,9 +85,9 @@ function ThemeCard({ name, variant, active, onSelect }: {
       style={{
         display: 'flex', flexDirection: 'column', gap: 0, padding: 0, cursor: 'pointer',
         borderRadius: 9, overflow: 'hidden', textAlign: 'left',
-        background: 'transparent',
+        background: 'transparent', outline: 'none',
+        // Accent border for selection — no ring, no solid fill (global UI rule).
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-        boxShadow: active ? '0 0 0 1px var(--accent)' : 'none',
       }}
     >
       {/* miniature terminal */}
@@ -117,8 +121,10 @@ function ThemeCard({ name, variant, active, onSelect }: {
           style={{
             width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 8, color: v['--bg-terminal'],
-            background: active ? v['--accent'] : 'transparent',
+            fontSize: 10, fontWeight: 700, lineHeight: 1,
+            // Accent check (no fill) when selected; hollow ring otherwise.
+            color: active ? v['--accent'] : 'transparent',
+            background: 'transparent',
             border: active ? 'none' : `1px solid ${v['--border']}`,
           }}
         >{active ? '✓' : ''}</span>
@@ -195,7 +201,10 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
       flex: 1, display: 'flex', flexDirection: 'column',
       fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden',
     }}>
-      <div style={{ padding: '16px 24px 0', flexShrink: 0 }}>
+      {/* Header + content share one centered max-width column (margin:0 auto on a
+          flex item centers it via auto-margins, and still fills narrow windows) so
+          the page is balanced instead of pinned to the left on a wide window. */}
+      <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
           Operator preferences
         </h2>
@@ -204,7 +213,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
         </p>
       </div>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 560 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <section style={{ marginBottom: 28 }}>
           <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
             Updates

@@ -172,6 +172,39 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   padding: 12px 14px;
   margin-bottom: 10px;
 }
+
+/* Human prompt = a FLAG that separates chunks of answers in the log. The command
+   is the section label for the agent's replies beneath it (until the next prompt).
+   A top rule + accent chevron mark the boundary; the command clamps to a few lines
+   so a long paste stays a label, not a wall (full text on hover via title). */
+.reading-flag {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 22px 0 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.reading-flag:first-child {
+  border-top: none;
+  padding-top: 2px;
+  margin-top: 0;
+}
+.reading-flag-marker {
+  flex-shrink: 0;
+  color: var(--accent);
+  font: 700 13px/1.4 'SF Mono', Menlo, monospace;
+}
+.reading-flag-text {
+  font: 600 12px/1.45 'Inter', system-ui, sans-serif;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 /* Saved state is indicated by the star's colour only (no accent border/fill) —
    per the UI rule: transparent, text-only colour for meaning. */
 /* Collapse / save / dismiss actions — top-right. Revealed on hover; always shown

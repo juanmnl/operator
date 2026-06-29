@@ -70,7 +70,7 @@ export interface AgentSession {
 }
 
 export interface NarrationEntry {
-  kind: 'text' | 'thinking'
+  kind: 'text' | 'thinking' | 'user'
   text: string
   timestamp: string
 }

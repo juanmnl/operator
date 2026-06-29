@@ -56,8 +56,9 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
-      {/* Header */}
-      <div style={{ padding: '16px 24px 0', flexShrink: 0 }}>
+      {/* Header — centered max-width column (matches PrefsView so every page is
+          balanced on a wide window instead of pinned left). */}
+      <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
           {projectName}
         </h2>
@@ -73,6 +74,7 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
         padding: '16px 24px 0',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
+        maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box',
       }}>
         {TABS.map((tab) => (
           <button
@@ -97,7 +99,7 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         {activeTab === 'Instructions' && (
           <InstructionsSection
             mdFiles={prefs.mdFiles}

@@ -73,7 +73,7 @@ export function AppPreviewPanel({ url, reserved }: { url: string | null; reserve
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-        padding: '6px 8px 6px 12px', borderBottom: '1px solid var(--border)',
+        height: 30, padding: '0 8px 0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
       }}>
         <span style={{
           fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, color: 'var(--fg-muted)',

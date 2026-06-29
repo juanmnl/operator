@@ -80,9 +80,11 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
       {/* Draggable title bar area */}
       <DragRegion style={{
         display: 'flex',
-        alignItems: 'flex-end',
+        alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '10px 12px 6px',
+        height: 36,
+        padding: '0 12px',
+        boxSizing: 'border-box',
         flexShrink: 0,
         borderBottom: '1px solid var(--border)',
         fontFamily: "'Inter', system-ui, sans-serif",

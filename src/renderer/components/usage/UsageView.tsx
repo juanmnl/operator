@@ -26,7 +26,7 @@ export function UsageView() {
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
       {/* Header */}
-      <div style={{ padding: '16px 24px 0', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+      <div style={{ padding: '16px 24px 0', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>Usage</h2>
           <div style={{ display: 'flex', gap: 2, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 2, flexShrink: 0 }}>
@@ -52,7 +52,7 @@ export function UsageView() {
         </div>
       </div>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '16px 24px' }} className="scroll-hidden">
+      <div style={{ flex: 1, overflow: 'auto', padding: '16px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }} className="scroll-hidden">
         {tab === 'usage' ? <InsightsTab days={days} /> : <CostTab days={days} />}
       </div>
     </div>

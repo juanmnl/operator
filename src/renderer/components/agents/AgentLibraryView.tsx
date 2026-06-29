@@ -128,8 +128,9 @@ export function AgentLibraryView() {
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
-      {/* Header */}
-      <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+      {/* Header — centered, wider column than the doc pages since this is a
+          list+editor workspace (still balanced instead of pinned left). */}
+      <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>Agents</h2>
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7, lineHeight: 1.6 }}>
           Define subagents and pick which model handles each kind of task. Saved as{' '}
@@ -138,7 +139,7 @@ export function AgentLibraryView() {
         </p>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         {/* List column */}
         <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto', padding: '12px 10px' }}>
           <ListGroup

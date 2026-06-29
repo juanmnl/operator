@@ -32,8 +32,11 @@ function blockKey(m: NarrationEntry): string {
 }
 
 export function ConversationPanel({ session }: { session?: AgentSession }) {
-  const answers = useMemo(
-    () => (session?.messages ?? []).filter((m) => m.kind === 'text'),
+  // The conversation = human prompts (kind 'user') interleaved with the agent's
+  // answers (kind 'text'), in transcript order — so it reads as a chat, not a
+  // one-sided log. (Thinking blocks are excluded — Claude Code stores them empty.)
+  const turns = useMemo(
+    () => (session?.messages ?? []).filter((m) => m.kind === 'user' || m.kind === 'text'),
     [session?.messages],
   )
   const [saved, setSaved] = useState<Set<string>>(() => loadSet(SAVED_KEY))
@@ -55,10 +58,11 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   const toggleCollapsed = (k: string) =>
     setCollapsed((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); persist(COLLAPSED_KEY, n); return n })
 
-  const visible = answers.filter((m) => {
+  const visible = turns.filter((m) => {
     const k = blockKey(m)
-    if (dismissed.has(k)) return false
-    if (savedOnly && !saved.has(k)) return false
+    if (m.kind === 'text' && dismissed.has(k)) return false
+    // Saved filter applies to answers only; in that mode the user turns drop out.
+    if (savedOnly) return m.kind === 'text' && saved.has(k)
     return true
   })
 
@@ -77,7 +81,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 12px', borderBottom: '1px solid var(--border)',
+        height: 30, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
         fontFamily: "'Inter', system-ui, sans-serif",
       }}>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -104,6 +108,17 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
         ) : (
           visible.map((m) => {
             const k = blockKey(m)
+            // Human prompt — a FLAG that separates the chunks of answers below it.
+            // The command itself is the section label for the agent's replies until
+            // the next prompt.
+            if (m.kind === 'user') {
+              return (
+                <div key={k} className="reading-flag" title={m.text}>
+                  <span className="reading-flag-marker">›</span>
+                  <span className="reading-flag-text">{m.text}</span>
+                </div>
+              )
+            }
             const isSaved = saved.has(k)
             const isCollapsed = collapsed.has(k)
             return (

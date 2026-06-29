@@ -26,7 +26,7 @@ export function PlanPanel({ session }: { session?: AgentSession }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-        padding: '8px 14px', borderBottom: '1px solid var(--border)',
+        height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
         fontSize: 11, color: 'var(--fg-muted)',
       }}>
         <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>{done}/{todos.length} done</span>

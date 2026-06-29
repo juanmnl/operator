@@ -219,6 +219,20 @@ impl Track {
                     self.dirty = true;
                 }
             }
+            // Capture the human prompt for the Chat panel so it reads as a real
+            // conversation (user turn + assistant answer), not a one-sided log.
+            // Truncate so a big pasted doc doesn't bloat the session payload.
+            let mut prompt = text.clone();
+            if prompt.chars().count() > 4000 {
+                prompt = prompt.chars().take(4000).collect::<String>() + "…";
+            }
+            let ts = v.get("timestamp").and_then(|t| t.as_str()).map(|s| s.to_string()).unwrap_or_else(now_iso);
+            self.narration.push(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts });
+            if self.narration.len() > NARRATION_CAP {
+                let drop = self.narration.len() - NARRATION_CAP;
+                self.narration.drain(0..drop);
+            }
+            self.dirty = true;
         }
     }
 
