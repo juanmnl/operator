@@ -44,6 +44,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // buffer — throttled during streaming + once on settle — to wipe the overprint.
   const refreshTimerRef = useRef<number | null>(null)
   const lastRefreshAtRef = useRef(0)
+  // Output that arrived while this pane was HIDDEN — buffered instead of written,
+  // because xterm renders even when not visible, and several background panes
+  // rendering at once overload WKWebView and corrupt the VISIBLE pane (the
+  // "worsens after the first session" report). Flushed when the pane activates.
+  const bgBufferRef = useRef<string[]>([])
+  const bgBufferLenRef = useRef(0)
   // Latest suspendFit without re-running the construction effect.
   const suspendFitRef = useRef(suspendFit)
   suspendFitRef.current = suspendFit
@@ -314,10 +320,33 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (Date.now() - lastDataAtRef.current < 6000) hardRepaint()
     }, 1000)
 
+    const BG_CAP = 512_000 // ~512KB of background output retained per hidden pane
+    // Flush output buffered while hidden, in order, before any live/active write.
+    const flushBg = () => {
+      if (!bgBufferRef.current.length) return
+      const buf = bgBufferRef.current.join('')
+      bgBufferRef.current = []
+      bgBufferLenRef.current = 0
+      try { term.write(buf) } catch { /* disposed */ }
+    }
     const writeLive = (data: string) => {
       lastDataAtRef.current = Date.now() // gate fits while output is streaming
-      term.write(data, scheduleRepaint) // repaint after xterm parses+renders the chunk
-      detectDevServer(data)
+      detectDevServer(data) // scan raw output for the dev-server banner (cheap, no render)
+      // Strip Claude's composer-divider ornaments (👀 eyes / 👣 footprints). Replace
+      // with 2 spaces, not nothing — they're double-width, so same-width keeps Claude's
+      // cursor math aligned with xterm (removing them would desync → real corruption).
+      const clean = data.replace(/[\u{1F440}\u{1F463}]/gu, '  ')
+      if (activeRef.current) {
+        flushBg() // catch up anything buffered while hidden, preserving order
+        term.write(clean, scheduleRepaint) // repaint after xterm parses+renders the chunk
+      } else {
+        // Hidden: buffer, don't render (see bgBufferRef). Trim oldest past the cap.
+        bgBufferRef.current.push(clean)
+        bgBufferLenRef.current += clean.length
+        while (bgBufferLenRef.current > BG_CAP && bgBufferRef.current.length > 1) {
+          bgBufferLenRef.current -= bgBufferRef.current.shift()!.length
+        }
+      }
     }
     // On (re)attach, replay the pty's buffered output first so a session that
     // survived a webview reload shows its prior scrollback instead of a blank pane.
@@ -474,6 +503,14 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     term.options.macOptionIsMeta = getMacOptionIsMeta()
 
     if (active) {
+      // Flush output buffered while this pane was hidden (it didn't render in the
+      // background to keep WKWebView load off the visible pane), in order, first.
+      if (bgBufferRef.current.length) {
+        const buf = bgBufferRef.current.join('')
+        bgBufferRef.current = []
+        bgBufferLenRef.current = 0
+        try { term.write(buf) } catch { /* ignore */ }
+      }
       term.options.cursorBlink = true
       try {
         fitRef.current?.fit()
