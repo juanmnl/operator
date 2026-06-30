@@ -15,6 +15,8 @@ mod folderprefs;
 mod transcript;
 #[path = "tray_anim.rs"]
 mod tray_anim;
+#[path = "gridterm.rs"]
+mod gridterm;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use backend::{AgentSession, Sessions};
 
@@ -199,6 +201,10 @@ fn terminal_spawn(
     session_id: String,
     permission_mode: Option<String>,
     tui_mode: Option<String>,
+    color_scheme: Option<String>,
+    grid: Option<bool>,
+    term_bg: Option<String>,
+    term_fg: Option<String>,
     mgr: State<Arc<PtyManager>>,
     reg: State<transcript::TrackRegistry>,
 ) -> Result<String, String> {
@@ -207,6 +213,15 @@ fn terminal_spawn(
         .map_err(|e| e.to_string())?;
 
     let id = format!("t{}", mgr.next.fetch_add(1, Ordering::Relaxed));
+
+    // Grid renderer: stand up the alacritty parser core NOW (matching the pty's 100×30)
+    // so it parses and answers Claude's queries (background colour, device attributes)
+    // from the very first byte — its OSC background query arrives before the pane mounts.
+    if grid.unwrap_or(false) {
+        let bg = term_bg.as_deref().and_then(parse_hex_rgb).unwrap_or((11, 13, 16));
+        let fg = term_fg.as_deref().and_then(parse_hex_rgb).unwrap_or((230, 230, 230));
+        gridterm::create(&id, 100, 30, bg, fg);
+    }
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
 
@@ -292,6 +307,13 @@ fn terminal_spawn(
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Tell Claude Code the terminal's light/dark background. It can't OSC-query our
+    // grid renderer, so without this it assumes dark and renders dark content onto a
+    // light pane (the dark/white split). COLORFGBG "fg;bg" as palette indices —
+    // bg 0 = dark terminal, 15 = light.
+    if let Some(scheme) = color_scheme.as_deref() {
+        cmd.env("COLORFGBG", if scheme == "light" { "0;15" } else { "15;0" });
+    }
     // Claude Code gates its inline "prompt suggestions" (ghost-text you accept
     // with Tab/Enter) on recognising the host terminal via TERM_PROGRAM, which a
     // bare pty leaves unset. Identify as iTerm so the feature turns on; xterm.js
@@ -329,6 +351,11 @@ fn terminal_spawn(
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
                     mgr_arc.push_history(&emit_id, &buf[..n]);
+                    // Grid handshake: write alacritty's replies (colour/device/cursor) back.
+                    let resp = gridterm::feed(&app, &emit_id, &buf[..n], n < buf.len());
+                    if !resp.is_empty() {
+                        if let Some(p) = lock(&mgr_arc.ptys).get(&emit_id) { let _ = p.tx.send(resp); }
+                    }
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -338,6 +365,7 @@ fn terminal_spawn(
         lock(&mgr_arc.ptys).remove(&emit_id);
         mgr_arc.release_port(&emit_id);
         mgr_arc.clear_history(&emit_id);
+        gridterm::dispose(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -393,6 +421,11 @@ fn shell_spawn(
                 Ok(n) => {
                     mgr_arc.note_activity(&emit_id);
                     mgr_arc.push_history(&emit_id, &buf[..n]);
+                    // Grid handshake: write alacritty's replies (colour/device/cursor) back.
+                    let resp = gridterm::feed(&app, &emit_id, &buf[..n], n < buf.len());
+                    if !resp.is_empty() {
+                        if let Some(p) = lock(&mgr_arc.ptys).get(&emit_id) { let _ = p.tx.send(resp); }
+                    }
                     use base64::Engine;
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
@@ -401,6 +434,7 @@ fn shell_spawn(
         }
         lock(&mgr_arc.ptys).remove(&emit_id);
         mgr_arc.clear_history(&emit_id);
+        gridterm::dispose(&emit_id);
         let _ = app.emit("terminal:exit", emit_id.clone());
     });
 
@@ -426,6 +460,60 @@ fn terminal_resize(id: String, cols: u16, rows: u16, mgr: State<Arc<PtyManager>>
     if let Some(p) = lock(&mgr.ptys).get(&id) {
         let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
+}
+
+// ---- grid terminal (our own, non-native — see gridterm.rs) ------------------
+
+/// Parse "#rrggbb" (or "rrggbb") to an RGB triple for the grid terminal's colour replies.
+fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 { return None }
+    Some((
+        u8::from_str_radix(&s[0..2], 16).ok()?,
+        u8::from_str_radix(&s[2..4], 16).ok()?,
+        u8::from_str_radix(&s[4..6], 16).ok()?,
+    ))
+}
+
+#[tauri::command]
+fn gridterm_set_theme(id: String, bg: String, fg: String) {
+    let bg = parse_hex_rgb(&bg).unwrap_or((11, 13, 16));
+    let fg = parse_hex_rgb(&fg).unwrap_or((230, 230, 230));
+    gridterm::set_theme(&id, bg, fg);
+}
+
+#[tauri::command]
+fn gridterm_attach(app: AppHandle, id: String, cols: usize, rows: usize, mgr: State<Arc<PtyManager>>) {
+    // Size the pty to match so Claude Code lays out at the pane's real width, not the
+    // 80×24 it was spawned with.
+    if let Some(p) = lock(&mgr.ptys).get(&id) {
+        let _ = p.master.resize(PtySize { rows: rows as u16, cols: cols as u16, pixel_width: 0, pixel_height: 0 });
+    }
+    gridterm::attach(&app, &id, cols, rows);
+}
+
+/// Resize both the pty and the alacritty grid so they stay in lockstep.
+#[tauri::command]
+fn gridterm_resize(app: AppHandle, id: String, cols: usize, rows: usize, mgr: State<Arc<PtyManager>>) {
+    if let Some(p) = lock(&mgr.ptys).get(&id) {
+        let _ = p.master.resize(PtySize { rows: rows as u16, cols: cols as u16, pixel_width: 0, pixel_height: 0 });
+    }
+    gridterm::resize_term(&app, &id, cols, rows);
+}
+
+#[tauri::command]
+fn gridterm_scroll(app: AppHandle, id: String, delta: i32, mgr: State<Arc<PtyManager>>) {
+    // In fullscreen apps this returns SGR mouse-wheel bytes to forward to the pty so
+    // the app scrolls its own view; otherwise it scrolls the grid and returns nothing.
+    let resp = gridterm::scroll(&app, &id, delta);
+    if !resp.is_empty() {
+        if let Some(p) = lock(&mgr.ptys).get(&id) { let _ = p.tx.send(resp); }
+    }
+}
+
+#[tauri::command]
+fn gridterm_detach(id: String) {
+    gridterm::detach(&id);
 }
 
 #[tauri::command]
@@ -751,6 +839,11 @@ pub fn run() {
             shell_spawn,
             terminal_write,
             terminal_resize,
+            gridterm_attach,
+            gridterm_resize,
+            gridterm_scroll,
+            gridterm_set_theme,
+            gridterm_detach,
             terminal_kill,
             terminal_list,
             terminal_history,

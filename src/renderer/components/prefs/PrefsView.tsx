@@ -410,6 +410,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               )
             })}
           </div>
+
         </section>
 
       </div>

@@ -1,11 +1,15 @@
 import { useState } from 'react'
 import { AgentSession } from '../../../shared/types'
+import type { SavedSession } from '../../views/DashboardView'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
 
 interface SidebarProps {
   sessions: AgentSession[]
+  /** Sessions from prior runs, not currently open — listed dormant for one-click resume. */
+  restorableSessions?: SavedSession[]
+  onRestoreSession?: (saved: SavedSession) => void
   activeSessionId: string | null
   customNames: Record<string, string>
   activeFolderPrefs: string | null
@@ -42,7 +46,7 @@ interface SidebarProps {
   onToggleCollapse?: () => void
 }
 
-export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
+export function Sidebar({ sessions, restorableSessions, onRestoreSession, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
   // Project name of the folder group currently being dragged for reorder — lifted
   // here so a drag can target any other group (each FolderGroup is a drop zone).
   const [dragGroup, setDragGroup] = useState<string | null>(null)
@@ -168,7 +172,7 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
           WebkitAppRegion: 'no-drag',
         }}
       >
-        {sessions.length === 0 && (
+        {sessions.length === 0 && (!restorableSessions || restorableSessions.length === 0) && (
           <p style={{ fontSize: 11, color: 'var(--fg-muted)', padding: '8px 12px' }}>
             No active sessions
           </p>
@@ -193,6 +197,52 @@ export function Sidebar({ sessions, activeSessionId, customNames, activeFolderPr
             onReorderGroup={onReorderGroup}
           />
         ))}
+
+        {/* Previously open — sessions from earlier runs the live pty list no longer
+            has (a full app restart kills the ptys). Listed dormant so the sidebar
+            isn't empty after a restart; click resumes the conversation. */}
+        {restorableSessions && restorableSessions.length > 0 && onRestoreSession && (
+          <div style={{ marginTop: sessions.length > 0 ? 14 : 4 }}>
+            <p style={{
+              fontSize: 10, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase',
+              color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 12px 4px', margin: 0,
+            }}>
+              Previously open
+            </p>
+            {restorableSessions.slice(0, 12).map((s) => (
+              <button
+                key={s.key}
+                onClick={() => onRestoreSession(s)}
+                title={`Resume — ${s.cwd}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  border: 'none', background: 'transparent', cursor: 'pointer',
+                  padding: '6px 12px', borderRadius: 8, textAlign: 'left',
+                  color: 'var(--fg)', opacity: 0.55, font: 'inherit', outline: 'none',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.9'; e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.55'; e.currentTarget.style.background = 'transparent' }}
+              >
+                {/* Hollow dot — dormant, distinct from the live StatusWave dots */}
+                <span style={{
+                  flexShrink: 0, width: 7, height: 7, borderRadius: '50%',
+                  border: '1.2px solid var(--fg-muted)',
+                }} />
+                <span style={{
+                  flex: 1, minWidth: 0, fontSize: 12,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {s.customName || s.projectName}
+                </span>
+                {s.claudeSessionId && (
+                  <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--fg-muted)', opacity: 0.8 }}>
+                    resume
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Stats row — at-a-glance counts */}

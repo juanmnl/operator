@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo, Fragment } from 'react'
 
 export interface PaletteAction {
   id: string
@@ -16,6 +16,10 @@ interface CommandPaletteProps {
   actions: PaletteAction[]
   onClose: () => void
 }
+
+// Section order when browsing (no query), most-reached first. Sections are set apart
+// by their headers + spacing alone — no decorative colour (it carried no meaning).
+const GROUP_ORDER = ['Session', 'Continue', 'Recent', 'New', 'View', 'Settings']
 
 /** Cheap fuzzy match: returns a score (lower = better) or -1 for no match. */
 function score(query: string, text: string): number {
@@ -41,39 +45,81 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const searching = !!query.trim()
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return actions
-    const scored = actions
-      .map((a) => {
-        const haystack = `${a.label} ${a.detail || ''} ${a.group || ''}`
-        const s = score(query.trim(), haystack)
-        return { action: a, score: s }
-      })
-      .filter((s) => s.score >= 0)
-      .sort((a, b) => a.score - b.score)
-    return scored.map((s) => s.action)
-  }, [query, actions])
+  // When searching: rank across everything (flat). When browsing: keep every action
+  // but order it by section so the rendered headers group cleanly.
+  const ordered = useMemo(() => {
+    if (searching) {
+      return actions
+        .map((a) => ({ a, s: score(query.trim(), `${a.label} ${a.detail || ''} ${a.group || ''}`) }))
+        .filter((x) => x.s >= 0)
+        .sort((x, y) => x.s - y.s)
+        .map((x) => x.a)
+    }
+    const rank = (g?: string) => { const i = GROUP_ORDER.indexOf(g || ''); return i < 0 ? 999 : i }
+    return [...actions].sort((a, b) => rank(a.group) - rank(b.group))
+  }, [query, actions, searching])
 
   useEffect(() => { setSelectedIdx(0) }, [query])
 
   useEffect(() => {
-    const el = listRef.current?.children[selectedIdx] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
+    listRef.current?.querySelector<HTMLElement>(`[data-row="${selectedIdx}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [selectedIdx])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx((i) => Math.min(filtered.length - 1, i + 1)); return }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx((i) => Math.min(ordered.length - 1, i + 1)); return }
     if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIdx((i) => Math.max(0, i - 1)); return }
     if (e.key === 'Enter') {
       e.preventDefault()
-      const chosen = filtered[selectedIdx]
+      const chosen = ordered[selectedIdx]
       if (chosen) { chosen.run(); onClose() }
     }
   }
+
+  const Row = ({ a, i }: { a: PaletteAction; i: number }) => (
+    <div
+      data-row={i}
+      onMouseEnter={() => setSelectedIdx(i)}
+      onClick={() => { a.run(); onClose() }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '7px 14px', cursor: 'pointer', borderRadius: 6, margin: '0 6px',
+        background: i === selectedIdx ? 'var(--bg-surface)' : 'transparent',
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {a.label}
+        </div>
+        {a.detail && (
+          <div style={{
+            fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+          }}>
+            {a.detail}
+          </div>
+        )}
+      </div>
+      {/* While searching there are no section headers, so tag the group inline. */}
+      {searching && a.group && (
+        <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--fg-muted)', opacity: 0.6, flexShrink: 0 }}>
+          {a.group}
+        </span>
+      )}
+      {a.hint && (
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.55, flexShrink: 0, fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace" }}>
+          {a.hint}
+        </span>
+      )}
+    </div>
+  )
+
+  let lastGroup = ''
 
   return (
     <div
@@ -90,7 +136,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 560, maxWidth: 'calc(100vw - 80px)',
-          maxHeight: '60vh', display: 'flex', flexDirection: 'column',
+          maxHeight: '64vh', display: 'flex', flexDirection: 'column',
           background: 'var(--bg-sidebar)',
           border: '1px solid var(--border)',
           borderRadius: 10,
@@ -103,7 +149,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Type to search…"
+          placeholder="Search sessions, settings, actions…"
           style={{
             padding: '12px 16px',
             fontSize: 13, fontFamily: 'inherit',
@@ -114,59 +160,55 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
             outline: 'none',
           }}
         />
-        <div ref={listRef} style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
-          {filtered.length === 0 && (
+        <div ref={listRef} style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
+          {ordered.length === 0 && (
             <div style={{ padding: '20px 16px', fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, textAlign: 'center' }}>
               No matches
             </div>
           )}
-          {filtered.map((a, i) => (
-            <div
-              key={a.id}
-              onMouseEnter={() => setSelectedIdx(i)}
-              onClick={() => { a.run(); onClose() }}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '7px 14px',
-                cursor: 'pointer',
-                background: i === selectedIdx ? 'var(--bg-surface)' : 'transparent',
-              }}
-            >
-              {a.group && (
-                <span style={{
-                  fontSize: 9, fontWeight: 600, textTransform: 'uppercase',
-                  letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.6,
-                  width: 56, flexShrink: 0,
-                }}>
-                  {a.group}
-                </span>
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.label}
-                </div>
-                {a.detail && (
+          {ordered.map((a, i) => {
+            // Browsing: emit a section header whenever the group changes.
+            const header = !searching && a.group !== lastGroup ? a.group : null
+            lastGroup = a.group || ''
+            return (
+              <Fragment key={a.id}>
+                {header && (
                   <div style={{
-                    fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 1,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+                    padding: '10px 20px 4px', fontSize: 9.5, fontWeight: 700,
+                    textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--fg-muted)', opacity: 0.65,
                   }}>
-                    {a.detail}
+                    {header}
                   </div>
                 )}
-              </div>
-              {a.hint && (
-                <span style={{
-                  fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, flexShrink: 0,
-                  fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-                }}>
-                  {a.hint}
-                </span>
-              )}
-            </div>
-          ))}
+                <Row a={a} i={i} />
+              </Fragment>
+            )
+          })}
+        </div>
+        {/* Shortcut legend — keeps the panel from reading as just a list. */}
+        <div style={{
+          flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14,
+          padding: '7px 16px', borderTop: '1px solid var(--border)',
+          fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6,
+        }}>
+          <Legend k="↑↓" label="navigate" />
+          <Legend k="↵" label="open" />
+          <Legend k="esc" label="close" />
+          <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{ordered.length}</span>
         </div>
       </div>
     </div>
+  )
+}
+
+function Legend({ k, label }: { k: string; label: string }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <kbd style={{
+        fontFamily: "'SF Mono', Menlo, monospace", fontSize: 9.5, color: 'var(--fg)',
+        padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-surface)',
+      }}>{k}</kbd>
+      {label}
+    </span>
   )
 }

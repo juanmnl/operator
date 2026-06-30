@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { WorktreeDiff, FileChange } from '../../../shared/types'
 
 // Live diff of the session's working directory — polls `worktree_diff` so the
@@ -38,7 +38,10 @@ function parseDiff(diff: string): DiffFile[] {
 export function CanvasDiffPanel({ path }: { path?: string | null }) {
   const [diff, setDiff] = useState<WorktreeDiff | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Track which files are EXPANDED (default: all collapsed, so the panel opens as a
+  // browsable list of changed files instead of one endless scroll).
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!path) { setDiff(null); setLoaded(true); return }
@@ -77,7 +80,10 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
   }
 
   const toggle = (p: string) =>
-    setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
+    setExpanded((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const expandAll = () => setExpanded(new Set(parsed.map((f) => f.path)))
+  const collapseAll = () => setExpanded(new Set())
+  const allExpanded = parsed.length > 0 && parsed.every((f) => expanded.has(f.path))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "'Inter', system-ui, sans-serif", background: 'var(--bg-terminal)' }}>
@@ -87,16 +93,27 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
         height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--fg-muted)',
       }}>
         <span style={{ fontWeight: 600, color: 'var(--fg)' }}>{files.length} file{files.length === 1 ? '' : 's'}</span>
-        <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', color: 'var(--color-success, #3fb950)' }}>+{totalAdded}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-success, #3fb950)' }}>+{totalAdded}</span>
         <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-error, #f85149)' }}>−{totalRemoved}</span>
+        <button
+          onClick={allExpanded ? collapseAll : expandAll}
+          title={allExpanded ? 'Collapse all files' : 'Expand all files'}
+          style={{
+            marginLeft: 'auto', fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
+            cursor: 'pointer', outline: 'none', padding: '2px 8px', borderRadius: 5,
+            border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)',
+          }}
+        >
+          {allExpanded ? 'Collapse all' : 'Expand all'}
+        </button>
       </div>
 
-      <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto' }}>
+      <div ref={scrollRef} className="scroll-hidden" style={{ flex: 1, overflow: 'auto' }}>
         {parsed.map((file) => {
           const fc = countByPath.get(file.path)
-          const isCollapsed = collapsed.has(file.path)
+          const isCollapsed = !expanded.has(file.path)
           return (
-            <section key={file.path}>
+            <section key={file.path} data-file={file.path}>
               {/* Sticky file header — also the collapse toggle + navigation anchor */}
               <button
                 onClick={() => toggle(file.path)}

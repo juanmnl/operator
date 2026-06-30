@@ -1,5 +1,23 @@
 export type Severity = 'low' | 'medium' | 'high'
 
+// --- grid terminal (our own, non-native) wire format (see src-tauri/src/gridterm.rs) ---
+/** A cell colour: ANSI palette index 0–15 (mapped to the live theme), a "#rrggbb"
+ *  truecolor/256 value, or null/undefined for the position's theme default. */
+export type GridColor = number | string | null
+/** A run of consecutive cells sharing fg(`f`)/bg(`b`)/attrs(`a`). `a` is a bitmask:
+ *  1 bold, 2 dim, 4 italic, 8 underline, 16 inverse, 32 strikeout. */
+export interface GridRun { t: string; f?: GridColor; b?: GridColor; a?: number }
+export interface GridLine { y: number; runs: GridRun[] }
+export interface GridUpdate {
+  id: string
+  cols: number
+  rows: number
+  cursor: { x: number; y: number; vis: boolean }
+  lines: GridLine[]
+  /** Lines scrolled back into history (0 = at the live bottom). */
+  offset: number
+}
+
 export type SessionPhase = 'idle' | 'running' | 'compacting' | 'waiting'
 export type SessionStatus = 'active' | 'ended'
 

@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate } from '../shared/types'
 
 declare global {
   interface Window {
@@ -23,6 +23,18 @@ declare global {
       getDevPorts: () => Promise<Record<string, number>>
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
       onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
+      /** Grid terminal (our own, non-native): start streaming a themed cell snapshot
+       *  for `id` at the given size (pushes a full frame immediately). */
+      gridtermAttach: (id: string, cols: number, rows: number) => void
+      /** Resize the pty + alacritty grid together. */
+      gridtermResize: (id: string, cols: number, rows: number) => void
+      /** Scroll the grid viewport by `delta` lines into history (+) / toward bottom (−). */
+      gridtermScroll: (id: string, delta: number) => void
+      /** Update the colours the grid reports to Claude's colour queries (theme change). */
+      gridtermSetTheme: (id: string, bg: string, fg: string) => void
+      /** Stop streaming for `id` (keeps the Rust grid for a clean re-attach). */
+      gridtermDetach: (id: string) => void
+      onGridUpdate: (callback: (u: GridUpdate) => void) => () => void
       showMainWindow: () => void
       /** Begin dragging the OS window for the current mousedown gesture. */
       startWindowDrag: () => void

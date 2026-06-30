@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession } from '../../shared/types'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
-import { TerminalPane } from '../components/terminal/TerminalPane'
+import { TerminalSurface } from '../components/terminal/TerminalSurface'
+import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
@@ -53,7 +54,7 @@ interface TerminalTab {
 const CONVERSATION_PANEL_W = 460
 
 /** A session's restorable config, persisted to localStorage across restarts. */
-interface SavedSession {
+export interface SavedSession {
   key: string
   cwd: string
   projectName: string
@@ -73,6 +74,20 @@ interface SavedSession {
   lastActiveAt: string
 }
 
+// Height of the actions footer at the bottom of the main view + Canvas panel. The
+// scratch-terminal sheet sits directly above the main footer (bottom = FOOTER_H).
+const FOOTER_H = 34
+
+// Per-session Canvas layout — each session remembers whether its panel is open and
+// which surface it shows. Keyed by session id, persisted across reloads.
+type CanvasMode = 'chat' | 'plan' | 'diff' | 'preview'
+type SessionLayout = { open: boolean; mode: CanvasMode }
+const LAYOUT_KEY = 'operator.sessionLayouts'
+const DEFAULT_LAYOUT: SessionLayout = { open: false, mode: 'chat' }
+function loadLayouts(): Record<string, SessionLayout> {
+  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
+}
+
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
@@ -80,7 +95,7 @@ export function DashboardView() {
   // banner a dev server prints when it boots). The project usually ignores the
   // OPERATOR_DEV_PORT we hand it and binds its own default, so this is the port
   // that's actually serving — it takes priority over the allocated one.
-  const [detectedDevPorts, setDetectedDevPorts] = useState<Record<string, number>>({})
+  const [detectedDevPorts] = useState<Record<string, number>>({})
   // Reserved OPERATOR_DEV_PORT per terminal — the Preview falls back to this when
   // no dev-server banner was detected (a best-effort guess; may not be serving).
   const [reservedDevPorts, setReservedDevPorts] = useState<Record<string, number>>({})
@@ -112,11 +127,24 @@ export function DashboardView() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('operator.sidebarCollapsed') === '1' } catch { return false }
   })
-  // Reading panel (ConversationPanel) — the agent's answers rendered as markdown
-  // beside the terminal. Persisted so it survives reloads.
-  const [conversationOpen, setConversationOpen] = useState(() => {
-    try { return localStorage.getItem('operator.conversationOpen') === '1' } catch { return false }
-  })
+  // Reading panel (ConversationPanel) + Canvas surface — now PER SESSION (each
+  // session keeps its own open-state and tab). Keyed by session id, persisted.
+  const [sessionLayouts, setSessionLayouts] = useState<Record<string, SessionLayout>>(loadLayouts)
+  const activeSessionIdRef = useRef<string | null>(null)
+  useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
+  const activeLayout = activeSessionId ? sessionLayouts[activeSessionId] : undefined
+  const conversationOpen = activeLayout?.open ?? DEFAULT_LAYOUT.open
+  const canvasMode: CanvasMode = activeLayout?.mode ?? DEFAULT_LAYOUT.mode
+  const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
+    setSessionLayouts((prev) => {
+      const sid = activeSessionIdRef.current
+      if (!sid) return prev
+      const next = { ...prev, [sid]: { ...DEFAULT_LAYOUT, ...prev[sid], ...patch } }
+      try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(next)) } catch { /* quota */ }
+      return next
+    })
+  }, [])
+  const selectCanvasMode = useCallback((mode: CanvasMode) => patchLayout({ mode }), [patchLayout])
   // User-adjustable Canvas panel width (drag handle on its left edge), persisted.
   const [panelW, setPanelW] = useState<number>(() => {
     try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= 300 && v <= 1000 ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
@@ -127,13 +155,17 @@ export function DashboardView() {
   const [resizingPanel, setResizingPanel] = useState(false)
   const toggleConversation = useCallback(() => {
     // Opens INSIDE the window — the panel shares the content area with the terminal
-    // (which resizes to fit). No OS-window resize.
-    setConversationOpen((c) => {
-      const next = !c
-      try { localStorage.setItem('operator.conversationOpen', next ? '1' : '0') } catch { /* ignore */ }
-      return next
-    })
-  }, [])
+    // (which resizes to fit). No OS-window resize. Per-session (ref avoids stale id).
+    patchLayout({ open: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.open : false) })
+  }, [patchLayout, sessionLayouts])
+
+  // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
+  // footer. `shellStarted` keeps it MOUNTED after first open (so the shell +
+  // scrollback survive close→reopen); `shellOpen` slides it up/down.
+  const [shellStarted, setShellStarted] = useState(false)
+  const [shellOpen, setShellOpen] = useState(false)
+  const openShell = useCallback(() => { setShellStarted(true); setShellOpen(true) }, [])
+  const closeShell = useCallback(() => setShellOpen(false), [])
 
   // Drag the panel's left edge to resize it — the terminal absorbs the change.
   // rAF-throttled so the layout updates at most once per frame, and the terminal
@@ -882,6 +914,28 @@ export function DashboardView() {
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
   }, [savedSessions, terminals])
 
+  // Keys of the sessions that were OPEN at the last app quit — captured once at mount,
+  // synchronously, BEFORE this run overwrites the store. Lets the sidebar list exactly
+  // what was open before the close/restart, not the whole saved history.
+  const lastOpenKeysRef = useRef<Set<string> | null>(null)
+  if (lastOpenKeysRef.current === null) {
+    try { lastOpenKeysRef.current = new Set<string>(JSON.parse(localStorage.getItem('operator.lastOpenKeys') || '[]')) }
+    catch { lastOpenKeysRef.current = new Set<string>() }
+  }
+  // Persist the CURRENT open-set for the next launch (terminalIds die on restart, so
+  // we track keys; closing a session drops it, so it won't resurface next time).
+  useEffect(() => {
+    if (!savedHydrated) return
+    try { localStorage.setItem('operator.lastOpenKeys', JSON.stringify(terminals.map((t) => t.key))) } catch { /* quota */ }
+  }, [terminals, savedHydrated])
+
+  // The subset of restorable sessions that were open at the last quit, not yet
+  // re-opened this run — what the sidebar shows so it isn't blank after a restart.
+  const previouslyOpenSessions = useMemo(() => {
+    const opened = lastOpenKeysRef.current ?? new Set<string>()
+    return restorableSessions.filter((s) => opened.has(s.key))
+  }, [restorableSessions])
+
   // Match on the session id, but fall back to the active terminal: when a session
   // ends it drops out of getSessions() and its sidebar id flips from the hook id
   // to `local-<tid>`, which would otherwise leave activeSessionId stale and
@@ -1019,6 +1073,8 @@ export function DashboardView() {
       ) : (
       <Sidebar
         sessions={allSidebarSessions}
+        restorableSessions={previouslyOpenSessions}
+        onRestoreSession={(s) => { void handleRestoreSession(s, !!s.claudeSessionId) }}
         activeSessionId={activeSessionId}
         customNames={customNames}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
@@ -1104,7 +1160,6 @@ export function DashboardView() {
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
-              theme={currentTheme.xterm}
               conversationOpen={conversationOpen}
               onToggleConversation={toggleConversation}
             />
@@ -1174,6 +1229,9 @@ export function DashboardView() {
             flex: 1,
             minHeight: 0,
             position: 'relative',
+            // Small gap so the terminal's last line (Claude's "auto mode" composer
+            // hint) doesn't sit flush against the actions footer below.
+            marginBottom: 8,
             display: contentMode === 'localTerminal'
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId
@@ -1188,15 +1246,10 @@ export function DashboardView() {
                   visibility: t.id === activeTerminalId ? 'visible' : 'hidden',
                 }}
               >
-                <TerminalPane
+                <TerminalSurface
                   terminalId={t.id}
                   theme={currentTheme.xterm}
-                  replayHistory={t.reattached}
-                  suspendFit={resizingPanel}
                   active={t.id === activeTerminalId && !t.ended}
-                  onDevServerDetected={(port) =>
-                    setDetectedDevPorts((m) => (m[t.id] === port ? m : { ...m, [t.id]: port }))
-                  }
                 />
                 {t.ended && (
                   <EndedOverlay
@@ -1313,6 +1366,40 @@ export function DashboardView() {
             <div style={{ marginBottom: 'auto' }} />
           </div>
         )}
+
+        {/* Main actions footer — pinned to the bottom of the main view. Hosts the
+            scratch-terminal trigger (opens the bottom sheet above it). */}
+        {contentMode === 'localTerminal' && activeSession && (
+          <div className="actions-footer" style={{ marginTop: 'auto', zIndex: 31, background: 'var(--bg-terminal)' }}>
+            <button
+              className={`actions-footer-btn${shellOpen ? ' is-active' : ''}`}
+              onClick={() => (shellOpen ? closeShell() : openShell())}
+              title="Open a terminal in this path"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.1" />
+                <path d="M4 6l2.4 2L4 10M8.6 10.5H12" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Terminal
+            </button>
+            <span className="actions-footer-label" style={{ marginLeft: 'auto' }}>
+              {activeSession.workingDirectory}
+            </span>
+          </div>
+        )}
+
+        {/* Scratch-terminal bottom sheet — mounted once opened, then only slid out of
+            view on close so the shell persists. Lives inside the card → matches the
+            main view's width, sits above the footer. */}
+        {shellStarted && contentMode === 'localTerminal' && activeSession && (
+          <ShellSheet
+            cwd={activeSession.workingDirectory}
+            theme={currentTheme.xterm}
+            open={shellOpen}
+            bottom={FOOTER_H}
+            onClose={closeShell}
+          />
+        )}
       </div>
 
       {/* Reading panel — the agent's answers as markdown, beside the terminal.
@@ -1338,6 +1425,8 @@ export function DashboardView() {
                 session={activeSession}
                 devUrl={port ? `http://localhost:${port}` : null}
                 devUrlReserved={!detected && !!reserved}
+                mode={canvasMode}
+                onSelectMode={selectCanvasMode}
               />
             )
           })()}

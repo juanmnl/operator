@@ -163,14 +163,69 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   display: none;
 }
 
-/* Reading panel (ConversationPanel) — each answer is a card you can save/dismiss. */
+/* Actions footer — a slim action bar at the bottom of the main view and the Canvas
+   panel. Same height/style on both so the two columns read as a matched pair. */
+.actions-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--border);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+.actions-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+  transition: color 0.12s, border-color 0.12s;
+}
+.actions-footer-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
+.actions-footer-btn.is-active { color: var(--accent); border-color: var(--accent); }
+.actions-footer-label {
+  font-size: 10px;
+  color: var(--fg-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Grid terminal cursor — a classic MS-DOS / C64 style block that hard-blinks (no
+   fade): on for half the cycle, off for the other half. Semi-opaque so the glyph
+   beneath reads through it (a cheap blend — no GPU-heavy mix-blend-mode). */
+@keyframes gt-cursor-blink {
+  0%, 50% { opacity: 0.6; }
+  50.01%, 100% { opacity: 0; }
+}
+.gt-cursor-blink { animation: gt-cursor-blink 1.06s infinite; }
+
+/* Reading panel (ConversationPanel) — answers flow as a continuous document (no
+   card chrome), separated by the command flags above them. A boxed surface read as
+   a chat bubble that clashed with the near-black themes; the prose belongs better
+   unframed. Saved answers get a thin accent left-rail (colour for meaning, no fill).*/
 .reading-answer {
   position: relative;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-  margin-bottom: 10px;
+  padding: 4px 0 6px;
+  margin-bottom: 16px;
+}
+.reading-answer.is-saved {
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+  margin-left: -2px;
 }
 
 /* Human prompt = a FLAG that separates chunks of answers in the log. The command
@@ -211,8 +266,8 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
    for collapsed (need to expand) and saved cards. */
 .reading-answer-actions {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 0;
+  right: 0;
   display: flex;
   gap: 2px;
   opacity: 0;
@@ -234,7 +289,8 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 .reading-answer-actions button.on { color: var(--accent); } /* saved star — colour for meaning */
 
 /* Collapsed answer: a one-line preview you click to expand. */
-.reading-answer.is-collapsed { padding: 8px 12px; }
+.reading-answer.is-collapsed { padding: 4px 0 6px; }
+.reading-answer.is-collapsed.is-saved { padding-left: 12px; }
 .reading-answer-preview {
   display: block; width: 100%; text-align: left; padding: 0 70px 0 0;
   background: none; border: none; outline: none; cursor: pointer;
@@ -250,10 +306,6 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   font-family: 'Inter', system-ui, sans-serif; font-size: 9.5px;
   color: var(--fg-muted); opacity: 0.5; letter-spacing: 0.2px;
 }
-/* Gentle hover lift on a card — border only, no fill (per UI rule). */
-.reading-answer { transition: border-color 0.12s; }
-.reading-answer:hover { border-color: var(--fg-muted); }
-
 /* Markdown body within an answer. Prose in Inter, code in mono. */
 .reading-md {
   font-family: 'Inter', system-ui, sans-serif;
@@ -304,6 +356,33 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 .reading-md th { background: var(--bg-surface); font-weight: 600; }
 .reading-md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .reading-md-dim { color: var(--fg-muted); font-size: 12px; }
+
+/* Fenced code block with a language label + copy button (see CodeBlock). */
+.reading-code {
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.reading-code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 3px 6px 3px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--overlay-subtle);
+}
+.reading-code-lang {
+  font-family: 'Inter', system-ui, sans-serif; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase; color: var(--fg-muted); opacity: 0.8;
+}
+.reading-code-copy {
+  font-family: 'Inter', system-ui, sans-serif; font-size: 10px; font-weight: 600;
+  color: var(--fg-muted); background: transparent; border: none; cursor: pointer; outline: none;
+  padding: 2px 7px; border-radius: 4px;
+}
+.reading-code-copy:hover { color: var(--fg); }
+/* The inner <pre> drops its own frame — the .reading-code wrapper owns it now. */
+.reading-code pre { margin: 0; border: none; border-radius: 0; background: transparent; }
 
 /* Collapsed "Thinking" disclosure */
 .reading-thinking {

@@ -1,7 +1,39 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AgentSession, NarrationEntry } from '../../../shared/types'
+
+// A fenced code block with a language label + copy button. Inline code keeps the
+// default <code> styling; only multi-line / language-tagged code gets the chrome.
+function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => navigator.clipboard?.writeText(text)
+    .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })
+    .catch(() => { /* clipboard blocked */ })
+  return (
+    <div className="reading-code">
+      <div className="reading-code-head">
+        <span className="reading-code-lang">{lang || 'text'}</span>
+        <button className="reading-code-copy" onClick={copy}>{copied ? '✓ Copied' : 'Copy'}</button>
+      </div>
+      <pre><code>{text}</code></pre>
+    </div>
+  )
+}
+
+const MD_COMPONENTS: Components = {
+  // Override <pre> to a passthrough so CodeBlock owns the block wrapper (avoids a
+  // <pre> nested inside our own).
+  pre: ({ children }) => <>{children}</>,
+  code({ node: _node, className, children, ...props }) {
+    const text = String(children ?? '')
+    const lang = /language-(\w+)/.exec(className || '')?.[1]
+    const isBlock = (className?.includes('language-')) || text.includes('\n')
+    if (!isBlock) return <code className={className} {...props}>{children}</code>
+    return <CodeBlock text={text.replace(/\n$/, '')} lang={lang} />
+  },
+}
 
 // A read-only reading panel: the agent's prose answers (transcript `text` blocks)
 // rendered as markdown, one card per answer, so you can read the explanation
@@ -142,7 +174,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
                 ) : (
                   <>
                     <div className="reading-md">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.text}</ReactMarkdown>
                     </div>
                     <div className="reading-answer-time">
                       {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

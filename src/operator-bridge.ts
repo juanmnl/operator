@@ -1,5 +1,6 @@
 // Implements the `window.operator` API (defined in src/renderer/env.d.ts) over
 // Tauri invoke()/events, so the Operator React UI runs unchanged.
+// (touch to force a clean full reload)
 
 import { invoke } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
@@ -13,8 +14,9 @@ import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
+import { isLightBackground } from './renderer/lib/terminal'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
-import { getTuiMode } from './renderer/lib/terminal-options'
+import type { GridUpdate } from './shared/types'
 
 type Unsub = () => void
 
@@ -41,12 +43,29 @@ export function installBridge(): void {
       }
       const resumeId = launchOptions?.resumeSessionId
       const sessionId = resumeId ? String(resumeId) : crypto.randomUUID()
+      // The grid renderer (our own terminal) parses alt-screen correctly, so it can
+      // host Claude Code's FULLSCREEN TUI — a fixed full-height viewport with the
+      // input pinned to the bottom — which the DOM xterm corrupts. So force fullscreen
+      // when grid is on; otherwise honour the user's tui pref (classic by default).
+      // Tell Claude the terminal's light/dark scheme (COLORFGBG fallback). The terminal
+      // is ghostty (a full VT engine) so it answers Claude's OSC colour query too.
+      const readVar = (name: string) => {
+        try { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() } catch { return '' }
+      }
+      const termBg = readVar('--bg-terminal') || '#0b0d10'
+      const colorScheme = isLightBackground(termBg) ? 'light' : 'dark'
+      // FORCE classic (tui:default). Ghostty is a complete terminal with native
+      // scrollback, and the wheel only scrolls in classic — in fullscreen/alt-screen
+      // ghostty's handleWheel forwards the wheel as ARROW KEYS (Claude reads those as
+      // input-history nav, not scroll), and there's no scrollback to scroll anyway.
+      // So classic is required for wheel-scroll; the Fullscreen pref is incompatible here.
       const id = await invoke<string>('terminal_spawn', {
         cwd: target,
         args: buildArgs(launchOptions, sessionId),
         sessionId,
         permissionMode: (launchOptions?.permissionMode as string) ?? null,
-        tuiMode: getTuiMode(),
+        tuiMode: 'default',
+        colorScheme,
       })
       return { terminalId: id, cwd: target }
     },
@@ -84,6 +103,20 @@ export function installBridge(): void {
     },
     onTerminalExit: (cb: (id: string, code: number, signal: number) => void): Unsub => {
       const p = listen<string>('terminal:exit', (e) => { decoders.delete(e.payload); writeQueues.delete(e.payload); cb(e.payload, 0, 0) })
+      return () => { void p.then((f) => f()) }
+    },
+
+    // --- grid terminal (our own, non-native — see src-tauri/src/gridterm.rs) ---
+    // Pty bytes are parsed into a grid by alacritty in Rust; gridterm:update carries
+    // a themed cell snapshot the GridTerminalPane paints as DOM. attach starts the
+    // stream for a terminal (and pushes a full frame); resize keeps pty + grid sized.
+    gridtermAttach: (id: string, cols: number, rows: number) => { void invoke('gridterm_attach', { id, cols, rows }) },
+    gridtermResize: (id: string, cols: number, rows: number) => { void invoke('gridterm_resize', { id, cols, rows }) },
+    gridtermScroll: (id: string, delta: number) => { void invoke('gridterm_scroll', { id, delta }) },
+    gridtermSetTheme: (id: string, bg: string, fg: string) => { void invoke('gridterm_set_theme', { id, bg, fg }) },
+    gridtermDetach: (id: string) => { void invoke('gridterm_detach', { id }) },
+    onGridUpdate: (cb: (u: GridUpdate) => void): Unsub => {
+      const p = listen<GridUpdate>('gridterm:update', (e) => cb(e.payload))
       return () => { void p.then((f) => f()) }
     },
 
