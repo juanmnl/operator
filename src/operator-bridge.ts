@@ -11,7 +11,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
-import { relaunch } from '@tauri-apps/plugin-process'
+import { relaunch, exit } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
@@ -144,6 +144,9 @@ export function installBridge(): void {
     // to the previous size — matching native macOS title-bar behavior. Needs the
     // `core:window:allow-toggle-maximize` capability (core:default is getters only).
     toggleWindowMaximize: () => { void getCurrentWindow().toggleMaximize() },
+    // Quit the whole app (⌘Q). There's no native macOS app menu, so the OS doesn't
+    // intercept ⌘Q — the renderer drives the quit explicitly via plugin-process.
+    quitApp: () => { void exit(0) },
     // Grow/shrink the OS window width by `delta` CSS px (negative shrinks), so a
     // side panel can be APPENDED to the right of the window instead of stealing
     // width from the terminal. Clamped to a sane minimum. No-op if maximized.

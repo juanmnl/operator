@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — ghostty resize-stress harness</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; height: 100%; }
+      /* The resizable pane the harness hammers. capture.mjs / the script mutate
+         its width/height to simulate a drag-resize. */
+      #pane { position: absolute; top: 12px; left: 12px; width: 720px; height: 420px; }
+      #host { position: absolute; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="pane"><div id="host"></div></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

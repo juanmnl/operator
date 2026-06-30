@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "verify:visual": "node scripts/visual/capture.mjs",
     "verify:input": "node scripts/input/capture.mjs",
+    "verify:resize": "node scripts/ghostty-resize/capture.mjs",
     "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
