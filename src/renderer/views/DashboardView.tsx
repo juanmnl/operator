@@ -167,6 +167,15 @@ export function DashboardView() {
   const openShell = useCallback(() => { setShellStarted(true); setShellOpen(true) }, [])
   const closeShell = useCallback(() => setShellOpen(false), [])
 
+  // The scratch shell is per-session: its state lived globally, so opening it once
+  // left it mounted+open (and a second ghostty canvas rendering → overprint) in EVERY
+  // session. Tear it down on session switch — the ShellSheet unmounts, killing its
+  // pty — so the hub belongs only to the session it was opened in.
+  useEffect(() => {
+    setShellOpen(false)
+    setShellStarted(false)
+  }, [activeSessionId])
+
   // Drag the panel's left edge to resize it — the terminal absorbs the change.
   // rAF-throttled so the layout updates at most once per frame, and the terminal
   // suspends fitting until release for a smooth drag.
@@ -1250,6 +1259,7 @@ export function DashboardView() {
                   terminalId={t.id}
                   theme={currentTheme.xterm}
                   active={t.id === activeTerminalId && !t.ended}
+                  suspendFit={resizingPanel}
                 />
                 {t.ended && (
                   <EndedOverlay
