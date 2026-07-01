@@ -88,13 +88,21 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
     return () => { stopped = true; ctrl.abort(); clearTimeout(timer) }
   }, [url, override, nonce])
 
-  // Track the frame area so a device preset can be scaled to fit.
+  // Track the frame area so a device preset can be scaled to fit. Bail the state
+  // update when the size is UNCHANGED (return the same object ref) — otherwise every
+  // ResizeObserver fire set a fresh {w,h} object, re-rendering unconditionally, and a
+  // spurious re-fire (WebKit's "ResizeObserver loop") never converged → 100% CPU spin
+  // that froze the app when the preview panel was resized.
   useEffect(() => {
     const el = frameWrapRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => setBox({ w: el.clientWidth, h: el.clientHeight }))
+    const measure = () => {
+      const w = el.clientWidth, h = el.clientHeight
+      setBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
+    }
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
-    setBox({ w: el.clientWidth, h: el.clientHeight })
+    measure()
     return () => ro.disconnect()
   }, [reach])
 
