@@ -40,6 +40,8 @@ declare global {
       startWindowDrag: () => void
       /** Toggle window zoom (fill screen ⇆ restore) — titlebar double-click. */
       toggleWindowMaximize: () => void
+      /** Subscribe to OS window resize/zoom events; returns an unsubscribe fn. */
+      onWindowResize: (callback: () => void) => () => void
       /** Quit the whole app (⌘Q) — no native menu, so the renderer drives it. */
       quitApp: () => void
       /** Grow/shrink the OS window width by `delta` CSS px (negative shrinks). */

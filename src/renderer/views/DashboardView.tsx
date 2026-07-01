@@ -153,6 +153,21 @@ export function DashboardView() {
   // True while dragging the panel divider — the terminal suspends its fit during
   // the drag (no per-frame reflow) and fits once on release.
   const [resizingPanel, setResizingPanel] = useState(false)
+  // True while the OS window is actively resizing/zooming (edge-drag, titlebar
+  // double-click maximize, display change). Same reason as the panel drag: each
+  // ghostty fit reallocates the Canvas backing store, and doing that repeatedly
+  // through a window zoom thrashes the WKWebView compositor into a hang. We suspend
+  // the terminal's fit while the window churns and let it fit once after it settles.
+  const [windowResizing, setWindowResizing] = useState(false)
+  useEffect(() => {
+    let settle = 0
+    const unsub = window.operator.onWindowResize?.(() => {
+      setWindowResizing(true)
+      clearTimeout(settle)
+      settle = window.setTimeout(() => setWindowResizing(false), 200)
+    })
+    return () => { clearTimeout(settle); unsub?.() }
+  }, [])
   const toggleConversation = useCallback(() => {
     // Opens INSIDE the window — the panel shares the content area with the terminal
     // (which resizes to fit). No OS-window resize. Per-session (ref avoids stale id).
@@ -1259,7 +1274,7 @@ export function DashboardView() {
                   terminalId={t.id}
                   theme={currentTheme.xterm}
                   active={t.id === activeTerminalId && !t.ended}
-                  suspendFit={resizingPanel}
+                  suspendFit={resizingPanel || windowResizing}
                 />
                 {t.ended && (
                   <EndedOverlay

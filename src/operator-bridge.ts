@@ -144,6 +144,14 @@ export function installBridge(): void {
     // to the previous size — matching native macOS title-bar behavior. Needs the
     // `core:window:allow-toggle-maximize` capability (core:default is getters only).
     toggleWindowMaximize: () => { void getCurrentWindow().toggleMaximize() },
+    // Fires on every OS window size change — manual edge-drag, titlebar-zoom/maximize,
+    // display change. Used to suspend the terminal's per-fit during the churn and refit
+    // once it settles: each fit reallocates the ghostty Canvas backing store, and doing
+    // that repeatedly mid-zoom thrashes the WKWebView compositor into a hang.
+    onWindowResize: (cb: () => void): Unsub => {
+      const p = getCurrentWindow().onResized(() => cb())
+      return () => { void p.then((f) => f()) }
+    },
     // Quit the whole app (⌘Q). There's no native macOS app menu, so the OS doesn't
     // intercept ⌘Q — the renderer drives the quit explicitly via plugin-process.
     quitApp: () => { void exit(0) },

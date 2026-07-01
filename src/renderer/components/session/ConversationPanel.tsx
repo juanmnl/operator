@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -34,6 +34,22 @@ const MD_COMPONENTS: Components = {
     return <CodeBlock text={text.replace(/\n$/, '')} lang={lang} />
   },
 }
+
+// react-markdown re-parses its input on EVERY render, and remark-gfm's table/list
+// grammar is super-linear — a large GFM table parses in SECONDS (an 80KB table ≈ 21s
+// in-repo benchmark; a 500-deep nested list ≈ 1.7s). ConversationPanel re-renders on
+// every `session:update` (~1/s), so an unbounded answer re-parsed forever pegs the
+// WebContent process at 100% and freezes the app whenever the reading panel is open.
+// Two guards: (1) memo so a SETTLED answer (stable text) parses once, not per render;
+// (2) answers past a size cap render as plain preformatted text (instant) instead of
+// running the markdown parser at all — bounding the pathological single parse too.
+const MAX_MARKDOWN_CHARS = 16000
+const MarkdownAnswer = memo(function MarkdownAnswer({ text }: { text: string }) {
+  if (text.length > MAX_MARKDOWN_CHARS) {
+    return <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, font: 'inherit' }}>{text}</pre>
+  }
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</ReactMarkdown>
+})
 
 // A read-only reading panel: the agent's prose answers (transcript `text` blocks)
 // rendered as markdown, one card per answer, so you can read the explanation
@@ -174,7 +190,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
                 ) : (
                   <>
                     <div className="reading-md">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.text}</ReactMarkdown>
+                      <MarkdownAnswer text={m.text} />
                     </div>
                     <div className="reading-answer-time">
                       {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
