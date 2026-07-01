@@ -87,12 +87,23 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   const [history, setHistory] = useState<NarrationEntry[]>([])
   useEffect(() => {
     const id = session?.id
-    if (!id) { setHistory([]); return }
+    setHistory([]) // reset when switching sessions (only fires on id change)
+    if (!id) return
     let cancelled = false
-    window.operator.chatHistory?.(id)
-      .then((h) => { if (!cancelled) setHistory(h ?? []) })
+    // Only replace state when the store actually grew — answers are append-only, so a
+    // longer result means new entries. Equal length ⇒ no change ⇒ keep the same array
+    // ref so React (and the memoized markdown) don't re-render/re-parse.
+    const load = () => window.operator.chatHistory?.(id)
+      .then((h) => { if (!cancelled && h && h.length) setHistory((prev) => (h.length > prev.length ? h : prev)) })
       .catch(() => { /* store unavailable — fall back to the live tail below */ })
-    return () => { cancelled = true }
+    load()
+    // Periodic refresh: the live session:update tail only carries the most recent
+    // NARRATION_CAP entries, so a long-running session that adds more than that
+    // between session switches would otherwise leave a gap in the middle. Re-poll the
+    // durable store to backfill. Ended sessions just return the same rows (a cheap
+    // no-op SELECT), so no need to special-case them.
+    const iv = window.setInterval(load, 15000)
+    return () => { cancelled = true; clearInterval(iv) }
   }, [session?.id])
 
   // The conversation = human prompts (kind 'user') interleaved with the agent's
