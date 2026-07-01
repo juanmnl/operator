@@ -217,35 +217,32 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
    card chrome), separated by the command flags above them. A boxed surface read as
    a chat bubble that clashed with the near-black themes; the prose belongs better
    unframed. Saved answers get a thin accent left-rail (colour for meaning, no fill).*/
-/* ---- Reading panel as an iMessage-style conversation ----------------------
-   Human prompts = "sent" bubbles (right, a subtle accent TINT — never a solid
-   accent fill, per the UI rule). Agent answers = "received" bubbles (left,
-   neutral surface), collapsed to a preview line you tap to expand into the full
-   markdown answer — so you read the DISCUSSION and open a whole answer on demand. */
-.imsg-row { display: flex; margin: 0 0 9px; }
-.imsg-row.is-user { justify-content: flex-end; }
-.imsg-row.is-agent { justify-content: flex-start; }
+/* ---- Reading panel as a balanced conversation ----------------------------
+   A chat read: human prompts on the right, agent answers on the left, but with
+   EQUAL visual weight — flat soft-rounded blocks (not heavy bubbles), a faint
+   surface both sides (only a whisper of accent distinguishes "you"), and a
+   timestamp under every message. Answers collapse to a preview you tap to expand
+   into the full markdown — read the discussion, open a whole answer on demand. */
+.imsg-row { display: flex; flex-direction: column; margin: 0 0 12px; }
+.imsg-row.is-user { align-items: flex-end; }
+.imsg-row.is-agent { align-items: flex-start; }
 
 .imsg-bubble {
   position: relative;
-  max-width: 86%;
+  max-width: 82%;
   padding: 8px 12px;
-  border-radius: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--overlay-subtle);
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--fg);
 }
+/* "You" is distinguished by a whisper of accent — not a filled bubble. */
 .imsg-bubble.is-user {
-  max-width: 78%;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
-  border-bottom-right-radius: 5px; /* iMessage tail corner */
-}
-.imsg-bubble.is-agent {
-  background: var(--overlay-subtle);
-  border: 1px solid var(--border);
-  border-bottom-left-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--overlay-subtle));
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
 }
 .imsg-bubble.is-agent.is-saved {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
@@ -259,7 +256,7 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   overflow: hidden;
 }
 
-/* Collapsed agent answer: a preview line + "show more" you click to expand. */
+/* Collapsed agent answer: a preview line + "more" you click to expand. */
 .imsg-preview {
   display: block; width: 100%; text-align: left; padding: 0;
   background: none; border: none; outline: none; cursor: pointer;
@@ -268,21 +265,17 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 }
 .imsg-more { margin-left: 6px; color: var(--accent); font-size: 11px; }
 .imsg-preview:hover .imsg-more { text-decoration: underline; }
-
-/* Expanded footer: collapse control on the left, timestamp on the right. */
-.imsg-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; margin-top: 8px;
-}
 .imsg-collapse {
   background: none; border: none; outline: none; cursor: pointer; padding: 0;
-  font: inherit; font-size: 11px; color: var(--accent);
+  font: inherit; font-size: 11px; color: var(--accent); margin-top: 8px;
 }
 .imsg-collapse:hover { text-decoration: underline; }
+
+/* Timestamp under EVERY message, aligned to that message's side. */
 .imsg-time {
-  font-size: 9.5px; color: var(--fg-muted); opacity: 0.55; letter-spacing: 0.2px;
+  margin: 3px 2px 0;
+  font-size: 9.5px; color: var(--fg-muted); opacity: 0.6; letter-spacing: 0.2px;
 }
-.imsg-bubble.is-user .imsg-time { margin-top: 3px; text-align: right; }
 
 /* Hover actions (copy / save / dismiss) — float above an agent bubble's top-right. */
 .imsg-actions {

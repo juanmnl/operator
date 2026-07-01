@@ -195,19 +195,19 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
           visible.map((m) => {
             const k = blockKey(m)
             const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            // Human prompt — a "sent" bubble on the right.
+            // Human prompt — right side.
             if (m.kind === 'user') {
               return (
                 <div key={k} className="imsg-row is-user">
                   <div className="imsg-bubble is-user" title={m.text}>
                     <span className="imsg-user-text">{m.text}</span>
-                    <div className="imsg-time">{time}</div>
                   </div>
+                  <div className="imsg-time">{time}</div>
                 </div>
               )
             }
-            // Agent answer — a "received" bubble on the left. Collapsed to a preview
-            // line by default; tap to expand the full markdown answer in place.
+            // Agent answer — left side. Collapsed to a preview line by default; tap to
+            // expand the full markdown answer in place. Timestamp under it either way.
             const isSaved = saved.has(k)
             const isExpanded = expanded.has(k)
             return (
@@ -222,10 +222,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
                       <div className="reading-md">
                         <MarkdownAnswer text={m.text} />
                       </div>
-                      <div className="imsg-foot">
-                        <button className="imsg-collapse" onClick={() => toggleExpanded(k)}>less</button>
-                        <span className="imsg-time">{time}</span>
-                      </div>
+                      <button className="imsg-collapse" onClick={() => toggleExpanded(k)}>less</button>
                     </>
                   )}
                   <div className="imsg-actions">
@@ -238,6 +235,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
                     <button onClick={() => dismiss(k)} title="Dismiss">✕</button>
                   </div>
                 </div>
+                <div className="imsg-time">{time}</div>
               </div>
             )
           })
