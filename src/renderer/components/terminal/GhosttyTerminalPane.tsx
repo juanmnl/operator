@@ -298,6 +298,23 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
 
   useEffect(() => { if (active) termRef.current?.focus() }, [active])
 
+  // Clicking anywhere in the main content column (toolbar, footer, the inset padding,
+  // empty terminal area) refocuses the terminal input, so keystrokes always reach the
+  // agent instead of falling on the floor. Scoped to `[data-term-focus-zone]` so the
+  // sidebar and the right Canvas panel keep their own focus; skipped for genuinely
+  // interactive controls so buttons/links/inputs still work normally.
+  useEffect(() => {
+    if (!active) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t || !t.closest('[data-term-focus-zone]')) return
+      if (t.closest('button, a, input, textarea, select, [role="button"]')) return
+      termRef.current?.focus()
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [active])
+
   // Panel drag released (suspendFit → false): fit once so the grid snaps to the
   // final size in a single reflow / single canvas realloc, instead of every frame
   // during the drag. A rAF lets the container's final width settle in layout first.

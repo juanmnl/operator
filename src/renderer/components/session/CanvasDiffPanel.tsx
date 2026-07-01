@@ -152,15 +152,19 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
 // ellipsis hid the start of the path).
 function FilePath({ path }: { path: string }) {
   const slash = path.lastIndexOf('/')
-  const dir = slash >= 0 ? path.slice(0, slash + 1) : ''
+  const dir = slash >= 0 ? path.slice(0, slash) : '' // directory WITHOUT the trailing slash
   const name = slash >= 0 ? path.slice(slash + 1) : path
   return (
     <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', fontFamily: "'SF Mono', Menlo, monospace", fontSize: 11.5 }}>
       {dir && (
+        // direction:rtl truncates the path from the LEFT (ellipsis at the start). Keep
+        // the separating "/" OUT of this span — as a neutral char, rtl bidi reorders it
+        // away from the dir, which glued the dir name onto the filename.
         <span style={{ color: 'var(--fg-muted)', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
           {dir}
         </span>
       )}
+      {slash >= 0 && <span style={{ flexShrink: 0, color: 'var(--fg-muted)', opacity: 0.7 }}>/</span>}
       <span style={{ flexShrink: 0, color: 'var(--fg)', fontWeight: 500 }}>{name}</span>
     </span>
   )

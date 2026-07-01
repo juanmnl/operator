@@ -195,6 +195,19 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 }
 .actions-footer-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
 .actions-footer-btn.is-active { color: var(--accent); border-color: var(--accent); }
+.actions-footer-btn:disabled { opacity: 0.45; cursor: default; }
+.actions-footer-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
+/* Primary action (e.g. Plan → Send to agent): accent-lit, subtle tint — not a fill. */
+.actions-footer-btn.is-primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.actions-footer-btn.is-primary:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
 .actions-footer-label {
   font-size: 10px;
   color: var(--fg-muted);

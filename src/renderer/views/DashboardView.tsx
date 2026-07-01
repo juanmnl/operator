@@ -1131,7 +1131,7 @@ export function DashboardView() {
       )}
       </div>
 
-      <div style={{
+      <div data-term-focus-zone style={{
         position: 'relative', flex: 1,
         display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden',
       }}>

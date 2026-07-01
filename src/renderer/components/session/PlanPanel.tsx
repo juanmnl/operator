@@ -1,42 +1,89 @@
+import { useState } from 'react'
 import type { AgentSession, TodoItem } from '../../../shared/types'
 
-// The agent's plan: its latest TodoWrite snapshot rendered as a live checklist
-// (transcript-driven, updates ~1s) so you can watch progress tick off. Status
-// shown with colour-for-meaning only (no fills) — in_progress accent, completed
-// muted+struck, pending plain.
-export function PlanPanel({ session }: { session?: AgentSession }) {
-  const todos = session?.todos ?? []
-  const done = todos.filter((t) => t.status === 'completed').length
+// The Plan tab. Top (read-only): the agent's latest TodoWrite snapshot as a live
+// checklist. Below it (writable): YOUR tasks — jot them down here; the "Send to agent"
+// action lives in the Canvas actions footer (owned by CanvasPanel), which injects them
+// into the session's terminal as a prompt for the agent to pick up. Operator's first
+// structured-INPUT surface, riding the existing terminal-as-stdin channel.
+export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
+  session?: AgentSession
+  userTodos: string[]
+  onAdd: (text: string) => void
+  onRemove: (index: number) => void
+}) {
+  const agentTodos = session?.todos ?? []
+  const done = agentTodos.filter((t) => t.status === 'completed').length
 
-  if (todos.length === 0) {
-    return (
-      <div style={{
-        height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        gap: 6, padding: 24, textAlign: 'center', fontFamily: "'Inter', system-ui, sans-serif",
-      }}>
-        <span style={{ fontSize: 12, color: 'var(--fg)' }}>No plan yet</span>
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.7, maxWidth: 280, lineHeight: 1.5 }}>
-          When the agent writes a todo list, it’ll appear here and update as it works.
-        </span>
-      </div>
-    )
+  const [draft, setDraft] = useState('')
+  const add = () => {
+    const t = draft.trim()
+    if (!t) return
+    onAdd(t)
+    setDraft('')
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "'Inter', system-ui, sans-serif" }}>
-      <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-        height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
-        fontSize: 11, color: 'var(--fg-muted)',
-      }}>
-        <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>{done}/{todos.length} done</span>
-        {/* Slim progress bar — border-bounded, accent fill is a meaning indicator. */}
-        <span style={{ marginLeft: 'auto', width: 90, height: 4, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden' }}>
-          <span style={{ display: 'block', height: '100%', width: `${todos.length ? (done / todos.length) * 100 : 0}%`, background: 'var(--accent)', transition: 'width 0.2s' }} />
-        </span>
-      </div>
-      <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto', padding: '10px 12px 20px' }}>
-        {todos.map((t, i) => <TodoRow key={i} todo={t} />)}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* Agent plan header — only when the agent has written one. */}
+      {agentTodos.length > 0 && (
+        <div style={{
+          flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
+          height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+          fontSize: 11, color: 'var(--fg-muted)',
+        }}>
+          <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>Agent plan · {done}/{agentTodos.length}</span>
+          <span style={{ marginLeft: 'auto', width: 90, height: 4, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden' }}>
+            <span style={{ display: 'block', height: '100%', width: `${agentTodos.length ? (done / agentTodos.length) * 100 : 0}%`, background: 'var(--accent)', transition: 'width 0.2s' }} />
+          </span>
+        </div>
+      )}
+
+      <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '12px 12px 16px' }}>
+        {agentTodos.map((t, i) => <TodoRow key={`a${i}`} todo={t} />)}
+
+        <div style={{
+          marginTop: agentTodos.length ? 16 : 0,
+          paddingTop: agentTodos.length ? 12 : 0,
+          borderTop: agentTodos.length ? '1px solid var(--border)' : 'none',
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3, color: 'var(--fg-muted)', padding: '0 2px 8px' }}>
+            YOUR TASKS
+          </div>
+
+          {/* Add-a-task input, right under the heading. */}
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
+            placeholder="Add a task, press ↵"
+            style={{
+              fontFamily: 'inherit', fontSize: 12.5, width: '100%', boxSizing: 'border-box', marginBottom: 8,
+              background: 'var(--overlay-subtle)', color: 'var(--fg)', outline: 'none',
+              border: '1px solid var(--border)', borderRadius: 6, padding: '6px 9px',
+            }}
+          />
+
+          {userTodos.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', opacity: 0.7, padding: '2px 2px', lineHeight: 1.5 }}>
+              List what you want done — then “Send to agent” hands them to the session.
+            </div>
+          ) : (
+            userTodos.map((t, i) => (
+              <div key={`u${i}`} style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '5px 2px', lineHeight: 1.45 }}>
+                <span style={{ flexShrink: 0, marginTop: 1, width: 14, textAlign: 'center', fontSize: 12, color: 'var(--fg-muted)' }}>◦</span>
+                <span style={{ fontSize: 12.5, flex: 1, color: 'var(--fg)' }}>{t}</span>
+                <button
+                  onClick={() => onRemove(i)}
+                  title="Remove"
+                  style={{ flexShrink: 0, background: 'none', border: 'none', outline: 'none', cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 12, padding: 0, lineHeight: 1 }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )

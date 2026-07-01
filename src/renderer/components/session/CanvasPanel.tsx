@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { ConversationPanel } from './ConversationPanel'
@@ -18,6 +19,13 @@ const MODES: { id: CanvasMode; label: string }[] = [
   { id: 'preview', label: 'Preview' },
 ]
 
+// The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
+// action can sit in the shared actions footer below. Persisted per session.
+const todosKey = (id?: string) => `operator.plan.userTodos.${id ?? 'none'}`
+function loadUserTodos(id?: string): string[] {
+  try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
+}
+
 export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMode }: {
   session?: AgentSession
   devUrl: string | null
@@ -26,6 +34,21 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
   onSelectMode: (m: CanvasMode) => void
 }) {
   const select = onSelectMode
+
+  const [userTodos, setUserTodos] = useState<string[]>(() => loadUserTodos(session?.id))
+  useEffect(() => { setUserTodos(loadUserTodos(session?.id)) }, [session?.id])
+  const persistTodos = (next: string[]) => {
+    setUserTodos(next)
+    try { localStorage.setItem(todosKey(session?.id), JSON.stringify(next)) } catch { /* quota */ }
+  }
+  const canSend = userTodos.length > 0 && !!session?.terminalId
+  const sendTodos = () => {
+    if (!canSend || !session?.terminalId) return
+    // One line so newlines don't submit early in Claude's input; trailing CR submits.
+    const prompt = `Please work through these tasks: ${userTodos.map((t, i) => `(${i + 1}) ${t}`).join('; ')}`
+    window.operator.terminalWrite(session.terminalId, prompt + '\r')
+    persistTodos([]) // handed off to the agent
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
@@ -56,15 +79,31 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
       </DragRegion>
       <div style={{ flex: 1, minHeight: 0 }}>
         {mode === 'chat' && <ConversationPanel session={session} />}
-        {mode === 'plan' && <PlanPanel session={session} />}
+        {mode === 'plan' && (
+          <PlanPanel
+            session={session}
+            userTodos={userTodos}
+            onAdd={(t) => persistTodos([...userTodos, t])}
+            onRemove={(i) => persistTodos(userTodos.filter((_, j) => j !== i))}
+          />
+        )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
         {mode === 'preview' && <AppPreviewPanel url={devUrl} storageKey={session?.id} />}
       </div>
 
-      {/* Canvas actions footer — mirrors the main view's footer (matched pair). The
-          current surface on the left; a contextual action on the right. */}
+      {/* Canvas actions footer — primary action on the left; contextual info + the
+          surface label on the right. */}
       <div className="actions-footer">
-        <span className="actions-footer-label" style={{ textTransform: 'capitalize' }}>{mode}</span>
+        {mode === 'plan' && userTodos.length > 0 && (
+          <button
+            className="actions-footer-btn is-primary"
+            onClick={sendTodos}
+            disabled={!session?.terminalId}
+            title={session?.terminalId ? 'Send your tasks to the agent’s terminal' : 'No live session to send to'}
+          >
+            Send {userTodos.length} to agent →
+          </button>
+        )}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           {mode === 'preview' && devUrl && !devUrlReserved && (
             <button className="actions-footer-btn" onClick={() => window.operator.openExternal?.(devUrl)} title="Open in browser">
