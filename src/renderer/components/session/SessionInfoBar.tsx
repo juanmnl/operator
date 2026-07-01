@@ -59,7 +59,15 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
           background: dotColor, flexShrink: 0,
           animation: isRunning ? 'pulse 1.5s ease-in-out infinite' : undefined,
         }} />
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
+        <span
+          title={`Session started ${started}`}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}
+        >
+          {/* Clock glyph so the bare time reads as "when this session started". */}
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} aria-hidden>
+            <circle cx="8" cy="8" r="6.4" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M8 4.6V8l2.4 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
           {started}
         </span>
         {session.lastToolName && (
