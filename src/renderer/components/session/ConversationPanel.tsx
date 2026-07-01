@@ -140,6 +140,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   // reading state, so it isn't persisted; each session opens condensed.
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [savedOnly, setSavedOnly] = useState(false)
+  const [search, setSearch] = useState('')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   const copy = (k: string, text: string) => {
@@ -155,11 +156,14 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   const toggleExpanded = (k: string) =>
     setExpanded((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n })
 
+  const q = search.trim().toLowerCase()
   const visible = turns.filter((m) => {
     const k = blockKey(m)
     if (m.kind === 'text' && dismissed.has(k)) return false
     // Saved filter applies to answers only; in that mode the user turns drop out.
-    if (savedOnly) return m.kind === 'text' && saved.has(k)
+    if (savedOnly && !(m.kind === 'text' && saved.has(k))) return false
+    // Search filters to matching prompts/answers (across the whole loaded history).
+    if (q && !m.text.toLowerCase().includes(q)) return false
     return true
   })
 
@@ -181,26 +185,42 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
         height: 30, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
         fontFamily: "'Inter', system-ui, sans-serif",
       }}>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search the conversation…"
+          style={{
+            flex: 1, minWidth: 0, fontFamily: 'inherit', fontSize: 11.5,
+            background: 'transparent', color: 'var(--fg)', outline: 'none', border: 'none', padding: '2px 0',
+          }}
+        />
+        {search && (
           <button
-            onClick={() => setSavedOnly((v) => !v)}
-            title={savedOnly ? 'Show all answers' : 'Show saved only'}
-            style={{
-              fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none',
-              padding: '2px 8px', borderRadius: 6,
-              border: '1px solid var(--border)',
-              color: savedOnly ? 'var(--accent)' : 'var(--fg-muted)',
-              background: 'transparent',
-            }}
+            onClick={() => setSearch('')}
+            title="Clear search"
+            style={{ fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', border: 'none', background: 'transparent', color: 'var(--fg-muted)', padding: '0 4px' }}
           >
-            ★ {saved.size}
+            ✕
           </button>
-        </span>
+        )}
+        <button
+          onClick={() => setSavedOnly((v) => !v)}
+          title={savedOnly ? 'Show all answers' : 'Show saved only'}
+          style={{
+            flexShrink: 0, fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none',
+            padding: '2px 8px', borderRadius: 6,
+            border: '1px solid var(--border)',
+            color: savedOnly ? 'var(--accent)' : 'var(--fg-muted)',
+            background: 'transparent',
+          }}
+        >
+          ★ {saved.size}
+        </button>
       </div>
       <div ref={scrollRef} onScroll={onScroll} className="scroll-hidden" style={{ flex: 1, overflow: 'auto', padding: '12px 12px 24px' }}>
         {visible.length === 0 ? (
           <div style={{ fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12, color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 4px' }}>
-            {savedOnly ? 'No saved answers yet — star one to keep it here.' : 'The agent’s answers will appear here as it responds.'}
+            {q ? `No matches for “${search.trim()}”.` : savedOnly ? 'No saved answers yet — star one to keep it here.' : 'The agent’s answers will appear here as it responds.'}
           </div>
         ) : (
           visible.map((m) => {
@@ -220,7 +240,8 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
             // Agent answer — left side. Collapsed to a preview line by default; tap to
             // expand the full markdown answer in place. Timestamp under it either way.
             const isSaved = saved.has(k)
-            const isExpanded = expanded.has(k)
+            // Auto-expand while searching so the matching text is visible.
+            const isExpanded = !!q || expanded.has(k)
             return (
               <div key={k} className="imsg-row is-agent">
                 <div className={`imsg-bubble is-agent${isSaved ? ' is-saved' : ''}`}>
