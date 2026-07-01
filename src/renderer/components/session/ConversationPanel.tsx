@@ -23,6 +23,17 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 }
 
 const MD_COMPONENTS: Components = {
+  // Open links in the default browser. A bare <a href> in the Tauri webview would
+  // navigate the whole app away (or silently do nothing) — route the click through
+  // openExternal instead and swallow the default navigation.
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      onClick={(e) => { e.preventDefault(); if (href) window.operator.openExternal?.(href) }}
+    >
+      {children}
+    </a>
+  ),
   // Override <pre> to a passthrough so CodeBlock owns the block wrapper (avoids a
   // <pre> nested inside our own).
   pre: ({ children }) => <>{children}</>,
