@@ -59,8 +59,6 @@ const MarkdownAnswer = memo(function MarkdownAnswer({ text }: { text: string }) 
 
 const SAVED_KEY = 'operator.answers.saved'
 const DISMISSED_KEY = 'operator.answers.dismissed'
-const COLLAPSED_KEY = 'operator.answers.collapsed'
-
 /** First non-empty line of an answer, lightly de-marked, for the collapsed preview. */
 function previewLine(text: string): string {
   const line = text.split('\n').find((l) => l.trim()) ?? ''
@@ -126,7 +124,10 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   }, [history, session?.messages])
   const [saved, setSaved] = useState<Set<string>>(() => loadSet(SAVED_KEY))
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadSet(DISMISSED_KEY))
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadSet(COLLAPSED_KEY))
+  // Answers are collapsed to a preview by default (you read the discussion, then
+  // expand a whole answer on demand). `expanded` tracks the open ones — ephemeral
+  // reading state, so it isn't persisted; each session opens condensed.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [savedOnly, setSavedOnly] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
@@ -140,8 +141,8 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
     setSaved((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); persist(SAVED_KEY, n); return n })
   const dismiss = (k: string) =>
     setDismissed((p) => { const n = new Set(p); n.add(k); persist(DISMISSED_KEY, n); return n })
-  const toggleCollapsed = (k: string) =>
-    setCollapsed((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); persist(COLLAPSED_KEY, n); return n })
+  const toggleExpanded = (k: string) =>
+    setExpanded((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n })
 
   const visible = turns.filter((m) => {
     const k = blockKey(m)
@@ -193,47 +194,50 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
         ) : (
           visible.map((m) => {
             const k = blockKey(m)
-            // Human prompt — a FLAG that separates the chunks of answers below it.
-            // The command itself is the section label for the agent's replies until
-            // the next prompt.
+            const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            // Human prompt — a "sent" bubble on the right.
             if (m.kind === 'user') {
               return (
-                <div key={k} className="reading-flag" title={m.text}>
-                  <span className="reading-flag-marker">›</span>
-                  <span className="reading-flag-text">{m.text}</span>
+                <div key={k} className="imsg-row is-user">
+                  <div className="imsg-bubble is-user" title={m.text}>
+                    <span className="imsg-user-text">{m.text}</span>
+                    <div className="imsg-time">{time}</div>
+                  </div>
                 </div>
               )
             }
+            // Agent answer — a "received" bubble on the left. Collapsed to a preview
+            // line by default; tap to expand the full markdown answer in place.
             const isSaved = saved.has(k)
-            const isCollapsed = collapsed.has(k)
+            const isExpanded = expanded.has(k)
             return (
-              <div key={k} className={`reading-answer${isSaved ? ' is-saved' : ''}${isCollapsed ? ' is-collapsed' : ''}`}>
-                <div className="reading-answer-actions">
-                  <button onClick={() => toggleCollapsed(k)} title={isCollapsed ? 'Expand' : 'Collapse'} className="always">
-                    ▾
-                  </button>
-                  <button onClick={() => copy(k, m.text)} title={copiedKey === k ? 'Copied' : 'Copy'} className={copiedKey === k ? 'on' : ''}>
-                    {copiedKey === k ? '✓' : '⧉'}
-                  </button>
-                  <button onClick={() => toggleSaved(k)} title={isSaved ? 'Unsave' : 'Save'} className={isSaved ? 'on' : ''}>
-                    {isSaved ? '★' : '☆'}
-                  </button>
-                  <button onClick={() => dismiss(k)} title="Dismiss">✕</button>
+              <div key={k} className="imsg-row is-agent">
+                <div className={`imsg-bubble is-agent${isSaved ? ' is-saved' : ''}`}>
+                  {!isExpanded ? (
+                    <button className="imsg-preview" onClick={() => toggleExpanded(k)} title="Expand answer">
+                      {previewLine(m.text)}<span className="imsg-more">more</span>
+                    </button>
+                  ) : (
+                    <>
+                      <div className="reading-md">
+                        <MarkdownAnswer text={m.text} />
+                      </div>
+                      <div className="imsg-foot">
+                        <button className="imsg-collapse" onClick={() => toggleExpanded(k)}>less</button>
+                        <span className="imsg-time">{time}</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="imsg-actions">
+                    <button onClick={() => copy(k, m.text)} title={copiedKey === k ? 'Copied' : 'Copy'} className={copiedKey === k ? 'on' : ''}>
+                      {copiedKey === k ? '✓' : '⧉'}
+                    </button>
+                    <button onClick={() => toggleSaved(k)} title={isSaved ? 'Unsave' : 'Save'} className={isSaved ? 'on' : ''}>
+                      {isSaved ? '★' : '☆'}
+                    </button>
+                    <button onClick={() => dismiss(k)} title="Dismiss">✕</button>
+                  </div>
                 </div>
-                {isCollapsed ? (
-                  <button className="reading-answer-preview" onClick={() => toggleCollapsed(k)} title="Expand">
-                    {previewLine(m.text)}
-                  </button>
-                ) : (
-                  <>
-                    <div className="reading-md">
-                      <MarkdownAnswer text={m.text} />
-                    </div>
-                    <div className="reading-answer-time">
-                      {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  </>
-                )}
               </div>
             )
           })
