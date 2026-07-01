@@ -44,9 +44,12 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
   const canSend = userTodos.length > 0 && !!session?.terminalId
   const sendTodos = () => {
     if (!canSend || !session?.terminalId) return
-    // One line so newlines don't submit early in Claude's input; trailing CR submits.
-    const prompt = `Please work through these tasks: ${userTodos.map((t, i) => `(${i + 1}) ${t}`).join('; ')}`
-    window.operator.terminalWrite(session.terminalId, prompt + '\r')
+    // Bracketed paste keeps the multi-line list from submitting line-by-line; the
+    // trailing CR (outside the paste) submits it as one message. Reads cleanly for
+    // the agent instead of a cramped single line.
+    const body = userTodos.map((t, i) => `${i + 1}. ${t}`).join('\n')
+    const prompt = `Please work through these tasks:\n${body}`
+    window.operator.terminalWrite(session.terminalId, `\x1b[200~${prompt}\x1b[201~\r`)
     persistTodos([]) // handed off to the agent
   }
 
