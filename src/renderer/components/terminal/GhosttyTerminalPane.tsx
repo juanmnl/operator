@@ -345,12 +345,21 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
   // drop that path into the terminal (parity with iTerm). ghostty-web renders to a
   // Canvas and never wired DnD itself, so we own it on the wrapper. (Needs
   // `dragDropEnabled: false` in tauri.conf so the webview gets HTML5 DnD.)
+  //
+  // We send the path(s) via BRACKETED PASTE (ESC[200~ … ESC[201~) rather than as raw
+  // typed bytes: Claude Code recognizes an image file path arriving as a PASTE and
+  // converts it to a native `[Image #N]` attachment in the input (the same as its
+  // window drag-drop), instead of leaving an ugly literal path. Non-image paths just
+  // paste as text. terminalWrite goes straight to the pty, so the sequence reaches
+  // Claude's stdin intact.
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
     if (files.length === 0) return
     const paths = await persistFiles(files, window.operator.savePastedImage)
-    if (paths.length > 0) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
+    if (paths.length > 0) {
+      window.operator.terminalWrite(terminalId, `\x1b[200~${paths.join(' ')}\x1b[201~`)
+    }
   }, [terminalId])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
