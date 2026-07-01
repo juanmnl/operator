@@ -19,6 +19,7 @@ use serde_json::Value;
 use tauri::{Emitter, Manager};
 
 use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem};
+use crate::chatstore::ChatStore;
 use crate::PtyManager;
 
 /// Recent assistant prose entries (answers + thinking) retained per session for
@@ -63,6 +64,14 @@ struct Track {
     /// Assistant prose (answers + thinking) for the reading panel, capped to a
     /// recent tail so the emitted session payload stays bounded.
     narration: Vec<NarrationEntry>,
+    /// Monotonic index assigned to EVERY narration entry ever pushed (never rewound
+    /// by the tail-cap drain). It's the durable (session_id, seq) key for the chat
+    /// store; re-reading the transcript after a relaunch reproduces the same seqs, so
+    /// persisting is idempotent (INSERT OR IGNORE).
+    narration_seq: u64,
+    /// New narration entries not yet flushed to the chat store, drained by the tailer
+    /// loop each tick. Separate from `narration` because that Vec gets tail-capped.
+    pending: Vec<(u64, NarrationEntry)>,
     /// Reconstructed plan (Plan tab) as (id, item) in order. Built from either a
     /// TodoWrite snapshot OR the harness's incremental TaskCreate/TaskUpdate events.
     tasks: Vec<(String, TodoItem)>,
@@ -94,6 +103,8 @@ impl Track {
             offset: 0,
             activity: vec![],
             narration: vec![],
+            narration_seq: 0,
+            pending: vec![],
             tasks: vec![],
             task_n: 0,
             summary: None,
@@ -109,6 +120,21 @@ impl Track {
             ended: false,
             dirty: true, // emit once so the session shell shows up promptly
         }
+    }
+
+    /// Record one narration entry: assign its durable seq, queue it for the chat
+    /// store, append to the in-memory tail (capped), and mark dirty. The single choke
+    /// point so seq assignment + persistence can't be forgotten at a call site.
+    fn push_narration(&mut self, entry: NarrationEntry) {
+        let seq = self.narration_seq;
+        self.narration_seq += 1;
+        self.pending.push((seq, entry.clone()));
+        self.narration.push(entry);
+        if self.narration.len() > NARRATION_CAP {
+            let drop = self.narration.len() - NARRATION_CAP;
+            self.narration.drain(0..drop);
+        }
+        self.dirty = true;
     }
 
     /// Read any new transcript lines and fold them into this track's state.
@@ -227,12 +253,7 @@ impl Track {
                 prompt = prompt.chars().take(4000).collect::<String>() + "…";
             }
             let ts = v.get("timestamp").and_then(|t| t.as_str()).map(|s| s.to_string()).unwrap_or_else(now_iso);
-            self.narration.push(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts });
-            if self.narration.len() > NARRATION_CAP {
-                let drop = self.narration.len() - NARRATION_CAP;
-                self.narration.drain(0..drop);
-            }
-            self.dirty = true;
+            self.push_narration(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts });
         }
     }
 
@@ -255,17 +276,11 @@ impl Track {
                 let field = if btype == "thinking" { "thinking" } else { "text" };
                 if let Some(s) = b.get(field).and_then(|t| t.as_str()) {
                     if !s.trim().is_empty() {
-                        self.narration.push(NarrationEntry {
+                        self.push_narration(NarrationEntry {
                             kind: btype.to_string(),
                             text: s.to_string(),
                             timestamp: ts.to_string(),
                         });
-                        // Cap to the recent tail so session:update stays bounded.
-                        if self.narration.len() > NARRATION_CAP {
-                            let drop = self.narration.len() - NARRATION_CAP;
-                            self.narration.drain(0..drop);
-                        }
-                        self.dirty = true;
                     }
                 }
                 continue;
@@ -438,6 +453,13 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 }
                 let alive = mgr.alive(&t.terminal_id);
                 t.poll();
+                // Persist any new answers to the durable chat store (append-only,
+                // idempotent by (session_id, seq)) before they can be dropped from the
+                // in-memory tail cap.
+                if !t.pending.is_empty() {
+                    app.state::<Arc<ChatStore>>().append(&t.session_id, &t.pending);
+                    t.pending.clear();
+                }
                 if !alive {
                     t.ended = true;
                     t.dirty = true;

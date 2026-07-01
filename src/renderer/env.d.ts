@@ -3,13 +3,15 @@ declare module '*.png' {
   export default src
 }
 
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry } from '../shared/types'
 
 declare global {
   interface Window {
     operator: {
       onSessionUpdate: (callback: (sessions: AgentSession[]) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
+      /** Full durable chat history (reading-panel answers) for a session, from SQLite. */
+      chatHistory: (sessionId: string) => Promise<NarrationEntry[]>
       terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
       /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */
       shellSpawn: (cwd: string) => Promise<string>

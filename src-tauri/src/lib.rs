@@ -17,6 +17,7 @@ mod transcript;
 mod tray_anim;
 #[path = "gridterm.rs"]
 mod gridterm;
+mod chatstore;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -635,6 +636,22 @@ fn load_sessions() -> serde_json::Value {
         .unwrap_or_else(|| serde_json::Value::Array(vec![]))
 }
 
+fn chat_db_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::Path::new(&home).join(".operator").join("chat.db")
+}
+
+/// Full durable chat history for a session (the reading-panel answers), from the
+/// SQLite store. The panel loads this on open so it can show the WHOLE conversation
+/// — not just the bounded tail the transcript tailer keeps in memory.
+#[tauri::command]
+fn chat_history(
+    store: tauri::State<Arc<chatstore::ChatStore>>,
+    id: String,
+) -> Vec<backend::NarrationEntry> {
+    store.load(&id)
+}
+
 /// Delete pasted-image temp files older than 3 days. Nothing else ever cleans
 /// $TMPDIR/operator-pastes and macOS's tmp reaper is unreliable, so dragged
 /// screenshots (100s of KB each) pile up indefinitely. The path is consumed the
@@ -827,6 +844,7 @@ pub fn run() {
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
         .manage(tray_anim::TrayState::default())
+        .manage(Arc::new(chatstore::ChatStore::open(&chat_db_file())))
         .setup(|app| {
             std::thread::spawn(prune_pasted_images);
             transcript::start_tailer(app.handle().clone());
@@ -871,7 +889,8 @@ pub fn run() {
             save_sessions,
             load_sessions,
             save_pasted_image,
-            set_dock_icon
+            set_dock_icon,
+            chat_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

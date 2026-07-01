@@ -29,6 +29,11 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 serde_yaml = "0.9"
 base64 = "0.22"
+# Durable chat store (~/.operator/chat.db) — persists the reading-panel answers so
+# they survive restarts / transcript rotation and the panel reads them append-only
+# instead of re-deriving from the transcript. `bundled` compiles SQLite from source
+# (no system libsqlite dep — keeps the signed macOS build self-contained).
+rusqlite = { version = "0.32", features = ["bundled"] }
 # Our own (non-native) terminal: alacritty's VT engine parses pty bytes into a grid
 # in Rust; the frontend paints a clean cell snapshot as DOM. Pure Rust, no GPU.
 alacritty_terminal = "0.25"

@@ -16,7 +16,7 @@ import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
-import type { GridUpdate } from './shared/types'
+import type { GridUpdate, NarrationEntry } from './shared/types'
 
 type Unsub = () => void
 
@@ -126,6 +126,9 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
     getSessions: () => invoke('get_sessions'),
+    // Full durable chat history for a session (reading-panel answers) from the SQLite
+    // store — the whole conversation, not just the bounded tail in session:update.
+    chatHistory: (sessionId: string) => invoke<NarrationEntry[]>('chat_history', { id: sessionId }),
 
     // --- misc ---
     pickFolder: async () => {

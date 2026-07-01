@@ -80,13 +80,39 @@ function blockKey(m: NarrationEntry): string {
 }
 
 export function ConversationPanel({ session }: { session?: AgentSession }) {
+  // Durable chat history from the SQLite store (~/.operator/chat.db) — the WHOLE
+  // conversation, loaded on session open. session:update only carries a bounded tail
+  // (NARRATION_CAP) that's re-derived from the transcript, so without this the panel
+  // could only ever show the last N answers and lost everything on restart.
+  const [history, setHistory] = useState<NarrationEntry[]>([])
+  useEffect(() => {
+    const id = session?.id
+    if (!id) { setHistory([]); return }
+    let cancelled = false
+    window.operator.chatHistory?.(id)
+      .then((h) => { if (!cancelled) setHistory(h ?? []) })
+      .catch(() => { /* store unavailable — fall back to the live tail below */ })
+    return () => { cancelled = true }
+  }, [session?.id])
+
   // The conversation = human prompts (kind 'user') interleaved with the agent's
   // answers (kind 'text'), in transcript order — so it reads as a chat, not a
   // one-sided log. (Thinking blocks are excluded — Claude Code stores them empty.)
-  const turns = useMemo(
-    () => (session?.messages ?? []).filter((m) => m.kind === 'user' || m.kind === 'text'),
-    [session?.messages],
-  )
+  // Merge durable history with the live tail: history is the full ordered record;
+  // session.messages carries the freshest entries that may not be persisted yet
+  // (~1s lag). Dedupe by blockKey (history wins), so each answer appears once.
+  const turns = useMemo(() => {
+    const seen = new Set<string>()
+    const out: NarrationEntry[] = []
+    for (const m of [...history, ...(session?.messages ?? [])]) {
+      if (m.kind !== 'user' && m.kind !== 'text') continue
+      const k = blockKey(m)
+      if (seen.has(k)) continue
+      seen.add(k)
+      out.push(m)
+    }
+    return out
+  }, [history, session?.messages])
   const [saved, setSaved] = useState<Set<string>>(() => loadSet(SAVED_KEY))
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadSet(DISMISSED_KEY))
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadSet(COLLAPSED_KEY))
