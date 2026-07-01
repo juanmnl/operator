@@ -230,12 +230,20 @@ export function DashboardView() {
     return () => { cancelled = true; clearInterval(iv) }
   }, [])
 
+  // True during the sidebar's 260ms width animation — the terminal suspends its fit
+  // while the content column animates, then fits once on settle. Without this the
+  // ghostty grid reflowed every frame of the collapse/expand → overprint corruption.
+  const [sidebarAnimating, setSidebarAnimating] = useState(false)
+  const sidebarAnimTimer = useRef(0)
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c
       try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
+    setSidebarAnimating(true)
+    clearTimeout(sidebarAnimTimer.current)
+    sidebarAnimTimer.current = window.setTimeout(() => setSidebarAnimating(false), 320)
   }, [])
 
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
@@ -1274,7 +1282,7 @@ export function DashboardView() {
                   terminalId={t.id}
                   theme={currentTheme.xterm}
                   active={t.id === activeTerminalId && !t.ended}
-                  suspendFit={resizingPanel || windowResizing}
+                  suspendFit={resizingPanel || windowResizing || sidebarAnimating}
                 />
                 {t.ended && (
                   <EndedOverlay
