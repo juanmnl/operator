@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Operator</title>
+    <style>
+      /* Operator launch splash. A standalone, transparent, borderless window
+         (see tauri.conf.json → "splashscreen") shown instantly while the main
+         window boots hidden — so the app appears fully rendered instead of
+         growing in from the corner. Self-contained: no external CSS/JS. */
+      :root {
+        color-scheme: dark;
+        --fg: #f6f8f7;        /* brand white (matches in-app --fg on dark) */
+        --fg-muted: #767a82;  /* muted gray (matches in-app --fg-muted on dark) */
+      }
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+      body {
+        -webkit-user-select: none; user-select: none; cursor: default;
+      }
+
+      /* The visible card fills the transparent window; its rounded corners read
+         as the splash's own shape. */
+      .card {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        background: radial-gradient(120% 120% at 50% 35%, #14171c 0%, #0b0d10 70%);
+        border: 1px solid rgba(246, 248, 247, 0.07);
+        border-radius: 18px;
+        box-shadow: inset 0 1px 0 rgba(246, 248, 247, 0.04);
+        animation: rise 0.45s ease-out both;
+      }
+      @keyframes rise {
+        from { opacity: 0; transform: scale(0.98); }
+        to   { opacity: 1; transform: scale(1); }
+      }
+
+      /* Logo + wordmark, centered in the free space above the footer. */
+      .center {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+      }
+      .mark { width: 96px; height: 96px; }
+      .mark circle { fill: var(--fg-muted); transform-box: fill-box; transform-origin: center; }
+
+      /* Exact copy of the in-app LogoMark twinkle (src/renderer/styles.css): dots
+         bloom from a muted gray trough up to the brand white on their own cadence. */
+      @keyframes twinkle {
+        0%, 100% { opacity: 0.3;  transform: scale(0.5); fill: var(--fg-muted); }
+        50%      { opacity: 0.85; transform: scale(1);   fill: var(--fg); }
+      }
+
+      /* Wordmark in the app's monospace stack. */
+      .wordmark {
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        color: var(--fg);
+        opacity: 0.95;
+      }
+
+      /* Footer: signature + version, pinned to the bottom. */
+      .footer {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        padding-bottom: 20px;
+      }
+      .sig {
+        font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.02em;
+        color: var(--fg-muted);
+      }
+      .ver {
+        font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+        font-size: 10px;
+        color: var(--fg-muted);
+        opacity: 0.65;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="center">
+        <svg class="mark" viewBox="0 0 11 11" fill="none" aria-label="Operator"></svg>
+        <div class="wordmark">Operator</div>
+      </div>
+      <div class="footer">
+        <div class="sig">Juan Cornejo</div>
+        <div class="ver">v%APP_VERSION%</div>
+      </div>
+    </div>
+
+    <script>
+      // Reproduce the in-app LogoMark dot grid EXACTLY (src/renderer/components/
+      // LogoMark.tsx, animated, cells=11 — the same density as the in-app splash's
+      // <LogoMark size=96 cells=11 />): a disc of dots, each twinkling on its own
+      // seeded cadence. Geometry + seeding match buildDots()/the animated branch.
+      const CELLS = 11, R = 0.5
+      const rand = (s) => { const x = Math.sin(s * 12.9898) * 43758.5453; return x - Math.floor(x) }
+      const center = (CELLS - 1) / 2 + 0.5
+      const radius = (CELLS / 7) * 3.4
+      const maxd = radius * radius * 1.04
+      const svg = document.querySelector('.mark')
+      const NS = 'http://www.w3.org/2000/svg'
+      let i = 0
+      for (let c = 0; c < CELLS; c++) {
+        for (let r = 0; r < CELLS; r++) {
+          const cx = c + 0.5, cy = r + 0.5
+          const dx = cx - center, dy = cy - center
+          if (dx * dx + dy * dy > maxd) continue
+          const v = rand(i + 11)
+          const dur = 3.0 + rand(i + 1) * 2.0
+          const delay = -rand(i + 7) * dur
+          const el = document.createElementNS(NS, 'circle')
+          el.setAttribute('cx', cx)
+          el.setAttribute('cy', cy)
+          el.setAttribute('r', (R * (0.5 + 0.5 * v)).toFixed(3))
+          el.style.animation = `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`
+          svg.appendChild(el)
+          i++
+        }
+      }
+    </script>
+  </body>
+</html>

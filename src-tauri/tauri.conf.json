@@ -10,17 +10,35 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "Operator",
         "width": 1100,
         "height": 720,
         "minWidth": 720,
         "minHeight": 480,
+        "center": true,
+        "visible": false,
         "backgroundColor": "#0b0d10",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "dragDropEnabled": false
+      },
+      {
+        "label": "splashscreen",
+        "url": "splashscreen.html",
+        "title": "Operator",
+        "width": 320,
+        "height": 320,
+        "center": true,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "skipTaskbar": true,
+        "focus": true
       }
     ],
     "security": {

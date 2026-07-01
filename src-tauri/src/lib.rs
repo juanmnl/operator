@@ -800,6 +800,24 @@ fn set_dock_icon(app: tauri::AppHandle, variant: String) {
     let _ = (app, variant);
 }
 
+/// Called by the renderer once it has painted its first frame. The main window
+/// launches hidden (tauri.conf.json → "visible": false) so the user never sees
+/// it grow in from the corner mid-render; here we close the launch splash and
+/// reveal the now-rendered main window.
+#[tauri::command]
+fn app_ready(app: tauri::AppHandle) {
+    if let Some(splash) = app.get_webview_window("splashscreen") {
+        let _ = splash.close();
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        // The window stayed truly hidden (config visible:false, plugin no longer
+        // forcing VISIBLE) at its restored geometry, so this reveal is a clean show
+        // at full size + saved position — no corner grow.
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
 // Menu-bar tray icon: the dot-circle logo (no count). Clicking it opens a menu
 // listing the active sessions and their states — rebuilt by the transcript
 // tailer via transcript::refresh_tray_menu. Clicking an item focuses the app.
@@ -838,8 +856,27 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        // Persist + restore the window's size/position across launches.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Persist + restore the window's size/position across launches. The
+        // splash is transient (fixed size, centered, closed on ready) — keep it
+        // out of the saved state so it never restores stale geometry.
+        //
+        // CRITICAL: exclude VISIBLE from the restored flags. The default flags
+        // (StateFlags::all()) restore visibility, so the plugin re-SHOWS the main
+        // window at startup (it was visible at last quit) — overriding the config's
+        // `visible: false`. That made the window appear + grow from the desktop's
+        // top-left corner BEFORE app_ready could reveal it centered. We restore only
+        // geometry; visibility stays owned by the config + app_ready.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["splashscreen"])
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
+                )
+                .build(),
+        )
         .manage(Arc::new(PtyManager::default()))
         .manage(Sessions::default())
         .manage(transcript::TrackRegistry::default())
@@ -890,7 +927,8 @@ pub fn run() {
             load_sessions,
             save_pasted_image,
             set_dock_icon,
-            chat_history
+            chat_history,
+            app_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
