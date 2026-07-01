@@ -32,6 +32,18 @@ const decoders = new Map<string, TextDecoder>()
 const writeQueues = new Map<string, WriteQueue>()
 
 export function installBridge(): void {
+  // Route external links to the system browser. The ghostty terminal activates a
+  // clicked URL / OSC-8 link via `window.open(url, '_blank')` (on Cmd/Ctrl+click),
+  // but in a Tauri webview a raw window.open to an http(s) URL never reaches the
+  // browser — so terminal links looked dead. Intercept http(s) targets and hand them
+  // to the opener plugin; anything else falls through to the original.
+  const origWindowOpen = window.open.bind(window)
+  window.open = ((url?: string | URL, target?: string, features?: string) => {
+    const href = url == null ? '' : typeof url === 'string' ? url : url.toString()
+    if (/^https?:\/\//i.test(href)) { void openUrl(href); return null }
+    return origWindowOpen(url as string, target, features)
+  }) as typeof window.open
+
   const bridge = {
     // --- terminals (real) ---
     terminalSpawn: async (cwd?: string, launchOptions?: Record<string, unknown>) => {
