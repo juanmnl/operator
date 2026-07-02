@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AgentSession, NarrationEntry } from '../../../shared/types'
+import { ChatComposer } from './ChatComposer'
 
 // A fenced code block with a language label + copy button. Inline code keeps the
 // default <code> styling; only multi-line / language-tagged code gets the chrome.
@@ -299,6 +300,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
           })
         )}
       </div>
+      <ChatComposer session={session} onSend={() => { stickRef.current = true }} />
     </div>
   )
 }

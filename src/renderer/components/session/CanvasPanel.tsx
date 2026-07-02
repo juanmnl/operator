@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { ConversationPanel } from './ConversationPanel'
+import { CanvasConversation } from './CanvasConversation'
 import { AppPreviewPanel } from './AppPreviewPanel'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
@@ -34,6 +35,17 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
   onSelectMode: (m: CanvasMode) => void
 }) {
   const select = onSelectMode
+
+  // SPIKE: A/B the canvas-painted chat renderer against the DOM/react-markdown one.
+  // Persisted so the choice survives a reload; defaults off.
+  const [canvasChat, setCanvasChat] = useState(() => {
+    try { return localStorage.getItem('operator.chat.canvas') === '1' } catch { return false }
+  })
+  const toggleCanvasChat = () => setCanvasChat((v) => {
+    const next = !v
+    try { localStorage.setItem('operator.chat.canvas', next ? '1' : '0') } catch { /* quota */ }
+    return next
+  })
 
   const [userTodos, setUserTodos] = useState<string[]>(() => loadUserTodos(session?.id))
   useEffect(() => { setUserTodos(loadUserTodos(session?.id)) }, [session?.id])
@@ -81,7 +93,7 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
         ))}
       </DragRegion>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {mode === 'chat' && <ConversationPanel session={session} />}
+        {mode === 'chat' && (canvasChat ? <CanvasConversation session={session} /> : <ConversationPanel session={session} />)}
         {mode === 'plan' && (
           <PlanPanel
             session={session}
@@ -111,6 +123,15 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
           {mode === 'preview' && devUrl && !devUrlReserved && (
             <button className="actions-footer-btn" onClick={() => window.operator.openExternal?.(devUrl)} title="Open in browser">
               Open ↗
+            </button>
+          )}
+          {mode === 'chat' && (
+            <button
+              className={`actions-footer-btn${canvasChat ? ' is-active' : ''}`}
+              onClick={toggleCanvasChat}
+              title={canvasChat ? 'Canvas renderer (spike) — click for the DOM renderer' : 'DOM renderer — click for the canvas renderer (spike)'}
+            >
+              {canvasChat ? '⚡ Canvas' : '⚡ Canvas'}
             </button>
           )}
           {mode === 'chat' && (session?.messages?.some((m) => m.kind === 'text')) && (
