@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import type { AgentSession, NarrationEntry } from '../../../shared/types'
 import { parseBlocks, type Block, type Span } from '../../lib/canvas-md'
 import { ChatComposer } from './ChatComposer'
@@ -44,8 +45,23 @@ type Op =
   | { kind: 'rule'; x: number; y: number; w: number; top: number; bottom: number }
   | { kind: 'vbar'; x: number; y: number; h: number; top: number; bottom: number }
   | { kind: 'segs'; y: number; h: number; segs: Seg[]; top: number; bottom: number }
-type TurnBound = { top: number; bottom: number; text: string }
+type TurnBound = { top: number; bottom: number; text: string; key: string; kind: string }
 interface Layout { ops: Op[]; height: number; bounds: TurnBound[] }
+
+// Per-answer state — SAME localStorage keys as the DOM ConversationPanel, so answers you'd
+// already starred/dismissed there carry straight over to the canvas panel.
+const SAVED_KEY = 'operator.answers.saved'
+const DISMISSED_KEY = 'operator.answers.dismissed'
+/** Stable-ish identity for a turn across re-emits (timestamp + length + head). */
+function blockKey(m: NarrationEntry): string {
+  return `${m.timestamp}|${m.text.length}|${m.text.slice(0, 40)}`
+}
+function loadSet(k: string): Set<string> {
+  try { const r = localStorage.getItem(k); return new Set<string>(r ? JSON.parse(r) : []) } catch { return new Set() }
+}
+function persistSet(k: string, s: Set<string>) {
+  try { localStorage.setItem(k, JSON.stringify([...s])) } catch { /* quota */ }
+}
 
 function fontFor(sp: Span, size: number, t: Theme): string {
   if (sp.code) return `${size - 1}px ${t.fontMono}`
@@ -175,7 +191,7 @@ function layout(ctx: CanvasRenderingContext2D, turns: NarrationEntry[], cssW: nu
       y = emitBlocks(ctx, ops, cachedBlocks(m.text), contentL, y, contentW, t)
     }
 
-    bounds.push({ top: turnTop, bottom: y, text: m.text })
+    bounds.push({ top: turnTop, bottom: y, text: m.text, key: blockKey(m), kind: m.kind })
     y += TURN_GAP
   }
   return { ops, height: y, bounds }
@@ -216,21 +232,45 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
     const order: string[] = []
     for (const m of [...history, ...(session?.messages ?? [])]) {
       if (m.kind !== 'user' && m.kind !== 'text') continue
-      const k = `${m.timestamp}|${m.text.length}|${m.text.slice(0, 40)}`
+      const k = blockKey(m)
       if (!byKey.has(k)) { byKey.set(k, m); order.push(k) }
     }
     return order.map((k) => byKey.get(k)!)
   }, [history, session?.messages])
 
+  // Per-answer reading state (starred / dismissed), search + saved-only filter — ported
+  // from the DOM ConversationPanel so the canvas panel has the same affordances.
+  const [saved, setSaved] = useState<Set<string>>(() => loadSet(SAVED_KEY))
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadSet(DISMISSED_KEY))
+  const [search, setSearch] = useState('')
+  const [savedOnly, setSavedOnly] = useState(false)
+  const q = search.trim().toLowerCase()
+
+  const visible = useMemo(() => turns.filter((m) => {
+    const k = blockKey(m)
+    if (m.kind === 'text' && dismissed.has(k)) return false           // dismissed answers hide
+    if (savedOnly && !(m.kind === 'text' && saved.has(k))) return false // saved-only ⇒ user turns drop too
+    if (q && !m.text.toLowerCase().includes(q)) return false           // search filters prompts + answers
+    return true
+  }), [turns, dismissed, savedOnly, saved, q])
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const layoutRef = useRef<Layout>({ ops: [], height: 0, bounds: [] })
   const themeRef = useRef<Theme | null>(null)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
   const [spacerH, setSpacerH] = useState(0)
   const stickRef = useRef(true)
   const [flash, setFlash] = useState<string | null>(null)
+  // Hover action toolbar: which turn the pointer is over (key + kind + viewport y). Updated
+  // only when the hovered turn CHANGES (hoverKeyRef guard) so mousemove stays cheap.
+  const [hover, setHover] = useState<{ key: string; kind: string; y: number } | null>(null)
+  const hoverKeyRef = useRef<string | null>(null)
 
-  const paint = () => {
+  const flashMsg = useCallback((m: string) => { setFlash(m); setTimeout(() => setFlash(null), 1100) }, [])
+
+  const paint = useCallback(() => {
     const canvas = canvasRef.current, scroller = scrollRef.current
     if (!canvas || !scroller) return
     const ctx = canvas.getContext('2d')
@@ -282,50 +322,54 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
         }
       }
     }
-  }
+  }, [])
 
-  useEffect(() => {
+  const relayout = useCallback(() => {
     const scroller = scrollRef.current, canvas = canvasRef.current
     if (!scroller || !canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const relayout = () => {
-      themeRef.current = readTheme(scroller)
-      const cssW = scroller.clientWidth
-      if (cssW < 40) return
-      ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0)
-      const lay = layout(ctx, turns, cssW, themeRef.current)
-      layoutRef.current = lay
-      setSpacerH(lay.height)
-      paint()
-    }
+    themeRef.current = readTheme(scroller)
+    const cssW = scroller.clientWidth
+    if (cssW < 40) return
+    ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0)
+    const lay = layout(ctx, visibleRef.current, cssW, themeRef.current)
+    layoutRef.current = lay
+    setSpacerH(lay.height)
+    paint()
+  }, [paint])
+
+  // Mount: own the ResizeObserver; re-layout on container resize.
+  useEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller) return
     relayout()
     const ro = new ResizeObserver(() => relayout())
     ro.observe(scroller)
     return () => ro.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turns])
+  }, [relayout])
 
-  // Stick to bottom once the spacer has grown to the new height (scrollTop can't exceed the
-  // current max until the DOM updates), then repaint at the settled offset.
+  // Re-layout whenever the VISIBLE set changes (new turns, search, saved filter, dismiss).
+  useEffect(() => { relayout() }, [visible, relayout])
+
+  // Stick to bottom once the spacer grows (scrollTop can't exceed the current max until the
+  // DOM updates). Suppressed while searching / saved-only so results don't jump to the end.
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el && stickRef.current) { el.scrollTop = el.scrollHeight; paint() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spacerH])
+    if (el && stickRef.current && !q && !savedOnly) { el.scrollTop = el.scrollHeight; paint() }
+  }, [spacerH, q, savedOnly, paint])
+
+  const clearHover = useCallback(() => { if (hoverKeyRef.current) { hoverKeyRef.current = null; setHover(null) } }, [])
 
   const onScroll = () => {
     const el = scrollRef.current
     if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    clearHover() // a hover toolbar's y goes stale after scroll — re-hover to show it again
     paint()
   }
 
-  // Hit-test the pointer against link segments (content coords = client + scrollTop).
-  const linkAt = (clientX: number, clientY: number): string | null => {
-    const el = scrollRef.current
-    if (!el) return null
-    const rect = el.getBoundingClientRect()
-    const px = clientX - rect.left, py = clientY - rect.top + el.scrollTop
+  // Hit-test the pointer (content coords) against link segments → the href under it, or null.
+  const linkAtXY = (px: number, py: number): string | null => {
     for (const op of layoutRef.current.ops) {
       if (op.kind !== 'segs' || py < op.top || py > op.bottom) continue
       for (const s of op.segs) if (s.href && px >= s.x && px <= s.x + (s.w ?? 0)) return s.href
@@ -333,19 +377,77 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
     return null
   }
 
+  // Pointer move: link cursor + track which turn we're over (for the hover action toolbar).
+  const onMove = (e: { clientX: number; clientY: number }) => {
+    const el = scrollRef.current; if (!el) return
+    const rect = el.getBoundingClientRect()
+    const px = e.clientX - rect.left, py = e.clientY - rect.top + el.scrollTop
+    el.style.cursor = linkAtXY(px, py) ? 'pointer' : 'default'
+    const b = layoutRef.current.bounds.find((tb) => py >= tb.top && py <= tb.bottom)
+    const key = b ? b.key : null
+    if (key !== hoverKeyRef.current) {
+      hoverKeyRef.current = key
+      setHover(b ? { key: b.key, kind: b.kind, y: b.top - el.scrollTop } : null)
+    }
+  }
+
+  const copyKey = (key: string) => {
+    const b = layoutRef.current.bounds.find((x) => x.key === key)
+    if (b) { navigator.clipboard?.writeText(b.text).catch(() => {}); flashMsg('Copied') }
+  }
+  const toggleSaved = (key: string) =>
+    setSaved((p) => { const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); persistSet(SAVED_KEY, n); return n })
+  const dismiss = (key: string) => {
+    setDismissed((p) => { const n = new Set(p); n.add(key); persistSet(DISMISSED_KEY, n); return n })
+    clearHover()
+  }
+
+  const hoverSaved = hover ? saved.has(hover.key) : false
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
-      <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+      {/* Search + saved-only filter (mirrors the DOM ConversationPanel header). */}
+      <div style={{
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
+        height: 30, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+        fontFamily: 'var(--font-body)',
+      }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search the conversation…"
+          style={{ flex: 1, minWidth: 0, fontFamily: 'inherit', fontSize: 11.5, background: 'transparent', color: 'var(--fg)', outline: 'none', border: 'none', padding: '2px 0' }}
+        />
+        {search && (
+          <button onClick={() => setSearch('')} title="Clear search"
+            style={{ fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', border: 'none', background: 'transparent', color: 'var(--fg-muted)', padding: '0 4px' }}>✕</button>
+        )}
+        <button
+          onClick={() => setSavedOnly((v) => !v)}
+          title={savedOnly ? 'Show all answers' : 'Show saved only'}
+          style={{
+            flexShrink: 0, fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none',
+            padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)',
+            color: savedOnly ? 'var(--accent)' : 'var(--fg-muted)', background: 'transparent',
+          }}>★ {saved.size}</button>
+      </div>
+
+      <div style={{ position: 'relative', flex: 1, minHeight: 0 }} onMouseLeave={clearHover}>
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          onClick={(e) => { const href = linkAt(e.clientX, e.clientY); if (href) window.operator.openExternal?.(href) }}
-          onMouseMove={(e) => { const el = scrollRef.current; if (el) el.style.cursor = linkAt(e.clientX, e.clientY) ? 'pointer' : 'default' }}
+          onClick={(e) => {
+            const el = scrollRef.current; if (!el) return
+            const rect = el.getBoundingClientRect()
+            const href = linkAtXY(e.clientX - rect.left, e.clientY - rect.top + el.scrollTop)
+            if (href) window.operator.openExternal?.(href)
+          }}
+          onMouseMove={onMove}
           onDoubleClick={(e) => {
             const el = scrollRef.current; if (!el) return
             const py = e.clientY - el.getBoundingClientRect().top + el.scrollTop
             const b = layoutRef.current.bounds.find((tb) => py >= tb.top && py <= tb.bottom)
-            if (b) { navigator.clipboard?.writeText(b.text).catch(() => {}); setFlash('Copied message'); setTimeout(() => setFlash(null), 1100) }
+            if (b) { navigator.clipboard?.writeText(b.text).catch(() => {}); flashMsg('Copied message') }
           }}
           className="scroll-hidden"
           style={{ position: 'absolute', inset: 0, overflow: 'auto' }}
@@ -353,11 +455,35 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
           <div style={{ height: spacerH, width: '100%' }} />
         </div>
         <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, display: 'block', pointerEvents: 'none' }} />
-        {turns.length === 0 && (
+
+        {visible.length === 0 && (
           <div style={{ position: 'absolute', top: 14, left: 18, fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg-muted)', opacity: 0.7 }}>
-            The agent’s answers will appear here as it responds.
+            {q ? `No matches for “${search.trim()}”.` : savedOnly ? 'No saved answers yet — star one to keep it here.' : 'The agent’s answers will appear here as it responds.'}
           </div>
         )}
+
+        {/* Hover action toolbar over the turn under the pointer. Copy for any turn; star +
+            dismiss for agent answers only. Positioned at the turn's top-right in viewport y. */}
+        {hover && (
+          <div
+            onMouseEnter={() => { /* keep visible while interacting */ }}
+            style={{
+              position: 'absolute', top: Math.max(4, hover.y + 2), right: 14,
+              display: 'flex', gap: 2, padding: 2, borderRadius: 7,
+              background: 'var(--overlay-medium)', border: '1px solid var(--border)', backdropFilter: 'blur(2px)',
+            }}
+          >
+            <button onClick={() => copyKey(hover.key)} title="Copy" style={hoverBtn}>⧉</button>
+            {hover.kind === 'text' && (
+              <button onClick={() => toggleSaved(hover.key)} title={hoverSaved ? 'Unsave' : 'Save'}
+                style={{ ...hoverBtn, color: hoverSaved ? 'var(--accent)' : 'var(--fg-muted)' }}>{hoverSaved ? '★' : '☆'}</button>
+            )}
+            {hover.kind === 'text' && (
+              <button onClick={() => dismiss(hover.key)} title="Dismiss" style={hoverBtn}>✕</button>
+            )}
+          </div>
+        )}
+
         {flash && (
           <div style={{
             position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
@@ -372,4 +498,10 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
       <ChatComposer session={session} onSend={() => { stickRef.current = true }} />
     </div>
   )
+}
+
+const hoverBtn: CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22,
+  padding: 0, fontSize: 12, cursor: 'pointer', outline: 'none', border: 'none',
+  background: 'transparent', color: 'var(--fg-muted)', borderRadius: 5,
 }
