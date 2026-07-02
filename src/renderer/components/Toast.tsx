@@ -61,7 +61,7 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
         border: '1px solid var(--border)',
         borderRadius: 6,
         boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
         cursor: 'pointer',
         maxWidth: 340,
         transform: entered ? 'translateY(0)' : 'translateY(10px)',
@@ -80,7 +80,7 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
           <div style={{
             fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, marginTop: 2,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+            fontFamily: 'var(--font-mono)',
           }}>
             {message.detail}
           </div>
@@ -90,8 +90,9 @@ function Toast({ message, onDismiss }: { message: ToastMessage; onDismiss: () =>
         <button
           onClick={(e) => { e.stopPropagation(); message.action!.run() }}
           style={{
-            flexShrink: 0, alignSelf: 'center', padding: '4px 10px', fontSize: 11, fontWeight: 500,
-            fontFamily: 'inherit', cursor: 'pointer', borderRadius: 5,
+            flexShrink: 0, alignSelf: 'center', padding: '5px 11px', fontFamily: 'var(--font-mono)',
+            fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+            cursor: 'pointer', borderRadius: 5,
             background: 'var(--accent)', color: 'var(--fg-on-accent)', border: 'none',
           }}
         >

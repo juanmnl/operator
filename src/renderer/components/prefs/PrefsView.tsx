@@ -194,13 +194,13 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
-      fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden',
+      fontFamily: "var(--font-body)", overflow: 'hidden',
     }}>
       {/* Header + content share one centered max-width column (margin:0 auto on a
           flex item centers it via auto-margins, and still fills narrow windows) so
           the page is balanced instead of pinned to the left on a wide window. */}
       <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
+        <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>
           Operator preferences
         </h2>
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7 }}>
@@ -210,7 +210,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
 
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <section style={{ marginBottom: 28 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+          <h3 style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg-muted)', margin: '0 0 2px' }}>
             Updates
           </h3>
           <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
@@ -258,7 +258,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
 
         <section style={{ marginBottom: 28 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 2 }}>
-            <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
+            <h3 style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg-muted)', margin: 0 }}>
               Theme
             </h3>
             {/* Light/Dark applies within whichever identity is selected. */}

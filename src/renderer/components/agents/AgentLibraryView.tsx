@@ -47,6 +47,15 @@ function modelLabel(model?: string): string {
   return MODEL_OPTIONS.find((m) => m.value === model)?.label.split(' — ')[0].toLowerCase() || model
 }
 
+/** opus / sonnet / haiku for the `.op-badge` tier chip, '' otherwise (inherit/default). */
+function modelTier(model?: string): string {
+  const m = (model || '').toLowerCase()
+  if (m.includes('opus')) return 'opus'
+  if (m.includes('sonnet')) return 'sonnet'
+  if (m.includes('haiku')) return 'haiku'
+  return ''
+}
+
 export function AgentLibraryView() {
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [projectPath, setProjectPath] = useState<string | null>(null)
@@ -127,11 +136,11 @@ export function AgentLibraryView() {
   const projectAgents = agents.filter((a) => a.scope === 'project')
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
       {/* Header — centered, wider column than the doc pages since this is a
           list+editor workspace (still balanced instead of pinned left). */}
       <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>Agents</h2>
+        <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Agents</h2>
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7, lineHeight: 1.6 }}>
           Define subagents and pick which model handles each kind of task. Saved as{' '}
           <code style={{ background: 'var(--bg-surface)', padding: '0 4px', borderRadius: 3 }}>.claude/agents/*.md</code>{' '}
@@ -207,7 +216,7 @@ function ListGroup({ title, sub, agents, selectedPath, onSelect, onAdd }: {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 6px 6px' }}>
-        <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.6 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', opacity: 0.7 }}>
           {title}{sub ? ` · ${sub}` : ''}
         </span>
         {onAdd && (
@@ -233,14 +242,11 @@ function ListGroup({ title, sub, agents, selectedPath, onSelect, onAdd }: {
               border: 'none', cursor: 'pointer', fontFamily: 'inherit',
             }}
           >
-            <div style={{ fontSize: 12, color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {a.name}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-              <span style={{
-                fontSize: 9, color: 'var(--fg-on-accent)', background: 'var(--mcp-cloud, var(--overlay-medium))',
-                padding: '0 5px', borderRadius: 3, fontWeight: 600, letterSpacing: 0.2,
-              }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+              <span className={`op-badge${modelTier(a.model) ? ' ' + modelTier(a.model) : ''}`}>
                 {modelLabel(a.model)}
               </span>
               <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
@@ -403,7 +409,7 @@ const textInput: React.CSSProperties = {
   width: '100%',
   padding: '6px 10px',
   fontSize: 12,
-  fontFamily: "'Inter', system-ui, sans-serif",
+  fontFamily: "var(--font-body)",
   background: 'var(--bg-terminal)',
   color: 'var(--fg)',
   border: '1px solid var(--border)',

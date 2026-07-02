@@ -24,15 +24,15 @@ export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontFamily: "var(--font-body)" }}>
       {/* Agent plan header — only when the agent has written one. */}
       {agentTodos.length > 0 && (
         <div style={{
           flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
           height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
-          fontSize: 11, color: 'var(--fg-muted)',
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
         }}>
-          <span style={{ fontWeight: 600, letterSpacing: 0.3 }}>Agent plan · {done}/{agentTodos.length}</span>
+          <span style={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>plan · <b style={{ color: 'var(--accent)', fontWeight: 700 }}>{done}</b>/{agentTodos.length}</span>
           <span style={{ marginLeft: 'auto', width: 90, height: 4, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden' }}>
             <span style={{ display: 'block', height: '100%', width: `${agentTodos.length ? (done / agentTodos.length) * 100 : 0}%`, background: 'var(--accent)', transition: 'width 0.2s' }} />
           </span>
@@ -96,7 +96,7 @@ function TodoRow({ todo }: { todo: TodoItem }) {
     <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '5px 4px', lineHeight: 1.45 }}>
       <span style={{
         flexShrink: 0, marginTop: 1, width: 14, textAlign: 'center', fontSize: 12,
-        color: done ? 'var(--color-success, var(--fg-muted))' : active ? 'var(--accent)' : 'var(--fg-muted)',
+        color: done ? 'var(--add-fg)' : active ? 'var(--accent)' : 'var(--fg-muted)',
       }}>
         {done ? '✓' : active ? '▸' : '○'}
       </span>

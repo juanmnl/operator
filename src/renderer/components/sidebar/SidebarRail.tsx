@@ -116,10 +116,14 @@ export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIn
                 justifyContent: 'center',
                 padding: 0,
                 borderRadius: 11,
-                border: active ? '1px solid var(--accent)' : '1px solid transparent',
+                // No dynamic (colour-changing) border on this rounded button — that
+                // re-rasterizes the rounded border layer in WKWebView on toggle. The
+                // active state is carried by the background wash + the accent pill
+                // below; the border stays a constant transparent for layout stability.
+                border: '1px solid transparent',
                 background: active ? 'var(--overlay-medium)' : 'transparent',
                 cursor: 'pointer',
-                transition: 'background 120ms ease, border-color 120ms ease',
+                transition: 'background 120ms ease',
               }}
               onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
               onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent' }}
@@ -136,7 +140,7 @@ export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIn
                   position: 'absolute', inset: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 700, lineHeight: 1,
-                  fontFamily: "'Inter', system-ui, sans-serif",
+                  fontFamily: "var(--font-body)",
                   color: active ? 'var(--fg)' : 'var(--fg)',
                   letterSpacing: initial.length > 1 ? -0.5 : 0,
                   // Slight halo so the glyph reads cleanly over the dot grid.

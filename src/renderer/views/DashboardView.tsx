@@ -1325,7 +1325,7 @@ export function DashboardView() {
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'flex-start',
-              fontFamily: "'Inter', system-ui, sans-serif",
+              fontFamily: "var(--font-body)",
               padding: '40px 40px',
               overflow: 'auto',
               minHeight: 0,
@@ -1492,7 +1492,7 @@ function EndedOverlay({ onClose }: { onClose: () => void }) {
         position: 'absolute', left: 0, right: 0, bottom: 16,
         display: 'flex', justifyContent: 'center',
         pointerEvents: 'none',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
       }}
     >
       <div

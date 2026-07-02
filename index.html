@@ -16,17 +16,19 @@
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Load Inter WITHOUT blocking first paint: a network stall on the webfont must not
-         hold the screen blank on reload. media=print → not render-blocking; onload swaps it
-         in. noscript path covers the (unused-in-app) no-JS case. -->
+    <!-- Design-system fonts (ported from the Operator landing): Sora = display/headlines,
+         Archivo = body/UI, JetBrains Mono = the uppercase labels + code. Loaded WITHOUT
+         blocking first paint (a webfont network stall must not hold the screen blank on
+         reload): media=print → not render-blocking; onload swaps it in. Inter is kept as a
+         fallback for the transition. noscript path covers the (unused-in-app) no-JS case. -->
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500&display=swap"
       media="print"
       onload="this.media='all'"
     />
     <noscript>
-      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" />
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500&display=swap" />
     </noscript>
     <title>Operator</title>
   </head>

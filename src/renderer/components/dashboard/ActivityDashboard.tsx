@@ -27,7 +27,7 @@ export function ActivityDashboard({
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0,
-      fontFamily: "'Inter', system-ui, sans-serif",
+      fontFamily: "var(--font-body)",
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',

@@ -41,9 +41,13 @@ impl ChatStore {
                  kind       TEXT NOT NULL,
                  text       TEXT NOT NULL,
                  ts         TEXT NOT NULL,
+                 images     TEXT,
                  PRIMARY KEY (session_id, seq)
              );",
         );
+        // Migrate DBs created before the `images` column (dropped-image paths, JSON).
+        // Errors harmlessly if the column already exists.
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN images TEXT", []);
         ChatStore {
             conn: Mutex::new(conn),
         }
@@ -60,13 +64,19 @@ impl ChatStore {
         let Ok(tx) = conn.transaction() else { return };
         {
             let Ok(mut stmt) = tx.prepare_cached(
-                "INSERT OR IGNORE INTO messages (session_id, seq, kind, text, ts)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR IGNORE INTO messages (session_id, seq, kind, text, ts, images)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             ) else {
                 return;
             };
             for (seq, e) in entries {
-                let _ = stmt.execute(params![session_id, *seq as i64, e.kind, e.text, e.timestamp]);
+                // Store image paths as a JSON array; NULL when there are none.
+                let images: Option<String> = if e.images.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&e.images).ok()
+                };
+                let _ = stmt.execute(params![session_id, *seq as i64, e.kind, e.text, e.timestamp, images]);
             }
         }
         let _ = tx.commit();
@@ -76,15 +86,20 @@ impl ChatStore {
     pub fn load(&self, session_id: &str) -> Vec<NarrationEntry> {
         let Ok(conn) = self.conn.lock() else { return Vec::new() };
         let Ok(mut stmt) = conn.prepare_cached(
-            "SELECT kind, text, ts FROM messages WHERE session_id = ?1 ORDER BY seq ASC",
+            "SELECT kind, text, ts, images FROM messages WHERE session_id = ?1 ORDER BY seq ASC",
         ) else {
             return Vec::new();
         };
         let rows = stmt.query_map(params![session_id], |r| {
+            let images = r
+                .get::<_, Option<String>>(3)?
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default();
             Ok(NarrationEntry {
                 kind: r.get(0)?,
                 text: r.get(1)?,
                 timestamp: r.get(2)?,
+                images,
             })
         });
         match rows {
@@ -100,7 +115,7 @@ mod tests {
     use crate::backend::NarrationEntry;
 
     fn entry(kind: &str, text: &str, ts: &str) -> NarrationEntry {
-        NarrationEntry { kind: kind.into(), text: text.into(), timestamp: ts.into() }
+        NarrationEntry { kind: kind.into(), text: text.into(), timestamp: ts.into(), images: Vec::new() }
     }
 
     #[test]
@@ -126,6 +141,17 @@ mod tests {
         store.append("s1", &batch);
         store.append("s1", &batch); // re-read after relaunch — must not duplicate
         assert_eq!(store.load("s1").len(), 1);
+    }
+
+    #[test]
+    fn images_roundtrip() {
+        let store = ChatStore::open(Path::new(":memory:"));
+        let mut e = entry("user", "[Image #1] look at this", "t0");
+        e.images = vec!["/x/img-cache/abc.jpg".into(), "/x/img-cache/def.png".into()];
+        store.append("s1", &[(0, e), (1, entry("text", "answer", "t1"))]);
+        let got = store.load("s1");
+        assert_eq!(got[0].images, vec!["/x/img-cache/abc.jpg".to_string(), "/x/img-cache/def.png".to_string()]);
+        assert!(got[1].images.is_empty()); // text answers carry no images
     }
 
     #[test]

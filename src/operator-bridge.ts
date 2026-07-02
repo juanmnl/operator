@@ -141,6 +141,11 @@ export function installBridge(): void {
     // Full durable chat history for a session (reading-panel answers) from the SQLite
     // store — the whole conversation, not just the bounded tail in session:update.
     chatHistory: (sessionId: string) => invoke<NarrationEntry[]>('chat_history', { id: sessionId }),
+    // Load a cached dropped-image (from NarrationEntry.images) as a data: URL for <img>.
+    imageDataUrl: (path: string) => invoke<string>('image_data_url', { path }),
+    // Liveness ping for the backend stall watchdog: while the main thread runs, this
+    // fires ~1/s; when it hangs, the pings stop and the backend recovers the webview.
+    rendererHeartbeat: () => { void invoke('renderer_heartbeat') },
 
     // --- misc ---
     pickFolder: async () => {

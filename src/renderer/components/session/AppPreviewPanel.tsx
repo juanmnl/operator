@@ -167,7 +167,7 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
               onClick={() => setPreset(p.id)}
               title={p.id === 'fit' ? 'Fit to panel' : `${p.id}px wide`}
               style={{
-                fontFamily: "'Inter', system-ui, sans-serif", fontSize: 9.5, fontWeight: 600,
+                fontFamily: "var(--font-body)", fontSize: 9.5, fontWeight: 600,
                 padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer', outline: 'none',
                 background: 'transparent',
                 color: preset === p.id ? 'var(--accent)' : 'var(--fg-muted)',
@@ -190,7 +190,7 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
             style={{
               position: 'absolute', top: 8, right: 8, zIndex: 2,
               display: 'flex', alignItems: 'center', gap: 5,
-              fontFamily: "'Inter', system-ui, sans-serif", fontSize: 10.5, fontWeight: 600,
+              fontFamily: "var(--font-body)", fontSize: 10.5, fontWeight: 600,
               padding: '4px 9px', borderRadius: 6, cursor: 'pointer', outline: 'none',
               color: 'var(--fg)', background: 'var(--bg-surface)', border: '1px solid var(--border)',
             }}
@@ -255,7 +255,7 @@ function Centered({ title, children }: { title: string; children?: React.ReactNo
   return (
     <div style={{
       height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 8, padding: 24, textAlign: 'center', fontFamily: "'Inter', system-ui, sans-serif",
+      gap: 8, padding: 24, textAlign: 'center', fontFamily: "var(--font-body)",
     }}>
       <span style={{ fontSize: 12, color: 'var(--fg)' }}>{title}</span>
       {children && (
@@ -275,7 +275,7 @@ const previewBtn: React.CSSProperties = {
   border: '1px solid var(--border)', borderRadius: 5,
 }
 const retryBtn: React.CSSProperties = {
-  marginTop: 0, marginRight: 8, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, cursor: 'pointer', outline: 'none',
+  marginTop: 0, marginRight: 8, fontFamily: "var(--font-body)", fontSize: 11, cursor: 'pointer', outline: 'none',
   padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'var(--btn-bg)', color: 'var(--fg)',
 }

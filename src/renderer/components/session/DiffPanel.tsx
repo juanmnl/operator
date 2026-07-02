@@ -36,8 +36,8 @@ function parseDiff(text: string): FileBlock[] {
 function lineStyle(line: string): React.CSSProperties {
   if (line.startsWith('+++') || line.startsWith('---')) return { color: 'var(--fg-muted)', opacity: 0.7 }
   if (line.startsWith('@@')) return { color: 'var(--accent)', opacity: 0.8 }
-  if (line.startsWith('+')) return { color: 'var(--color-success)', background: 'var(--overlay-subtle)' }
-  if (line.startsWith('-')) return { color: 'var(--color-error)', background: 'var(--overlay-subtle)' }
+  if (line.startsWith('+')) return { color: 'var(--add-fg)', background: 'var(--add-bg)' }
+  if (line.startsWith('-')) return { color: 'var(--del-fg)', background: 'var(--del-bg)' }
   return { color: 'var(--fg)', opacity: 0.75 }
 }
 
@@ -115,7 +115,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0,
-      fontFamily: "'Inter', system-ui, sans-serif",
+      fontFamily: "var(--font-body)",
     }}>
       {/* Header */}
       <div style={{
@@ -177,9 +177,9 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
               </span>
               {(f.added > 0 || f.removed > 0) && (
                 <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.7, flexShrink: 0 }}>
-                  {f.added > 0 && <span style={{ color: 'var(--color-success)' }}>+{f.added}</span>}
+                  {f.added > 0 && <span style={{ color: 'var(--add-fg)' }}>+{f.added}</span>}
                   {f.added > 0 && f.removed > 0 && ' '}
-                  {f.removed > 0 && <span style={{ color: 'var(--color-error)' }}>-{f.removed}</span>}
+                  {f.removed > 0 && <span style={{ color: 'var(--del-fg)' }}>-{f.removed}</span>}
                 </span>
               )}
             </button>

@@ -24,11 +24,11 @@ export function UsageView() {
   useEffect(() => { localStorage.setItem(DAYS_KEY, String(days)) }, [days])
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
       {/* Header */}
       <div style={{ padding: '16px 24px 0', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>Usage</h2>
+          <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Usage</h2>
           <div style={{ display: 'flex', gap: 2, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 2, flexShrink: 0 }}>
             {RANGES.map((r) => (
               <button key={r.days} onClick={() => setDays(r.days)} style={{
@@ -170,9 +170,12 @@ function CostTab({ days }: { days: number }) {
       <div style={{ marginTop: 8, marginBottom: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {stats.byModel.map((m) => (
           <div key={m.model} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', textTransform: 'capitalize' }}>{modelLabel(m.model)}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{fmtCost(m.cost)}</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{ fontFamily: 'var(--font-disp)', fontSize: 14, fontWeight: 700, color: 'var(--fg)', textTransform: 'capitalize', letterSpacing: '-0.01em' }}>{modelLabel(m.model)}</span>
+                {modelBadgeClass(m.model) && <span className={`op-badge ${modelBadgeClass(m.model)}`}>{modelBadgeClass(m.model)}</span>}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{fmtCost(m.cost)}</span>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
               <TokenStat label="Input" value={m.inputTokens} />
@@ -208,24 +211,33 @@ function CostTab({ days }: { days: number }) {
   )
 }
 
+/** opus / sonnet / haiku for the `.op-badge` tier chip, or '' for an unknown model. */
+function modelBadgeClass(model: string): string {
+  const m = model.toLowerCase()
+  if (m.includes('opus')) return 'opus'
+  if (m.includes('sonnet')) return 'sonnet'
+  if (m.includes('haiku')) return 'haiku'
+  return ''
+}
+
 function Stat({ label, value, big }: { label: string; value: string; big?: boolean }) {
   return (
     <div>
-      <div style={{ fontSize: big ? 28 : 20, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      <div style={{ fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 4, opacity: 0.6 }}>{label}</div>
+      <div style={{ fontFamily: 'var(--font-disp)', fontSize: big ? 30 : 21, fontWeight: 700, color: 'var(--fg)', lineHeight: 1.05, letterSpacing: '-0.01em', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.14em', marginTop: 5, opacity: 0.7 }}>{label}</div>
     </div>
   )
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-muted)', opacity: 0.6, margin: 0 }}>{children}</p>
+  return <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', opacity: 0.7, margin: 0 }}>{children}</p>
 }
 
 function TokenStat({ label, value, raw }: { label: string; value: number; raw?: boolean }) {
   return (
     <div>
-      <div style={{ fontSize: 13, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{raw ? value.toLocaleString() : fmtTokens(value)}</div>
-      <div style={{ fontSize: 9, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 2, opacity: 0.6 }}>{label}</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>{raw ? value.toLocaleString() : fmtTokens(value)}</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: 2, opacity: 0.7 }}>{label}</div>
     </div>
   )
 }

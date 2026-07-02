@@ -64,8 +64,8 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
             key={m.id}
             onClick={() => select(m.id)}
             style={{
-              fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, fontWeight: 600,
-              letterSpacing: 0.2, cursor: 'pointer', outline: 'none',
+              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+              textTransform: 'uppercase', letterSpacing: '0.14em', cursor: 'pointer', outline: 'none',
               padding: '2px 9px', borderRadius: 6, border: 'none', background: 'transparent',
               color: mode === m.id ? 'var(--accent)' : 'var(--fg-muted)',
             }}

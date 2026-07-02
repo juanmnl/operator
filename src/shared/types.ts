@@ -91,6 +91,8 @@ export interface NarrationEntry {
   kind: 'text' | 'thinking' | 'user'
   text: string
   timestamp: string
+  /** Cache-file paths for images the user dropped into this turn (load via imageDataUrl). */
+  images?: string[]
 }
 
 export interface TodoItem {

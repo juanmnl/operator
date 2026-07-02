@@ -5,20 +5,17 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
-import { isLightBackground, detectDevServerPort, findUrlAtColumn } from '../../lib/terminal'
+import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
 import { buildTerminalOptions, getMacOptionIsMeta } from '../../lib/terminal-options'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 
-// Claude Code's composer-divider ornaments (👀 eyes / 👣 footprints) are decorative,
-// not corruption. Strip them on EVERY path that writes to xterm — live output AND
-// replayed history (an idle input box keeps the ornament from its last draw, so the
-// history path matters). Replace with 2 spaces, not nothing: they're double-width,
-// and same-width keeps Claude's cursor math aligned with xterm.
-const ORNAMENT_RE = /[\u{1F440}\u{1F463}]/gu
+// Claude Code's composer-divider ornaments (👀/👣 and newer cycled pictographs) are
+// decorative, not corruption. Strip them on EVERY path that writes to xterm — live
+// output AND replayed history (an idle input box keeps the ornament from its last draw,
+// so the history path matters). See lib/terminal `stripOrnaments` for the shared regex.
 const decoder = new TextDecoder()
-function stripOrnaments(s: string): string { return s.replace(ORNAMENT_RE, '  ') }
 
 interface TerminalPaneProps {
   terminalId: string

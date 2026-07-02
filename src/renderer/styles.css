@@ -12,6 +12,73 @@
   --radius-sm: 6px;   /* buttons, badges, inputs */
 }
 
+/* ── Design-system foundation (ported from the Operator landing) ──────────────
+   The app's visual language, aligned to ../Operator-landing. Three type roles +
+   a token bridge. The bridge aliases the landing's token names onto the app's
+   own per-theme vars (set on :root by applyTheme in themes/index.ts) — the values
+   are IDENTICAL because the landing was ported from these themes, so this is pure
+   naming. Terminal fonts are deliberately untouched (they own their own stack). */
+:root {
+  --font-disp: 'Sora', 'Archivo', system-ui, -apple-system, sans-serif;   /* headlines, values */
+  --font-body: 'Archivo', system-ui, -apple-system, sans-serif;           /* body / UI text */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;       /* uppercase labels, code */
+
+  /* token bridge — landing name → app theme var */
+  --bg: var(--bg-terminal);
+  --surface: var(--bg-surface);
+  --bg-deep: var(--bg-sidebar);
+  --muted: var(--fg-muted);
+  --accent-fg: var(--fg-on-accent);
+  /* --fg, --accent, --border already match by name */
+
+  /* Diff / add-remove colours (the landing promoted these to per-theme tokens).
+     Theme-agnostic green/red — the one intentional exception to "stay within the
+     accent" — used by diff, worktree, and permission views. Dark-tuned defaults;
+     refine per-theme when the diff view is restyled. */
+  --add-fg: #4ec9a0;
+  --del-fg: #e2686b;
+  --add-bg: color-mix(in srgb, #4ec9a0 15%, transparent);
+  --del-bg: color-mix(in srgb, #e2686b 14%, transparent);
+}
+
+/* A monospace, uppercase, wide-tracked label — the landing's signature. Used for
+   panel names, metadata chips, phase/status text. */
+.op-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+.op-display { font-family: var(--font-disp); letter-spacing: -0.01em; }
+
+/* Panel-bar header — mono name + right-aligned LIVE flag (from the landing). */
+.op-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); }
+.op-bar-name { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.14em; }
+.op-flag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.18em; color: var(--accent); }
+
+/* List/tree rows — the landing's `.row` / `.is-live` kit. FLUSH (no border-radius)
+   so the live row's dynamic accent left-border is safe (see the freeze rule in the
+   ui-style memory: radius + a colour-changing border re-rasterizes → freeze). */
+.op-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-family: var(--font-mono); font-size: 11.5px; border-left: 2px solid transparent; }
+.op-row .op-g { flex: none; width: 12px; text-align: center; font-size: 11px; color: var(--muted); }
+.op-row .op-lbl { flex: none; color: color-mix(in srgb, var(--fg) 74%, transparent); white-space: nowrap; }
+.op-row .op-meta { flex: 1 1 auto; min-width: 0; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.op-row .op-dur { margin-left: auto; flex: none; padding-left: 8px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.op-row.is-live { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.op-row.is-live .op-lbl { color: var(--fg); }
+.op-row.is-live .op-dur { color: var(--accent); }
+.op-row.is-delegate .op-lbl { color: var(--accent); }
+.op-row.is-queued { opacity: 0.55; }
+
+/* Model / meta badges — mono, tiny, bordered. Static colours (no freeze risk). */
+.op-badge { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1; padding: 2px 5px; border-radius: 3px; border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent); color: var(--muted); white-space: nowrap; flex: none; }
+.op-badge.opus { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.op-badge.sonnet { color: color-mix(in srgb, var(--fg) 80%, transparent); border-color: color-mix(in srgb, var(--fg) 30%, transparent); }
+.op-badge.haiku { color: var(--muted); border-color: color-mix(in srgb, var(--fg) 18%, transparent); }
+
+/* Tree nesting connector — static border, no radius. */
+.op-nest { margin-left: 11px; padding-left: 9px; border-left: 1px solid var(--border); }
+
 * {
   margin: 0;
   padding: 0;
@@ -21,7 +88,7 @@
 
 html, body, #root {
   overflow: hidden;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body);
   height: 100%;
   width: 100%;
 }
@@ -174,7 +241,7 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   padding: 0 10px;
   box-sizing: border-box;
   border-top: 1px solid var(--border);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
 }
 .actions-footer-btn {
   display: inline-flex;
@@ -247,16 +314,24 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--overlay-subtle);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--fg);
 }
-/* "You" is distinguished by a whisper of accent — not a filled bubble. */
+/* "You" = a solid accent bubble (matching the Operator landing `.bubble.is-user`).
+   Background is a STATIC accent (never changes per-render), so radius+fill is safe. */
 .imsg-bubble.is-user {
-  background: color-mix(in srgb, var(--accent) 9%, var(--overlay-subtle));
-  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  border-bottom-right-radius: 4px;
 }
+.imsg-bubble.is-user .imsg-user-text { color: var(--accent-fg); }
+/* Inline code inside the user bubble reads against the accent, not the page bg. */
+.imsg-bubble.is-user code { background: color-mix(in srgb, var(--accent-fg) 18%, transparent); color: var(--accent-fg); }
+/* Agent bubble: bordered, mirror-cornered (landing `.bubble.is-agent`). */
+.imsg-bubble.is-agent { border-bottom-left-radius: 4px; }
 .imsg-bubble.is-agent.is-saved {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
@@ -308,7 +383,7 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 .imsg-actions button.on { color: var(--accent); } /* saved star — colour for meaning */
 /* Markdown body within an answer. Prose in Inter, code in mono. */
 .reading-md {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.6;
   color: var(--fg);
@@ -372,11 +447,11 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   background: var(--overlay-subtle);
 }
 .reading-code-lang {
-  font-family: 'Inter', system-ui, sans-serif; font-size: 9px; font-weight: 700;
+  font-family: var(--font-body); font-size: 9px; font-weight: 700;
   letter-spacing: 0.5px; text-transform: uppercase; color: var(--fg-muted); opacity: 0.8;
 }
 .reading-code-copy {
-  font-family: 'Inter', system-ui, sans-serif; font-size: 10px; font-weight: 600;
+  font-family: var(--font-body); font-size: 10px; font-weight: 600;
   color: var(--fg-muted); background: transparent; border: none; cursor: pointer; outline: none;
   padding: 2px 7px; border-radius: 4px;
 }
@@ -390,7 +465,7 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   background: var(--overlay-subtle); overflow: hidden;
 }
 .reading-thinking > summary {
-  cursor: pointer; padding: 7px 12px; font-family: 'Inter', system-ui, sans-serif;
+  cursor: pointer; padding: 7px 12px; font-family: var(--font-body);
   font-size: 11px; font-weight: 600; color: var(--fg-muted);
   letter-spacing: 0.3px; text-transform: uppercase; user-select: none; list-style: none;
 }

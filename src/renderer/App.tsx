@@ -25,7 +25,13 @@ export default function App() {
     // The safety timer (longer) still guarantees reveal if rAF never settles.
     const safety = setTimeout(reveal, 3000)
     requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(reveal, 1000)))
-    return () => clearTimeout(safety)
+
+    // Liveness heartbeat for the backend stall watchdog. While the main thread runs,
+    // this fires every second; if the thread hangs (e.g. a ghostty resize/render loop),
+    // the pings stop and the backend kills+respawns the frozen WebContent to self-heal.
+    window.operator.rendererHeartbeat?.()
+    const heartbeat = setInterval(() => window.operator.rendererHeartbeat?.(), 1000)
+    return () => { clearTimeout(safety); clearInterval(heartbeat) }
   }, [])
 
   return <DashboardView />

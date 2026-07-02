@@ -4,6 +4,7 @@ import type { ITerminalOptions } from 'ghostty-web'
 import type { ITheme } from '@xterm/xterm'
 import { TERMINAL_FONT_FAMILY } from '../../lib/terminal-options'
 import { base64ToBytes } from '../../lib/base64'
+import { stripOrnaments } from '../../lib/terminal'
 import { persistFiles } from '../../lib/paste-image'
 import { isAppChord } from '../../lib/key-routing'
 
@@ -12,6 +13,15 @@ import { isAppChord } from '../../lib/key-routing'
 // open question this spike answers: does that Canvas-2D path render cleanly in
 // WKWebView (where xterm's WebGL/canvas corrupted)? If yes, this is a drop-in that's
 // a more correct + complete terminal than both xterm and our DOM grid.
+
+// Claude Code centers a decorative, cycling ornament on the composer divider
+// (historically 👀/👣; newer builds cycle other pictographs). ghostty renders to
+// Canvas-2D via the browser's font fallback, so any pictograph that neither the bundled
+// subsets NOR the system Apple Color Emoji cover falls to a LastResort "tofu" box (the
+// two ⍰ seen on the divider). The old xterm pane STRIPPED these on every write path; the
+// ghostty migration dropped that — restore it via the shared `stripOrnaments` (see
+// lib/terminal for the rationale) on both live output AND replayed history.
+const decoder = new TextDecoder()
 
 // WASM loads once for the whole app. We also force-load the bundled symbol fonts:
 // ghostty renders to Canvas-2D, and canvas fillText only falls back to fonts that are
@@ -45,6 +55,14 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
   // the ResizeObserver reads this each callback so a panel drag pauses fitting.
   const suspendFitRef = useRef(suspendFit)
   suspendFitRef.current = suspendFit
+  // Latest theme WITHOUT making it a construction-effect dep. A live theme change used
+  // to tear the terminal down and rebuild it (ghostty-web can't live-swap themes), and
+  // that rebuild replays the whole scrollback through term.write — which can hang the
+  // ghostty WASM parser and FREEZE the app (observed on every theme toggle). So a theme
+  // change no longer rebuilds: the terminal keeps its current colours until the next real
+  // rebuild (relaunch / ⇧⌘R / auto-heal), which reads this ref for the up-to-date theme.
+  const themeRef = useRef(theme)
+  themeRef.current = theme
   // Bumping buildId tears down + recreates the Terminal (the mount effect deps on it).
   // Both the manual reload and the auto-heal watchdog funnel through this one lever —
   // the pty is backend-owned, so a rebuild replays retained scrollback and loses nothing.
@@ -76,7 +94,7 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
         cursorBlink: true,
         cursorStyle: 'block',
         scrollback: 10000,
-        theme: theme as unknown as ITerminalOptions['theme'],
+        theme: themeRef.current as unknown as ITerminalOptions['theme'],
       })
       termRef.current = term
       const fit = new FitAddon()
@@ -190,7 +208,7 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
 
       // Replay retained scrollback (re-attach after reload), then live stream.
       window.operator.terminalHistory(terminalId)
-        .then((b64) => { if (!disposed && b64) { term.write(base64ToBytes(b64)); scheduleCleanRepaint() } })
+        .then((b64) => { if (!disposed && b64) { term.write(stripOrnaments(decoder.decode(base64ToBytes(b64)))); scheduleCleanRepaint() } })
         .catch(() => { /* none */ })
 
       // A rebuild (theme change) can run while the card is mid-layout, so the first
@@ -207,7 +225,7 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
       // reading panel (clean DOM markdown), not the terminal canvas.
       const unsubData = window.operator.onTerminalData((id, d) => {
         if (id !== terminalId) return
-        term.write(d)
+        term.write(stripOrnaments(d))
         scheduleCleanRepaint()
       })
       const onData = term.onData((d: string) => window.operator.terminalWrite(terminalId, d))
@@ -286,15 +304,15 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
     })
 
     return () => { disposed = true; cleanup() }
-    // NB: `theme` is a dep — ghostty-web does NOT support live theme swaps after open()
-    // (its handleOptionChange warns + no-ops, and renderer.setTheme didn't repaint
-    // existing cells). The reliable path is the one that already works for NEW sessions:
-    // the CONSTRUCTOR applies the theme. So on a theme change we tear down and rebuild
-    // the terminal, replaying the retained scrollback. Brief flicker, but it actually
-    // switches. `theme` is a stable per-variant object, so this fires only on real
-    // light/dark / identity changes, not every render. `buildId` is the rebuild lever
-    // (manual reload + auto-heal); bumping it re-runs this whole teardown→recreate path.
-  }, [terminalId, theme, buildId])
+    // NB: `theme` is intentionally NOT a dep. ghostty-web can't live-swap themes, so a
+    // theme change would force a full teardown+rebuild — and that rebuild replays the
+    // scrollback through term.write, which can hang the WASM parser and FREEZE the app
+    // (it did, on every theme toggle). We accept a stale terminal palette on a live theme
+    // change: the terminal keeps its colours until the next real rebuild (relaunch, ⇧⌘R,
+    // or auto-heal), which reads `themeRef.current` for the current theme. Only `buildId`
+    // (manual reload + watchdog) drives the teardown→recreate path now.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalId, buildId])
 
   useEffect(() => { if (active) termRef.current?.focus() }, [active])
 
@@ -410,7 +428,7 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', gap: 12,
           background: 'var(--overlay-medium)', backdropFilter: 'blur(2px)',
-          fontFamily: "'Inter', system-ui, sans-serif", textAlign: 'center', padding: 24,
+          fontFamily: "var(--font-body)", textAlign: 'center', padding: 24,
         }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>
             Terminal view stopped responding

@@ -71,7 +71,7 @@ export function Sidebar({ sessions, restorableSessions, onRestoreSession, active
         background: 'var(--bg-sidebar)',
         display: 'flex',
         flexDirection: 'column',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
         userSelect: 'none',
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'drag',
@@ -472,7 +472,7 @@ function FolderGroup({
             'position:absolute', 'top:-1000px', 'left:-1000px', 'pointer-events:none',
             'padding:6px 12px', 'border-radius:8px',
             'background:var(--bg-surface)', 'color:var(--fg)', 'border:1px solid var(--accent)',
-            "font:600 10px/1 'Inter',system-ui,sans-serif", 'text-transform:uppercase', 'letter-spacing:0.5px',
+            'font:600 10px/1 var(--font-mono)', 'text-transform:uppercase', 'letter-spacing:0.5px',
             'box-shadow:0 8px 24px rgba(0,0,0,0.4)', 'white-space:nowrap',
           ].join(';')
           document.body.appendChild(ghost)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn } from './terminal'
+import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn, stripOrnaments } from './terminal'
 
 describe('isLightBackground', () => {
   it('classifies by perceived luma', () => {
@@ -72,5 +72,28 @@ describe('findUrlAtColumn', () => {
     expect(findUrlAtColumn(line, 0)).toBeNull()
     expect(findUrlAtColumn(line, 1)).toBeNull()
     expect(findUrlAtColumn('no urls here', 3)).toBeNull()
+  })
+})
+
+describe('stripOrnaments', () => {
+  it('strips the known composer-divider ornaments (👀/👣) to two spaces', () => {
+    expect(stripOrnaments('───\u{1F463}───')).toBe('───  ───')
+    expect(stripOrnaments('──\u{1F440}──')).toBe('──  ──')
+  })
+
+  it('strips newer/uncovered pictographs anywhere in the plane (no tofu)', () => {
+    // 1FA77 (newer than some Apple Color Emoji builds) and 1F650–1F67F ornamental
+    // dingbats (absent from Apple Color Emoji) are exactly the tofu-prone cases.
+    expect(stripOrnaments('─\u{1FA77}─')).toBe('─  ─')
+    expect(stripOrnaments('─\u{1F670}\u{1F652}─')).toBe('─    ─')
+  })
+
+  it('leaves Claude\'s structural BMP markers and box-drawing untouched', () => {
+    expect(stripOrnaments('⏺ ⎿ ✳ ✔ ● ◆ ▸')).toBe('⏺ ⎿ ✳ ✔ ● ◆ ▸')
+    expect(stripOrnaments('──── ← ❯')).toBe('──── ← ❯')
+  })
+
+  it('is a no-op for plain text', () => {
+    expect(stripOrnaments('auto mode on (shift+tab to cycle)')).toBe('auto mode on (shift+tab to cycle)')
   })
 })

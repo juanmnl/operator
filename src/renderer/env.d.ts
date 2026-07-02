@@ -12,6 +12,8 @@ declare global {
       getSessions: () => Promise<AgentSession[]>
       /** Full durable chat history (reading-panel answers) for a session, from SQLite. */
       chatHistory: (sessionId: string) => Promise<NarrationEntry[]>
+      imageDataUrl: (path: string) => Promise<string>
+      rendererHeartbeat: () => void
       terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
       /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */
       shellSpawn: (cwd: string) => Promise<string>

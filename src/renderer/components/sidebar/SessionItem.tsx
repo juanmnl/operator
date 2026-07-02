@@ -25,11 +25,20 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
   const [confirmingClose, setConfirmingClose] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const toolLabel = session.lastToolName
-    ? ` — ${session.lastToolName}`
-    : session.phase === 'running' ? ' — processing' : ''
-
   const status = sessionWaveStatus(session)
+
+  // Landing-style uppercase phase word shown on the right of each row (rendered
+  // uppercase via CSS). Mirrors the `.sess-phase` label in ../Operator-landing.
+  const PHASE_LABEL: Record<string, string> = {
+    running: 'running', compacting: 'compacting', waiting: 'your turn',
+    idle: 'idle', ended: 'ended', error: 'error',
+  }
+  const phaseLabel = PHASE_LABEL[status] ?? status
+  // The running session gets an accent left-border + faint accent wash (the
+  // landing's `.sess.running`); waiting tints the phase word accent as a
+  // quiet "your turn" cue. No pulsing dot (a banned generic AI tell).
+  const isRunning = status === 'running'
+  const phaseAccent = status === 'running' || status === 'waiting'
 
   useEffect(() => {
     if (editing) {
@@ -85,15 +94,26 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         // Fixed height (not padding-driven) so every row is identical regardless of
         // its content — tool suffix, badges, shortcut hint all sit within the same box.
         height: 32,
-        padding: '0 12px 0 10px',
-        background: active ? 'var(--bg-surface)' : 'transparent',
-        border: 'none',
-        borderRadius: 8,
+        // 2px left-accent for the running session; a constant 2px transparent
+        // border otherwise keeps text from shifting when the state flips.
+        // NB: NO border-radius here — a rounded corner + a DYNAMIC (colour-changing)
+        // border re-rasterizes the rounded border layer in WKWebView on every state
+        // flip, which pegs the compositor and freezes the app. Flush rows also match
+        // the landing's `.sess` rows exactly. Keep radius OFF wherever a border colour
+        // is dynamic. (Selection is shown by the full-width wash, not a rounded card.)
+        padding: '0 12px 0 8px',
+        borderLeft: `2px solid ${isRunning ? 'var(--accent)' : 'transparent'}`,
+        background: active
+          ? 'var(--bg-surface)'
+          : isRunning ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
+        borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+        borderRadius: 0,
         cursor: 'pointer',
         textAlign: 'left',
-        fontFamily: 'inherit',
+        // Mono, matching the landing's session panel rows.
+        fontFamily: 'var(--font-mono)',
         color: 'var(--fg)',
-        fontSize: 12,
+        fontSize: 11.5,
         boxSizing: 'border-box',
         outline: 'none',
       }}
@@ -134,18 +154,11 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           />
         ) : (
           <>
-            {/* Working states tint the name the same hue as their status dot, so
-                the actively-busy sessions stand out; quiet states stay default. */}
-            <span style={
-              status === 'running' ? { color: 'var(--status-running)' }
-                : status === 'compacting' ? { color: 'var(--status-compacting)' }
-                : undefined
-            }>
+            {/* The running session's name reads full-strength (landing
+                `.sess.running .sess-name`); quiet rows sit a touch dimmer. */}
+            <span style={{ color: isRunning ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)' }}>
               {label}
             </span>
-            {toolLabel && (
-              <span style={{ color: 'var(--fg-muted)', fontSize: 10 }}>{toolLabel}</span>
-            )}
           </>
         )}
       </span>
@@ -169,15 +182,32 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
       )}
       {!editing && session.activeSubagents > 0 && (
         <span
+          title={`${session.activeSubagents} active subagent${session.activeSubagents > 1 ? 's' : ''}`}
           style={{
-            fontSize: 9,
-            color: 'var(--fg-muted)',
-            background: 'transparent',
-            borderRadius: 8,
-            padding: '1px 5px',
+            fontSize: 10,
+            color: 'var(--accent)',
+            flexShrink: 0,
+            fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {session.activeSubagents}
+          ⤷{session.activeSubagents}
+        </span>
+      )}
+      {/* Uppercase phase word — the landing's signature right-aligned `.sess-phase`.
+          Accent for running/your-turn, muted otherwise. Hidden on hover so the
+          close affordance can take its place (same gate as effort/shortcut). */}
+      {!editing && !(hovered && closable) && (
+        <span
+          style={{
+            marginLeft: 'auto',
+            flexShrink: 0,
+            fontSize: 9.5,
+            textTransform: 'uppercase',
+            letterSpacing: '0.1em',
+            color: phaseAccent ? 'var(--accent)' : 'var(--fg-muted)',
+          }}
+        >
+          {phaseLabel}
         </span>
       )}
       {!editing && effortLevel && !(hovered && closable) && (

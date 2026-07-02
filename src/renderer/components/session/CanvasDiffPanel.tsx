@@ -69,9 +69,9 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
     return (
       <div style={{
         height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        gap: 6, padding: 24, textAlign: 'center', fontFamily: "'Inter', system-ui, sans-serif",
+        gap: 6, padding: 24, textAlign: 'center', fontFamily: "var(--font-body)",
       }}>
-        <span style={{ fontSize: 12, color: 'var(--fg)' }}>No changes</span>
+        <span style={{ fontFamily: 'var(--font-disp)', fontSize: 15, fontWeight: 600, color: 'var(--fg)', opacity: 0.9 }}>No changes</span>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.7, maxWidth: 280, lineHeight: 1.5 }}>
           Edits the agent makes in this session’s working tree show up here.
         </span>
@@ -86,15 +86,15 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
   const allExpanded = parsed.length > 0 && parsed.every((f) => expanded.has(f.path))
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "'Inter', system-ui, sans-serif", background: 'var(--bg-terminal)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "var(--font-body)", background: 'var(--bg-terminal)' }}>
       {/* Summary bar */}
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10,
-        height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--fg-muted)',
+        height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
       }}>
-        <span style={{ fontWeight: 600, color: 'var(--fg)' }}>{files.length} file{files.length === 1 ? '' : 's'}</span>
-        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-success, #3fb950)' }}>+{totalAdded}</span>
-        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-error, #f85149)' }}>−{totalRemoved}</span>
+        <span style={{ fontWeight: 700, color: 'var(--fg)' }}>{files.length} file{files.length === 1 ? '' : 's'}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--add-fg)' }}>+{totalAdded}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--del-fg)' }}>−{totalRemoved}</span>
         <button
           onClick={allExpanded ? collapseAll : expandAll}
           title={allExpanded ? 'Collapse all files' : 'Expand all files'}
@@ -131,8 +131,8 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
                   transform: isCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.12s',
                 }}>▾</span>
                 <FilePath path={file.path} />
-                {fc && fc.added > 0 && <span style={{ flexShrink: 0, fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--color-success, #3fb950)' }}>+{fc.added}</span>}
-                {fc && fc.removed > 0 && <span style={{ flexShrink: 0, fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--color-error, #f85149)' }}>−{fc.removed}</span>}
+                {fc && fc.added > 0 && <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--add-fg)' }}>+{fc.added}</span>}
+                {fc && fc.removed > 0 && <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--del-fg)' }}>−{fc.removed}</span>}
               </button>
               {!isCollapsed && (
                 <div style={{ fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, lineHeight: 1.55 }}>
@@ -170,17 +170,18 @@ function FilePath({ path }: { path: string }) {
   )
 }
 
-// One diff line: tinted row for +/−, subtle separator for @@ hunks, muted context.
+// One diff line: tinted row for +/−, accent-tinted @@ hunk separator, muted context.
+// Uses the landing's diff palette (--add-fg/--del-fg + their bg tints).
 function DiffLine({ line }: { line: string }) {
   const base: React.CSSProperties = { padding: '0 12px', whiteSpace: 'pre', minHeight: '1.55em' }
   if (line.startsWith('@@')) {
-    return <div style={{ ...base, color: 'var(--mcp-http, #56b6c2)', background: 'var(--overlay-subtle)', opacity: 0.85, padding: '2px 12px' }}>{line}</div>
+    return <div style={{ ...base, color: 'var(--fg-muted)', background: 'color-mix(in srgb, var(--accent) 8%, transparent)', padding: '3px 12px' }}>{line}</div>
   }
   if (line.startsWith('+')) {
-    return <div style={{ ...base, color: 'var(--color-success, #3fb950)', background: 'color-mix(in srgb, var(--color-success, #3fb950) 13%, transparent)' }}>{line}</div>
+    return <div style={{ ...base, color: 'var(--add-fg)', background: 'var(--add-bg)' }}>{line}</div>
   }
   if (line.startsWith('-')) {
-    return <div style={{ ...base, color: 'var(--color-error, #f85149)', background: 'color-mix(in srgb, var(--color-error, #f85149) 13%, transparent)' }}>{line}</div>
+    return <div style={{ ...base, color: 'var(--del-fg)', background: 'var(--del-bg)' }}>{line}</div>
   }
-  return <div style={{ ...base, color: 'var(--fg-muted)' }}>{line || ' '}</div>
+  return <div style={{ ...base, color: 'color-mix(in srgb, var(--fg) 60%, transparent)' }}>{line || ' '}</div>
 }

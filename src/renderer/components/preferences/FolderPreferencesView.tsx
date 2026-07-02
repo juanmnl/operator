@@ -55,7 +55,7 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "'Inter', system-ui, sans-serif", overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
       {/* Header — centered max-width column (matches PrefsView so every page is
           balanced on a wide window instead of pinned left). */}
       <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>

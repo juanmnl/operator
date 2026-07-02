@@ -129,7 +129,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
         background: 'rgba(0,0,0,0.4)',
         display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
         paddingTop: 100,
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
       }}
     >
       <div
@@ -152,7 +152,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
           placeholder="Search sessions, settings, actions…"
           style={{
             padding: '12px 16px',
-            fontSize: 13, fontFamily: 'inherit',
+            fontSize: 14, fontFamily: 'var(--font-disp)',
             background: 'transparent',
             color: 'var(--fg)',
             border: 'none',
@@ -174,8 +174,8 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
               <Fragment key={a.id}>
                 {header && (
                   <div style={{
-                    padding: '10px 20px 4px', fontSize: 9.5, fontWeight: 700,
-                    textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--fg-muted)', opacity: 0.65,
+                    padding: '10px 20px 4px', fontFamily: 'var(--font-mono)', fontSize: 9.5,
+                    textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--fg-muted)', opacity: 0.7,
                   }}>
                     {header}
                   </div>

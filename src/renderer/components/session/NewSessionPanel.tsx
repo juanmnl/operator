@@ -88,7 +88,7 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
         padding: '0 40px',
         overflow: 'auto',
         minHeight: 0,
@@ -102,7 +102,7 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
         borderRadius: 10,
         padding: '24px',
       }}>
-        <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: '0 0 4px' }}>
+        <h3 style={{ fontFamily: 'var(--font-disp)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: '0 0 4px' }}>
           New Session
         </h3>
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 20px', opacity: 0.6 }}>
@@ -238,7 +238,7 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="What should every agent work on? Each gets this as its first prompt."
               rows={3}
-              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, fontFamily: "'Inter', system-ui, sans-serif" }}
+              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, fontFamily: "var(--font-body)" }}
             />
           </div>
         )}
@@ -346,16 +346,17 @@ const inputStyle: React.CSSProperties = {
 
 const selectStyle: React.CSSProperties = {
   width: '100%', padding: '7px 10px', fontSize: 11, fontWeight: 500,
-  fontFamily: "'Inter', system-ui, sans-serif",
+  fontFamily: "var(--font-body)",
   background: 'var(--bg-terminal)', color: 'var(--fg)',
   border: '1px solid var(--border)', borderRadius: 6,
   outline: 'none', boxSizing: 'border-box', cursor: 'pointer',
 }
 
 const cancelBtnStyle: React.CSSProperties = {
-  flex: 1, padding: '8px 0', background: 'var(--bg-terminal)',
+  flex: 1, padding: '9px 0', background: 'transparent',
   border: '1px solid var(--border)', borderRadius: 6,
-  color: 'var(--fg-muted)', fontSize: 12, fontFamily: 'inherit', cursor: 'pointer',
+  color: 'var(--fg-muted)', fontFamily: 'var(--font-mono)', fontSize: 11,
+  textTransform: 'uppercase', letterSpacing: '0.08em', cursor: 'pointer',
 }
 
 // Primary CTA — uses the theme accent (like the app's other primary buttons:
@@ -363,7 +364,8 @@ const cancelBtnStyle: React.CSSProperties = {
 // blending into the dark --btn-bg surface (indistinguishable from Cancel in
 // Mission Control, where --btn-bg ≈ the panel background).
 const launchBtnStyle: React.CSSProperties = {
-  flex: 2, padding: '8px 0', background: 'var(--accent)',
+  flex: 2, padding: '9px 0', background: 'var(--accent)',
   border: '1px solid var(--accent)', borderRadius: 6,
-  color: 'var(--fg-on-accent)', fontSize: 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+  color: 'var(--fg-on-accent)', fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+  textTransform: 'uppercase', letterSpacing: '0.08em', cursor: 'pointer',
 }

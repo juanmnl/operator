@@ -79,10 +79,11 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
         boxSizing: 'border-box',
         flexShrink: 0,
         borderBottom: '1px solid var(--border)',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
       }}>
         <span style={{
-          fontSize: 12,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11.5,
           fontWeight: 500,
           color: 'var(--fg)',
           opacity: 0.82,
@@ -276,7 +277,7 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
           borderRadius: 8,
           boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
           overflow: 'hidden',
-          fontFamily: "'Inter', system-ui, sans-serif",
+          fontFamily: "var(--font-body)",
         }}
       >
         <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)' }}>

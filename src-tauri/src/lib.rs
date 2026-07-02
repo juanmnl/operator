@@ -641,6 +641,31 @@ fn chat_db_file() -> std::path::PathBuf {
     std::path::Path::new(&home).join(".operator").join("chat.db")
 }
 
+/// Read a cached dropped-image file and return it as a `data:` URL for an <img> in
+/// the Chat panel. Scoped to `~/.operator/img-cache` so it can't read arbitrary files.
+#[tauri::command]
+fn image_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cache = std::path::Path::new(&home).join(".operator").join("img-cache");
+    let p = std::path::Path::new(&path);
+    // Canonicalize and confirm the resolved path stays inside the cache dir.
+    let real = std::fs::canonicalize(p).map_err(|e| e.to_string())?;
+    let cache_real = std::fs::canonicalize(&cache).map_err(|e| e.to_string())?;
+    if !real.starts_with(&cache_real) {
+        return Err("path outside image cache".into());
+    }
+    let bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
+    let media = match real.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", media, b64))
+}
+
 /// Full durable chat history for a session (the reading-panel answers), from the
 /// SQLite store. The panel loads this on open so it can show the WHOLE conversation
 /// — not just the bounded tail the transcript tailer keeps in memory.
@@ -850,6 +875,89 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// --- Renderer stall watchdog -------------------------------------------------
+// The WKWebView JS main thread can hang in a non-terminating loop (a ghostty
+// resize/render hang, a runaway reconcile, …). NOTHING inside the webview can
+// recover a hung JS thread — an injected `location.reload()` just queues behind the
+// loop. But the native backend keeps running, so it detects the stall (missed
+// heartbeats) and KILLS the pegged WebContent; WKWebView respawns it and reloads the
+// app (the terminal replays retained scrollback — sessions are backend-owned). The
+// renderer pings `renderer_heartbeat` ~1/s; when those stop AND a WebContent is truly
+// pegged, we recover. This makes any main-thread freeze a ~few-second self-heal.
+
+#[tauri::command]
+fn renderer_heartbeat(hb: State<Arc<Mutex<Instant>>>) {
+    *lock(&hb) = Instant::now();
+}
+
+/// Kill the highest-CPU `com.apple.WebKit.WebContent` process IF it's actually pegged
+/// (our hung renderer). The >80% gate is critical: a napped/suspended webview also
+/// stops heart-beating (paused timers) but sits IDLE — it must NOT be killed.
+fn recover_hung_webview() -> bool {
+    let out = match std::process::Command::new("ps")
+        .args(["-Ao", "pid=,%cpu=,comm="])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut best: Option<(i32, f32)> = None;
+    for line in text.lines() {
+        if !line.contains("WebContent") {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let pid = it.next().and_then(|s| s.parse::<i32>().ok());
+        let cpu = it.next().and_then(|s| s.parse::<f32>().ok());
+        if let (Some(pid), Some(cpu)) = (pid, cpu) {
+            if best.map_or(true, |(_, c)| cpu > c) {
+                best = Some((pid, cpu));
+            }
+        }
+    }
+    match best {
+        Some((pid, cpu)) if cpu > 80.0 => {
+            eprintln!("[watchdog] renderer stalled — killing pegged WebContent {pid} ({cpu}%) to force a reload");
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Background watchdog: recovers the app if the renderer main thread hangs.
+fn start_stall_watchdog(hb: Arc<Mutex<Instant>>) {
+    std::thread::spawn(move || {
+        let mut ever_alive = false;
+        let mut last_recovery = Instant::now() - Duration::from_secs(60);
+        loop {
+            // Poll fast (heartbeat is 1/s) so a hang is caught in ~3s, not ~9s — a
+            // 9s "recover" still reads as a freeze to the user.
+            std::thread::sleep(Duration::from_millis(500));
+            let elapsed = lock(&hb).elapsed();
+            if elapsed < Duration::from_millis(1500) {
+                ever_alive = true; // fresh heartbeats → renderer healthy
+                continue;
+            }
+            if !ever_alive {
+                continue; // renderer hasn't booted / heart-beat yet
+            }
+            if elapsed < Duration::from_secs(3) {
+                continue; // brief stall — 3 missed pings before we act
+            }
+            if last_recovery.elapsed() < Duration::from_secs(12) {
+                continue; // cooldown so a reload that re-hangs isn't thrashed
+            }
+            if recover_hung_webview() {
+                last_recovery = Instant::now();
+            }
+        }
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -882,11 +990,15 @@ pub fn run() {
         .manage(transcript::TrackRegistry::default())
         .manage(tray_anim::TrayState::default())
         .manage(Arc::new(chatstore::ChatStore::open(&chat_db_file())))
+        // Last renderer heartbeat time; the stall watchdog reads it (see below).
+        .manage(Arc::new(Mutex::new(Instant::now())))
         .setup(|app| {
             std::thread::spawn(prune_pasted_images);
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
             tray_anim::start(app.handle().clone());
+            // Auto-recover a hung renderer (see start_stall_watchdog).
+            start_stall_watchdog(app.state::<Arc<Mutex<Instant>>>().inner().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -928,6 +1040,8 @@ pub fn run() {
             save_pasted_image,
             set_dock_icon,
             chat_history,
+            image_data_url,
+            renderer_heartbeat,
             app_ready
         ])
         .run(tauri::generate_context!())

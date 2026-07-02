@@ -17,6 +17,7 @@ export function SessionActivityView({ session }: Props) {
   const [now, setNow] = useState(() => Date.now())
   const activity = session.activity || []
   const delegations = activity.filter((a) => a.kind === 'delegate').length
+  const toolCount = activity.filter((a) => !a.kind || a.kind === 'tool').length
 
   // Tick once a second while the agent is working so the in-flight tool's
   // elapsed time updates live.
@@ -54,54 +55,38 @@ export function SessionActivityView({ session }: Props) {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
         color: 'var(--fg)',
         minHeight: 0,
       }}
     >
-      {/* Compact header — click to expand details */}
+      {/* Panel-bar header (landing `.panel-bar`) — click to expand details. Mono
+          name + a right-aligned LIVE flag while the agent works (no pulsing dot). */}
       <button
         onClick={() => setShowDetails(!showDetails)}
+        className="op-bar"
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 20px',
-          borderBottom: '1px solid var(--border)',
           flexShrink: 0,
           background: 'none',
           border: 'none',
-          borderBottomStyle: 'solid',
-          borderBottomWidth: 1,
-          borderBottomColor: 'var(--border)',
+          borderBottom: '1px solid var(--border)',
           cursor: 'pointer',
-          fontFamily: 'inherit',
           textAlign: 'left',
           width: '100%',
         }}
       >
         <StatusDot phase={session.phase} />
-        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg)' }}>Orchestration</span>
-        {session.lastToolName && (
-          <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
-            — {session.lastToolName}
-          </span>
-        )}
+        <span className="op-bar-name">orchestration</span>
         {session.activeSubagents > 0 && (
-          <span style={{ fontSize: 9, color: 'var(--fg-on-accent)', background: 'var(--accent)', borderRadius: 8, padding: '1px 7px', fontWeight: 600 }}>
-            {session.activeSubagents} agent{session.activeSubagents === 1 ? '' : 's'} running
-          </span>
+          <span className="op-badge sonnet">{session.activeSubagents} sub</span>
         )}
-        {delegations > 0 && (
-          <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.6 }}>
-            {delegations} delegation{delegations === 1 ? '' : 's'}
-          </span>
-        )}
+        {session.phase === 'running'
+          ? <span className="op-flag">live</span>
+          : <span className="op-flag" style={{ color: 'var(--muted)' }}>{session.phase}</span>}
         <span style={{
-          marginLeft: 'auto',
           fontSize: 7,
           color: 'var(--fg-muted)',
-          opacity: 0.3,
+          opacity: 0.4,
           transform: showDetails ? 'rotate(180deg)' : 'none',
           transition: 'transform 0.15s',
           display: 'inline-block',
@@ -136,39 +121,43 @@ export function SessionActivityView({ session }: Props) {
         style={{
           flex: 1,
           overflow: 'auto',
-          padding: '12px 20px',
+          padding: '6px 12px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 1,
+          gap: 0,
         }}
       >
         {activity.length === 0 && (
-          <div style={{ textAlign: 'center', marginTop: 40 }}>
-            <p style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+          <div style={{ textAlign: 'center', marginTop: 40, fontFamily: 'var(--font-body)' }}>
+            <p style={{ fontFamily: 'var(--font-disp)', fontSize: 15, fontWeight: 600, color: 'var(--fg)', opacity: 0.9 }}>
               No activity yet
             </p>
-            <p style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 8, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.6, marginTop: 6, lineHeight: 1.6 }}>
               Tool calls and subagent delegations will appear here as the agent works.
             </p>
           </div>
         )}
         {renderNodes(buildActivityTree(timed), 0)}
       </div>
+
+      {/* Panel-foot (landing `.panel-foot`) — mono counts of what's happened. */}
+      {activity.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '1.1rem', flexShrink: 0,
+          padding: '6px 14px', borderTop: '1px solid var(--border)',
+          fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg-muted)',
+        }}>
+          <span><b style={{ color: 'var(--fg)', fontWeight: 700 }}>{toolCount}</b> tool{toolCount === 1 ? '' : 's'}</span>
+          {delegations > 0 && <span><b style={{ color: 'var(--fg)', fontWeight: 700 }}>{delegations}</b> subagent{delegations === 1 ? '' : 's'}</span>}
+        </div>
+      )}
     </div>
   )
 }
 
 function DurationTag({ entry }: { entry: TimedEntry }) {
   if (entry.durMs === undefined) return null
-  return (
-    <span style={{
-      marginLeft: 'auto', flexShrink: 0, fontSize: 10, fontVariantNumeric: 'tabular-nums',
-      color: entry.live ? 'var(--accent)' : 'var(--fg-muted)',
-      opacity: entry.live ? 0.9 : 0.45,
-    }}>
-      {fmtDur(entry.durMs)}{entry.live ? '…' : ''}
-    </span>
-  )
+  return <span className="op-dur">{fmtDur(entry.durMs)}{entry.live ? '…' : ''}</span>
 }
 
 function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {
@@ -176,7 +165,7 @@ function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {
     <div key={`${depth}-${i}`}>
       <TimelineRow entry={n.entry} />
       {n.children.length > 0 && (
-        <div style={{ marginLeft: 11, paddingLeft: 9, borderLeft: '1px solid var(--border)' }}>
+        <div className="op-nest">
           {renderNodes(n.children, depth + 1)}
         </div>
       )}
@@ -184,81 +173,52 @@ function renderNodes(nodes: TreeNode[], depth: number): React.ReactNode {
   ))
 }
 
+/** Glyph per row kind — ◆ mutating tools, ◇ read-only, ⤷ delegate, ▸ subagent. */
+function glyphFor(entry: TimedEntry): string {
+  if (entry.kind === 'delegate') return '⤷'
+  if (entry.kind === 'subagent') return '▸'
+  return /edit|write|create|multiedit|notebook/i.test(entry.toolName) ? '◆' : '◇'
+}
+
 function TimelineRow({ entry }: { entry: TimedEntry }) {
   const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const glyph = glyphFor(entry)
 
   // Subagent group header (SubagentStart). Its tool calls nest beneath it.
   if (entry.kind === 'subagent') {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px' }}>
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', width: 56, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{time}</span>
-        <span style={{ fontSize: 10, color: 'var(--accent)' }}>▸</span>
-        <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>
-          Subagent{entry.detail ? ` · ${entry.detail}` : ' running'}
-        </span>
+      <div className="op-row" title={time}>
+        <span className="op-g" style={{ color: 'var(--accent)' }}>{glyph}</span>
+        <span className="op-lbl" style={{ color: 'var(--fg)' }}>{entry.detail || 'subagent'}</span>
         <DurationTag entry={entry} />
       </div>
     )
   }
 
-  // Delegation — the lead agent handed work to a subagent. Branch-styled.
+  // Delegation — the lead agent handed work to a subagent.
   if (entry.kind === 'delegate') {
     return (
-      <div style={{
-        display: 'flex', gap: 10, padding: '6px 8px',
-        borderRadius: 5, background: 'var(--overlay-subtle)',
-      }}>
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', width: 48, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{time}</span>
-        <span style={{ color: 'var(--accent)', fontSize: 12, flexShrink: 0, lineHeight: '16px' }}>↳</span>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 12, lineHeight: '16px' }}>
-            <span style={{ color: 'var(--fg-muted)' }}>Delegated to </span>
-            <span style={{ fontWeight: 600, color: 'var(--accent)' }}>{entry.target || 'agent'}</span>
-          </div>
-          {entry.detail && (
-            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {entry.detail}
-            </div>
-          )}
-        </div>
+      <div className="op-row is-delegate" title={time}>
+        <span className="op-g" style={{ color: 'var(--accent)' }}>{glyph}</span>
+        <span className="op-lbl">delegate › {entry.target || 'agent'}</span>
+        {entry.detail && <span className="op-meta">{entry.detail}</span>}
         <DurationTag entry={entry} />
-        <StatusTag status={entry.status} />
       </div>
     )
   }
 
-  // Ordinary tool call.
+  // Ordinary tool call. Live → accent row; pending → dimmed "queued".
+  const cls = `op-row${entry.live ? ' is-live' : ''}${entry.status === 'pending' ? ' is-queued' : ''}`
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '4px 8px',
-        borderRadius: 4,
-        background: entry.status === 'pending' ? 'rgba(234, 179, 8, 0.08)' : 'transparent',
-        fontSize: 12,
-      }}
-    >
-      <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0, width: 56, fontVariantNumeric: 'tabular-nums' }}>{time}</span>
-      <span style={{ fontWeight: 500, flexShrink: 0 }}>{entry.toolName}</span>
-      {entry.target && (
-        <span style={{ color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
-          {entry.target}
-        </span>
-      )}
-      <DurationTag entry={entry} />
-      <StatusTag status={entry.status} />
+    <div className={cls} title={time}>
+      <span className="op-g">{glyph}</span>
+      <span className="op-lbl">{entry.toolName}</span>
+      {entry.target && <span className="op-meta">{entry.target}</span>}
+      {entry.status === 'pending'
+        ? <span className="op-dur">queued</span>
+        : <DurationTag entry={entry} />}
+      {entry.status === 'denied' && <span style={{ flexShrink: 0, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--del-fg, var(--red))' }}>denied</span>}
     </div>
-  )
-}
-
-function StatusTag({ status }: { status: ActivityEntry['status'] }) {
-  if (status === 'auto') return <span style={{ marginLeft: 'auto', flexShrink: 0 }} />
-  return (
-    <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: statusColor(status) }}>
-      {status}
-    </span>
   )
 }
 
@@ -267,22 +227,19 @@ function StatusDot({ phase }: { phase: string }) {
   const isCompacting = phase === 'compacting'
   const isWaiting = phase === 'waiting'
   const color = isRunning ? 'var(--green)' : isCompacting ? 'var(--cyan)' : isWaiting ? 'var(--accent)' : 'var(--fg-muted)'
+  // A SOLID dot: dynamic BACKGROUND on a rounded fill is cheap. The old version was
+  // a hollow ring (`border: 1.5px solid ${color}` on `borderRadius:50%`) PLUS an
+  // infinite `pulse` — a colour-changing border on a rounded element re-rasterizes
+  // the border layer in WKWebView every frame, and one of these renders per activity
+  // row on every session:update → a compositor paint-storm that pegs the app (this is
+  // the "dynamic border + radius freezes" rule). No border, no pulse — also drops the
+  // banned pulsating status dot.
   return (
     <span style={{
-      width: 7, height: 7, borderRadius: '50%',
-      background: 'transparent', border: `1.5px solid ${color}`,
-      boxSizing: 'border-box',
+      width: 6, height: 6, borderRadius: '50%',
+      background: color,
       flexShrink: 0,
-      animation: isRunning || isWaiting ? 'pulse 1.5s ease-in-out infinite' : undefined,
     }} />
   )
 }
 
-function statusColor(status: string): string {
-  switch (status) {
-    case 'approved': return 'var(--green)'
-    case 'denied': return 'var(--red)'
-    case 'pending': return 'var(--yellow)'
-    default: return 'var(--fg-muted)'
-  }
-}

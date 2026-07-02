@@ -36,9 +36,14 @@ impl ActivityEntry {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NarrationEntry {
-    pub kind: String, // "text" | "thinking"
+    pub kind: String, // "text" | "thinking" | "user"
     pub text: String,
     pub timestamp: String,
+    /// Cache-file paths for images the user dropped into this turn (extracted from
+    /// the transcript's base64 image blocks). Empty for most entries; skipped in the
+    /// payload when empty so it doesn't bloat session:update.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// One item of the agent's TodoWrite plan (latest snapshot), for the Plan tab.

@@ -88,6 +88,26 @@ function blockKey(m: NarrationEntry): string {
   return `${m.timestamp}|${m.text.length}|${m.text.slice(0, 40)}`
 }
 
+// A dropped image, loaded on demand from its cache path (via the backend) as a
+// data: URL, and rendered above the user's bubble. Keeping the ~500KB base64 out
+// of the session payload is why the transcript stores a small PATH, not the bytes.
+function ChatImage({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(null)
+  useEffect(() => {
+    let ok = true
+    window.operator.imageDataUrl?.(path).then((u) => { if (ok) setSrc(u) }).catch(() => { /* file gone */ })
+    return () => { ok = false }
+  }, [path])
+  if (!src) return null
+  return (
+    <img
+      src={src}
+      alt="dropped image"
+      style={{ maxWidth: '82%', maxHeight: 300, marginBottom: 4, borderRadius: 12, border: '1px solid var(--border)', display: 'block' }}
+    />
+  )
+}
+
 export function ConversationPanel({ session }: { session?: AgentSession }) {
   // Durable chat history from the SQLite store (~/.operator/chat.db) — the WHOLE
   // conversation, loaded on session open. session:update only carries a bounded tail
@@ -122,16 +142,21 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
   // session.messages carries the freshest entries that may not be persisted yet
   // (~1s lag). Dedupe by blockKey (history wins), so each answer appears once.
   const turns = useMemo(() => {
-    const seen = new Set<string>()
-    const out: NarrationEntry[] = []
+    const byKey = new Map<string, NarrationEntry>()
+    const order: string[] = []
     for (const m of [...history, ...(session?.messages ?? [])]) {
       if (m.kind !== 'user' && m.kind !== 'text') continue
       const k = blockKey(m)
-      if (seen.has(k)) continue
-      seen.add(k)
-      out.push(m)
+      const existing = byKey.get(k)
+      if (!existing) { byKey.set(k, m); order.push(k); continue }
+      // The durable history has text only; the live tail carries the dropped-image
+      // paths. When both hold the same turn, graft the images onto the kept entry so
+      // the picture shows even though history "wins" the dedup.
+      if (m.images?.length && !existing.images?.length) {
+        byKey.set(k, { ...existing, images: m.images })
+      }
     }
-    return out
+    return order.map((k) => byKey.get(k)!)
   }, [history, session?.messages])
   const [saved, setSaved] = useState<Set<string>>(() => loadSet(SAVED_KEY))
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadSet(DISMISSED_KEY))
@@ -183,7 +208,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
         height: 30, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
-        fontFamily: "'Inter', system-ui, sans-serif",
+        fontFamily: "var(--font-body)",
       }}>
         <input
           value={search}
@@ -219,7 +244,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
       </div>
       <div ref={scrollRef} onScroll={onScroll} className="scroll-hidden" style={{ flex: 1, overflow: 'auto', padding: '12px 12px 24px' }}>
         {visible.length === 0 ? (
-          <div style={{ fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12, color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 4px' }}>
+          <div style={{ fontFamily: "var(--font-body)", fontSize: 12, color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 4px' }}>
             {q ? `No matches for “${search.trim()}”.` : savedOnly ? 'No saved answers yet — star one to keep it here.' : 'The agent’s answers will appear here as it responds.'}
           </div>
         ) : (
@@ -230,6 +255,7 @@ export function ConversationPanel({ session }: { session?: AgentSession }) {
             if (m.kind === 'user') {
               return (
                 <div key={k} className="imsg-row is-user">
+                  {m.images?.map((p, i) => <ChatImage key={i} path={p} />)}
                   <div className="imsg-bubble is-user" title={m.text}>
                     <span className="imsg-user-text">{m.text}</span>
                   </div>

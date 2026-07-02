@@ -35,7 +35,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
   }, [worktreePath])
 
   return (
-    <div style={{ flexShrink: 0, fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div style={{ flexShrink: 0, fontFamily: "var(--font-body)" }}>
       <button
         onClick={() => setExpanded(!expanded)}
         style={{

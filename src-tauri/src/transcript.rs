@@ -253,7 +253,10 @@ impl Track {
                 prompt = prompt.chars().take(4000).collect::<String>() + "…";
             }
             let ts = v.get("timestamp").and_then(|t| t.as_str()).map(|s| s.to_string()).unwrap_or_else(now_iso);
-            self.push_narration(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts });
+            // Dropped images live as base64 image blocks alongside the text; cache them
+            // to files once and carry the (small) paths so the Chat panel can show them.
+            let images = extract_user_images(content);
+            self.push_narration(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts, images });
         }
     }
 
@@ -280,6 +283,7 @@ impl Track {
                             kind: btype.to_string(),
                             text: s.to_string(),
                             timestamp: ts.to_string(),
+                            images: Vec::new(),
                         });
                     }
                 }
@@ -402,6 +406,64 @@ fn derive_phase(running_tools: bool, last_stop_reason: Option<&str>, last_was_us
     // Called only while the pty is quiet: the assistant turn has ended and
     // nothing is streaming, so the session is waiting for the user's reply.
     "waiting"
+}
+
+/// Extract base64 image blocks from a user message's content, write each to a
+/// dedup'd cache file (`~/.operator/img-cache/<hash>.<ext>`), and return the paths.
+/// Keeps the ~500KB base64 OUT of the session payload — only the path travels.
+fn extract_user_images(content: Option<&Value>) -> Vec<String> {
+    let arr = match content.and_then(|c| c.as_array()) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for b in arr {
+        if b.get("type").and_then(|t| t.as_str()) != Some("image") {
+            continue;
+        }
+        let src = match b.get("source") {
+            Some(s) => s,
+            None => continue,
+        };
+        if src.get("type").and_then(|t| t.as_str()) != Some("base64") {
+            continue;
+        }
+        let data = match src.get("data").and_then(|d| d.as_str()) {
+            Some(d) => d,
+            None => continue,
+        };
+        let media = src.get("media_type").and_then(|m| m.as_str()).unwrap_or("image/png");
+        if let Some(path) = cache_image(data, media) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Decode a base64 image and write it to `~/.operator/img-cache/<hash>.<ext>` (once,
+/// keyed by content hash so re-tailing the transcript is idempotent). Returns the path.
+fn cache_image(b64: &str, media: &str) -> Option<String> {
+    use base64::Engine;
+    use std::hash::{Hash, Hasher};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let ext = match media {
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "jpg",
+    };
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::Path::new(&home).join(".operator").join("img-cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{:016x}.{}", h.finish(), ext));
+    if !path.exists() {
+        std::fs::write(&path, &bytes).ok()?;
+    }
+    Some(path.to_string_lossy().into_owned())
 }
 
 fn user_prompt_text(content: Option<&Value>) -> Option<String> {
