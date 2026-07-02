@@ -63,6 +63,12 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
   // rebuild (relaunch / ⇧⌘R / auto-heal), which reads this ref for the up-to-date theme.
   const themeRef = useRef(theme)
   themeRef.current = theme
+  // Latest `active` for the resize path. Only the VISIBLE pane needs to fit on a
+  // sidebar/window resize — fitting the hidden panes too means N ghostty grid
+  // reallocs per toggle (N = open sessions), each a chance to trip the WASM
+  // resize/render hang. Hidden panes fit when they become active (the effect below).
+  const activeRef = useRef(active)
+  activeRef.current = active
   // Bumping buildId tears down + recreates the Terminal (the mount effect deps on it).
   // Both the manual reload and the auto-heal watchdog funnel through this one lever —
   // the pty is backend-owned, so a rebuild replays retained scrollback and loses nothing.
@@ -99,9 +105,18 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
       termRef.current = term
       const fit = new FitAddon()
       fitRef.current = fit
+      // Never fit on a degenerate/transient container size (mid-layout, hidden, ~0-width):
+      // a fit measures a tiny box → resizes the grid to a degenerate shape → another chance
+      // to trip the ghostty resize/render hang. Skip until the box is real; a later fit
+      // (ResizeObserver / activation / settle) sizes it correctly.
+      const safeFit = () => {
+        const el = ref.current
+        if (!el || el.clientWidth < 24 || el.clientHeight < 24) return
+        try { fit.fit() } catch { /* ignore */ }
+      }
       term.loadAddon(fit)
       term.open(ref.current)
-      try { fit.fit() } catch { /* not measured yet */ }
+      safeFit()
 
       // Keep app chords out of the pty. ghostty's key handler ENCODES any unhandled
       // ⌘-letter to its bare character and writes it to the pty (then stopPropagation,
@@ -195,9 +210,11 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
       // gated on suspendFit so a panel drag refits nothing until release.
       let fitDebounce = 0
       const resizeObserver = new ResizeObserver(() => {
-        if (suspendFitRef.current) return
+        // Skip while suspended (panel drag), AND for hidden panes — only the active
+        // pane refits on resize; the rest fit when activated (avoids N reallocs/toggle).
+        if (suspendFitRef.current || !activeRef.current) return
         clearTimeout(fitDebounce)
-        fitDebounce = window.setTimeout(() => { try { fit.fit() } catch { /* ignore */ } }, 100)
+        fitDebounce = window.setTimeout(safeFit, 100)
       })
       try { resizeObserver.observe(ref.current) } catch { /* ignore */ }
       const onResize = term.onResize((d: { cols: number; rows: number }) => {
@@ -214,7 +231,7 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
       // A rebuild (theme change) can run while the card is mid-layout, so the first
       // fit() above may measure a wrong box and the pane collapses. Re-fit once the
       // layout settles.
-      const settle = setTimeout(() => { try { fit.fit() } catch { /* ignore */ } }, 100)
+      const settle = setTimeout(safeFit, 100)
 
       // NB: ghostty's write() force-snaps the viewport to the bottom on every chunk
       // while you're scrolled up (`viewportY !== 0 && scrollToBottom()`). Counteracting
@@ -333,14 +350,21 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
     return () => window.removeEventListener('mousedown', onDown)
   }, [active])
 
-  // Panel drag released (suspendFit → false): fit once so the grid snaps to the
-  // final size in a single reflow / single canvas realloc, instead of every frame
-  // during the drag. A rAF lets the container's final width settle in layout first.
+  // Fit once when the drag/animation is released (suspendFit → false) OR when this
+  // pane becomes active — so it snaps to the final size in a single reflow. Gated on
+  // `active`: hidden panes don't fit on a sidebar/window resize (that's N grid reallocs
+  // per toggle, each a resize-hang chance); they fit here the moment they're shown. A
+  // rAF lets the container's final width settle in layout first.
   useEffect(() => {
-    if (suspendFit) return
-    const raf = requestAnimationFrame(() => { try { fitRef.current?.fit() } catch { /* ignore */ } })
+    if (suspendFit || !active) return
+    const raf = requestAnimationFrame(() => {
+      // Same degenerate-size guard as the construction path: don't fit a ~0-width box.
+      const el = ref.current
+      if (!el || el.clientWidth < 24 || el.clientHeight < 24) return
+      try { fitRef.current?.fit() } catch { /* ignore */ }
+    })
     return () => cancelAnimationFrame(raf)
-  }, [suspendFit])
+  }, [suspendFit, active])
 
   // ⇧⌘R rebuilds this pane from retained scrollback (manual escape hatch for a frozen or
   // corrupted canvas). Capture phase so it beats ghostty's textarea key handling; gated
