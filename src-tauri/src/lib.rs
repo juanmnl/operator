@@ -100,6 +100,19 @@ pub struct PtyManager {
     pending: Mutex<HashMap<String, PendingStart>>,
 }
 
+/// A localhost port counts as free only if it can be bound on BOTH IPv4 (127.0.0.1) and
+/// IPv6 (::1) loopback. Checking IPv4 alone missed servers that modern Node/Vite bind to
+/// `[::1]` for `localhost` — an orphaned dev server from a prior run, or another app — so
+/// Operator would reserve that "free" port and the Preview, loading `localhost:PORT`, would
+/// resolve to `[::1]` and show the foreign server. Each test listener is dropped immediately
+/// (the session's real server binds a moment later). IPv6 loopback is always present on
+/// macOS (this app's only target), so a bind failure there means the port is genuinely busy.
+fn port_free(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+        && TcpListener::bind((Ipv6Addr::LOCALHOST, port)).is_ok()
+}
+
 /// Max bytes of pty output retained per terminal for re-attach replay.
 const HISTORY_CAP: usize = 256 * 1024;
 
@@ -129,7 +142,7 @@ impl PtyManager {
             if taken.contains(&port) {
                 continue;
             }
-            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            if port_free(port) {
                 ports.insert(id.to_string(), port);
                 return Some(port);
             }
