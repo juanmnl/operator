@@ -76,6 +76,10 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
   // The watchdog gave up after MAX_HEAL_ATTEMPTS → show the manual recovery overlay.
   const [degraded, setDegraded] = useState(false)
   const [hovered, setHovered] = useState(false)
+  // Sticky-bottom scrollback: true while the user has scrolled up during a live stream
+  // (write-snap suppressed). `jumpRef` re-anchors to the bottom; set inside the mount effect.
+  const [scrolledUp, setScrolledUp] = useState(false)
+  const jumpRef = useRef<() => void>(() => {})
   // Survives rebuilds so consecutive failed heals accumulate toward the cap; forgiven
   // once a rebuilt canvas stays healthy a few seconds (see watchdog).
   const healAttemptsRef = useRef(0)
@@ -164,36 +168,15 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
         }
       } catch { /* renderer shape changed in a future build — fall back to the watchdog */ }
 
-      // Clean-repaint after the screen settles. ghostty's Canvas renderer only
-      // repaints rows the WASM engine flags dirty; a cursor-positioned overwrite
-      // (e.g. Claude Code redrawing its welcome box over the just-printed session-ID
-      // line) can change a row WITHOUT it being flagged → the old glyphs show through
-      // the new line's gaps = overprint. renderLine fully clears any row it DOES
-      // repaint, so the cure is one full-redraw pass over every row.
-      //
-      // We MUST NOT call `renderer.render()` ourselves to force that — it reads the
-      // WASM grid directly and racing the render loop (esp. mid-resize, when the grid
-      // is reallocating) reads out-of-bounds WASM memory → a trap that kills the
-      // canvas (blank session; a JS try/catch can't catch a WASM memory fault). That
-      // was the resize crash. Instead we nudge the engine's OWN loop: invalidating
-      // `renderer.lastViewportY` makes its next natural frame take the forceAll path
-      // (`g !== lastViewportY` ⇒ every row cleared + redrawn from live state). The
-      // loop stays the only thing touching WASM memory, in sync — no race, no crash.
-      // Throttled (leading, ≤1 per 100ms) so a live drag-resize stays clean MID-drag,
-      // not only on settle, plus a trailing pass 120ms after the burst goes quiet so
-      // the final frame is clean even if it landed inside the throttle window.
-      let repaintTimer = 0
-      let lastRepaintAt = 0
-      const doCleanRepaint = () => {
-        const r = termRef.current?.renderer as unknown as { lastViewportY?: number } | undefined
-        if (r) { try { r.lastViewportY = -1 } catch { /* field renamed in a future build */ } }
-      }
-      const scheduleCleanRepaint = () => {
-        const now = performance.now()
-        if (now - lastRepaintAt >= 100) { lastRepaintAt = now; doCleanRepaint() }
-        clearTimeout(repaintTimer)
-        repaintTimer = window.setTimeout(() => { lastRepaintAt = performance.now(); doCleanRepaint() }, 120)
-      }
+      // NOTE (2026-07-02): we used to force a full-canvas redraw ~10×/sec during streaming
+      // by invalidating `renderer.lastViewportY = -1` ("scheduleCleanRepaint"). That fought
+      // the engine's OWN render loop: ghostty runs a continuous rAF that already redraws
+      // every dirty row (proper per-row dirty tracking) and force-redraws all rows on
+      // resize/scroll. The forced full redraws were redundant and a prime suspect for the
+      // WebContent CPU peg → watchdog kill → reload churn. Removed — we now drive ghostty
+      // the way its reference consumer (coder's Mux) does: just `write()` and let the loop
+      // paint. The overprint this once masked was the spawn-size reflow, fixed at the root
+      // (the pty opens at the pane's final width; see terminal_spawn).
 
       // ONE resize path. We own the ResizeObserver (instead of FitAddon's own
       // `observeResize()`) for ONE reason: it must honor suspendFit. During a panel
@@ -219,31 +202,49 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
       try { resizeObserver.observe(ref.current) } catch { /* ignore */ }
       const onResize = term.onResize((d: { cols: number; rows: number }) => {
         try { window.operator.terminalResize(terminalId, d.cols, d.rows) } catch { /* ignore */ }
-        scheduleCleanRepaint()
       })
       try { window.operator.terminalResize(terminalId, term.cols, term.rows) } catch { /* ignore */ }
 
       // Replay retained scrollback (re-attach after reload), then live stream.
       window.operator.terminalHistory(terminalId)
-        .then((b64) => { if (!disposed && b64) { term.write(stripOrnaments(decoder.decode(base64ToBytes(b64)))); scheduleCleanRepaint() } })
+        .then((b64) => { if (!disposed && b64) term.write(stripOrnaments(decoder.decode(base64ToBytes(b64)))) })
         .catch(() => { /* none */ })
 
       // A rebuild (theme change) can run while the card is mid-layout, so the first
       // fit() above may measure a wrong box and the pane collapses. Re-fit once the
       // layout settles.
-      const settle = setTimeout(safeFit, 100)
+      // Fit once the layout settles, THEN launch the deferred Claude process at that exact
+      // fitted size (see terminal_spawn's DEFERRED LAUNCH). Doing it here — after the box has
+      // real dimensions — means the pty width == grid width from Claude's first byte, so its
+      // classic-mode output (incl. the whole --resume reprint) never mis-wraps. Idempotent on
+      // a rebuild (the backend has no pending command left, so it's a no-op).
+      const settle = setTimeout(() => {
+        safeFit()
+        try { window.operator.terminalStart?.(terminalId, term.cols, term.rows) } catch { /* ignore */ }
+      }, 100)
 
-      // NB: ghostty's write() force-snaps the viewport to the bottom on every chunk
-      // while you're scrolled up (`viewportY !== 0 && scrollToBottom()`). Counteracting
-      // that per-chunk (snap → re-anchor) thrashes viewportY twice per write, and the
-      // Canvas renderer doesn't fully clear between those rapid jumps → whole-screen
-      // overprint corruption. So we DON'T fight it here: scroll-back during a live
-      // stream isn't safe on ghostty. Reading-while-streaming belongs in the Canvas
-      // reading panel (clean DOM markdown), not the terminal canvas.
+      // Sticky-bottom scrollback. ghostty's write() force-snaps the viewport to the bottom
+      // on every chunk while you're scrolled up (writeInternal: `viewportY !== 0 &&
+      // scrollToBottom()`), so reading back during a live stream yanks you down. We suppress
+      // the snap AT THE SOURCE — override the instance's scrollToBottom to no-op while the
+      // user is scrolled up — instead of undoing it after each write (that per-chunk snap →
+      // re-anchor thrashed viewportY twice per write and smeared the canvas). onScroll tells
+      // us when the user leaves / returns to the bottom; the jump-to-latest button re-anchors.
+      const realScrollToBottom = term.scrollToBottom.bind(term)
+      const scrollState = { locked: false }
+      ;(term as unknown as { scrollToBottom: () => void }).scrollToBottom = () => {
+        if (!scrollState.locked) realScrollToBottom()
+      }
+      jumpRef.current = () => { scrollState.locked = false; setScrolledUp(false); realScrollToBottom() }
+      const onScrollSub = (term as unknown as { onScroll?: (cb: (y: number) => void) => { dispose(): void } })
+        .onScroll?.((y: number) => {
+          const up = y > 0.5
+          if (up !== scrollState.locked) { scrollState.locked = up; setScrolledUp(up) }
+        })
+
       const unsubData = window.operator.onTerminalData((id, d) => {
         if (id !== terminalId) return
         term.write(stripOrnaments(d))
-        scheduleCleanRepaint()
       })
       const onData = term.onData((d: string) => window.operator.terminalWrite(terminalId, d))
 
@@ -298,13 +299,13 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
 
       cleanup = () => {
         clearTimeout(settle)
-        clearTimeout(repaintTimer)
         clearInterval(watchdog)
         clearTimeout(fitDebounce)
         try { resizeObserver.disconnect() } catch { /* ignore */ }
         unsubData()
         try { onData.dispose() } catch { /* ignore */ }
         try { onResize.dispose() } catch { /* ignore */ }
+        try { onScrollSub?.dispose() } catch { /* ignore */ }
         try { fit.dispose() } catch { /* ignore */ }
         try { term.dispose() } catch { /* ignore */ }
         termRef.current = null
@@ -441,6 +442,28 @@ export function GhosttyTerminalPane({ terminalId, theme, active, suspendFit }: {
             <path d="M13 3.5v3.5h-3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M12.5 7A5 5 0 1 0 13 9.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
+        </button>
+      )}
+
+      {/* Jump to latest — shown while scrolled up during a live stream (the write-snap is
+          suppressed so you can read back). Re-anchors to the bottom and resumes following. */}
+      {scrolledUp && !degraded && (
+        <button
+          onClick={() => jumpRef.current()}
+          title="Jump to latest output"
+          style={{
+            position: 'absolute', bottom: 12, right: 16,
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '4px 10px', fontFamily: 'var(--font-body)', fontSize: 11,
+            background: 'var(--overlay-medium)', border: '1px solid var(--border)',
+            borderRadius: 14, cursor: 'pointer', outline: 'none', color: 'var(--fg)',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+            <path d="M8 3v9M8 12l-3.5-3.5M8 12l3.5-3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Latest
         </button>
       )}
 

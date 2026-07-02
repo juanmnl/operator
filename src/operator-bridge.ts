@@ -81,6 +81,9 @@ export function installBridge(): void {
       })
       return { terminalId: id, cwd: target }
     },
+    // Launch a deferred session's Claude process once its pane has fitted and resized the
+    // pty to the real grid width (see terminal_spawn's DEFERRED LAUNCH note). Idempotent.
+    terminalStart: (id: string, cols: number, rows: number) => { void invoke('terminal_start', { id, cols, rows }) },
     // Spawn a plain interactive shell in `cwd` — the toolbar's scratch terminal.
     // Returns a terminal id usable with the normal terminal* methods + onTerminalData.
     shellSpawn: (cwd: string) => invoke<string>('shell_spawn', { cwd }),

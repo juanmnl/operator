@@ -18,15 +18,19 @@ export function stripAnsi(s: string): string {
 }
 
 // Claude Code centers a decorative, cycling ornament on the composer divider
-// (historically 👀 U+1F440 / 👣 U+1F463; newer builds cycle other pictographs). It's
+// (historically 👀 U+1F440 / 👣 U+1F463; newer builds cycle other pictographs, incl.
+// double-width glyphs from the Mahjong/Dominoes/Cards blocks U+1F000–1F2FF). It's
 // chrome, not content — and ghostty's Canvas-2D renderer falls any pictograph that
-// neither the bundled subsets NOR the system Apple Color Emoji cover to a LastResort
-// "tofu" box (the two ⍰ seen on the divider). Strip the whole emoji-pictograph plane
-// on every terminal write so ANY cycled ornament is removed rather than tofu-ing.
-// These codepoints are double-width, so replace each with TWO spaces to keep Claude's
-// cursor math aligned. Structural TUI markers (⏺ ⎿ ✳ ✔ …, all BMP U+2300–2BFF) sit
-// OUTSIDE this range and are untouched; content emoji still render in the reading panel.
-const ORNAMENT_RE = /[\u{1F300}-\u{1FAFF}]/gu
+// neither the bundled subsets NOR the system Apple Color Emoji cover to a plain
+// `.notdef` box. A double-width ornament from those low blocks renders as TWO adjacent
+// "?" pills (one per cell) — exactly the divider tofu seen in the wild. Strip the whole
+// emoji-pictograph space (U+1F000–1FAFF) on every terminal write so ANY cycled ornament
+// is removed rather than tofu-ing. These codepoints are double-width, so replace each
+// with TWO spaces to keep Claude's cursor math aligned. Range stops BEFORE U+1FB00 so
+// the Legacy-Computing block art (the Claude logo mark) is untouched, and structural TUI
+// markers (⏺ ⎿ ✳ ✔ …, all BMP U+2300–2BFF) sit outside it too. Content emoji still
+// render in the reading panel.
+const ORNAMENT_RE = /[\u{1F000}-\u{1FAFF}]/gu
 
 /** Remove Claude Code's decorative composer-divider ornaments (emoji-pictograph
  *  plane), replacing each double-width glyph with two spaces to preserve alignment. */

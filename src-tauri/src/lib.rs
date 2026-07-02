@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize, SlavePty};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -37,8 +37,19 @@ struct Pty {
     /// lock across a blocking write and bytes are applied in queue order.
     tx: std::sync::mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// None until the deferred child is actually exec'd (see `terminal_start`): the
+    /// pty is opened and sized first, then Claude launches at the final grid width so
+    /// classic-mode scrollback never mis-wraps. Set once the child spawns.
+    killer: Option<Box<dyn ChildKiller + Send + Sync>>,
     cwd: String,
+}
+
+/// A pty that's open + sized but whose command hasn't been exec'd yet. Held between
+/// `terminal_spawn` (opens the pty) and `terminal_start` (launches Claude once the pane
+/// has reported its real fitted width) so the process starts at the exact grid size.
+struct PendingStart {
+    cmd: CommandBuilder,
+    slave: Box<dyn SlavePty + Send>,
 }
 
 /// Recover a Mutex guard even if a previous holder panicked (poisoning). The pty
@@ -84,6 +95,9 @@ pub struct PtyManager {
     /// renderer/webview reload, so its ptys keep running — this lets a re-attaching
     /// terminal replay recent scrollback instead of showing a blank pane.
     history: Mutex<HashMap<String, Vec<u8>>>,
+    /// Ptys opened but not yet launched — awaiting `terminal_start` (or the fallback
+    /// timer) so Claude execs at the pane's final fitted width. See PendingStart.
+    pending: Mutex<HashMap<String, PendingStart>>,
 }
 
 /// Max bytes of pty output retained per terminal for re-attach replay.
@@ -206,22 +220,34 @@ fn terminal_spawn(
     grid: Option<bool>,
     term_bg: Option<String>,
     term_fg: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
     mgr: State<Arc<PtyManager>>,
     reg: State<transcript::TrackRegistry>,
 ) -> Result<String, String> {
+    // Open the pty at the size the pane will ACTUALLY fit to (measured on the frontend
+    // and passed in), not a fixed default. Claude Code draws its welcome box wrapped to
+    // whatever width the pty reports at startup; if that width is wrong, the pane's first
+    // fit SIGWINCHes Claude to a new width and the reflow of the already-drawn box (plus
+    // the replay of the retained, wrong-width scrollback into the resized grid) overprints
+    // — the garbled header/announcement seen on session open. Matching the size up front
+    // means Claude draws at the final width from byte one, so the fit is a no-op. Clamp to
+    // sane bounds and fall back to the historical 100×30 when the frontend can't measure.
+    let cols = cols.filter(|c| (20..=500).contains(c)).unwrap_or(100);
+    let rows = rows.filter(|r| (5..=200).contains(r)).unwrap_or(30);
     let pair = native_pty_system()
-        .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
     let id = format!("t{}", mgr.next.fetch_add(1, Ordering::Relaxed));
 
-    // Grid renderer: stand up the alacritty parser core NOW (matching the pty's 100×30)
+    // Grid renderer: stand up the alacritty parser core NOW (matching the pty size)
     // so it parses and answers Claude's queries (background colour, device attributes)
     // from the very first byte — its OSC background query arrives before the pane mounts.
     if grid.unwrap_or(false) {
         let bg = term_bg.as_deref().and_then(parse_hex_rgb).unwrap_or((11, 13, 16));
         let fg = term_fg.as_deref().and_then(parse_hex_rgb).unwrap_or((230, 230, 230));
-        gridterm::create(&id, 100, 30, bg, fg);
+        gridterm::create(&id, cols as usize, rows as usize, bg, fg);
     }
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
@@ -322,17 +348,33 @@ fn terminal_spawn(
     // (never the inline-image protocol), so impersonating it is safe here.
     cmd.env("TERM_PROGRAM", "iTerm.app");
 
-    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    let killer = child.clone_killer();
-    drop(pair.slave);
-
+    // DEFERRED LAUNCH (see PendingStart / terminal_start): open + wire the pty now, but
+    // exec Claude LATER — once the pane has mounted, fitted, and resized this pty to the
+    // real grid width. In classic mode Claude wraps its output (and its whole --resume
+    // reprint) to the pty width at startup and never reflows it, so if the pty width ≠ the
+    // grid width every line mis-wraps (the cascading-margin corruption). Launching after
+    // the resize guarantees pty width == grid width from Claude's first byte. Reader/writer
+    // attach immediately; the reader thread just blocks until the child produces output.
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { tx, master: pair.master, killer, cwd: cwd.clone() },
+        Pty { tx, master: pair.master, killer: None, cwd: cwd.clone() },
     );
+    lock(&mgr.pending).insert(id.clone(), PendingStart { cmd, slave: pair.slave });
+
+    // Fallback: if the frontend never calls terminal_start (older webview / a race), launch
+    // anyway after a short grace so the session isn't left dark. Idempotent with the explicit
+    // call — whichever fires first consumes `pending`.
+    {
+        let mgr_timer = mgr.inner().clone();
+        let id_timer = id.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3000));
+            start_pending(&mgr_timer, &id_timer);
+        });
+    }
 
     // Register so the transcript tailer watches this session's JSONL.
     // session_id is the forced `--session-id` (or the resumed id), so the
@@ -373,6 +415,40 @@ fn terminal_spawn(
     Ok(id)
 }
 
+/// Launch a pending pty's command (Claude) if it hasn't started yet. Idempotent: no-op if
+/// there's no pending entry for `id` (already launched, or unknown). Called by
+/// `terminal_start` once the pane has fitted, and by the fallback timer.
+fn start_pending(mgr: &Arc<PtyManager>, id: &str) {
+    let Some(PendingStart { cmd, slave }) = lock(&mgr.pending).remove(id) else { return };
+    match slave.spawn_command(cmd) {
+        Ok(child) => {
+            let killer = child.clone_killer();
+            drop(slave);
+            if let Some(p) = lock(&mgr.ptys).get_mut(id) {
+                p.killer = Some(killer);
+            }
+            // `child` drops here; the process keeps running (killer holds the kill capability).
+        }
+        Err(e) => eprintln!("[operator] failed to launch deferred pty {id}: {e}"),
+    }
+}
+
+/// Launch a deferred session at the pane's fitted size (see terminal_spawn's DEFERRED
+/// LAUNCH note). Resizes the pty to cols×rows and execs in one step so there's no race
+/// between the async resize and start invokes — Claude sees the final width from byte one.
+/// Safe to call more than once (start is idempotent).
+#[tauri::command]
+fn terminal_start(id: String, cols: Option<u16>, rows: Option<u16>, mgr: State<Arc<PtyManager>>) {
+    if let (Some(c), Some(r)) = (cols, rows) {
+        if c > 0 && r > 0 {
+            if let Some(p) = lock(&mgr.ptys).get(&id) {
+                let _ = p.master.resize(PtySize { rows: r, cols: c, pixel_width: 0, pixel_height: 0 });
+            }
+        }
+    }
+    start_pending(mgr.inner(), &id);
+}
+
 /// Spawn a plain interactive login shell in `cwd` — a scratch terminal for pure
 /// shell work, opened from the session toolbar, separate from the Claude session.
 /// Reuses the same pty machinery + `terminal:data`/`terminal:exit` events (so the
@@ -409,7 +485,7 @@ fn shell_spawn(
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { tx, master: pair.master, killer, cwd: cwd.clone() },
+        Pty { tx, master: pair.master, killer: Some(killer), cwd: cwd.clone() },
     );
 
     let emit_id = id.clone();
@@ -519,8 +595,9 @@ fn gridterm_detach(id: String) {
 
 #[tauri::command]
 fn terminal_kill(id: String, mgr: State<Arc<PtyManager>>) {
+    lock(&mgr.pending).remove(&id); // drop an un-launched command so nothing execs later
     if let Some(mut p) = lock(&mgr.ptys).remove(&id) {
-        let _ = p.killer.kill();
+        if let Some(k) = p.killer.as_mut() { let _ = k.kill(); }
     }
     mgr.release_port(&id);
     mgr.clear_history(&id);
@@ -1003,6 +1080,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             terminal_spawn,
+            terminal_start,
             shell_spawn,
             terminal_write,
             terminal_resize,

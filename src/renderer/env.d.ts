@@ -15,6 +15,8 @@ declare global {
       imageDataUrl: (path: string) => Promise<string>
       rendererHeartbeat: () => void
       terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
+      /** Launch a deferred session's Claude process at the pane's fitted size (defer-launch). */
+      terminalStart: (id: string, cols: number, rows: number) => void
       /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */
       shellSpawn: (cwd: string) => Promise<string>
       terminalWrite: (id: string, data: string) => void

@@ -88,6 +88,14 @@ describe('stripOrnaments', () => {
     expect(stripOrnaments('─\u{1F670}\u{1F652}─')).toBe('─    ─')
   })
 
+  it('strips low-block double-width pictographs (Mahjong/Dominoes/Cards → notdef pills)', () => {
+    // U+1F000–1F2FF: double-width, absent from Apple Color Emoji, below the old
+    // 1F300 floor — these rendered as the two "?" pills on the composer divider.
+    expect(stripOrnaments('─\u{1F02B}─')).toBe('─  ─') // Mahjong tile
+    expect(stripOrnaments('─\u{1F031}─')).toBe('─  ─') // Domino tile
+    expect(stripOrnaments('─\u{1F0A1}─')).toBe('─  ─') // Playing card
+  })
+
   it('leaves Claude\'s structural BMP markers and box-drawing untouched', () => {
     expect(stripOrnaments('⏺ ⎿ ✳ ✔ ● ◆ ▸')).toBe('⏺ ⎿ ✳ ✔ ● ◆ ▸')
     expect(stripOrnaments('──── ← ❯')).toBe('──── ← ❯')
