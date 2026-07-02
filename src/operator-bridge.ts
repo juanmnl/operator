@@ -59,18 +59,17 @@ export function installBridge(): void {
       // host Claude Code's FULLSCREEN TUI — a fixed full-height viewport with the
       // input pinned to the bottom — which the DOM xterm corrupts. So force fullscreen
       // when grid is on; otherwise honour the user's tui pref (classic by default).
-      // Tell Claude the terminal's light/dark scheme (COLORFGBG fallback). The terminal
-      // is ghostty (a full VT engine) so it answers Claude's OSC colour query too.
+      // Tell Claude the terminal's light/dark scheme via COLORFGBG (a fallback for terminals
+      // that don't answer Claude's OSC background query).
       const readVar = (name: string) => {
         try { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() } catch { return '' }
       }
       const termBg = readVar('--bg-terminal') || '#0b0d10'
       const colorScheme = isLightBackground(termBg) ? 'light' : 'dark'
-      // FORCE classic (tui:default). Ghostty is a complete terminal with native
-      // scrollback, and the wheel only scrolls in classic — in fullscreen/alt-screen
-      // ghostty's handleWheel forwards the wheel as ARROW KEYS (Claude reads those as
-      // input-history nav, not scroll), and there's no scrollback to scroll anyway.
-      // So classic is required for wheel-scroll; the Fullscreen pref is incompatible here.
+      // FORCE classic (tui:default): xterm has native scrollback, and our custom wheel
+      // handler scrolls it in classic mode — in fullscreen/alt-screen there's no scrollback
+      // to scroll and the wheel is forwarded as arrow keys. So classic is required for
+      // wheel-scroll; the Fullscreen pref is incompatible here.
       const id = await invoke<string>('terminal_spawn', {
         cwd: target,
         args: buildArgs(launchOptions, sessionId),

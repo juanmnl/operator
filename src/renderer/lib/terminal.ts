@@ -20,9 +20,9 @@ export function stripAnsi(s: string): string {
 // Claude Code centers a decorative, cycling ornament on the composer divider
 // (historically 👀 U+1F440 / 👣 U+1F463; newer builds cycle other pictographs, incl.
 // double-width glyphs from the Mahjong/Dominoes/Cards blocks U+1F000–1F2FF). It's
-// chrome, not content — and ghostty's Canvas-2D renderer falls any pictograph that
-// neither the bundled subsets NOR the system Apple Color Emoji cover to a plain
-// `.notdef` box. A double-width ornament from those low blocks renders as TWO adjacent
+// chrome, not content — and xterm's WebGL atlas (built from the browser's font rendering)
+// falls any pictograph that neither the bundled subsets NOR the system Apple Color Emoji
+// cover to a plain `.notdef` box. A double-width ornament from those low blocks renders as TWO adjacent
 // "?" pills (one per cell) — exactly the divider tofu seen in the wild. Strip the whole
 // emoji-pictograph space (U+1F000–1FAFF) on every terminal write so ANY cycled ornament
 // is removed rather than tofu-ing. These codepoints are double-width, so replace each

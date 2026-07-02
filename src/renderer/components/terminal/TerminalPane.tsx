@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
@@ -28,12 +29,15 @@ interface TerminalPaneProps {
   /** Suspend fitting while true (e.g. during a panel drag) — the terminal holds
    *  its grid and fits once when this returns to false, for a smooth resize. */
   suspendFit?: boolean
+  /** SPIKE: load xterm's WebGL renderer (the one that corrupted in older WKWebView) to
+   *  re-test it on today's WebKit. Off = xterm's built-in DOM renderer. */
+  webgl?: boolean
   onTitleChange?: (title: string) => void
   /** Fires with the port when a dev server announces itself in the output. */
   onDevServerDetected?: (port: number) => void
 }
 
-export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, suspendFit = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
+export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, suspendFit = false, webgl = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -75,22 +79,13 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   const outTailRef = useRef('')
   const lastDevPortRef = useRef<number | null>(null)
 
-  // We render with xterm's DOM renderer (each cell is a styled span). WKWebView
-  // corrupted both the WebGL texture atlas AND the 2D-canvas renderer — stray
-  // tofu cells and duplicated/garbled rows — so the only reliable path is to use
-  // neither GPU nor canvas. The DOM renderer has no glyph atlas to invalidate,
-  // so the atlas-clearing scaffolding the GPU/canvas renderers needed is gone.
-  //
-  // DO NOT reintroduce a renderer addon on this stack:
-  //  - WebGL is still broken in WKWebView/Safari on the macOS 26.x line
-  //    (xtermjs/xterm.js#5816, open as of 2026-06) — corrupted output.
-  //  - canvas was REMOVED in @xterm/xterm v6; DOM and WebGL are the only two
-  //    renderers that exist, and WebGL is the broken one here.
-  //  - even if WebGL is fixed, WKWebView reports devicePixelRatio=1 on Retina
-  //    under a custom URL scheme (wailsapp/wails#5111), so canvas/WebGL render
-  //    half-res/blurry. The DOM renderer has no backing store, so it's immune.
-  // Revisit only when #5816 is fixed in a STABLE macOS 26.x (that's also the
-  // gate for chasing GPU perf again — see the shelved native-terminal branch).
+  // Renderer: xterm's WebGL renderer (see term.open below), with the built-in DOM renderer
+  // as the fallback if the GPU context is lost. WKWebView used to corrupt WebGL's texture
+  // atlas (tofu cells, duplicated/garbled rows) — that's why we detoured through ghostty-web
+  // — but a 2026-07 re-test on current WebKit (Darwin 25) showed WebGL rendering clean under
+  // sustained output and multiple sessions, so the upstream bug (xtermjs/xterm.js#5816) is
+  // fixed here. WebGL is now the primary path; if the atlas ever regresses, drop the `webgl`
+  // prop to fall back to DOM (correct-but-slower, no backing store).
   // Quiet window (ms) after the last pty chunk before a deferred fit is allowed.
   // Claude's spinner updates leave gaps well over this, so fits still apply
   // between frames; only mid-burst fits are held back.
@@ -173,10 +168,19 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       else window.open(uri, '_blank')
     }))
 
-    // No renderer addon: xterm falls back to its built-in DOM renderer, which
-    // sidesteps the WKWebView WebGL/canvas corruption entirely. Box-drawing
-    // borders are now drawn by the font (SF Mono) rather than custom glyphs.
+    // WebGL renderer (loaded after open()). Falls back to xterm's DOM renderer if the addon
+    // can't init OR the GPU context is later lost (driver reset, sleep/wake) — disposing the
+    // addon on context loss reverts xterm to DOM instead of freezing on a dead canvas.
     term.open(containerRef.current)
+    if (webgl) {
+      try {
+        const gl = new WebglAddon()
+        gl.onContextLoss(() => { try { gl.dispose() } catch { /* already gone */ } })
+        term.loadAddon(gl)
+      } catch (e) {
+        console.warn('[xterm] WebGL addon failed to init — staying on the DOM renderer', e)
+      }
+    }
 
     termRef.current = term
     fitRef.current = fitAddon
@@ -234,6 +238,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       }
       try { fitAddon.fit() } catch { /* */ }
       window.operator.terminalResize(terminalId, term.cols, term.rows)
+      // Defer-launch: exec Claude at the fitted width now that the box is real (see
+      // terminal_spawn's DEFERRED LAUNCH). Idempotent — the backend no-ops if already started.
+      try { window.operator.terminalStart?.(terminalId, term.cols, term.rows) } catch { /* ignore */ }
     }
     ensureInitialFit()
     term.focus()
