@@ -1,22 +1,18 @@
 import { useEffect, useState } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
-import { CanvasConversation } from './CanvasConversation'
-import { AppPreviewPanel } from './AppPreviewPanel'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
 
-// The right-side Canvas: one switchable surface beside the terminal. Hosts the
-// agent's answers (Chat), its live plan (Plan), the working-tree diff (Diff),
-// and a preview of the running app (Preview). The active surface is owned per
-// session by DashboardView (so each session keeps its own tab).
-type CanvasMode = 'chat' | 'plan' | 'diff' | 'preview'
+// The right-side panel: the "working" surfaces beside the main area — the agent's live plan
+// (Plan) and the working-tree diff (Diff). Chat and Preview live in the MAIN view now
+// (Console ⇄ Chat ⇄ Preview toggle), not here. The active tab is owned per session by
+// DashboardView.
+type PanelTab = 'plan' | 'diff'
 
-const MODES: { id: CanvasMode; label: string }[] = [
-  { id: 'chat', label: 'Chat' },
+const MODES: { id: PanelTab; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'diff', label: 'Diff' },
-  { id: 'preview', label: 'Preview' },
 ]
 
 // The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
@@ -26,12 +22,10 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMode }: {
+export function CanvasPanel({ session, mode, onSelectMode }: {
   session?: AgentSession
-  devUrl: string | null
-  devUrlReserved?: boolean
-  mode: CanvasMode
-  onSelectMode: (m: CanvasMode) => void
+  mode: PanelTab
+  onSelectMode: (m: PanelTab) => void
 }) {
   const select = onSelectMode
 
@@ -71,9 +65,6 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
             }}
           >
             {m.label}
-            {/* Live dot ONLY when a dev server is actually detected/serving — not for
-                the merely-reserved port (devUrlReserved), which serves nothing yet. */}
-            {m.id === 'preview' && devUrl && !devUrlReserved ? ' ●' : ''}
             {m.id === 'plan' && (session?.todos?.length ?? 0) > 0
               ? ` ${session!.todos!.filter((t) => t.status === 'completed').length}/${session!.todos!.length}`
               : ''}
@@ -81,7 +72,6 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
         ))}
       </DragRegion>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {mode === 'chat' && <CanvasConversation session={session} />}
         {mode === 'plan' && (
           <PlanPanel
             session={session}
@@ -91,7 +81,6 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
           />
         )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
-        {mode === 'preview' && <AppPreviewPanel url={devUrl} storageKey={session?.id} />}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the
@@ -108,16 +97,6 @@ export function CanvasPanel({ session, devUrl, devUrlReserved, mode, onSelectMod
           </button>
         )}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          {mode === 'preview' && devUrl && !devUrlReserved && (
-            <button className="actions-footer-btn" onClick={() => window.operator.openExternal?.(devUrl)} title="Open in browser">
-              Open ↗
-            </button>
-          )}
-          {mode === 'chat' && (session?.messages?.some((m) => m.kind === 'text')) && (
-            <span className="actions-footer-label">
-              {session!.messages!.filter((m) => m.kind === 'text').length} answers
-            </span>
-          )}
           {mode === 'plan' && (session?.todos?.length ?? 0) > 0 && (
             <span className="actions-footer-label">
               {session!.todos!.filter((t) => t.status === 'completed').length}/{session!.todos!.length} done

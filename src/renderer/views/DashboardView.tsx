@@ -9,6 +9,8 @@ import { FolderPreferencesView } from '../components/preferences/FolderPreferenc
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { SessionInfoBar } from '../components/session/SessionInfoBar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
+import { CanvasConversation } from '../components/session/CanvasConversation'
+import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
@@ -50,8 +52,6 @@ interface TerminalTab {
   reattached?: boolean
 }
 
-/** Width (CSS px) of the right-side Conversation reading panel. */
-const CONVERSATION_PANEL_W = 460
 
 /** A session's restorable config, persisted to localStorage across restarts. */
 export interface SavedSession {
@@ -77,13 +77,19 @@ export interface SavedSession {
 // Height of the actions footer at the bottom of the main view + Canvas panel. The
 // scratch-terminal sheet sits directly above the main footer (bottom = FOOTER_H).
 const FOOTER_H = 34
+/** Default width (CSS px) of the right side panel (Plan / Diff). */
+const CONVERSATION_PANEL_W = 460
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
 // which surface it shows. Keyed by session id, persisted across reloads.
-type CanvasMode = 'chat' | 'plan' | 'diff' | 'preview'
-type SessionLayout = { open: boolean; mode: CanvasMode }
+// Main content area shows ONE of these (Console = the raw terminal). Chat + Preview can
+// fill the main window; Console is the live agent terminal (always mounted underneath).
+type MainView = 'terminal' | 'chat' | 'preview'
+// The right side panel hosts the "working" surfaces. (Preview lives in the main view.)
+type PanelTab = 'plan' | 'diff'
+type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 const LAYOUT_KEY = 'operator.sessionLayouts'
-const DEFAULT_LAYOUT: SessionLayout = { open: false, mode: 'chat' }
+const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
 function loadLayouts(): Record<string, SessionLayout> {
   try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
 }
@@ -133,8 +139,9 @@ export function DashboardView() {
   const activeSessionIdRef = useRef<string | null>(null)
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
   const activeLayout = activeSessionId ? sessionLayouts[activeSessionId] : undefined
-  const conversationOpen = activeLayout?.open ?? DEFAULT_LAYOUT.open
-  const canvasMode: CanvasMode = activeLayout?.mode ?? DEFAULT_LAYOUT.mode
+  const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
+  const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
+  const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
       const sid = activeSessionIdRef.current
@@ -144,14 +151,14 @@ export function DashboardView() {
       return next
     })
   }, [])
-  const selectCanvasMode = useCallback((mode: CanvasMode) => patchLayout({ mode }), [patchLayout])
-  // User-adjustable Canvas panel width (drag handle on its left edge), persisted.
+  const selectMainView = useCallback((v: MainView) => patchLayout({ mainView: v }), [patchLayout])
+  const selectPanelTab = useCallback((t: PanelTab) => patchLayout({ panelTab: t }), [patchLayout])
+  // User-adjustable right side-panel width (drag handle on its left edge), persisted.
   const [panelW, setPanelW] = useState<number>(() => {
     try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= 300 && v <= 1000 ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
   })
   const panelWRef = useRef(panelW); panelWRef.current = panelW
-  // True while dragging the panel divider — the terminal suspends its fit during
-  // the drag (no per-frame reflow) and fits once on release.
+  // True while dragging the panel divider — the terminal suspends its fit during the drag.
   const [resizingPanel, setResizingPanel] = useState(false)
   // True while the OS window is actively resizing/zooming (edge-drag, titlebar
   // double-click maximize, display change). Same reason as the panel drag: each
@@ -168,10 +175,14 @@ export function DashboardView() {
     })
     return () => { clearTimeout(settle); unsub?.() }
   }, [])
-  const toggleConversation = useCallback(() => {
-    // Opens INSIDE the window — the panel shares the content area with the terminal
-    // (which resizes to fit). No OS-window resize. Per-session (ref avoids stale id).
-    patchLayout({ open: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.open : false) })
+  // Open/close the right side panel (Plan / Diff / Preview). Per-session (ref avoids a stale id).
+  const togglePanel = useCallback(() => {
+    patchLayout({ panelOpen: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.panelOpen : false) })
+  }, [patchLayout, sessionLayouts])
+  // ⌘J flips the main view between Console (terminal) and Chat.
+  const toggleChat = useCallback(() => {
+    const cur = activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.mainView : undefined
+    patchLayout({ mainView: cur === 'chat' ? 'terminal' : 'chat' })
   }, [patchLayout, sessionLayouts])
 
   // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
@@ -191,8 +202,7 @@ export function DashboardView() {
     setShellStarted(false)
   }, [activeSessionId])
 
-  // Drag the panel's left edge to resize it — the terminal absorbs the change.
-  // rAF-throttled so the layout updates at most once per frame, and the terminal
+  // Drag the right panel's left edge to resize it — rAF-throttled, and the terminal
   // suspends fitting until release for a smooth drag.
   const startPanelResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -908,7 +918,7 @@ export function DashboardView() {
         toggleSidebar()
       } else if (e.key === 'j' || e.key === 'J') {
         e.preventDefault()
-        toggleConversation()
+        toggleChat()
       } else if (e.key === 'w' || e.key === 'W') {
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
@@ -936,7 +946,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleConversation, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
 
   // Saved sessions not currently open — offered for restore on the splash & palette.
   const restorableSessions = useMemo(() => {
@@ -1192,8 +1202,10 @@ export function DashboardView() {
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
-              conversationOpen={conversationOpen}
-              onToggleConversation={toggleConversation}
+              mainView={mainView}
+              onSelectMainView={selectMainView}
+              panelOpen={panelOpen}
+              onTogglePanel={togglePanel}
             />
           )
         })()}
@@ -1281,7 +1293,10 @@ export function DashboardView() {
                 <TerminalSurface
                   terminalId={t.id}
                   theme={currentTheme.xterm}
-                  active={t.id === activeTerminalId && !t.ended}
+                  // Deactivated when a Chat/Preview overlay covers it, so the hidden terminal
+                  // doesn't grab focus/keystrokes; re-activates on switch back (its size is
+                  // unchanged, so the activation fit is a no-op — no resize-hang risk).
+                  active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
                   suspendFit={resizingPanel || windowResizing || sidebarAnimating}
                 />
                 {t.ended && (
@@ -1299,6 +1314,24 @@ export function DashboardView() {
                 )}
               </div>
             ))}
+
+            {/* Main-view overlays — Chat / Preview cover the (still-mounted, still-sized)
+                terminal in the SAME area. OVERLAYING it (rather than display:none-ing) means
+                the terminal never resizes on a Console⇄Chat⇄Preview switch, so it can't trip
+                the ghostty resize/render hang. Hidden while reviewing a diff / viewing activity. */}
+            {mainView !== 'terminal' && activeSession
+              && reviewingTerminalId !== activeTerminalId
+              && activityViewingTerminalId !== activeTerminalId && (
+              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                {mainView === 'chat' && <CanvasConversation session={activeSession} />}
+                {mainView === 'preview' && (() => {
+                  const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
+                  const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
+                  const port = detected ?? reserved
+                  return <AppPreviewPanel url={port ? `http://localhost:${port}` : null} storageKey={`main-${activeSession.id}`} />
+                })()}
+              </div>
+            )}
           </div>
         )}
 
@@ -1435,40 +1468,24 @@ export function DashboardView() {
         )}
       </div>
 
-      {/* Reading panel — the agent's answers as markdown, beside the terminal.
-          A sibling of the content card so it sits to its right (the root row has
-          gap: 8). Only while viewing a live session. */}
-      {contentMode === 'localTerminal' && conversationOpen && (
+      {/* Right side panel — the "working" surfaces (Plan / Diff / Preview). A sibling of the
+          content card so it sits to its right (the root row has gap: 8). Resizable via the
+          left-edge handle; opened/closed from the toolbar's panel button. */}
+      {contentMode === 'localTerminal' && panelOpen && activeSession && (
         <div style={{
           position: 'relative', width: panelW, flexShrink: 0, overflow: 'hidden',
           background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)',
         }}>
-          {/* Resize handle — drag the panel's left edge. */}
           <div
             className={`panel-resize-handle${resizingPanel ? ' is-active' : ''}`}
             onMouseDown={startPanelResize}
             title="Drag to resize"
           />
-          {(() => {
-            const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
-            const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
-            const port = detected ?? reserved
-            return (
-              <CanvasPanel
-                session={activeSession}
-                devUrl={port ? `http://localhost:${port}` : null}
-                devUrlReserved={!detected && !!reserved}
-                mode={canvasMode}
-                onSelectMode={selectCanvasMode}
-              />
-            )
-          })()}
+          <CanvasPanel session={activeSession} mode={panelTab} onSelectMode={selectPanelTab} />
         </div>
       )}
 
-      {/* Full-window capture overlay during a panel drag, so the cursor moving
-          over the terminal/iframe still delivers mousemove to the drag handler
-          (iframes & xterm otherwise swallow the events → the drag gets stuck). */}
+      {/* Full-window capture overlay during a panel drag (iframes/xterm swallow mousemove). */}
       {resizingPanel && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />
       )}

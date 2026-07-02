@@ -24,12 +24,15 @@ interface SessionToolbarProps {
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
-  /** Right-side Canvas panel toggle (lives after the permission-mode badge). */
-  conversationOpen?: boolean
-  onToggleConversation?: () => void
+  /** Main-view segmented toggle: Console (terminal) · Chat · Preview. */
+  mainView?: 'terminal' | 'chat' | 'preview'
+  onSelectMainView?: (v: 'terminal' | 'chat' | 'preview') => void
+  /** Right side panel (Plan / Diff / Preview) open state + toggle. */
+  panelOpen?: boolean
+  onTogglePanel?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, conversationOpen, onToggleConversation }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -158,33 +161,38 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
             </button>
           )}
 
-          {/* MCP indicator */}
+          {/* MCP indicator — dropdown anchors to THIS badge (relative wrapper) so it drops
+              directly beneath it, not the toolbar's far-right edge (which now holds the
+              Console/Chat/Preview segmented control). */}
           {mcpServers.length > 0 && (
-            <button
-              onClick={() => setMcpExpanded(!mcpExpanded)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '2px 7px',
-                fontSize: 9,
-                fontWeight: 500,
-                fontFamily: 'inherit',
-                background: mcpExpanded ? 'var(--overlay-subtle)' : 'transparent',
-                color: 'var(--fg-muted)',
-                border: 'none',
-                borderRadius: 3,
-                cursor: 'pointer',
-                lineHeight: '16px',
-              }}
-            >
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
-                <circle cx="4" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
-                <circle cx="12" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[1]?.type || mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
-                <path d="M6 8h4" stroke="var(--fg-muted)" strokeWidth="1" opacity="0.2" />
-              </svg>
-              {mcpServers.length} MCP
-            </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setMcpExpanded(!mcpExpanded)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '2px 7px',
+                  fontSize: 9,
+                  fontWeight: 500,
+                  fontFamily: 'inherit',
+                  background: mcpExpanded ? 'var(--overlay-subtle)' : 'transparent',
+                  color: 'var(--fg-muted)',
+                  border: 'none',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  lineHeight: '16px',
+                }}
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                  <circle cx="4" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
+                  <circle cx="12" cy="8" r="2" fill={mcpActive ? typeColor(mcpServers[1]?.type || mcpServers[0]?.type) : 'var(--fg-muted)'} opacity={mcpActive ? 0.9 : 0.25} />
+                  <path d="M6 8h4" stroke="var(--fg-muted)" strokeWidth="1" opacity="0.2" />
+                </svg>
+                {mcpServers.length} MCP
+              </button>
+              {mcpExpanded && <McpDropdown servers={mcpServers} onClose={() => setMcpExpanded(false)} />}
+            </div>
           )}
 
           {/* Effort level badge */}
@@ -225,33 +233,60 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
             </span>
           )}
 
-          {/* Right-side Canvas panel toggle — accent when open, transparent always. */}
-          {onToggleConversation && (
+          {/* Main-view segmented toggle — Console (the raw Claude Code terminal) · Chat ·
+              Preview. The chosen surface fills the main area (the terminal stays mounted
+              underneath). Active segment: accent text on a subtle tint (no solid accent fill). */}
+          {onSelectMainView && (
+            <div style={{
+              display: 'flex', alignItems: 'center', marginLeft: 4,
+              border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden',
+            }}>
+              {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview']] as const).map(([v, label]) => {
+                const activeSeg = v === mainView
+                return (
+                  <button
+                    key={v}
+                    onClick={() => onSelectMainView(v)}
+                    title={`${label} view`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 4, padding: '3px 9px',
+                      fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                      textTransform: 'uppercase', letterSpacing: '0.08em',
+                      border: 'none', cursor: 'pointer', outline: 'none',
+                      background: activeSeg ? 'var(--overlay-subtle)' : 'transparent',
+                      color: activeSeg ? 'var(--accent)' : 'var(--fg-muted)',
+                    }}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Right side-panel toggle (Plan / Diff / Preview) — accent when open. */}
+          {onTogglePanel && (
             <button
-              onClick={onToggleConversation}
-              title={conversationOpen ? 'Hide panel' : 'Show panel'}
+              onClick={onTogglePanel}
+              title={panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff / Preview)'}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 22, height: 22, padding: 0, marginLeft: 2,
+                width: 22, height: 22, padding: 0, marginLeft: 4,
                 background: 'transparent', border: 'none', borderRadius: 4,
                 cursor: 'pointer', outline: 'none',
-                color: conversationOpen ? 'var(--accent)' : 'var(--fg-muted)',
+                color: panelOpen ? 'var(--accent)' : 'var(--fg-muted)',
               }}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
                 <line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" strokeWidth="1.3" />
-                {conversationOpen && <rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" opacity="0.18" />}
+                {panelOpen && <rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" opacity="0.18" />}
               </svg>
             </button>
           )}
         </div>
       </DragRegion>
 
-      {/* MCP expanded dropdown */}
-      {mcpExpanded && mcpServers.length > 0 && (
-        <McpDropdown servers={mcpServers} onClose={() => setMcpExpanded(false)} />
-      )}
     </div>
   )
 }
@@ -268,8 +303,8 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
       <div
         style={{
           position: 'absolute',
-          top: '100%',
-          right: 12,
+          top: 'calc(100% + 4px)',
+          right: 0,
           zIndex: 100,
           width: 220,
           background: 'var(--bg-surface)',
