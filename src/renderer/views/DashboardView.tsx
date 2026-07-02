@@ -1322,7 +1322,7 @@ export function DashboardView() {
             {mainView !== 'terminal' && activeSession
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId && (
-              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)' }}>
                 {mainView === 'chat' && <CanvasConversation session={activeSession} />}
                 {mainView === 'preview' && (() => {
                   const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
