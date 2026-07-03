@@ -70,6 +70,14 @@ export interface AgentSession {
   agentId: string
   workingDirectory: string
   projectName: string
+  /** Canonical project id (repo root) — groups sessions by project in the sidebar. */
+  projectId?: string
+  /** Orchestration role (lane) this session was launched against, if any. */
+  roleId?: string
+  /** Model alias this session was launched with (Operator-side; the transcript omits it). */
+  model?: string
+  /** Reasoning effort this session was launched with (Operator-side). */
+  effortLevel?: 'high' | 'normal' | 'low'
   /** Short summary derived from the first user prompt, shown as the default label. */
   summary?: string
   status: SessionStatus
@@ -85,6 +93,81 @@ export interface AgentSession {
   lastActivityAt: string
   terminalId?: string
   permissionMode?: string
+}
+
+/** An orchestration role within a project's roster — a reusable "lane" that pins a model and
+ *  its settings (e.g. Orchestrator=Fable, Research=Sonnet, Code=Opus). Launching a session
+ *  against a role prefills its config; the session then carries the role's id. */
+export interface Role {
+  id: string
+  name: string
+  /** Model alias: 'fable' | 'opus' | 'sonnet' | 'haiku' (or a full model id). */
+  model: string
+  effort?: 'high' | 'normal' | 'low'
+  permissionMode?: string
+  /** Optional `.claude/agents` definition name to launch this lane as. */
+  agentName?: string
+  /** Optional lane accent (CSS colour) for sidebar/board badges. */
+  accent?: string
+}
+
+/** A queued unit of work in a project's backlog. Optionally assigned to an agent lane (roleId);
+ *  unassigned tasks sit in the backlog until assigned. Dispatched tasks leave the queue. */
+export interface ProjectTask {
+  id: string
+  text: string
+  /** Assigned agent lane, or undefined = unassigned backlog. */
+  roleId?: string
+  createdAt: string
+}
+
+/** A project = a folder/repo (its canonical git root) that owns many sessions over time.
+ *  The durable home for a repo's sessions, defaults, roster, and — later — moodboard/context. */
+export interface Project {
+  id: string
+  /** Canonical repo root, or the folder path itself for a non-git folder. */
+  path: string
+  /** Folder basename; renamable (id/path stay fixed). */
+  name: string
+  createdAt: string
+  lastActiveAt: string
+  defaults?: { model?: string; effortLevel?: 'high' | 'normal' | 'low'; permissionMode?: string }
+  /** Orchestration roster — the project's agent lanes (see Role). */
+  roster?: Role[]
+  /** Backlog of tasks to dispatch to agents (see ProjectTask). */
+  tasks?: ProjectTask[]
+  // Deferred seams (not populated this phase): moodboard, contextNotes, chatThreadId.
+}
+
+/** What resolveProject() returns for a source cwd. */
+export interface ProjectResolution {
+  id: string
+  path: string
+  name: string
+}
+
+/** A session's restorable config, persisted across restarts (~/.operator/sessions.json +
+ *  localStorage mirror). Lives here (not in a view) so the sidebar can import it too. */
+export interface SavedSession {
+  key: string
+  cwd: string
+  projectName: string
+  /** Canonical project id (repo root). Optional — older saved files predate it. */
+  projectId?: string
+  /** Orchestration role (lane) this session was launched against, if any. */
+  roleId?: string
+  customName?: string
+  model?: string
+  effortLevel?: 'high' | 'normal' | 'low'
+  permissionMode?: string
+  worktreeBranch?: string
+  worktreeBase?: string
+  sourceCwd?: string
+  /** Latest Claude Code session id seen — enables "resume conversation". */
+  claudeSessionId?: string
+  /** Live pty id from the CURRENT backend run; stale (ignored) after a full restart. */
+  terminalId?: string
+  lastActiveAt: string
 }
 
 export interface NarrationEntry {

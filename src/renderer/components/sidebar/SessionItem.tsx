@@ -8,6 +8,10 @@ interface SessionItemProps {
   label: string
   active: boolean
   effortLevel?: string | null
+  /** When the default label IS the role name (an orchestration lane, no custom name), render it
+   *  in the role's colour + the tracked-uppercase "running / your turn" treatment. */
+  labelIsRole?: boolean
+  roleColor?: string
   /** Fan-out membership: this agent's position within a parallel launch. */
   fanInfo?: { index: number; total: number }
   closable: boolean
@@ -18,7 +22,7 @@ interface SessionItemProps {
   onClose: () => void
 }
 
-export function SessionItem({ session, label, active, effortLevel, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
@@ -34,11 +38,13 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
     idle: 'idle', ended: 'ended', error: 'error',
   }
   const phaseLabel = PHASE_LABEL[status] ?? status
-  // The running session gets an accent left-border + faint accent wash (the
-  // landing's `.sess.running`); waiting tints the phase word accent as a
-  // quiet "your turn" cue. No pulsing dot (a banned generic AI tell).
+  // The animated status logo (StatusWave) already signals busy / your-turn / idle, so the
+  // phase WORD is redundant for those — and a bright-green "YOUR TURN" on every waiting row
+  // was loud. Keep a QUIET word only where the logo can't disambiguate: muted for active work
+  // (running/compacting), red for error. Waiting + idle show no word — the logo carries them.
   const isRunning = status === 'running'
-  const phaseAccent = status === 'running' || status === 'waiting'
+  const showPhase = status === 'running' || status === 'compacting' || status === 'error'
+  const phaseColor = status === 'error' ? 'var(--color-error, #f85149)' : 'var(--fg-muted)'
 
   useEffect(() => {
     if (editing) {
@@ -94,15 +100,12 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         // Fixed height (not padding-driven) so every row is identical regardless of
         // its content — tool suffix, badges, shortcut hint all sit within the same box.
         height: 32,
-        // 2px left-accent for the running session; a constant 2px transparent
-        // border otherwise keeps text from shifting when the state flips.
-        // NB: NO border-radius here — a rounded corner + a DYNAMIC (colour-changing)
-        // border re-rasterizes the rounded border layer in WKWebView on every state
-        // flip, which pegs the compositor and freezes the app. Flush rows also match
-        // the landing's `.sess` rows exactly. Keep radius OFF wherever a border colour
-        // is dynamic. (Selection is shown by the full-width wash, not a rounded card.)
+        // Running state reads from the background tint + status dot + "RUNNING" label, so
+        // the left-accent bar was redundant — dropped. Keep a constant 2px transparent
+        // border (no dynamic colour) purely as a spacer so nothing shifts, and flush rows
+        // (no radius) that match the landing's `.sess` rows.
         padding: '0 12px 0 8px',
-        borderLeft: `2px solid ${isRunning ? 'var(--accent)' : 'transparent'}`,
+        borderLeft: '2px solid transparent',
         background: active
           ? 'var(--bg-surface)'
           : isRunning ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
@@ -114,14 +117,21 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
         fontFamily: 'var(--font-mono)',
         color: 'var(--fg)',
         fontSize: 11.5,
+        // Tight line-box so the text centres exactly in the fixed 32px row — an inherited
+        // tall line-height leaves descent space below the glyph, reading as "sits high".
+        lineHeight: 1,
         boxSizing: 'border-box',
         outline: 'none',
       }}
     >
       <StatusWave status={status} seed={session.id} />
+      {/* Left group: the session name with its lane badge sitting immediately after it, so the
+          lane reads as part of the session — not a tag floating in the right cluster. */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
       <span
         style={{
-          flex: 1,
+          // Size to the name so the lane badge hugs it; grow only while editing (wide input).
+          flex: editing ? 1 : '0 1 auto',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -154,14 +164,24 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           />
         ) : (
           <>
-            {/* The running session's name reads full-strength (landing
-                `.sess.running .sess-name`); quiet rows sit a touch dimmer. */}
-            <span style={{ color: isRunning ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)' }}>
-              {label}
-            </span>
+            {/* A role-named session (orchestration lane) reads as the role: the role's colour +
+                the tracked-uppercase treatment shared with the phase words. A plain session name
+                reads full-strength when running, a touch dimmer when quiet. */}
+            {labelIsRole ? (
+              <span style={{ color: roleColor || 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+                {label}
+              </span>
+            ) : (
+              <span style={{ color: isRunning ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)' }}>
+                {label}
+              </span>
+            )}
           </>
         )}
       </span>
+      </div>
+      {/* Right group: status word + meta, right-aligned; yields to the close button on hover. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
       {!editing && fanInfo && (
         <span
           title={`Agent ${fanInfo.index} of ${fanInfo.total} in a parallel fan-out`}
@@ -193,25 +213,28 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           ⤷{session.activeSubagents}
         </span>
       )}
-      {/* Uppercase phase word — the landing's signature right-aligned `.sess-phase`.
-          Accent for running/your-turn, muted otherwise. Hidden on hover so the
-          close affordance can take its place (same gate as effort/shortcut). */}
-      {!editing && !(hovered && closable) && (
+      {/* Quiet phase word — only for active work / error (see showPhase above); waiting +
+          idle rely on the animated logo. Hidden on hover so the close affordance can take
+          its place (same gate as effort/shortcut). */}
+      {!editing && showPhase && !(hovered && closable) && (
         <span
           style={{
-            marginLeft: 'auto',
             flexShrink: 0,
             fontSize: 9.5,
             textTransform: 'uppercase',
             letterSpacing: '0.1em',
-            color: phaseAccent ? 'var(--accent)' : 'var(--fg-muted)',
+            color: phaseColor,
+            opacity: status === 'error' ? 0.95 : 0.65,
           }}
         >
           {phaseLabel}
         </span>
       )}
-      {!editing && effortLevel && !(hovered && closable) && (
+      {/* Effort only when it DEVIATES from the default (high) — an "H" on every row was noise;
+          a lone "N"/"L" flags the exception worth noticing. Also in the composer + roster. */}
+      {!editing && effortLevel && effortLevel !== 'high' && !(hovered && closable) && (
         <span
+          title={`Effort: ${effortLevel}`}
           style={{
             fontSize: 8,
             fontWeight: 600,
@@ -257,6 +280,7 @@ export function SessionItem({ session, label, active, effortLevel, fanInfo, clos
           {confirmingClose ? '×?' : '×'}
         </button>
       )}
+      </div>
     </div>
   )
 }

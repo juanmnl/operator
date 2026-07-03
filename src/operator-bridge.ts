@@ -77,6 +77,7 @@ export function installBridge(): void {
         permissionMode: (launchOptions?.permissionMode as string) ?? null,
         tuiMode: 'default',
         colorScheme,
+        orchestrationNote: (launchOptions?.orchestrationNote as string) ?? null,
       })
       return { terminalId: id, cwd: target }
     },
@@ -236,6 +237,14 @@ export function installBridge(): void {
     getUsageInsights: (days?: number) => invoke('get_usage_insights', { days: days ?? null }),
     saveSessions: (sessions: unknown[]) => { void invoke('save_sessions', { sessions }) },
     loadSessions: () => invoke('load_sessions') as Promise<unknown[]>,
+    saveProjects: (projects: unknown[]) => { void invoke('save_projects', { projects }) },
+    loadProjects: () => invoke('load_projects') as Promise<unknown[]>,
+    projectAssetDir: (id: string) => invoke('project_asset_dir', { id }) as Promise<string>,
+    // Project-scoped moodboard (inspiration images).
+    moodboardAdd: (id: string, dataB64: string, ext: string) => invoke('moodboard_add', { id, data: dataB64, ext }) as Promise<string>,
+    moodboardList: (id: string) => invoke('moodboard_list', { id }) as Promise<string[]>,
+    moodboardImage: (id: string, name: string) => invoke('moodboard_image', { id, name }) as Promise<string>,
+    moodboardRemove: (id: string, name: string) => invoke('moodboard_remove', { id, name }) as Promise<void>,
 
     // Auto-update: check the public releases feed; install + relaunch on demand.
     getVersion: () => getVersion(),

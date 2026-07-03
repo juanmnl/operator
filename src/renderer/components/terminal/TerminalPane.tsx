@@ -214,7 +214,8 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       e.preventDefault()
       e.stopPropagation()
       const paths = await persistFiles(images, window.operator.savePastedImage)
-      if (paths.length) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
+      // Bracketed paste so Claude Code converts the path to a native `[Image #N]` (see handleDrop).
+      if (paths.length) window.operator.terminalWrite(terminalId, `\x1b[200~${paths.join(' ')}\x1b[201~`)
     }
     textarea?.addEventListener('paste', onPaste, { capture: true })
 
@@ -261,6 +262,17 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // Resize pty on terminal resize
     term.onResize(({ cols, rows }) => {
       window.operator.terminalResize(terminalId, cols, rows)
+      // WebGL leaves stale cell backgrounds / offsets after a reflow — e.g. collapsing the
+      // sidebar widens the terminal, then scrolling back shows the diff's +/- background
+      // bars misaligned from the text. The heal loop only runs during output, so an idle
+      // session never self-corrects. Force a clean re-render once the new size settles:
+      // drop the glyph atlas (so it re-uploads at the new metrics) and repaint every row.
+      requestAnimationFrame(() => {
+        const t = termRef.current
+        if (!t) return
+        try { (t as unknown as { clearTextureAtlas?: () => void }).clearTextureAtlas?.() } catch { /* no atlas */ }
+        try { t.refresh(0, t.rows - 1) } catch { /* disposed */ }
+      })
     })
 
     // Title changes
@@ -551,8 +563,10 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // Persist each dropped file to a temp path (works for unsaved screenshots that
     // carry bytes but no File.path). Shared with the clipboard-paste handler.
     const paths = await persistFiles(files, window.operator.savePastedImage)
-    // Trailing space so the path is delimited from whatever's typed next.
-    if (paths.length > 0) window.operator.terminalWrite(terminalId, paths.join(' ') + ' ')
+    // BRACKETED PASTE (ESC[200~ … ESC[201~), not a plain write: Claude Code only converts a
+    // path to a native `[Image #N]` attachment when it arrives as a PASTE. A plain typed
+    // write leaves the ugly literal path (the "didn't get shortened" bug).
+    if (paths.length > 0) window.operator.terminalWrite(terminalId, `\x1b[200~${paths.join(' ')}\x1b[201~`)
   }, [terminalId])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { AgentSession } from '../../../shared/types'
-import type { SavedSession } from '../../views/DashboardView'
+import type { SavedSession, Project } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
 
 interface SidebarProps {
   sessions: AgentSession[]
+  /** Known projects (folder/repo groups); supplies each group's display name + canonical path. */
+  projects?: Project[]
   /** Sessions from prior runs, not currently open — listed dormant for one-click resume. */
   restorableSessions?: SavedSession[]
   onRestoreSession?: (saved: SavedSession) => void
@@ -29,7 +31,11 @@ interface SidebarProps {
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
-  onReorderGroup: (draggedName: string, targetName: string, edge: 'before' | 'after') => void
+  onReorderGroup: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** Open a project's workspace (Agents + Moodboard) — from its title. Only for real projects. */
+  onOpenProject?: (projectId: string) => void
+  /** The project whose workspace is currently open (highlights its title). */
+  activeProjectId?: string | null
   onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
@@ -42,23 +48,31 @@ interface SidebarProps {
   /** A newer release found by the updater, or null. */
   update?: { version: string } | null
   onInstallUpdate?: () => void
-  /** Collapse the sidebar (hide it). */
-  onToggleCollapse?: () => void
 }
 
-export function Sidebar({ sessions, restorableSessions, onRestoreSession, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate, onToggleCollapse }: SidebarProps) {
-  // Project name of the folder group currently being dragged for reorder — lifted
-  // here so a drag can target any other group (each FolderGroup is a drop zone).
+export function Sidebar({ sessions, projects, restorableSessions, onRestoreSession, onOpenProject, activeProjectId, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+  // Id of the folder group currently being dragged for reorder — lifted here so a
+  // drag can target any other group (each FolderGroup is a drop zone).
   const [dragGroup, setDragGroup] = useState<string | null>(null)
-  // Group sessions by project name (last folder segment)
-  const grouped = new Map<string, AgentSession[]>()
+  // Group sessions by their canonical Project (id = repo root), so two folders that share
+  // a basename no longer merge and a worktree session groups under its source repo. Legacy
+  // sessions without a projectId fall back to a basename key. The group carries the project's
+  // display name + canonical path (used for the prefs button), from the projects store.
+  const projectById = new Map((projects ?? []).map((p) => [p.id, p]))
+  const grouped = new Map<string, { name: string; path: string; roster?: Project['roster']; sessions: AgentSession[] }>()
   for (const session of sessions) {
-    const key = session.projectName || 'Unknown'
+    const proj = session.projectId ? projectById.get(session.projectId) : undefined
+    const key = session.projectId || `name:${session.projectName || 'Unknown'}`
     const existing = grouped.get(key)
     if (existing) {
-      existing.push(session)
+      existing.sessions.push(session)
     } else {
-      grouped.set(key, [session])
+      grouped.set(key, {
+        name: proj?.name || session.projectName || 'Unknown',
+        path: proj?.path || session.workingDirectory || '',
+        roster: proj?.roster,
+        sessions: [session],
+      })
     }
   }
 
@@ -130,33 +144,10 @@ export function Sidebar({ sessions, restorableSessions, onRestoreSession, active
               WebkitAppRegion: 'no-drag',
             }}
           >
-            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 9.5V2.5M3 5l3-3 3 3" />
-            </svg>
-          </button>
-        )}
-        {/* Collapse (hide) the sidebar. Right-aligned at the end of the header. */}
-        {onToggleCollapse && (
-          <button
-            onClick={onToggleCollapse}
-            title="Hide sidebar"
-            aria-label="Hide sidebar"
-            style={{
-              marginLeft: 'auto',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 24, height: 22, padding: 0,
-              background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
-              color: 'var(--fg-muted)', opacity: 0.85, cursor: 'pointer',
-              transition: 'opacity 120ms ease, background 120ms ease',
-              // @ts-expect-error Electron-specific CSS property
-              WebkitAppRegion: 'no-drag',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.background = 'transparent' }}
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
-              <line x1="6.25" y1="3.25" x2="6.25" y2="12.75" />
+            {/* Arrow centered in the viewBox (spans y3–y9, mid = 6) + a 0.5px downward
+                optical nudge — an up-arrow's chevron is top-heavy, so dead-center reads high. */}
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'translateY(0.5px)' }}>
+              <path d="M6 9V3M3 5.5l3-2.5 3 2.5" />
             </svg>
           </button>
         )}
@@ -177,10 +168,15 @@ export function Sidebar({ sessions, restorableSessions, onRestoreSession, active
             No active sessions
           </p>
         )}
-        {Array.from(grouped.entries()).map(([projectName, group]) => (
+        {Array.from(grouped.entries()).map(([groupId, { name, path, roster, sessions: group }]) => (
           <FolderGroup
-            key={projectName}
-            projectName={projectName}
+            key={groupId}
+            groupId={groupId}
+            projectName={name}
+            projectPath={path}
+            roster={roster}
+            onOpenProject={onOpenProject}
+            projectActive={activeProjectId === groupId}
             group={group}
             activeSessionId={activeSessionId}
             customNames={customNames}
@@ -387,7 +383,12 @@ export function Sidebar({ sessions, restorableSessions, onRestoreSession, active
 }
 
 function FolderGroup({
+  groupId,
   projectName,
+  projectPath,
+  roster,
+  onOpenProject,
+  projectActive,
   group,
   activeSessionId,
   customNames,
@@ -403,7 +404,17 @@ function FolderGroup({
   setDragGroup,
   onReorderGroup,
 }: {
+  /** Stable group identity (projectId, or a basename key for legacy sessions) — used for
+   *  React key + drag/reorder, distinct from the human display name. */
+  groupId: string
   projectName: string
+  /** Canonical project path (repo root) — opens the right `.claude` even for worktrees. */
+  projectPath: string
+  /** The project's roster, to resolve each session's roleId → lane badge. */
+  roster?: Project['roster']
+  /** Open this project's workspace (only wired for real projects, not legacy name-groups). */
+  onOpenProject?: (projectId: string) => void
+  projectActive?: boolean
   group: AgentSession[]
   activeSessionId: string | null
   customNames: Record<string, string>
@@ -416,24 +427,25 @@ function FolderGroup({
   onCloseSession: (session: AgentSession) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   dragGroup: string | null
-  setDragGroup: (name: string | null) => void
-  onReorderGroup: (draggedName: string, targetName: string, edge: 'before' | 'after') => void
+  setDragGroup: (id: string | null) => void
+  onReorderGroup: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
 }) {
   const [hovered, setHovered] = useState(false)
   // Which edge of THIS group the dragged group is hovering — drives the drop line.
   const [dropEdge, setDropEdge] = useState<'before' | 'after' | null>(null)
-  const projectPath = group[0]?.workingDirectory || ''
   const isPrefsActive = activeFolderPrefs === projectPath
-  const isDragging = dragGroup === projectName
+  const isDragging = dragGroup === groupId
+  // Real projects (id = repo root) can open their workspace; legacy name-groups can't.
+  const canOpenProject = !!onOpenProject && !groupId.startsWith('name:')
 
   return (
     // The whole project (title + its sessions) is one draggable/droppable unit. The
     // group title is the drag handle; while dragging, its sessions collapse so you
     // move a compact title; other groups show a before/after drop line.
     <div
-      key={projectName}
+      key={groupId}
       onDragOver={(e) => {
-        if (!dragGroup || dragGroup === projectName) return
+        if (!dragGroup || dragGroup === groupId) return
         e.preventDefault()
         e.dataTransfer.dropEffect = 'move'
         const r = e.currentTarget.getBoundingClientRect()
@@ -446,7 +458,7 @@ function FolderGroup({
       }}
       onDrop={(e) => {
         e.preventDefault()
-        if (dragGroup && dragGroup !== projectName && dropEdge) onReorderGroup(dragGroup, projectName, dropEdge)
+        if (dragGroup && dragGroup !== groupId && dropEdge) onReorderGroup(dragGroup, groupId, dropEdge)
         setDropEdge(null)
       }}
       style={{
@@ -461,7 +473,7 @@ function FolderGroup({
       <div
         draggable
         onDragStart={(e) => {
-          setDragGroup(projectName)
+          setDragGroup(groupId)
           e.dataTransfer.effectAllowed = 'move'
           // Custom drag ghost so you SEE the grabbed project follow the cursor — a
           // floating chip with the name + session count (instead of the faint default
@@ -501,7 +513,11 @@ function FolderGroup({
           cursor: 'grab',
         }}
       >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{projectName}</span>
+        <span
+          onClick={canOpenProject ? (e) => { e.stopPropagation(); onOpenProject!(groupId) } : undefined}
+          title={canOpenProject ? `Open ${projectName} workspace` : undefined}
+          style={{ overflow: 'hidden', textOverflow: 'ellipsis', cursor: canOpenProject ? 'pointer' : undefined, color: projectActive ? 'var(--accent)' : undefined }}
+        >{projectName}</span>
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -533,12 +549,14 @@ function FolderGroup({
       {/* Sessions collapse (hide) while this group is being dragged. */}
       {!isDragging && group.map((session, i) => {
         const customName = customNames[session.id]
-        const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
-        // Prefer the agent-derived summary (first user prompt) when no custom name is set.
-        const defaultLabel = session.summary || autoName
-        // Get effort level from terminal tab (keyed by terminalId)
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
+        const role = session.roleId ? roster?.find((r) => r.id === session.roleId) : undefined
+        // Default name: the role (orchestration lane), else the agent-derived summary, else a
+        // generic "Session". A custom name always wins.
+        const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
+        const defaultLabel = role?.name || session.summary || autoName
+        const labelIsRole = !customName && !!role
         return (
           <SessionItem
             key={session.id}
@@ -546,6 +564,8 @@ function FolderGroup({
             label={customName || defaultLabel}
             active={session.id === activeSessionId}
             effortLevel={effort}
+            labelIsRole={labelIsRole}
+            roleColor={role?.accent}
             fanInfo={fan}
             closable
             shortcutIndex={shortcutIndices[session.id] ?? null}

@@ -3,17 +3,16 @@ import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
+import { CanvasConversation } from './CanvasConversation'
 
-// The right-side panel: the "working" surfaces beside the main area — the agent's live plan
-// (Plan) and the working-tree diff (Diff). Chat and Preview live in the MAIN view now
-// (Console ⇄ Chat ⇄ Preview toggle), not here. The active tab is owned per session by
-// DashboardView.
-type PanelTab = 'plan' | 'diff'
+// The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
+// is CONTEXTUAL to the main view (passed in as `tabs`): Plan + Diff always, plus Chat when the
+// main view is Console or Preview (so you can watch the terminal/preview AND read the
+// conversation). Project-level surfaces (Agents roster, Moodboard) live in the ProjectView, not
+// here. The active tab is owned per session by DashboardView.
+type PanelTab = 'plan' | 'diff' | 'chat'
 
-const MODES: { id: PanelTab; label: string }[] = [
-  { id: 'plan', label: 'Plan' },
-  { id: 'diff', label: 'Diff' },
-]
+const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff', chat: 'Chat' }
 
 // The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
 // action can sit in the shared actions footer below. Persisted per session.
@@ -22,10 +21,13 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, mode, onSelectMode }: {
+export function CanvasPanel({ session, tabs, mode, onSelectMode, onModelChange, onEffortChange }: {
   session?: AgentSession
+  tabs: PanelTab[]
   mode: PanelTab
   onSelectMode: (m: PanelTab) => void
+  onModelChange?: (model: string) => void
+  onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
 }) {
   const select = onSelectMode
 
@@ -53,19 +55,19 @@ export function CanvasPanel({ session, mode, onSelectMode }: {
       {/* Same 36px height + centered content as the main panel's SessionToolbar,
           so the tabs sit on exactly the same line as the toolbar title/icons. */}
       <DragRegion style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, height: 36, padding: '0 10px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
-        {MODES.map((m) => (
+        {tabs.map((id) => (
           <button
-            key={m.id}
-            onClick={() => select(m.id)}
+            key={id}
+            onClick={() => select(id)}
             style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
               textTransform: 'uppercase', letterSpacing: '0.14em', cursor: 'pointer', outline: 'none',
               padding: '2px 9px', borderRadius: 6, border: 'none', background: 'transparent',
-              color: mode === m.id ? 'var(--accent)' : 'var(--fg-muted)',
+              color: mode === id ? 'var(--accent)' : 'var(--fg-muted)',
             }}
           >
-            {m.label}
-            {m.id === 'plan' && (session?.todos?.length ?? 0) > 0
+            {LABELS[id]}
+            {id === 'plan' && (session?.todos?.length ?? 0) > 0
               ? ` ${session!.todos!.filter((t) => t.status === 'completed').length}/${session!.todos!.length}`
               : ''}
           </button>
@@ -81,6 +83,7 @@ export function CanvasPanel({ session, mode, onSelectMode }: {
           />
         )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
+        {mode === 'chat' && <CanvasConversation session={session} onModelChange={onModelChange} onEffortChange={onEffortChange} />}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the

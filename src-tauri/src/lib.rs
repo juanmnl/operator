@@ -230,6 +230,9 @@ fn terminal_spawn(
     permission_mode: Option<String>,
     tui_mode: Option<String>,
     color_scheme: Option<String>,
+    // Orchestration awareness note — appended to the system prompt so an agent knows its
+    // role + its sibling lanes in the project (see the frontend roster).
+    orchestration_note: Option<String>,
     grid: Option<bool>,
     term_bg: Option<String>,
     term_fg: Option<String>,
@@ -305,6 +308,9 @@ fn terminal_spawn(
     // prompt is the reliable channel: most dev servers (Vite, etc.) won't honour
     // a PORT env var on their own, and Claude won't read OPERATOR_DEV_PORT — but
     // it WILL follow an instruction to bind a specific port.
+    // Collect all appended-system-prompt notes into ONE flag (Claude Code takes a single
+    // --append-system-prompt reliably): the port-collision hint + the orchestration note.
+    let mut sys_notes: Vec<String> = Vec::new();
     if let Some(port) = dev_port {
         let taken = if others.is_empty() {
             "none".to_string()
@@ -315,14 +321,20 @@ fn terminal_spawn(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        prefix.push("--append-system-prompt".to_string());
-        prefix.push(format!(
+        sys_notes.push(format!(
             "Operator (this session's manager) reserves a localhost port per session to avoid \
              collisions between parallel agents. Your reserved dev-server port is {port}; start any \
              local/dev server on it (pass `--port {port}`, or read it from the PORT env var). Ports \
              already in use by other Operator sessions: {taken} — do NOT bind those. If you need \
              more than one port, pick free ones outside that set."
         ));
+    }
+    if let Some(note) = orchestration_note.filter(|s| !s.trim().is_empty()) {
+        sys_notes.push(note);
+    }
+    if !sys_notes.is_empty() {
+        prefix.push("--append-system-prompt".to_string());
+        prefix.push(sys_notes.join("\n\n"));
     }
 
     let inner = prefix
@@ -724,6 +736,144 @@ fn load_sessions() -> serde_json::Value {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::Value::Array(vec![]))
+}
+
+// --- Durable project store (~/.operator/projects.json) -----------------------
+// Same crash-safe atomic-write pattern as sessions.json. A Project = a folder/repo (its
+// canonical git root) that owns many sessions over time — see the frontend `Project` type.
+
+fn projects_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::Path::new(&home).join(".operator").join("projects.json")
+}
+
+#[tauri::command]
+fn save_projects(projects: serde_json::Value) {
+    let path = projects_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&projects) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, &path); // atomic swap
+        }
+    }
+}
+
+#[tauri::command]
+fn load_projects() -> serde_json::Value {
+    std::fs::read_to_string(projects_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::Value::Array(vec![]))
+}
+
+/// A single path segment is safe (no `/`, `..`, or exotic chars) so it can't escape its
+/// parent dir. Used to validate project ids and moodboard filenames (traversal guard, same
+/// containment spirit as image_data_url).
+fn safe_segment(s: &str) -> bool {
+    !s.is_empty()
+        && !s.contains("..")
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Lazily create + return `~/.operator/projects/<id>/` — the per-project asset dir the
+/// moodboard/context builds on. `id` is validated so it can't escape the projects dir.
+#[tauri::command]
+fn project_asset_dir(id: String) -> Result<String, String> {
+    if !safe_segment(&id) {
+        return Err("invalid project id".into());
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = std::path::Path::new(&home).join(".operator").join("projects").join(&id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+// --- Moodboard (~/.operator/projects/<id>/moodboard/) ------------------------
+// A project-scoped board of inspiration images the user drops in over time. Bytes are
+// COPIED into the project (unlike the terminal image drop, which references a temp path),
+// so the board survives independently of the source files.
+
+fn moodboard_dir(id: &str) -> Result<std::path::PathBuf, String> {
+    if !safe_segment(id) {
+        return Err("invalid project id".into());
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = std::path::Path::new(&home)
+        .join(".operator").join("projects").join(id).join("moodboard");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Add an image (base64) to a project's moodboard; returns the stored filename.
+#[tauri::command]
+fn moodboard_add(id: String, data: String, ext: String) -> Result<String, String> {
+    use base64::Engine;
+    let dir = moodboard_dir(&id)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let safe_ext = if !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        ext
+    } else {
+        "png".to_string()
+    };
+    // Nanos-prefixed name sorts chronologically (see moodboard_list).
+    let name = format!("shot-{nanos}.{safe_ext}");
+    std::fs::write(dir.join(&name), &bytes).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
+/// List a project's moodboard image filenames, newest first.
+#[tauri::command]
+fn moodboard_list(id: String) -> Result<Vec<String>, String> {
+    let dir = moodboard_dir(&id)?;
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort(); // nanos-embedded names sort chronologically
+    names.reverse(); // newest first
+    Ok(names)
+}
+
+/// Data URL for one moodboard image (name validated; can't escape the board dir).
+#[tauri::command]
+fn moodboard_image(id: String, name: String) -> Result<String, String> {
+    use base64::Engine;
+    if !safe_segment(&name) {
+        return Err("invalid image name".into());
+    }
+    let path = moodboard_dir(&id)?.join(&name);
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let media = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", media, b64))
+}
+
+/// Remove one moodboard image.
+#[tauri::command]
+fn moodboard_remove(id: String, name: String) -> Result<(), String> {
+    if !safe_segment(&name) {
+        return Err("invalid image name".into());
+    }
+    let path = moodboard_dir(&id)?.join(&name);
+    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn chat_db_file() -> std::path::PathBuf {
@@ -1128,6 +1278,13 @@ pub fn run() {
             get_mcp_servers,
             save_sessions,
             load_sessions,
+            save_projects,
+            load_projects,
+            project_asset_dir,
+            moodboard_add,
+            moodboard_list,
+            moodboard_image,
+            moodboard_remove,
             save_pasted_image,
             set_dock_icon,
             chat_history,

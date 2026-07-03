@@ -82,6 +82,16 @@ declare global {
       /** Durable, crash-safe session snapshot (~/.operator/sessions.json). */
       saveSessions: (sessions: unknown[]) => void
       loadSessions: () => Promise<unknown[]>
+      /** Durable project store (~/.operator/projects.json), same crash-safe pattern. */
+      saveProjects: (projects: unknown[]) => void
+      loadProjects: () => Promise<unknown[]>
+      /** Lazily create + return ~/.operator/projects/<id>/ (moodboard/context asset dir). */
+      projectAssetDir: (id: string) => Promise<string>
+      /** Project-scoped moodboard: copy an image in (→ filename), list, load one, remove. */
+      moodboardAdd: (id: string, dataB64: string, ext: string) => Promise<string>
+      moodboardList: (id: string) => Promise<string[]>
+      moodboardImage: (id: string, name: string) => Promise<string>
+      moodboardRemove: (id: string, name: string) => Promise<void>
       /** Auto-update against the public releases feed. */
       getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>

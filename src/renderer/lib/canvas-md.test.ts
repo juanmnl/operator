@@ -60,4 +60,35 @@ describe('parseBlocks', () => {
   it('parses blockquotes', () => {
     expect(parseBlocks('> quoted')).toEqual([{ type: 'quote', spans: [{ text: 'quoted' }] }])
   })
+
+  it('parses task-list items with checked state', () => {
+    const b = parseBlocks('- [ ] todo\n- [x] done')
+    expect(b[0]).toMatchObject({ type: 'list', ordered: false, checked: false, spans: [{ text: 'todo' }] })
+    expect(b[1]).toMatchObject({ type: 'list', ordered: false, checked: true, spans: [{ text: 'done' }] })
+  })
+
+  it('leaves a plain bullet without a checked flag', () => {
+    expect(parseBlocks('- plain')[0]).toMatchObject({ type: 'list', checked: undefined })
+  })
+
+  it('parses a GFM table with alignments', () => {
+    const b = parseBlocks('| a | b | c |\n| :-- | :--: | --: |\n| 1 | 2 | 3 |\n| x | y | z |')
+    expect(b).toHaveLength(1)
+    expect(b[0]).toMatchObject({
+      type: 'table',
+      aligns: ['left', 'center', 'right'],
+      headers: [[{ text: 'a' }], [{ text: 'b' }], [{ text: 'c' }]],
+    })
+    expect((b[0] as { rows: unknown[] }).rows).toHaveLength(2)
+  })
+
+  it('does not treat a pipe line without a separator as a table', () => {
+    expect(parseBlocks('a | b | c')[0].type).toBe('paragraph')
+  })
+})
+
+describe('parseInline — strikethrough', () => {
+  it('splits ~~strike~~ runs', () => {
+    expect(parseInline('a ~~b~~ c')).toEqual([{ text: 'a ' }, { text: 'b', strike: true }, { text: ' c' }])
+  })
 })

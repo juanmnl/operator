@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession } from '../../shared/types'
+import { AgentSession, SavedSession, Project, Role, ProjectTask } from '../../shared/types'
+import { resolveProject } from '../lib/resolve-project'
+import { defaultRoster, orchestrationNote } from '../lib/roster'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
@@ -7,9 +9,9 @@ import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { SessionToolbar } from '../components/session/SessionToolbar'
-import { SessionInfoBar } from '../components/session/SessionInfoBar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
+import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
@@ -39,6 +41,10 @@ interface TerminalTab {
   worktreeBranch?: string
   worktreeBase?: string
   sourceCwd?: string
+  /** Canonical project id (repo root) — links this session to its Project. */
+  projectId?: string
+  /** Orchestration role (lane) this session was launched against, if any. */
+  roleId?: string
   /** Shared id across the N agents of one fan-out launch (undefined = solo). */
   fanGroup?: string
   /** 1-based position within the fan-out group, and the group size. */
@@ -53,26 +59,6 @@ interface TerminalTab {
 }
 
 
-/** A session's restorable config, persisted to localStorage across restarts. */
-export interface SavedSession {
-  key: string
-  cwd: string
-  projectName: string
-  customName?: string
-  model?: string
-  effortLevel?: 'high' | 'normal' | 'low'
-  permissionMode?: string
-  worktreeBranch?: string
-  worktreeBase?: string
-  sourceCwd?: string
-  /** Latest Claude Code session id seen — enables "resume conversation". */
-  claudeSessionId?: string
-  /** Live pty id from the CURRENT backend run. Stable across a renderer/webview
-   *  reload (the Rust process survives), so it's used to re-attach the sidebar to
-   *  still-running ptys. Stale (ignored) after a full app restart. */
-  terminalId?: string
-  lastActiveAt: string
-}
 
 // Height of the actions footer at the bottom of the main view + Canvas panel. The
 // scratch-terminal sheet sits directly above the main footer (bottom = FOOTER_H).
@@ -85,8 +71,10 @@ const CONVERSATION_PANEL_W = 460
 // Main content area shows ONE of these (Console = the raw terminal). Chat + Preview can
 // fill the main window; Console is the live agent terminal (always mounted underneath).
 type MainView = 'terminal' | 'chat' | 'preview'
-// The right side panel hosts the "working" surfaces. (Preview lives in the main view.)
-type PanelTab = 'plan' | 'diff'
+// The right side panel's tabs. Contextual to the main view: Chat is offered here when the
+// main view is Console or Preview (so you can watch the terminal / preview AND read the
+// conversation), but dropped in Chat view where it's already the main surface.
+type PanelTab = 'plan' | 'diff' | 'chat'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 const LAYOUT_KEY = 'operator.sessionLayouts'
 const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
@@ -124,6 +112,8 @@ export function DashboardView() {
   const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [usageViewActive, setUsageViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
+  // Project workspace (Agents roster + Moodboard), opened from a project title in the sidebar.
+  const [projectView, setProjectView] = useState<{ id: string; tab: 'roster' | 'moodboard' } | null>(null)
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -142,6 +132,13 @@ export function DashboardView() {
   const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
   const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
+  // Contextual panel tabs: Chat appears after Diff in Console/Preview, not in Chat view.
+  // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
+  // project title, not per-session here.)
+  const panelTabs: PanelTab[] = mainView === 'chat'
+    ? ['plan', 'diff']
+    : ['plan', 'diff', 'chat']
+  const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
       const sid = activeSessionIdRef.current
@@ -375,7 +372,25 @@ export function DashboardView() {
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setPendingSession(null)
+    setProjectView(null)
   }, [])
+
+  // A recent-project click: open its workspace if we already know it as a Project (so you can
+  // launch/manage its agents even with nothing live), else fall back to starting fresh there.
+  // Open a project's workspace (Agents roster + Moodboard) — from its title in the sidebar.
+  // Clears the active session so the project area can surface (see contentMode).
+  const handleOpenProject = useCallback((projectId: string) => {
+    setProjectView((prev) => ({ id: projectId, tab: prev?.id === projectId ? prev.tab : 'roster' }))
+    setPrefsViewActive(false)
+    setAgentsViewActive(false)
+    setUsageViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+    setPendingSession(null)
+  }, [])
+
 
   // Clicking the "Operator" header clears every view so the content area falls
   // through to the splash — the live active-sessions dashboard.
@@ -388,6 +403,7 @@ export function DashboardView() {
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setPendingSession(null)
+    setProjectView(null)
   }, [])
 
   const rememberRecent = useCallback((cwd: string) => {
@@ -417,19 +433,134 @@ export function DashboardView() {
       return raw ? JSON.parse(raw) : []
     } catch { return [] }
   })
+
+  // Projects: the durable top-level unit (a folder/repo owning many sessions over time).
+  // Seeded from localStorage for instant render, reconciled with ~/.operator/projects.json
+  // on hydrate (below), and migrated from prior session/recent data on first run.
+  const [projects, setProjects] = useState<Project[]>(() => {
+    try {
+      const raw = localStorage.getItem('operator.projects')
+      return raw ? JSON.parse(raw) : []
+    } catch { return [] }
+  })
+
+  // Create-or-touch a project by id: fills missing defaults, bumps lastActiveAt, and keeps
+  // any user rename (existing name wins). The single mutation point for the projects store.
+  const upsertProject = useCallback((r: { id: string; path: string; name: string }, opts?: { defaults?: Project['defaults'] }) => {
+    const now = new Date().toISOString()
+    setProjects((prev) => {
+      const existing = prev.find((p) => p.id === r.id)
+      if (existing) {
+        return prev.map((p) => p.id === r.id
+          ? { ...p, path: r.path, name: p.name || r.name, lastActiveAt: now, defaults: p.defaults ?? opts?.defaults }
+          : p)
+      }
+      // New project → seed the default orchestration roster (editable afterwards).
+      return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: defaultRoster() }]
+    })
+  }, [])
+
+  // Patch a project by id (roster edits, rename, …) and persist via the effect below.
+  const updateProject = useCallback((id: string, patch: Partial<Project>) => {
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))
+  }, [])
+
+  // --- Project task backlog (race-safe functional updates) ------------------------------
+  const addProjectTask = useCallback((projectId: string, text: string, roleId?: string) => {
+    const t = text.trim()
+    if (!t) return
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, createdAt: new Date().toISOString() }
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
+  }, [])
+  const assignProjectTask = useCallback((projectId: string, taskId: string, roleId?: string) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === taskId ? { ...t, roleId } : t)) }
+      : p)))
+  }, [])
+  const removeProjectTasks = useCallback((projectId: string, ids: string[]) => {
+    const idset = new Set(ids)
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).filter((t) => !idset.has(t.id)) }
+      : p)))
+  }, [])
+
+  // A recent-project click: open its workspace if we already know it as a Project (so you can
+  // launch/manage its agents even with nothing live), else fall back to starting fresh there.
+  const openProjectOrFolder = useCallback((path: string) => {
+    const proj = projects.find((p) => p.path === path)
+    if (proj) handleOpenProject(proj.id)
+    else handleNewSessionInFolder(path)
+  }, [projects, handleOpenProject, handleNewSessionInFolder])
+
+  // One-time, non-destructive backfill: derive Projects from existing saved sessions +
+  // recent-project paths (mapping each unique source path through resolveProject → canonical
+  // repo root), and stamp projectId onto those sessions. Only runs when projects.json is empty.
+  const migrateProjects = useCallback(async (saved: SavedSession[]): Promise<{ projects: Project[]; sessions: SavedSession[] }> => {
+    const paths = new Set<string>()
+    for (const s of saved) paths.add(s.sourceCwd ?? s.cwd)
+    try {
+      const raw = localStorage.getItem('operator.recentProjects')
+      const recents: Array<{ path?: string }> = raw ? JSON.parse(raw) : []
+      for (const r of recents) if (r?.path) paths.add(r.path)
+    } catch { /* ignore */ }
+
+    const byPath = new Map<string, { id: string; path: string; name: string }>()
+    for (const p of paths) {
+      try { byPath.set(p, await resolveProject(p)) } catch { /* skip unresolvable */ }
+    }
+
+    const sessions = saved.map((s) => {
+      const res = byPath.get(s.sourceCwd ?? s.cwd)
+      return res ? { ...s, projectId: res.id } : s
+    })
+
+    const now = new Date().toISOString()
+    const projById = new Map<string, Project>()
+    for (const res of byPath.values()) {
+      if (!projById.has(res.id)) {
+        projById.set(res.id, { id: res.id, path: res.path, name: res.name, createdAt: now, lastActiveAt: '' })
+      }
+    }
+    // Seed lastActiveAt from the newest contributing session.
+    for (const s of sessions) {
+      if (!s.projectId) continue
+      const proj = projById.get(s.projectId)
+      if (proj && s.lastActiveAt > proj.lastActiveAt) proj.lastActiveAt = s.lastActiveAt
+    }
+    for (const proj of projById.values()) {
+      if (!proj.lastActiveAt) proj.lastActiveAt = now
+      proj.createdAt = proj.lastActiveAt // best-effort; no earlier signal survives
+    }
+    return { projects: [...projById.values()], sessions }
+  }, [])
+
   // Block file-writes until the durable store has been read, so we never clobber
   // it with the (possibly staler) localStorage seed on launch.
   const [savedHydrated, setSavedHydrated] = useState(false)
   useEffect(() => {
-    const p = window.operator.loadSessions?.()
-    if (p) {
-      p.then((list) => {
-        if (Array.isArray(list) && list.length) setSavedSessions(list as SavedSession[])
-        setSavedHydrated(true)
-      }).catch(() => setSavedHydrated(true))
-    } else {
-      setSavedHydrated(true) // no file store (e.g. Electron) — localStorage only
-    }
+    const sp = window.operator.loadSessions?.()
+    if (!sp) { setSavedHydrated(true); return } // no file store (e.g. Electron) — localStorage only
+    const pp = window.operator.loadProjects?.() ?? Promise.resolve([])
+    Promise.all([sp, pp]).then(async ([sList, pList]) => {
+      const hasSaved = Array.isArray(sList) && sList.length > 0
+      const saved = (hasSaved ? sList : savedSessions) as SavedSession[]
+      let nextSaved: SavedSession[] = saved
+      if (Array.isArray(pList) && pList.length) {
+        setProjects(pList as Project[]) // projects.json exists → no migration
+      } else {
+        try {
+          const migrated = await migrateProjects(saved)
+          if (migrated.projects.length) {
+            setProjects(migrated.projects)
+            window.operator.saveProjects?.(migrated.projects)
+            try { localStorage.setItem('operator.projects', JSON.stringify(migrated.projects)) } catch { /* quota */ }
+            nextSaved = migrated.sessions // projectId backfilled in-memory too
+          }
+        } catch { /* a migration failure must never block hydration */ }
+      }
+      if (hasSaved || nextSaved !== saved) setSavedSessions(nextSaved)
+      setSavedHydrated(true)
+    }).catch(() => setSavedHydrated(true))
   }, [])
 
   // Re-attach the sidebar to ptys that survived a renderer/webview reload. The Rust
@@ -465,6 +596,8 @@ export function DashboardView() {
             worktreeBranch: s?.worktreeBranch,
             worktreeBase: s?.worktreeBase,
             sourceCwd: s?.sourceCwd,
+            projectId: s?.projectId,
+            roleId: s?.roleId,
             reattached: true, // replay buffered scrollback on mount
           }
         })
@@ -474,13 +607,17 @@ export function DashboardView() {
     }).catch(() => { /* no re-attach */ })
   }, [savedHydrated, savedSessions])
 
-  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig) => {
+  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string }) => {
     // Write effort level to global settings (Claude Code reads it from there)
     const prefs = await window.operator.folderPrefsLoad(cwd)
     const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
     if (globalFile) {
       await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: config.effortLevel })
     }
+
+    // Resolve the project once (canonical repo root) — all fan-out agents of this launch,
+    // worktrees included, belong to the same source project.
+    const proj = await resolveProject(cwd)
 
     // Fan-out: launch the same task on N agents, each in its own worktree.
     const count = Math.max(1, config.count || 1)
@@ -507,6 +644,7 @@ export function DashboardView() {
       if (config.model) launchOptions.model = config.model
       if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
       if (config.prompt) launchOptions.initialPrompt = config.prompt
+      if (opts?.orchestrationNote) launchOptions.orchestrationNote = opts.orchestrationNote
 
       const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
       if (!result) continue
@@ -521,6 +659,8 @@ export function DashboardView() {
         worktreeBranch,
         worktreeBase,
         sourceCwd: worktreeBranch ? cwd : undefined,
+        projectId: proj.id,
+        roleId: opts?.roleId,
         fanGroup,
         fanIndex: fanGroup ? i + 1 : undefined,
         fanTotal: fanGroup ? count : undefined,
@@ -530,17 +670,109 @@ export function DashboardView() {
       if (i === 0) {
         setActiveTerminalId(result.terminalId)
         setActiveSessionId(`local-${result.terminalId}`)
+        setProjectView(null) // launching switches to the new agent's console
       }
     }
 
     rememberRecent(cwd)
+    upsertProject(proj, { defaults: { model: config.model, effortLevel: config.effortLevel, permissionMode: config.permissionMode } })
     setRecentProjects((prev) => {
       const name = cwd.split('/').pop() || cwd
       const filtered = prev.filter((p) => p.path !== cwd)
       return [{ path: cwd, name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
     })
     setPendingSession(null)
-  }, [rememberRecent])
+  }, [rememberRecent, upsertProject])
+
+  // Orchestration: launch a session on a project's role (lane) — spawns in the project
+  // root with the role's model/effort/permission and tags the session with roleId. An
+  // optional `prompt` is handed to Claude as the first message (delegation).
+  const handleLaunchRole = useCallback((project: Project, role: Role, prompt?: string) => {
+    // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
+    const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
+    // The agent picks up its assigned queued tasks as its opening work (and they leave the queue).
+    const queued = (project.tasks ?? []).filter((t) => t.roleId === role.id)
+    const taskBlock = queued.length
+      ? `Please work through these tasks:\n${queued.map((t, i) => `${i + 1}. ${t.text}`).join('\n')}`
+      : ''
+    const combined = [prompt?.trim(), taskBlock].filter(Boolean).join('\n\n')
+    if (queued.length) removeProjectTasks(project.id, queued.map((t) => t.id))
+    void handleLaunchSession(
+      project.path,
+      {
+        effortLevel: role.effort ?? 'high',
+        permissionMode: (role.permissionMode as SessionConfig['permissionMode']) ?? 'default',
+        model: role.model,
+        allowedTools: '',
+        useWorktree: false,
+        count: 1,
+        prompt: combined,
+      },
+      { roleId: role.id, orchestrationNote: note },
+    )
+  }, [handleLaunchSession, removeProjectTasks])
+
+  // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
+  const focusTerminal = useCallback((terminalId: string) => {
+    if (!terminals.some((t) => t.id === terminalId)) return
+    setActiveTerminalId(terminalId)
+    const hook = sessions.find((s) => s.terminalId === terminalId)
+    setActiveSessionId(hook?.id ?? `local-${terminalId}`)
+    setProjectView(null) // reveal the session's console
+  }, [terminals, sessions])
+
+  // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
+  // (bracketed paste + CR) and focus it; otherwise launch the lane with the task. The
+  // autonomous "orchestrator delegates on its own" remains the deferred structured-UI path.
+  const dispatchToRole = useCallback((project: Project, role: Role, task: string) => {
+    const t = task.trim()
+    if (!t) return
+    const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
+    if (liveTab) {
+      window.operator.terminalWrite(liveTab.id, `\x1b[200~${t}\x1b[201~\r`)
+      setActiveTerminalId(liveTab.id)
+      setActiveSessionId(`local-${liveTab.id}`)
+    } else {
+      handleLaunchRole(project, role, t)
+    }
+  }, [terminals, handleLaunchRole])
+
+  // Send one queued task: to a live lane's pty, or (if the lane isn't up) launch it — which
+  // picks up the whole queue for that lane, this task included.
+  const sendProjectTask = useCallback((project: Project, task: ProjectTask) => {
+    const role = project.roster?.find((r) => r.id === task.roleId)
+    if (!role) return
+    const live = terminals.some((t) => t.projectId === project.id && t.roleId === role.id)
+    if (live) {
+      dispatchToRole(project, role, task.text)
+      removeProjectTasks(project.id, [task.id])
+    } else {
+      handleLaunchRole(project, role) // picks up its queue (incl. this task)
+    }
+  }, [terminals, dispatchToRole, handleLaunchRole, removeProjectTasks])
+
+  // "Start all": dispatch every ASSIGNED queued task, grouped per lane — live lanes get the
+  // combined message, idle lanes launch and pick up their queue. Unassigned tasks stay put.
+  const startProjectTasks = useCallback((project: Project) => {
+    const byRole = new Map<string, ProjectTask[]>()
+    for (const t of project.tasks ?? []) {
+      if (!t.roleId) continue
+      const arr = byRole.get(t.roleId) ?? []
+      arr.push(t); byRole.set(t.roleId, arr)
+    }
+    for (const [roleId, tasks] of byRole) {
+      const role = project.roster?.find((r) => r.id === roleId)
+      if (!role) continue
+      const live = terminals.some((t) => t.projectId === project.id && t.roleId === roleId)
+      if (live) {
+        const text = tasks.map((t, i) => `${i + 1}. ${t.text}`).join('\n')
+        dispatchToRole(project, role, `Please work through these tasks:\n${text}`)
+        removeProjectTasks(project.id, tasks.map((t) => t.id))
+      } else {
+        handleLaunchRole(project, role) // picks up its queue
+      }
+    }
+  }, [terminals, dispatchToRole, handleLaunchRole, removeProjectTasks])
 
   // Re-open a previously saved session. `resume` continues the prior Claude
   // conversation (--resume); otherwise it starts the agent clean in the same
@@ -557,6 +789,10 @@ export function DashboardView() {
     if (saved.model) launchOptions.model = saved.model
     if (resume && saved.claudeSessionId) launchOptions.resumeSessionId = saved.claudeSessionId
 
+    // Resolve the project (canonical repo root) — always, so an old saved session with no
+    // projectId gets backfilled and the project's lastActiveAt is touched on reopen.
+    const proj = await resolveProject(saved.sourceCwd ?? saved.cwd)
+
     // Restore spawns directly into the saved cwd (the worktree path persists
     // across quits), so no new worktree is created.
     const result = await window.operator.terminalSpawn(saved.cwd, launchOptions)
@@ -572,6 +808,8 @@ export function DashboardView() {
       worktreeBranch: saved.worktreeBranch,
       worktreeBase: saved.worktreeBase,
       sourceCwd: saved.sourceCwd,
+      projectId: saved.projectId ?? proj.id,
+      roleId: saved.roleId,
     }
     setTerminals((prev) => [...prev, tab])
     setActiveTerminalId(result.terminalId)
@@ -584,13 +822,14 @@ export function DashboardView() {
       })
     }
     rememberRecent(saved.cwd)
+    upsertProject(proj)
     setPendingSession(null)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
-  }, [rememberRecent])
+  }, [rememberRecent, upsertProject])
 
   const forgetSavedSession = useCallback((key: string) => {
     setSavedSessions((prev) => {
@@ -637,6 +876,7 @@ export function DashboardView() {
     setUsageViewActive(false)
     setPrefsViewActive(false)
     setPendingSession(null)
+    setProjectView(null)
     if (session.terminalId && localTerminalIds.has(session.terminalId)) {
       setActiveTerminalId(session.terminalId)
     } else {
@@ -685,12 +925,18 @@ export function DashboardView() {
 
   const localSessions: AgentSession[] = terminals.map((t) => {
     const hookSession = sessions.find((s) => s.terminalId === t.id)
-    if (hookSession) return hookSession
+    // Operator-side fields the transcript observer can't know (it only sees the JSONL):
+    // project/role linkage + the launch model/effort. Overlay them onto the tracked session
+    // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
+    // badge) the moment the observer starts tracking it.
+    const operatorFields = { projectId: t.projectId, roleId: t.roleId, model: t.model, effortLevel: t.effortLevel }
+    if (hookSession) return { ...hookSession, ...operatorFields }
     return {
       id: `local-${t.id}`,
       agentId: 'claude-code',
       workingDirectory: t.cwd,
       projectName: t.cwd.split('/').pop() || t.cwd,
+      ...operatorFields,
       status: 'active' as const,
       phase: 'idle' as const,
       activity: [],
@@ -708,12 +954,14 @@ export function DashboardView() {
   // block of terminals to sit before/after the drop-target project, in the canonical
   // `terminals` order (which drives the sidebar list + ⌘1..9). `edge` is which side
   // of the target the group was dropped on. (Per-run; not persisted across restarts.)
-  const handleReorderGroup = (draggedName: string, targetName: string, edge: 'before' | 'after') => {
-    if (draggedName === targetName) return
-    const tidsOf = (name: string) =>
-      allSidebarSessions.filter((s) => s.projectName === name).map((s) => s.terminalId).filter(Boolean) as string[]
-    const draggedTids = tidsOf(draggedName)
-    const targetTids = tidsOf(targetName)
+  const handleReorderGroup = (draggedId: string, targetId: string, edge: 'before' | 'after') => {
+    if (draggedId === targetId) return
+    // Group identity mirrors the sidebar: projectId, or a basename key for legacy sessions.
+    const groupIdOf = (s: AgentSession) => s.projectId || `name:${s.projectName || 'Unknown'}`
+    const tidsOf = (id: string) =>
+      allSidebarSessions.filter((s) => groupIdOf(s) === id).map((s) => s.terminalId).filter(Boolean) as string[]
+    const draggedTids = tidsOf(draggedId)
+    const targetTids = tidsOf(targetId)
     if (draggedTids.length === 0 || targetTids.length === 0) return
     const dSet = new Set(draggedTids)
     setTerminals((prev) => {
@@ -796,6 +1044,8 @@ export function DashboardView() {
           key: t.key,
           cwd: t.cwd,
           projectName: t.cwd.split('/').pop() || t.cwd,
+          projectId: t.projectId,
+          roleId: t.roleId,
           customName: customNames[nameKey] || customNames[`local-${t.id}`],
           model: t.model,
           effortLevel: t.effortLevel,
@@ -818,6 +1068,18 @@ export function DashboardView() {
       return merged
     })
   }, [terminals, sessions, customNames, savedHydrated])
+
+  // Persist projects to localStorage + the durable file, mirroring savedSessions. The
+  // JSON-diff (ignoring the volatile lastActiveAt) avoids churning writes on every touch.
+  const projectsSerRef = useRef<string>('')
+  useEffect(() => {
+    if (!savedHydrated) return // don't clobber projects.json before it's been read
+    const ser = JSON.stringify(projects.map(({ lastActiveAt: _omit, ...rest }) => rest))
+    if (ser === projectsSerRef.current) return
+    projectsSerRef.current = ser
+    try { localStorage.setItem('operator.projects', JSON.stringify(projects)) } catch { /* quota */ }
+    window.operator.saveProjects?.(projects)
+  }, [projects, savedHydrated])
 
   // App version (shown next to the name) + a pending update (surfaced as a badge
   // in the sidebar, in addition to the toast).
@@ -985,9 +1247,16 @@ export function DashboardView() {
   const activeSession =
     allSidebarSessions.find((s) => s.id === activeSessionId) ??
     (activeTerminalId ? allSidebarSessions.find((s) => s.terminalId === activeTerminalId) : undefined)
+  // Persist a chat-driven model/effort change onto the active session's tab (so it survives a
+  // tab switch and is written into the durable SavedSession). Keyed by the active terminalId.
+  const patchActiveTerminal = useCallback((patch: Partial<TerminalTab>) => {
+    const tid = activeSession?.terminalId
+    if (!tid) return
+    setTerminals((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
+  }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'splash' = useMemo(() => {
+  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'project' | 'splash' = useMemo(() => {
     if (pendingSession) return 'pendingSession'
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
@@ -999,8 +1268,11 @@ export function DashboardView() {
     // otherwise render neither the terminal container (needs terminals.length>0)
     // nor the splash (needs contentMode==='splash'), i.e. a blank screen.
     if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
+    // Project workspace shows only when nothing else claims the area (openProject clears the
+    // active session so this can surface); any lingering state is masked by the checks above.
+    if (projectView && projects.some((p) => p.id === projectView.id)) return 'project'
     return 'splash'
-  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals])
+  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, projectView, projects])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -1115,8 +1387,11 @@ export function DashboardView() {
       ) : (
       <Sidebar
         sessions={allSidebarSessions}
+        projects={projects}
         restorableSessions={previouslyOpenSessions}
         onRestoreSession={(s) => { void handleRestoreSession(s, !!s.claudeSessionId) }}
+        onOpenProject={handleOpenProject}
+        activeProjectId={contentMode === 'project' ? projectView?.id ?? null : null}
         activeSessionId={activeSessionId}
         customNames={customNames}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
@@ -1144,7 +1419,6 @@ export function DashboardView() {
         version={appVersion}
         update={availableUpdate}
         onInstallUpdate={() => { void window.operator.installUpdate() }}
-        onToggleCollapse={toggleSidebar}
       />
       )}
       </div>
@@ -1183,6 +1457,29 @@ export function DashboardView() {
 
         {contentMode === 'agents' && <AgentLibraryView />}
 
+        {contentMode === 'project' && projectView && (() => {
+          const proj = projects.find((p) => p.id === projectView.id)
+          if (!proj) return null
+          const live: Record<string, string> = {}
+          for (const t of terminals) if (t.projectId === proj.id && t.roleId) live[t.roleId] = t.id
+          return (
+            <ProjectView
+              project={proj}
+              tab={projectView.tab}
+              onSelectTab={(t) => setProjectView((prev) => (prev ? { ...prev, tab: t } : prev))}
+              onUpdateProject={updateProject}
+              onLaunchRole={handleLaunchRole}
+              liveRoles={live}
+              onFocusTerminal={focusTerminal}
+              onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
+              onAssignTask={(taskId, roleId) => assignProjectTask(proj.id, taskId, roleId)}
+              onRemoveTask={(taskId) => removeProjectTasks(proj.id, [taskId])}
+              onSendTask={(task) => sendProjectTask(proj, task)}
+              onStartAll={() => startProjectTasks(proj)}
+            />
+          )
+        })()}
+
         {contentMode === 'usage' && <UsageView />}
 
         {contentMode === 'prefs' && (
@@ -1206,31 +1503,8 @@ export function DashboardView() {
               onSelectMainView={selectMainView}
               panelOpen={panelOpen}
               onTogglePanel={togglePanel}
-            />
-          )
-        })()}
-
-        {contentMode === 'localTerminal' && activeSession && (() => {
-          const tab = terminals.find((t) => t.id === activeTerminalId)
-          // If the session was launched into a worktree, tab.cwd is the worktree path.
-          const worktreePath = tab?.worktreeBranch ? tab.cwd : null
-          return (
-            <SessionInfoBar
-              session={activeSession}
-              worktreePath={worktreePath}
-              onReviewChanges={worktreePath ? () => {
-                setReviewingTerminalId(activeTerminalId)
-                setActivityViewingTerminalId(null)
-              } : undefined}
-              onViewActivity={() => {
-                if (activityViewingTerminalId === activeTerminalId) {
-                  setActivityViewingTerminalId(null)
-                } else {
-                  setActivityViewingTerminalId(activeTerminalId)
-                  setReviewingTerminalId(null)
-                }
-              }}
-              activityViewing={activityViewingTerminalId === activeTerminalId}
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={toggleSidebar}
             />
           )
         })()}
@@ -1288,6 +1562,11 @@ export function DashboardView() {
                   position: 'absolute',
                   inset: 0,
                   visibility: t.id === activeTerminalId ? 'visible' : 'hidden',
+                  // Inert while a Chat/Preview overlay covers it — otherwise the wheel falls
+                  // through the canvas (pointerEvents:none) to the still-visible console and
+                  // scrolls ITS scrollback under the overlay (the "chat won't scroll, but the
+                  // scrollbar moves" bug — that scrollbar was the console's).
+                  pointerEvents: mainView === 'terminal' ? undefined : 'none',
                 }}
               >
                 <TerminalSurface
@@ -1323,12 +1602,24 @@ export function DashboardView() {
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId && (
               <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)' }}>
-                {mainView === 'chat' && <CanvasConversation session={activeSession} />}
+                {mainView === 'chat' && (
+                  <CanvasConversation
+                    session={activeSession}
+                    onModelChange={(m) => patchActiveTerminal({ model: m })}
+                    onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
+                  />
+                )}
                 {mainView === 'preview' && (() => {
                   const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
                   const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
                   const port = detected ?? reserved
-                  return <AppPreviewPanel url={port ? `http://localhost:${port}` : null} storageKey={`main-${activeSession.id}`} />
+                  return (
+                    <AppPreviewPanel
+                      url={port ? `http://localhost:${port}` : null}
+                      storageKey={`main-${activeSession.id}`}
+                      onDispatch={activeSession.terminalId ? (text) => window.operator.terminalWrite(activeSession.terminalId!, `\x1b[200~${text}\x1b[201~\r`) : undefined}
+                    />
+                  )
                 })()}
               </div>
             )}
@@ -1345,7 +1636,7 @@ export function DashboardView() {
             recentProjects={recentProjects}
             onRestore={handleRestoreSession}
             onForget={forgetSavedSession}
-            onOpenFolder={handleNewSessionInFolder}
+            onOpenFolder={openProjectOrFolder}
           />
         )}
 
@@ -1425,7 +1716,7 @@ export function DashboardView() {
               projects={recentProjects}
               onRestore={handleRestoreSession}
               onForget={forgetSavedSession}
-              onOpenFolder={handleNewSessionInFolder}
+              onOpenFolder={openProjectOrFolder}
             />
 
             {/* spacer keeps the splash block vertically centered */}
@@ -1433,9 +1724,15 @@ export function DashboardView() {
           </div>
         )}
 
-        {/* Main actions footer — pinned to the bottom of the main view. Hosts the
-            scratch-terminal trigger (opens the bottom sheet above it). */}
-        {contentMode === 'localTerminal' && activeSession && (
+        {/* Consolidated action bar — the SINGLE place for session actions (scratch Terminal,
+            Review changes, Activity timeline) + the working dir. Replaces the old
+            SessionInfoBar strip, so there's one action surface, not three. */}
+        {contentMode === 'localTerminal' && activeSession && (() => {
+          const tab = terminals.find((t) => t.id === activeTerminalId)
+          const worktreePath = tab?.worktreeBranch ? tab.cwd : null
+          const reviewing = reviewingTerminalId === activeTerminalId
+          const activityOn = activityViewingTerminalId === activeTerminalId
+          return (
           <div className="actions-footer" style={{ marginTop: 'auto', zIndex: 31, background: 'var(--bg-terminal)' }}>
             <button
               className={`actions-footer-btn${shellOpen ? ' is-active' : ''}`}
@@ -1448,11 +1745,30 @@ export function DashboardView() {
               </svg>
               Terminal
             </button>
+            {worktreePath && (
+              <button
+                className={`actions-footer-btn${reviewing ? ' is-active' : ''}`}
+                onClick={() => { setReviewingTerminalId(reviewing ? null : activeTerminalId); setActivityViewingTerminalId(null) }}
+                title="Review working-tree changes (commit / merge / discard)"
+              >
+                Review
+              </button>
+            )}
+            {(activeSession.activity?.length ?? 0) > 0 && (
+              <button
+                className={`actions-footer-btn${activityOn ? ' is-active' : ''}`}
+                onClick={() => { if (activityOn) setActivityViewingTerminalId(null); else { setActivityViewingTerminalId(activeTerminalId); setReviewingTerminalId(null) } }}
+                title="View the activity timeline"
+              >
+                Activity
+              </button>
+            )}
             <span className="actions-footer-label" style={{ marginLeft: 'auto' }}>
               {activeSession.workingDirectory}
             </span>
           </div>
-        )}
+          )
+        })()}
 
         {/* Scratch-terminal bottom sheet — mounted once opened, then only slid out of
             view on close so the shell persists. Lives inside the card → matches the
@@ -1481,7 +1797,14 @@ export function DashboardView() {
             onMouseDown={startPanelResize}
             title="Drag to resize"
           />
-          <CanvasPanel session={activeSession} mode={panelTab} onSelectMode={selectPanelTab} />
+          <CanvasPanel
+            session={activeSession}
+            tabs={panelTabs}
+            mode={effPanelTab}
+            onSelectMode={selectPanelTab}
+            onModelChange={(m) => patchActiveTerminal({ model: m })}
+            onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
+          />
         </div>
       )}
 

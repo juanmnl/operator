@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { type Annotation, loadAnnotations, saveAnnotations, composeMessage } from '../../lib/annotations'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -32,7 +33,12 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, storageKey }: { url: string | null; storageKey?: string }) {
+export function AppPreviewPanel({ url, storageKey, onDispatch }: {
+  url: string | null
+  storageKey?: string
+  /** Send the composed feedback message to the agent (Console pty / Chat). Enables annotate. */
+  onDispatch?: (text: string) => void
+}) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
   const [override, setOverride] = useState<number | null>(() => {
     if (!overrideKey) return null
@@ -47,6 +53,19 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
   const [found, setFound] = useState<number[]>([])
   const frameWrapRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
+
+  // --- Annotations: pin/box feedback over the preview, dispatched to the agent -----------
+  const annKey = storageKey ? `main-${storageKey}` : null
+  const [annotating, setAnnotating] = useState(false)
+  const [annotations, setAnnotations] = useState<Annotation[]>(() => (annKey ? loadAnnotations(annKey) : []))
+  // A note being authored: pending geometry + text (isNew distinguishes create vs edit).
+  const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note'> & { isNew: boolean })>(null)
+  const dragRef = useRef<null | { x0: number; y0: number }>(null)
+  const [rubber, setRubber] = useState<null | { x: number; y: number; w: number; h: number }>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { setAnnotations(annKey ? loadAnnotations(annKey) : []) }, [annKey])
+  const persistAnn = (next: Annotation[]) => { setAnnotations(next); if (annKey) saveAnnotations(annKey, next) }
 
   // Explicit discovery: probe the common dev ports and list whatever responds, so the
   // user can pick the right one (instead of us guessing and possibly grabbing another
@@ -120,6 +139,41 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
 
   const display = resolved || (override ? `http://localhost:${override}` : url)
   const host = display ? display.replace(/^https?:\/\//, '') : null
+  // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
+  // in-app navigation the user did afterwards).
+  const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
+
+  const onOverlayDown = (e: React.MouseEvent) => {
+    const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
+    dragRef.current = { x0: e.clientX - r.left, y0: e.clientY - r.top }
+  }
+  const onOverlayMove = (e: React.MouseEvent) => {
+    const s = dragRef.current, r = overlayRef.current?.getBoundingClientRect(); if (!s || !r) return
+    const cx = e.clientX - r.left, cy = e.clientY - r.top
+    if (Math.hypot(cx - s.x0, cy - s.y0) > 6) setRubber({ x: Math.min(s.x0, cx), y: Math.min(s.y0, cy), w: Math.abs(cx - s.x0), h: Math.abs(cy - s.y0) })
+  }
+  const onOverlayUp = (e: React.MouseEvent) => {
+    const s = dragRef.current, r = overlayRef.current?.getBoundingClientRect()
+    dragRef.current = null; setRubber(null)
+    if (!s || !r) return
+    const cx = e.clientX - r.left, cy = e.clientY - r.top
+    const W = r.width || 1, H = r.height || 1
+    if (Math.hypot(cx - s.x0, cy - s.y0) > 6) {
+      const x = Math.min(s.x0, cx), y = Math.min(s.y0, cy)
+      setDraft({ id: crypto.randomUUID(), xPct: (x / W) * 100, yPct: (y / H) * 100, wPct: (Math.abs(cx - s.x0) / W) * 100, hPct: (Math.abs(cy - s.y0) / H) * 100, note: '', isNew: true })
+    } else {
+      setDraft({ id: crypto.randomUUID(), xPct: (s.x0 / W) * 100, yPct: (s.y0 / H) * 100, note: '', isNew: true })
+    }
+  }
+  const saveDraft = () => {
+    if (!draft) return
+    const exists = annotations.some((a) => a.id === draft.id)
+    if (exists) persistAnn(annotations.map((a) => (a.id === draft.id ? { ...a, note: draft.note } : a)))
+    else persistAnn([...annotations, { id: draft.id, xPct: draft.xPct, yPct: draft.yPct, wPct: draft.wPct, hPct: draft.hPct, note: draft.note, route, createdAt: new Date().toISOString() }])
+    setDraft(null)
+  }
+  const deleteDraft = () => { if (draft) persistAnn(annotations.filter((a) => a.id !== draft.id)); setDraft(null) }
+  const sendAll = () => { const msg = composeMessage(annotations, route, { w: box.w, h: box.h }); if (msg) onDispatch?.(msg) }
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -175,6 +229,23 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
             >{p.label}</button>
           ))}
         </span>
+        {onDispatch && reach === 'up' && (
+          <>
+            <button
+              onClick={() => { setAnnotating((v) => !v); setDraft(null) }}
+              title={annotating ? 'Done annotating' : 'Annotate: pin feedback for the agent'}
+              style={{ ...previewBtn, width: 'auto', padding: '0 7px', gap: 5, fontSize: 11,
+                color: annotating ? 'var(--accent)' : 'var(--fg-muted)',
+                borderColor: annotating ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+              {annotations.length > 0 ? annotations.length : ''}
+            </button>
+            {annotations.length > 0 && (
+              <button onClick={sendAll} title="Send the feedback to the agent" style={{ ...previewBtn, width: 'auto', padding: '0 8px', fontSize: 10.5, color: 'var(--accent)', borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))' }}>Send →</button>
+            )}
+          </>
+        )}
         <button onClick={() => setNonce((n) => n + 1)} title="Reload preview" style={previewBtn}>⟳</button>
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
       </div>
@@ -214,6 +285,67 @@ export function AppPreviewPanel({ url, storageKey }: { url: string | null; stora
               />
             )
           })()}
+
+          {/* Annotation markers — numbered pins / boxes over the preview, always visible so
+              the feedback set reads as a punch-list; clickable to edit only while annotating. */}
+          {annotations.map((a, i) => (
+            <div
+              key={a.id}
+              onClick={annotating ? (e) => { e.stopPropagation(); setDraft({ id: a.id, xPct: a.xPct, yPct: a.yPct, wPct: a.wPct, hPct: a.hPct, note: a.note, isNew: false }) } : undefined}
+              title={a.note || `Note ${i + 1}`}
+              style={{
+                position: 'absolute', zIndex: 3, left: `${a.xPct}%`, top: `${a.yPct}%`,
+                pointerEvents: annotating ? 'auto' : 'none', cursor: annotating ? 'pointer' : 'default',
+                ...(a.wPct != null ? { width: `${a.wPct}%`, height: `${a.hPct}%`, border: '2px solid var(--accent)', borderRadius: 4, background: 'color-mix(in srgb, var(--accent) 10%, transparent)' } : {}),
+              }}
+            >
+              <span style={{
+                position: 'absolute', top: -9, left: -9, width: 18, height: 18, borderRadius: '50%',
+                background: 'var(--accent)', color: 'var(--fg-on-accent, #06210c)', display: 'grid', placeItems: 'center',
+                fontSize: 10, fontWeight: 700, fontFamily: 'var(--font-mono)', boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
+              }}>{i + 1}</span>
+            </div>
+          ))}
+
+          {/* Interaction overlay — only while annotating; intercepts clicks to pin/box. */}
+          {annotating && (
+            <div
+              ref={overlayRef}
+              onMouseDown={onOverlayDown}
+              onMouseMove={onOverlayMove}
+              onMouseUp={onOverlayUp}
+              style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: 'crosshair', background: 'color-mix(in srgb, var(--accent) 4%, transparent)' }}
+            >
+              {rubber && (
+                <div style={{ position: 'absolute', left: rubber.x, top: rubber.y, width: rubber.w, height: rubber.h, border: '1.5px dashed var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)', pointerEvents: 'none' }} />
+              )}
+            </div>
+          )}
+
+          {/* Note popover for the active draft (Enter saves, Esc cancels). */}
+          {draft && (
+            <div style={{
+              position: 'absolute', zIndex: 5,
+              left: `min(${draft.xPct}%, calc(100% - 222px))`,
+              top: `min(calc(${draft.yPct}% + 14px), calc(100% - 118px))`,
+              width: 210, padding: 8, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+            }}>
+              <textarea
+                autoFocus
+                value={draft.note}
+                onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveDraft() } if (e.key === 'Escape') setDraft(null) }}
+                placeholder="What should change here?"
+                rows={3}
+                style={{ width: '100%', boxSizing: 'border-box', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 12, background: 'var(--overlay-subtle)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', outline: 'none' }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button onClick={saveDraft} style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px', color: 'var(--accent)', borderColor: 'var(--accent)' }}>Save</button>
+                {!draft.isNew && <button onClick={deleteDraft} style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px' }}>Delete</button>}
+                <button onClick={() => setDraft(null)} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <Centered title={reach === 'checking' ? 'Looking for this session’s app…' : 'No app running for this session'}>

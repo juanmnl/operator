@@ -38,13 +38,16 @@ function readTheme(el: HTMLElement): Theme {
 const MARGIN = 18, TURN_GAP = 22, BLOCK_GAP = 7, HEADER_H = 22
 const PROSE = 13.5, PROSE_LH = 21, CODE = 12, CODE_LH = 18
 
-type Seg = { text: string; x: number; font: string; color: string; code?: boolean; href?: string; w?: number }
+type Seg = { text: string; x: number; font: string; color: string; code?: boolean; strike?: boolean; href?: string; w?: number }
 type Op =
   | { kind: 'header'; x: number; y: number; role: 'user' | 'agent'; label: string; time: string; top: number; bottom: number }
   | { kind: 'codebg'; x: number; y: number; w: number; h: number; top: number; bottom: number }
   | { kind: 'rule'; x: number; y: number; w: number; top: number; bottom: number }
   | { kind: 'vbar'; x: number; y: number; h: number; top: number; bottom: number }
   | { kind: 'segs'; y: number; h: number; segs: Seg[]; top: number; bottom: number }
+  // Table frame: outer box + header underline + internal column/row separators. Cell text
+  // rides as normal `segs` ops. colX/rowY are ABSOLUTE (content-space) separator positions.
+  | { kind: 'tframe'; x: number; y: number; w: number; h: number; headerBottom: number; colX: number[]; rowY: number[]; top: number; bottom: number }
 type TurnBound = { top: number; bottom: number; text: string; key: string; kind: string }
 interface Layout { ops: Op[]; height: number; bounds: TurnBound[] }
 
@@ -70,6 +73,41 @@ function fontFor(sp: Span, size: number, t: Theme): string {
   return `${style}${weight}${size}px ${t.fontBody}`
 }
 
+// Symbol glyphs (⌘ ● ◉ ⏺ ▸ ✔ arrows, keycaps, emoji, …) whose FONT advance is often narrower
+// than their ink — so the next character overlaps them. We isolate these and advance by their
+// real ink extent (see tokenAdvance), which fixes the "⌘N / ●LANE collide" spacing.
+function isSymbol(ch: string): boolean {
+  const cp = ch.codePointAt(0) ?? 0
+  return cp > 0xffff ||                       // astral plane (emoji, legacy-computing, …)
+    (cp >= 0x2190 && cp <= 0x2bff) ||         // arrows, technical, geometric shapes, dingbats
+    cp === 0xfe0f || cp === 0x20e3            // emoji variation selector / combining keycap
+}
+
+// Split a word into runs: each symbol char becomes its own token (so we can give it an
+// ink-based advance), while ordinary text stays grouped (preserving its kerning). Iterates by
+// code point so surrogate-pair emoji stay intact.
+function tokenizeWord(word: string): string[] {
+  const out: string[] = []
+  let buf = ''
+  for (const ch of word) {
+    if (isSymbol(ch)) { if (buf) { out.push(buf); buf = '' } out.push(ch) }
+    else buf += ch
+  }
+  if (buf) out.push(buf)
+  return out
+}
+
+// Advance width for a token. For a symbol token whose ink overruns its advance box, return the
+// ink right edge + a hair of breathing room so the following glyph can never sit on top of it.
+function tokenAdvance(ctx: CanvasRenderingContext2D, tok: string): number {
+  const m = ctx.measureText(tok)
+  if (tok.length <= 2 && isSymbol(tok)) {
+    const ink = m.actualBoundingBoxRight ?? m.width
+    return Math.max(m.width, ink) + 1.5
+  }
+  return m.width
+}
+
 // Greedy word-wrap a run of inline spans into positioned segments (x relative to the block
 // left edge). Each word keeps its own font/colour/href so bold/italic/code/links flow
 // inline, and its measured width so links can be hit-tested and code chips drawn.
@@ -88,8 +126,21 @@ function flowSpans(
       let w = ctx.measureText(word).width
       if (x + w > maxW && x > 0) { lines.push(cur); cur = []; x = 0; word = word.replace(/^\s+/, ''); w = ctx.measureText(word).width }
       if (word === '') continue
-      cur.push({ text: word, x, font, color, code: sp.code, href: sp.href, w })
-      x += w
+      const meta = { font, color, code: sp.code, strike: sp.strike, href: sp.href }
+      let hasSym = false
+      for (const ch of word) { if (isSymbol(ch)) { hasSym = true; break } }
+      // Fast path: no symbols → one seg for the whole (kerned) word. Otherwise flow each token
+      // with a symbol-aware advance so nothing collides with the glyph after it.
+      if (!hasSym) {
+        cur.push({ text: word, x, ...meta, w })
+        x += w
+      } else {
+        for (const tok of tokenizeWord(word)) {
+          const adv = tokenAdvance(ctx, tok)
+          cur.push({ text: tok, x, ...meta, w: adv })
+          x += adv
+        }
+      }
     }
   }
   lines.push(cur)
@@ -118,6 +169,69 @@ function cachedBlocks(text: string): Block[] {
   return b
 }
 
+// Lay out a GFM table: measure columns, cap to the available width, render header + rows as
+// aligned `segs` ops, plus one `tframe` op for the box + column/row separators.
+function emitTable(ctx: CanvasRenderingContext2D, ops: Op[], blk: Extract<Block, { type: 'table' }>, x: number, startY: number, width: number, t: Theme): number {
+  const cols = Math.max(1, blk.headers.length)
+  const padH = 8, padV = 5
+  const colContentW = new Array<number>(cols).fill(0)
+  const measure = (cells: Span[][]) => {
+    for (let c = 0; c < cols; c++) {
+      let w = 0
+      for (const sp of cells[c] || []) { ctx.font = fontFor(sp, PROSE, t); w += ctx.measureText(sp.text).width }
+      colContentW[c] = Math.max(colContentW[c], w)
+    }
+  }
+  measure(blk.headers)
+  blk.rows.forEach(measure)
+  let colW = colContentW.map((w) => Math.max(36, w) + padH * 2)
+  let total = colW.reduce((a, b) => a + b, 0)
+  if (total > width) { const scale = width / total; colW = colW.map((w) => w * scale); total = width }
+  const cxs: number[] = [x]
+  for (let c = 0; c < cols; c++) cxs.push(cxs[c] + colW[c])
+
+  // Flow every row's cells FIRST (measure only) so we know the geometry; then push the
+  // frame op, then the cell text — so the frame's header fill paints UNDER the text.
+  const rows = [{ cells: blk.headers, header: true }, ...blk.rows.map((r) => ({ cells: r, header: false }))]
+  const flowed = rows.map(({ cells, header }) => {
+    const cellLines: Seg[][][] = []
+    let maxLines = 1
+    for (let c = 0; c < cols; c++) {
+      const raw = cells[c] || []
+      const spans: Span[] = header ? raw.map((s) => ({ ...s, bold: true })) : raw
+      const { lines } = flowSpans(ctx, spans.length ? spans : [{ text: '' }], colW[c] - padH * 2, PROSE, t.fg, t)
+      cellLines.push(lines)
+      maxLines = Math.max(maxLines, lines.length)
+    }
+    return { cellLines, rowH: maxLines * PROSE_LH + padV * 2 }
+  })
+  const rowTop: number[] = []
+  let y = startY
+  for (const f of flowed) { rowTop.push(y); y += f.rowH }
+  const headerBottom = rowTop[1] ?? y // top of the first data row = bottom of the header
+
+  // Frame first (header bg + borders under the text).
+  ops.push({ kind: 'tframe', x, y: startY, w: total, h: y - startY, headerBottom, colX: cxs.slice(1, -1), rowY: rowTop.slice(2), top: startY, bottom: y })
+
+  // Then the cell text, aligned per column.
+  flowed.forEach((f, ri) => {
+    for (let c = 0; c < cols; c++) {
+      const align = blk.aligns[c] || 'left'
+      const inner = colW[c] - padH * 2
+      f.cellLines[c].forEach((segs, li) => {
+        const lineW = segs.reduce((mx, s) => Math.max(mx, s.x + (s.w ?? 0)), 0)
+        let dx = cxs[c] + padH
+        if (align === 'center') dx += Math.max(0, (inner - lineW) / 2)
+        else if (align === 'right') dx += Math.max(0, inner - lineW)
+        const shifted = segs.map((s) => ({ ...s, x: dx + s.x }))
+        const ly = rowTop[ri] + padV + li * PROSE_LH
+        ops.push({ kind: 'segs', y: ly, h: PROSE_LH, segs: shifted, top: ly, bottom: ly + PROSE_LH })
+      })
+    }
+  })
+  return y
+}
+
 // Emit an agent answer's blocks as positioned ops at column [x, x+width], returning the
 // next Y. Prose is full-width (no bubble) — role is conveyed by the header marker above.
 function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x: number, startY: number, width: number, t: Theme): number {
@@ -135,9 +249,13 @@ function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x
       ops.push({ kind: 'rule', x, y: y + 5, w: width, top: y + 5, bottom: y + 6 }); y += 11
     } else if (blk.type === 'code') {
       const codeLines = flowCode(ctx, blk.text, width - 20, CODE, t)
-      const boxH = codeLines.length * CODE_LH + 14
+      const labelH = blk.lang ? 15 : 0
+      const boxH = codeLines.length * CODE_LH + 14 + labelH
       ops.push({ kind: 'codebg', x, y, w: width, h: boxH, top: y, bottom: y + boxH })
-      let cy = y + 7
+      if (blk.lang) {
+        ops.push({ kind: 'segs', y: y + 5, h: 14, segs: [{ text: blk.lang.toUpperCase(), x: x + 10, font: `600 9px ${t.fontMono}`, color: t.fgMuted }], top: y + 5, bottom: y + 19 })
+      }
+      let cy = y + 7 + labelH
       for (const cl of codeLines) {
         ops.push({ kind: 'segs', y: cy, h: CODE_LH, segs: [{ text: cl, x: x + 10, font: `${CODE}px ${t.fontMono}`, color: t.fg }], top: cy, bottom: cy + CODE_LH }); cy += CODE_LH
       }
@@ -148,16 +266,21 @@ function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x
       const { lines } = flowSpans(ctx, blk.spans.map((s) => ({ ...s, bold: true })), width, size, t.fg, t)
       pushLines(lines, lh, 0)
     } else if (blk.type === 'list') {
-      const prefix = blk.ordered ? `${blk.index}.` : '•'
+      // Task list → checkbox glyph (accent when checked); otherwise the bullet / number.
+      const isTask = blk.checked !== undefined
+      const prefix = isTask ? (blk.checked ? '☑' : '☐') : blk.ordered ? `${blk.index}.` : '•'
+      const prefixColor = blk.checked ? t.accent : t.fgMuted
       const indent = 16 * blk.depth
       ctx.font = `${PROSE}px ${t.fontBody}`
       const pw = ctx.measureText(prefix + '  ').width
       const { lines } = flowSpans(ctx, blk.spans, width - indent - pw, PROSE, t.fg, t)
-      pushLines(lines, PROSE_LH, indent + pw, { text: prefix, x: x + indent, font: `${PROSE}px ${t.fontBody}`, color: t.fgMuted })
+      pushLines(lines, PROSE_LH, indent + pw, { text: prefix, x: x + indent, font: `${PROSE}px ${t.fontBody}`, color: prefixColor })
     } else if (blk.type === 'quote') {
       const { lines } = flowSpans(ctx, blk.spans, width - 14, PROSE, t.fgMuted, t)
       ops.push({ kind: 'vbar', x, y, h: lines.length * PROSE_LH, top: y, bottom: y + lines.length * PROSE_LH })
       pushLines(lines, PROSE_LH, 14)
+    } else if (blk.type === 'table') {
+      y = emitTable(ctx, ops, blk, x, y, width, t)
     } else {
       const { lines } = flowSpans(ctx, blk.spans, width, PROSE, t.fg, t)
       pushLines(lines, PROSE_LH, 0)
@@ -209,7 +332,11 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath()
 }
 
-export function CanvasConversation({ session }: { session?: AgentSession }) {
+export function CanvasConversation({ session, onModelChange, onEffortChange }: {
+  session?: AgentSession
+  onModelChange?: (model: string) => void
+  onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
+}) {
   // Same durable-history + live-tail merge as ConversationPanel (kept local so the spike
   // doesn't touch the shipping panel). history = full ordered record from the SQLite store;
   // session.messages = freshest tail that may lag ~1s. Dedupe by (timestamp|len|head).
@@ -309,6 +436,16 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
         ctx.beginPath(); ctx.moveTo(op.x, ry); ctx.lineTo(op.x + op.w, ry); ctx.stroke()
       } else if (op.kind === 'vbar') {
         ctx.fillStyle = t.border; ctx.fillRect(op.x, y, 2, op.h)
+      } else if (op.kind === 'tframe') {
+        // Header fill, then the outer box + header underline + column/row separators.
+        ctx.fillStyle = t.codeBg
+        ctx.fillRect(op.x, y, op.w, op.headerBottom - op.y)
+        ctx.strokeStyle = t.border; ctx.lineWidth = 1
+        ctx.strokeRect(Math.round(op.x) + 0.5, Math.round(y) + 0.5, Math.round(op.w), Math.round(op.h))
+        const line = (cy: number) => { const yr = Math.round(cy) + 0.5; ctx.beginPath(); ctx.moveTo(op.x, yr); ctx.lineTo(op.x + op.w, yr); ctx.stroke() }
+        line(op.headerBottom - scrollTop)
+        for (const ry of op.rowY) line(ry - scrollTop)
+        for (const vx of op.colX) { const xv = Math.round(vx) + 0.5; ctx.beginPath(); ctx.moveTo(xv, y); ctx.lineTo(xv, y + op.h); ctx.stroke() }
       } else if (op.kind === 'segs') {
         for (const s of op.segs) {
           if (s.code) {
@@ -319,6 +456,7 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
           ctx.font = s.font; ctx.fillStyle = s.color
           ctx.fillText(s.text, s.x, y)
           if (s.href) { ctx.strokeStyle = s.color; ctx.lineWidth = 1; const uy = Math.round(y + 15) + 0.5; ctx.beginPath(); ctx.moveTo(s.x, uy); ctx.lineTo(s.x + (s.w ?? 0), uy); ctx.stroke() }
+          if (s.strike) { ctx.strokeStyle = s.color; ctx.lineWidth = 1; const my = Math.round(y + 8) + 0.5; ctx.beginPath(); ctx.moveTo(s.x, my); ctx.lineTo(s.x + (s.w ?? ctx.measureText(s.text).width), my); ctx.stroke() }
         }
       }
     }
@@ -495,7 +633,7 @@ export function CanvasConversation({ session }: { session?: AgentSession }) {
           </div>
         )}
       </div>
-      <ChatComposer session={session} onSend={() => { stickRef.current = true }} />
+      <ChatComposer session={session} onSend={() => { stickRef.current = true }} onModelChange={onModelChange} onEffortChange={onEffortChange} />
     </div>
   )
 }

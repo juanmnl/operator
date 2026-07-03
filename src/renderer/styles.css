@@ -284,6 +284,13 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   white-space: nowrap;
 }
 
+/* Moodboard tiles — the remove (×) button stays hidden until the tile is hovered,
+   so the board reads as clean thumbnails at rest. */
+.moodboard-remove { opacity: 0; transition: opacity 120ms; }
+.moodboard-tile:hover .moodboard-remove { opacity: 1; }
+.moodboard-tile img { transition: transform 160ms; }
+.moodboard-tile:hover img { transform: scale(1.04); }
+
 /* Grid terminal cursor — a classic MS-DOS / C64 style block that hard-blinks (no
    fade): on for half the cycle, off for the other half. Semi-opaque so the glyph
    beneath reads through it (a cheap blend — no GPU-heavy mix-blend-mode). */

@@ -27,12 +27,15 @@ interface SessionToolbarProps {
   /** Main-view segmented toggle: Console (terminal) · Chat · Preview. */
   mainView?: 'terminal' | 'chat' | 'preview'
   onSelectMainView?: (v: 'terminal' | 'chat' | 'preview') => void
-  /** Right side panel (Plan / Diff / Preview) open state + toggle. */
+  /** Right side panel (Plan / Diff) open state + toggle. */
   panelOpen?: boolean
   onTogglePanel?: () => void
+  /** Sidebar collapse/expand — a persistent toggle left of the title (works in both states). */
+  sidebarCollapsed?: boolean
+  onToggleSidebar?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -84,7 +87,31 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
         borderBottom: '1px solid var(--border)',
         fontFamily: "var(--font-body)",
       }}>
+        {/* Left cluster: sidebar toggle · title · Console·Chat·Preview main-view toggle. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        {onToggleSidebar && (
+          <button
+            onClick={onToggleSidebar}
+            title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+            aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+            style={{
+              flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 24, height: 22, padding: 0,
+              background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
+              color: 'var(--fg-muted)', opacity: 0.85, cursor: 'pointer',
+              // @ts-expect-error Electron-specific CSS property
+              WebkitAppRegion: 'no-drag',
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
+              <line x1="6.25" y1="3.25" x2="6.25" y2="12.75" />
+            </svg>
+          </button>
+        )}
         <span style={{
+          minWidth: 0,
           fontFamily: 'var(--font-mono)',
           fontSize: 11.5,
           fontWeight: 500,
@@ -121,6 +148,36 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
             </span>
           )}
         </span>
+        {onSelectMainView && (
+          <div style={{
+            display: 'flex', alignItems: 'center', flexShrink: 0,
+            border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden',
+            // @ts-expect-error Electron-specific CSS property
+            WebkitAppRegion: 'no-drag',
+          }}>
+            {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview']] as const).map(([v, label]) => {
+              const activeSeg = v === mainView
+              return (
+                <button
+                  key={v}
+                  onClick={() => onSelectMainView(v)}
+                  title={`${label} view`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4, padding: '3px 9px',
+                    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                    textTransform: 'uppercase', letterSpacing: '0.08em',
+                    border: 'none', cursor: 'pointer', outline: 'none',
+                    background: activeSeg ? 'var(--overlay-subtle)' : 'transparent',
+                    color: activeSeg ? 'var(--accent)' : 'var(--fg-muted)',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+        </div>
 
         <div style={{
           display: 'flex',
@@ -233,38 +290,7 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
             </span>
           )}
 
-          {/* Main-view segmented toggle — Console (the raw Claude Code terminal) · Chat ·
-              Preview. The chosen surface fills the main area (the terminal stays mounted
-              underneath). Active segment: accent text on a subtle tint (no solid accent fill). */}
-          {onSelectMainView && (
-            <div style={{
-              display: 'flex', alignItems: 'center', marginLeft: 4,
-              border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden',
-            }}>
-              {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview']] as const).map(([v, label]) => {
-                const activeSeg = v === mainView
-                return (
-                  <button
-                    key={v}
-                    onClick={() => onSelectMainView(v)}
-                    title={`${label} view`}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 4, padding: '3px 9px',
-                      fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-                      textTransform: 'uppercase', letterSpacing: '0.08em',
-                      border: 'none', cursor: 'pointer', outline: 'none',
-                      background: activeSeg ? 'var(--overlay-subtle)' : 'transparent',
-                      color: activeSeg ? 'var(--accent)' : 'var(--fg-muted)',
-                    }}
-                  >
-                    {label}
-                  </button>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Right side-panel toggle (Plan / Diff / Preview) — accent when open. */}
+          {/* Right side-panel toggle (Plan / Diff) — accent when open. */}
           {onTogglePanel && (
             <button
               onClick={onTogglePanel}
