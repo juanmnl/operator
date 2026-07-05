@@ -876,6 +876,139 @@ fn moodboard_remove(id: String, name: String) -> Result<(), String> {
     Ok(())
 }
 
+// --- Preview inspector (Stage 3, spike) -----------------------------------------------------
+// A separate webview window loading the running app's URL, with an inspector script injected
+// at document-start (Operator owns this webview, so unlike the cross-origin preview iframe the
+// script CAN read the DOM). Slice 1: outline the element under the cursor on hover. Slices 2+
+// add click-to-capture (selector + component@file:line) reported back over IPC, then embedding.
+const INSPECTOR_JS: &str = r#"
+(function () {
+  if (window.__operatorInspector) return; window.__operatorInspector = true;
+  var box, label;
+  function mk() {
+    box = document.createElement('div');
+    box.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #7ee787;background:rgba(126,231,135,0.12);border-radius:2px;display:none;transition:all 45ms ease-out';
+    label = document.createElement('div');
+    label.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b0d10;color:#7ee787;padding:2px 6px;border-radius:4px;display:none;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+    document.documentElement.appendChild(box);
+    document.documentElement.appendChild(label);
+  }
+  function name(el) {
+    var s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    if (el.className && typeof el.className === 'string') {
+      var c = el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+      if (c.length) s += '.' + c.join('.');
+    }
+    return s;
+  }
+  function selector(el) {
+    if (el.id) return '#' + CSS.escape(el.id);
+    var parts = [];
+    while (el && el.nodeType === 1 && parts.length < 5) {
+      if (el.id) { parts.unshift('#' + CSS.escape(el.id)); break; }
+      var t = el.tagName.toLowerCase(), sib = el, nth = 1;
+      while ((sib = sib.previousElementSibling)) if (sib.tagName === el.tagName) nth++;
+      parts.unshift(t + ':nth-of-type(' + nth + ')');
+      el = el.parentElement;
+    }
+    return parts.join(' > ');
+  }
+  function fiber(el) {
+    for (var k in el) if (k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0) return el[k];
+    return null;
+  }
+  function source(el) {
+    var f = fiber(el), comp = null, src = null;
+    while (f) {
+      if (!src && f._debugSource) src = f._debugSource;
+      if (!comp && typeof f.type === 'function') comp = f.type.displayName || f.type.name || null;
+      if (src && comp) break;
+      f = f._debugOwner || f.return;
+    }
+    return { component: comp, source: src ? (src.fileName + ':' + src.lineNumber) : null };
+  }
+  function invoke(cmd, args) {
+    var i = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke)
+         || (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+    if (!i) return false;
+    try { i(cmd, args); return true; } catch (e) { return false; }
+  }
+  if (document.body) mk(); else document.addEventListener('DOMContentLoaded', mk);
+  document.addEventListener('mousemove', function (e) {
+    if (!box) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === box || el === label) { box.style.display = 'none'; label.style.display = 'none'; return; }
+    var r = el.getBoundingClientRect();
+    box.style.display = 'block'; box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
+    label.textContent = name(el); label.style.borderColor = ''; label.style.color = '#7ee787';
+    label.style.display = 'block'; label.style.left = r.left + 'px'; label.style.top = Math.max(0, r.top - 20) + 'px';
+  }, true);
+  // Click SELECTS the element (doesn't activate the app) and reports it back to Operator.
+  document.addEventListener('click', function (e) {
+    if (!box) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === box || el === label) return;
+    e.preventDefault(); e.stopPropagation();
+    var s = source(el);
+    var ok = invoke('preview_inspect_pick', { data: JSON.stringify({
+      selector: selector(el), tag: el.tagName.toLowerCase(),
+      text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+      component: s.component, source: s.source,
+      route: location.pathname,
+    }) });
+    // Visible feedback so we can SEE whether the IPC channel worked (spike diagnostic).
+    label.textContent = ok ? '✓ sent to Operator' : '✗ no Operator IPC';
+    label.style.color = ok ? '#7ee787' : '#ff6b6b';
+    label.style.display = 'block';
+  }, true);
+})();
+"#;
+
+/// Embed (or reposition) the inspector: a native child webview on the running app's URL,
+/// placed over the preview panel at the frontend-measured rect (logical px, window-relative).
+#[tauri::command]
+fn preview_inspect_open(app: AppHandle, url: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    use tauri::{LogicalPosition, LogicalSize};
+    if let Some(wv) = app.get_webview("inspector") {
+        let _ = wv.set_position(LogicalPosition::new(x, y));
+        let _ = wv.set_size(LogicalSize::new(w, h));
+        return Ok(());
+    }
+    let win = app.get_window("main").ok_or_else(|| "no main window".to_string())?;
+    let parsed: tauri::Url = url.parse().map_err(|_| "invalid preview url".to_string())?;
+    let builder = tauri::webview::WebviewBuilder::new("inspector", tauri::WebviewUrl::External(parsed))
+        .initialization_script(INSPECTOR_JS);
+    win.add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(w, h))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Reposition the embedded inspector as the panel resizes.
+#[tauri::command]
+fn preview_inspect_move(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    use tauri::{LogicalPosition, LogicalSize};
+    if let Some(wv) = app.get_webview("inspector") {
+        let _ = wv.set_position(LogicalPosition::new(x, y));
+        let _ = wv.set_size(LogicalSize::new(w, h));
+    }
+}
+
+#[tauri::command]
+fn preview_inspect_close(app: AppHandle) {
+    if let Some(wv) = app.get_webview("inspector") {
+        let _ = wv.close();
+    }
+}
+
+/// The inspector's injected script calls this when the user clicks an element; re-broadcast to
+/// the main window (which turns it into an annotation/task). `data` is the JSON payload string.
+#[tauri::command]
+fn preview_inspect_pick(app: AppHandle, data: String) {
+    let _ = app.emit("preview:pick", data);
+}
+
 fn chat_db_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
     std::path::Path::new(&home).join(".operator").join("chat.db")
@@ -1285,6 +1418,10 @@ pub fn run() {
             moodboard_list,
             moodboard_image,
             moodboard_remove,
+            preview_inspect_open,
+            preview_inspect_move,
+            preview_inspect_close,
+            preview_inspect_pick,
             save_pasted_image,
             set_dock_icon,
             chat_history,

@@ -79,13 +79,11 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   const outTailRef = useRef('')
   const lastDevPortRef = useRef<number | null>(null)
 
-  // Renderer: xterm's WebGL renderer (see term.open below), with the built-in DOM renderer
-  // as the fallback if the GPU context is lost. WKWebView used to corrupt WebGL's texture
-  // atlas (tofu cells, duplicated/garbled rows) — that's why we detoured through ghostty-web
-  // — but a 2026-07 re-test on current WebKit (Darwin 25) showed WebGL rendering clean under
-  // sustained output and multiple sessions, so the upstream bug (xtermjs/xterm.js#5816) is
-  // fixed here. WebGL is now the primary path; if the atlas ever regresses, drop the `webgl`
-  // prop to fall back to DOM (correct-but-slower, no backing store).
+  // Renderer: xterm's built-in DOM renderer — TerminalSurface does NOT pass `webgl`.
+  // WKWebView corrupts WebGL's texture atlas (tofu cells, garbled rows; xtermjs/xterm.js#5816).
+  // A 2026-07 spot-test looked clean and v0.8.0 shipped WebGL, but real long sessions still
+  // corrupted WHOLESALE, so the GPU bug is NOT fixed in this WebKit. Do not re-enable `webgl`
+  // without a sustained-session soak test — see TerminalSurface's header for the history.
   // Quiet window (ms) after the last pty chunk before a deferred fit is allowed.
   // Claude's spinner updates leave gaps well over this, so fits still apply
   // between frames; only mid-burst fits are held back.

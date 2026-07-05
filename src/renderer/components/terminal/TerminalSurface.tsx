@@ -1,15 +1,17 @@
 import type { ITheme } from '@xterm/xterm'
 import { TerminalPane } from './TerminalPane'
 
-// The terminal surface — xterm.js with the WebGL renderer.
+// The terminal surface — xterm.js with the DOM renderer.
 //
-// History: we moved off xterm to ghostty-web because xterm's WebGL/canvas renderers
-// corrupted in WKWebView. Re-tested 2026-07 on current WebKit (Darwin 25): xterm + WebGL
-// renders Claude's TUI CLEAN — no tofu, no duplicated rows, under sustained output and
-// multiple sessions. So the corruption was a WebKit bug that's since been fixed, ghostty-web
-// (and its WASM resize-hang) is gone, and this settled the "should we go Electron?" question:
-// no — Electron's only terminal advantage was "xterm renders in Chromium," which now holds
-// in WKWebView too. WebGL falls back to xterm's DOM renderer if the GPU context is lost.
+// History: xterm's WebGL/canvas renderers corrupt in WKWebView (tofu + duplicated/garbled
+// rows). A 2026-07 re-test on Darwin 25 looked clean and we shipped WebGL in v0.8.0 — but
+// real, long/interactive sessions still corrupt WHOLESALE (near-total glyph garble, atlas
+// producing garbage for most cells), so the WebKit GPU bug is NOT fixed here. WebGL's
+// texture-atlas failure has no reliable software mitigation (periodic atlas clears can't keep
+// up), so the console renders via xterm's built-in DOM renderer: correct, no GPU atlas, a bit
+// slower on heavy scroll. The overprint that the DOM renderer can show under Claude's
+// cursor-up rewrites is handled by TerminalPane's repaint/heal loop. Flip `webgl` back on only
+// if a future WebKit genuinely fixes the atlas.
 export function TerminalSurface({ terminalId, theme, active, suspendFit }: {
   terminalId: string
   theme: ITheme
@@ -25,7 +27,6 @@ export function TerminalSurface({ terminalId, theme, active, suspendFit }: {
       active={active}
       suspendFit={suspendFit}
       replayHistory
-      webgl
     />
   )
 }

@@ -24,6 +24,11 @@ const COMMON_PORTS = [5173, 5174, 3000, 3001, 4321, 4173, 8080, 8000, 5000, 4200
 
 // Is something answering at this origin? A no-cors fetch resolves (opaque) if a
 // server replies, throws on connection-refused (fast on localhost).
+// A pinned override is a full URL (has a scheme) or a bare port → localhost.
+function overrideUrl(o: string): string {
+  return /:\/\//.test(o) ? o : `http://localhost:${o}`
+}
+
 async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   try {
     await fetch(url, { mode: 'no-cors', signal })
@@ -33,16 +38,23 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, storageKey, onDispatch }: {
+export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange }: {
   url: string | null
   storageKey?: string
-  /** Send the composed feedback message to the agent (Console pty / Chat). Enables annotate. */
+  /** Send the composed feedback straight to the Console pty (quick path). */
   onDispatch?: (text: string) => void
+  /** Add the composed feedback to the project's task backlog (assign to a lane later). */
+  onSendToTasks?: (text: string) => void
+  /** Annotate vs Interact mode — controlled by DashboardView so a shortcut can toggle it. */
+  annotate?: boolean
+  onAnnotateChange?: (annotate: boolean) => void
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
-  const [override, setOverride] = useState<number | null>(() => {
+  // A pinned target: a bare port ("5173") OR a full URL ("https://app.example.com") — so the
+  // preview (+ inspect/annotate) works for ANY web app, not just the session's dev server.
+  const [override, setOverride] = useState<string | null>(() => {
     if (!overrideKey) return null
-    try { const v = localStorage.getItem(overrideKey); return v ? parseInt(v, 10) || null : null } catch { return null }
+    try { return localStorage.getItem(overrideKey) || null } catch { return null }
   })
   const [nonce, setNonce] = useState(0)
   const [resolved, setResolved] = useState<string | null>(null) // the live URL we landed on
@@ -56,7 +68,11 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
 
   // --- Annotations: pin/box feedback over the preview, dispatched to the agent -----------
   const annKey = storageKey ? `main-${storageKey}` : null
-  const [annotating, setAnnotating] = useState(false)
+  const annotating = annotate
+  const setAnnotate = (b: boolean) => { onAnnotateChange?.(b); setDraft(null) }
+  // Inspect mode: a native child webview embedded over the preview frame (Operator owns it, so
+  // its injected script CAN read the DOM — hover-outline + click-capture). Off = the iframe.
+  const [inspecting, setInspecting] = useState(false)
   const [annotations, setAnnotations] = useState<Annotation[]>(() => (annKey ? loadAnnotations(annKey) : []))
   // A note being authored: pending geometry + text (isNew distinguishes create vs edit).
   const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note'> & { isNew: boolean })>(null)
@@ -89,7 +105,7 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
     const ctrl = new AbortController()
     let timer = 0
     let stopped = false
-    const target = override ? `http://localhost:${override}` : url
+    const target = override ? overrideUrl(override) : url
 
     const tick = async () => {
       if (target && await ping(target, ctrl.signal)) {
@@ -127,21 +143,66 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
 
   const commitOverride = (raw: string) => {
     setEditing(false)
-    const p = parseInt(raw.replace(/[^0-9]/g, ''), 10)
-    const next = p > 0 && p < 65536 ? p : null
+    const v = raw.trim()
+    let next: string | null = null
+    if (/:\/\//.test(v)) next = v                                       // full URL
+    else if (/^\d{2,5}$/.test(v)) next = v                              // bare port
+    else if (/^localhost(:\d+)?$/.test(v) || /^[\w-]+(\.[\w-]+)+/.test(v)) next = `http://${v}` // host
     setOverride(next)
     try {
       if (!overrideKey) return
-      if (next) localStorage.setItem(overrideKey, String(next))
+      if (next) localStorage.setItem(overrideKey, next)
       else localStorage.removeItem(overrideKey)
     } catch { /* ignore */ }
   }
 
-  const display = resolved || (override ? `http://localhost:${override}` : url)
+  const display = resolved || (override ? overrideUrl(override) : url)
   const host = display ? display.replace(/^https?:\/\//, '') : null
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
   const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
+
+  // Embed the native inspector webview over the frame while inspecting; close on off / url
+  // change / unmount (leaving Preview). Re-runs on `display` so it follows a URL change.
+  useEffect(() => {
+    if (!inspecting || !display) { window.operator.previewInspectClose?.(); return }
+    const el = frameWrapRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    void window.operator.previewInspectOpen?.(display, r.left, r.top, r.width, r.height)
+    return () => { window.operator.previewInspectClose?.() }
+  }, [inspecting, display])
+  // Keep it aligned as the frame resizes (`box` updates via the ResizeObserver below).
+  useEffect(() => {
+    if (!inspecting) return
+    const el = frameWrapRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    window.operator.previewInspectMove?.(r.left, r.top, r.width, r.height)
+  }, [box, inspecting])
+
+  // A picked element awaiting a message. Clicking one in the inspector fires preview:pick;
+  // we capture it and show a compose bar (element chip + your message → Console / Tasks).
+  const [pick, setPick] = useState<null | { selector?: string; tag?: string; text?: string; component?: string | null; source?: string | null }>(null)
+  const [pickMsg, setPickMsg] = useState('')
+  useEffect(() => {
+    const unsub = window.operator.onPreviewPick?.((data) => {
+      try { setPick(JSON.parse(data)); setPickMsg('') } catch { /* ignore */ }
+    })
+    return () => unsub?.()
+  }, [])
+  useEffect(() => { if (!inspecting) setPick(null) }, [inspecting])
+  const pickLoc = (p: NonNullable<typeof pick>) => {
+    const who = p.component || p.tag || 'element'
+    return p.source ? `${who} @ ${p.source}` : `${who}${p.selector ? ` (${p.selector})` : ''}`
+  }
+  const sendPick = (target: 'console' | 'tasks') => {
+    if (!pick) return
+    const loc = pickLoc(pick)
+    const msg = `${pickMsg.trim()}\n\n↳ ${loc}${pick.text ? ` — “${pick.text}”` : ''}`.trim()
+    if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg)
+    setPick(null); setPickMsg('')
+  }
 
   const onOverlayDown = (e: React.MouseEvent) => {
     const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
@@ -173,7 +234,12 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
     setDraft(null)
   }
   const deleteDraft = () => { if (draft) persistAnn(annotations.filter((a) => a.id !== draft.id)); setDraft(null) }
-  const sendAll = () => { const msg = composeMessage(annotations, route, { w: box.w, h: box.h }); if (msg) onDispatch?.(msg) }
+  const send = (target: 'console' | 'tasks') => {
+    const msg = composeMessage(annotations, route, { w: box.w, h: box.h })
+    if (!msg) return
+    if (target === 'tasks') onSendToTasks?.(msg)
+    else onDispatch?.(msg)
+  }
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -184,8 +250,8 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
         {editing ? (
           <input
             autoFocus
-            defaultValue={override ? String(override) : ''}
-            placeholder="port"
+            defaultValue={override ?? ''}
+            placeholder="port or URL"
             onBlur={(e) => commitOverride(e.currentTarget.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitOverride(e.currentTarget.value)
@@ -200,14 +266,14 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
         ) : (
           <button
             onClick={() => setEditing(true)}
-            title="Click to set the preview port"
+            title="Click to set the preview target — a port or any URL"
             style={{
               fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, color: 'var(--fg-muted)',
               background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', outline: 'none',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220, textAlign: 'left',
             }}
           >
-            {host || 'set port…'}
+            {host || 'set URL / port…'}
             {/* Live dot only when something is actually answering. */}
             {reach === 'up' && <span style={{ color: 'var(--color-success, #3fb950)' }}> ●</span>}
             {override && <span style={{ color: 'var(--accent)' }}> ·pinned</span>}
@@ -229,20 +295,45 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
             >{p.label}</button>
           ))}
         </span>
-        {onDispatch && reach === 'up' && (
+        {(onDispatch || onSendToTasks) && reach === 'up' && (
           <>
-            <button
-              onClick={() => { setAnnotating((v) => !v); setDraft(null) }}
-              title={annotating ? 'Done annotating' : 'Annotate: pin feedback for the agent'}
-              style={{ ...previewBtn, width: 'auto', padding: '0 7px', gap: 5, fontSize: 11,
-                color: annotating ? 'var(--accent)' : 'var(--fg-muted)',
-                borderColor: annotating ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)' }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
-              {annotations.length > 0 ? annotations.length : ''}
-            </button>
-            {annotations.length > 0 && (
-              <button onClick={sendAll} title="Send the feedback to the agent" style={{ ...previewBtn, width: 'auto', padding: '0 8px', fontSize: 10.5, color: 'var(--accent)', borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))' }}>Send →</button>
+            {/* Mode: Interact (clicks pass to your app) vs Annotate (pin/box feedback). */}
+            <span style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1 }}>
+              {([['interact', 'Interact'], ['annotate', 'Annotate']] as const).map(([m, label]) => {
+                const on = (m === 'annotate') === annotating
+                return (
+                  <button
+                    key={m}
+                    onClick={() => setAnnotate(m === 'annotate')}
+                    title={m === 'annotate' ? 'Pin/box feedback over the app' : 'Interact with the running app'}
+                    style={{
+                      height: 20, padding: '0 8px', border: 'none', borderRadius: 5, background: 'transparent',
+                      cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
+                      color: on ? 'var(--accent)' : 'var(--fg-muted)',
+                    }}
+                  >
+                    {label}{m === 'annotate' && annotations.length > 0 ? ` ${annotations.length}` : ''}
+                  </button>
+                )
+              })}
+            </span>
+            {annotating && annotations.length > 0 && (
+              <>
+                {onDispatch && <button onClick={() => send('console')} title="Send the feedback to the Console now" style={sendBtn}>→ Console</button>}
+                {onSendToTasks && <button onClick={() => send('tasks')} title="Add the feedback as a task in the queue (assign to a lane later)" style={sendBtn}>→ Tasks</button>}
+              </>
+            )}
+            {/* Inspect: embeds an Operator-owned webview over the frame with a DOM inspector —
+                hover to outline the real element, click to capture it (component@file:line).
+                Cross-origin blocks this in the iframe, so it's a native child webview. */}
+            {display && (
+              <button
+                onClick={() => setInspecting((v) => !v)}
+                title={inspecting ? 'Stop inspecting' : 'Inspect elements — hover to outline, click to capture'}
+                style={{ ...previewBtn, width: 'auto', padding: '0 8px', fontSize: 10.5,
+                  color: inspecting ? 'var(--accent)' : 'var(--fg-muted)',
+                  borderColor: inspecting ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)' }}
+              >Inspect ⧉</button>
             )}
           </>
         )}
@@ -250,24 +341,31 @@ export function AppPreviewPanel({ url, storageKey, onDispatch }: {
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
       </div>
 
+      {/* Compose bar for a picked element: sits above the frame (so it's not under the native
+          inspector webview, which repositions below it as the frame shrinks). */}
+      {pick && (
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', background: 'var(--overlay-subtle)' }}>
+          <span title={pick.selector || ''} style={{ flexShrink: 0, maxWidth: 220, display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 40%, var(--border))', borderRadius: 6, padding: '3px 7px', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+            ⧉ {pickLoc(pick)}
+          </span>
+          <input
+            autoFocus
+            value={pickMsg}
+            onChange={(e) => setPickMsg(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); sendPick(onSendToTasks ? 'tasks' : 'console') } if (e.key === 'Escape') setPick(null) }}
+            placeholder="What should change about this element?"
+            style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-body)', fontSize: 12, background: 'transparent', color: 'var(--fg)', border: 'none', outline: 'none' }}
+          />
+          {onDispatch && <button onClick={() => sendPick('console')} title="Send to the Console" style={sendBtn}>→ Console</button>}
+          {onSendToTasks && <button onClick={() => sendPick('tasks')} title="Add as a task" style={sendBtn}>→ Tasks</button>}
+          <button onClick={() => setPick(null)} title="Discard" style={{ ...previewBtn, width: 22, height: 22 }}>✕</button>
+        </div>
+      )}
+
       {reach === 'up' && display ? (
         <div ref={frameWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: '#fff', position: 'relative' }}>
-          {/* Escape hatch: some apps refuse to embed (X-Frame-Options / CSP) or are
-              native, so the frame can render black. This always-present button pops
-              the running app into a real browser window. */}
-          <button
-            onClick={() => window.operator.openExternal?.(display)}
-            title="Open the app in your browser (use this if the preview is blank)"
-            style={{
-              position: 'absolute', top: 8, right: 8, zIndex: 2,
-              display: 'flex', alignItems: 'center', gap: 5,
-              fontFamily: "var(--font-body)", fontSize: 10.5, fontWeight: 600,
-              padding: '4px 9px', borderRadius: 6, cursor: 'pointer', outline: 'none',
-              color: 'var(--fg)', background: 'var(--bg-surface)', border: '1px solid var(--border)',
-            }}
-          >
-            Open app ↗
-          </button>
+          {/* (If the frame renders blank — X-Frame-Options / CSP — the toolbar's ↗ opens the
+              app in a real browser; no need for a second button floating over the content.) */}
           {(() => {
             if (preset === 'fit' || box.w === 0) {
               return <iframe key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
@@ -410,4 +508,10 @@ const retryBtn: React.CSSProperties = {
   marginTop: 0, marginRight: 8, fontFamily: "var(--font-body)", fontSize: 11, cursor: 'pointer', outline: 'none',
   padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'var(--btn-bg)', color: 'var(--fg)',
+}
+// Send-target buttons in the annotate toolbar (→ Console / → Tasks).
+const sendBtn: React.CSSProperties = {
+  flexShrink: 0, height: 22, padding: '0 8px', fontFamily: 'var(--font-body)', fontSize: 10.5, cursor: 'pointer',
+  outline: 'none', borderRadius: 5, background: 'transparent', color: 'var(--accent)',
+  border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
 }

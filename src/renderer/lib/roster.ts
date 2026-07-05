@@ -9,8 +9,19 @@ export const ROSTER_MODELS = [
   { id: 'haiku', label: 'Haiku' },
 ] as const
 
-export function modelLabel(id?: string): string {
-  return ROSTER_MODELS.find((m) => m.id === id)?.label || (id ? id : '—')
+/** Family label ("Opus"/"Sonnet"/…) for a model alias OR a full transcript id. Distinct
+ *  from lib/format's modelLabel, which renders the id-style label for the usage view. */
+export function modelFamilyLabel(id?: string): string {
+  if (!id) return '—'
+  const alias = ROSTER_MODELS.find((m) => m.id === id)
+  if (alias) return alias.label
+  // Full model ids (e.g. "claude-opus-4-20250514", from the transcript) → family label.
+  const l = id.toLowerCase()
+  if (l.includes('opus')) return 'Opus'
+  if (l.includes('sonnet')) return 'Sonnet'
+  if (l.includes('haiku')) return 'Haiku'
+  if (l.includes('fable')) return 'Fable'
+  return id
 }
 
 // Sensible starting roster seeded on project creation — the user's own framing:
@@ -18,9 +29,15 @@ export function modelLabel(id?: string): string {
 // (Ids are stable, human-readable, and unique within a fresh roster — safe as React keys.)
 export function defaultRoster(): Role[] {
   return [
+    // Orchestrator: fast coordination. Research: strong reading, cheaper for breadth. The rest
+    // pin the most capable model where quality matters most (code / review / design), Sonnet
+    // for QA's higher-volume test work. All editable per project.
     { id: 'orchestrator', name: 'Orchestrator', model: 'fable', effort: 'normal', accent: '#c98bff' },
     { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa' },
     { id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787' },
+    { id: 'review', name: 'Review', model: 'opus', effort: 'high', accent: '#ff9f45' },
+    { id: 'design', name: 'Design', model: 'opus', effort: 'normal', accent: '#ff7ac6' },
+    { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', accent: '#ffd43b' },
   ]
 }
 
@@ -29,12 +46,16 @@ export function defaultRoster(): Role[] {
 export function orchestrationNote(projectName: string, role: Role, roster: Role[]): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   const list = siblings.length
-    ? siblings.map((r) => `“${r.name}” (${modelLabel(r.model)})`).join(', ')
+    ? siblings.map((r) => `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})`).join(', ')
     : 'none yet'
   return (
-    `You are the “${role.name}” agent (model ${modelLabel(role.model)}) in the “${projectName}” project, ` +
-    `coordinated by Operator. The project's other agent lanes are: ${list}. You may be handed tasks that ` +
-    `belong to your role; stay scoped to it, and when work clearly belongs to another lane, say which one.`
+    `You are the "${role.name}" agent (model ${modelFamilyLabel(role.model)}) in the "${projectName}" project, ` +
+    `coordinated by Operator. The project's other agent lanes are: ${list}.\n` +
+    `To hand a task to another lane, output a line EXACTLY in this form, alone on its own line:\n` +
+    `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
+    `Operator routes it to that lane — typed into it if it's running, otherwise queued for it. ` +
+    `Only dispatch work that clearly belongs to another lane; do your own role's work yourself, ` +
+    `and stay scoped to it when a task is handed to you.`
   )
 }
 

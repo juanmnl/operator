@@ -100,17 +100,18 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // Fixed height (not padding-driven) so every row is identical regardless of
         // its content — tool suffix, badges, shortcut hint all sit within the same box.
         height: 32,
-        // Running state reads from the background tint + status dot + "RUNNING" label, so
-        // the left-accent bar was redundant — dropped. Keep a constant 2px transparent
-        // border (no dynamic colour) purely as a spacer so nothing shifts, and flush rows
-        // (no radius) that match the landing's `.sess` rows.
+        // The SELECTED (open) session must clearly dominate: a solid surface fill + a subtle
+        // NEUTRAL inset ring (not an accent stripe — see the global no-left-marker rule), so it
+        // reads as a distinct card, unmistakable next to a merely-RUNNING row (faint accent
+        // wash). Running is a secondary tint; selected always wins.
         padding: '0 12px 0 8px',
         borderLeft: '2px solid transparent',
         background: active
           ? 'var(--bg-surface)'
-          : isRunning ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
+          : isRunning ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'transparent',
+        boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--fg) 16%, transparent)' : 'none',
         borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-        borderRadius: 0,
+        borderRadius: active ? 6 : 0,
         cursor: 'pointer',
         textAlign: 'left',
         // Mono, matching the landing's session panel rows.
@@ -172,7 +173,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
                 {label}
               </span>
             ) : (
-              <span style={{ color: isRunning ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)' }}>
+              <span style={{ color: (isRunning || active) ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)' }}>
                 {label}
               </span>
             )}

@@ -118,7 +118,13 @@ export interface ProjectTask {
   text: string
   /** Assigned agent lane, or undefined = unassigned backlog. */
   roleId?: string
+  /** Lifecycle: queued (backlog) → running (handed to a lane) → done. Absent = queued. */
+  status?: 'queued' | 'running' | 'done'
+  /** The lane's terminal this task was dispatched to (for auto-complete + diff link). */
+  terminalId?: string
   createdAt: string
+  startedAt?: string
+  doneAt?: string
 }
 
 /** A project = a folder/repo (its canonical git root) that owns many sessions over time.

@@ -187,6 +187,8 @@ export function DashboardView() {
   // scrollback survive close→reopen); `shellOpen` slides it up/down.
   const [shellStarted, setShellStarted] = useState(false)
   const [shellOpen, setShellOpen] = useState(false)
+  // Preview mode (Interact ↔ Annotate) — lifted here so ⌘E can toggle it globally.
+  const [previewAnnotate, setPreviewAnnotate] = useState(false)
   const openShell = useCallback(() => { setShellStarted(true); setShellOpen(true) }, [])
   const closeShell = useCallback(() => setShellOpen(false), [])
 
@@ -290,6 +292,7 @@ export function DashboardView() {
       // mounted + active; the last frame stays on screen until the user dismisses
       // it (Cmd+W / sidebar close / the pane's "ended" overlay). Intentional
       // closes (handleCloseSession, worktree merge/discard) still remove the tab.
+      exitCompleteRef.current(id) // a lane's session ended → its running tasks are done
       setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, ended: true } : t)))
     })
 
@@ -483,6 +486,88 @@ export function DashboardView() {
       ? { ...p, tasks: (p.tasks ?? []).filter((t) => !idset.has(t.id)) }
       : p)))
   }, [])
+  // Lifecycle transitions. Dispatching a task marks it running (with its lane) instead of
+  // deleting it, so it stays visible until done. `terminalId` is optional — the lane pickup
+  // path doesn't know the new terminal id yet, so it matches on roleId for auto-complete.
+  const markTasksRunning = useCallback((projectId: string, ids: string[], terminalId?: string) => {
+    if (!ids.length) return
+    const idset = new Set(ids)
+    const now = new Date().toISOString()
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id) ? { ...t, status: 'running' as const, startedAt: now, terminalId: terminalId ?? t.terminalId } : t)) }
+      : p)))
+  }, [])
+  const setTaskStatus = useCallback((projectId: string, id: string, status: ProjectTask['status']) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === id ? { ...t, status, doneAt: status === 'done' ? new Date().toISOString() : t.doneAt } : t)) }
+      : p)))
+  }, [])
+  // Record a task that's ALREADY running (orchestrator dispatched it straight to a live lane).
+  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string) => {
+    const t = text.trim()
+    if (!t) return
+    const now = new Date().toISOString()
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, createdAt: now, startedAt: now }
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
+  }, [])
+  // When a lane's session ends, its still-running tasks are treated as done (auto-complete).
+  const completeTerminalTasks = useCallback((terminalId: string, roleId?: string, projectId?: string) => {
+    const now = new Date().toISOString()
+    setProjects((prev) => prev.map((p) => {
+      if (projectId && p.id !== projectId) return p
+      const tasks = (p.tasks ?? []).map((t) =>
+        t.status === 'running' && (t.terminalId === terminalId || (roleId && t.roleId === roleId && !t.terminalId))
+          ? { ...t, status: 'done' as const, doneAt: now }
+          : t)
+      return tasks === p.tasks ? p : { ...p, tasks }
+    }))
+  }, [])
+  // Fresh closure over terminals + completeTerminalTasks for the mount-time exit subscription.
+  const exitCompleteRef = useRef<(id: string) => void>(() => {})
+  exitCompleteRef.current = (id: string) => {
+    const tab = terminals.find((t) => t.id === id)
+    if (tab?.projectId) completeTerminalTasks(id, tab.roleId, tab.projectId)
+  }
+
+  // --- Orchestrator dispatch routing ----------------------------------------------------
+  // An agent emitted `OPERATOR-DISPATCH [role] task`; the backend parsed it and fires the
+  // event. Route it to the target lane WITHIN the emitting session's project: a live lane
+  // gets the task typed into its pty (no focus steal); an idle lane gets it QUEUED (we don't
+  // auto-spawn agents from model output — the user launches, keeping a human in the loop).
+  // Latest routing inputs held in a ref so the subscription is set up once (no missed events).
+  const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast })
+  dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast }
+  useEffect(() => {
+    const SEEN_KEY = 'operator.dispatch.seen'
+    const unsub = window.operator.onOrchestratorDispatch?.((d) => {
+      let seen: string[] = []
+      try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') } catch { /* */ }
+      if (seen.includes(d.id)) return // already handled (dedupe across transcript re-reads)
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, d.id].slice(-500))) } catch { /* */ }
+
+      const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast } = dispatchRef.current
+      const srcTab = tabs.find((t) => t.id === d.terminalId)
+      const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
+      if (!project) return
+      const role = project.roster?.find((r) => r.id === d.role || r.name.toLowerCase() === d.role.toLowerCase())
+      const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
+      if (role) {
+        const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id)
+        if (liveTab) {
+          window.operator.terminalWrite(liveTab.id, `\x1b[200~${d.task}\x1b[201~\r`)
+          addRunning(project.id, d.task, role.id, liveTab.id) // track it as running on the lane
+          toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
+        } else {
+          addTask(project.id, d.task, role.id) // idle lane → queued (user launches)
+          toast({ text: `Queued for ${role.name}`, kind: 'info', detail: preview })
+        }
+      } else {
+        addTask(project.id, d.task) // unknown role → unassigned backlog
+        toast({ text: 'Queued (unassigned)', kind: 'info', detail: preview })
+      }
+    })
+    return () => { unsub?.() }
+  }, [])
 
   // A recent-project click: open its workspace if we already know it as a Project (so you can
   // launch/manage its agents even with nothing live), else fall back to starting fresh there.
@@ -643,7 +728,13 @@ export function DashboardView() {
       if (config.permissionMode !== 'default') launchOptions.permissionMode = config.permissionMode
       if (config.model) launchOptions.model = config.model
       if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
-      if (config.prompt) launchOptions.initialPrompt = config.prompt
+      // "Launch dev server" → ask the agent (single session only; fan-out worktrees would
+      // collide on ports) to start it in the background on its reserved port, before any task.
+      const devInstr = config.launchDevServer && count === 1
+        ? "First, start this project's dev server in the BACKGROUND on the port Operator reserved for you (named in your system prompt — pass it via --port or the PORT env), and don't block the terminal on it."
+        : ''
+      const initial = [devInstr, config.prompt].filter(Boolean).join('\n\n')
+      if (initial) launchOptions.initialPrompt = initial
       if (opts?.orchestrationNote) launchOptions.orchestrationNote = opts.orchestrationNote
 
       const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
@@ -687,16 +778,17 @@ export function DashboardView() {
   // Orchestration: launch a session on a project's role (lane) — spawns in the project
   // root with the role's model/effort/permission and tags the session with roleId. An
   // optional `prompt` is handed to Claude as the first message (delegation).
-  const handleLaunchRole = useCallback((project: Project, role: Role, prompt?: string) => {
+  const handleLaunchRole = useCallback((project: Project, role: Role, prompt?: string, launchDevServer = false) => {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
     const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
-    // The agent picks up its assigned queued tasks as its opening work (and they leave the queue).
-    const queued = (project.tasks ?? []).filter((t) => t.roleId === role.id)
+    // The agent picks up its assigned QUEUED tasks as its opening work; they move to running
+    // (kept visible under this lane) rather than vanishing.
+    const queued = (project.tasks ?? []).filter((t) => t.roleId === role.id && (t.status ?? 'queued') === 'queued')
     const taskBlock = queued.length
       ? `Please work through these tasks:\n${queued.map((t, i) => `${i + 1}. ${t.text}`).join('\n')}`
       : ''
     const combined = [prompt?.trim(), taskBlock].filter(Boolean).join('\n\n')
-    if (queued.length) removeProjectTasks(project.id, queued.map((t) => t.id))
+    if (queued.length) markTasksRunning(project.id, queued.map((t) => t.id))
     void handleLaunchSession(
       project.path,
       {
@@ -705,6 +797,7 @@ export function DashboardView() {
         model: role.model,
         allowedTools: '',
         useWorktree: false,
+        launchDevServer,
         count: 1,
         prompt: combined,
       },
@@ -742,37 +835,37 @@ export function DashboardView() {
   const sendProjectTask = useCallback((project: Project, task: ProjectTask) => {
     const role = project.roster?.find((r) => r.id === task.roleId)
     if (!role) return
-    const live = terminals.some((t) => t.projectId === project.id && t.roleId === role.id)
-    if (live) {
+    const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === role.id)
+    if (liveTab) {
       dispatchToRole(project, role, task.text)
-      removeProjectTasks(project.id, [task.id])
+      markTasksRunning(project.id, [task.id], liveTab.id) // now running on this lane
     } else {
-      handleLaunchRole(project, role) // picks up its queue (incl. this task)
+      handleLaunchRole(project, role) // launch picks up its queue (incl. this task → running)
     }
-  }, [terminals, dispatchToRole, handleLaunchRole, removeProjectTasks])
+  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
 
-  // "Start all": dispatch every ASSIGNED queued task, grouped per lane — live lanes get the
-  // combined message, idle lanes launch and pick up their queue. Unassigned tasks stay put.
+  // "Start all": dispatch every ASSIGNED, still-QUEUED task, grouped per lane — live lanes get
+  // the combined message (→ running), idle lanes launch and pick up their queue.
   const startProjectTasks = useCallback((project: Project) => {
     const byRole = new Map<string, ProjectTask[]>()
     for (const t of project.tasks ?? []) {
-      if (!t.roleId) continue
+      if (!t.roleId || (t.status ?? 'queued') !== 'queued') continue
       const arr = byRole.get(t.roleId) ?? []
       arr.push(t); byRole.set(t.roleId, arr)
     }
     for (const [roleId, tasks] of byRole) {
       const role = project.roster?.find((r) => r.id === roleId)
       if (!role) continue
-      const live = terminals.some((t) => t.projectId === project.id && t.roleId === roleId)
-      if (live) {
+      const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === roleId)
+      if (liveTab) {
         const text = tasks.map((t, i) => `${i + 1}. ${t.text}`).join('\n')
         dispatchToRole(project, role, `Please work through these tasks:\n${text}`)
-        removeProjectTasks(project.id, tasks.map((t) => t.id))
+        markTasksRunning(project.id, tasks.map((t) => t.id), liveTab.id)
       } else {
         handleLaunchRole(project, role) // picks up its queue
       }
     }
-  }, [terminals, dispatchToRole, handleLaunchRole, removeProjectTasks])
+  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
 
   // Re-open a previously saved session. `resume` continues the prior Claude
   // conversation (--resume); otherwise it starts the agent clean in the same
@@ -855,6 +948,7 @@ export function DashboardView() {
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
     // Closing is intentional — forget the saved session so it won't offer to restore.
     if (tab) forgetSavedSession(tab.key)
+    if (tab?.projectId) completeTerminalTasks(terminalId, tab.roleId, tab.projectId) // its running tasks → done
     setTerminals((prev) => prev.filter((t) => t.id !== terminalId))
     setActiveTerminalId((current) => (current === terminalId ? null : current))
     setActiveSessionId((current) => {
@@ -865,7 +959,7 @@ export function DashboardView() {
     // Leave the session's settings view when its session is closed, so the main
     // area returns to the workspace instead of staying stuck in settings.
     setActiveFolderPrefs(null)
-  }, [terminals, forgetSavedSession])
+  }, [terminals, forgetSavedSession, completeTerminalTasks])
 
   const handleSelectSession = useCallback((session: AgentSession) => {
     const localTerminalIds = new Set(terminals.map((t) => t.id))
@@ -930,7 +1024,11 @@ export function DashboardView() {
     // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
     // badge) the moment the observer starts tracking it.
     const operatorFields = { projectId: t.projectId, roleId: t.roleId, model: t.model, effortLevel: t.effortLevel }
-    if (hookSession) return { ...hookSession, ...operatorFields }
+    // Model precedence: the tab's model (launch config / the user's pill pick — updated the
+    // instant they act) wins over the transcript, which lags an assistant turn behind and
+    // would otherwise revert a fresh /model switch. The transcript fills the blank for
+    // account-default launches, and transcript CHANGES are synced into the tab below.
+    if (hookSession) return { ...hookSession, ...operatorFields, model: t.model ?? hookSession.model }
     return {
       id: `local-${t.id}`,
       agentId: 'claude-code',
@@ -1081,6 +1179,23 @@ export function DashboardView() {
     window.operator.saveProjects?.(projects)
   }, [projects, savedHydrated])
 
+  // One-time top-up: existing projects (rosters created before Review/Design/QA) gain any
+  // missing DEFAULT roles, so the new lanes show up without recreating the project. Guarded by
+  // a flag so a role you later delete doesn't resurrect on the next launch.
+  useEffect(() => {
+    if (!savedHydrated) return
+    const FLAG = 'operator.rosterDefaults.v2'
+    try { if (localStorage.getItem(FLAG)) return } catch { return }
+    const defs = defaultRoster()
+    setProjects((prev) => prev.map((p) => {
+      if (!p.roster || p.roster.length === 0) return p // rosterless is seeded fresh elsewhere
+      const have = new Set(p.roster.map((r) => r.id))
+      const missing = defs.filter((d) => !have.has(d.id))
+      return missing.length ? { ...p, roster: [...p.roster, ...missing] } : p
+    }))
+    try { localStorage.setItem(FLAG, '1') } catch { /* quota */ }
+  }, [savedHydrated])
+
   // App version (shown next to the name) + a pending update (surfaced as a badge
   // in the sidebar, in addition to the toast).
   const [appVersion, setAppVersion] = useState('')
@@ -1181,6 +1296,10 @@ export function DashboardView() {
       } else if (e.key === 'j' || e.key === 'J') {
         e.preventDefault()
         toggleChat()
+      } else if (e.key === 'e' || e.key === 'E') {
+        // Quick-switch the Preview between Interact and Annotate.
+        e.preventDefault()
+        setPreviewAnnotate((v) => !v)
       } else if (e.key === 'w' || e.key === 'W') {
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
@@ -1209,6 +1328,23 @@ export function DashboardView() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
+
+  // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
+  // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise
+  // swallow Esc into the pty). With the hub closed there's no listener, so Esc reaches the
+  // main terminal normally (vim, etc.).
+  useEffect(() => {
+    if (!shellOpen) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        closeShell()
+      }
+    }
+    window.addEventListener('keydown', onEsc, { capture: true })
+    return () => window.removeEventListener('keydown', onEsc, { capture: true } as EventListenerOptions)
+  }, [shellOpen, closeShell])
 
   // Saved sessions not currently open — offered for restore on the splash & palette.
   const restorableSessions = useMemo(() => {
@@ -1247,6 +1383,30 @@ export function DashboardView() {
   const activeSession =
     allSidebarSessions.find((s) => s.id === activeSessionId) ??
     (activeTerminalId ? allSidebarSessions.find((s) => s.terminalId === activeTerminalId) : undefined)
+
+  // Adopt transcript-reported model CHANGES into the tab. The first report just fills the
+  // blank for account-default launches (handled by the ?? merge in localSessions); a change
+  // from one reported model to another means the model really switched mid-session (e.g. the
+  // user typed /model in the terminal, which Operator can't see) — adopt it so the sidebar
+  // label and composer pill follow. Keyed per terminal; skips the '<synthetic>' placeholder.
+  const lastTranscriptModelRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    const updates: Array<{ tid: string; model: string }> = []
+    for (const s of sessions) {
+      const tid = s.terminalId
+      if (!tid || !s.model || s.model.startsWith('<')) continue
+      const prev = lastTranscriptModelRef.current[tid]
+      lastTranscriptModelRef.current[tid] = s.model
+      if (prev && prev !== s.model) updates.push({ tid, model: s.model })
+    }
+    if (updates.length) {
+      setTerminals((prev) => prev.map((t) => {
+        const u = updates.find((x) => x.tid === t.id)
+        return u ? { ...t, model: u.model } : t
+      }))
+    }
+  }, [sessions])
+
   // Persist a chat-driven model/effort change onto the active session's tab (so it survives a
   // tab switch and is written into the durable SavedSession). Keyed by the active terminalId.
   const patchActiveTerminal = useCallback((patch: Partial<TerminalTab>) => {
@@ -1468,7 +1628,7 @@ export function DashboardView() {
               tab={projectView.tab}
               onSelectTab={(t) => setProjectView((prev) => (prev ? { ...prev, tab: t } : prev))}
               onUpdateProject={updateProject}
-              onLaunchRole={handleLaunchRole}
+              onLaunchRole={(project, role, dev) => handleLaunchRole(project, role, undefined, dev)}
               liveRoles={live}
               onFocusTerminal={focusTerminal}
               onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
@@ -1476,6 +1636,7 @@ export function DashboardView() {
               onRemoveTask={(taskId) => removeProjectTasks(proj.id, [taskId])}
               onSendTask={(task) => sendProjectTask(proj, task)}
               onStartAll={() => startProjectTasks(proj)}
+              onSetTaskStatus={(taskId, status) => setTaskStatus(proj.id, taskId, status)}
             />
           )
         })()}
@@ -1613,11 +1774,15 @@ export function DashboardView() {
                   const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
                   const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
                   const port = detected ?? reserved
+                  const projId = activeSession.projectId
                   return (
                     <AppPreviewPanel
                       url={port ? `http://localhost:${port}` : null}
                       storageKey={`main-${activeSession.id}`}
                       onDispatch={activeSession.terminalId ? (text) => window.operator.terminalWrite(activeSession.terminalId!, `\x1b[200~${text}\x1b[201~\r`) : undefined}
+                      onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
+                      annotate={previewAnnotate}
+                      onAnnotateChange={setPreviewAnnotate}
                     />
                   )
                 })()}

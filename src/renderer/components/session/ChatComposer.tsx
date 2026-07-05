@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { CSSProperties, ReactNode, ClipboardEvent as ReactClipboardEvent } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
+import { modelFamilyLabel as displayModel } from '../../lib/roster'
 
 // The chat composer — the two-way input for the reading panel. It drives the SAME Claude
 // Code session as the terminal (this is the hybrid path, not a terminal replacement): the
@@ -73,6 +74,14 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
     setModel(session?.model ?? null); setEffort(session?.effortLevel ?? null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id])
+
+  // Track the session's model as it changes: the first transcript report backfills an
+  // account-default launch, and a later change (a /model typed in the terminal, synced into
+  // the session upstream) updates the pill too. A pill pick round-trips through the same
+  // session.model, so following it never fights the user's own choice.
+  useEffect(() => {
+    if (session?.model) setModel(session.model)
+  }, [session?.model])
 
   // Revoke object URLs on unmount so previews don't leak.
   useEffect(() => () => { attachments.forEach((a) => URL.revokeObjectURL(a.url)) }, [attachments])
@@ -156,7 +165,8 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
     if (images.length) { e.preventDefault(); void attach(images) }
   }
 
-  const modelLabel = MODELS.find((m) => m.id === model)?.label
+  // Handles both the alias set (opus/sonnet/…) and a full transcript model id (claude-opus-…).
+  const modelLabel = model ? displayModel(model) : undefined
   const effortLabel = EFFORTS.find((m) => m.id === effort)?.label
 
   return (

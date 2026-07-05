@@ -9,6 +9,8 @@ declare global {
   interface Window {
     operator: {
       onSessionUpdate: (callback: (sessions: AgentSession[]) => void) => () => void
+      /** Orchestrator dispatch directives parsed from an agent's output. */
+      onOrchestratorDispatch: (callback: (d: { id: string; sessionId: string; terminalId: string; role: string; task: string }) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
       /** Full durable chat history (reading-panel answers) for a session, from SQLite. */
       chatHistory: (sessionId: string) => Promise<NarrationEntry[]>
@@ -92,6 +94,12 @@ declare global {
       moodboardList: (id: string) => Promise<string[]>
       moodboardImage: (id: string, name: string) => Promise<string>
       moodboardRemove: (id: string, name: string) => Promise<void>
+      /** Preview inspector window (Stage 3): open on the app URL with an injected inspector. */
+      previewInspectOpen: (url: string, x: number, y: number, w: number, h: number) => Promise<void>
+      previewInspectMove: (x: number, y: number, w: number, h: number) => void
+      previewInspectClose: () => void
+      /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */
+      onPreviewPick: (callback: (data: string) => void) => () => void
       /** Auto-update against the public releases feed. */
       getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>

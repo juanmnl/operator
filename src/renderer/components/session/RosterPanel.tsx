@@ -17,7 +17,7 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
 export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, onFocusTerminal }: {
   project?: Project
   onUpdateProject?: (id: string, patch: Partial<Project>) => void
-  onLaunchRole?: (project: Project, role: Role) => void
+  onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
   /** Focus an already-live lane's session (the "View" action). */
@@ -41,6 +41,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   }
 
   const roles = roster ?? []
+  // Whether launching an agent also has it start the project's dev server (so Preview works).
+  const [devServer, setDevServer] = useState(true)
   // Queued-task count per agent, so each card can show its backlog + a launch that picks it up.
   const taskCounts: Record<string, number> = {}
   for (const t of project.tasks ?? []) if (t.roleId) taskCounts[t.roleId] = (taskCounts[t.roleId] ?? 0) + 1
@@ -50,18 +52,23 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
     const name = 'New role'
     setRoles([...roles, { id: roleIdFrom(name + ' ' + (roles.length + 1), roles), name, model: 'sonnet', effort: 'high' }])
   }
-  const removeRole = (id: string) => setRoles(roles.filter((r) => r.id !== id))
+  // Removing a role also unassigns its queued tasks (back to the backlog) — otherwise they'd
+  // carry a stale roleId that no group matches and drop out of the queue UI.
+  const removeRole = (id: string) => onUpdateProject?.(project.id, {
+    roster: roles.filter((r) => r.id !== id),
+    tasks: (project.tasks ?? []).map((t) => (t.roleId === id ? { ...t, roleId: undefined } : t)),
+  })
 
   return (
     <div style={{ boxSizing: 'border-box', fontFamily: 'var(--font-body)' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
         <p style={{ flex: 1, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5, margin: 0 }}>
           Agents in <strong style={{ color: 'var(--fg)' }}>{project.name}</strong> — each pins a model. Launch one to
           start it, or view a live one.
         </p>
         {roles.length > 1 && onLaunchRole && (
           <button
-            onClick={() => roles.forEach((r) => onLaunchRole(project, r))}
+            onClick={() => roles.forEach((r) => onLaunchRole(project, r, devServer))}
             title="Spawn a session for every lane at once"
             style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em', color: 'var(--fg-muted)', background: 'transparent', border: '1px solid var(--border)', borderRadius: 7, padding: '3px 8px', cursor: 'pointer', outline: 'none' }}
           >
@@ -69,6 +76,21 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           </button>
         )}
       </div>
+
+      {/* Whether a launched agent also brings up the project's dev server (so Preview works). */}
+      <button
+        onClick={() => setDevServer((v) => !v)}
+        title="When launching an agent, have it start your dev server in the background"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginBottom: 14, padding: '4px 2px', background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)' }}
+      >
+        <span style={{
+          width: 14, height: 14, borderRadius: 3, flexShrink: 0, display: 'grid', placeItems: 'center',
+          background: devServer ? 'var(--accent)' : 'transparent', border: devServer ? 'none' : '1px solid var(--border)',
+        }}>
+          {devServer && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="var(--fg-on-accent)" strokeWidth="1.6" /></svg>}
+        </span>
+        <span style={{ fontSize: 10.5, color: 'var(--fg-muted)' }}>Launch dev server with agents</span>
+      </button>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {roles.map((role) => (
@@ -79,7 +101,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             queued={taskCounts[role.id] ?? 0}
             onPatch={(patch) => patchRole(role.id, patch)}
             onRemove={() => removeRole(role.id)}
-            onLaunch={() => onLaunchRole?.(project, role)}
+            onLaunch={() => onLaunchRole?.(project, role, devServer)}
             onView={() => { const tid = liveRoles?.[role.id]; if (tid) onFocusTerminal?.(tid) }}
           />
         ))}

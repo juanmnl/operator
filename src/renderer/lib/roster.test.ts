@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelLabel, ROSTER_MODELS } from './roster'
+import { defaultRoster, roleIdFrom, modelFamilyLabel, ROSTER_MODELS } from './roster'
 
 describe('roster', () => {
   it('seeds a default roster with unique ids and valid models', () => {
@@ -26,10 +26,10 @@ describe('roster', () => {
     expect(roleIdFrom('!!!', existing)).toBe('role')
   })
 
-  it('modelLabel maps aliases and falls back gracefully', () => {
-    expect(modelLabel('fable')).toBe('Fable')
-    expect(modelLabel('opus')).toBe('Opus')
-    expect(modelLabel('claude-x')).toBe('claude-x')
-    expect(modelLabel(undefined)).toBe('—')
+  it('modelFamilyLabel maps aliases and falls back gracefully', () => {
+    expect(modelFamilyLabel('fable')).toBe('Fable')
+    expect(modelFamilyLabel('opus')).toBe('Opus')
+    expect(modelFamilyLabel('claude-x')).toBe('claude-x')
+    expect(modelFamilyLabel(undefined)).toBe('—')
   })
 })

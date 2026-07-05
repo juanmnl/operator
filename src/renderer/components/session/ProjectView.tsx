@@ -15,13 +15,13 @@ const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodb
 export function ProjectView({
   project, tab, onSelectTab,
   onUpdateProject, onLaunchRole, liveRoles, onFocusTerminal,
-  onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll,
+  onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
 }: {
   project: Project
   tab: ProjectTab
   onSelectTab: (t: ProjectTab) => void
   onUpdateProject?: (id: string, patch: Partial<Project>) => void
-  onLaunchRole?: (project: Project, role: Role) => void
+  onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   liveRoles?: Record<string, string>
   onFocusTerminal?: (terminalId: string) => void
   onAddTask: (text: string, roleId?: string) => void
@@ -29,6 +29,7 @@ export function ProjectView({
   onRemoveTask: (taskId: string) => void
   onSendTask: (task: ProjectTask) => void
   onStartAll: () => void
+  onSetTaskStatus: (taskId: string, status: ProjectTask['status']) => void
 }) {
   const tabs: ProjectTab[] = ['roster', 'moodboard']
   return (
@@ -73,6 +74,7 @@ export function ProjectView({
               onRemoveTask={onRemoveTask}
               onSendTask={onSendTask}
               onStartAll={onStartAll}
+              onSetTaskStatus={onSetTaskStatus}
             />
           </div>
         )}

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
@@ -83,6 +84,10 @@ struct Track {
     active_subagents: i32,
     in_sidechain: bool,
     last_tool_name: Option<String>,
+    /// Model from the latest assistant message (the actual running model).
+    model: Option<String>,
+    /// Dispatch directives parsed from assistant text, drained + emitted by the tailer loop.
+    pending_dispatches: Vec<DispatchEvent>,
     last_stop_reason: Option<String>,
     last_was_user_prompt: bool,
     started_at: Option<String>,
@@ -112,6 +117,8 @@ impl Track {
             active_subagents: 0,
             in_sidechain: false,
             last_tool_name: None,
+            model: None,
+            pending_dispatches: vec![],
             last_stop_reason: None,
             last_was_user_prompt: false,
             started_at: None,
@@ -238,7 +245,11 @@ impl Track {
         if let Some(text) = user_prompt_text(content) {
             self.last_was_user_prompt = true;
             self.last_stop_reason = None;
-            if self.summary.is_none() {
+            // Skip injected plumbing turns (<local-command-caveat>, <command-name>,
+            // <system-reminder>, …) — Claude Code's machinery, not the user's words; they
+            // made ugly "<local-command-cavea…" session titles. Matched by exact prefix,
+            // NOT a bare '<' — a genuine prompt may start with markup ("<Modal> crashes").
+            if self.summary.is_none() && !is_injected_turn(&text) {
                 let line = first_line(&text, 60);
                 if !line.is_empty() {
                     self.summary = Some(line);
@@ -267,6 +278,18 @@ impl Track {
             None => return,
         };
         self.last_stop_reason = msg.get("stop_reason").and_then(|s| s.as_str()).map(|s| s.to_string());
+        // The assistant message carries the model that produced it — the real running model
+        // (even for account-default launches Operator didn't set). Remember the latest, but:
+        // skip sidechain (subagent) messages — a Haiku subagent must not relabel an Opus
+        // session — and skip "<synthetic>" (Claude Code's API-error placeholder).
+        let is_side = v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false);
+        if !is_side {
+            if let Some(m) = msg.get("model").and_then(|m| m.as_str()) {
+                if !m.is_empty() && !m.starts_with('<') {
+                    self.model = Some(m.to_string());
+                }
+            }
+        }
         let blocks = match msg.get("content").and_then(|c| c.as_array()) {
             Some(b) => b,
             None => return,
@@ -278,6 +301,20 @@ impl Track {
             if btype == "text" || btype == "thinking" {
                 let field = if btype == "thinking" { "thinking" } else { "text" };
                 if let Some(s) = b.get(field).and_then(|t| t.as_str()) {
+                    // Orchestrator dispatch directives (only from a real answer, not thinking).
+                    if btype == "text" {
+                        for (role, task) in parse_dispatches(s) {
+                            let id = dispatch_id(&self.session_id, &role, &task);
+                            self.pending_dispatches.push(DispatchEvent {
+                                id,
+                                session_id: self.session_id.clone(),
+                                terminal_id: self.terminal_id.clone(),
+                                role,
+                                task,
+                            });
+                            self.dirty = true;
+                        }
+                    }
                     if !s.trim().is_empty() {
                         self.push_narration(NarrationEntry {
                             kind: btype.to_string(),
@@ -371,6 +408,7 @@ impl Track {
             self.last_tool_name.clone(),
             self.started_at.clone().unwrap_or_else(|| self.last_activity_at.clone()),
             self.last_activity_at.clone(),
+            self.model.clone(),
         )
     }
 }
@@ -466,6 +504,73 @@ fn cache_image(b64: &str, media: &str) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
+// --- Orchestrator dispatch ------------------------------------------------------------------
+// A lead ("orchestrator") agent hands work to another lane by emitting a directive line in its
+// answer: `OPERATOR-DISPATCH [<role-id>] <task>`. The tailer detects these and the frontend
+// routes each to the target lane (send to its live session, or queue it as a task). This is
+// the cheap-but-real dispatch loop — the model prints a marker, Operator does the routing.
+
+/// An emitted dispatch directive. `id` is a stable content hash so the frontend can dedupe
+/// re-reads of the transcript (relaunch) without double-dispatching.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchEvent {
+    id: String,
+    session_id: String,
+    terminal_id: String,
+    role: String,
+    task: String,
+}
+
+/// Parse `OPERATOR-DISPATCH [<role>] <task>` directives out of an assistant text block.
+/// Returns (role, task) pairs; ignores malformed lines. Kept liberal on the role charset so
+/// a hand-named role id still routes (the frontend validates against the live roster).
+fn parse_dispatches(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let l = line.trim();
+        let rest = match l.strip_prefix("OPERATOR-DISPATCH") {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        if !rest.starts_with('[') {
+            continue;
+        }
+        let close = match rest.find(']') {
+            Some(i) => i,
+            None => continue,
+        };
+        let role = rest[1..close].trim().to_string();
+        let task = rest[close + 1..].trim().trim_start_matches(':').trim().to_string();
+        if !role.is_empty() && !task.is_empty() {
+            out.push((role, task));
+        }
+    }
+    out
+}
+
+/// Stable id for a dispatch, so a re-read of the same transcript line doesn't re-fire it.
+fn dispatch_id(session_id: &str, role: &str, task: &str) -> String {
+    // Cheap FNV-1a over the tuple — deterministic across relaunches.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in session_id.bytes().chain(b"|".iter().copied()).chain(role.bytes()).chain(b"|".iter().copied()).chain(task.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Claude Code's injected plumbing turns that masquerade as user prompts. Mirrors the
+/// frontend filter in lib/format.ts (isInjectedTurn) — keep the two prefix lists in sync.
+fn is_injected_turn(text: &str) -> bool {
+    const PREFIXES: [&str; 7] = [
+        "<local-command-", "<command-name>", "<command-message>", "<command-args>",
+        "<system-reminder>", "<task-notification>", "<synthetic>",
+    ];
+    let t = text.trim_start();
+    PREFIXES.iter().any(|p| t.starts_with(p))
+}
+
 fn user_prompt_text(content: Option<&Value>) -> Option<String> {
     match content {
         Some(Value::String(s)) => Some(s.clone()),
@@ -521,6 +626,13 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 if !t.pending.is_empty() {
                     app.state::<Arc<ChatStore>>().append(&t.session_id, &t.pending);
                     t.pending.clear();
+                }
+                // Emit any orchestrator dispatch directives; the frontend dedupes by id and
+                // routes each to its target lane (send to a live session, or queue a task).
+                if !t.pending_dispatches.is_empty() {
+                    for d in t.pending_dispatches.drain(..) {
+                        let _ = app.emit("operator:dispatch", &d);
+                    }
                 }
                 if !alive {
                     t.ended = true;
@@ -615,6 +727,32 @@ mod tests {
     #[test]
     fn derive_phase_running_when_tool_open() {
         assert_eq!(derive_phase(true, None, false), "running");
+    }
+
+    #[test]
+    fn parse_dispatches_extracts_role_and_task() {
+        let text = "Here is the plan.\nOPERATOR-DISPATCH [code] Fix the login button alignment\nOPERATOR-DISPATCH [research]: why is the list slow?\nnot a directive";
+        let d = parse_dispatches(text);
+        assert_eq!(d, vec![
+            ("code".to_string(), "Fix the login button alignment".to_string()),
+            ("research".to_string(), "why is the list slow?".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn parse_dispatches_ignores_malformed() {
+        assert!(parse_dispatches("OPERATOR-DISPATCH no brackets").is_empty());
+        assert!(parse_dispatches("OPERATOR-DISPATCH [code]").is_empty()); // no task
+        assert!(parse_dispatches("OPERATOR-DISPATCH [] task").is_empty()); // no role
+        assert!(parse_dispatches("just prose about OPERATOR-DISPATCH mid-line").is_empty());
+    }
+
+    #[test]
+    fn dispatch_id_is_stable_and_distinct() {
+        let a = dispatch_id("s1", "code", "task");
+        assert_eq!(a, dispatch_id("s1", "code", "task"));
+        assert_ne!(a, dispatch_id("s1", "code", "task2"));
+        assert_ne!(a, dispatch_id("s2", "code", "task"));
     }
 
     #[test]

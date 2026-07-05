@@ -4,6 +4,8 @@ import type { SavedSession, Project } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
+import { modelFamilyLabel } from '../../lib/roster'
+import { isInjectedTurn } from '../../lib/format'
 
 interface SidebarProps {
   sessions: AgentSession[]
@@ -552,10 +554,19 @@ function FolderGroup({
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
         const role = session.roleId ? roster?.find((r) => r.id === session.roleId) : undefined
-        // Default name: the role (orchestration lane), else the agent-derived summary, else a
-        // generic "Session". A custom name always wins.
+        // Default name: the role (orchestration lane) if launched on one; otherwise the model
+        // it's running (Opus/Sonnet/…) — cleaner than the transcript summary, which can pick up
+        // Claude's <local-command-*> reminder text. Summary/"Session" only when neither is known.
         const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
-        const defaultLabel = role?.name || session.summary || autoName
+        // '<synthetic>' is Claude Code's API-error placeholder — never a display name.
+        const modelName = session.model && !session.model.startsWith('<') ? modelFamilyLabel(session.model) : undefined
+        // The transcript summary can capture Claude Code's injected plumbing turns instead of
+        // the real prompt — filter exactly those (a genuine prompt may legitimately start
+        // with '<', e.g. "<Modal> crashes on mount").
+        const cleanSummary = session.summary && !isInjectedTurn(session.summary) ? session.summary : undefined
+        // Default name: role (lane) → the user's first prompt → the running model → generic.
+        // Summary before model so parallel same-model sessions stay distinguishable.
+        const defaultLabel = role?.name || cleanSummary || modelName || autoName
         const labelIsRole = !customName && !!role
         return (
           <SessionItem

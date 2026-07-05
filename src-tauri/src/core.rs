@@ -81,6 +81,11 @@ pub struct AgentSession {
     terminal_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     permission_mode: Option<String>,
+    /// Model reported by the transcript (assistant messages carry it) — the ACTUAL running
+    /// model, even when the session was launched on the account default. Full id, e.g.
+    /// "claude-opus-4-…"; the frontend maps it to a family label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 pub fn now_iso() -> String {
@@ -229,6 +234,7 @@ impl AgentSession {
         last_tool_name: Option<String>,
         started_at: String,
         last_activity_at: String,
+        model: Option<String>,
     ) -> AgentSession {
         let project_name = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
         AgentSession {
@@ -248,6 +254,7 @@ impl AgentSession {
             last_activity_at,
             terminal_id: Some(terminal_id),
             permission_mode,
+            model,
         }
     }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { relativeTime, fmtCost, fmtTokens, modelLabel, fmtDuration, fmtDur } from './format'
+import { relativeTime, fmtCost, fmtTokens, modelLabel, fmtDuration, fmtDur, isInjectedTurn } from './format'
 
 // relativeTime is anchored to Date.now(); build isos as offsets from "now" so the
 // tests are deterministic regardless of wall-clock.
@@ -69,5 +69,18 @@ describe('fmtDur', () => {
     expect(fmtDur(35_000)).toBe('35s') // no decimal from 10s
     expect(fmtDur(60_000)).toBe('1m') // exact minute drops seconds
     expect(fmtDur(65_000)).toBe('1m 5s')
+  })
+})
+
+describe('isInjectedTurn', () => {
+  it('matches Claude Code plumbing turns by exact prefix', () => {
+    expect(isInjectedTurn('<local-command-caveat>Caveat: …')).toBe(true)
+    expect(isInjectedTurn('  <command-name>/model</command-name>')).toBe(true)
+    expect(isInjectedTurn('<system-reminder>…')).toBe(true)
+    expect(isInjectedTurn('<synthetic>')).toBe(true)
+  })
+  it('does NOT match genuine prompts that merely start with markup', () => {
+    expect(isInjectedTurn('<Modal> crashes on mount, why?')).toBe(false)
+    expect(isInjectedTurn('fix the header')).toBe(false)
   })
 })

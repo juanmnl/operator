@@ -140,6 +140,12 @@ export function installBridge(): void {
       const p = listen('session:update', (e) => cb(e.payload))
       return () => { void p.then((f) => f()) }
     },
+    // Orchestrator dispatch: an agent emitted `OPERATOR-DISPATCH [role] task`; the tailer
+    // parsed it and fires this so the frontend can route it to the target lane.
+    onOrchestratorDispatch: (cb: (d: { id: string; sessionId: string; terminalId: string; role: string; task: string }) => void): Unsub => {
+      const p = listen('operator:dispatch', (e) => cb(e.payload as { id: string; sessionId: string; terminalId: string; role: string; task: string }))
+      return () => { void p.then((f) => f()) }
+    },
     getSessions: () => invoke('get_sessions'),
     // Full durable chat history for a session (reading-panel answers) from the SQLite
     // store — the whole conversation, not just the bounded tail in session:update.
@@ -245,6 +251,14 @@ export function installBridge(): void {
     moodboardList: (id: string) => invoke('moodboard_list', { id }) as Promise<string[]>,
     moodboardImage: (id: string, name: string) => invoke('moodboard_image', { id, name }) as Promise<string>,
     moodboardRemove: (id: string, name: string) => invoke('moodboard_remove', { id, name }) as Promise<void>,
+    // Preview inspector (Stage 3 spike): a webview on the app's URL with an injected inspector.
+    previewInspectOpen: (url: string, x: number, y: number, w: number, h: number) => invoke('preview_inspect_open', { url, x, y, w, h }) as Promise<void>,
+    previewInspectMove: (x: number, y: number, w: number, h: number) => { void invoke('preview_inspect_move', { x, y, w, h }) },
+    previewInspectClose: () => { void invoke('preview_inspect_close') },
+    onPreviewPick: (cb: (data: string) => void): Unsub => {
+      const p = listen('preview:pick', (e) => cb(e.payload as string))
+      return () => { void p.then((f) => f()) }
+    },
 
     // Auto-update: check the public releases feed; install + relaunch on demand.
     getVersion: () => getVersion(),

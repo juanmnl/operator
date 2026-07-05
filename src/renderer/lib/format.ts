@@ -30,9 +30,22 @@ export function fmtTokens(n: number): string {
   return `${n}`
 }
 
-/** Display label for a model id: strips the "claude-" prefix, dashes → spaces. */
+/** Display label for a model id: strips the "claude-" prefix, dashes → spaces.
+ *  (Id-style, for the usage view. For a family label — "Opus"/"Sonnet" — see
+ *  lib/roster's modelFamilyLabel.) */
 export function modelLabel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-/g, ' ')
+}
+
+/** True for Claude Code's injected plumbing turns (<local-command-*>, <command-*>,
+ *  <system-reminder>, …) that masquerade as user prompts in the transcript. Mirrors the
+ *  backend filter in transcript.rs — keep the two prefix lists in sync. A genuine prompt
+ *  may legitimately start with '<' ("<Modal> crashes on mount"), so match exact prefixes,
+ *  not just the bracket. */
+const INJECTED_PREFIXES = ['<local-command-', '<command-name>', '<command-message>', '<command-args>', '<system-reminder>', '<task-notification>', '<synthetic>']
+export function isInjectedTurn(text: string): boolean {
+  const t = text.trimStart()
+  return INJECTED_PREFIXES.some((p) => t.startsWith(p))
 }
 
 /** Coarse duration for the usage view: — / 45s / 12m / 2h 30m. Non-positive → em dash. */

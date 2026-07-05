@@ -7,6 +7,8 @@ export interface SessionConfig {
   model: string
   allowedTools: string
   useWorktree: boolean
+  /** Ask the agent to start the project's dev server on launch (so Preview works right away). */
+  launchDevServer: boolean
   /** Number of parallel agents to fan the task out to (1 = a single session). */
   count: number
   /** Initial task submitted to every agent on launch (required when count > 1). */
@@ -54,6 +56,7 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
   const [useWorktree, setUseWorktree] = useState(false)
+  const [launchDevServer, setLaunchDevServer] = useState(true)
   const [count, setCount] = useState(1)
   const [prompt, setPrompt] = useState('')
   const projectName = cwd.split('/').pop() || cwd
@@ -76,6 +79,7 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
       effortLevel, permissionMode, model, allowedTools,
       // Fan-out requires per-agent isolation, so worktrees are forced on.
       useWorktree: (useWorktree || fanning) && !!repoInfo?.isRepo,
+      launchDevServer,
       count, prompt: prompt.trim(),
     })
   }
@@ -212,6 +216,40 @@ export function NewSessionPanel({ cwd, onLaunch, onCancel }: NewSessionPanelProp
             </button>
           </div>
         )}
+
+        {/* Launch dev server — ask the agent to start it on launch so Preview works right away. */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Preview</label>
+          <button
+            onClick={() => setLaunchDevServer(!launchDevServer)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+              background: launchDevServer ? 'var(--overlay-subtle)' : 'var(--bg-terminal)',
+              border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+            }}
+          >
+            <div style={{
+              width: 14, height: 14, borderRadius: 3,
+              background: launchDevServer ? 'var(--accent)' : 'transparent',
+              border: launchDevServer ? 'none' : '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              {launchDevServer && (
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M2 5l2 2 4-4" stroke="var(--fg-on-accent)" strokeWidth="1.6" fill="none" />
+                </svg>
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Launch dev server</div>
+              <div style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, marginTop: 1 }}>
+                {launchDevServer
+                  ? 'The agent starts your dev server on its reserved port, in the background'
+                  : 'Start it yourself when you need the Preview'}
+              </div>
+            </div>
+          </button>
+        </div>
 
         {/* Fan-out: run the same task on N parallel agents (git repos only) */}
         {repoInfo?.isRepo && (
