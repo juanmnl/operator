@@ -928,15 +928,80 @@ const INSPECTOR_JS: &str = r#"
     }
     return { component: comp, source: src ? (src.fileName + ':' + src.lineNumber) : null };
   }
-  function invoke(cmd, args) {
-    var i = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke)
-         || (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
-    if (!i) return false;
-    try { i(cmd, args); return true; } catch (e) { return false; }
+  // Send the picked element + note back to Operator. A remote embedded webview can't route command
+  // IPC (the ACL denies it) — but a request to our registered custom scheme is never ACL-gated. So
+  // we beacon via an <img> to operatorpick://, URL-safe-base64-encoding the JSON payload.
+  function b64(str) { return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function beacon(data, onOk, onFail) {
+    try {
+      var im = new Image();
+      im.onload = onOk; im.onerror = onFail;
+      im.src = 'operatorpick://ipc?d=' + b64(JSON.stringify(data)) + '&t=' + Date.now();
+    } catch (e) { onFail(); }
+  }
+  // ---- Floating compose card next to the clicked element (annotate-style, not a bottom bar).
+  var composing = false;
+  function removeCompose() { var c = document.getElementById('__op_compose'); if (c) c.remove(); composing = false; }
+  function showCompose(el) {
+    removeCompose(); composing = true;
+    box.style.display = 'none'; label.style.display = 'none';
+    var s = source(el), r = el.getBoundingClientRect();
+    var data = {
+      selector: selector(el), tag: el.tagName.toLowerCase(),
+      text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+      component: s.component, source: s.source, route: location.pathname, message: '',
+    };
+    var card = document.createElement('div');
+    card.id = '__op_compose';
+    var W = 288;
+    var left = Math.min(Math.max(8, r.left), window.innerWidth - W - 8);
+    var top = r.bottom + 8; if (top > window.innerHeight - 130) top = Math.max(8, r.top - 130);
+    card.style.cssText = 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + W + 'px;z-index:2147483647;box-sizing:border-box;background:#0b0d10;border:1px solid #2a2a35;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,0.55)';
+    var chip = document.createElement('div');
+    chip.textContent = '⧉ ' + (data.component || data.tag) + (data.source ? ' @ ' + data.source.split('/').pop() : '');
+    chip.title = data.source || data.selector;
+    chip.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#7ee787';
+    var inp = document.createElement('textarea');
+    inp.placeholder = 'What should change about this element?';
+    inp.rows = 2;
+    inp.style.cssText = 'width:100%;box-sizing:border-box;resize:none;font:13px ui-sans-serif,system-ui;background:#15171c;color:#e6e6e6;border:1px solid #2a2a35;border-radius:6px;outline:none;padding:6px 8px';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px';
+    function mkBtn(txt, primary) {
+      var b = document.createElement('button');
+      b.textContent = txt;
+      b.style.cssText = 'font:600 11px ui-sans-serif;border-radius:6px;padding:6px 10px;cursor:pointer;border:1px solid ' +
+        (primary ? 'transparent;color:#0b0d10;background:#7ee787' : 'rgba(126,231,135,0.4);color:#7ee787;background:transparent');
+      return b;
+    }
+    var toConsole = mkBtn('→ Console', false);
+    var toTasks = mkBtn('→ Tasks', true);
+    var spacer = document.createElement('span'); spacer.style.cssText = 'flex:1';
+    var cancel = document.createElement('button');
+    cancel.textContent = '✕';
+    cancel.style.cssText = 'color:#8a8f98;background:transparent;border:none;cursor:pointer;font-size:15px;line-height:1;padding:2px 4px';
+    function submit(target) {
+      data.message = inp.value.trim(); data.target = target;
+      toConsole.disabled = toTasks.disabled = true;
+      beacon(data,
+        function () { removeCompose(); },
+        function () { chip.textContent = '✗ could not reach Operator'; chip.style.color = '#ff6b6b'; toConsole.disabled = toTasks.disabled = false; });
+    }
+    toConsole.onclick = function () { submit('console'); };
+    toTasks.onclick = function () { submit('tasks'); };
+    cancel.onclick = removeCompose;
+    inp.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit('tasks'); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); removeCompose(); }
+    });
+    row.appendChild(toConsole); row.appendChild(toTasks); row.appendChild(spacer); row.appendChild(cancel);
+    card.appendChild(chip); card.appendChild(inp); card.appendChild(row);
+    document.documentElement.appendChild(card);
+    inp.focus();
   }
   if (document.body) mk(); else document.addEventListener('DOMContentLoaded', mk);
   document.addEventListener('mousemove', function (e) {
-    if (!box) return;
+    if (!box || composing) return;
     var el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el || el === box || el === label) { box.style.display = 'none'; label.style.display = 'none'; return; }
     var r = el.getBoundingClientRect();
@@ -945,29 +1010,22 @@ const INSPECTOR_JS: &str = r#"
     label.textContent = name(el); label.style.borderColor = ''; label.style.color = '#7ee787';
     label.style.display = 'block'; label.style.left = r.left + 'px'; label.style.top = Math.max(0, r.top - 20) + 'px';
   }, true);
-  // Click SELECTS the element (doesn't activate the app) and reports it back to Operator.
+  // Click SELECTS the element (doesn't activate the app) and opens the in-window compose bar.
   document.addEventListener('click', function (e) {
-    if (!box) return;
+    if (!box || composing) return;
     var el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el || el === box || el === label) return;
     e.preventDefault(); e.stopPropagation();
-    var s = source(el);
-    var ok = invoke('preview_inspect_pick', { data: JSON.stringify({
-      selector: selector(el), tag: el.tagName.toLowerCase(),
-      text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
-      component: s.component, source: s.source,
-      route: location.pathname,
-    }) });
-    // Visible feedback so we can SEE whether the IPC channel worked (spike diagnostic).
-    label.textContent = ok ? '✓ sent to Operator' : '✗ no Operator IPC';
-    label.style.color = ok ? '#7ee787' : '#ff6b6b';
-    label.style.display = 'block';
+    showCompose(el);
   }, true);
 })();
 "#;
 
-/// Embed (or reposition) the inspector: a native child webview on the running app's URL,
-/// placed over the preview panel at the frontend-measured rect (logical px, window-relative).
+/// Embed (or reposition) the inspector: a native child webview on the running app's URL, placed
+/// OVER the preview panel at the frontend-measured rect (logical px, window-relative) so it reads
+/// as inline. The injected inspector script reads the DOM (which a cross-origin iframe can't) and
+/// beacons picks back over the `operatorpick://` scheme (a remote embedded webview can't route
+/// command IPC, but a custom-scheme request is never ACL-gated).
 #[tauri::command]
 fn preview_inspect_open(app: AppHandle, url: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
     use tauri::{LogicalPosition, LogicalSize};
@@ -985,7 +1043,7 @@ fn preview_inspect_open(app: AppHandle, url: String, x: f64, y: f64, w: f64, h: 
     Ok(())
 }
 
-/// Reposition the embedded inspector as the panel resizes.
+/// Reposition the embedded inspector as the preview panel resizes.
 #[tauri::command]
 fn preview_inspect_move(app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
     use tauri::{LogicalPosition, LogicalSize};
@@ -1000,13 +1058,6 @@ fn preview_inspect_close(app: AppHandle) {
     if let Some(wv) = app.get_webview("inspector") {
         let _ = wv.close();
     }
-}
-
-/// The inspector's injected script calls this when the user clicks an element; re-broadcast to
-/// the main window (which turns it into an annotation/task). `data` is the JSON payload string.
-#[tauri::command]
-fn preview_inspect_pick(app: AppHandle, data: String) {
-    let _ = app.emit("preview:pick", data);
 }
 
 fn chat_db_file() -> std::path::PathBuf {
@@ -1333,6 +1384,38 @@ fn start_stall_watchdog(hb: Arc<Mutex<Instant>>) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Beacon channel for the embedded preview inspector: its injected script can't route
+        // command IPC (a remote embedded webview is ACL-denied), so it sends a picked element +
+        // note as `operatorpick://ipc?d=<url-safe-base64 JSON>`. Custom schemes bypass the ACL.
+        .register_uri_scheme_protocol("operatorpick", |ctx, req| {
+            use base64::Engine;
+            let uri = req.uri().to_string();
+            if let Some(q) = uri.split('?').nth(1) {
+                for pair in q.split('&') {
+                    if let Some(v) = pair.strip_prefix("d=") {
+                        if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(v) {
+                            if let Ok(json) = String::from_utf8(bytes) {
+                                let _ = ctx.app_handle().emit("preview:pick", json);
+                            }
+                        }
+                    }
+                }
+            }
+            // A 1×1 transparent GIF so the beacon <img> fires `onload` on success (→ the card gets
+            // honest feedback; `onerror` means the request was blocked, e.g. by the page's CSP).
+            const GIF_1PX: &[u8] = &[
+                0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c,
+                0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
+            ];
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Content-Type", "image/gif")
+                .header("Cache-Control", "no-store")
+                .body(GIF_1PX.to_vec())
+                .unwrap()
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1421,7 +1504,6 @@ pub fn run() {
             preview_inspect_open,
             preview_inspect_move,
             preview_inspect_close,
-            preview_inspect_pick,
             save_pasted_image,
             set_dock_icon,
             chat_history,

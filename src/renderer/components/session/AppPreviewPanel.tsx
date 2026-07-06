@@ -162,8 +162,9 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
   // in-app navigation the user did afterwards).
   const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
 
-  // Embed the native inspector webview over the frame while inspecting; close on off / url
-  // change / unmount (leaving Preview). Re-runs on `display` so it follows a URL change.
+  // Inspect embeds a native webview OVER the frame (inline). It reads the app's DOM (a cross-origin
+  // iframe can't) → hover-outline + a floating compose card next to the clicked element. Close on
+  // toggle-off / url change / unmount. Re-runs on `display` so it follows a URL change.
   useEffect(() => {
     if (!inspecting || !display) { window.operator.previewInspectClose?.(); return }
     const el = frameWrapRef.current
@@ -172,37 +173,31 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
     void window.operator.previewInspectOpen?.(display, r.left, r.top, r.width, r.height)
     return () => { window.operator.previewInspectClose?.() }
   }, [inspecting, display])
-  // Keep it aligned as the frame resizes (`box` updates via the ResizeObserver below).
+  // Keep the embedded inspector aligned to the frame as the panel resizes.
   useEffect(() => {
     if (!inspecting) return
-    const el = frameWrapRef.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    window.operator.previewInspectMove?.(r.left, r.top, r.width, r.height)
+    const id = requestAnimationFrame(() => {
+      const el = frameWrapRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      window.operator.previewInspectMove?.(r.left, r.top, r.width, r.height)
+    })
+    return () => cancelAnimationFrame(id)
   }, [box, inspecting])
-
-  // A picked element awaiting a message. Clicking one in the inspector fires preview:pick;
-  // we capture it and show a compose bar (element chip + your message → Console / Tasks).
-  const [pick, setPick] = useState<null | { selector?: string; tag?: string; text?: string; component?: string | null; source?: string | null }>(null)
-  const [pickMsg, setPickMsg] = useState('')
+  // The inspector's floating card composes the note itself and beacons preview:pick with the final
+  // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
     const unsub = window.operator.onPreviewPick?.((data) => {
-      try { setPick(JSON.parse(data)); setPickMsg('') } catch { /* ignore */ }
+      try {
+        const p = JSON.parse(data) as { selector?: string; tag?: string; text?: string; component?: string | null; source?: string | null; message?: string; target?: 'console' | 'tasks' }
+        const who = p.component || p.tag || 'element'
+        const loc = p.source ? `${who} @ ${p.source}` : `${who}${p.selector ? ` (${p.selector})` : ''}`
+        const msg = `${(p.message || '').trim()}\n\n↳ ${loc}${p.text ? ` — “${p.text}”` : ''}`.trim()
+        if (p.target === 'console') onDispatch?.(msg); else onSendToTasks?.(msg)
+      } catch { /* ignore */ }
     })
     return () => unsub?.()
-  }, [])
-  useEffect(() => { if (!inspecting) setPick(null) }, [inspecting])
-  const pickLoc = (p: NonNullable<typeof pick>) => {
-    const who = p.component || p.tag || 'element'
-    return p.source ? `${who} @ ${p.source}` : `${who}${p.selector ? ` (${p.selector})` : ''}`
-  }
-  const sendPick = (target: 'console' | 'tasks') => {
-    if (!pick) return
-    const loc = pickLoc(pick)
-    const msg = `${pickMsg.trim()}\n\n↳ ${loc}${pick.text ? ` — “${pick.text}”` : ''}`.trim()
-    if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg)
-    setPick(null); setPickMsg('')
-  }
+  }, [onDispatch, onSendToTasks])
 
   const onOverlayDown = (e: React.MouseEvent) => {
     const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
@@ -329,7 +324,7 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
             {display && (
               <button
                 onClick={() => setInspecting((v) => !v)}
-                title={inspecting ? 'Stop inspecting' : 'Inspect elements — hover to outline, click to capture'}
+                title={inspecting ? 'Stop inspecting' : 'Inspect elements — hover to outline, click to add a note → Console / Tasks'}
                 style={{ ...previewBtn, width: 'auto', padding: '0 8px', fontSize: 10.5,
                   color: inspecting ? 'var(--accent)' : 'var(--fg-muted)',
                   borderColor: inspecting ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)' }}
@@ -340,27 +335,6 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
         <button onClick={() => setNonce((n) => n + 1)} title="Reload preview" style={previewBtn}>⟳</button>
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
       </div>
-
-      {/* Compose bar for a picked element: sits above the frame (so it's not under the native
-          inspector webview, which repositions below it as the frame shrinks). */}
-      {pick && (
-        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', background: 'var(--overlay-subtle)' }}>
-          <span title={pick.selector || ''} style={{ flexShrink: 0, maxWidth: 220, display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 40%, var(--border))', borderRadius: 6, padding: '3px 7px', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-            ⧉ {pickLoc(pick)}
-          </span>
-          <input
-            autoFocus
-            value={pickMsg}
-            onChange={(e) => setPickMsg(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); sendPick(onSendToTasks ? 'tasks' : 'console') } if (e.key === 'Escape') setPick(null) }}
-            placeholder="What should change about this element?"
-            style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-body)', fontSize: 12, background: 'transparent', color: 'var(--fg)', border: 'none', outline: 'none' }}
-          />
-          {onDispatch && <button onClick={() => sendPick('console')} title="Send to the Console" style={sendBtn}>→ Console</button>}
-          {onSendToTasks && <button onClick={() => sendPick('tasks')} title="Add as a task" style={sendBtn}>→ Tasks</button>}
-          <button onClick={() => setPick(null)} title="Discard" style={{ ...previewBtn, width: 22, height: 22 }}>✕</button>
-        </div>
-      )}
 
       {reach === 'up' && display ? (
         <div ref={frameWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: '#fff', position: 'relative' }}>

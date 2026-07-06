@@ -33,8 +33,22 @@ export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
           fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
         }}>
           <span style={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>plan · <b style={{ color: 'var(--accent)', fontWeight: 700 }}>{done}</b>/{agentTodos.length}</span>
-          <span style={{ marginLeft: 'auto', width: 90, height: 4, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden' }}>
-            <span style={{ display: 'block', height: '100%', width: `${agentTodos.length ? (done / agentTodos.length) * 100 : 0}%`, background: 'var(--accent)', transition: 'width 0.2s' }} />
+          {/* One vertical pill per task: filled = done, mid = in progress, faint = pending. */}
+          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3, maxWidth: 190, overflow: 'hidden' }}>
+            {agentTodos.map((t, i) => (
+              <span
+                key={i}
+                title={`${t.content} — ${t.status.replace('_', ' ')}`}
+                style={{
+                  width: 5, height: 12, borderRadius: 3, flexShrink: 0, transition: 'background 0.2s',
+                  background: t.status === 'completed'
+                    ? 'var(--accent)'
+                    : t.status === 'in_progress'
+                      ? 'color-mix(in srgb, var(--accent) 55%, var(--overlay-subtle))'
+                      : 'var(--overlay-subtle)',
+                }}
+              />
+            ))}
           </span>
         </div>
       )}
