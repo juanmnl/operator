@@ -229,11 +229,16 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
     setDraft(null)
   }
   const deleteDraft = () => { if (draft) persistAnn(annotations.filter((a) => a.id !== draft.id)); setDraft(null) }
-  const send = (target: 'console' | 'tasks') => {
-    const msg = composeMessage(annotations, route, { w: box.w, h: box.h })
-    if (!msg) return
-    if (target === 'tasks') onSendToTasks?.(msg)
-    else onDispatch?.(msg)
+  // Send THIS annotation (the one in the open card) to the Console or Tasks — same self-contained
+  // pattern as the Inspect card. Persist it first so it stays in the punch-list, then dispatch.
+  const dispatchDraft = (target: 'console' | 'tasks') => {
+    if (!draft) return
+    const one: Annotation = { id: draft.id, xPct: draft.xPct, yPct: draft.yPct, wPct: draft.wPct, hPct: draft.hPct, note: draft.note, route, createdAt: new Date().toISOString() }
+    const exists = annotations.some((a) => a.id === draft.id)
+    persistAnn(exists ? annotations.map((a) => (a.id === draft.id ? { ...a, note: draft.note } : a)) : [...annotations, one])
+    const msg = composeMessage([one], route, { w: box.w, h: box.h })
+    if (msg) { if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg) }
+    setDraft(null)
   }
 
   return (
@@ -312,12 +317,6 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
                 )
               })}
             </span>
-            {annotating && annotations.length > 0 && (
-              <>
-                {onDispatch && <button onClick={() => send('console')} title="Send the feedback to the Console now" style={sendBtn}>→ Console</button>}
-                {onSendToTasks && <button onClick={() => send('tasks')} title="Add the feedback as a task in the queue (assign to a lane later)" style={sendBtn}>→ Tasks</button>}
-              </>
-            )}
             {/* Inspect: embeds an Operator-owned webview over the frame with a DOM inspector —
                 hover to outline the real element, click to capture it (component@file:line).
                 Cross-origin blocks this in the iframe, so it's a native child webview. */}
@@ -358,16 +357,16 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
             )
           })()}
 
-          {/* Annotation markers — numbered pins / boxes over the preview, always visible so
-              the feedback set reads as a punch-list; clickable to edit only while annotating. */}
-          {annotations.map((a, i) => (
+          {/* Annotation markers — numbered pins / boxes over the preview. Only shown while
+              annotating: switching to Interact reveals the clean app (no leftover boxes). */}
+          {annotating && annotations.map((a, i) => (
             <div
               key={a.id}
-              onClick={annotating ? (e) => { e.stopPropagation(); setDraft({ id: a.id, xPct: a.xPct, yPct: a.yPct, wPct: a.wPct, hPct: a.hPct, note: a.note, isNew: false }) } : undefined}
+              onClick={(e) => { e.stopPropagation(); setDraft({ id: a.id, xPct: a.xPct, yPct: a.yPct, wPct: a.wPct, hPct: a.hPct, note: a.note, isNew: false }) }}
               title={a.note || `Note ${i + 1}`}
               style={{
                 position: 'absolute', zIndex: 3, left: `${a.xPct}%`, top: `${a.yPct}%`,
-                pointerEvents: annotating ? 'auto' : 'none', cursor: annotating ? 'pointer' : 'default',
+                pointerEvents: 'auto', cursor: 'pointer',
                 ...(a.wPct != null ? { width: `${a.wPct}%`, height: `${a.hPct}%`, border: '2px solid var(--accent)', borderRadius: 4, background: 'color-mix(in srgb, var(--accent) 10%, transparent)' } : {}),
               }}
             >
@@ -398,9 +397,9 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
           {draft && (
             <div style={{
               position: 'absolute', zIndex: 5,
-              left: `min(${draft.xPct}%, calc(100% - 222px))`,
-              top: `min(calc(${draft.yPct}% + 14px), calc(100% - 118px))`,
-              width: 210, padding: 8, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+              left: `min(${draft.xPct}%, calc(100% - 234px))`,
+              top: `min(calc(${draft.yPct}% + 14px), calc(100% - 156px))`,
+              width: 222, padding: 8, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
             }}>
               <textarea
                 autoFocus
@@ -411,8 +410,15 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
                 rows={3}
                 style={{ width: '100%', boxSizing: 'border-box', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 12, background: 'var(--overlay-subtle)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', outline: 'none' }}
               />
+              {/* Send THIS note straight to the Console/Tasks — self-contained, same as the Inspect card. */}
+              {(onDispatch || onSendToTasks) && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                  {onDispatch && <button onClick={() => dispatchDraft('console')} title="Send this note to the Console now" style={{ ...sendBtn, flex: 1, justifyContent: 'center' }}>→ Console</button>}
+                  {onSendToTasks && <button onClick={() => dispatchDraft('tasks')} title="Add this note as a task in the queue" style={{ ...sendBtn, flex: 1, justifyContent: 'center' }}>→ Tasks</button>}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                <button onClick={saveDraft} style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px', color: 'var(--accent)', borderColor: 'var(--accent)' }}>Save</button>
+                <button onClick={saveDraft} title="Keep this note in the punch-list without sending" style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px' }}>Save</button>
                 {!draft.isNew && <button onClick={deleteDraft} style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px' }}>Delete</button>}
                 <button onClick={() => setDraft(null)} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Cancel</button>
               </div>
@@ -483,9 +489,10 @@ const retryBtn: React.CSSProperties = {
   padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border)',
   background: 'var(--btn-bg)', color: 'var(--fg)',
 }
-// Send-target buttons in the annotate toolbar (→ Console / → Tasks).
+// Send-target buttons inside the annotation card (→ Console / → Tasks).
 const sendBtn: React.CSSProperties = {
-  flexShrink: 0, height: 22, padding: '0 8px', fontFamily: 'var(--font-body)', fontSize: 10.5, cursor: 'pointer',
+  flexShrink: 0, height: 24, padding: '0 8px', display: 'flex', alignItems: 'center',
+  fontFamily: 'var(--font-body)', fontSize: 10.5, fontWeight: 600, cursor: 'pointer',
   outline: 'none', borderRadius: 5, background: 'transparent', color: 'var(--accent)',
   border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
 }
