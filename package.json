@@ -12,7 +12,8 @@
     "verify:visual": "node scripts/visual/capture.mjs",
     "verify:input": "node scripts/input/capture.mjs",
     "verify:resize": "node scripts/ghostty-resize/capture.mjs",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "verify:width": "node scripts/width-audit/audit.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
@@ -30,13 +31,16 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "string-width": "^8.2.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "emoji-regex": "^10.6.0",
+    "get-east-asian-width": "^1.6.0",
     "jsdom": "^25.0.1",
     "playwright": "^1.61.1",
     "typescript": "~5.8.3",

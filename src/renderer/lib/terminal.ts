@@ -1,5 +1,6 @@
 // Pure terminal-output helpers extracted from TerminalPane so the regex/parse
 // logic (dev-server sniffing, URL-under-pointer) is unit-testable without xterm.
+import stringWidth from 'string-width'
 
 /** Rough perceived lightness of a #rrggbb background (WCAG luma > 140). */
 export function isLightBackground(bg?: string): boolean {
@@ -19,23 +20,42 @@ export function stripAnsi(s: string): string {
 
 // Claude Code centers a decorative, cycling ornament on the composer divider
 // (historically 👀 U+1F440 / 👣 U+1F463; newer builds cycle other pictographs, incl.
-// double-width glyphs from the Mahjong/Dominoes/Cards blocks U+1F000–1F2FF). It's
-// chrome, not content — and xterm's WebGL atlas (built from the browser's font rendering)
-// falls any pictograph that neither the bundled subsets NOR the system Apple Color Emoji
-// cover to a plain `.notdef` box. A double-width ornament from those low blocks renders as TWO adjacent
-// "?" pills (one per cell) — exactly the divider tofu seen in the wild. Strip the whole
+// tiles from the Mahjong/Dominoes/Cards blocks U+1F000–1F2FF). It's chrome, not
+// content — and xterm's WebGL atlas (built from the browser's font rendering) falls
+// any pictograph that neither the bundled subsets NOR the system Apple Color Emoji
+// cover to a plain `.notdef` box — the divider tofu seen in the wild. Strip the whole
 // emoji-pictograph space (U+1F000–1FAFF) on every terminal write so ANY cycled ornament
-// is removed rather than tofu-ing. These codepoints are double-width, so replace each
-// with TWO spaces to keep Claude's cursor math aligned. Range stops BEFORE U+1FB00 so
-// the Legacy-Computing block art (the Claude logo mark) is untouched, and structural TUI
-// markers (⏺ ⎿ ✳ ✔ …, all BMP U+2300–2BFF) sit outside it too. Content emoji still
-// render in the reading panel.
+// is removed rather than tofu-ing. CRITICAL: these codepoints are NOT uniformly
+// double-width — most pictographs are 2 cells, but the low tile blocks hold width-1
+// glyphs (e.g. Dominoes/Cards U+1F031/1F0A1 = 1 cell in both string-width AND xterm).
+// So the substitution must be width-EXACT (see ornamentSpaces), not a blanket two
+// spaces — widening a width-1 divider ornament by a cell desynced Claude's cursor math
+// and garbled the scrollback. Range stops BEFORE U+1FB00 so the Legacy-Computing block
+// art (the Claude logo mark) is untouched, and structural TUI markers (⏺ ⎿ ✳ ✔ …, all
+// BMP U+2300–2BFF) sit outside it too. Content emoji still render in the reading panel.
 const ORNAMENT_RE = /[\u{1F000}-\u{1FAFF}]/gu
 
+// The replacement MUST occupy the same number of terminal cells as the glyph it
+// removes, or we shift Claude's cursor math and its next in-place redraw lands on
+// the wrong row → overprinted/garbled scrollback. Most pictographs are 2 cells,
+// but the range also holds width-1 glyphs (e.g. some Dominoes U+1F063 = 1 cell in
+// both string-width AND xterm — see scripts/width-audit). Blindly emitting TWO
+// spaces WIDENS those by a cell, which is precisely the drift we were chasing. So
+// substitute each glyph's true display width in spaces, using the SAME width oracle
+// (string-width) Claude Code lays out its TUI with. Memoized per codepoint — the
+// ornament set is tiny and repeats, so this costs ~nothing on the hot write path.
+const ornSpaces = new Map<string, string>()
+function ornamentSpaces(glyph: string): string {
+  let sp = ornSpaces.get(glyph)
+  if (sp === undefined) { sp = ' '.repeat(stringWidth(glyph) || 1); ornSpaces.set(glyph, sp) }
+  return sp
+}
+
 /** Remove Claude Code's decorative composer-divider ornaments (emoji-pictograph
- *  plane), replacing each double-width glyph with two spaces to preserve alignment. */
+ *  plane), replacing each glyph with an EQUAL-WIDTH run of spaces so Claude's
+ *  cursor/wrap math (and thus its in-place status redraws) stay aligned. */
 export function stripOrnaments(s: string): string {
-  return s.replace(ORNAMENT_RE, '  ')
+  return s.replace(ORNAMENT_RE, ornamentSpaces)
 }
 
 const DEV_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i

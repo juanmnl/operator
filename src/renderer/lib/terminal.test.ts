@@ -76,24 +76,28 @@ describe('findUrlAtColumn', () => {
 })
 
 describe('stripOrnaments', () => {
-  it('strips the known composer-divider ornaments (👀/👣) to two spaces', () => {
+  it('strips the known double-width ornaments (👀/👣) to TWO spaces', () => {
     expect(stripOrnaments('───\u{1F463}───')).toBe('───  ───')
     expect(stripOrnaments('──\u{1F440}──')).toBe('──  ──')
   })
 
-  it('strips newer/uncovered pictographs anywhere in the plane (no tofu)', () => {
-    // 1FA77 (newer than some Apple Color Emoji builds) and 1F650–1F67F ornamental
-    // dingbats (absent from Apple Color Emoji) are exactly the tofu-prone cases.
+  it('strips newer/uncovered double-width pictographs (no tofu)', () => {
+    // 1FA77 (newer than some Apple Color Emoji builds) is emoji-presentation → 2 cells.
     expect(stripOrnaments('─\u{1FA77}─')).toBe('─  ─')
-    expect(stripOrnaments('─\u{1F670}\u{1F652}─')).toBe('─    ─')
   })
 
-  it('strips low-block double-width pictographs (Mahjong/Dominoes/Cards → notdef pills)', () => {
-    // U+1F000–1F2FF: double-width, absent from Apple Color Emoji, below the old
-    // 1F300 floor — these rendered as the two "?" pills on the composer divider.
-    expect(stripOrnaments('─\u{1F02B}─')).toBe('─  ─') // Mahjong tile
-    expect(stripOrnaments('─\u{1F031}─')).toBe('─  ─') // Domino tile
-    expect(stripOrnaments('─\u{1F0A1}─')).toBe('─  ─') // Playing card
+  it('replaces each ornament with an EQUAL-WIDTH space run (the anti-drift invariant)', () => {
+    // The substitution must occupy the SAME cells as the glyph, or Claude's cursor
+    // math shifts and its next in-place redraw overprints the scrollback (garble).
+    // These low-block tiles are width-1 in BOTH string-width and xterm (verified by
+    // scripts/width-audit) — so they must become ONE space, not two. Emitting two
+    // spaces here was the bug that widened the composer divider by a cell each redraw.
+    expect(stripOrnaments('─\u{1F02B}─')).toBe('─ ─') // Mahjong back — width 1
+    expect(stripOrnaments('─\u{1F031}─')).toBe('─ ─') // Domino tile — width 1
+    expect(stripOrnaments('─\u{1F0A1}─')).toBe('─ ─') // Playing card — width 1
+    expect(stripOrnaments('─\u{1F004}─')).toBe('─  ─') // Mahjong RED dragon — width 2
+    // Ornamental dingbats U+1F670/1F652 are width-1 each → two of them = two spaces.
+    expect(stripOrnaments('─\u{1F670}\u{1F652}─')).toBe('─  ─')
   })
 
   it('leaves Claude\'s structural BMP markers and box-drawing untouched', () => {
