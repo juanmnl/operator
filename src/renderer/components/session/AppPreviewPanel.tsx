@@ -221,11 +221,21 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
       setDraft({ id: crypto.randomUUID(), xPct: (s.x0 / W) * 100, yPct: (s.y0 / H) * 100, note: '', isNew: true })
     }
   }
+  // A newly-authored annotation captures the FULL session-side context it was made in —
+  // the full URL (not just the pathname), the pixel viewport, and the device preset — so the
+  // dispatched feedback carries page + breakpoint, not just a position. Existing annotations
+  // keep the context they were captured with (only the note is editable afterward).
+  const deviceLabel = preset === 'fit' ? 'Fit' : `${preset}px`
+  const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
+    id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
+    route, url: display || undefined, viewport: box.w ? { w: box.w, h: box.h } : undefined,
+    device: deviceLabel, createdAt: new Date().toISOString(),
+  })
   const saveDraft = () => {
     if (!draft) return
     const exists = annotations.some((a) => a.id === draft.id)
     if (exists) persistAnn(annotations.map((a) => (a.id === draft.id ? { ...a, note: draft.note } : a)))
-    else persistAnn([...annotations, { id: draft.id, xPct: draft.xPct, yPct: draft.yPct, wPct: draft.wPct, hPct: draft.hPct, note: draft.note, route, createdAt: new Date().toISOString() }])
+    else persistAnn([...annotations, buildAnnotation(draft)])
     setDraft(null)
   }
   const deleteDraft = () => { if (draft) persistAnn(annotations.filter((a) => a.id !== draft.id)); setDraft(null) }
@@ -233,10 +243,10 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
   // pattern as the Inspect card. Persist it first so it stays in the punch-list, then dispatch.
   const dispatchDraft = (target: 'console' | 'tasks') => {
     if (!draft) return
-    const one: Annotation = { id: draft.id, xPct: draft.xPct, yPct: draft.yPct, wPct: draft.wPct, hPct: draft.hPct, note: draft.note, route, createdAt: new Date().toISOString() }
-    const exists = annotations.some((a) => a.id === draft.id)
-    persistAnn(exists ? annotations.map((a) => (a.id === draft.id ? { ...a, note: draft.note } : a)) : [...annotations, one])
-    const msg = composeMessage([one], route, { w: box.w, h: box.h })
+    const existing = annotations.find((a) => a.id === draft.id)
+    const ann: Annotation = existing ? { ...existing, note: draft.note } : buildAnnotation(draft)
+    persistAnn(existing ? annotations.map((a) => (a.id === draft.id ? ann : a)) : [...annotations, ann])
+    const msg = composeMessage([ann], route, { w: box.w, h: box.h })
     if (msg) { if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg) }
     setDraft(null)
   }
@@ -398,9 +408,26 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
             <div style={{
               position: 'absolute', zIndex: 5,
               left: `min(${draft.xPct}%, calc(100% - 234px))`,
-              top: `min(calc(${draft.yPct}% + 14px), calc(100% - 156px))`,
+              top: `min(calc(${draft.yPct}% + 14px), calc(100% - 178px))`,
               width: 222, padding: 8, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border)', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
             }}>
+              {/* Context this note will carry — device · page · pixel position — so it's visible
+                  that annotate sends more than a coordinate. Mirrors composeMessage's header. */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, fontFamily: 'var(--font-mono)',
+                fontSize: 9.5, color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden',
+              }}>
+                <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{deviceLabel}</span>
+                <span style={{ opacity: 0.5, flexShrink: 0 }}>·</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{route}</span>
+                {box.w > 0 && (
+                  <span style={{ marginLeft: 'auto', flexShrink: 0, opacity: 0.7 }}>
+                    {draft.wPct != null
+                      ? `${Math.round((draft.wPct / 100) * box.w)}×${Math.round((draft.hPct! / 100) * box.h)}px`
+                      : `${Math.round((draft.xPct / 100) * box.w)},${Math.round((draft.yPct / 100) * box.h)}px`}
+                  </span>
+                )}
+              </div>
               <textarea
                 autoFocus
                 value={draft.note}

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, Role, ProjectTask } from '../../shared/types'
+import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote } from '../lib/roster'
 import { Sidebar } from '../components/sidebar/Sidebar'
@@ -13,7 +13,6 @@ import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
-import { NewSessionPanel, SessionConfig } from '../components/session/NewSessionPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
 import { AgentLibraryView } from '../components/agents/AgentLibraryView'
 import { UsageView } from '../components/usage/UsageView'
@@ -262,7 +261,6 @@ export function DashboardView() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
-  const [pendingSession, setPendingSession] = useState<string | null>(null) // cwd awaiting launch
   const [currentTheme, setCurrentTheme] = useState<OperatorTheme>(() => {
     return themes[resolveThemeKey(localStorage.getItem('operator.theme'))]
   })
@@ -308,31 +306,6 @@ export function DashboardView() {
     return () => { unsubSession(); unsubExit(); unsubDrop() }
   }, [])
 
-  const handleNewSession = useCallback(async () => {
-    const folder = await window.operator.pickFolder()
-    if (folder) {
-      setPendingSession(folder)
-      setActiveSessionId(null)
-      setActiveTerminalId(null)
-      setActiveFolderPrefs(null)
-      setGlobalPrefsActive(false)
-      setAgentsViewActive(false)
-      setUsageViewActive(false)
-      setPrefsViewActive(false)
-    }
-  }, [])
-
-  const handleNewSessionInFolder = useCallback((cwd: string) => {
-    setPendingSession(cwd)
-    setActiveSessionId(null)
-    setActiveTerminalId(null)
-    setActiveFolderPrefs(null)
-    setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
-    setUsageViewActive(false)
-    setPrefsViewActive(false)
-  }, [])
-
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
     setAgentsViewActive(false)
@@ -341,7 +314,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
   }, [])
 
   const handleOpenAgents = useCallback(() => {
@@ -352,7 +324,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
   }, [])
 
   const handleOpenUsage = useCallback(() => {
@@ -363,7 +334,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
   }, [])
 
   const handleOpenPrefs = useCallback(() => {
@@ -374,7 +344,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
     setProjectView(null)
   }, [])
 
@@ -391,7 +360,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
   }, [])
 
 
@@ -405,7 +373,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
     setProjectView(null)
   }, [])
 
@@ -467,6 +434,31 @@ export function DashboardView() {
   const updateProject = useCallback((id: string, patch: Partial<Project>) => {
     setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))
   }, [])
+
+  // Open a folder as its Project workspace (Agents/Roster) — this is now how "New Session"
+  // / picking a folder works: no ad-hoc single-session form, land straight on the roster so
+  // the user picks/tunes agent lanes and launches from there (RosterPanel's Launch/Launch all).
+  // Registers the project (seeding the default roster) if this is the first time we've seen
+  // it; launches nothing itself.
+  const openFolderAsProject = useCallback(async (cwd: string) => {
+    const proj = await resolveProject(cwd)
+    upsertProject(proj)
+    rememberRecent(proj.path)
+    setRecentProjects((prev) => {
+      const filtered = prev.filter((p) => p.path !== proj.path)
+      return [{ path: proj.path, name: proj.name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
+    })
+    handleOpenProject(proj.id)
+  }, [upsertProject, rememberRecent, handleOpenProject])
+
+  const handleNewSession = useCallback(async () => {
+    const folder = await window.operator.pickFolder()
+    if (folder) await openFolderAsProject(folder)
+  }, [openFolderAsProject])
+
+  const handleNewSessionInFolder = useCallback((cwd: string) => {
+    void openFolderAsProject(cwd)
+  }, [openFolderAsProject])
 
   // --- Project task backlog (race-safe functional updates) ------------------------------
   const addProjectTask = useCallback((projectId: string, text: string, roleId?: string) => {
@@ -772,7 +764,6 @@ export function DashboardView() {
       const filtered = prev.filter((p) => p.path !== cwd)
       return [{ path: cwd, name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
     })
-    setPendingSession(null)
   }, [rememberRecent, upsertProject])
 
   // Orchestration: launch a session on a project's role (lane) — spawns in the project
@@ -916,7 +907,6 @@ export function DashboardView() {
     }
     rememberRecent(saved.cwd)
     upsertProject(proj)
-    setPendingSession(null)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
@@ -969,7 +959,6 @@ export function DashboardView() {
     setAgentsViewActive(false)
     setUsageViewActive(false)
     setPrefsViewActive(false)
-    setPendingSession(null)
     setProjectView(null)
     if (session.terminalId && localTerminalIds.has(session.terminalId)) {
       setActiveTerminalId(session.terminalId)
@@ -1005,7 +994,6 @@ export function DashboardView() {
     setActiveFolderPrefs({ projectPath, projectName })
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setPendingSession(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
     setUsageViewActive(false)
@@ -1320,7 +1308,6 @@ export function DashboardView() {
             setActiveSessionId(`local-${t.id}`)
             setActiveFolderPrefs(null)
             setGlobalPrefsActive(false)
-            setPendingSession(null)
           }
         }
       }
@@ -1416,8 +1403,7 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'pendingSession' | 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'project' | 'splash' = useMemo(() => {
-    if (pendingSession) return 'pendingSession'
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'project' | 'splash' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
     if (usageViewActive) return 'usage'
@@ -1432,7 +1418,7 @@ export function DashboardView() {
     // active session so this can surface); any lingering state is masked by the checks above.
     if (projectView && projects.some((p) => p.id === projectView.id)) return 'project'
     return 'splash'
-  }, [pendingSession, prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, projectView, projects])
+  }, [prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, projectView, projects])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -1590,14 +1576,6 @@ export function DashboardView() {
         {/* Drag region — full height only when no session toolbar is acting as drag region */}
         {contentMode !== 'localTerminal' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
-        )}
-
-        {contentMode === 'pendingSession' && pendingSession && (
-          <NewSessionPanel
-            cwd={pendingSession}
-            onLaunch={handleLaunchSession}
-            onCancel={() => setPendingSession(null)}
-          />
         )}
 
         {contentMode === 'folderPrefs' && activeFolderPrefs && (

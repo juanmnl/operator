@@ -1,6 +1,6 @@
 [package]
 name = "operator"
-version = "0.8.4"
+version = "0.8.5"
 description = "Mission control for working agents"
 authors = ["Juan Cornejo"]
 edition = "2021"

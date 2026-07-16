@@ -127,6 +127,22 @@ export interface ProjectTask {
   doneAt?: string
 }
 
+/** Launch-time config for a single Claude Code session (model/effort/permissions/etc.) —
+ *  built from a Role when launching a roster lane, or from a project's saved defaults. */
+export interface SessionConfig {
+  effortLevel: 'high' | 'normal' | 'low'
+  permissionMode: 'default' | 'auto' | 'bypassPermissions'
+  model: string
+  allowedTools: string
+  useWorktree: boolean
+  /** Ask the agent to start the project's dev server on launch (so Preview works right away). */
+  launchDevServer: boolean
+  /** Number of parallel agents to fan the task out to (1 = a single session). */
+  count: number
+  /** Initial task submitted to every agent on launch (required when count > 1). */
+  prompt: string
+}
+
 /** A project = a folder/repo (its canonical git root) that owns many sessions over time.
  *  The durable home for a repo's sessions, defaults, roster, and — later — moodboard/context. */
 export interface Project {

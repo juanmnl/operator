@@ -33,4 +33,17 @@ describe('composeMessage', () => {
     expect(msg).toContain('UI feedback on /:')
     expect(msg).toContain('(no note)')
   })
+
+  it('uses the annotation full URL + device + pixel coords when captured', () => {
+    const rich: Annotation = {
+      id: '4', xPct: 40, yPct: 40, wPct: 20, hPct: 10, note: 'Overlaps logo',
+      route: '/dashboard', url: 'http://localhost:5173/dashboard?tab=settings',
+      viewport: { w: 375, h: 720 }, device: '375px', createdAt: '',
+    }
+    const msg = composeMessage([rich], '/dashboard')
+    // Full URL (not just the pathname) + device + viewport in the header.
+    expect(msg).toContain('UI feedback on http://localhost:5173/dashboard?tab=settings (375px · viewport 375×720):')
+    // Percentage geometry resolved to concrete pixels (20%×10% of 375×720 = 75×72).
+    expect(msg).toContain('region · ≈ 75×72px] Overlaps logo')
+  })
 })
