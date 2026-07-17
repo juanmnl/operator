@@ -306,23 +306,19 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (!activeRef.current) return
       try { term.refresh(0, term.rows - 1) } catch { /* disposed */ }
     }
-    // term.refresh() rewrites the row DOM, but WKWebView doesn't reliably RECOMPOSITE
-    // the layer, so pixels from a prior frame linger even though the DOM is correct —
-    // a stale ─ rule showing through cells now blanked, or a superimposed old row
-    // (verified: replaying the real byte stream, xterm's BUFFER + a static render are
-    // pixel-clean; only the live incremental WKWebView paint garbles). The OLD trick
-    // toggled transform translateZ(0)↔'' — both are the IDENTITY transform, which
-    // WebKit collapses to a no-op, so nothing repainted. A real, sub-perceptible
-    // OPACITY change can't be elided: it forces the compositor to repaint the layer's
-    // actual contents. Heavier than refresh, so only on settle + the periodic heal.
+    // term.refresh() rewrites the row DOM, but WKWebView sometimes doesn't
+    // RECOMPOSITE the (stale) layer, so an old glyph lingers on screen even though
+    // the DOM is correct (the residual ✳/👀). Nudging an identity 3D transform on
+    // the xterm element invalidates its compositor layer → forces a real repaint.
+    // Heavier than refresh, so only on settle + the periodic heal, never per-chunk.
     const hardRepaint = () => {
-      if (!activeRef.current || termRef.current !== term) return
+      if (!activeRef.current) return
       try {
         term.refresh(0, term.rows - 1)
         const el = term.element as HTMLElement | null
         if (el) {
-          el.style.opacity = '0.9998'
-          requestAnimationFrame(() => { if (termRef.current === term) el.style.opacity = '' })
+          el.style.transform = 'translateZ(0)'
+          requestAnimationFrame(() => { if (termRef.current === term) el.style.transform = '' })
         }
       } catch { /* disposed */ }
     }
@@ -335,12 +331,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
       refreshTimerRef.current = window.setTimeout(() => {
         lastRefreshAtRef.current = Date.now()
-        // Settle: force a real recomposite. WKWebView can DROP a single recomposite,
-        // and once output stops there's nothing left to heal a garbled final frame —
-        // so re-assert a short decaying burst instead of one shot.
-        hardRepaint()
-        window.setTimeout(() => hardRepaint(), 240)
-        window.setTimeout(() => hardRepaint(), 620)
+        hardRepaint() // settle: force a real recomposite to clear lingering glyphs
       }, 90)
     }
     // The throttled per-write repaint can fall behind during long, sustained
@@ -351,10 +342,6 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     const healInterval = window.setInterval(() => {
       if (Date.now() - lastDataAtRef.current < 6000) hardRepaint()
     }, 1000)
-    // Scrolling the scrollback (our wheel handler moves the buffer viewport) brings
-    // previously-rendered rows into view that WKWebView may still be showing stale —
-    // recomposite them. Throttled/debounced via scheduleRepaint.
-    const scrollSub = term.onScroll(() => { if (activeRef.current) scheduleRepaint() })
 
     const BG_CAP = 512_000 // ~512KB of background output retained per hidden pane
     // Flush output buffered while hidden, in order, before any live/active write.
@@ -489,7 +476,6 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (pendingFitRef.current != null) clearTimeout(pendingFitRef.current)
       if (refreshTimerRef.current != null) clearTimeout(refreshTimerRef.current)
       clearInterval(healInterval)
-      scrollSub.dispose()
       window.removeEventListener('resize', handleResize)
       unsubData()
       observer.disconnect()
