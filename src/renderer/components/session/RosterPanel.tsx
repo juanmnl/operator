@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Project, Role, TokenUsage } from '../../../shared/types'
-import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom } from '../../lib/roster'
+import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom, isCoordinator } from '../../lib/roster'
 
 /** Live runtime for a lane's session (from the transcript observer). */
 export interface LaneSession {
@@ -158,6 +158,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           <RoleCard
             key={role.id}
             role={role}
+            coordinator={isCoordinator(role.id)}
             live={!!liveRoles?.[role.id]}
             session={laneSessions?.[role.id]}
             runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
@@ -186,8 +187,10 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, live, session, runningTask, queued = 0, selected, onToggleSelect, onPatch, onRemove, onLaunch, onView }: {
+function RoleCard({ role, coordinator, live, session, runningTask, queued = 0, selected, onToggleSelect, onPatch, onRemove, onLaunch, onView }: {
   role: Role
+  /** The coordinator lane (Operator) — the roster's hub, not a worker peer. */
+  coordinator?: boolean
   live?: boolean
   session?: LaneSession
   /** The task currently running on this lane (latest), for the "working on" line. */
@@ -252,6 +255,11 @@ function RoleCard({ role, live, session, runningTask, queued = 0, selected, onTo
             style={{ flex: 1, minWidth: 0, textAlign: 'left', fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--fg)', background: 'transparent', border: 'none', outline: 'none', cursor: 'text', padding: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >{role.name}</button>
         )}
+        {coordinator && (
+          <span title="The coordinator — routes work to the other lanes, and does it itself when none fits" style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, opacity: 0.85 }}>
+            coordinator
+          </span>
+        )}
         {queued > 0 && (
           <span title={`${queued} queued task${queued > 1 ? 's' : ''} for this agent`} style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 6px' }}>
             {queued} queued
@@ -262,7 +270,11 @@ function RoleCard({ role, live, session, runningTask, queued = 0, selected, onTo
             <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />live
           </span>
         )}
-        <button onClick={onRemove} title="Remove agent" style={{ flexShrink: 0, width: 20, height: 20, padding: 0, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none', fontSize: 12 }}>✕</button>
+        {/* The coordinator is the roster's hub — the lane that routes to every other. Removing
+            it would leave the roster with no dispatcher, so it's kept (workers stay removable). */}
+        {!coordinator && (
+          <button onClick={onRemove} title="Remove agent" style={{ flexShrink: 0, width: 20, height: 20, padding: 0, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none', fontSize: 12 }}>✕</button>
+        )}
       </div>
 
       {/* Mission line — what the live lane is working on + its token spend so far. */}
