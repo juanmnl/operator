@@ -1,6 +1,6 @@
 [package]
 name = "operator"
-version = "0.8.6"
+version = "0.8.7"
 description = "Mission control for working agents"
 authors = ["Juan Cornejo"]
 edition = "2021"
@@ -39,6 +39,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Our own (non-native) terminal: alacritty's VT engine parses pty bytes into a grid
 # in Rust; the frontend paints a clean cell snapshot as DOM. Pure Rust, no GPU.
 alacritty_terminal = "0.25"
+
+# Hermetic scratch repos for the worktree/branch diff tests (already in the tree
+# transitively — this just makes it available to #[cfg(test)]).
+[dev-dependencies]
+tempfile = "3"
 
 # macOS dock-icon swapping at runtime (the in-app icon selector). Versions match
 # what Tauri already pulls in (see Cargo.lock) so the objc2 tree stays unified.

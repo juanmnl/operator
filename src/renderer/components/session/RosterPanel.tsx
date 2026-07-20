@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { Project, Role } from '../../../shared/types'
-import { ROSTER_MODELS, defaultRoster, roleIdFrom } from '../../lib/roster'
+import type { Project, Role, TokenUsage } from '../../../shared/types'
+import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom } from '../../lib/roster'
+
+/** Live runtime for a lane's session (from the transcript observer). */
+export interface LaneSession {
+  phase: string // idle | running | compacting | waiting
+  usage?: TokenUsage
+  lastActivityAt?: string
+}
+
+/** Compact token count for the lane cards: 950 → "950", 12_400 → "12.4k", 3_400_000 → "3.4M". */
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`
+  return String(n)
+}
 
 // The orchestration Roster — a project's agent lanes. Each role pins a model + reasoning
 // effort; launching a role spawns a session on that lane (project root, role's config,
@@ -14,20 +28,30 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, onFocusTerminal }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal }: {
   project?: Project
   onUpdateProject?: (id: string, patch: Partial<Project>) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
+  /** roleId → live session runtime (phase/usage) — the mission-control read per card. */
+  laneSessions?: Record<string, LaneSession>
   /** Focus an already-live lane's session (the "View" action). */
   onFocusTerminal?: (terminalId: string) => void
 }) {
   const roster = project?.roster
 
-  // Seed a default roster the first time a rosterless project's board is opened.
+  // Seed a default roster the first time a rosterless project's board is opened; and for
+  // rosters created before role charters existed, backfill the default prompt per known lane.
+  // Only `undefined` prompts are filled — a prompt the user cleared ('') stays cleared.
   useEffect(() => {
-    if (project && !project.roster && onUpdateProject) onUpdateProject(project.id, { roster: defaultRoster() })
+    if (!project || !onUpdateProject) return
+    if (!project.roster) { onUpdateProject(project.id, { roster: defaultRoster() }); return }
+    if (project.roster.some((r) => r.prompt === undefined && DEFAULT_ROLE_PROMPTS[r.id])) {
+      onUpdateProject(project.id, {
+        roster: project.roster.map((r) => (r.prompt === undefined && DEFAULT_ROLE_PROMPTS[r.id] ? { ...r, prompt: DEFAULT_ROLE_PROMPTS[r.id] } : r)),
+      })
+    }
   }, [project, onUpdateProject])
 
   if (!project) {
@@ -92,12 +116,33 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
         <span style={{ fontSize: 10.5, color: 'var(--fg-muted)' }}>Launch dev server with agents</span>
       </button>
 
+      {/* Verification gate: shell command run in a lane's dir when its task completes
+          ("done" → "done and green"). Saved on blur; empty = gates off. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>Check</span>
+        <input
+          key={project.id}
+          defaultValue={project.checkCommand ?? ''}
+          placeholder="e.g. npm test  — runs when a task completes; ✓/✗ shows on the task"
+          onBlur={(e) => { const v = e.target.value.trim(); if (v !== (project.checkCommand ?? '')) onUpdateProject?.(project.id, { checkCommand: v }) }}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+          spellCheck={false}
+          style={{
+            flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg)',
+            background: 'var(--overlay-subtle)', border: '1px solid var(--border)', borderRadius: 7,
+            padding: '5px 9px', outline: 'none',
+          }}
+        />
+      </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {roles.map((role) => (
           <RoleCard
             key={role.id}
             role={role}
             live={!!liveRoles?.[role.id]}
+            session={laneSessions?.[role.id]}
+            runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
             queued={taskCounts[role.id] ?? 0}
             onPatch={(patch) => patchRole(role.id, patch)}
             onRemove={() => removeRole(role.id)}
@@ -121,9 +166,12 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, live, queued = 0, onPatch, onRemove, onLaunch, onView }: {
+function RoleCard({ role, live, session, runningTask, queued = 0, onPatch, onRemove, onLaunch, onView }: {
   role: Role
   live?: boolean
+  session?: LaneSession
+  /** The task currently running on this lane (latest), for the "working on" line. */
+  runningTask?: string
   queued?: number
   onPatch: (patch: Partial<Role>) => void
   onRemove: () => void
@@ -131,7 +179,9 @@ function RoleCard({ role, live, queued = 0, onPatch, onRemove, onLaunch, onView 
   onView: () => void
 }) {
   const [editingName, setEditingName] = useState(false)
+  const [editingPrompt, setEditingPrompt] = useState(false)
   const accent = role.accent || 'var(--accent)'
+  const promptPreview = (role.prompt ?? '').trim()
 
   return (
     <div style={{
@@ -170,6 +220,25 @@ function RoleCard({ role, live, queued = 0, onPatch, onRemove, onLaunch, onView 
         <button onClick={onRemove} title="Remove agent" style={{ flexShrink: 0, width: 20, height: 20, padding: 0, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none', fontSize: 12 }}>✕</button>
       </div>
 
+      {/* Mission line — what the live lane is working on + its token spend so far. */}
+      {live && (runningTask || session?.usage) && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8, paddingLeft: 15 }}>
+          {runningTask ? (
+            <span title={runningTask} style={{ flex: 1, minWidth: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              ▸ {runningTask}
+            </span>
+          ) : <span style={{ flex: 1 }} />}
+          {session?.usage && (
+            <span
+              title={`Tokens this session — in: ${session.usage.input.toLocaleString()} · out: ${session.usage.output.toLocaleString()} · cache reads: ${session.usage.cacheRead.toLocaleString()}`}
+              style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, fontVariantNumeric: 'tabular-nums', color: 'var(--fg-muted)' }}
+            >
+              {formatTokens(session.usage.input)} in · {formatTokens(session.usage.output)} out
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Config + action, one horizontal row (uses the width; action pinned right). */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 12, flexWrap: 'wrap' }}>
         <Field label="Model">
@@ -177,6 +246,18 @@ function RoleCard({ role, live, queued = 0, onPatch, onRemove, onLaunch, onView 
         </Field>
         <Field label="Effort">
           <Segmented options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))} value={role.effort ?? 'high'} onChange={(id) => onPatch({ effort: id as Role['effort'] })} small />
+        </Field>
+        <Field label="Worktree">
+          <button
+            onClick={() => onPatch({ useWorktree: !role.useWorktree })}
+            title="Run this lane in an isolated git worktree — its tasks get their own diff, mergeable back when done"
+            style={{
+              width: 14, height: 14, borderRadius: 3, padding: 0, display: 'grid', placeItems: 'center', cursor: 'pointer', outline: 'none',
+              background: role.useWorktree ? 'var(--accent)' : 'transparent', border: role.useWorktree ? 'none' : '1px solid var(--border)',
+            }}
+          >
+            {role.useWorktree && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="var(--fg-on-accent)" strokeWidth="1.6" /></svg>}
+          </button>
         </Field>
         {live ? (
           <button onClick={onView} className="actions-footer-btn" style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }} title={`View the live ${role.name} session`}>View →</button>
@@ -188,6 +269,38 @@ function RoleCard({ role, live, queued = 0, onPatch, onRemove, onLaunch, onView 
             title={queued > 0 ? `Launch ${role.name} and start its ${queued} queued task${queued > 1 ? 's' : ''}` : `Launch a ${role.name} session (${role.model})`}
           >
             {queued > 0 ? `Launch ${queued} →` : 'Launch →'}
+          </button>
+        )}
+      </div>
+
+      {/* The lane's standing charter — appended to its system prompt at launch. Collapsed
+          to a one-line preview; click to edit in place (blur saves, Esc cancels). */}
+      <div style={{ marginTop: 10 }}>
+        {editingPrompt ? (
+          <textarea
+            autoFocus
+            defaultValue={role.prompt ?? ''}
+            onBlur={(e) => { onPatch({ prompt: e.target.value.trim() }); setEditingPrompt(false) }}
+            onKeyDown={(e) => { if (e.key === 'Escape') { (e.target as HTMLTextAreaElement).value = role.prompt ?? ''; (e.target as HTMLTextAreaElement).blur() } }}
+            rows={4}
+            style={{
+              width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'var(--font-body)',
+              fontSize: 11, lineHeight: 1.5, color: 'var(--fg)', background: 'var(--overlay-subtle)',
+              border: '1px solid var(--border)', borderRadius: 8, padding: '7px 9px', outline: 'none',
+            }}
+          />
+        ) : (
+          <button
+            onClick={() => setEditingPrompt(true)}
+            title={promptPreview ? `${promptPreview}\n\nClick to edit this lane's prompt` : 'Add a standing prompt for this lane'}
+            style={{
+              display: 'block', width: '100%', textAlign: 'left', background: 'transparent', border: 'none',
+              padding: 0, cursor: 'text', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10.5,
+              lineHeight: 1.45, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', marginRight: 7 }}>Prompt</span>
+            {promptPreview || <em style={{ opacity: 0.6 }}>none — click to add</em>}
           </button>
         )}
       </div>

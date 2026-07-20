@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Project, Role, ProjectTask } from '../../../shared/types'
+import { taskHasDiffSource } from '../../lib/task-diff'
+import { TaskDiffCard } from './TaskDiffCard'
 
 // The project's task backlog. Add tasks (the input grows vertically as you type), optionally
 // assign each to an agent lane, then dispatch them: individually (Send →), all at once
@@ -22,6 +24,8 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
   const [draft, setDraft] = useState('')
   const [assignee, setAssignee] = useState('') // '' = unassigned
   const [showDone, setShowDone] = useState(false)
+  // Tasks whose diff card is expanded inline (running + done rows).
+  const [openDiff, setOpenDiff] = useState<Set<string>>(new Set())
   const taRef = useRef<HTMLTextAreaElement>(null)
   const allTasks = project.tasks ?? []
   // Split by lifecycle. The add/assign/group machinery below operates on QUEUED only.
@@ -42,6 +46,34 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
 
   const add = () => { if (draft.trim()) { onAddTask(draft, assignee || undefined); setDraft('') } }
   const roleOf = (id?: string) => roles.find((r) => r.id === id)
+  const toggleDiff = (id: string) =>
+    setOpenDiff((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const laneLive = (t: ProjectTask) => !!(t.roleId && liveRoles?.[t.roleId])
+
+  // Verification-gate chip: the project's check command run in the lane's dir at
+  // completion. Colored text only (no fills) per the UI rules.
+  const checkChip = (task: ProjectTask) => task.check && (
+    <span
+      title={task.check.status === 'running' ? 'Check running…' : (task.check.output || 'no output')}
+      style={{
+        flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5,
+        color: task.check.status === 'pass' ? 'var(--add-fg)' : task.check.status === 'fail' ? 'var(--del-fg)' : 'var(--fg-muted)',
+      }}
+    >
+      {task.check.status === 'running' ? '⋯ check' : task.check.status === 'pass' ? '✓ check' : '✗ check'}
+    </span>
+  )
+
+  // The "Diff ▸" toggle + inline card shared by running and done rows.
+  const diffToggle = (task: ProjectTask) => taskHasDiffSource(task) && (
+    <button
+      onClick={() => toggleDiff(task.id)}
+      title="View this task's code change"
+      style={{ fontFamily: 'var(--font-mono)', fontSize: 10, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: openDiff.has(task.id) ? 'var(--accent)' : 'var(--fg-muted)', cursor: 'pointer', outline: 'none', flexShrink: 0 }}
+    >
+      {task.diffStat ? `+${task.diffStat.added} −${task.diffStat.removed}` : 'Diff'} {openDiff.has(task.id) ? '▾' : '▸'}
+    </button>
+  )
 
   const renderRow = (task: ProjectTask) => {
     const role = roleOf(task.roleId)
@@ -127,12 +159,17 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
           {running.map((task) => {
             const role = roleOf(task.roleId)
             return (
-              <div key={task.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))', borderRadius: 'var(--radius-md)', padding: '8px 9px', background: 'color-mix(in srgb, var(--accent) 5%, var(--overlay-subtle))' }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.4, color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{task.text}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                  {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: role.accent || 'var(--fg-muted)' }}>{role.name}</span>}
-                  <button onClick={() => onSetTaskStatus(task.id, 'done')} title="Mark done" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none' }}>Done ✓</button>
+              <div key={task.id}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, border: '1px solid color-mix(in srgb, var(--accent) 30%, var(--border))', borderRadius: 'var(--radius-md)', padding: '8px 9px', background: 'color-mix(in srgb, var(--accent) 5%, var(--overlay-subtle))' }}>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.4, color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{task.text}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: role.accent || 'var(--fg-muted)' }}>{role.name}</span>}
+                    {checkChip(task)}
+                    {diffToggle(task)}
+                    <button onClick={() => onSetTaskStatus(task.id, 'done')} title="Mark done" style={{ fontFamily: 'var(--font-mono)', fontSize: 10, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none' }}>Done ✓</button>
+                  </div>
                 </div>
+                {openDiff.has(task.id) && <TaskDiffCard task={task} laneLive={laneLive(task)} />}
               </div>
             )
           })}
@@ -206,12 +243,17 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
               {done.map((task) => {
                 const role = roleOf(task.roleId)
                 return (
-                  <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
-                    <span style={{ color: 'var(--accent)', fontSize: 11, flexShrink: 0 }}>✓</span>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--fg-muted)', textDecoration: 'line-through', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.text}>{task.text}</span>
-                    {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--fg-muted)', flexShrink: 0 }}>{role.name}</span>}
-                    <button onClick={() => onSetTaskStatus(task.id, 'queued')} title="Re-queue" style={{ background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', color: 'var(--fg-muted)', fontSize: 11, flexShrink: 0 }}>↩</button>
-                    <button onClick={() => onRemoveTask(task.id)} title="Delete" style={{ background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', color: 'var(--fg-muted)', fontSize: 11, flexShrink: 0 }}>✕</button>
+                  <div key={task.id}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
+                      <span style={{ color: 'var(--accent)', fontSize: 11, flexShrink: 0 }}>✓</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--fg-muted)', textDecoration: 'line-through', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.text}>{task.text}</span>
+                      {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--fg-muted)', flexShrink: 0 }}>{role.name}</span>}
+                      {checkChip(task)}
+                      {diffToggle(task)}
+                      <button onClick={() => onSetTaskStatus(task.id, 'queued')} title="Re-queue" style={{ background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', color: 'var(--fg-muted)', fontSize: 11, flexShrink: 0 }}>↩</button>
+                      <button onClick={() => onRemoveTask(task.id)} title="Delete" style={{ background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', color: 'var(--fg-muted)', fontSize: 11, flexShrink: 0 }}>✕</button>
+                    </div>
+                    {openDiff.has(task.id) && <TaskDiffCard task={task} laneLive={laneLive(task)} />}
                   </div>
                 )
               })}

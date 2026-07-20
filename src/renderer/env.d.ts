@@ -72,7 +72,9 @@ declare global {
       worktreeCreate: (cwd: string) => Promise<WorktreeCreateResult | { error: string }>
       worktreeStatus: (path: string) => Promise<WorktreeStatus>
       worktreeRemove: (path: string, sourceRoot: string) => Promise<{ ok: boolean; error?: string }>
-      worktreeDiff: (path: string) => Promise<WorktreeDiff>
+      worktreeDiff: (path: string, base?: string) => Promise<WorktreeDiff>
+      branchDiff: (sourceRoot: string, branch: string, baseBranch: string) => Promise<WorktreeDiff>
+      runCheck: (cwd: string, command: string) => Promise<{ ok: boolean; code?: number; output: string }>
       worktreeCommit: (path: string, message: string) => Promise<{ ok: boolean; sha?: string; error?: string }>
       worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) => Promise<{ ok: boolean; message?: string }>
       worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string) => Promise<{ ok: boolean; error?: string }>

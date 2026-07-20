@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from 'react'
 import type { AgentSession, NarrationEntry } from '../../../shared/types'
 import { parseBlocks, type Block, type Span } from '../../lib/canvas-md'
+import { stripDispatchLines } from '../../lib/roster'
 import { ChatComposer } from './ChatComposer'
 
 // Canvas chat SPIKE — renders the conversation PAINTED on one <canvas> instead of the
@@ -359,8 +360,14 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
     const order: string[] = []
     for (const m of [...history, ...(session?.messages ?? [])]) {
       if (m.kind !== 'user' && m.kind !== 'text') continue
-      const k = blockKey(m)
-      if (!byKey.has(k)) { byKey.set(k, m); order.push(k) }
+      const k = blockKey(m) // key on the RAW text — history and tail must dedupe identically
+      if (byKey.has(k)) continue
+      // Orchestrator dispatch directives are protocol, not prose — the dispatch log shows
+      // them; strip from the reading surface (drop the turn if that's all it was).
+      const text = m.kind === 'text' ? stripDispatchLines(m.text) : m.text
+      if (!text.trim()) { byKey.set(k, m); continue } // consumed, but still deduped
+      byKey.set(k, text === m.text ? m : { ...m, text })
+      order.push(k)
     }
     return order.map((k) => byKey.get(k)!)
   }, [history, session?.messages])

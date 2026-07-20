@@ -120,7 +120,13 @@ pub struct WorktreeDiff {
     pub diff: String,
 }
 
-pub fn worktree_diff(path: &str) -> WorktreeDiff {
+// Working-tree diff of `path`. Against HEAD by default; pass `base` (e.g. the worktree's
+// base branch) to diff from the merge-base instead — that spans the lane's COMMITTED work
+// too, not just uncommitted edits (an agent that commits would otherwise read "no changes").
+pub fn worktree_diff(path: &str, base: Option<&str>) -> WorktreeDiff {
+    let against: String = base
+        .and_then(|b| git(path, &["merge-base", b, "HEAD"]).ok())
+        .unwrap_or_else(|| "HEAD".into());
     let branch = git(path, &["rev-parse", "--abbrev-ref", "HEAD"]).ok();
     let porcelain = git(path, &["status", "--porcelain"]).unwrap_or_default();
 
@@ -138,19 +144,28 @@ pub fn worktree_diff(path: &str) -> WorktreeDiff {
         files.push(FileChange { path: file, status, added: 0, removed: 0 });
     }
 
-    if let Ok(numstat) = git(path, &["diff", "HEAD", "--numstat"]) {
+    if let Ok(numstat) = git(path, &["diff", &against, "--numstat"]) {
         for line in numstat.lines() {
             let cols: Vec<&str> = line.split('\t').collect();
             if cols.len() == 3 {
                 if let Some(entry) = files.iter_mut().find(|f| f.path == cols[2]) {
                     entry.added = cols[0].parse().unwrap_or(0);
                     entry.removed = cols[1].parse().unwrap_or(0);
+                } else {
+                    // Committed-but-clean files don't appear in porcelain — add them so a
+                    // base-relative diff still lists the lane's committed work.
+                    files.push(FileChange {
+                        path: cols[2].to_string(),
+                        status: "M ".into(),
+                        added: cols[0].parse().unwrap_or(0),
+                        removed: cols[1].parse().unwrap_or(0),
+                    });
                 }
             }
         }
     }
 
-    let mut diff = git(path, &["diff", "HEAD", "--no-color"]).unwrap_or_default();
+    let mut diff = git(path, &["diff", &against, "--no-color"]).unwrap_or_default();
 
     // Synthetic +diff for untracked files so new file contents show too.
     for u in &untracked {
@@ -169,6 +184,36 @@ pub fn worktree_diff(path: &str) -> WorktreeDiff {
     }
 
     WorktreeDiff { branch, files, diff }
+}
+
+// Diff a (surviving) branch against its base from the SOURCE repo — the durable
+// fallback for a task's diff after its worktree directory has been removed
+// (close keeps the branch). Three-dot: base..merge-base..branch, i.e. only what
+// the lane committed, not what base gained since.
+pub fn branch_diff(source_root: &str, branch: &str, base_branch: &str) -> WorktreeDiff {
+    let range = format!("{base_branch}...{branch}");
+    let mut files: Vec<FileChange> = vec![];
+    if let Ok(status) = git(source_root, &["diff", &range, "--name-status"]) {
+        for line in status.lines() {
+            let mut cols = line.split('\t');
+            if let (Some(st), Some(path)) = (cols.next(), cols.next_back()) {
+                files.push(FileChange { path: path.trim().to_string(), status: st.trim().to_string(), added: 0, removed: 0 });
+            }
+        }
+    }
+    if let Ok(numstat) = git(source_root, &["diff", &range, "--numstat"]) {
+        for line in numstat.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() == 3 {
+                if let Some(entry) = files.iter_mut().find(|f| f.path == cols[2]) {
+                    entry.added = cols[0].parse().unwrap_or(0);
+                    entry.removed = cols[1].parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    let diff = git(source_root, &["diff", &range, "--no-color"]).unwrap_or_default();
+    WorktreeDiff { branch: Some(branch.to_string()), files, diff }
 }
 
 pub fn remove_worktree(path: &str, source_root: &str) -> Result<(), String> {
@@ -223,4 +268,68 @@ pub fn discard_branch(worktree_path: &str, source_root: &str, branch: &str) -> R
     let _ = remove_worktree(worktree_path, source_root);
     let _ = git(source_root, &["branch", "-D", branch]);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Hermetic scratch repo: init on `main` with an identity, one seed commit.
+    fn scratch_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_str().unwrap();
+        git(p, &["init", "-b", "main"]).unwrap();
+        git(p, &["config", "user.email", "t@t"]).unwrap();
+        git(p, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        git(p, &["add", "-A"]).unwrap();
+        git(p, &["commit", "-m", "seed"]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn branch_diff_survives_worktree_removal_semantics() {
+        // The task-diff fallback: a lane's branch, diffed vs its base from the source root.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        git(p, &["checkout", "-b", "operator/x"]).unwrap();
+        std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.path().join("b.txt"), "new\n").unwrap();
+        git(p, &["add", "-A"]).unwrap();
+        git(p, &["commit", "-m", "lane work"]).unwrap();
+        git(p, &["checkout", "main"]).unwrap();
+
+        let d = branch_diff(p, "operator/x", "main");
+        assert_eq!(d.files.len(), 2);
+        let b = d.files.iter().find(|f| f.path == "b.txt").expect("b.txt listed");
+        assert_eq!((b.added, b.removed), (1, 0));
+        assert!(d.diff.contains("+two"));
+
+        // Unknown branch → empty, not a panic.
+        let none = branch_diff(p, "operator/gone", "main");
+        assert!(none.files.is_empty() && none.diff.is_empty());
+    }
+
+    #[test]
+    fn worktree_diff_vs_base_spans_committed_and_uncommitted_work() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        git(p, &["checkout", "-b", "operator/y"]).unwrap();
+        // Committed lane work…
+        std::fs::write(repo.path().join("a.txt"), "one\ncommitted\n").unwrap();
+        git(p, &["add", "-A"]).unwrap();
+        git(p, &["commit", "-m", "committed part"]).unwrap();
+        // …plus an uncommitted edit on top.
+        std::fs::write(repo.path().join("c.txt"), "uncommitted\n").unwrap();
+
+        // Vs HEAD (default): only the uncommitted file shows.
+        let head = worktree_diff(p, None);
+        assert_eq!(head.files.iter().filter(|f| f.added + f.removed > 0).count(), 1);
+
+        // Vs base: the committed edit shows too.
+        let base = worktree_diff(p, Some("main"));
+        assert!(base.files.iter().any(|f| f.path == "a.txt" && f.added == 1));
+        assert!(base.files.iter().any(|f| f.path == "c.txt"));
+        assert!(base.diff.contains("+committed") && base.diff.contains("+uncommitted"));
+    }
 }

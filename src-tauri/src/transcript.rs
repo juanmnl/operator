@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
-use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem};
+use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem, TokenUsage};
 use crate::chatstore::ChatStore;
 use crate::PtyManager;
 
@@ -86,6 +86,12 @@ struct Track {
     last_tool_name: Option<String>,
     /// Model from the latest assistant message (the actual running model).
     model: Option<String>,
+    /// Cumulative token usage across the session's assistant messages.
+    usage: TokenUsage,
+    /// Last assistant message id whose usage was counted — one API response is stored
+    /// as multiple JSONL records (one per content block) all repeating the same usage,
+    /// so only the first record of each id accumulates.
+    last_usage_msg_id: Option<String>,
     /// Dispatch directives parsed from assistant text, drained + emitted by the tailer loop.
     pending_dispatches: Vec<DispatchEvent>,
     last_stop_reason: Option<String>,
@@ -118,6 +124,8 @@ impl Track {
             in_sidechain: false,
             last_tool_name: None,
             model: None,
+            usage: TokenUsage::default(),
+            last_usage_msg_id: None,
             pending_dispatches: vec![],
             last_stop_reason: None,
             last_was_user_prompt: false,
@@ -290,6 +298,19 @@ impl Track {
                 }
             }
         }
+        // Accumulate token usage ONCE per API response — its blocks land as separate
+        // JSONL records that all repeat the same `usage` under the same message id.
+        if let Some(u) = msg.get("usage") {
+            let mid = msg.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            if !mid.is_empty() && self.last_usage_msg_id.as_deref() != Some(mid) {
+                self.last_usage_msg_id = Some(mid.to_string());
+                let g = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                self.usage.input += g("input_tokens") + g("cache_creation_input_tokens");
+                self.usage.output += g("output_tokens");
+                self.usage.cache_read += g("cache_read_input_tokens");
+                self.dirty = true;
+            }
+        }
         let blocks = match msg.get("content").and_then(|c| c.as_array()) {
             Some(b) => b,
             None => return,
@@ -409,6 +430,8 @@ impl Track {
             self.started_at.clone().unwrap_or_else(|| self.last_activity_at.clone()),
             self.last_activity_at.clone(),
             self.model.clone(),
+            // Absent until anything accumulated (keeps pre-first-turn payloads lean).
+            if self.usage.output > 0 || self.usage.input > 0 { Some(self.usage) } else { None },
         )
     }
 }

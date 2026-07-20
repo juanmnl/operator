@@ -664,6 +664,80 @@ fn get_sessions(sessions: State<Sessions>) -> Vec<AgentSession> {
     sessions.get_active()
 }
 
+// --- Verification gate ------------------------------------------------------
+// Run the project's configured check command (e.g. "npm test") in a lane's working
+// dir when a task completes — "done" becomes "done and green". Async (spawn_blocking
+// equivalent via std thread inside tauri's async runtime) with a hard timeout so a
+// hung test suite can't wedge the app or leak the child.
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckResult {
+    ok: bool,
+    code: Option<i32>,
+    /// Combined stdout+stderr tail (bounded — enough to see the failure).
+    output: String,
+}
+
+#[tauri::command]
+async fn run_check(cwd: String, command: String) -> CheckResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::process::{Command, Stdio};
+        let child = Command::new("/bin/sh")
+            .args(["-lc", &command])
+            .current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return CheckResult { ok: false, code: None, output: format!("failed to start: {e}") },
+        };
+        // Drain pipes on their own threads — a chatty child would otherwise fill the
+        // pipe buffer and block forever while we poll (classic piped-wait deadlock).
+        let drain = |r: Option<Box<dyn std::io::Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut r) = r {
+                    let _ = r.read_to_end(&mut buf);
+                }
+                buf
+            })
+        };
+        let so = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
+        let se = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
+        // Poll with a 10-minute cap; kill on timeout so nothing leaks.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break st,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return CheckResult { ok: false, code: None, output: "check timed out after 10 minutes".into() };
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Err(e) => return CheckResult { ok: false, code: None, output: format!("wait failed: {e}") },
+            }
+        };
+        let mut text = String::from_utf8_lossy(&so.join().unwrap_or_default()).to_string();
+        text.push_str(&String::from_utf8_lossy(&se.join().unwrap_or_default()));
+        // Keep the TAIL — failures print last.
+        const CAP: usize = 4000;
+        if text.len() > CAP {
+            let cut = text.len() - CAP;
+            let safe = (cut..text.len()).find(|i| text.is_char_boundary(*i)).unwrap_or(text.len());
+            text = format!("…{}", &text[safe..]);
+        }
+        CheckResult { ok: status.success(), code: status.code(), output: text.trim().to_string() }
+    })
+    .await
+    .unwrap_or(CheckResult { ok: false, code: None, output: "check task panicked".into() })
+}
+
 // --- Worktree commands ------------------------------------------------------
 
 #[tauri::command]
@@ -682,8 +756,13 @@ fn worktree_status(path: String) -> worktree::WorktreeStatus {
 }
 
 #[tauri::command]
-fn worktree_diff(path: String) -> worktree::WorktreeDiff {
-    worktree::worktree_diff(&path)
+fn worktree_diff(path: String, base: Option<String>) -> worktree::WorktreeDiff {
+    worktree::worktree_diff(&path, base.as_deref())
+}
+
+#[tauri::command]
+fn branch_diff(source_root: String, branch: String, base_branch: String) -> worktree::WorktreeDiff {
+    worktree::branch_diff(&source_root, &branch, &base_branch)
 }
 
 #[tauri::command]
@@ -1477,6 +1556,8 @@ pub fn run() {
             worktree_create,
             worktree_status,
             worktree_diff,
+            branch_diff,
+            run_check,
             worktree_remove,
             worktree_commit,
             worktree_merge,

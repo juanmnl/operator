@@ -1,8 +1,9 @@
 import type { Project, Role, ProjectTask } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
-import { RosterPanel } from './RosterPanel'
+import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
 import { TaskQueue } from './TaskQueue'
+import { DispatchLog } from './DispatchLog'
 
 // The project-level workspace, opened from a project's title in the sidebar. Home for the
 // things that belong to the PROJECT (not a single session): its Agents roster (launch new
@@ -14,7 +15,7 @@ const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodb
 
 export function ProjectView({
   project, tab, onSelectTab,
-  onUpdateProject, onLaunchRole, liveRoles, onFocusTerminal,
+  onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
 }: {
   project: Project
@@ -23,6 +24,8 @@ export function ProjectView({
   onUpdateProject?: (id: string, patch: Partial<Project>) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   liveRoles?: Record<string, string>
+  /** roleId → live session runtime (phase/usage), for the mission-control read. */
+  laneSessions?: Record<string, LaneSession>
   onFocusTerminal?: (terminalId: string) => void
   onAddTask: (text: string, roleId?: string) => void
   onAssignTask: (taskId: string, roleId?: string) => void
@@ -63,6 +66,7 @@ export function ProjectView({
               onUpdateProject={onUpdateProject}
               onLaunchRole={onLaunchRole}
               liveRoles={liveRoles}
+              laneSessions={laneSessions}
               onFocusTerminal={onFocusTerminal}
             />
             <TaskQueue
@@ -76,6 +80,7 @@ export function ProjectView({
               onStartAll={onStartAll}
               onSetTaskStatus={onSetTaskStatus}
             />
+            <DispatchLog project={project} />
           </div>
         )}
         {tab === 'moodboard' && (

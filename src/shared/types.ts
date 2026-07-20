@@ -93,6 +93,15 @@ export interface AgentSession {
   lastActivityAt: string
   terminalId?: string
   permissionMode?: string
+  /** Cumulative token usage parsed from the transcript (absent until the first turn). */
+  usage?: TokenUsage
+}
+
+/** Cumulative session token usage — the per-lane effort/cost signal. */
+export interface TokenUsage {
+  input: number
+  output: number
+  cacheRead: number
 }
 
 /** An orchestration role within a project's roster — a reusable "lane" that pins a model and
@@ -109,6 +118,19 @@ export interface Role {
   agentName?: string
   /** Optional lane accent (CSS colour) for sidebar/board badges. */
   accent?: string
+  /** Launch this lane in an isolated git worktree — gives its tasks an attributable
+   *  diff and a merge-back story (vs sharing the project root with other lanes). */
+  useWorktree?: boolean
+  /** The lane's standing charter, appended to its system prompt at launch (how this
+   *  role works — scope, method, output shape). Defaults per role; editable. */
+  prompt?: string
+}
+
+/** Compact summary of a task's code change, captured when the task completes. */
+export interface TaskDiffStat {
+  files: number
+  added: number
+  removed: number
 }
 
 /** A queued unit of work in a project's backlog. Optionally assigned to an agent lane (roleId);
@@ -122,6 +144,18 @@ export interface ProjectTask {
   status?: 'queued' | 'running' | 'done'
   /** The lane's terminal this task was dispatched to (for auto-complete + diff link). */
   terminalId?: string
+  /** Where the lane ran (worktree path or project root) — the live-diff source. */
+  cwd?: string
+  /** Worktree lanes: source repo root + branch/base, so the diff (and merge) survive
+   *  worktree removal — close deletes the dir but keeps the branch. */
+  sourceCwd?: string
+  worktreeBranch?: string
+  worktreeBase?: string
+  /** Change summary captured at completion (files/+/−), shown on the done row. */
+  diffStat?: TaskDiffStat
+  /** Verification gate result — the project's check command run in the lane's dir
+   *  at completion ("done" vs "done and green"). */
+  check?: { status: 'running' | 'pass' | 'fail'; output?: string; at: string }
   createdAt: string
   startedAt?: string
   doneAt?: string
@@ -154,11 +188,30 @@ export interface Project {
   createdAt: string
   lastActiveAt: string
   defaults?: { model?: string; effortLevel?: 'high' | 'normal' | 'low'; permissionMode?: string }
+  /** Verification gate: shell command (e.g. "npm test") run in a lane's dir when its
+   *  task completes. Empty/absent = gates off. */
+  checkCommand?: string
   /** Orchestration roster — the project's agent lanes (see Role). */
   roster?: Role[]
   /** Backlog of tasks to dispatch to agents (see ProjectTask). */
   tasks?: ProjectTask[]
+  /** Recent orchestrator dispatches (who asked whom to do what) — capped tail, newest last. */
+  dispatches?: DispatchRecord[]
   // Deferred seams (not populated this phase): moodboard, contextNotes, chatThreadId.
+}
+
+/** One routed `OPERATOR-DISPATCH` directive, kept as a project activity log. */
+export interface DispatchRecord {
+  /** The backend's dedupe id (stable across transcript re-reads). */
+  id: string
+  at: string
+  /** The lane that emitted the directive (unknown for non-role sessions). */
+  fromRoleId?: string
+  /** The resolved target lane; absent when the role didn't match (→ unassigned). */
+  toRoleId?: string
+  task: string
+  /** sent = typed into a live lane · queued = lane idle, task queued · unassigned = unknown role. */
+  outcome: 'sent' | 'queued' | 'unassigned'
 }
 
 /** What resolveProject() returns for a source cwd. */

@@ -225,7 +225,13 @@ export function installBridge(): void {
     worktreeRemove: async (path: string, sourceRoot: string) => {
       try { await invoke('worktree_remove', { path, sourceRoot }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
     },
-    worktreeDiff: (path: string) => invoke('worktree_diff', { path }),
+    worktreeDiff: (path: string, base?: string) => invoke('worktree_diff', { path, base }),
+    // Diff a surviving branch vs its base from the source repo — the durable diff for a
+    // done task after its worktree dir is gone (close removes the dir, keeps the branch).
+    branchDiff: (sourceRoot: string, branch: string, baseBranch: string) =>
+      invoke('branch_diff', { sourceRoot, branch, baseBranch }),
+    // Verification gate: run the project's check command in a lane's dir (10-min cap).
+    runCheck: (cwd: string, command: string) => invoke('run_check', { cwd, command }),
     worktreeCommit: async (path: string, message: string) => {
       try { const sha = await invoke<string>('worktree_commit', { path, message }); return { ok: true, sha } } catch (e) { return { ok: false, error: String(e) } }
     },

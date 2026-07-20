@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig } from '../../shared/types'
+import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote } from '../lib/roster'
+import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
@@ -478,48 +479,119 @@ export function DashboardView() {
       ? { ...p, tasks: (p.tasks ?? []).filter((t) => !idset.has(t.id)) }
       : p)))
   }, [])
+  // Where a task's lane ran — stamped onto the task at dispatch so its diff stays
+  // resolvable after the session (worktree lanes: dir + surviving branch/base).
+  type TaskLane = { cwd?: string; sourceCwd?: string; worktreeBranch?: string; worktreeBase?: string }
+  const laneOf = (tab?: { cwd: string; sourceCwd?: string; worktreeBranch?: string; worktreeBase?: string }): TaskLane | undefined =>
+    tab ? { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase } : undefined
+  // Latest projects snapshot for async task helpers (diff capture) without re-subscribing.
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
   // Lifecycle transitions. Dispatching a task marks it running (with its lane) instead of
   // deleting it, so it stays visible until done. `terminalId` is optional — the lane pickup
   // path doesn't know the new terminal id yet, so it matches on roleId for auto-complete.
-  const markTasksRunning = useCallback((projectId: string, ids: string[], terminalId?: string) => {
+  const markTasksRunning = useCallback((projectId: string, ids: string[], terminalId?: string, lane?: TaskLane) => {
     if (!ids.length) return
     const idset = new Set(ids)
     const now = new Date().toISOString()
     setProjects((prev) => prev.map((p) => (p.id === projectId
-      ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id) ? { ...t, status: 'running' as const, startedAt: now, terminalId: terminalId ?? t.terminalId } : t)) }
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id)
+        ? { ...t, status: 'running' as const, startedAt: t.startedAt ?? now, terminalId: terminalId ?? t.terminalId, ...(lane ?? {}) }
+        : t)) }
+      : p)))
+  }, [])
+  // Verification gate: stamp + run the project's check command in the lane's dir when
+  // tasks complete. Fire-and-await per lane; the close path chains worktree removal
+  // behind it so the dir survives until the check finishes.
+  const stampTaskCheck = useCallback((projectId: string, ids: string[], check: ProjectTask['check']) => {
+    const idset = new Set(ids)
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id) ? { ...t, check } : t)) }
+      : p)))
+  }, [])
+  const runTaskChecks = useCallback(async (projectId: string, ids: string[], cwd?: string) => {
+    const cmd = projectsRef.current.find((p) => p.id === projectId)?.checkCommand?.trim()
+    if (!cmd || !ids.length || !cwd) return
+    stampTaskCheck(projectId, ids, { status: 'running', at: new Date().toISOString() })
+    const res = await window.operator.runCheck(cwd, cmd).catch((e) => ({ ok: false, output: String(e) }))
+    stampTaskCheck(projectId, ids, { status: res.ok ? 'pass' : 'fail', output: res.output, at: new Date().toISOString() })
+  }, [stampTaskCheck])
+
+  // Attach the captured change summary (files/+/−) to completed tasks.
+  const attachTaskDiffStats = useCallback((projectId: string, ids: string[], stat?: TaskDiffStat) => {
+    if (!stat || !ids.length) return
+    const idset = new Set(ids)
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id) ? { ...t, diffStat: stat } : t)) }
       : p)))
   }, [])
   const setTaskStatus = useCallback((projectId: string, id: string, status: ProjectTask['status']) => {
     setProjects((prev) => prev.map((p) => (p.id === projectId
       ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === id ? { ...t, status, doneAt: status === 'done' ? new Date().toISOString() : t.doneAt } : t)) }
       : p)))
-  }, [])
+    // Manual "Done ✓": capture the task's change summary while its dir/branch still
+    // resolves, and run the verification gate in its dir.
+    if (status === 'done') {
+      const task = projectsRef.current.find((p) => p.id === projectId)?.tasks?.find((t) => t.id === id)
+      if (task && !task.diffStat && taskHasDiffSource(task)) {
+        void fetchTaskDiffStat(task).then((stat) => attachTaskDiffStats(projectId, [id], stat))
+      }
+      if (task && !task.check) void runTaskChecks(projectId, [id], task.cwd)
+    }
+  }, [attachTaskDiffStats, runTaskChecks])
   // Record a task that's ALREADY running (orchestrator dispatched it straight to a live lane).
-  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string) => {
+  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string, lane?: TaskLane) => {
     const t = text.trim()
     if (!t) return
     const now = new Date().toISOString()
-    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, createdAt: now, startedAt: now }
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, createdAt: now, startedAt: now, ...(lane ?? {}) }
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
   }, [])
   // When a lane's session ends, its still-running tasks are treated as done (auto-complete).
-  const completeTerminalTasks = useCallback((terminalId: string, roleId?: string, projectId?: string) => {
+  // Also captures each task's diff summary — awaited by the close path BEFORE it removes the
+  // worktree, so the stat survives the dir. `lane` backfills provenance the pickup path missed.
+  const completeTerminalTasks = useCallback(async (terminalId: string, roleId?: string, projectId?: string, lane?: TaskLane) => {
     const now = new Date().toISOString()
+    const isMatch = (t: ProjectTask) =>
+      t.status === 'running' && (t.terminalId === terminalId || (!!roleId && t.roleId === roleId && !t.terminalId))
+    const matched: { projectId: string; ids: string[]; task: ProjectTask }[] = []
+    for (const p of projectsRef.current) {
+      if (projectId && p.id !== projectId) continue
+      const hits = (p.tasks ?? []).filter(isMatch)
+      if (hits.length) matched.push({ projectId: p.id, ids: hits.map((t) => t.id), task: hits[0] })
+    }
     setProjects((prev) => prev.map((p) => {
       if (projectId && p.id !== projectId) return p
-      const tasks = (p.tasks ?? []).map((t) =>
-        t.status === 'running' && (t.terminalId === terminalId || (roleId && t.roleId === roleId && !t.terminalId))
-          ? { ...t, status: 'done' as const, doneAt: now }
-          : t)
+      const tasks = (p.tasks ?? []).map((t) => (isMatch(t)
+        ? { ...t, status: 'done' as const, doneAt: now, cwd: t.cwd ?? lane?.cwd, sourceCwd: t.sourceCwd ?? lane?.sourceCwd, worktreeBranch: t.worktreeBranch ?? lane?.worktreeBranch, worktreeBase: t.worktreeBase ?? lane?.worktreeBase }
+        : t))
       return tasks === p.tasks ? p : { ...p, tasks }
     }))
-  }, [])
+    // One capture per lane (all matched tasks shared the terminal/role → same diff),
+    // then the verification gate — awaited so a worktree close removes the dir only
+    // after the check has run in it.
+    for (const m of matched) {
+      const src = lane ?? m.task
+      if (taskHasDiffSource(src)) {
+        const stat = await fetchTaskDiffStat(src).catch(() => undefined)
+        attachTaskDiffStats(m.projectId, m.ids, stat)
+      }
+      await runTaskChecks(m.projectId, m.ids, src.cwd)
+    }
+  }, [attachTaskDiffStats, runTaskChecks])
   // Fresh closure over terminals + completeTerminalTasks for the mount-time exit subscription.
   const exitCompleteRef = useRef<(id: string) => void>(() => {})
   exitCompleteRef.current = (id: string) => {
     const tab = terminals.find((t) => t.id === id)
-    if (tab?.projectId) completeTerminalTasks(id, tab.roleId, tab.projectId)
+    if (tab?.projectId) void completeTerminalTasks(id, tab.roleId, tab.projectId, laneOf(tab))
   }
+
+  // Append a routed dispatch to the project's activity log (capped tail, newest last).
+  const logDispatch = useCallback((projectId: string, rec: DispatchRecord) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, dispatches: [...(p.dispatches ?? []), rec].slice(-100) }
+      : p)))
+  }, [])
 
   // --- Orchestrator dispatch routing ----------------------------------------------------
   // An agent emitted `OPERATOR-DISPATCH [role] task`; the backend parsed it and fires the
@@ -527,8 +599,8 @@ export function DashboardView() {
   // gets the task typed into its pty (no focus steal); an idle lane gets it QUEUED (we don't
   // auto-spawn agents from model output — the user launches, keeping a human in the loop).
   // Latest routing inputs held in a ref so the subscription is set up once (no missed events).
-  const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast })
-  dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast }
+  const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch })
+  dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch }
   useEffect(() => {
     const SEEN_KEY = 'operator.dispatch.seen'
     const unsub = window.operator.onOrchestratorDispatch?.((d) => {
@@ -537,24 +609,30 @@ export function DashboardView() {
       if (seen.includes(d.id)) return // already handled (dedupe across transcript re-reads)
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, d.id].slice(-500))) } catch { /* */ }
 
-      const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast } = dispatchRef.current
+      const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === d.terminalId)
       const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
       if (!project) return
       const role = project.roster?.find((r) => r.id === d.role || r.name.toLowerCase() === d.role.toLowerCase())
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
+      const record = (outcome: DispatchRecord['outcome']) =>
+        log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: role?.id, task: d.task, outcome })
       if (role) {
         const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id)
         if (liveTab) {
           window.operator.terminalWrite(liveTab.id, `\x1b[200~${d.task}\x1b[201~\r`)
-          addRunning(project.id, d.task, role.id, liveTab.id) // track it as running on the lane
+          // track it as running on the lane (with its dir, so the diff link resolves)
+          addRunning(project.id, d.task, role.id, liveTab.id, { cwd: liveTab.cwd, sourceCwd: liveTab.sourceCwd, worktreeBranch: liveTab.worktreeBranch, worktreeBase: liveTab.worktreeBase })
+          record('sent')
           toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
         } else {
           addTask(project.id, d.task, role.id) // idle lane → queued (user launches)
+          record('queued')
           toast({ text: `Queued for ${role.name}`, kind: 'info', detail: preview })
         }
       } else {
         addTask(project.id, d.task) // unknown role → unassigned backlog
+        record('unassigned')
         toast({ text: 'Queued (unassigned)', kind: 'info', detail: preview })
       }
     })
@@ -684,7 +762,7 @@ export function DashboardView() {
     }).catch(() => { /* no re-attach */ })
   }, [savedHydrated, savedSessions])
 
-  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string }) => {
+  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string }): Promise<TerminalTab[]> => {
     // Write effort level to global settings (Claude Code reads it from there)
     const prefs = await window.operator.folderPrefsLoad(cwd)
     const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
@@ -699,6 +777,7 @@ export function DashboardView() {
     // Fan-out: launch the same task on N agents, each in its own worktree.
     const count = Math.max(1, config.count || 1)
     const fanGroup = count > 1 ? crypto.randomUUID() : undefined
+    const spawned: TerminalTab[] = []
 
     for (let i = 0; i < count; i++) {
       // Each agent gets an isolated git worktree (forced on for fan-out).
@@ -749,6 +828,7 @@ export function DashboardView() {
         fanTotal: fanGroup ? count : undefined,
       }
       setTerminals((prev) => [...prev, tab])
+      spawned.push(tab)
       // Focus the first agent; the rest run in the background.
       if (i === 0) {
         setActiveTerminalId(result.terminalId)
@@ -764,12 +844,13 @@ export function DashboardView() {
       const filtered = prev.filter((p) => p.path !== cwd)
       return [{ path: cwd, name, lastUsedAt: new Date().toISOString() }, ...filtered].slice(0, 10)
     })
+    return spawned
   }, [rememberRecent, upsertProject])
 
   // Orchestration: launch a session on a project's role (lane) — spawns in the project
   // root with the role's model/effort/permission and tags the session with roleId. An
   // optional `prompt` is handed to Claude as the first message (delegation).
-  const handleLaunchRole = useCallback((project: Project, role: Role, prompt?: string, launchDevServer = false) => {
+  const handleLaunchRole = useCallback(async (project: Project, role: Role, prompt?: string, launchDevServer = false) => {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
     const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
     // The agent picks up its assigned QUEUED tasks as its opening work; they move to running
@@ -779,22 +860,24 @@ export function DashboardView() {
       ? `Please work through these tasks:\n${queued.map((t, i) => `${i + 1}. ${t.text}`).join('\n')}`
       : ''
     const combined = [prompt?.trim(), taskBlock].filter(Boolean).join('\n\n')
-    if (queued.length) markTasksRunning(project.id, queued.map((t) => t.id))
-    void handleLaunchSession(
+    if (queued.length) markTasksRunning(project.id, queued.map((t) => t.id)) // claim first (no double pickup)
+    const tabs = await handleLaunchSession(
       project.path,
       {
         effortLevel: role.effort ?? 'high',
         permissionMode: (role.permissionMode as SessionConfig['permissionMode']) ?? 'default',
         model: role.model,
         allowedTools: '',
-        useWorktree: false,
+        useWorktree: !!role.useWorktree, // isolated lane → attributable diff + merge-back
         launchDevServer,
         count: 1,
         prompt: combined,
       },
       { roleId: role.id, orchestrationNote: note },
     )
-  }, [handleLaunchSession, removeProjectTasks])
+    // Now the terminal (and worktree) exist — stamp the picked-up tasks with their lane.
+    if (tabs[0] && queued.length) markTasksRunning(project.id, queued.map((t) => t.id), tabs[0].id, laneOf(tabs[0]))
+  }, [handleLaunchSession, markTasksRunning])
 
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
@@ -817,7 +900,7 @@ export function DashboardView() {
       setActiveTerminalId(liveTab.id)
       setActiveSessionId(`local-${liveTab.id}`)
     } else {
-      handleLaunchRole(project, role, t)
+      void handleLaunchRole(project, role, t)
     }
   }, [terminals, handleLaunchRole])
 
@@ -829,9 +912,9 @@ export function DashboardView() {
     const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === role.id)
     if (liveTab) {
       dispatchToRole(project, role, task.text)
-      markTasksRunning(project.id, [task.id], liveTab.id) // now running on this lane
+      markTasksRunning(project.id, [task.id], liveTab.id, laneOf(liveTab)) // now running on this lane
     } else {
-      handleLaunchRole(project, role) // launch picks up its queue (incl. this task → running)
+      void handleLaunchRole(project, role) // launch picks up its queue (incl. this task → running)
     }
   }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
 
@@ -851,9 +934,9 @@ export function DashboardView() {
       if (liveTab) {
         const text = tasks.map((t, i) => `${i + 1}. ${t.text}`).join('\n')
         dispatchToRole(project, role, `Please work through these tasks:\n${text}`)
-        markTasksRunning(project.id, tasks.map((t) => t.id), liveTab.id)
+        markTasksRunning(project.id, tasks.map((t) => t.id), liveTab.id, laneOf(liveTab))
       } else {
-        handleLaunchRole(project, role) // picks up its queue
+        void handleLaunchRole(project, role) // picks up its queue
       }
     }
   }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
@@ -929,16 +1012,24 @@ export function DashboardView() {
     const tab = terminals.find((t) => t.id === terminalId)
     // Kill the pty first so any in-flight git operations on the worktree die.
     await window.operator.terminalKill(terminalId)
-    // If this was a worktree session, clean up the worktree directory.
+    // Its running tasks → done: capture their diff summary and run the verification
+    // gate while the dir still exists. NOT awaited here (a check can take minutes) —
+    // worktree removal is CHAINED behind it instead, so close stays snappy and the
+    // dir survives until the capture + check finish.
+    const finishTasks = tab?.projectId
+      ? completeTerminalTasks(terminalId, tab.roleId, tab.projectId, laneOf(tab))
+      : Promise.resolve()
+    // If this was a worktree session, clean up the worktree directory afterwards.
     // Branch is intentionally left intact — user may want to merge or review later.
     if (tab?.worktreeBranch && tab?.sourceCwd) {
-      const result = await window.operator.worktreeRemove(tab.cwd, tab.sourceCwd)
-      if (!result.ok) console.warn('Worktree removal failed:', result.error)
+      void finishTasks.then(async () => {
+        const result = await window.operator.worktreeRemove(tab.cwd, tab.sourceCwd!)
+        if (!result.ok) console.warn('Worktree removal failed:', result.error)
+      })
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
     // Closing is intentional — forget the saved session so it won't offer to restore.
     if (tab) forgetSavedSession(tab.key)
-    if (tab?.projectId) completeTerminalTasks(terminalId, tab.roleId, tab.projectId) // its running tasks → done
     setTerminals((prev) => prev.filter((t) => t.id !== terminalId))
     setActiveTerminalId((current) => (current === terminalId ? null : current))
     setActiveSessionId((current) => {
@@ -1600,6 +1691,13 @@ export function DashboardView() {
           if (!proj) return null
           const live: Record<string, string> = {}
           for (const t of terminals) if (t.projectId === proj.id && t.roleId) live[t.roleId] = t.id
+          // Live runtime per lane (phase + token usage) from the transcript observer,
+          // so RoleCards read as mission control rather than static config.
+          const laneSessions: Record<string, { phase: string; usage?: AgentSession['usage']; lastActivityAt?: string }> = {}
+          for (const [roleId, tid] of Object.entries(live)) {
+            const s = sessions.find((x) => x.terminalId === tid)
+            if (s) laneSessions[roleId] = { phase: s.phase, usage: s.usage, lastActivityAt: s.lastActivityAt }
+          }
           return (
             <ProjectView
               project={proj}
@@ -1608,6 +1706,7 @@ export function DashboardView() {
               onUpdateProject={updateProject}
               onLaunchRole={(project, role, dev) => handleLaunchRole(project, role, undefined, dev)}
               liveRoles={live}
+              laneSessions={laneSessions}
               onFocusTerminal={focusTerminal}
               onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
               onAssignTask={(taskId, roleId) => assignProjectTask(proj.id, taskId, roleId)}

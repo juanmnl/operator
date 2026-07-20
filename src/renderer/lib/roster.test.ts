@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelFamilyLabel, ROSTER_MODELS } from './roster'
+import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 
 describe('roster', () => {
   it('seeds a default roster with unique ids and valid models', () => {
@@ -24,6 +24,35 @@ describe('roster', () => {
     expect(roleIdFrom('Design QA', existing)).toBe('design-qa')
     expect(roleIdFrom('Research', existing)).toBe('research-2') // 'research' already taken
     expect(roleIdFrom('!!!', existing)).toBe('role')
+  })
+
+  it('every default lane ships a standing charter prompt', () => {
+    for (const r of defaultRoster()) {
+      expect(r.prompt, `role ${r.id} has a prompt`).toBeTruthy()
+      expect(r.prompt).toBe(DEFAULT_ROLE_PROMPTS[r.id])
+    }
+  })
+
+  it('orchestrationNote carries the lane charter and the dispatch protocol', () => {
+    const roster = defaultRoster()
+    const code = roster.find((r) => r.id === 'code')!
+    const note = orchestrationNote('Demo', code, roster)
+    expect(note).toContain('Your role charter:')
+    expect(note).toContain(code.prompt!.slice(0, 40)) // the charter text itself rides along
+    expect(note).toContain('OPERATOR-DISPATCH')
+    // No charter → no dangling charter line.
+    const bare = orchestrationNote('Demo', { ...code, prompt: undefined }, roster)
+    expect(bare).not.toContain('Your role charter:')
+  })
+
+  it('stripDispatchLines removes directive lines, keeps the prose', () => {
+    const text = 'I split the work.\n\nOPERATOR-DISPATCH [code] fix the parser\nOPERATOR-DISPATCH [qa] add a regression test\n\nBoth lanes are briefed.'
+    expect(stripDispatchLines(text)).toBe('I split the work.\n\nBoth lanes are briefed.')
+    // A directive-only message strips to empty (the turn is dropped upstream).
+    expect(stripDispatchLines('OPERATOR-DISPATCH [code] do x')).toBe('')
+    // Prose that merely MENTIONS the protocol mid-line is untouched.
+    const mention = 'Use OPERATOR-DISPATCH [lane] to delegate.'
+    expect(stripDispatchLines(mention)).toBe(mention)
   })
 
   it('modelFamilyLabel maps aliases and falls back gracefully', () => {

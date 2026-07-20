@@ -54,6 +54,16 @@ pub struct TodoItem {
     pub status: String, // pending | in_progress | completed
 }
 
+/// Cumulative token usage parsed from the transcript's assistant messages —
+/// the per-lane effort/cost signal (input = fresh + cache-write tokens).
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
@@ -86,6 +96,9 @@ pub struct AgentSession {
     /// "claude-opus-4-…"; the frontend maps it to a family label.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// Cumulative token usage for the session (absent until the first assistant turn).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<TokenUsage>,
 }
 
 pub fn now_iso() -> String {
@@ -235,6 +248,7 @@ impl AgentSession {
         started_at: String,
         last_activity_at: String,
         model: Option<String>,
+        usage: Option<TokenUsage>,
     ) -> AgentSession {
         let project_name = cwd.rsplit('/').next().unwrap_or(&cwd).to_string();
         AgentSession {
@@ -255,6 +269,7 @@ impl AgentSession {
             terminal_id: Some(terminal_id),
             permission_mode,
             model,
+            usage,
         }
     }
 }
