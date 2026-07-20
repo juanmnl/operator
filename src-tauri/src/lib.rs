@@ -41,6 +41,10 @@ struct Pty {
     /// pty is opened and sized first, then Claude launches at the final grid width so
     /// classic-mode scrollback never mis-wraps. Set once the child spawns.
     killer: Option<Box<dyn ChildKiller + Send + Sync>>,
+    /// The pty child's pid (the login shell). Root of the process tree we walk to
+    /// find which listening ports belong to THIS session — see `session_ports`.
+    /// None until the deferred child execs, same as `killer`.
+    pid: Option<u32>,
     cwd: String,
 }
 
@@ -89,8 +93,10 @@ pub struct PtyManager {
     /// signal for the status indicator (claude streams while thinking/running).
     activity: Mutex<HashMap<String, Instant>>,
     /// Dev-server port handed to each session via OPERATOR_DEV_PORT, tracked so
-    /// parallel worktree agents never grab the same port.
-    ports: Mutex<HashMap<String, u16>>,
+    /// parallel worktree agents never grab the same port. Keyed terminal id →
+    /// (canonical cwd, port): the cwd is what makes SHARING possible — lanes in the
+    /// same directory serve the same code and get the same port (see alloc_port).
+    ports: Mutex<HashMap<String, (String, u16)>>,
     /// Rolling tail of each pty's raw output (capped). The Rust backend outlives a
     /// renderer/webview reload, so its ptys keep running — this lets a re-attaching
     /// terminal replay recent scrollback instead of showing a blank pane.
@@ -113,6 +119,96 @@ fn port_free(port: u16) -> bool {
         && TcpListener::bind((Ipv6Addr::LOCALHOST, port)).is_ok()
 }
 
+/// Normalize a working directory into a port-sharing key, so `/a/b`, `/a/b/` and a
+/// path through a symlink all agree on whether two lanes are "in the same place".
+/// Falls back to the trimmed literal when the path can't be resolved (it may not
+/// exist yet at spawn time).
+fn canonical_cwd(cwd: &str) -> String {
+    std::fs::canonicalize(cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| cwd.trim_end_matches('/').to_string())
+}
+
+/// Parse `ps -Ao pid=,ppid=` into a parent → children map, then collect every
+/// descendant of `root` (inclusive). A session's dev server is a grandchild at best
+/// — zsh → claude → npm → vite — so a direct-children check would miss it.
+///
+/// Split out from `descendants` so the tree walk is testable without spawning `ps`.
+fn descendants_from(ps_output: &str, root: u32) -> Vec<u32> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in ps_output.lines() {
+        let mut it = line.split_whitespace();
+        if let (Some(Ok(pid)), Some(Ok(ppid))) = (
+            it.next().map(str::parse::<u32>),
+            it.next().map(str::parse::<u32>),
+        ) {
+            children.entry(ppid).or_default().push(pid);
+        }
+    }
+    // Breadth-first from the root. `seen` guards against a cycle in a malformed
+    // table — a pid loop would otherwise hang the walk forever.
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut queue = vec![root];
+    while let Some(pid) = queue.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        out.push(pid);
+        if let Some(kids) = children.get(&pid) {
+            queue.extend(kids);
+        }
+    }
+    out
+}
+
+/// Every pid in this process's tree, root included.
+fn descendants(root: u32) -> Vec<u32> {
+    let out = std::process::Command::new("ps")
+        .args(["-Ao", "pid=,ppid="])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    descendants_from(&out, root)
+}
+
+/// Pull the listening TCP ports out of `lsof -F n` output (one `n<name>` field per
+/// socket, e.g. `n*:5173`, `n127.0.0.1:3000`, `n[::1]:8080`). Deduped + sorted, so a
+/// server listening on both loopback families reports one port, not two.
+///
+/// Split out from `listening_ports` so the parsing is testable without spawning `lsof`.
+fn listening_ports_from(lsof_output: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = lsof_output
+        .lines()
+        .filter_map(|l| l.strip_prefix('n'))
+        // The port is whatever follows the LAST colon — `[::1]:5173` has several.
+        .filter_map(|name| name.rsplit_once(':'))
+        .filter_map(|(_, port)| port.parse::<u16>().ok())
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// TCP ports these pids are LISTENING on. Empty when nothing is serving (or when
+/// `lsof` is unavailable) — a best-effort signal, never an error path.
+fn listening_ports(pids: &[u32]) -> Vec<u16> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let out = std::process::Command::new("lsof")
+        // -a ANDs the filters: these pids AND tcp AND listening. -nP skips DNS +
+        // service-name lookups (both slow); -F n emits just the socket names.
+        .args(["-nP", "-a", "-p", &list, "-iTCP", "-sTCP:LISTEN", "-F", "n"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    listening_ports_from(&out)
+}
+
 /// Max bytes of pty output retained per terminal for re-attach replay.
 const HISTORY_CAP: usize = 256 * 1024;
 
@@ -131,20 +227,40 @@ impl PtyManager {
         lock(&self.activity).get(id).map(|t| t.elapsed() < dur).unwrap_or(false)
     }
 
-    /// Reserve a free localhost port for this session's dev server. Scans up from
-    /// 1420, skipping ports already handed to a sibling session and any the OS
-    /// reports busy right now (bind-test, dropped immediately — the dev server
-    /// binds a moment later). Returns None if the whole range is exhausted.
-    pub fn alloc_port(&self, id: &str) -> Option<u16> {
+    /// Reserve a localhost dev-server port for this session, keyed on its working
+    /// directory.
+    ///
+    /// Sharing rule: **same cwd → same port; different cwd → different port.** A
+    /// worktree lane has its own checkout, so it must have its own server — otherwise
+    /// lanes would be reviewing each other's build, which is the whole reason the port
+    /// bookkeeping exists. But lanes sharing the project root serve *identical* code,
+    /// and giving each its own port just spawns redundant servers (and the second one
+    /// usually loses the bind race anyway). Keying on cwd gives worktree isolation for
+    /// free, since a worktree's path differs from the root's.
+    ///
+    /// Returns `(port, shared)` — `shared` meaning a sibling in the same directory
+    /// already holds it, so a server may already be live there.
+    ///
+    /// On a fresh cwd, scans up from 1420, skipping ports held by another directory
+    /// and any the OS reports busy right now (bind-test, dropped immediately — the dev
+    /// server binds a moment later). Returns None if the whole range is exhausted.
+    pub fn alloc_port(&self, id: &str, cwd: &str) -> Option<(u16, bool)> {
+        let key = canonical_cwd(cwd);
         let mut ports = lock(&self.ports);
-        let taken: std::collections::HashSet<u16> = ports.values().copied().collect();
+        // A live sibling in the same directory already has one — join it.
+        if let Some((_, port)) = ports.values().find(|(c, _)| c == &key) {
+            let port = *port;
+            ports.insert(id.to_string(), (key, port));
+            return Some((port, true));
+        }
+        let taken: std::collections::HashSet<u16> = ports.values().map(|(_, p)| *p).collect();
         for port in 1420u16..1520 {
             if taken.contains(&port) {
                 continue;
             }
             if port_free(port) {
-                ports.insert(id.to_string(), port);
-                return Some(port);
+                ports.insert(id.to_string(), (key, port));
+                return Some((port, false));
             }
         }
         None
@@ -155,9 +271,10 @@ impl PtyManager {
         lock(&self.ports).remove(id);
     }
 
-    /// Snapshot of every live session's dev port (terminal id → port).
+    /// Snapshot of every live session's dev port (terminal id → port). Sessions
+    /// sharing a directory report the same port.
     pub fn dev_ports(&self) -> HashMap<String, u16> {
-        lock(&self.ports).clone()
+        lock(&self.ports).iter().map(|(id, (_, p))| (id.clone(), *p)).collect()
     }
 
     /// Append pty output to the re-attach replay buffer. Trims lazily — only once
@@ -272,16 +389,24 @@ fn terminal_spawn(
     // of Operator's port bookkeeping is that parallel sessions don't fight over
     // the same dev-server port — so we both hand the port to the dev tooling
     // (OPERATOR_DEV_PORT / PORT) and *tell the agent about it* (below).
-    let dev_port = mgr.alloc_port(&id);
+    // `shared` = a sibling lane in this same directory already holds this port, so a
+    // dev server may already be serving this exact code (see alloc_port).
+    let (dev_port, port_shared) = match mgr.alloc_port(&id, &cwd) {
+        Some((p, shared)) => (Some(p), shared),
+        None => (None, false),
+    };
     // Ports other live sessions already hold, so we can warn this agent off them.
+    // Our own port is excluded even when a sibling shares it — otherwise a shared
+    // lane would be told to bind a port and avoid it in the same breath.
     let others: Vec<u16> = {
         let mut v: Vec<u16> = mgr
             .dev_ports()
             .into_iter()
-            .filter(|(tid, _)| tid != &id)
+            .filter(|(tid, p)| tid != &id && Some(*p) != dev_port)
             .map(|(_, p)| p)
             .collect();
         v.sort_unstable();
+        v.dedup();
         v
     };
 
@@ -321,12 +446,30 @@ fn terminal_spawn(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        // Two different instructions depending on whether this lane owns the port or
+        // shares it. A shared lane starting its own server would just lose the bind
+        // race (or worse, silently land on a random fallback port the Preview isn't
+        // watching), so tell it to check for a live one first.
+        let own = if port_shared {
+            format!(
+                "Your dev-server port is {port}, SHARED with the other Operator sessions working in \
+                 this same directory — you all serve identical code, so one server is enough. Check \
+                 whether it is already live (e.g. `curl -s -o /dev/null localhost:{port}`) BEFORE \
+                 starting anything: if it responds, just use it. Only if it is down should you start \
+                 the dev server yourself, on that port (pass `--port {port}`, or read it from the \
+                 PORT env var)."
+            )
+        } else {
+            format!(
+                "Your reserved dev-server port is {port}; start any local/dev server on it (pass \
+                 `--port {port}`, or read it from the PORT env var)."
+            )
+        };
         sys_notes.push(format!(
-            "Operator (this session's manager) reserves a localhost port per session to avoid \
-             collisions between parallel agents. Your reserved dev-server port is {port}; start any \
-             local/dev server on it (pass `--port {port}`, or read it from the PORT env var). Ports \
-             already in use by other Operator sessions: {taken} — do NOT bind those. If you need \
-             more than one port, pick free ones outside that set."
+            "Operator (this session's manager) reserves a localhost port per working directory to \
+             avoid collisions between parallel agents. {own} Ports already in use by other Operator \
+             sessions: {taken} — do NOT bind those. If you need more than one port, pick free ones \
+             outside that set."
         ));
     }
     if let Some(note) = orchestration_note.filter(|s| !s.trim().is_empty()) {
@@ -385,7 +528,8 @@ fn terminal_spawn(
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { tx, master: pair.master, killer: None, cwd: cwd.clone() },
+        // Deferred launch: pid arrives with the child in `start_pending`.
+        Pty { tx, master: pair.master, killer: None, pid: None, cwd: cwd.clone() },
     );
     lock(&mgr.pending).insert(id.clone(), PendingStart { cmd, slave: pair.slave });
 
@@ -448,9 +592,11 @@ fn start_pending(mgr: &Arc<PtyManager>, id: &str) {
     match slave.spawn_command(cmd) {
         Ok(child) => {
             let killer = child.clone_killer();
+            let pid = child.process_id();
             drop(slave);
             if let Some(p) = lock(&mgr.ptys).get_mut(id) {
                 p.killer = Some(killer);
+                p.pid = pid;
             }
             // `child` drops here; the process keeps running (killer holds the kill capability).
         }
@@ -503,6 +649,7 @@ fn shell_spawn(
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
+    let pid = child.process_id();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -510,7 +657,7 @@ fn shell_spawn(
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { tx, master: pair.master, killer: Some(killer), cwd: cwd.clone() },
+        Pty { tx, master: pair.master, killer: Some(killer), pid, cwd: cwd.clone() },
     );
 
     let emit_id = id.clone();
@@ -655,6 +802,22 @@ fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
 #[tauri::command]
 fn get_dev_ports(mgr: State<Arc<PtyManager>>) -> HashMap<String, u16> {
     mgr.dev_ports()
+}
+
+/// Every TCP port this session is actually LISTENING on, discovered by walking its
+/// pty's process tree (zsh → claude → npm → vite → …) rather than probing localhost.
+///
+/// Attribution is the whole point. Probing common dev ports from the renderer can't
+/// tell whose server answered — a sibling lane (or an unrelated app) on :5173 would be
+/// shown as this session's app. Walking the tree only ever reports servers this
+/// session's own processes opened.
+///
+/// Best-effort: an empty vec means "nothing serving yet", never an error. A session
+/// whose child hasn't exec'd (deferred launch) has no pid, so it reports nothing.
+#[tauri::command]
+fn session_ports(id: String, mgr: State<Arc<PtyManager>>) -> Vec<u16> {
+    let Some(pid) = lock(&mgr.ptys).get(&id).and_then(|p| p.pid) else { return Vec::new() };
+    listening_ports(&descendants(pid))
 }
 
 // --- Sessions command -------------------------------------------------------
@@ -1551,6 +1714,7 @@ pub fn run() {
             terminal_list,
             terminal_history,
             get_dev_ports,
+            session_ports,
             get_sessions,
             inspect_repo,
             worktree_create,
@@ -1611,5 +1775,91 @@ mod tests {
     fn shell_quote_escapes_embedded_single_quotes() {
         // it's  ->  'it'\''s'
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    /// Lanes in the same directory serve identical code, so they get ONE port —
+    /// the second lane joins the first rather than spawning a redundant server.
+    #[test]
+    fn alloc_port_shares_one_port_across_lanes_in_the_same_cwd() {
+        let mgr = PtyManager::default();
+        let (a, a_shared) = mgr.alloc_port("t0", "/tmp").expect("a port");
+        let (b, b_shared) = mgr.alloc_port("t1", "/tmp").expect("a port");
+        assert_eq!(a, b, "same cwd must share a port");
+        assert!(!a_shared, "the first lane in a directory owns its port");
+        assert!(b_shared, "the second lane is told the port is shared");
+    }
+
+    /// A worktree lane has its own checkout, so it must get its own server —
+    /// this is what keeps lanes from reviewing each other's build.
+    #[test]
+    fn alloc_port_isolates_different_cwds() {
+        let mgr = PtyManager::default();
+        let (a, _) = mgr.alloc_port("t0", "/tmp").expect("a port");
+        let (b, b_shared) = mgr.alloc_port("t1", "/usr").expect("a port");
+        assert_ne!(a, b, "different cwds must not share a port");
+        assert!(!b_shared);
+    }
+
+    /// Releasing one lane leaves the port held while a sibling still shares it,
+    /// so a rejoining lane can't be handed a port that's still serving.
+    #[test]
+    fn releasing_one_sharer_keeps_the_port_held_for_the_rest() {
+        let mgr = PtyManager::default();
+        let (a, _) = mgr.alloc_port("t0", "/tmp").expect("a port");
+        mgr.alloc_port("t1", "/tmp").expect("a port");
+        mgr.release_port("t0");
+        assert_eq!(mgr.dev_ports().get("t1"), Some(&a));
+        let (c, c_shared) = mgr.alloc_port("t2", "/tmp").expect("a port");
+        assert_eq!(c, a);
+        assert!(c_shared);
+    }
+
+    /// Trailing slashes must not read as a different directory, or two lanes in
+    /// the same place would each get a server.
+    #[test]
+    fn canonical_cwd_normalizes_trailing_slash() {
+        assert_eq!(canonical_cwd("/tmp/"), canonical_cwd("/tmp"));
+    }
+
+    /// The dev server is a grandchild (zsh → claude → npm → vite), so the walk has
+    /// to go all the way down — not just the root's direct children.
+    #[test]
+    fn descendants_walks_the_whole_tree() {
+        // 1 ─ 100(zsh) ─ 200(claude) ─ 300(npm) ─ 400(vite)
+        //                            └ 301(tsc)
+        let ps = "100 1\n200 100\n300 200\n301 200\n400 300\n999 1\n";
+        let mut got = descendants_from(ps, 100);
+        got.sort_unstable();
+        assert_eq!(got, vec![100, 200, 300, 301, 400]);
+    }
+
+    /// An unrelated tree must never be attributed to this session — that's the whole
+    /// reason we walk pids instead of probing localhost.
+    #[test]
+    fn descendants_excludes_unrelated_processes() {
+        let ps = "100 1\n200 100\n500 1\n600 500\n";
+        let got = descendants_from(ps, 100);
+        assert!(!got.contains(&500) && !got.contains(&600));
+    }
+
+    /// A malformed ps table with a pid cycle must not hang the walk.
+    #[test]
+    fn descendants_survives_a_cycle() {
+        let ps = "100 200\n200 100\n";
+        let got = descendants_from(ps, 100);
+        assert_eq!(got.len(), 2);
+    }
+
+    /// lsof reports one socket per address family; the picker should offer ONE port.
+    #[test]
+    fn listening_ports_dedupes_across_address_families() {
+        let lsof = "p123\nn*:5173\nn127.0.0.1:5173\nn[::1]:5173\nn127.0.0.1:3000\n";
+        assert_eq!(listening_ports_from(lsof), vec![3000, 5173]);
+    }
+
+    #[test]
+    fn listening_ports_ignores_unparseable_names() {
+        let lsof = "p123\nn*:*\nnsomething-odd\nn127.0.0.1:4321\n";
+        assert_eq!(listening_ports_from(lsof), vec![4321]);
     }
 }

@@ -67,6 +67,22 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   const roles = roster ?? []
   // Whether launching an agent also has it start the project's dev server (so Preview works).
   const [devServer, setDevServer] = useState(true)
+  // Lanes ticked for a batch launch. Held as ids (not Role objects) so an edit to a
+  // role while it's selected doesn't strand a stale copy.
+  const [selected, setSelected] = useState<string[]>([])
+  const isLive = (id: string) => !!liveRoles?.[id]
+  // A lane that's been removed or has since gone live isn't launchable, so it can't
+  // stay in the selection — derived rather than synced, so there's no stale state to
+  // clean up when the roster or the live set changes underneath us.
+  const picked = selected.filter((id) => roles.some((r) => r.id === id) && !isLive(id))
+  const toggleSelect = (id: string) =>
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
+  // Nothing ticked keeps the original "launch the whole roster" behaviour; a partial
+  // selection launches exactly what's ticked. Either way live lanes are skipped —
+  // launching one again would spawn a duplicate session on the same lane.
+  const launchTargets = picked.length
+    ? roles.filter((r) => picked.includes(r.id))
+    : roles.filter((r) => !isLive(r.id))
   // Queued-task count per agent, so each card can show its backlog + a launch that picks it up.
   const taskCounts: Record<string, number> = {}
   for (const t of project.tasks ?? []) if (t.roleId) taskCounts[t.roleId] = (taskCounts[t.roleId] ?? 0) + 1
@@ -90,13 +106,15 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           Agents in <strong style={{ color: 'var(--fg)' }}>{project.name}</strong> — each pins a model. Launch one to
           start it, or view a live one.
         </p>
-        {roles.length > 1 && onLaunchRole && (
+        {roles.length > 1 && onLaunchRole && launchTargets.length > 0 && (
           <button
-            onClick={() => roles.forEach((r) => onLaunchRole(project, r, devServer))}
-            title="Spawn a session for every lane at once"
-            style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em', color: 'var(--fg-muted)', background: 'transparent', border: '1px solid var(--border)', borderRadius: 7, padding: '3px 8px', cursor: 'pointer', outline: 'none' }}
+            onClick={() => { launchTargets.forEach((r) => onLaunchRole(project, r, devServer)); setSelected([]) }}
+            title={picked.length
+              ? `Spawn a session for the ${picked.length} selected lane${picked.length > 1 ? 's' : ''}`
+              : 'Spawn a session for every lane that isn’t already live'}
+            style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em', color: picked.length ? 'var(--accent)' : 'var(--fg-muted)', background: 'transparent', border: `1px solid ${picked.length ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)'}`, borderRadius: 7, padding: '3px 8px', cursor: 'pointer', outline: 'none' }}
           >
-            Launch all →
+            {picked.length ? `Launch ${picked.length} →` : 'Launch all →'}
           </button>
         )}
       </div>
@@ -144,6 +162,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             session={laneSessions?.[role.id]}
             runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
             queued={taskCounts[role.id] ?? 0}
+            selected={picked.includes(role.id)}
+            onToggleSelect={() => toggleSelect(role.id)}
             onPatch={(patch) => patchRole(role.id, patch)}
             onRemove={() => removeRole(role.id)}
             onLaunch={() => onLaunchRole?.(project, role, devServer)}
@@ -166,13 +186,16 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, live, session, runningTask, queued = 0, onPatch, onRemove, onLaunch, onView }: {
+function RoleCard({ role, live, session, runningTask, queued = 0, selected, onToggleSelect, onPatch, onRemove, onLaunch, onView }: {
   role: Role
   live?: boolean
   session?: LaneSession
   /** The task currently running on this lane (latest), for the "working on" line. */
   runningTask?: string
   queued?: number
+  /** Ticked for a batch launch (see the roster header's Launch button). */
+  selected?: boolean
+  onToggleSelect?: () => void
   onPatch: (patch: Partial<Role>) => void
   onRemove: () => void
   onLaunch: () => void
@@ -191,7 +214,29 @@ function RoleCard({ role, live, session, runningTask, queued = 0, onPatch, onRem
     }}>
       {/* Identity row: colour dot + name + live pill + remove. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent, flexShrink: 0 }} />
+        {/* Lane marker doubles as the batch-launch tick. Unchecked it's an accent-bordered
+            box, so the card still carries its lane colour; a live lane can't be launched
+            again, so it keeps the plain dot. Both occupy the same 14px slot to keep every
+            card's name (and the mission line below) on one vertical rule. */}
+        <span style={{ width: 14, flexShrink: 0, display: 'grid', placeItems: 'center' }}>
+          {live ? (
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent }} />
+          ) : (
+            <button
+              onClick={onToggleSelect}
+              title={selected ? `Don’t launch ${role.name} in the batch` : `Select ${role.name} to launch with others`}
+              aria-pressed={!!selected}
+              style={{
+                width: 14, height: 14, borderRadius: 3, padding: 0, display: 'grid', placeItems: 'center',
+                cursor: 'pointer', outline: 'none',
+                background: selected ? accent : 'transparent',
+                border: selected ? 'none' : `1px solid color-mix(in srgb, ${accent} 55%, transparent)`,
+              }}
+            >
+              {selected && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="var(--fg-on-accent)" strokeWidth="1.6" /></svg>}
+            </button>
+          )}
+        </span>
         {editingName ? (
           <input
             autoFocus
@@ -222,7 +267,7 @@ function RoleCard({ role, live, session, runningTask, queued = 0, onPatch, onRem
 
       {/* Mission line — what the live lane is working on + its token spend so far. */}
       {live && (runningTask || session?.usage) && (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8, paddingLeft: 15 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8, paddingLeft: 22 }}>
           {runningTask ? (
             <span title={runningTask} style={{ flex: 1, minWidth: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               ▸ {runningTask}

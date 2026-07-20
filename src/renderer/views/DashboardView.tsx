@@ -85,11 +85,12 @@ function loadLayouts(): Record<string, SessionLayout> {
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
-  // Dev-server port sniffed from each session's terminal output (the "Local:"
-  // banner a dev server prints when it boots). The project usually ignores the
-  // OPERATOR_DEV_PORT we hand it and binds its own default, so this is the port
-  // that's actually serving — it takes priority over the allocated one.
-  const [detectedDevPorts] = useState<Record<string, number>>({})
+  // The port the ACTIVE session is really serving on, from the backend's process-tree
+  // walk (session_ports). The project usually ignores the OPERATOR_DEV_PORT we hand it
+  // and binds its own default, so this — not the reserved port — is what the toolbar's
+  // open-in-browser chip should point at. Only the active session is polled; Preview
+  // does its own richer discovery (it needs the full port list for the picker).
+  const [detectedDevPort, setDetectedDevPort] = useState<number | undefined>(undefined)
   // Reserved OPERATOR_DEV_PORT per terminal — the Preview falls back to this when
   // no dev-server banner was detected (a best-effort guess; may not be serving).
   const [reservedDevPorts, setReservedDevPorts] = useState<Record<string, number>>({})
@@ -104,7 +105,13 @@ export function DashboardView() {
   const [customNames, setCustomNames] = useState<Record<string, string>>(() => {
     try {
       const raw = localStorage.getItem('operator.customNames')
-      return raw ? JSON.parse(raw) : {}
+      const parsed: Record<string, string> = raw ? JSON.parse(raw) : {}
+      // Drop `local-<terminalId>` keys on load. Terminal ids are a per-run counter
+      // (t0, t1, … — see terminal_spawn), so they REPEAT every launch: a stray
+      // `local-t0` left behind by a session that never migrated to its Claude id
+      // (below) would silently name the next run's first agent after a dead one.
+      // These keys are only meaningful within the run that created them.
+      return Object.fromEntries(Object.entries(parsed).filter(([k]) => !k.startsWith('local-')))
     } catch { return {} }
   })
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
@@ -238,6 +245,22 @@ export function DashboardView() {
     const iv = setInterval(load, 5000)
     return () => { cancelled = true; clearInterval(iv) }
   }, [])
+
+  // The active session's live dev-server port, for the toolbar chip. Reset to
+  // undefined on switch so the chip can't briefly point at the previous session's app.
+  useEffect(() => {
+    setDetectedDevPort(undefined)
+    if (!activeTerminalId) return
+    let cancelled = false
+    const load = () => {
+      window.operator.sessionPorts?.(activeTerminalId)
+        .then((ps) => { if (!cancelled) setDetectedDevPort(ps?.[0]) })
+        .catch(() => { /* best-effort */ })
+    }
+    load()
+    const iv = setInterval(load, 5000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [activeTerminalId])
 
   // True during the sidebar's 260ms width animation — the terminal suspends its fit
   // while the content column animates, then fits once on settle. Without this the
@@ -1614,6 +1637,7 @@ export function DashboardView() {
       {sidebarCollapsed ? (
         <SidebarRail
           sessions={allSidebarSessions}
+          projects={projects}
           activeSessionId={activeSessionId}
           customNames={customNames}
           shortcutIndices={shortcutIndices}
@@ -1732,7 +1756,7 @@ export function DashboardView() {
               projectPath={activeSession.workingDirectory}
               projectName={activeSession.projectName}
               terminalId={activeTerminalId}
-              detectedDevPort={activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined}
+              detectedDevPort={detectedDevPort}
               effortLevel={tab?.effortLevel}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
@@ -1848,13 +1872,15 @@ export function DashboardView() {
                   />
                 )}
                 {mainView === 'preview' && (() => {
-                  const detected = activeTerminalId ? detectedDevPorts[activeTerminalId] : undefined
+                  // The reserved port is only the starting hint — AppPreviewPanel asks the
+                  // backend which ports this session is ACTUALLY serving on and picks (or
+                  // offers) among those.
                   const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
-                  const port = detected ?? reserved
                   const projId = activeSession.projectId
                   return (
                     <AppPreviewPanel
-                      url={port ? `http://localhost:${port}` : null}
+                      url={reserved ? `http://localhost:${reserved}` : null}
+                      terminalId={activeTerminalId}
                       storageKey={`main-${activeSession.id}`}
                       onDispatch={activeSession.terminalId ? (text) => window.operator.terminalWrite(activeSession.terminalId!, `\x1b[200~${text}\x1b[201~\r`) : undefined}
                       onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}

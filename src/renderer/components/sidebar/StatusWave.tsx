@@ -38,7 +38,7 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
 // Dots that fall inside the circle, computed once (see lib/random).
 const DOTS = gridPointsInDisc(CELLS, RADIUS)
 
-export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus; size?: number; seed?: string | number }) {
+export function StatusWave({ status, size = 13, seed = 0, accent }: { status: WaveStatus; size?: number; seed?: string | number; accent?: string }) {
   // The your-turn pulse is a transient beacon: once a session has been waiting
   // for PULSE_SETTLE_MS we let the dot settle to the static idle look so a
   // long-untouched session doesn't pulse forever. Entering 'waiting' (incl. a
@@ -88,8 +88,12 @@ export function StatusWave({ status, size = 13, seed = 0 }: { status: WaveStatus
       // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
       // (scaled-up). Set per state: resting tint only for waiting, peak tint for any
       // active state so the dots that grow take on the status colour.
-      ...(cfg.fill ? { ['--tw-fill' as string]: cfg.fill } : null),
-      ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: cfg.fillPeak } : null),
+      // `accent` (an orchestration lane's colour) re-tints the MOVING half of the
+      // animation so a collapsed rail reads as "which agent" at a glance. It only
+      // overrides the animated states — idle/ended stay the frozen gray that makes
+      // a quiet session recede.
+      ...(cfg.fill ? { ['--tw-fill' as string]: (cfg.animate && accent) || cfg.fill } : null),
+      ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: (cfg.animate && accent) || cfg.fillPeak } : null),
     }}>
       <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
         <g fill="var(--fg)">

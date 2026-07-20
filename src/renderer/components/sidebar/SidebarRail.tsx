@@ -1,9 +1,14 @@
-import { AgentSession } from '../../../shared/types'
+import { Fragment, useState } from 'react'
+import { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
+import { modelFamilyLabel } from '../../lib/roster'
+import { isInjectedTurn } from '../../lib/format'
 
 interface SidebarRailProps {
   sessions: AgentSession[]
+  /** Projects, to resolve each session's roleId → its lane (colour + name). */
+  projects: Project[]
   activeSessionId: string | null
   customNames: Record<string, string>
   shortcutIndices: Record<string, number>
@@ -33,6 +38,17 @@ function initialOf(name: string): string {
   return (words[0][0] + words[1][0]).toUpperCase()
 }
 
+// What the agent is working on right now, for the hover card. The live in-progress
+// plan item is the truest answer; a dispatched-but-not-yet-planned lane falls back to
+// its running project task, then to the first-prompt summary.
+function currentTaskOf(session: AgentSession, project?: Project): string | undefined {
+  const todo = session.todos?.find((t) => t.status === 'in_progress')
+  if (todo) return todo.content
+  const task = project?.tasks?.find((t) => t.status === 'running' && t.terminalId === session.terminalId)
+  if (task) return task.text
+  return session.summary
+}
+
 const panelIcon = (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
@@ -43,7 +59,8 @@ const panelIcon = (
 // Collapsed "rail" — a Slack-style narrow strip for quick access to running
 // sessions plus the expand toggle. Hosts the macOS traffic lights (paddingTop)
 // so the content card to its right never slides under them.
-export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand }: SidebarRailProps) {
+export function SidebarRail({ sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand }: SidebarRailProps) {
+  const [hovered, setHovered] = useState<{ id: string; top: number; left: number } | null>(null)
   return (
     <div
       style={{
@@ -99,14 +116,23 @@ export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIn
       >
         {sessions.map((session) => {
           const active = session.id === activeSessionId
-          const label = customNames[session.id] || session.projectName || 'Session'
-          const initial = initialOf(label)
+          const project = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
+          const role: Role | undefined = session.roleId ? project?.roster?.find((r) => r.id === session.roleId) : undefined
+          // Same label ladder as the expanded sidebar (see Sidebar.tsx): custom name →
+          // lane → first prompt → running model → generic. The rail used to fall back
+          // straight to the folder name, so collapsing renamed every agent in a project
+          // to the same folder initials.
+          const cleanSummary = session.summary && !isInjectedTurn(session.summary) ? session.summary : undefined
+          const modelName = session.model && !session.model.startsWith('<') ? modelFamilyLabel(session.model) : undefined
+          const label = customNames[session.id] || role?.name || cleanSummary || modelName || 'Session'
+          const initial = initialOf(role?.name || label)
           const idx = shortcutIndices[session.id]
+          const task = currentTaskOf(session, project)
           return (
+            <Fragment key={session.id}>
             <button
-              key={session.id}
               onClick={() => onSelectSession(session)}
-              title={idx ? `${label}  (⌘${idx})` : label}
+              aria-label={idx ? `${label} (⌘${idx})` : label}
               style={{
                 position: 'relative',
                 width: 40,
@@ -125,23 +151,33 @@ export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIn
                 cursor: 'pointer',
                 transition: 'background 120ms ease',
               }}
-              onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-              onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent' }}
+              onMouseEnter={(e) => {
+                if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)'
+                // Fixed-position card: the rail scroller clips overflow, so an absolutely
+                // positioned one would be cut off at the 64px rail edge.
+                const r = e.currentTarget.getBoundingClientRect()
+                setHovered({ id: session.id, top: r.top, left: r.right + 8 })
+              }}
+              onMouseLeave={(e) => {
+                if (!active) e.currentTarget.style.background = 'transparent'
+                setHovered((h) => (h?.id === session.id ? null : h))
+              }}
             >
               {/* Active left pill (Slack-style). */}
               {active && (
                 <span style={{ position: 'absolute', left: -10, top: 9, bottom: 9, width: 3, borderRadius: 2, background: 'var(--accent)' }} />
               )}
-              {/* Folder initial on top of the animated dot-logo so sessions stay
-                  distinguishable at a glance. The dots carry the live status. */}
+              {/* Lane initials on top of the animated dot-logo so sessions stay
+                  distinguishable at a glance. The dots carry the live status, tinted
+                  with the lane's accent so the rail also says WHICH agent. */}
               <span style={{ position: 'relative', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} />
+                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={role?.accent} />
                 <span style={{
                   position: 'absolute', inset: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 700, lineHeight: 1,
                   fontFamily: "var(--font-body)",
-                  color: active ? 'var(--fg)' : 'var(--fg)',
+                  color: role?.accent || 'var(--fg)',
                   letterSpacing: initial.length > 1 ? -0.5 : 0,
                   // Slight halo so the glyph reads cleanly over the dot grid.
                   textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
@@ -151,6 +187,45 @@ export function SidebarRail({ sessions, activeSessionId, customNames, shortcutIn
                 </span>
               </span>
             </button>
+            {hovered?.id === session.id && (
+              <div
+                style={{
+                  position: 'fixed',
+                  top: hovered.top,
+                  left: hovered.left,
+                  zIndex: 60,
+                  maxWidth: 260,
+                  padding: '7px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-surface)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
+                  pointerEvents: 'none',
+                  fontFamily: 'var(--font-mono)',
+                  lineHeight: 1.35,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: 11.5, color: role?.accent || 'var(--fg)' }}>{label}</span>
+                  {idx && <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5 }}>⌘{idx}</span>}
+                </div>
+                {task && (
+                  // The live task, clamped to two lines — a long plan item shouldn't
+                  // grow the card into a wall of text.
+                  <div style={{
+                    marginTop: 3,
+                    fontSize: 10.5,
+                    color: 'var(--fg-muted)',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}>
+                    {task}
+                  </div>
+                )}
+              </div>
+            )}
+            </Fragment>
           )
         })}
       </div>

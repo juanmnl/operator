@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
-import { getMacOptionIsMeta, setMacOptionIsMeta } from '../../lib/terminal-options'
+import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '../../lib/terminal-options'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -154,6 +154,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   )
   const [sounds, setSounds] = useState(() => soundsEnabled())
   const [optionIsMeta, setOptionIsMeta] = useState(() => getMacOptionIsMeta())
+  const [fullscreenTui, setFullscreenTui] = useState(() => getTuiMode() === 'fullscreen')
 
   const toggleSounds = () => {
     const next = !sounds
@@ -166,6 +167,12 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     const next = !optionIsMeta
     setOptionIsMeta(next)
     setMacOptionIsMeta(next) // TerminalPane re-reads this when a pane reactivates
+  }
+
+  const toggleFullscreenTui = () => {
+    const next = !fullscreenTui
+    setFullscreenTui(next)
+    setTuiMode(next ? 'fullscreen' : 'default') // read at spawn — applies to NEW sessions
   }
 
 
@@ -374,6 +381,42 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <span style={{
                 position: 'absolute', top: 2, left: optionIsMeta ? 16 : 2, width: 14, height: 14,
                 borderRadius: '50%', background: optionIsMeta ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
+
+          {/* Claude Code's TUI renderer. Classic draws each word at an absolute column
+              (ESC[<n>G) on rows found by RELATIVE moves, and almost never clears a line —
+              so one row of cursor drift leaves the previous row's glyphs showing through
+              the gaps between words (the struck-through / colour-spilled rows). Alt-screen
+              repaints the whole viewport, so drift can't accumulate — at the cost of the
+              native scrollback, which Claude's own scrolling replaces. */}
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '18px 0 12px', opacity: 0.7 }}>
+            Fullscreen runs Claude in an alt-screen viewport that repaints whole frames, which
+            avoids the overprinting that can garble classic-mode output. The trade-off: no native
+            terminal scrollback — you scroll inside Claude instead. Applies to newly-started sessions.
+          </p>
+          <button
+            onClick={toggleFullscreenTui}
+            role="switch"
+            aria-checked={fullscreenTui}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Fullscreen TUI renderer</span>
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: fullscreenTui ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: fullscreenTui ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: fullscreenTui ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
                 transition: 'left 0.15s, background 0.15s',
               }} />
             </span>

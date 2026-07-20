@@ -29,6 +29,8 @@ declare global {
       terminalHistory: (id: string) => Promise<string>
       /** Dev-port registry: terminal id → reserved port (OPERATOR_DEV_PORT). */
       getDevPorts: () => Promise<Record<string, number>>
+      /** TCP ports this session's process tree is listening on (attributed, not probed). */
+      sessionPorts: (id: string) => Promise<number[]>
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
       onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
       /** Grid terminal (our own, non-native): start streaming a themed cell snapshot

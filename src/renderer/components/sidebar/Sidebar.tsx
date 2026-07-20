@@ -567,7 +567,10 @@ function FolderGroup({
         // Default name: role (lane) → the user's first prompt → the running model → generic.
         // Summary before model so parallel same-model sessions stay distinguishable.
         const defaultLabel = role?.name || cleanSummary || modelName || autoName
-        const labelIsRole = !customName && !!role
+        // A lane keeps its role treatment (colour + tracked uppercase) even after the user
+        // renames it — the name is the session's, the colour is the lane's, and losing the
+        // colour on rename made a renamed lane indistinguishable from an unassigned session.
+        const labelIsRole = !!role
         return (
           <SessionItem
             key={session.id}

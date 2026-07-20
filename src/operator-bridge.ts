@@ -15,6 +15,7 @@ import { relaunch, exit } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
+import { getTuiMode } from './renderer/lib/terminal-options'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
 import type { GridUpdate, NarrationEntry } from './shared/types'
 
@@ -66,16 +67,23 @@ export function installBridge(): void {
       }
       const termBg = readVar('--bg-terminal') || '#0b0d10'
       const colorScheme = isLightBackground(termBg) ? 'light' : 'dark'
-      // FORCE classic (tui:default): xterm has native scrollback, and our custom wheel
-      // handler scrolls it in classic mode — in fullscreen/alt-screen there's no scrollback
-      // to scroll and the wheel is forwarded as arrow keys. So classic is required for
-      // wheel-scroll; the Fullscreen pref is incompatible here.
+      // Classic (tui:default) is the DEFAULT because xterm has native scrollback and our
+      // custom wheel handler scrolls it — in fullscreen/alt-screen there's no scrollback to
+      // scroll and the wheel is forwarded as arrow keys, so wheel-scroll effectively stops
+      // working. That cost is why classic stays the default.
+      //
+      // But classic is also what produces the overprint garble: Claude draws each word at an
+      // absolute column (ESC[<n>G) on rows reached by RELATIVE moves and almost never clears a
+      // line, so ONE row of cursor drift leaves the previous row's glyphs showing through the
+      // gaps between words. Alt-screen repaints whole frames and structurally can't drift. So
+      // the pref is now honoured rather than hardcoded: it's an opt-in escape hatch for anyone
+      // hitting the garble, trading wheel-scroll for a stable picture.
       const id = await invoke<string>('terminal_spawn', {
         cwd: target,
         args: buildArgs(launchOptions, sessionId),
         sessionId,
         permissionMode: (launchOptions?.permissionMode as string) ?? null,
-        tuiMode: 'default',
+        tuiMode: getTuiMode(),
         colorScheme,
         orchestrationNote: (launchOptions?.orchestrationNote as string) ?? null,
       })
@@ -103,6 +111,9 @@ export function installBridge(): void {
     },
     // The dev-server port registry: terminal id → port Operator reserved for it.
     getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
+    // Ports this session is actually listening on, found by walking its pty's process
+    // tree — so a sibling lane's server can never be mistaken for this one's.
+    sessionPorts: (id: string) => invoke<number[]>('session_ports', { id }),
     // Base64 of a terminal's retained output tail — replayed when a pane re-attaches
     // to a pty that survived a renderer reload, so it shows scrollback, not a blank.
     terminalHistory: (id: string) => invoke<string>('terminal_history', { id }),

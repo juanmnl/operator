@@ -38,8 +38,10 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange }: {
   url: string | null
+  /** The session's terminal, so we can ask the backend which ports IT is serving on. */
+  terminalId?: string | null
   storageKey?: string
   /** Send the composed feedback straight to the Console pty (quick path). */
   onDispatch?: (text: string) => void
@@ -63,6 +65,10 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
   const [preset, setPreset] = useState<Preset>('fit')
   const [scanning, setScanning] = useState(false)
   const [found, setFound] = useState<number[]>([])
+  // Ports THIS session is listening on, from the backend's process-tree walk. Unlike
+  // `found` (a blind localhost probe, user-initiated), these are attributable — so we
+  // can act on them automatically without risking showing a sibling lane's app.
+  const [servers, setServers] = useState<number[]>([])
   const frameWrapRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
 
@@ -94,18 +100,50 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
     setScanning(false)
   }
 
+  // Poll which ports this session is serving on. Cheap (one lsof over the session's
+  // own pids) and it has to repeat, because a dev server can come up, die, or be
+  // joined by a second one (an API alongside the web server) at any point in a turn.
+  useEffect(() => {
+    if (!terminalId) { setServers([]); return }
+    let cancelled = false
+    const poll = () => {
+      window.operator.sessionPorts?.(terminalId)
+        .then((ps) => { if (!cancelled) setServers(ps || []) })
+        .catch(() => { /* best-effort: no servers is a normal answer, not an error */ })
+    }
+    poll()
+    const t = window.setInterval(poll, 4000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [terminalId])
+
+  // The port Operator reserved for this session (carried in `url`), used only to
+  // BREAK TIES below — never as proof anything is actually listening on it.
+  const reservedPort = useMemo(() => {
+    try { return url ? Number(new URL(url).port) || null : null } catch { return null }
+  }, [url])
+
+  // Which of the session's servers to show when the user hasn't pinned one: its
+  // reserved port if that's among them (the dev server followed our instruction),
+  // else the lowest — a stable choice, so the preview doesn't flip between ports as
+  // lsof reorders. With nothing discovered we fall back to the reserved URL, which
+  // at least renders the right "not serving yet" empty state.
+  const autoUrl = useMemo(() => {
+    if (!servers.length) return url
+    const pick = reservedPort && servers.includes(reservedPort) ? reservedPort : servers[0]
+    return `http://localhost:${pick}`
+  }, [servers, reservedPort, url])
+
   // Resolve a live port, but ONLY one we can attribute to THIS session: a manual
-  // override, or the session's own port (`url` = the port sniffed from this session's
-  // output, else its reserved port). We deliberately DON'T blind-probe the common
-  // dev ports here — another session's (or a system) server answering on :5173 would
-  // be shown as this session's app, which is wrong. Discovery is an explicit action
-  // (Scan) in the empty state instead.
+  // override, or a port the session's own process tree is serving on (`autoUrl`). We
+  // deliberately DON'T blind-probe the common dev ports here — another session's (or
+  // a system) server answering on :5173 would be shown as this session's app, which
+  // is wrong. Discovery is an explicit action (Scan) in the empty state instead.
   useEffect(() => {
     setReach('checking')
     const ctrl = new AbortController()
     let timer = 0
     let stopped = false
-    const target = override ? overrideUrl(override) : url
+    const target = override ? overrideUrl(override) : autoUrl
 
     const tick = async () => {
       if (target && await ping(target, ctrl.signal)) {
@@ -121,7 +159,7 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
     }
     tick()
     return () => { stopped = true; ctrl.abort(); clearTimeout(timer) }
-  }, [url, override, nonce])
+  }, [autoUrl, override, nonce])
 
   // Track the frame area so a device preset can be scaled to fit. Bail the state
   // update when the size is UNCHANGED (return the same object ref) — otherwise every
@@ -156,8 +194,12 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
     } catch { /* ignore */ }
   }
 
-  const display = resolved || (override ? overrideUrl(override) : url)
+  const display = resolved || (override ? overrideUrl(override) : autoUrl)
   const host = display ? display.replace(/^https?:\/\//, '') : null
+  // Which of the session's ports is on screen, so the picker can mark it.
+  const displayPort = useMemo(() => {
+    try { return display ? Number(new URL(display).port) || null : null } catch { return null }
+  }, [display])
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
   const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
@@ -288,6 +330,31 @@ export function AppPreviewPanel({ url, storageKey, onDispatch, onSendToTasks, an
             {reach === 'up' && <span style={{ color: 'var(--color-success, #3fb950)' }}> ●</span>}
             {override && <span style={{ color: 'var(--accent)' }}> ·pinned</span>}
           </button>
+        )}
+        {/* Multi-server picker: only when this session is serving on more than one port
+            (e.g. a web server + an API). One port needs no choice — the auto-pick above
+            already landed on it. Picking PINS it, so an explicit choice survives a
+            restart and won't be overridden the next time the port set shifts. */}
+        {servers.length > 1 && (
+          <span
+            title="This session is serving on several ports — pick which to preview"
+            style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1, gap: 1 }}
+          >
+            {servers.map((p) => (
+              <button
+                key={p}
+                onClick={() => commitOverride(String(p))}
+                style={{
+                  height: 20, padding: '0 7px', border: 'none', borderRadius: 5, background: 'transparent',
+                  cursor: 'pointer', outline: 'none',
+                  fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 10,
+                  color: displayPort === p ? 'var(--accent)' : 'var(--fg-muted)',
+                }}
+              >
+                :{p}
+              </button>
+            ))}
+          </span>
         )}
         {/* Device-width presets */}
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 1 }}>
