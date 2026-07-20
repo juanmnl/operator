@@ -105,7 +105,7 @@ export interface TokenUsage {
 }
 
 /** An orchestration role within a project's roster — a reusable "lane" that pins a model and
- *  its settings (e.g. Orchestrator=Fable, Research=Sonnet, Code=Opus). Launching a session
+ *  its settings (e.g. Operator=Fable, Research=Sonnet, Code=Opus). Launching a session
  *  against a role prefills its config; the session then carries the role's id. */
 export interface Role {
   id: string

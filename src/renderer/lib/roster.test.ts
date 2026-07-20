@@ -14,7 +14,7 @@ describe('roster', () => {
   it('matches the user framing: Fable orchestrates, Sonnet research, Opus code', () => {
     const roster = defaultRoster()
     const by = (id: string) => roster.find((r) => r.id === id)
-    expect(by('orchestrator')?.model).toBe('fable')
+    expect(by('operator')?.model).toBe('fable') // the coordinator lane is named for the app
     expect(by('research')?.model).toBe('sonnet')
     expect(by('code')?.model).toBe('opus')
   })
@@ -43,6 +43,22 @@ describe('roster', () => {
     // No charter → no dangling charter line.
     const bare = orchestrationNote('Demo', { ...code, prompt: undefined }, roster)
     expect(bare).not.toContain('Your role charter:')
+  })
+
+  it('the coordinator note is self-referential (you ARE Operator) and lists the team', () => {
+    const roster = defaultRoster()
+    const op = roster.find((r) => r.id === 'operator')!
+    const note = orchestrationNote('Demo', op, roster)
+    expect(note).toContain('You are Operator')
+    expect(note).toContain('do it yourself') // the no-lane-fits fallback
+    expect(note).toContain('id: code') // the team is listed with dispatchable ids
+    expect(note).not.toContain('coordinated by Operator') // it doesn't refer to itself in 3rd person
+  })
+
+  it('a legacy roster keyed on the old "orchestrator" id still gets the Operator framing', () => {
+    const legacy = [{ id: 'orchestrator', name: 'Orchestrator', model: 'fable', prompt: 'x' }, ...defaultRoster().filter((r) => r.id !== 'operator')]
+    const note = orchestrationNote('Demo', legacy[0], legacy)
+    expect(note).toContain('You are Operator')
   })
 
   it('stripDispatchLines removes directive lines, keeps the prose', () => {

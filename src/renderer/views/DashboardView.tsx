@@ -640,6 +640,25 @@ export function DashboardView() {
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
       const record = (outcome: DispatchRecord['outcome']) =>
         log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: role?.id, task: d.task, outcome })
+      // A dispatch to an idle/unknown lane is QUEUED, not started — but the orchestrator
+      // gets no runtime signal of that and keeps coordinating as if the work is live. Type
+      // a status note back into ITS pty so it can adapt (reassign to a live lane, or ask
+      // the user to launch). We deliberately DON'T auto-spawn or auto-reroute here — the
+      // decision stays with the agent (in the loop). Naming the currently-live lanes lets
+      // it reassign informedly. Dedupe by dispatch id (above) bounds any re-dispatch loop:
+      // the same task→role re-emitted is dropped before it reaches here, so feedback can't
+      // ping-pong. The note carries no OPERATOR-DISPATCH token, so it isn't itself parsed.
+      const feedback = (msg: string) => {
+        if (!srcTab) return
+        const liveLaneNames = tabs
+          .filter((t) => t.projectId === project.id && t.roleId && t.id !== srcTab.id)
+          .map((t) => project.roster?.find((r) => r.id === t.roleId)?.name)
+          .filter((n): n is string => !!n)
+        const liveHint = liveLaneNames.length
+          ? ` Lanes running now: ${liveLaneNames.join(', ')}.`
+          : ' No other lanes are running.'
+        window.operator.terminalWrite(srcTab.id, `\x1b[200~[Operator] ${msg}${liveHint}\x1b[201~\r`)
+      }
       if (role) {
         const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id)
         if (liveTab) {
@@ -652,11 +671,13 @@ export function DashboardView() {
           addTask(project.id, d.task, role.id) // idle lane → queued (user launches)
           record('queued')
           toast({ text: `Queued for ${role.name}`, kind: 'info', detail: preview })
+          feedback(`The "${role.name}" lane is not running, so your task was QUEUED, not started. Reassign it to a lane that's live now, or ask the user to launch ${role.name}.`)
         }
       } else {
         addTask(project.id, d.task) // unknown role → unassigned backlog
         record('unassigned')
         toast({ text: 'Queued (unassigned)', kind: 'info', detail: preview })
+        feedback(`No lane named "${d.role}" exists in this project, so your task went to the unassigned backlog. Reassign it to one of the project's actual lanes, or ask the user.`)
       }
     })
     return () => { unsub?.() }

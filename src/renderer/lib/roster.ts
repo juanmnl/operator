@@ -27,12 +27,23 @@ export function modelFamilyLabel(id?: string): string {
 // The standing charter each default lane launches with (appended to its system prompt).
 // Written to be terse, method-first, and to keep lanes in their own swimlane — the
 // orchestrationNote below already teaches the dispatch mechanics. Editable per project.
+// The coordinating lane IS the app: it's called "Operator" because that's what it does —
+// operate the roster. `operator` is the canonical id; `orchestrator` stays keyed to the
+// same charter so rosters seeded before the rename still backfill (see isCoordinator).
+export const COORDINATOR_IDS = ['operator', 'orchestrator'] as const
+export function isCoordinator(id: string): boolean {
+  return (COORDINATOR_IDS as readonly string[]).includes(id)
+}
+
+const OPERATOR_CHARTER =
+  'You are Operator, this project’s coordinator. Know the team (the lanes below), and route each ' +
+  'task to the best-suited one via OPERATOR-DISPATCH — several precise dispatches beat one vague ' +
+  'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
+  'right one isn’t available, do it yourself rather than forcing a bad fit.'
+
 export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
-  orchestrator:
-    'Coordinate — don’t implement. Break goals into small, verifiable tasks and hand each to the ' +
-    'best-suited lane via OPERATOR-DISPATCH. Track what you delegated; when work comes back, check it ' +
-    'against the goal and dispatch follow-ups for gaps. Prefer several precise dispatches over one ' +
-    'vague one, and keep a running summary of who is doing what.',
+  operator: OPERATOR_CHARTER,
+  orchestrator: OPERATOR_CHARTER, // legacy id → same charter (pre-rename rosters)
   research:
     'Investigate and report — never change code. Read the relevant code end-to-end before answering; ' +
     'check docs or the web when it helps. Return compact findings: what exists today (with file:line ' +
@@ -68,7 +79,7 @@ export function defaultRoster(): Role[] {
     // Orchestrator: fast coordination. Research: strong reading, cheaper for breadth. The rest
     // pin the most capable model where quality matters most (code / review / design), Sonnet
     // for QA's higher-volume test work. All editable per project.
-    { id: 'orchestrator', name: 'Orchestrator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.orchestrator },
+    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
     { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
     { id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
     { id: 'review', name: 'Review', model: 'opus', effort: 'high', accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
@@ -77,16 +88,46 @@ export function defaultRoster(): Role[] {
   ]
 }
 
+/** One roster line for the coordinator's team list: identity + what the lane is for
+ *  (first sentence of its charter), so Operator can route by purpose, not just by name. */
+function laneSummary(r: Role): string {
+  const purpose = r.prompt?.trim().split(/(?<=[.!?])\s/)[0]?.slice(0, 90)
+  return `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})${purpose ? ` — ${purpose}` : ''}`
+}
+
 /** The awareness note appended to an agent's system prompt so it knows its own lane and its
- *  siblings in the project (see terminal_spawn's --append-system-prompt). */
+ *  siblings in the project (see terminal_spawn's --append-system-prompt).
+ *
+ *  The COORDINATOR lane is the app itself — "Operator" — so its note is self-referential:
+ *  it's told it IS Operator, given the project's team with each lane's purpose, and told to
+ *  dispatch to the best fit OR do the work itself when none fits. Worker lanes get the
+ *  simpler "you are lane X, coordinated by Operator" framing. */
 export function orchestrationNote(projectName: string, role: Role, roster: Role[]): string {
   const siblings = roster.filter((r) => r.id !== role.id)
-  const list = siblings.length
-    ? siblings.map((r) => `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})`).join(', ')
-    : 'none yet'
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
   // role works, not just which lane it is.
   const charter = role.prompt?.trim() ? `\nYour role charter: ${role.prompt.trim()}\n` : ''
+
+  if (isCoordinator(role.id)) {
+    const team = siblings.length
+      ? siblings.map((r) => `  • ${laneSummary(r)}`).join('\n')
+      : '  (no other lanes yet — you’ll be doing the work yourself)'
+    return (
+      `You are Operator — the coordinator of the "${projectName}" project. "Operator" is this app; ` +
+      `you are its coordinating agent, not a separate service.\n` +
+      `Your team for this project — the lanes you can delegate to:\n${team}\n` +
+      charter +
+      `Delegate a task by outputting a line EXACTLY in this form, alone on its own line:\n` +
+      `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
+      `It's typed into that lane if it's running, otherwise queued — Operator notes back to you ` +
+      `which lanes are live so you can reassign. If no lane fits a task, or the best-suited one ` +
+      `isn't available, just do it yourself rather than forcing a poor fit.`
+    )
+  }
+
+  const list = siblings.length
+    ? siblings.map((r) => `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})`).join(', ')
+    : 'none yet'
   return (
     `You are the "${role.name}" agent (model ${modelFamilyLabel(role.model)}) in the "${projectName}" project, ` +
     `coordinated by Operator. The project's other agent lanes are: ${list}.\n` +
