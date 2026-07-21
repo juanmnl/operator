@@ -651,7 +651,10 @@ export function DashboardView() {
       const feedback = (msg: string) => {
         if (!srcTab) return
         const liveLaneNames = tabs
-          .filter((t) => t.projectId === project.id && t.roleId && t.id !== srcTab.id)
+          // An ended session's tab stays mounted (buffer kept until the user dismisses it),
+          // so exclude `ended` — otherwise a dead lane is advertised as "running now" and the
+          // orchestrator reassigns work into a corpse (which the router below also guards).
+          .filter((t) => t.projectId === project.id && t.roleId && !t.ended && t.id !== srcTab.id)
           .map((t) => project.roster?.find((r) => r.id === t.roleId)?.name)
           .filter((n): n is string => !!n)
         const liveHint = liveLaneNames.length
@@ -660,7 +663,7 @@ export function DashboardView() {
         window.operator.terminalWrite(srcTab.id, `\x1b[200~[Operator] ${msg}${liveHint}\x1b[201~\r`)
       }
       if (role) {
-        const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id)
+        const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id && !t.ended)
         if (liveTab) {
           window.operator.terminalWrite(liveTab.id, `\x1b[200~${d.task}\x1b[201~\r`)
           // track it as running on the lane (with its dir, so the diff link resolves)

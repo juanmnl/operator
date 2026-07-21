@@ -58,6 +58,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     if (!overrideKey) return null
     try { return localStorage.getItem(overrideKey) || null } catch { return null }
   })
+  // The initializer runs only once, but this panel isn't remounted per session — so on a
+  // switch (overrideKey changes) re-read the new session's pin, else session B keeps showing
+  // A's pinned URL. Within a session overrideKey is stable, so an in-session commitOverride
+  // isn't clobbered.
+  useEffect(() => {
+    try { setOverride(overrideKey ? localStorage.getItem(overrideKey) || null : null) } catch { setOverride(null) }
+  }, [overrideKey])
   const [nonce, setNonce] = useState(0)
   const [resolved, setResolved] = useState<string | null>(null) // the live URL we landed on
   const [reach, setReach] = useState<Reach>('checking')
@@ -104,7 +111,14 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // own pids) and it has to repeat, because a dev server can come up, die, or be
   // joined by a second one (an API alongside the web server) at any point in a turn.
   useEffect(() => {
-    if (!terminalId) { setServers([]); return }
+    // Reset per-session discovery on switch. Without this, `servers` keeps the PREVIOUS
+    // session's ports until B's first poll resolves — and since `autoUrl` falls back to
+    // `servers[0]`, it can stay stale-EQUAL across the switch (A's 5173 not in B's reserved
+    // set → picks 5173 again), so the resolve effect (keyed on autoUrl) never re-runs and B
+    // shows A's app. Clearing here forces autoUrl → B's reserved url immediately.
+    setServers([])
+    setResolved(null)
+    if (!terminalId) return
     let cancelled = false
     const poll = () => {
       window.operator.sessionPorts?.(terminalId)

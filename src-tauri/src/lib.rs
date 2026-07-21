@@ -121,12 +121,37 @@ fn port_free(port: u16) -> bool {
 
 /// Normalize a working directory into a port-sharing key, so `/a/b`, `/a/b/` and a
 /// path through a symlink all agree on whether two lanes are "in the same place".
-/// Falls back to the trimmed literal when the path can't be resolved (it may not
-/// exist yet at spawn time).
+///
+/// The dir may not exist yet at spawn time (a worktree not checked out). A plain
+/// `canonicalize`-or-literal fallback would then split two lanes in the SAME dir: the
+/// lane that spawns before the dir exists keys on the literal `/tmp/proj`, the one that
+/// spawns after keys on the resolved `/private/tmp/proj` (macOS `/tmp` → `/private/tmp`),
+/// they don't match, and each starts its own server — the exact redundancy this prevents.
+/// So resolve the nearest EXISTING ancestor and re-append the missing tail, yielding the
+/// same key both before and after the dir exists.
 fn canonical_cwd(cwd: &str) -> String {
-    std::fs::canonicalize(cwd)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| cwd.trim_end_matches('/').to_string())
+    if let Ok(p) = std::fs::canonicalize(cwd) {
+        return p.to_string_lossy().into_owned();
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = std::path::Path::new(cwd);
+    loop {
+        if let Ok(base) = std::fs::canonicalize(cur) {
+            let mut resolved = base;
+            for comp in tail.iter().rev() {
+                resolved.push(comp);
+            }
+            return resolved.to_string_lossy().into_owned();
+        }
+        match (cur.file_name(), cur.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                cur = parent;
+            }
+            // Reached the root with nothing resolvable — fall back to the trimmed literal.
+            _ => return cwd.trim_end_matches('/').to_string(),
+        }
+    }
 }
 
 /// Parse `ps -Ao pid=,ppid=` into a parent → children map, then collect every
@@ -1819,6 +1844,19 @@ mod tests {
     #[test]
     fn canonical_cwd_normalizes_trailing_slash() {
         assert_eq!(canonical_cwd("/tmp/"), canonical_cwd("/tmp"));
+    }
+
+    /// A dir that doesn't exist yet (a worktree not checked out) must key the SAME whether
+    /// reached via a symlinked ancestor (/tmp) or its resolved form (/private/tmp) — else the
+    /// before-exists lane and the after-exists lane split into two servers. (macOS: /tmp is a
+    /// symlink to /private/tmp; this is a mac-only target.)
+    #[test]
+    fn canonical_cwd_agrees_before_and_after_a_dir_exists() {
+        let via_symlink = canonical_cwd("/tmp/operator-nonexistent-xyz/proj");
+        let via_resolved = canonical_cwd("/private/tmp/operator-nonexistent-xyz/proj");
+        assert_eq!(via_symlink, via_resolved);
+        // And it resolved the ancestor rather than returning the raw literal.
+        assert!(via_symlink.starts_with("/private/tmp/"), "got {via_symlink}");
     }
 
     /// The dev server is a grandchild (zsh → claude → npm → vite), so the walk has
