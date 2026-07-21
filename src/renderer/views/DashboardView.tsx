@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote } from '../lib/roster'
+import { routeDispatch, liveLaneNames } from '../lib/dispatch'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
@@ -636,46 +637,39 @@ export function DashboardView() {
       const srcTab = tabs.find((t) => t.id === d.terminalId)
       const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
       if (!project) return
-      const role = project.roster?.find((r) => r.id === d.role || r.name.toLowerCase() === d.role.toLowerCase())
+      const roster = project.roster ?? []
+      const route = routeDispatch(d.role, roster, tabs, project.id)
+      const routedRole = route.kind === 'unassigned' ? undefined : route.role
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
       const record = (outcome: DispatchRecord['outcome']) =>
-        log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: role?.id, task: d.task, outcome })
+        log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: routedRole?.id, task: d.task, outcome })
       // A dispatch to an idle/unknown lane is QUEUED, not started — but the orchestrator
       // gets no runtime signal of that and keeps coordinating as if the work is live. Type
       // a status note back into ITS pty so it can adapt (reassign to a live lane, or ask
       // the user to launch). We deliberately DON'T auto-spawn or auto-reroute here — the
-      // decision stays with the agent (in the loop). Naming the currently-live lanes lets
-      // it reassign informedly. Dedupe by dispatch id (above) bounds any re-dispatch loop:
-      // the same task→role re-emitted is dropped before it reaches here, so feedback can't
-      // ping-pong. The note carries no OPERATOR-DISPATCH token, so it isn't itself parsed.
+      // decision stays with the agent (in the loop). Naming the currently-live lanes (routing
+      // logic + the ended-lane guard live in lib/dispatch) lets it reassign informedly. Dedupe
+      // by dispatch id (above) bounds any re-dispatch loop: the same task→role re-emitted is
+      // dropped before it reaches here. The note carries no OPERATOR-DISPATCH token, so it
+      // isn't itself parsed.
       const feedback = (msg: string) => {
         if (!srcTab) return
-        const liveLaneNames = tabs
-          // An ended session's tab stays mounted (buffer kept until the user dismisses it),
-          // so exclude `ended` — otherwise a dead lane is advertised as "running now" and the
-          // orchestrator reassigns work into a corpse (which the router below also guards).
-          .filter((t) => t.projectId === project.id && t.roleId && !t.ended && t.id !== srcTab.id)
-          .map((t) => project.roster?.find((r) => r.id === t.roleId)?.name)
-          .filter((n): n is string => !!n)
-        const liveHint = liveLaneNames.length
-          ? ` Lanes running now: ${liveLaneNames.join(', ')}.`
-          : ' No other lanes are running.'
+        const live = liveLaneNames(tabs, roster, project.id, srcTab.id)
+        const liveHint = live.length ? ` Lanes running now: ${live.join(', ')}.` : ' No other lanes are running.'
         window.operator.terminalWrite(srcTab.id, `\x1b[200~[Operator] ${msg}${liveHint}\x1b[201~\r`)
       }
-      if (role) {
-        const liveTab = tabs.find((t) => t.projectId === project.id && t.roleId === role.id && !t.ended)
-        if (liveTab) {
-          window.operator.terminalWrite(liveTab.id, `\x1b[200~${d.task}\x1b[201~\r`)
-          // track it as running on the lane (with its dir, so the diff link resolves)
-          addRunning(project.id, d.task, role.id, liveTab.id, { cwd: liveTab.cwd, sourceCwd: liveTab.sourceCwd, worktreeBranch: liveTab.worktreeBranch, worktreeBase: liveTab.worktreeBase })
-          record('sent')
-          toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
-        } else {
-          addTask(project.id, d.task, role.id) // idle lane → queued (user launches)
-          record('queued')
-          toast({ text: `Queued for ${role.name}`, kind: 'info', detail: preview })
-          feedback(`The "${role.name}" lane is not running, so your task was QUEUED, not started. Reassign it to a lane that's live now, or ask the user to launch ${role.name}.`)
-        }
+      if (route.kind === 'send') {
+        const { role, tab } = route
+        window.operator.terminalWrite(tab.id, `\x1b[200~${d.task}\x1b[201~\r`)
+        // track it as running on the lane (with its dir, so the diff link resolves)
+        addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
+        record('sent')
+        toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
+      } else if (route.kind === 'queue') {
+        addTask(project.id, d.task, route.role.id) // idle lane → queued (user launches)
+        record('queued')
+        toast({ text: `Queued for ${route.role.name}`, kind: 'info', detail: preview })
+        feedback(`The "${route.role.name}" lane is not running, so your task was QUEUED, not started. Reassign it to a lane that's live now, or ask the user to launch ${route.role.name}.`)
       } else {
         addTask(project.id, d.task) // unknown role → unassigned backlog
         record('unassigned')
