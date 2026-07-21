@@ -14,6 +14,9 @@ interface SessionItemProps {
   roleColor?: string
   /** Fan-out membership: this agent's position within a parallel launch. */
   fanInfo?: { index: number; total: number }
+  /** What this lane is working on now (or last did) — shown on hover, same as the
+   *  collapsed rail, so the info doesn't disappear when the sidebar is expanded. */
+  currentTask?: string
   closable: boolean
   /** 1-based Cmd+N hint for the first nine local sessions. */
   shortcutIndex?: number | null
@@ -22,10 +25,13 @@ interface SessionItemProps {
   onClose: () => void
 }
 
-export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
+  // Fixed-position card: the sidebar scroller clips overflow, so an absolutely
+  // positioned one would be cut off at its edge.
+  const [card, setCard] = useState<{ top: number; left: number } | null>(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -90,8 +96,12 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         setEditValue(label)
         setEditing(true)
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { setHovered(false); setConfirmingClose(false) }}
+      onMouseEnter={(e) => {
+        setHovered(true)
+        const r = e.currentTarget.getBoundingClientRect()
+        setCard({ top: r.top, left: r.right + 8 })
+      }}
+      onMouseLeave={() => { setHovered(false); setConfirmingClose(false); setCard(null) }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -282,6 +292,23 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         </button>
       )}
       </div>
+      {/* Hover card — the lane's current/last task. Suppressed while renaming (the input
+          owns the row) and when there's nothing to say. */}
+      {card && currentTask && !editing && (
+        <div style={{
+          position: 'fixed', top: card.top, left: card.left, zIndex: 60, maxWidth: 260,
+          padding: '7px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
+          pointerEvents: 'none', fontFamily: 'var(--font-mono)', lineHeight: 1.35,
+        }}>
+          <div style={{
+            fontSize: 10.5, color: 'var(--fg-muted)',
+            display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          }}>
+            {currentTask}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

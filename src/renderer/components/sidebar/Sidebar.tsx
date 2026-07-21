@@ -6,6 +6,7 @@ import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
 import { modelFamilyLabel } from '../../lib/roster'
 import { isInjectedTurn } from '../../lib/format'
+import { currentTaskOf } from '../../lib/session-task'
 
 interface SidebarProps {
   sessions: AgentSession[]
@@ -61,7 +62,7 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
   // sessions without a projectId fall back to a basename key. The group carries the project's
   // display name + canonical path (used for the prefs button), from the projects store.
   const projectById = new Map((projects ?? []).map((p) => [p.id, p]))
-  const grouped = new Map<string, { name: string; path: string; roster?: Project['roster']; sessions: AgentSession[] }>()
+  const grouped = new Map<string, { name: string; path: string; roster?: Project['roster']; project?: Project; sessions: AgentSession[] }>()
   for (const session of sessions) {
     const proj = session.projectId ? projectById.get(session.projectId) : undefined
     const key = session.projectId || `name:${session.projectName || 'Unknown'}`
@@ -73,6 +74,7 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
         name: proj?.name || session.projectName || 'Unknown',
         path: proj?.path || session.workingDirectory || '',
         roster: proj?.roster,
+        project: proj,
         sessions: [session],
       })
     }
@@ -170,13 +172,14 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
             No active sessions
           </p>
         )}
-        {Array.from(grouped.entries()).map(([groupId, { name, path, roster, sessions: group }]) => (
+        {Array.from(grouped.entries()).map(([groupId, { name, path, roster, project, sessions: group }]) => (
           <FolderGroup
             key={groupId}
             groupId={groupId}
             projectName={name}
             projectPath={path}
             roster={roster}
+            project={project}
             onOpenProject={onOpenProject}
             projectActive={activeProjectId === groupId}
             group={group}
@@ -389,6 +392,7 @@ function FolderGroup({
   projectName,
   projectPath,
   roster,
+  project,
   onOpenProject,
   projectActive,
   group,
@@ -414,6 +418,8 @@ function FolderGroup({
   projectPath: string
   /** The project's roster, to resolve each session's roleId → lane badge. */
   roster?: Project['roster']
+  /** The project itself — supplies task state for the hover card. */
+  project?: Project
   /** Open this project's workspace (only wired for real projects, not legacy name-groups). */
   onOpenProject?: (projectId: string) => void
   projectActive?: boolean
@@ -581,6 +587,7 @@ function FolderGroup({
             labelIsRole={labelIsRole}
             roleColor={role?.accent}
             fanInfo={fan}
+            currentTask={currentTaskOf(session, project)}
             closable
             shortcutIndex={shortcutIndices[session.id] ?? null}
             onClick={() => onSelectSession(session)}

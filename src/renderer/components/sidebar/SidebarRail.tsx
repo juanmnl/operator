@@ -4,6 +4,7 @@ import { StatusWave, WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
 import { modelFamilyLabel } from '../../lib/roster'
 import { isInjectedTurn } from '../../lib/format'
+import { currentTaskOf } from '../../lib/session-task'
 
 interface SidebarRailProps {
   sessions: AgentSession[]
@@ -36,17 +37,6 @@ function initialOf(name: string): string {
   if (words.length === 0) return '?'
   if (words.length === 1) return words[0].slice(0, 1).toUpperCase()
   return (words[0][0] + words[1][0]).toUpperCase()
-}
-
-// What the agent is working on right now, for the hover card. The live in-progress
-// plan item is the truest answer; a dispatched-but-not-yet-planned lane falls back to
-// its running project task, then to the first-prompt summary.
-function currentTaskOf(session: AgentSession, project?: Project): string | undefined {
-  const todo = session.todos?.find((t) => t.status === 'in_progress')
-  if (todo) return todo.content
-  const task = project?.tasks?.find((t) => t.status === 'running' && t.terminalId === session.terminalId)
-  if (task) return task.text
-  return session.summary
 }
 
 const panelIcon = (
