@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 
 describe('roster', () => {
   it('seeds a default roster with unique ids and valid models', () => {
@@ -59,6 +59,23 @@ describe('roster', () => {
     const legacy = [{ id: 'orchestrator', name: 'Orchestrator', model: 'fable', prompt: 'x' }, ...defaultRoster().filter((r) => r.id !== 'operator')]
     const note = orchestrationNote('Demo', legacy[0], legacy)
     expect(note).toContain('You are Operator')
+  })
+
+  it('reorderRoles moves a lane before/after another', () => {
+    const ids = (rs: ReturnType<typeof defaultRoster>) => rs.map((r) => r.id)
+    const roster = defaultRoster() // operator, research, code, review, design, qa
+    // Drag DOWNWARD: the target index must be recomputed after the removal, or the
+    // moved lane lands one slot short of the drop line.
+    expect(ids(reorderRoles(roster, 'operator', 'code', 'after'))).toEqual(['research', 'code', 'operator', 'review', 'design', 'qa'])
+    // Drag UPWARD.
+    expect(ids(reorderRoles(roster, 'qa', 'research', 'before'))).toEqual(['operator', 'qa', 'research', 'code', 'review', 'design'])
+  })
+
+  it('reorderRoles is a no-op for unknown ids or a self-drop', () => {
+    const roster = defaultRoster()
+    expect(reorderRoles(roster, 'code', 'code', 'before')).toBe(roster)
+    expect(reorderRoles(roster, 'nope', 'code', 'before')).toBe(roster)
+    expect(reorderRoles(roster, 'code', 'nope', 'after')).toBe(roster)
   })
 
   it('stripDispatchLines removes directive lines, keeps the prose', () => {

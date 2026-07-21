@@ -70,10 +70,28 @@ const MOCK_TERMINALS = MOCK_SESSIONS.map((s) => ({
   devPort: s.terminalId === 't1' ? 1421 : undefined,
 }))
 
+// The re-attach path builds each TerminalTab from terminalList() joined against the
+// SAVED sessions by terminal id — projectId/roleId come from here, not from the
+// terminal. Without these the lanes lose their role, so the sidebar falls back to the
+// summary and none of the lane colouring/coordinator behaviour can be exercised.
+const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
+  key: `key-${s.terminalId}`,
+  cwd: PROJECT_PATH,
+  projectName: 'operator',
+  projectId: PROJECT_ID,
+  roleId: s.roleId,
+  model: s.model,
+  effortLevel: s.effortLevel,
+  claudeSessionId: s.id,
+  terminalId: s.terminalId,
+  lastActiveAt: now,
+}))
+
 export function installMockBridge() {
   // Seed the stores the renderer reads at boot so it lands on a populated UI.
   try {
     localStorage.setItem('operator.projects', JSON.stringify(MOCK_PROJECTS))
+    localStorage.setItem('operator.savedSessions', JSON.stringify(MOCK_SAVED))
     localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
   } catch { /* ignore */ }
 
@@ -92,7 +110,7 @@ export function installMockBridge() {
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => [],
+    loadSessions: async () => MOCK_SAVED,
     loadProjects: async () => MOCK_PROJECTS,
     agentsList: async () => [],
     getUsageStats: async () => ({ totalCost: 0, totalTokens: 0, days: [], projects: [], models: [] }),

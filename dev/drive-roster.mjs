@@ -1,0 +1,18 @@
+import { webkit } from 'playwright'
+const b = await webkit.launch()
+const p = await b.newPage({ viewport: { width: 1440, height: 980 }, colorScheme: 'dark' })
+p.on('pageerror', e => console.log('ERR', String(e).slice(0, 200)))
+await p.goto('http://localhost:1429/dev/mock.html', { waitUntil: 'load' })
+await p.waitForTimeout(2200)
+await p.keyboard.press('Meta+k'); await p.waitForTimeout(350)
+await p.keyboard.type('Open operator workspace'); await p.waitForTimeout(350)
+await p.keyboard.press('Enter'); await p.waitForTimeout(1200)
+await p.screenshot({ path: '/tmp/roster-v2.png' })
+// Click a non-live card body to select it (no checkbox any more).
+const design = p.locator('div').filter({ hasText: /^Design/ }).first()
+await design.click({ position: { x: 300, y: 12 } }).catch(() => {})
+await p.waitForTimeout(500)
+await p.screenshot({ path: '/tmp/roster-selected.png' })
+const btn = await p.locator('button', { hasText: /Launch \d+ →|Launch all →/ }).first().textContent().catch(() => null)
+console.log('header button:', JSON.stringify(btn))
+await b.close()

@@ -152,6 +152,25 @@ export function stripDispatchLines(text: string): string {
     .trim()
 }
 
+/** Move the role `dragId` to sit before/after `targetId`, returning a new array.
+ *  Order is the roster's own — it drives the board, the ⌘K launch list, and which lane
+ *  reads as the project's lead — so it's worth letting the user arrange it. Returns the
+ *  input unchanged when the move is a no-op or either id is unknown. */
+export function reorderRoles(roles: Role[], dragId: string, targetId: string, edge: 'before' | 'after'): Role[] {
+  if (dragId === targetId) return roles
+  const from = roles.findIndex((r) => r.id === dragId)
+  const to = roles.findIndex((r) => r.id === targetId)
+  if (from < 0 || to < 0) return roles
+  const next = roles.slice()
+  const [moved] = next.splice(from, 1)
+  // Recompute the target index AFTER the removal, so dragging downward lands where
+  // the drop line was drawn rather than one slot short.
+  let idx = next.findIndex((r) => r.id === targetId)
+  if (edge === 'after') idx += 1
+  next.splice(idx, 0, moved)
+  return next
+}
+
 /** A short, unique role id from a name (for user-added roles); falls back to a counter. */
 export function roleIdFrom(name: string, existing: Role[]): string {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'role'
