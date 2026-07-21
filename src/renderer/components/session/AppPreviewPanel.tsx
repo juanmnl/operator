@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage } from '../../lib/annotations'
+import { pickPreviewUrl, portOf } from '../../lib/preview-port'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -130,22 +131,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     return () => { cancelled = true; clearInterval(t) }
   }, [terminalId])
 
-  // The port Operator reserved for this session (carried in `url`), used only to
-  // BREAK TIES below — never as proof anything is actually listening on it.
-  const reservedPort = useMemo(() => {
-    try { return url ? Number(new URL(url).port) || null : null } catch { return null }
-  }, [url])
-
-  // Which of the session's servers to show when the user hasn't pinned one: its
-  // reserved port if that's among them (the dev server followed our instruction),
-  // else the lowest — a stable choice, so the preview doesn't flip between ports as
-  // lsof reorders. With nothing discovered we fall back to the reserved URL, which
-  // at least renders the right "not serving yet" empty state.
-  const autoUrl = useMemo(() => {
-    if (!servers.length) return url
-    const pick = reservedPort && servers.includes(reservedPort) ? reservedPort : servers[0]
-    return `http://localhost:${pick}`
-  }, [servers, reservedPort, url])
+  // Which of the session's servers to show when the user hasn't pinned one — reserved
+  // port if it's actually being served, else the lowest (see lib/preview-port).
+  const autoUrl = useMemo(() => pickPreviewUrl(servers, url), [servers, url])
 
   // Resolve a live port, but ONLY one we can attribute to THIS session: a manual
   // override, or a port the session's own process tree is serving on (`autoUrl`). We
@@ -211,9 +199,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   const display = resolved || (override ? overrideUrl(override) : autoUrl)
   const host = display ? display.replace(/^https?:\/\//, '') : null
   // Which of the session's ports is on screen, so the picker can mark it.
-  const displayPort = useMemo(() => {
-    try { return display ? Number(new URL(display).port) || null : null } catch { return null }
-  }, [display])
+  const displayPort = useMemo(() => portOf(display), [display])
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
   const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
