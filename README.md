@@ -22,11 +22,15 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 
 ### What Operator does
 
+- **A project roster, coordinated by Operator.** Give a project a team of agent *lanes* — **Operator** (the coordinator), Research, Code, Review, Design, QA — each pinning a model, reasoning effort, an optional isolated worktree, and a standing charter. Drag to reorder, click to select, launch one or several. The Operator lane knows the team and routes work to the best-suited lane, doing the job itself when none fits.
+- **Delegation that actually lands.** An agent hands work off with a single line (`OPERATOR-DISPATCH [lane] task`); Operator types it into that lane if it's running, queues it if not — and tells the sender which it was, plus which lanes *are* live, so it can reassign instead of waiting on work that never started.
+- **A task queue with provenance.** Tasks carry who ran them, where, and the resulting diff — with an optional check command (`npm test`) that has to go green before a task reads "done".
 - **An agent library with per-task models.** A visual editor over your `.claude/agents/*.md` — the headline being which model runs each agent (Haiku for extraction, Sonnet for general work, Opus for hard reasoning), with cost/speed hints right at the point of choice.
 - **A live orchestration timeline.** Watch each session's tool calls and subagent delegations as they happen — nested by who-spawned-whom, with a live-ticking duration on the in-flight tool and elapsed time on finished ones. Reconstructed straight from Claude Code's own transcripts, so it needs nothing installed.
 - **Isolated worktrees + fan-out.** Run multiple agents on one repo in parallel — each gets its own git worktree, so changes never collide. Fan a single task out across N parallel agents, each badged so the group reads at a glance.
 - **In-app diff review.** See each session's changes in a built-in diff viewer, then **Commit**, **Merge** back to your base branch, or **Discard** — no terminal required.
 - **A usage & cost dashboard.** Token-driven insights into what's driving your usage (high-context, subagent-heavy, and long-running sessions), plus a Claude-Code-`/usage`-style per-model breakdown — input/output/cache, cost, and API vs. wall time.
+- **Three ways to watch one session.** **Console** (the real terminal), **Chat** (a document-style read of the conversation with its own composer), and **Preview** — a live view of the app the session is building, with the port discovered by walking that session's own process tree rather than guessing, and a picker when it's serving several. Annotate the preview with pins and boxes, or inspect a real element down to `component@file:line`, and send either straight to the agent or the task queue.
 - **Drop & click.** Drop an image anywhere on the window to paste its path into the active session, and click links in the terminal to open them in your browser.
 - **Never lose your place.** Open sessions are saved continuously to a crash-safe store; relaunch and pick up under "Continue where you left off" — **Resume** the exact conversation or reopen clean.
 - **Self-updating.** New tagged releases are signed, notarized, and published automatically; the app checks on launch and offers a one-click "Install & Restart".
@@ -55,6 +59,30 @@ npm run tauri dev   # or `npm run dev` for the frontend alone
 
 Click **+ New Session**, pick a folder, and start. If the folder is a git repo, worktree isolation defaults on; bump **Agents** above 1 to fan the same task out across parallel worktree agents.
 
+### Development
+
+```bash
+npm test                       # unit tests (vitest)
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run build                  # tsc + vite
+```
+
+The terminal is the hard part of this app, so it has its own harnesses. Each boots the
+**production** xterm config in headless WebKit (the same engine family as the app's
+WKWebView) rather than a stand-in:
+
+| Command | Answers |
+| --- | --- |
+| `npm run verify:width` | Do xterm and Claude Code agree on every glyph's cell width? (A disagreement drifts the cursor and garbles scrollback.) |
+| `npm run verify:dom` | Does the DOM renderer leave stale text under incremental writes? (Separates a renderer bug from a compositor one.) |
+| `npm run verify:visual` | What do the symbol/emoji fallback paths actually render? |
+| `npm run verify:input` | Do keystrokes reach the pty in order? |
+
+`dev/` holds a mock `window.operator` bridge that boots the real renderer against
+fixtures in a plain browser, so the UI can be driven and screenshotted without the Tauri
+shell (`node dev/mock-check.mjs`, `dev/drive-palette.mjs`, …). It's development-only —
+the production build declares its entry points explicitly, so `dev/` is never bundled.
+
 ### Building a signed & notarized release
 
 The build is configured to sign with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`). Signing happens automatically; notarization runs too if Apple credentials are present in the environment:
@@ -74,14 +102,16 @@ Without those variables the build still produces a signed (un-notarized) `.app` 
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+K` | Command palette |
+| `Cmd+K` | Command palette — sessions, but also Operator's own functions: switch surface, open Plan/Diff, launch a project's lane, start its queued backlog |
 | `Cmd+N` | New session |
 | `Cmd+W` | Close active session |
+| `Cmd+J` | Console ⇄ Chat |
+| `Cmd+E` | Preview: Interact ⇄ Annotate |
 | `Cmd+1`–`9` | Switch session |
 
 ### Stack
 
-React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, a transcript tailer that rebuilds the session timeline, an optional `tiny_http` server for the permission hook, and `serde`/`serde_yaml` for rules, the agent library, and the durable session store. The build produces a ~10 MB signed app.
+React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, xterm.js (DOM renderer) for the terminal surface, a transcript tailer that rebuilds the session timeline, and `serde`/`serde_yaml` for the agent library, projects, and the durable session store. The build produces a ~10 MB signed app.
 
 ### Brand & assets
 
