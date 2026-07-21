@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { defaultRoster, orchestrationNote } from '../lib/roster'
+import { defaultRoster, orchestrationNote, modelFamilyLabel } from '../lib/roster'
 import { routeDispatch, liveLaneNames } from '../lib/dispatch'
 import { submitQueue } from '../lib/submit-queue'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -1617,6 +1617,70 @@ export function DashboardView() {
       })
     })
 
+    // --- Operator's own functions -------------------------------------------------------
+    // The palette used to reach only sessions/settings/themes, so most of what Operator can
+    // DO (switch surface, open a panel, launch a lane, dispatch a backlog) was mouse-only.
+    // Each block is gated on the state that makes it meaningful, so the list stays honest.
+    if (activeSession) {
+      const view = (v: MainView, label: string, hint?: string) => actions.push({
+        id: `view-${v}`, group: 'View',
+        label: `${label}${mainView === v ? ' ✓' : ''}`,
+        hint,
+        run: () => selectMainView(v),
+      })
+      view('terminal', 'Show Console', '⌘J')
+      view('chat', 'Show Chat', '⌘J')
+      view('preview', 'Show Preview')
+      actions.push(
+        { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff)', run: togglePanel },
+        { id: 'panel-plan', group: 'View', label: 'Side panel: Plan', run: () => { selectPanelTab('plan'); if (!panelOpen) togglePanel() } },
+        { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => { selectPanelTab('diff'); if (!panelOpen) togglePanel() } },
+        { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => { void handleCloseSession(activeSession) } },
+      )
+      if (mainView === 'preview') {
+        actions.push({
+          id: 'preview-annotate', group: 'View',
+          label: previewAnnotate ? 'Preview: Interact mode' : 'Preview: Annotate mode',
+          hint: '⌘E',
+          run: () => setPreviewAnnotate((v) => !v),
+        })
+      }
+    }
+    actions.push(
+      { id: 'toggle-sidebar', group: 'View', label: sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', run: toggleSidebar },
+      { id: 'dashboard', group: 'View', label: 'Show activity dashboard', run: handleShowDashboard },
+      { id: 'scratch-shell', group: 'New', label: 'Open scratch terminal', run: () => { setShellStarted(true); setShellOpen(true) } },
+    )
+
+    // Per project: open its workspace, launch any lane, and start its queued backlog —
+    // the orchestration surface, previously reachable only through the Agents board.
+    projects.forEach((p) => {
+      actions.push({
+        id: `project-${p.id}`, group: 'Project',
+        label: `Open ${p.name} workspace`, detail: p.path,
+        run: () => handleOpenProject(p.id),
+      })
+      const queued = (p.tasks ?? []).filter((t) => t.roleId && (t.status ?? 'queued') === 'queued').length
+      if (queued > 0) {
+        actions.push({
+          id: `start-tasks-${p.id}`, group: 'Project',
+          label: `Start ${queued} queued task${queued > 1 ? 's' : ''} in ${p.name}`,
+          detail: 'Dispatches each to its assigned lane',
+          run: () => startProjectTasks(p),
+        })
+      }
+      ;(p.roster ?? []).forEach((role) => {
+        const live = terminals.some((t) => t.projectId === p.id && t.roleId === role.id && !t.ended)
+        if (live) return // already running — the Session group switches to it
+        actions.push({
+          id: `launch-${p.id}-${role.id}`, group: 'Project',
+          label: `Launch ${role.name} in ${p.name}`,
+          detail: `${modelFamilyLabel(role.model)}${role.useWorktree ? ' · worktree' : ''}`,
+          run: () => { void handleLaunchRole(p, role) },
+        })
+      })
+    })
+
     // Static entries
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
@@ -1641,7 +1705,9 @@ export function DashboardView() {
     })
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck])
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
+      activeSession, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks])
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
