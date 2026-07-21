@@ -3,6 +3,7 @@ import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, 
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote } from '../lib/roster'
 import { routeDispatch, liveLaneNames } from '../lib/dispatch'
+import { submitQueue } from '../lib/submit-queue'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
@@ -656,11 +657,14 @@ export function DashboardView() {
         if (!srcTab) return
         const live = liveLaneNames(tabs, roster, project.id, srcTab.id)
         const liveHint = live.length ? ` Lanes running now: ${live.join(', ')}.` : ' No other lanes are running.'
-        window.operator.terminalWrite(srcTab.id, `\x1b[200~[Operator] ${msg}${liveHint}\x1b[201~\r`)
+        void submitQueue.submit(srcTab.id, `[Operator] ${msg}${liveHint}`)
       }
       if (route.kind === 'send') {
         const { role, tab } = route
-        window.operator.terminalWrite(tab.id, `\x1b[200~${d.task}\x1b[201~\r`)
+        // Queued, not written directly: a coordinator that emits several dispatches at once
+        // would otherwise land them faster than the TUI commits each paste, merging them into
+        // one composer draft that never runs as separate turns (see lib/submit-queue).
+        void submitQueue.submit(tab.id, d.task)
         // track it as running on the lane (with its dir, so the diff link resolves)
         addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
         record('sent')
@@ -937,7 +941,7 @@ export function DashboardView() {
     if (!t) return
     const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
     if (liveTab) {
-      window.operator.terminalWrite(liveTab.id, `\x1b[200~${t}\x1b[201~\r`)
+      void submitQueue.submit(liveTab.id, t)
       setActiveTerminalId(liveTab.id)
       setActiveSessionId(`local-${liveTab.id}`)
     } else {
