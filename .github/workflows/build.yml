@@ -7,7 +7,40 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Verification gate: the suites the repo already relies on locally (vitest +
+  # cargo test), so a release build can't ship what the tests would have caught.
+  # npm run build runs first because tsc is part of it AND cargo test compiles
+  # tauri-build, which wants the frontend dist present.
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Typecheck + bundle
+        run: npm run build
+
+      - name: Renderer tests
+        run: npm test
+
+      - name: Rust tests
+        run: cargo test --locked --lib
+        working-directory: src-tauri
+
   macos:
+    needs: test
     runs-on: macos-14 # Apple Silicon → aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
