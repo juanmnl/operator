@@ -6,8 +6,9 @@ import type { Project } from '../../../shared/types'
 // queue; the durable record behind the transient dispatch toasts.
 
 const OUTCOME_LABEL: Record<string, string> = {
-  sent: 'sent',       // typed into the live lane
-  queued: 'queued',   // lane idle → queued for it
+  sent: 'sent',         // typed into the live lane
+  launched: 'launched', // lane was idle → spawned with the task
+  queued: 'queued',     // task queued (legacy records / failed launch)
   unassigned: 'no lane', // role didn't resolve → unassigned backlog
 }
 
@@ -40,7 +41,7 @@ export function DispatchLog({ project }: { project: Project }) {
                 <span style={{ flexShrink: 0, color: 'var(--fg-muted)', fontSize: 10 }}>→</span>
                 <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: to?.accent || 'var(--fg-muted)' }}>{to?.name ?? '?'}</span>
                 <span style={{ flex: 1, minWidth: 0, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.task}>{d.task}</span>
-                <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: d.outcome === 'sent' ? 'var(--accent)' : 'var(--fg-muted)' }}>
+                <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: d.outcome === 'sent' || d.outcome === 'launched' ? 'var(--accent)' : 'var(--fg-muted)' }}>
                   {OUTCOME_LABEL[d.outcome] ?? d.outcome}
                 </span>
               </div>

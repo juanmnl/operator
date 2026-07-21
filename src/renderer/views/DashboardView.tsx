@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { defaultRoster, orchestrationNote, modelFamilyLabel } from '../lib/roster'
+import { defaultRoster, orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings } from '../lib/roster'
+import { reorderByIds } from '../lib/reorder'
 import { routeDispatch, liveLaneNames } from '../lib/dispatch'
 import { submitQueue } from '../lib/submit-queue'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -436,7 +437,9 @@ export function DashboardView() {
   const [projects, setProjects] = useState<Project[]>(() => {
     try {
       const raw = localStorage.getItem('operator.projects')
-      return raw ? JSON.parse(raw) : []
+      // Legacy-coordinator migration on the seed too, so the pre-hydrate first paint
+      // never flashes the old "Orchestrator" lane.
+      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator) : []
     } catch { return [] }
   })
 
@@ -539,7 +542,7 @@ export function DashboardView() {
     if (!cmd || !ids.length || !cwd) return
     stampTaskCheck(projectId, ids, { status: 'running', at: new Date().toISOString() })
     const res = await window.operator.runCheck(cwd, cmd).catch((e) => ({ ok: false, output: String(e) }))
-    stampTaskCheck(projectId, ids, { status: res.ok ? 'pass' : 'fail', output: res.output, at: new Date().toISOString() })
+    stampTaskCheck(projectId, ids, { status: res?.ok ? 'pass' : 'fail', output: res?.output, at: new Date().toISOString() })
   }, [stampTaskCheck])
 
   // Attach the captured change summary (files/+/−) to completed tasks.
@@ -621,11 +624,17 @@ export function DashboardView() {
   // --- Orchestrator dispatch routing ----------------------------------------------------
   // An agent emitted `OPERATOR-DISPATCH [role] task`; the backend parsed it and fires the
   // event. Route it to the target lane WITHIN the emitting session's project: a live lane
-  // gets the task typed into its pty (no focus steal); an idle lane gets it QUEUED (we don't
-  // auto-spawn agents from model output — the user launches, keeping a human in the loop).
+  // gets the task typed into its pty (no focus steal); an idle lane is LAUNCHED with the
+  // task as its opening brief (without stealing focus). Dedupe by dispatch id plus the
+  // in-flight guard below bound any re-dispatch loop.
   // Latest routing inputs held in a ref so the subscription is set up once (no missed events).
   const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch })
   dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch }
+  // handleLaunchRole is declared further down; the subscription reaches it through a ref.
+  const launchRoleRef = useRef<((project: Project, role: Role, prompt?: string, launchDevServer?: boolean, opts?: { focus?: boolean }) => Promise<TerminalTab | undefined>) | null>(null)
+  // One launch per (project, lane) at a time: a burst of dispatches to the same idle lane
+  // must join the session being spawned, not fan out into sibling lanes.
+  const launchingLanesRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
   useEffect(() => {
     const SEEN_KEY = 'operator.dispatch.seen'
     const unsub = window.operator.onOrchestratorDispatch?.((d) => {
@@ -644,15 +653,10 @@ export function DashboardView() {
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
       const record = (outcome: DispatchRecord['outcome']) =>
         log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: routedRole?.id, task: d.task, outcome })
-      // A dispatch to an idle/unknown lane is QUEUED, not started — but the orchestrator
-      // gets no runtime signal of that and keeps coordinating as if the work is live. Type
-      // a status note back into ITS pty so it can adapt (reassign to a live lane, or ask
-      // the user to launch). We deliberately DON'T auto-spawn or auto-reroute here — the
-      // decision stays with the agent (in the loop). Naming the currently-live lanes (routing
-      // logic + the ended-lane guard live in lib/dispatch) lets it reassign informedly. Dedupe
-      // by dispatch id (above) bounds any re-dispatch loop: the same task→role re-emitted is
-      // dropped before it reaches here. The note carries no OPERATOR-DISPATCH token, so it
-      // isn't itself parsed.
+      // Status notes typed back into the DISPATCHER's pty so it can adapt (e.g. an unknown
+      // role, or confirmation that an idle lane was launched). Naming the currently-live
+      // lanes (routing logic + the ended-lane guard live in lib/dispatch) lets it reassign
+      // informedly. The note carries no OPERATOR-DISPATCH token, so it isn't itself parsed.
       const feedback = (msg: string) => {
         if (!srcTab) return
         const live = liveLaneNames(tabs, roster, project.id, srcTab.id)
@@ -670,10 +674,35 @@ export function DashboardView() {
         record('sent')
         toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
       } else if (route.kind === 'queue') {
-        addTask(project.id, d.task, route.role.id) // idle lane → queued (user launches)
-        record('queued')
-        toast({ text: `Queued for ${route.role.name}`, kind: 'info', detail: preview })
-        feedback(`The "${route.role.name}" lane is not running, so your task was QUEUED, not started. Reassign it to a lane that's live now, or ask the user to launch ${route.role.name}.`)
+        // Idle lane → LAUNCH it with the task as its opening brief (the user asked for
+        // dispatches to start the agent, not park work in the queue). If the launch fails,
+        // the task falls back to the queue so it's never lost.
+        const { role } = route
+        const key = `${project.id}:${role.id}`
+        const trackOrQueue = (tab: TerminalTab | undefined) => {
+          if (tab) addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
+          else addTask(project.id, d.task, role.id)
+        }
+        const inflight = launchingLanesRef.current.get(key)
+        if (inflight) {
+          // This lane is already spawning from a moments-ago dispatch — hand the task to
+          // that same session once it's live instead of fanning out a sibling.
+          void inflight.then((tab) => {
+            if (tab) void submitQueue.submit(tab.id, d.task)
+            trackOrQueue(tab)
+          })
+        } else {
+          const launch = (async () => {
+            const tab = await launchRoleRef.current?.(project, role, d.task, false, { focus: false })
+            trackOrQueue(tab)
+            return tab
+          })()
+          launchingLanesRef.current.set(key, launch)
+          void launch.finally(() => launchingLanesRef.current.delete(key))
+        }
+        record('launched')
+        toast({ text: `Launching ${role.name}`, kind: 'info', detail: preview })
+        feedback(`The "${role.name}" lane wasn't running — Operator is LAUNCHING it now with your task as its opening brief.`)
       } else {
         addTask(project.id, d.task) // unknown role → unassigned backlog
         record('unassigned')
@@ -744,9 +773,15 @@ export function DashboardView() {
     Promise.all([sp, pp]).then(async ([sList, pList]) => {
       const hasSaved = Array.isArray(sList) && sList.length > 0
       const saved = (hasSaved ? sList : savedSessions) as SavedSession[]
-      let nextSaved: SavedSession[] = saved
+      // Saved sessions launched on the legacy coordinator lane follow the rename too,
+      // so they still resolve against the migrated roster.
+      let nextSaved: SavedSession[] = saved.some((s) => s.roleId === 'orchestrator')
+        ? saved.map((s) => (s.roleId === 'orchestrator' ? { ...s, roleId: 'operator' } : s))
+        : saved
       if (Array.isArray(pList) && pList.length) {
-        setProjects(pList as Project[]) // projects.json exists → no migration
+        // projects.json exists → no path backfill, but rosters saved before the
+        // Orchestrator→Operator rename still migrate (persisted by the effect below).
+        setProjects((pList as Project[]).map(migrateLegacyCoordinator))
       } else {
         try {
           const migrated = await migrateProjects(saved)
@@ -807,7 +842,7 @@ export function DashboardView() {
     }).catch(() => { /* no re-attach */ })
   }, [savedHydrated, savedSessions])
 
-  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string }): Promise<TerminalTab[]> => {
+  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string; focus?: boolean }): Promise<TerminalTab[]> => {
     // Write effort level to global settings (Claude Code reads it from there)
     const prefs = await window.operator.folderPrefsLoad(cwd)
     const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
@@ -847,7 +882,7 @@ export function DashboardView() {
       // "Launch dev server" → ask the agent (single session only; fan-out worktrees would
       // collide on ports) to start it in the background on its reserved port, before any task.
       const devInstr = config.launchDevServer && count === 1
-        ? "First, start this project's dev server in the BACKGROUND on the port Operator reserved for you (named in your system prompt — pass it via --port or the PORT env), and don't block the terminal on it."
+        ? "First, make sure this project's dev server is up on the port Operator reserved for you (named in your system prompt): if that port already responds, another lane is serving the same code — just use it. Only if it's down, start the dev server yourself in the BACKGROUND on EXACTLY that port (--port with strict-port semantics, or the PORT env — never accept an auto-incremented fallback port), and don't block the terminal on it."
         : ''
       const initial = [devInstr, config.prompt].filter(Boolean).join('\n\n')
       if (initial) launchOptions.initialPrompt = initial
@@ -874,8 +909,10 @@ export function DashboardView() {
       }
       setTerminals((prev) => [...prev, tab])
       spawned.push(tab)
-      // Focus the first agent; the rest run in the background.
-      if (i === 0) {
+      // Focus the first agent; the rest run in the background. An auto-launched lane
+      // (dispatch to an idle lane) passes focus:false — it must not yank the user away
+      // from whatever they're watching.
+      if (i === 0 && opts?.focus !== false) {
         setActiveTerminalId(result.terminalId)
         setActiveSessionId(`local-${result.terminalId}`)
         setProjectView(null) // launching switches to the new agent's console
@@ -895,7 +932,7 @@ export function DashboardView() {
   // Orchestration: launch a session on a project's role (lane) — spawns in the project
   // root with the role's model/effort/permission and tags the session with roleId. An
   // optional `prompt` is handed to Claude as the first message (delegation).
-  const handleLaunchRole = useCallback(async (project: Project, role: Role, prompt?: string, launchDevServer = false) => {
+  const handleLaunchRole = useCallback(async (project: Project, role: Role, prompt?: string, launchDevServer = false, opts?: { focus?: boolean }): Promise<TerminalTab | undefined> => {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
     const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
     // The agent picks up its assigned QUEUED tasks as its opening work; they move to running
@@ -906,11 +943,14 @@ export function DashboardView() {
       : ''
     const combined = [prompt?.trim(), taskBlock].filter(Boolean).join('\n\n')
     if (queued.length) markTasksRunning(project.id, queued.map((t) => t.id)) // claim first (no double pickup)
+    // Role pins win; a role without its own pin inherits the project's saved defaults
+    // (e.g. permissionMode 'auto' — otherwise lanes regress to permission prompts).
+    const settings = roleLaunchSettings(role, project.defaults)
     const tabs = await handleLaunchSession(
       project.path,
       {
-        effortLevel: role.effort ?? 'high',
-        permissionMode: (role.permissionMode as SessionConfig['permissionMode']) ?? 'default',
+        effortLevel: settings.effortLevel,
+        permissionMode: settings.permissionMode as SessionConfig['permissionMode'],
         model: role.model,
         allowedTools: '',
         useWorktree: !!role.useWorktree, // isolated lane → attributable diff + merge-back
@@ -918,11 +958,13 @@ export function DashboardView() {
         count: 1,
         prompt: combined,
       },
-      { roleId: role.id, orchestrationNote: note },
+      { roleId: role.id, orchestrationNote: note, focus: opts?.focus },
     )
     // Now the terminal (and worktree) exist — stamp the picked-up tasks with their lane.
     if (tabs[0] && queued.length) markTasksRunning(project.id, queued.map((t) => t.id), tabs[0].id, laneOf(tabs[0]))
+    return tabs[0]
   }, [handleLaunchSession, markTasksRunning])
+  launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
 
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
@@ -1041,6 +1083,20 @@ export function DashboardView() {
     setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [rememberRecent, upsertProject])
+
+  // Resume a PROJECT: re-open every saved agent of the project that isn't already live,
+  // each resuming its prior Claude conversation when one exists (else clean in the same
+  // cwd/worktree). Sequential on purpose — each spawn allocates its port and re-attaches
+  // cleanly; the last restored session ends up focused.
+  const handleResumeProject = useCallback(async (projectId: string) => {
+    const liveKeys = new Set(terminals.map((t) => t.key))
+    const toRestore = savedSessions
+      .filter((s) => s.projectId === projectId && !liveKeys.has(s.key))
+      .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt)) // oldest first → sidebar keeps its familiar order
+    for (const s of toRestore) {
+      await handleRestoreSession(s, true)
+    }
+  }, [terminals, savedSessions, handleRestoreSession])
 
   const forgetSavedSession = useCallback((key: string) => {
     setSavedSessions((prev) => {
@@ -1200,6 +1256,17 @@ export function DashboardView() {
     })
   }
 
+  // Drag-to-reorder AGENT SESSIONS within a project group: move the dragged terminal
+  // before/after the drop target in the canonical `terminals` order (which drives the
+  // sidebar list + ⌘1..9). Same per-run contract as group reorder above.
+  const handleReorderSession = (draggedId: string, targetId: string, edge: 'before' | 'after') => {
+    const tidOf = (id: string) => allSidebarSessions.find((s) => s.id === id)?.terminalId
+    const dragTid = tidOf(draggedId)
+    const targetTid = tidOf(targetId)
+    if (!dragTid || !targetTid || dragTid === targetTid) return
+    setTerminals((prev) => reorderByIds(prev, dragTid, targetTid, edge))
+  }
+
   // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.
   const shortcutIndices = useMemo(() => {
     const map: Record<string, number> = {}
@@ -1303,22 +1370,10 @@ export function DashboardView() {
     window.operator.saveProjects?.(projects)
   }, [projects, savedHydrated])
 
-  // One-time top-up: existing projects (rosters created before Review/Design/QA) gain any
-  // missing DEFAULT roles, so the new lanes show up without recreating the project. Guarded by
-  // a flag so a role you later delete doesn't resurrect on the next launch.
-  useEffect(() => {
-    if (!savedHydrated) return
-    const FLAG = 'operator.rosterDefaults.v2'
-    try { if (localStorage.getItem(FLAG)) return } catch { return }
-    const defs = defaultRoster()
-    setProjects((prev) => prev.map((p) => {
-      if (!p.roster || p.roster.length === 0) return p // rosterless is seeded fresh elsewhere
-      const have = new Set(p.roster.map((r) => r.id))
-      const missing = defs.filter((d) => !have.has(d.id))
-      return missing.length ? { ...p, roster: [...p.roster, ...missing] } : p
-    }))
-    try { localStorage.setItem(FLAG, '1') } catch { /* quota */ }
-  }, [savedHydrated])
+  // (No roster "top-up" migration here: a trimmed roster must never regrow. The one-time
+  // backfill that added Review/Design/QA to pre-existing rosters has already run on real
+  // data, and new projects seed the full defaultRoster() at creation — see upsertProject,
+  // and RosterPanel's seed-if-absent for a project that somehow has none.)
 
   // App version (shown next to the name) + a pending update (surfaced as a badge
   // in the sidebar, in addition to the toast).
@@ -1477,27 +1532,9 @@ export function DashboardView() {
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
   }, [savedSessions, terminals])
 
-  // Keys of the sessions that were OPEN at the last app quit — captured once at mount,
-  // synchronously, BEFORE this run overwrites the store. Lets the sidebar list exactly
-  // what was open before the close/restart, not the whole saved history.
-  const lastOpenKeysRef = useRef<Set<string> | null>(null)
-  if (lastOpenKeysRef.current === null) {
-    try { lastOpenKeysRef.current = new Set<string>(JSON.parse(localStorage.getItem('operator.lastOpenKeys') || '[]')) }
-    catch { lastOpenKeysRef.current = new Set<string>() }
-  }
-  // Persist the CURRENT open-set for the next launch (terminalIds die on restart, so
-  // we track keys; closing a session drops it, so it won't resurface next time).
-  useEffect(() => {
-    if (!savedHydrated) return
-    try { localStorage.setItem('operator.lastOpenKeys', JSON.stringify(terminals.map((t) => t.key))) } catch { /* quota */ }
-  }, [terminals, savedHydrated])
-
-  // The subset of restorable sessions that were open at the last quit, not yet
-  // re-opened this run — what the sidebar shows so it isn't blank after a restart.
-  const previouslyOpenSessions = useMemo(() => {
-    const opened = lastOpenKeysRef.current ?? new Set<string>()
-    return restorableSessions.filter((s) => opened.has(s.key))
-  }, [restorableSessions])
+  // (The "open at last quit" key set — `operator.lastOpenKeys` — was read only by the
+  // sidebar's dormant-session list, which is now a Recent PROJECTS list; restoring an
+  // individual session lives on the splash, ⌘K, and the workspace's "Resume N agents".)
 
   // Match on the session id, but fall back to the active terminal: when a session
   // ends it drops out of getSessions() and its sidebar id flips from the hook id
@@ -1660,6 +1697,15 @@ export function DashboardView() {
         label: `Open ${p.name} workspace`, detail: p.path,
         run: () => handleOpenProject(p.id),
       })
+      const resumable = restorableSessions.filter((s) => s.projectId === p.id).length
+      if (resumable > 0) {
+        actions.push({
+          id: `resume-project-${p.id}`, group: 'Project',
+          label: `Resume ${p.name} — ${resumable} agent${resumable > 1 ? 's' : ''}`,
+          detail: 'Re-opens every previously open agent, continuing its conversation',
+          run: () => { void handleResumeProject(p.id) },
+        })
+      }
       const queued = (p.tasks ?? []).filter((t) => t.roleId && (t.status ?? 'queued') === 'queued').length
       if (queued > 0) {
         actions.push({
@@ -1707,7 +1753,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
 
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
@@ -1737,8 +1783,6 @@ export function DashboardView() {
       <Sidebar
         sessions={allSidebarSessions}
         projects={projects}
-        restorableSessions={previouslyOpenSessions}
-        onRestoreSession={(s) => { void handleRestoreSession(s, !!s.claudeSessionId) }}
         onOpenProject={handleOpenProject}
         activeProjectId={contentMode === 'project' ? projectView?.id ?? null : null}
         activeSessionId={activeSessionId}
@@ -1758,6 +1802,7 @@ export function DashboardView() {
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
         onReorderGroup={handleReorderGroup}
+        onReorderSession={handleReorderSession}
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
@@ -1826,6 +1871,8 @@ export function DashboardView() {
               onSendTask={(task) => sendProjectTask(proj, task)}
               onStartAll={() => startProjectTasks(proj)}
               onSetTaskStatus={(taskId, status) => setTaskStatus(proj.id, taskId, status)}
+              resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
+              onResumeProject={() => { void handleResumeProject(proj.id) }}
             />
           )
         })()}

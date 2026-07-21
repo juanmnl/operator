@@ -363,6 +363,66 @@ fn strip_nested_session_env(cmd: &mut CommandBuilder) {
     }
 }
 
+// True when something already listens on the reserved port — i.e. a lane in this cwd has
+// the project's dev server up. Probed at spawn time so the hint can say "use it" outright:
+// prompt-only "check first" wording still lost races (simultaneously launched lanes each
+// saw the port down and started a server, and Vite silently falls back to port+1 when the
+// bind is taken — which is exactly how per-agent servers multiplied).
+fn dev_port_is_live(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
+// The appended-system-prompt note teaching an agent its dev-server port etiquette. Three
+// cases: the port already serves (use it, never start another) · shared with live siblings
+// but not serving yet · exclusively reserved. The not-live branches demand strict-port
+// binding so a lost bind race surfaces as "use the winner's server", not a drifted port.
+fn dev_port_note(port: u16, shared: bool, live: bool, others: &[u16]) -> String {
+    let taken = if others.is_empty() {
+        "none".to_string()
+    } else {
+        others
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let own = if live {
+        format!(
+            "The project's dev server is ALREADY LIVE on port {port} — it serves this same code, \
+             so use it for previews and checks. Do NOT start another dev server and do NOT bind \
+             that port yourself."
+        )
+    } else if shared {
+        format!(
+            "Your dev-server port is {port}, SHARED with the other Operator sessions working in \
+             this same directory — you all serve identical code, so one server is enough. Check \
+             whether it is already live (e.g. `curl -s -o /dev/null localhost:{port}`) BEFORE \
+             starting anything: if it responds, just use it. Only if it is down should you start \
+             the dev server yourself, on that port (pass `--port {port}`, or read it from the \
+             PORT env var). Bind EXACTLY that port with strict-port semantics (e.g. Vite \
+             `--strictPort`); if the bind fails because the port is taken, another session just \
+             started the project's server — use theirs, never fall back to a different port."
+        )
+    } else {
+        format!(
+            "Your reserved dev-server port is {port}; start any local/dev server on it (pass \
+             `--port {port}`, or read it from the PORT env var). Bind EXACTLY that port with \
+             strict-port semantics (e.g. Vite `--strictPort`); if the bind fails because the \
+             port is taken, a server for this project is already up — use it, never fall back \
+             to a different port."
+        )
+    };
+    format!(
+        "Operator (this session's manager) reserves a localhost port per working directory to \
+         avoid collisions between parallel agents. {own} Ports already in use by other Operator \
+         sessions: {taken} — do NOT bind those. If you need more than one port, pick free ones \
+         outside that set."
+    )
+}
+
 #[tauri::command]
 fn terminal_spawn(
     app: tauri::AppHandle,
@@ -462,40 +522,7 @@ fn terminal_spawn(
     // --append-system-prompt reliably): the port-collision hint + the orchestration note.
     let mut sys_notes: Vec<String> = Vec::new();
     if let Some(port) = dev_port {
-        let taken = if others.is_empty() {
-            "none".to_string()
-        } else {
-            others
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        // Two different instructions depending on whether this lane owns the port or
-        // shares it. A shared lane starting its own server would just lose the bind
-        // race (or worse, silently land on a random fallback port the Preview isn't
-        // watching), so tell it to check for a live one first.
-        let own = if port_shared {
-            format!(
-                "Your dev-server port is {port}, SHARED with the other Operator sessions working in \
-                 this same directory — you all serve identical code, so one server is enough. Check \
-                 whether it is already live (e.g. `curl -s -o /dev/null localhost:{port}`) BEFORE \
-                 starting anything: if it responds, just use it. Only if it is down should you start \
-                 the dev server yourself, on that port (pass `--port {port}`, or read it from the \
-                 PORT env var)."
-            )
-        } else {
-            format!(
-                "Your reserved dev-server port is {port}; start any local/dev server on it (pass \
-                 `--port {port}`, or read it from the PORT env var)."
-            )
-        };
-        sys_notes.push(format!(
-            "Operator (this session's manager) reserves a localhost port per working directory to \
-             avoid collisions between parallel agents. {own} Ports already in use by other Operator \
-             sessions: {taken} — do NOT bind those. If you need more than one port, pick free ones \
-             outside that set."
-        ));
+        sys_notes.push(dev_port_note(port, port_shared, dev_port_is_live(port), &others));
     }
     if let Some(note) = orchestration_note.filter(|s| !s.trim().is_empty()) {
         sys_notes.push(note);
@@ -1844,6 +1871,41 @@ mod tests {
     #[test]
     fn canonical_cwd_normalizes_trailing_slash() {
         assert_eq!(canonical_cwd("/tmp/"), canonical_cwd("/tmp"));
+    }
+
+    /// A port that already serves gets the "use it" note — the lane must not be told
+    /// to start anything, or every lane launched after the first grows its own server.
+    #[test]
+    fn dev_port_note_already_live_forbids_starting_a_server() {
+        let note = dev_port_note(1420, true, true, &[1425]);
+        assert!(note.contains("ALREADY LIVE on port 1420"));
+        assert!(note.contains("Do NOT start another dev server"));
+        assert!(!note.contains("start the dev server yourself"), "must not instruct a start");
+        assert!(note.contains("1425"), "still lists ports held by other sessions");
+    }
+
+    /// Not live yet: both the shared and exclusive wordings must demand strict-port
+    /// binding, so a lost bind race means "use the winner's server" — Vite's silent
+    /// fall-back to port+1 is how per-agent servers multiplied.
+    #[test]
+    fn dev_port_note_not_live_demands_strict_port() {
+        let shared = dev_port_note(1420, true, false, &[]);
+        assert!(shared.contains("SHARED"));
+        assert!(shared.contains("--strictPort"));
+        assert!(shared.contains("never fall back to a different port"));
+        let owned = dev_port_note(1420, false, false, &[]);
+        assert!(owned.contains("Your reserved dev-server port is 1420"));
+        assert!(owned.contains("--strictPort"));
+    }
+
+    /// The probe itself: a bound listener reads as live, a freshly freed port as down.
+    #[test]
+    fn dev_port_is_live_detects_a_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(dev_port_is_live(port));
+        drop(listener);
+        assert!(!dev_port_is_live(port));
     }
 
     /// A dir that doesn't exist yet (a worktree not checked out) must key the SAME whether

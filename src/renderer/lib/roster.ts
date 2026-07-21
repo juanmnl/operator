@@ -1,4 +1,5 @@
-import type { Role } from '../../shared/types'
+import type { Project, Role } from '../../shared/types'
+import { reorderByIds } from './reorder'
 
 // The orchestration model set — Claude Code accepts each of these as a `--model` / `/model`
 // alias (verified against `claude --help`: 'fable', 'opus', 'sonnet', plus 'haiku').
@@ -33,6 +34,58 @@ export function modelFamilyLabel(id?: string): string {
 export const COORDINATOR_IDS = ['operator', 'orchestrator'] as const
 export function isCoordinator(id: string): boolean {
   return (COORDINATOR_IDS as readonly string[]).includes(id)
+}
+
+/** Map a legacy 'orchestrator' role id to the canonical 'operator'; anything else passes through. */
+export function migrateLegacyRoleId(id: string | undefined): string | undefined {
+  return id === 'orchestrator' ? 'operator' : id
+}
+
+/** Migrate a project persisted before the Orchestrator→Operator rename: the coordinator
+ *  lane's id becomes 'operator' (and its stock display name "Orchestrator" becomes
+ *  "Operator" — a user-customized name is kept), and every stored reference to the old
+ *  id (task assignments, dispatch log) is remapped so history still resolves. A project
+ *  that never had the legacy id is returned unchanged (same reference). */
+export function migrateLegacyCoordinator(p: Project): Project {
+  const legacyRole = p.roster?.some((r) => r.id === 'orchestrator')
+  const legacyTask = p.tasks?.some((t) => t.roleId === 'orchestrator')
+  const legacyDispatch = p.dispatches?.some((d) => d.fromRoleId === 'orchestrator' || d.toRoleId === 'orchestrator')
+  if (!legacyRole && !legacyTask && !legacyDispatch) return p
+  // Degenerate pre+post-rename mix (both ids present): leave ids alone — rewriting would
+  // collide two distinct lanes; only the stock display name is refreshed.
+  const collision = legacyRole && p.roster!.some((r) => r.id === 'operator')
+  const next: Project = { ...p }
+  if (legacyRole) {
+    next.roster = p.roster!.map((r) => {
+      if (r.id !== 'orchestrator') return r
+      return {
+        ...r,
+        id: collision ? r.id : 'operator',
+        name: r.name === 'Orchestrator' ? 'Operator' : r.name,
+      }
+    })
+  }
+  if (!collision) {
+    if (legacyTask) next.tasks = p.tasks!.map((t) => (t.roleId === 'orchestrator' ? { ...t, roleId: 'operator' } : t))
+    if (legacyDispatch) {
+      next.dispatches = p.dispatches!.map((d) =>
+        d.fromRoleId === 'orchestrator' || d.toRoleId === 'orchestrator'
+          ? { ...d, fromRoleId: migrateLegacyRoleId(d.fromRoleId), toRoleId: migrateLegacyRoleId(d.toRoleId) }
+          : d,
+      )
+    }
+  }
+  return next
+}
+
+/** Launch-time settings for a lane: the role's own pins, falling back to the project's
+ *  saved defaults (so a project configured for e.g. auto-permissions launches lanes
+ *  without permission prompts even when the role doesn't pin a mode itself). */
+export function roleLaunchSettings(role: Role, defaults?: Project['defaults']): { effortLevel: 'high' | 'normal' | 'low'; permissionMode: string } {
+  return {
+    effortLevel: role.effort ?? defaults?.effortLevel ?? 'high',
+    permissionMode: role.permissionMode ?? defaults?.permissionMode ?? 'default',
+  }
 }
 
 const OPERATOR_CHARTER =
@@ -119,9 +172,10 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       charter +
       `Delegate a task by outputting a line EXACTLY in this form, alone on its own line:\n` +
       `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
-      `It's typed into that lane if it's running, otherwise queued — Operator notes back to you ` +
-      `which lanes are live so you can reassign. If no lane fits a task, or the best-suited one ` +
-      `isn't available, just do it yourself rather than forcing a poor fit.`
+      `It's typed into that lane if it's running; if the lane is idle, Operator LAUNCHES it ` +
+      `with your task as its opening brief — either way the work starts, and Operator notes ` +
+      `back to you how each dispatch landed. If no lane fits a task, just do it yourself ` +
+      `rather than forcing a poor fit.`
     )
   }
 
@@ -134,19 +188,22 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     charter +
     `To hand a task to another lane, output a line EXACTLY in this form, alone on its own line:\n` +
     `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
-    `Operator routes it to that lane — typed into it if it's running, otherwise queued for it. ` +
-    `Only dispatch work that clearly belongs to another lane; do your own role's work yourself, ` +
-    `and stay scoped to it when a task is handed to you.`
+    `Operator routes it to that lane — typed into it if it's running, otherwise the lane is ` +
+    `launched with the task. Only dispatch work that clearly belongs to another lane; do your ` +
+    `own role's work yourself, and stay scoped to it when a task is handed to you.`
   )
 }
 
 /** Remove `OPERATOR-DISPATCH …` directive lines from assistant prose — they're protocol,
- *  not conversation (the dispatch log shows them); leaves surrounding text intact. */
+ *  not conversation (the dispatch log shows them); leaves surrounding text intact.
+ *  Tolerates markdown decoration around the directive (bullets, numbering, bold/backticks)
+ *  to mirror the Rust parser (transcript.rs parse_dispatches) — keep the two in sync. */
+const DISPATCH_LINE = /^\s*(?:(?:[-*•>]|\d+[.)])\s+|[`*_]+)*OPERATOR-DISPATCH\s*\[/
 export function stripDispatchLines(text: string): string {
   if (!text.includes('OPERATOR-DISPATCH')) return text // fast path for ~every message
   return text
     .split('\n')
-    .filter((l) => !/^\s*OPERATOR-DISPATCH\s*\[/.test(l))
+    .filter((l) => !DISPATCH_LINE.test(l))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -157,18 +214,7 @@ export function stripDispatchLines(text: string): string {
  *  reads as the project's lead — so it's worth letting the user arrange it. Returns the
  *  input unchanged when the move is a no-op or either id is unknown. */
 export function reorderRoles(roles: Role[], dragId: string, targetId: string, edge: 'before' | 'after'): Role[] {
-  if (dragId === targetId) return roles
-  const from = roles.findIndex((r) => r.id === dragId)
-  const to = roles.findIndex((r) => r.id === targetId)
-  if (from < 0 || to < 0) return roles
-  const next = roles.slice()
-  const [moved] = next.splice(from, 1)
-  // Recompute the target index AFTER the removal, so dragging downward lands where
-  // the drop line was drawn rather than one slot short.
-  let idx = next.findIndex((r) => r.id === targetId)
-  if (edge === 'after') idx += 1
-  next.splice(idx, 0, moved)
-  return next
+  return reorderByIds(roles, dragId, targetId, edge)
 }
 
 /** A short, unique role id from a name (for user-added roles); falls back to a counter. */

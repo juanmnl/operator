@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AgentSession } from '../../../shared/types'
-import type { SavedSession, Project } from '../../../shared/types'
+import type { Project } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
@@ -10,11 +10,9 @@ import { currentTaskOf } from '../../lib/session-task'
 
 interface SidebarProps {
   sessions: AgentSession[]
-  /** Known projects (folder/repo groups); supplies each group's display name + canonical path. */
+  /** Known projects (folder/repo groups); supplies each group's display name + canonical
+   *  path, and the "Recent" list of projects with no live session. */
   projects?: Project[]
-  /** Sessions from prior runs, not currently open — listed dormant for one-click resume. */
-  restorableSessions?: SavedSession[]
-  onRestoreSession?: (saved: SavedSession) => void
   activeSessionId: string | null
   customNames: Record<string, string>
   activeFolderPrefs: string | null
@@ -35,7 +33,9 @@ interface SidebarProps {
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
   onReorderGroup: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
-  /** Open a project's workspace (Agents + Moodboard) — from its title. Only for real projects. */
+  /** Reorder a session within its project group (drag one row onto another). */
+  onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** Open a project's workspace (Agents + Moodboard) — from its title, or from a Recent row. */
   onOpenProject?: (projectId: string) => void
   /** The project whose workspace is currently open (highlights its title). */
   activeProjectId?: string | null
@@ -53,10 +53,35 @@ interface SidebarProps {
   onInstallUpdate?: () => void
 }
 
-export function Sidebar({ sessions, projects, restorableSessions, onRestoreSession, onOpenProject, activeProjectId, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
   // Id of the folder group currently being dragged for reorder — lifted here so a
   // drag can target any other group (each FolderGroup is a drop zone).
   const [dragGroup, setDragGroup] = useState<string | null>(null)
+  // Collapsed project groups — persisted per group so a busy sidebar stays curated
+  // across restarts (mirrors the "Recent" disclosure below).
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem('operator.collapsedGroups') || '[]')) } catch { return new Set<string>() }
+  })
+  const toggleGroupCollapsed = (id: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      try { localStorage.setItem('operator.collapsedGroups', JSON.stringify([...next])) } catch { /* quota */ }
+      return next
+    })
+  }
+  // "Recent" disclosure — collapsed state survives restarts so the list doesn't
+  // reclaim the sidebar every launch.
+  const [recentCollapsed, setRecentCollapsed] = useState(() => {
+    try { return localStorage.getItem('operator.recentCollapsed') === '1' } catch { return false }
+  })
+  const toggleRecent = () => {
+    setRecentCollapsed((v) => {
+      try { localStorage.setItem('operator.recentCollapsed', v ? '0' : '1') } catch { /* quota */ }
+      return !v
+    })
+  }
   // Group sessions by their canonical Project (id = repo root), so two folders that share
   // a basename no longer merge and a worktree session groups under its source repo. Legacy
   // sessions without a projectId fall back to a basename key. The group carries the project's
@@ -79,6 +104,15 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
       })
     }
   }
+
+  // "Recent" — projects with nothing live, most recently active first. Opening one lands
+  // on its workspace, where the user picks lanes and launches; that's the unit of work the
+  // sidebar offers to return to. (It replaced a per-SESSION dormant list — per-session
+  // resume still lives on the dashboard splash, ⌘K, and the workspace's "Resume N agents".)
+  const recent = (projects ?? [])
+    .filter((p) => !grouped.has(p.id))
+    .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
+    .slice(0, 5)
 
   return (
     <div
@@ -167,7 +201,7 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
           WebkitAppRegion: 'no-drag',
         }}
       >
-        {sessions.length === 0 && (!restorableSessions || restorableSessions.length === 0) && (
+        {sessions.length === 0 && recent.length === 0 && (
           <p style={{ fontSize: 11, color: 'var(--fg-muted)', padding: '8px 12px' }}>
             No active sessions
           </p>
@@ -196,35 +230,52 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
             dragGroup={dragGroup}
             setDragGroup={setDragGroup}
             onReorderGroup={onReorderGroup}
+            onReorderSession={onReorderSession}
+            collapsed={collapsedGroups.has(groupId)}
+            onToggleCollapsed={() => toggleGroupCollapsed(groupId)}
           />
         ))}
 
-        {/* Previously open — sessions from earlier runs the live pty list no longer
-            has (a full app restart kills the ptys). Listed dormant so the sidebar
-            isn't empty after a restart; click resumes the conversation. */}
-        {restorableSessions && restorableSessions.length > 0 && onRestoreSession && (
+        {/* Recent — projects with no live session. Click opens the workspace and leaves
+            it there, waiting to launch; nothing is spawned by the click itself. */}
+        {recent.length > 0 && onOpenProject && (
           <div style={{ marginTop: sessions.length > 0 ? 14 : 4 }}>
-            <p style={{
-              fontSize: 10, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase',
-              color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 12px 4px', margin: 0,
-            }}>
-              Previously open
-            </p>
-            {restorableSessions.slice(0, 12).map((s) => (
-              <button
-                key={s.key}
-                onClick={() => onRestoreSession(s)}
-                title={`Resume — ${s.cwd}`}
+            {/* Disclosure header — collapsible so the list doesn't permanently claim
+                the sidebar (collapsed state persists). */}
+            <button
+              onClick={toggleRecent}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, width: '100%',
+                fontSize: 10, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase',
+                color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 12px 4px', margin: 0,
+                background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none',
+                textAlign: 'left', font: 'inherit',
+              }}
+            >
+              <span style={{ display: 'inline-block', fontSize: 8, transform: recentCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform 120ms' }}>▸</span>
+              Recent · {recent.length}
+            </button>
+            {!recentCollapsed && recent.map((p) => (
+              <div
+                key={p.id}
+                data-recent-project={p.id}
+                onClick={() => onOpenProject(p.id)}
+                title={`Open ${p.name} workspace — ${p.path}`}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                  border: 'none', background: 'transparent', cursor: 'pointer',
-                  padding: '6px 12px', borderRadius: 8, textAlign: 'left',
-                  color: 'var(--fg)', opacity: 0.55, font: 'inherit', outline: 'none',
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%', boxSizing: 'border-box',
+                  cursor: 'pointer', padding: '6px 12px', borderRadius: 8, textAlign: 'left',
+                  color: 'var(--fg)', opacity: 0.55,
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.9'; e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.55'; e.currentTarget.style.background = 'transparent' }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.9'
+                  e.currentTarget.style.background = 'var(--overlay-subtle)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '0.55'
+                  e.currentTarget.style.background = 'transparent'
+                }}
               >
-                {/* Hollow dot — dormant, distinct from the live StatusWave dots */}
+                {/* Hollow dot — nothing running here, distinct from the live StatusWave dots */}
                 <span style={{
                   flexShrink: 0, width: 7, height: 7, borderRadius: '50%',
                   border: '1.2px solid var(--fg-muted)',
@@ -233,14 +284,9 @@ export function Sidebar({ sessions, projects, restorableSessions, onRestoreSessi
                   flex: 1, minWidth: 0, fontSize: 12,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
-                  {s.customName || s.projectName}
+                  {p.name}
                 </span>
-                {s.claudeSessionId && (
-                  <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--fg-muted)', opacity: 0.8 }}>
-                    resume
-                  </span>
-                )}
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -409,6 +455,9 @@ function FolderGroup({
   dragGroup,
   setDragGroup,
   onReorderGroup,
+  onReorderSession,
+  collapsed,
+  onToggleCollapsed,
 }: {
   /** Stable group identity (projectId, or a basename key for legacy sessions) — used for
    *  React key + drag/reorder, distinct from the human display name. */
@@ -437,10 +486,18 @@ function FolderGroup({
   dragGroup: string | null
   setDragGroup: (id: string | null) => void
   onReorderGroup: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** Disclosure state for this project's session rows (persisted by the parent). */
+  collapsed: boolean
+  onToggleCollapsed: () => void
 }) {
   const [hovered, setHovered] = useState(false)
   // Which edge of THIS group the dragged group is hovering — drives the drop line.
   const [dropEdge, setDropEdge] = useState<'before' | 'after' | null>(null)
+  // Session-row drag state — scoped to the group because rows only reorder WITHIN
+  // their project (a cross-project session move would change its cwd, not its slot).
+  const [dragSession, setDragSession] = useState<string | null>(null)
+  const [sessionDrop, setSessionDrop] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
   const isPrefsActive = activeFolderPrefs === projectPath
   const isDragging = dragGroup === groupId
   // Real projects (id = repo root) can open their workspace; legacy name-groups can't.
@@ -521,41 +578,78 @@ function FolderGroup({
           cursor: 'grab',
         }}
       >
-        <span
-          onClick={canOpenProject ? (e) => { e.stopPropagation(); onOpenProject!(groupId) } : undefined}
-          title={canOpenProject ? `Open ${projectName} workspace` : undefined}
-          style={{ overflow: 'hidden', textOverflow: 'ellipsis', cursor: canOpenProject ? 'pointer' : undefined, color: projectActive ? 'var(--accent)' : undefined }}
-        >{projectName}</span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenFolderPrefs(projectPath, projectName)
-          }}
-          // Don't start a group drag from the prefs button.
-          draggable={false}
-          onDragStart={(e) => e.preventDefault()}
-          style={{
-            background: isPrefsActive ? 'rgba(255,255,255,0.08)' : 'none',
-            border: 'none',
-            padding: '2px 4px',
-            borderRadius: 8,
-            cursor: 'pointer',
-            opacity: hovered || isPrefsActive ? 0.8 : 0,
-            transition: 'opacity 0.15s',
-            display: 'flex',
-            alignItems: 'center',
-            flexShrink: 0,
-          }}
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ display: 'block' }}>
-            <circle cx="5" cy="2" r="1" fill="var(--fg-muted)" />
-            <circle cx="5" cy="5" r="1" fill="var(--fg-muted)" />
-            <circle cx="5" cy="8" r="1" fill="var(--fg-muted)" />
-          </svg>
-        </button>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+          {/* Disclosure — collapse this project's rows. Not a drag handle. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleCollapsed() }}
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${projectName}`}
+            title={collapsed ? 'Expand' : 'Collapse'}
+            style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              color: 'var(--fg-muted)', fontSize: 8, lineHeight: 1, flexShrink: 0,
+              display: 'inline-block', transform: collapsed ? 'none' : 'rotate(90deg)', transition: 'transform 120ms',
+            }}
+          >▸</button>
+          <span
+            onClick={canOpenProject ? (e) => { e.stopPropagation(); onOpenProject!(groupId) } : undefined}
+            title={canOpenProject ? `Open ${projectName} workspace` : undefined}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: canOpenProject ? 'pointer' : undefined, color: projectActive ? 'var(--accent)' : undefined }}
+          >{projectName}</span>
+          {/* Collapsed: keep the agent count in view — accent when the active one is hidden here. */}
+          {collapsed && (
+            <span style={{ flexShrink: 0, color: group.some((s) => s.id === activeSessionId) ? 'var(--accent)' : undefined }}>
+              · {group.length}
+            </span>
+          )}
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+          {/* Close the whole section: ends every agent session in this project. */}
+          <button
+            onClick={(e) => { e.stopPropagation(); group.forEach((s) => onCloseSession(s)) }}
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            aria-label={`Close all agents in ${projectName}`}
+            title={`Close all ${group.length > 1 ? `${group.length} agents` : 'agents'} in ${projectName}`}
+            style={{
+              background: 'none', border: 'none', padding: '2px 4px', borderRadius: 8,
+              cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 11, lineHeight: 1,
+              opacity: hovered ? 0.8 : 0, transition: 'opacity 0.15s',
+              display: 'flex', alignItems: 'center',
+            }}
+          >×</button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenFolderPrefs(projectPath, projectName)
+            }}
+            // Don't start a group drag from the prefs button.
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            style={{
+              background: isPrefsActive ? 'rgba(255,255,255,0.08)' : 'none',
+              border: 'none',
+              padding: '2px 4px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              opacity: hovered || isPrefsActive ? 0.8 : 0,
+              transition: 'opacity 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ display: 'block' }}>
+              <circle cx="5" cy="2" r="1" fill="var(--fg-muted)" />
+              <circle cx="5" cy="5" r="1" fill="var(--fg-muted)" />
+              <circle cx="5" cy="8" r="1" fill="var(--fg-muted)" />
+            </svg>
+          </button>
+        </span>
       </div>
-      {/* Sessions collapse (hide) while this group is being dragged. */}
-      {!isDragging && group.map((session, i) => {
+      {/* Sessions hide while this group is being dragged, and when collapsed. */}
+      {!isDragging && !collapsed && group.map((session, i) => {
         const customName = customNames[session.id]
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
@@ -577,23 +671,63 @@ function FolderGroup({
         // renames it — the name is the session's, the colour is the lane's, and losing the
         // colour on rename made a renamed lane indistinguishable from an unassigned session.
         const labelIsRole = !!role
+        // Rows are draggable to reorder WITHIN the group. The wrapper (not SessionItem)
+        // owns the drag: same 2px transparent-border drop-line idiom as the group reorder
+        // above — constant border widths, colour only on a straight rule (no radius), so
+        // the WKWebView border-freeze rule doesn't apply.
+        const rowDrop = sessionDrop?.id === session.id ? sessionDrop.edge : null
         return (
-          <SessionItem
+          <div
             key={session.id}
-            session={session}
-            label={customName || defaultLabel}
-            active={session.id === activeSessionId}
-            effortLevel={effort}
-            labelIsRole={labelIsRole}
-            roleColor={role?.accent}
-            fanInfo={fan}
-            currentTask={currentTaskOf(session, project)}
-            closable
-            shortcutIndex={shortcutIndices[session.id] ?? null}
-            onClick={() => onSelectSession(session)}
-            onRename={(name) => onRenameSession(session.id, name)}
-            onClose={() => onCloseSession(session)}
-          />
+            data-session-row={session.id}
+            draggable={!!onReorderSession && group.length > 1}
+            onDragStart={(e) => {
+              setDragSession(session.id)
+              e.dataTransfer.effectAllowed = 'move'
+              e.stopPropagation() // don't also start a group drag
+            }}
+            onDragEnd={() => { setDragSession(null); setSessionDrop(null) }}
+            onDragOver={(e) => {
+              if (!dragSession || dragSession === session.id) return
+              e.preventDefault()
+              e.stopPropagation() // group's own dragover must not claim this
+              e.dataTransfer.dropEffect = 'move'
+              const r = e.currentTarget.getBoundingClientRect()
+              setSessionDrop({ id: session.id, edge: e.clientY - r.top < r.height / 2 ? 'before' : 'after' })
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return
+              setSessionDrop((d) => (d?.id === session.id ? null : d))
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (dragSession && dragSession !== session.id && rowDrop) onReorderSession?.(dragSession, session.id, rowDrop)
+              setDragSession(null)
+              setSessionDrop(null)
+            }}
+            style={{
+              opacity: dragSession === session.id ? 0.5 : 1,
+              borderTop: `2px solid ${rowDrop === 'before' ? 'var(--accent)' : 'transparent'}`,
+              borderBottom: `2px solid ${rowDrop === 'after' ? 'var(--accent)' : 'transparent'}`,
+            }}
+          >
+            <SessionItem
+              session={session}
+              label={customName || defaultLabel}
+              active={session.id === activeSessionId}
+              effortLevel={effort}
+              labelIsRole={labelIsRole}
+              roleColor={role?.accent}
+              fanInfo={fan}
+              currentTask={currentTaskOf(session, project)}
+              closable
+              shortcutIndex={shortcutIndices[session.id] ?? null}
+              onClick={() => onSelectSession(session)}
+              onRename={(name) => onRenameSession(session.id, name)}
+              onClose={() => onCloseSession(session)}
+            />
+          </div>
         )
       })}
     </div>

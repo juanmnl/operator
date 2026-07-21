@@ -210,8 +210,10 @@ export interface DispatchRecord {
   /** The resolved target lane; absent when the role didn't match (→ unassigned). */
   toRoleId?: string
   task: string
-  /** sent = typed into a live lane · queued = lane idle, task queued · unassigned = unknown role. */
-  outcome: 'sent' | 'queued' | 'unassigned'
+  /** sent = typed into a live lane · launched = idle lane spawned with the task ·
+   *  queued = task queued (lane idle, pre-auto-launch records or a failed launch) ·
+   *  unassigned = unknown role. */
+  outcome: 'sent' | 'launched' | 'queued' | 'unassigned'
 }
 
 /** What resolveProject() returns for a source cwd. */

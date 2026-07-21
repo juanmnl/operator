@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import type { Project } from '../../shared/types'
 
 describe('roster', () => {
   it('seeds a default roster with unique ids and valid models', () => {
@@ -88,10 +89,76 @@ describe('roster', () => {
     expect(stripDispatchLines(mention)).toBe(mention)
   })
 
+  it('stripDispatchLines also strips markdown-decorated directives (mirrors the Rust parser)', () => {
+    const text = 'Plan:\n\n- **OPERATOR-DISPATCH [code] fix it**\n`OPERATOR-DISPATCH [qa] verify it`\n2. OPERATOR-DISPATCH [design] polish it\n\nAll dispatched.'
+    expect(stripDispatchLines(text)).toBe('Plan:\n\nAll dispatched.')
+  })
+
   it('modelFamilyLabel maps aliases and falls back gracefully', () => {
     expect(modelFamilyLabel('fable')).toBe('Fable')
     expect(modelFamilyLabel('opus')).toBe('Opus')
     expect(modelFamilyLabel('claude-x')).toBe('claude-x')
     expect(modelFamilyLabel(undefined)).toBe('—')
+  })
+})
+
+describe('migrateLegacyCoordinator', () => {
+  const base = (over: Partial<Project>): Project => ({
+    id: 'p', path: '/p', name: 'P', createdAt: 't', lastActiveAt: 't', ...over,
+  })
+
+  it('renames the legacy lane (id + stock name) and remaps stored references', () => {
+    const p = base({
+      roster: [{ id: 'orchestrator', name: 'Orchestrator', model: 'fable' }, { id: 'code', name: 'Code', model: 'opus' }],
+      tasks: [{ id: 't1', text: 'x', roleId: 'orchestrator', createdAt: 't' }, { id: 't2', text: 'y', roleId: 'code', createdAt: 't' }],
+      dispatches: [{ id: 'd1', at: 't', fromRoleId: 'orchestrator', toRoleId: 'code', task: 'z', outcome: 'sent' }],
+    })
+    const m = migrateLegacyCoordinator(p)
+    expect(m.roster![0]).toMatchObject({ id: 'operator', name: 'Operator' })
+    expect(m.tasks!.map((t) => t.roleId)).toEqual(['operator', 'code'])
+    expect(m.dispatches![0].fromRoleId).toBe('operator')
+    expect(m.dispatches![0].toRoleId).toBe('code')
+  })
+
+  it('keeps a user-customized coordinator name while still migrating the id', () => {
+    const p = base({ roster: [{ id: 'orchestrator', name: 'Boss', model: 'fable' }] })
+    const m = migrateLegacyCoordinator(p)
+    expect(m.roster![0]).toMatchObject({ id: 'operator', name: 'Boss' })
+  })
+
+  it('is a reference-preserving no-op for already-migrated projects', () => {
+    const p = base({ roster: defaultRoster() })
+    expect(migrateLegacyCoordinator(p)).toBe(p)
+    const bare = base({})
+    expect(migrateLegacyCoordinator(bare)).toBe(bare) // no roster at all
+  })
+
+  it('does not collide when both ids somehow exist — only the stock name refreshes', () => {
+    const p = base({
+      roster: [{ id: 'operator', name: 'Operator', model: 'fable' }, { id: 'orchestrator', name: 'Orchestrator', model: 'fable' }],
+      tasks: [{ id: 't1', text: 'x', roleId: 'orchestrator', createdAt: 't' }],
+    })
+    const m = migrateLegacyCoordinator(p)
+    expect(m.roster!.map((r) => r.id)).toEqual(['operator', 'orchestrator']) // ids untouched
+    expect(m.roster![1].name).toBe('Operator')
+    expect(m.tasks![0].roleId).toBe('orchestrator') // reference still resolves to its lane
+  })
+})
+
+describe('roleLaunchSettings', () => {
+  it('falls back to the project defaults when the role does not pin a mode', () => {
+    // The regression: projects saved with permissionMode 'auto' were launching lanes
+    // with permission prompts because the role-level undefined won.
+    const role = { id: 'code', name: 'Code', model: 'opus' }
+    expect(roleLaunchSettings(role, { permissionMode: 'auto', effortLevel: 'normal' }))
+      .toEqual({ permissionMode: 'auto', effortLevel: 'normal' })
+  })
+
+  it('role pins beat project defaults; hard defaults apply when neither pins', () => {
+    const role = { id: 'code', name: 'Code', model: 'opus', effort: 'low' as const, permissionMode: 'bypassPermissions' }
+    expect(roleLaunchSettings(role, { permissionMode: 'auto', effortLevel: 'normal' }))
+      .toEqual({ permissionMode: 'bypassPermissions', effortLevel: 'low' })
+    expect(roleLaunchSettings({ id: 'qa', name: 'QA', model: 'sonnet' }, undefined))
+      .toEqual({ permissionMode: 'default', effortLevel: 'high' })
   })
 })

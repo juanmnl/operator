@@ -26,6 +26,16 @@ export function submitSequence(text: string): string {
  *  merges tasks. */
 export const SUBMIT_GAP_MS = 350
 
+/** Delay before the follow-up bare CR sent after every submission. Even with the gap,
+ *  a single CR can still be swallowed when the TUI is busy (mid-commit or redrawing a
+ *  running turn) — the task then sits in the composer as a draft and the lane looks
+ *  "stuck": dispatched, but no turn ever starts. A lone CR after the commit window
+ *  submits a stranded draft, and is a no-op on an empty composer, so re-firing it
+ *  unconditionally is safe. (Narrow caveat: a human typing into that same lane within
+ *  this window could have a partial message submitted — dispatch targets are almost
+ *  always unattended, and losing dispatched tasks is the worse failure.) */
+export const SUBMIT_NUDGE_MS = 800
+
 export interface SubmitQueueDeps {
   write: (id: string, data: string) => void
   now?: () => number
@@ -37,7 +47,7 @@ export interface SubmitQueue {
   submit(id: string, text: string): Promise<void>
 }
 
-export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_GAP_MS): SubmitQueue {
+export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_GAP_MS, nudgeMs: number = SUBMIT_NUDGE_MS): SubmitQueue {
   const now = deps.now ?? (() => Date.now())
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   // Per-terminal promise chain + the last write time on that terminal.
@@ -55,6 +65,11 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
             if (since < gapMs) await sleep(gapMs - since)
           }
           deps.write(id, submitSequence(text))
+          // Watchdog nudge (see SUBMIT_NUDGE_MS): re-fire the CR once the TUI's commit
+          // window has passed, so a swallowed submit doesn't strand the task as a draft.
+          // Inside the chain, so the next submission's gap counts from the nudge.
+          await sleep(nudgeMs)
+          deps.write(id, '\r')
           lastAt.set(id, now())
         })
         // A failed write must not break ordering for everything queued behind it.

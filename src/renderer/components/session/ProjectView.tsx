@@ -17,6 +17,7 @@ export function ProjectView({
   project, tab, onSelectTab,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
+  resumableCount, onResumeProject,
 }: {
   project: Project
   tab: ProjectTab
@@ -33,6 +34,9 @@ export function ProjectView({
   onSendTask: (task: ProjectTask) => void
   onStartAll: () => void
   onSetTaskStatus: (taskId: string, status: ProjectTask['status']) => void
+  /** Saved-but-not-live agents of this project — resumable as a group. */
+  resumableCount?: number
+  onResumeProject?: () => void
 }) {
   const tabs: ProjectTab[] = ['roster', 'moodboard']
   return (
@@ -57,6 +61,23 @@ export function ProjectView({
             </button>
           ))}
         </span>
+        {/* Group resume: bring back every previously open agent of this project. */}
+        {(resumableCount ?? 0) > 0 && onResumeProject && (
+          <button
+            onClick={onResumeProject}
+            title="Re-open every previously open agent of this project, continuing its conversation"
+            style={{
+              marginLeft: 'auto', cursor: 'pointer', outline: 'none',
+              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+              textTransform: 'uppercase', letterSpacing: '0.14em',
+              padding: '3px 10px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'transparent',
+              color: 'var(--fg-muted)',
+            }}
+          >
+            Resume {resumableCount} agent{resumableCount! > 1 ? 's' : ''}
+          </button>
+        )}
       </DragRegion>
       <div style={{ flex: 1, minHeight: 0, overflowY: tab === 'roster' ? 'auto' : undefined }}>
         {tab === 'roster' && (

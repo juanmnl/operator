@@ -11,13 +11,27 @@
 // exercise the interesting states — several lanes in one project, a live and an
 // ENDED lane, a queued backlog, multi-port preview.
 import type { AgentSession } from '../src/shared/types'
+import { deriveProjectId } from '../src/renderer/lib/project-id'
 
 const now = new Date().toISOString()
 const noop = () => {}
-const unsub = () => () => {}
+// Subscription stub: SUBSCRIBING (calling with a callback) returns a working
+// unsubscribe. Use as `onX: sub` — NOT `sub()`, which would make unmount cleanup
+// call undefined and throw (the close-all teardown errors of 2026-07-21).
+const sub = (..._args: unknown[]) => () => {}
 
-const PROJECT_ID = 'proj-operator'
 const PROJECT_PATH = '/Users/dev/operator'
+// MUST match what resolveProject derives for PROJECT_PATH, or a session launched at
+// runtime (auto-launch, resume) lands in a DIFFERENT sidebar group than the fixture
+// sessions — an invented id split the group in two during dispatch driving (2026-07-21).
+const PROJECT_ID = deriveProjectId(PROJECT_PATH)
+
+// A second project with NO live sessions, so the sidebar's "Recent" list (projects the
+// live groups don't already cover) renders and its rows are clickable in the harness.
+const DORMANT_PATH = '/Users/dev/uwazi_app'
+const DORMANT_ID = deriveProjectId(DORMANT_PATH)
+// Older than `now` so the sort order (lastActiveAt desc) is actually exercised.
+const earlier = new Date(Date.parse(now) - 36e5).toISOString()
 
 export const MOCK_PROJECTS = [
   {
@@ -38,6 +52,19 @@ export const MOCK_PROJECTS = [
       { id: 'task-2', text: 'Why does the settings list render slowly?', roleId: 'research', status: 'queued', createdAt: now },
       { id: 'task-3', text: 'Extract the dispatch router', roleId: 'code', status: 'running', terminalId: 't1', cwd: PROJECT_PATH, createdAt: now, startedAt: now },
     ],
+    dispatches: [],
+  },
+  {
+    id: DORMANT_ID,
+    path: DORMANT_PATH,
+    name: 'uwazi_app',
+    createdAt: earlier,
+    lastActiveAt: earlier,
+    roster: [
+      { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff' },
+      { id: 'code', name: 'Code', model: 'opus', effort: 'high' },
+    ],
+    tasks: [],
     dispatches: [],
   },
 ]
@@ -87,19 +114,32 @@ const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
   lastActiveAt: now,
 }))
 
+// Saved sessions with no live terminal. The sidebar no longer lists these (it lists
+// Recent PROJECTS), but they still feed the dashboard splash, the ⌘K restore actions,
+// and the workspace's "Resume N agents" — so the dormant project owns one of them.
+const MOCK_DORMANT = [
+  { key: 'key-old-1', cwd: DORMANT_PATH, projectName: 'uwazi_app', projectId: DORMANT_ID, claudeSessionId: 'old-1', lastActiveAt: earlier },
+  { key: 'key-old-2', cwd: '/tmp/el-encanto', projectName: 'el-encanto', claudeSessionId: 'old-2', lastActiveAt: earlier },
+]
+
 export function installMockBridge() {
   // Seed the stores the renderer reads at boot so it lands on a populated UI.
   try {
     localStorage.setItem('operator.projects', JSON.stringify(MOCK_PROJECTS))
-    localStorage.setItem('operator.savedSessions', JSON.stringify(MOCK_SAVED))
+    localStorage.setItem('operator.savedSessions', JSON.stringify([...MOCK_SAVED, ...MOCK_DORMANT]))
     localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
   } catch { /* ignore */ }
+
+  // The dispatch subscription is capturable so a driver can fire directives as if the
+  // transcript tailer parsed them: `window.__mockDispatch({ id, terminalId, role, task })`.
+  let dispatchCb: ((d: unknown) => void) | null = null
 
   const bridge: Record<string, unknown> = {
     // --- subscriptions: push the fixture once, then stay quiet -------------------
     onSessionUpdate: (cb: (s: AgentSession[]) => void) => { setTimeout(() => cb(MOCK_SESSIONS), 0); return () => {} },
-    onOrchestratorDispatch: unsub(), onTerminalData: unsub(), onTerminalExit: unsub(),
-    onGridUpdate: unsub(), onWindowResize: unsub(), onFileDrop: unsub(), onPreviewPick: unsub(),
+    onOrchestratorDispatch: (cb: (d: unknown) => void) => { dispatchCb = cb; return () => { dispatchCb = null } },
+    onTerminalData: sub, onTerminalExit: sub,
+    onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     // --- reads ------------------------------------------------------------------
     getSessions: async () => MOCK_SESSIONS,
@@ -110,7 +150,7 @@ export function installMockBridge() {
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => MOCK_SAVED,
+    loadSessions: async () => [...MOCK_SAVED, ...MOCK_DORMANT],
     loadProjects: async () => MOCK_PROJECTS,
     agentsList: async () => [],
     getUsageStats: async () => ({ totalCost: 0, totalTokens: 0, days: [], projects: [], models: [] }),
@@ -130,7 +170,13 @@ export function installMockBridge() {
 
     // --- writes: recorded so the harness can assert what the UI attempted --------
     terminalWrite: (id: string, data: string) => { calls.push({ fn: 'terminalWrite', id, data }) },
-    terminalSpawn: async () => { calls.push({ fn: 'terminalSpawn' }); return null },
+    // Spawns return a real-ish tab so launch flows (auto-launch dispatch, project
+    // resume) actually add a session row the driver can assert on.
+    terminalSpawn: async (cwd: string, opts?: unknown) => {
+      calls.push({ fn: 'terminalSpawn', cwd, opts })
+      return { terminalId: `tm${spawnN++}`, cwd }
+    },
+    runCheck: async () => ({ ok: true, output: 'mock: checks green' }),
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,
     showMainWindow: noop, startWindowDrag: noop, toggleWindowMaximize: noop, quitApp: noop,
     growWindowWidth: noop, openExternal: noop, setDockIcon: noop, terminalStart: noop,
@@ -143,7 +189,9 @@ export function installMockBridge() {
   // Anything not explicitly mocked resolves to a harmless no-op, so a newly added
   // bridge method can't crash the harness before it's been taught about it.
   const calls: Array<Record<string, unknown>> = []
+  let spawnN = 0
   ;(window as unknown as { __calls: unknown[] }).__calls = calls
+  ;(window as unknown as { __mockDispatch: unknown }).__mockDispatch = (d: unknown) => dispatchCb?.(d)
   ;(window as unknown as { operator: unknown }).operator = new Proxy(bridge, {
     get: (t, p: string) => (p in t ? t[p] : (...args: unknown[]) => { calls.push({ fn: p, args }); return Promise.resolve(undefined) }),
   })

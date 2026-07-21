@@ -27,13 +27,13 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, onFocusTerminal }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal }: {
   project?: Project
   onUpdateProject?: (id: string, patch: Partial<Project>) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
-  /** roleId → live session runtime. Currently unused by the card (the per-lane token
+  /** roleId → live session runtime. The card shows the phase in its live pill (the per-lane token
    *  readout is hidden); kept on the interface so callers don't need rewiring if it returns. */
   laneSessions?: Record<string, LaneSession>
   /** Focus an already-live lane's session (the "View" action). */
@@ -194,6 +194,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             onDragEnd={() => { setDragId(null); setDropAt(null) }}
             coordinator={isCoordinator(role.id)}
             live={!!liveRoles?.[role.id]}
+            phase={laneSessions?.[role.id]?.phase}
             runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
             queued={taskCounts[role.id] ?? 0}
             selected={picked.includes(role.id)}
@@ -221,7 +222,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, runningTask, queued = 0, selected, onToggleSelect, onDragStart, onDragEnd, onPatch, onRemove, onLaunch, onView }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onDragStart, onDragEnd, onPatch, onRemove, onLaunch, onView }: {
   role: Role
   /** Drag-to-reorder, driven from the grip handle so text stays selectable. */
   onDragStart?: () => void
@@ -229,6 +230,8 @@ function RoleCard({ role, coordinator, live, runningTask, queued = 0, selected, 
   /** The coordinator lane (Operator) — the roster's hub, not a worker peer. */
   coordinator?: boolean
   live?: boolean
+  /** The live session's phase (running/compacting/waiting/idle) — shown in the pill. */
+  phase?: string
   /** The task currently running on this lane (latest), for the "working on" line. */
   runningTask?: string
   queued?: number
@@ -266,10 +269,22 @@ function RoleCard({ role, coordinator, live, runningTask, queued = 0, selected, 
         cursor: selectable ? 'pointer' : 'default',
         background: selected
           ? `color-mix(in srgb, ${accent} 10%, var(--overlay-subtle))`
-          : live ? `color-mix(in srgb, ${accent} 6%, var(--overlay-subtle))` : 'var(--overlay-subtle)',
+          : live ? `color-mix(in srgb, ${accent} 9%, var(--overlay-subtle))` : 'var(--overlay-subtle)',
         boxShadow: selected ? `inset 0 0 0 1px color-mix(in srgb, ${accent} 55%, transparent)` : 'none',
+        // "Who's running now" is the board's main question, and the LIVE cards answer it
+        // by colour: an accent-tinted wash + the phase pill. Idle cards deliberately do
+        // NOT fade — group opacity composites text and card background toward the page
+        // together, so it shrinks the ratio between them: at 0.62 the lane prompt measured
+        // 2.05:1 (dark) / 1.7:1 (light) and the model+effort chips 1.4:1 / 1.32:1, i.e.
+        // unreadable. It also can't be undone per-child (a subtree can't exceed its group's
+        // opacity), so the idle card's primary action — Launch — faded with everything else,
+        // and the hover-to-restore escape hatch was mouse-only, unreachable by keyboard.
         transition: 'background 120ms ease',
       }}
+      // Hover feedback via the background only — a colour-CHANGING border on a
+      // border-radius element re-rasterises in WKWebView.
+      onMouseEnter={(e) => { if (!live && !selected) e.currentTarget.style.background = 'var(--overlay-medium)' }}
+      onMouseLeave={(e) => { if (!live && !selected) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
     >
       {/* Identity row: grip + colour dot/tick + name + live pill + remove. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -329,7 +344,10 @@ function RoleCard({ role, coordinator, live, runningTask, queued = 0, selected, 
         )}
         {live && (
           <span title="This lane has a live session" style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`, borderRadius: 6, padding: '2px 6px' }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />live
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />
+            {/* The phase, not a generic "live" — running/compacting/waiting is the
+                actual answer to "who's doing what right now". */}
+            {phase && phase !== 'idle' ? phase : 'live'}
           </span>
         )}
         {/* The coordinator is the roster's hub — the lane that routes to every other. Removing

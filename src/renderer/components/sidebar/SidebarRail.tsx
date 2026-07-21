@@ -39,6 +39,15 @@ function initialOf(name: string): string {
   return (words[0][0] + words[1][0]).toUpperCase()
 }
 
+// Compact project tag for the rail's group labels: initials of a multi-word name
+// ("Operator-landing" → "OL"), otherwise the first 4 letters ("operator" → "OPER").
+function shortNameOf(name: string): string {
+  const words = name.replace(/[_\-/.]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return '?'
+  if (words.length === 1) return words[0].slice(0, 4).toUpperCase()
+  return words.slice(0, 3).map((w) => w[0]).join('').toUpperCase()
+}
+
 const panelIcon = (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
@@ -51,6 +60,25 @@ const panelIcon = (
 // so the content card to its right never slides under them.
 export function SidebarRail({ sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand }: SidebarRailProps) {
   const [hovered, setHovered] = useState<{ id: string; top: number; left: number } | null>(null)
+  // Cluster sessions by project (same keying as the expanded sidebar's groups) so the
+  // rail reads as per-project clusters instead of one undifferentiated column of agents.
+  const groups: Array<{ key: string; name: string; sessions: AgentSession[] }> = []
+  {
+    const byKey = new Map<string, { key: string; name: string; sessions: AgentSession[] }>()
+    for (const session of sessions) {
+      const proj = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
+      const key = session.projectId || `name:${session.projectName || 'Unknown'}`
+      let g = byKey.get(key)
+      if (!g) {
+        g = { key, name: proj?.name || session.projectName || 'Unknown', sessions: [] }
+        byKey.set(key, g)
+        groups.push(g)
+      }
+      g.sessions.push(session)
+    }
+  }
+  // A single project needs no tags/dividers — keep the rail as clean as before.
+  const showGroupChrome = groups.length > 1
   return (
     <div
       style={{
@@ -104,7 +132,32 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        {sessions.map((session) => {
+        {groups.map((g, gi) => (
+          <Fragment key={g.key}>
+            {/* Faint seam + compact project tag between clusters — separation comes from
+                the hairline and the label, per the no-accent-fill / no-stripe rules. */}
+            {showGroupChrome && gi > 0 && (
+              <div style={{ width: 28, height: 1, flexShrink: 0, background: 'var(--border)', margin: '5px 0 3px' }} />
+            )}
+            {showGroupChrome && (
+              <div
+                title={g.name}
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 8, fontWeight: 500,
+                  letterSpacing: '0.12em', textTransform: 'uppercase',
+                  color: 'var(--fg-muted)', opacity: 0.75,
+                  maxWidth: 56, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  marginBottom: 1,
+                  // NOT pointer-events:none — the tag is an abbreviation ("uwazi_app" → "UA"),
+                  // so the title tooltip is the only way to decode it, and hit-testing skips
+                  // a pointer-events:none element, meaning the tooltip could never fire.
+                  cursor: 'default',
+                }}
+              >
+                {shortNameOf(g.name)}
+              </div>
+            )}
+            {g.sessions.map((session) => {
           const active = session.id === activeSessionId
           const project = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
           const role: Role | undefined = session.roleId ? project?.roster?.find((r) => r.id === session.roleId) : undefined
@@ -218,6 +271,8 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
             </Fragment>
           )
         })}
+          </Fragment>
+        ))}
       </div>
 
       {/* Bottom: new session. */}

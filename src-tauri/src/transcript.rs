@@ -545,13 +545,57 @@ struct DispatchEvent {
     task: String,
 }
 
+/// Peel markdown decoration a model may wrap around a directive line — list bullets
+/// (`- `, `* `, `• `, `> `, `1. `), and emphasis/code wrappers (`**`, `*`, `_`, `` ` ``).
+/// Returns the cleaned line plus the wrapper chars stripped from the front, so the caller
+/// can strip the SAME chars off the task's tail (symmetric `**…**` / `` `…` `` wrapping)
+/// without eating meaningful trailing chars like the closing backtick of "fix `foo`".
+fn strip_directive_decoration(line: &str) -> (&str, Vec<char>) {
+    let mut l = line.trim();
+    let mut wrappers: Vec<char> = Vec::new();
+    loop {
+        let before = l;
+        // List / blockquote markers (only when followed by a space, so a task line
+        // that legitimately starts with '-' isn't misread).
+        for p in ["-", "*", "•", ">"] {
+            if let Some(r) = l.strip_prefix(p) {
+                if r.starts_with(' ') {
+                    l = r.trim_start();
+                }
+            }
+        }
+        // "1." / "2)" numbering.
+        let digits = l.len() - l.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            if let Some(r) = l[digits..].strip_prefix(['.', ')']) {
+                if r.starts_with(' ') {
+                    l = r.trim_start();
+                }
+            }
+        }
+        // Emphasis / inline-code wrappers hugging the directive itself.
+        while let Some(r) = l.strip_prefix(['`', '*', '_']) {
+            wrappers.push(l.chars().next().unwrap());
+            l = r;
+        }
+        l = l.trim_start();
+        if l == before {
+            break;
+        }
+    }
+    (l, wrappers)
+}
+
 /// Parse `OPERATOR-DISPATCH [<role>] <task>` directives out of an assistant text block.
 /// Returns (role, task) pairs; ignores malformed lines. Kept liberal on the role charset so
 /// a hand-named role id still routes (the frontend validates against the live roster).
+/// Tolerates markdown decoration around the directive (bullets, bold, backticks) — models
+/// decorate protocol lines despite instructions, and a silently dropped dispatch looks
+/// exactly like "the coordinator did nothing".
 fn parse_dispatches(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in text.lines() {
-        let l = line.trim();
+        let (l, wrappers) = strip_directive_decoration(line);
         let rest = match l.strip_prefix("OPERATOR-DISPATCH") {
             Some(r) => r.trim_start(),
             None => continue,
@@ -564,7 +608,14 @@ fn parse_dispatches(text: &str) -> Vec<(String, String)> {
             None => continue,
         };
         let role = rest[1..close].trim().to_string();
-        let task = rest[close + 1..].trim().trim_start_matches(':').trim().to_string();
+        let mut task = rest[close + 1..].trim().trim_start_matches(':').trim();
+        // Strip the tail of a symmetric wrapper — one trailing char per leading one.
+        for c in wrappers.iter().rev() {
+            if let Some(t) = task.strip_suffix(*c) {
+                task = t.trim_end();
+            }
+        }
+        let task = task.to_string();
         if !role.is_empty() && !task.is_empty() {
             out.push((role, task));
         }
@@ -768,6 +819,38 @@ mod tests {
         assert!(parse_dispatches("OPERATOR-DISPATCH [code]").is_empty()); // no task
         assert!(parse_dispatches("OPERATOR-DISPATCH [] task").is_empty()); // no role
         assert!(parse_dispatches("just prose about OPERATOR-DISPATCH mid-line").is_empty());
+    }
+
+    /// Models decorate protocol lines despite instructions — a dropped dispatch looks
+    /// exactly like "the coordinator did nothing", so decoration must parse.
+    #[test]
+    fn parse_dispatches_tolerates_markdown_decoration() {
+        let cases = [
+            ("- OPERATOR-DISPATCH [code] fix the button", "fix the button"),
+            ("* OPERATOR-DISPATCH [code] fix the button", "fix the button"),
+            ("2. OPERATOR-DISPATCH [code] fix the button", "fix the button"),
+            ("> OPERATOR-DISPATCH [code] fix the button", "fix the button"),
+            ("`OPERATOR-DISPATCH [code] fix the button`", "fix the button"),
+            ("**OPERATOR-DISPATCH [code] fix the button**", "fix the button"),
+            ("- **OPERATOR-DISPATCH [code] fix the button**", "fix the button"),
+            ("_OPERATOR-DISPATCH [code] fix the button_", "fix the button"),
+        ];
+        for (line, want) in cases {
+            let d = parse_dispatches(line);
+            assert_eq!(d, vec![("code".to_string(), want.to_string())], "line: {line}");
+        }
+    }
+
+    /// Symmetric wrapper stripping must not eat a task's OWN trailing chars: only as
+    /// many tail chars come off as wrapper chars were peeled from the front.
+    #[test]
+    fn parse_dispatches_keeps_meaningful_trailing_chars() {
+        // Unwrapped: the closing backtick belongs to the task.
+        let d = parse_dispatches("OPERATOR-DISPATCH [code] rename `oldFn`");
+        assert_eq!(d[0].1, "rename `oldFn`");
+        // Wrapped in backticks: only the WRAPPER's backtick is stripped.
+        let d = parse_dispatches("`OPERATOR-DISPATCH [code] rename `oldFn``");
+        assert_eq!(d[0].1, "rename `oldFn`");
     }
 
     #[test]
