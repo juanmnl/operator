@@ -4,6 +4,7 @@ import { DragRegion } from '../DragRegion'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
 import { CanvasConversation } from './CanvasConversation'
+import { submitQueue } from '../../lib/submit-queue'
 
 // The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
 // is CONTEXTUAL to the main view (passed in as `tabs`): Plan + Diff always, plus Chat when the
@@ -42,10 +43,11 @@ export function CanvasPanel({ session, tabs, mode, onSelectMode, onModelChange, 
     if (!canSend || !session?.terminalId) return
     // Bracketed paste keeps the multi-line list from submitting line-by-line; the
     // trailing CR (outside the paste) submits it as one message. Reads cleanly for
-    // the agent instead of a cramped single line.
+    // the agent instead of a cramped single line. Goes through the submit queue so it
+    // can't merge with a dispatch landing on the same lane (see lib/submit-queue).
     const body = userTodos.map((t, i) => `${i + 1}. ${t}`).join('\n')
     const prompt = `Please work through these tasks:\n${body}`
-    window.operator.terminalWrite(session.terminalId, `\x1b[200~${prompt}\x1b[201~\r`)
+    void submitQueue.submit(session.terminalId, prompt)
     persistTodos([]) // handed off to the agent
   }
 

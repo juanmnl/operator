@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode, ClipboardEvent as ReactClipboardEvent } 
 import type { AgentSession } from '../../../shared/types'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { modelFamilyLabel as displayModel } from '../../lib/roster'
+import { submitQueue } from '../../lib/submit-queue'
 
 // The chat composer — the two-way input for the reading panel. It drives the SAME Claude
 // Code session as the terminal (this is the hybrid path, not a terminal replacement): the
@@ -125,7 +126,9 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
     // Text + attachment paths in one bracketed paste; the trailing CR (outside the paste)
     // submits it as a single message. Claude Code turns each image path into `[Image #N]`.
     const parts = [draft.trim(), ...attachments.map((a) => a.path)].filter(Boolean)
-    window.operator.terminalWrite(session.terminalId, `\x1b[200~${parts.join(' ')}\x1b[201~\r`)
+    // Via the submit queue: a fast double-send, or a dispatch landing on this same lane,
+    // would otherwise merge into one composer draft (see lib/submit-queue).
+    void submitQueue.submit(session.terminalId, parts.join(' '))
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
     setDraft(''); setAttachments([])
     onSend?.()

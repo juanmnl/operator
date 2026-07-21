@@ -1904,7 +1904,7 @@ export function DashboardView() {
                       url={reserved ? `http://localhost:${reserved}` : null}
                       terminalId={activeTerminalId}
                       storageKey={`main-${activeSession.id}`}
-                      onDispatch={activeSession.terminalId ? (text) => window.operator.terminalWrite(activeSession.terminalId!, `\x1b[200~${text}\x1b[201~\r`) : undefined}
+                      onDispatch={activeSession.terminalId ? (text) => { void submitQueue.submit(activeSession.terminalId!, text) } : undefined}
                       onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
                       annotate={previewAnnotate}
                       onAnnotateChange={setPreviewAnnotate}
