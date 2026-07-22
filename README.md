@@ -14,7 +14,7 @@
 
 ---
 
-Operator is a desktop app for orchestrating Claude Code. Define agents and the model each task runs on, launch sessions that delegate to them, and follow every tool call and subagent live — each in its own git worktree — approving or denying anything they touch, inline as they go.
+Operator is a desktop app for operating Claude Code. Define agents and the model each task runs on, launch sessions that delegate to them, and follow every tool call and subagent live — each in its own git worktree — approving or denying anything they touch, inline as they go.
 
 ### The problem
 
@@ -22,11 +22,11 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 
 ### What Operator does
 
-- **A project roster, coordinated by Operator.** Give a project a team of agent *lanes* — **Operator** (the coordinator), Research, Code, Review, Design, QA — each pinning a model, reasoning effort, an optional isolated worktree, and a standing charter. Drag to reorder, click to select, launch one or several. The Operator lane knows the team and routes work to the best-suited lane, doing the job itself when none fits.
+- **A project roster, run by Operator.** Give a project a team of agent *lanes* — **Operator**, Research, Code, Review, Design, QA — each pinning a model, reasoning effort, an optional isolated worktree, and a standing charter. Drag to reorder, click to select, launch one or several. The Operator lane knows the team and routes work to the best-suited lane, doing the job itself when none fits.
 - **Delegation that actually lands.** An agent hands work off with a single line (`OPERATOR-DISPATCH [lane] task`); Operator types it into that lane if it's running — or **launches the lane** with the task as its opening brief if it isn't — and tells the sender how it landed. Directives parse even when the model wraps them in bullets or backticks, submissions are spaced and nudged so they can't merge or strand in the composer, and every dispatch is logged with its outcome.
 - **A task queue with provenance.** Tasks carry who ran them, where, and the resulting diff — with an optional check command (`npm test`) that has to go green before a task reads "done".
 - **An agent library with per-task models.** A visual editor over your `.claude/agents/*.md` — the headline being which model runs each agent (Haiku for extraction, Sonnet for general work, Opus for hard reasoning), with cost/speed hints right at the point of choice.
-- **A live orchestration timeline.** Watch each session's tool calls and subagent delegations as they happen — nested by who-spawned-whom, with a live-ticking duration on the in-flight tool and elapsed time on finished ones. Reconstructed straight from Claude Code's own transcripts, so it needs nothing installed.
+- **A live operations timeline.** Watch each session's tool calls and subagent delegations as they happen — nested by who-spawned-whom, with a live-ticking duration on the in-flight tool and elapsed time on finished ones. Reconstructed straight from Claude Code's own transcripts, so it needs nothing installed.
 - **Isolated worktrees + fan-out.** Run multiple agents on one repo in parallel — each gets its own git worktree, so changes never collide. Fan a single task out across N parallel agents, each badged so the group reads at a glance.
 - **In-app diff review.** See each session's changes in a built-in diff viewer, then **Commit**, **Merge** back to your base branch, or **Discard** — no terminal required.
 - **A usage & cost dashboard.** Token-driven insights into what's driving your usage (high-context, subagent-heavy, and long-running sessions), plus a Claude-Code-`/usage`-style per-model breakdown — input/output/cache, cost, and API vs. wall time.

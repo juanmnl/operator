@@ -53,7 +53,7 @@ export const MOCK_PROJECTS = [
     lastActiveAt: now,
     checkCommand: 'npm test',
     roster: [
-      { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: 'You are Operator, this project’s coordinator. Route each task to the best-suited lane.' },
+      { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: 'You are Operator — you operate this project. Route each task to the best-suited lane.' },
       { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: 'Investigate and report — never change code.' },
       { id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787', useWorktree: true, prompt: 'Implement the task, nothing more.' },
       { id: 'design', name: 'Design', model: 'opus', effort: 'normal', accent: '#ff7ac6', prompt: 'Own UI/UX quality. Reuse the design system.' },

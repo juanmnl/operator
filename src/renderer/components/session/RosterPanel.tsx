@@ -333,8 +333,8 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
           >{role.name}</button>
         )}
         {coordinator && (
-          <span title="The coordinator — routes work to the other lanes, and does it itself when none fits" style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, opacity: 0.85 }}>
-            coordinator
+          <span title="Operator — runs the roster: routes work to the other lanes, does it itself when none fits" style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, opacity: 0.85 }}>
+            operates
           </span>
         )}
         {queued > 0 && (

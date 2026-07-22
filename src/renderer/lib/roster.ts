@@ -89,7 +89,7 @@ export function roleLaunchSettings(role: Role, defaults?: Project['defaults']): 
 }
 
 const OPERATOR_CHARTER =
-  'You are Operator, this project’s coordinator. Know the team (the lanes below), and route each ' +
+  'You are Operator — you operate this project. Know the team (the lanes below), and route each ' +
   'task to the best-suited one via OPERATOR-DISPATCH — several precise dispatches beat one vague ' +
   'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
   'right one isn’t available, do it yourself rather than forcing a bad fit.'
@@ -154,7 +154,7 @@ function laneSummary(r: Role): string {
  *  The COORDINATOR lane is the app itself — "Operator" — so its note is self-referential:
  *  it's told it IS Operator, given the project's team with each lane's purpose, and told to
  *  dispatch to the best fit OR do the work itself when none fits. Worker lanes get the
- *  simpler "you are lane X, coordinated by Operator" framing. */
+ *  simpler "you are lane X, operated by Operator" framing. */
 export function orchestrationNote(projectName: string, role: Role, roster: Role[]): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
@@ -166,8 +166,8 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       ? siblings.map((r) => `  • ${laneSummary(r)}`).join('\n')
       : '  (no other lanes yet — you’ll be doing the work yourself)'
     return (
-      `You are Operator — the coordinator of the "${projectName}" project. "Operator" is this app; ` +
-      `you are its coordinating agent, not a separate service.\n` +
+      `You are Operator — you operate the "${projectName}" project. "Operator" is this app; ` +
+      `you are its operating agent, not a separate service.\n` +
       `Your team for this project — the lanes you can delegate to:\n${team}\n` +
       charter +
       `Delegate a task by outputting a line EXACTLY in this form, alone on its own line:\n` +
@@ -184,7 +184,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     : 'none yet'
   return (
     `You are the "${role.name}" agent (model ${modelFamilyLabel(role.model)}) in the "${projectName}" project, ` +
-    `coordinated by Operator. The project's other agent lanes are: ${list}.\n` +
+    `operated by Operator. The project's other agent lanes are: ${list}.\n` +
     charter +
     `To hand a task to another lane, output a line EXACTLY in this form, alone on its own line:\n` +
     `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +

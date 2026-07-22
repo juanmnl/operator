@@ -41,6 +41,7 @@ describe('roster', () => {
     expect(note).toContain('Your role charter:')
     expect(note).toContain(code.prompt!.slice(0, 40)) // the charter text itself rides along
     expect(note).toContain('OPERATOR-DISPATCH')
+    expect(note).toContain('operated by Operator') // a worker lane is operated, not coordinated
     // No charter → no dangling charter line.
     const bare = orchestrationNote('Demo', { ...code, prompt: undefined }, roster)
     expect(bare).not.toContain('Your role charter:')
@@ -50,10 +51,10 @@ describe('roster', () => {
     const roster = defaultRoster()
     const op = roster.find((r) => r.id === 'operator')!
     const note = orchestrationNote('Demo', op, roster)
-    expect(note).toContain('You are Operator')
+    expect(note).toContain('You are Operator — you operate the "Demo" project')
     expect(note).toContain('do it yourself') // the no-lane-fits fallback
     expect(note).toContain('id: code') // the team is listed with dispatchable ids
-    expect(note).not.toContain('coordinated by Operator') // it doesn't refer to itself in 3rd person
+    expect(note).not.toContain('operated by Operator') // it doesn't refer to itself in 3rd person
   })
 
   it('a legacy roster keyed on the old "orchestrator" id still gets the Operator framing', () => {

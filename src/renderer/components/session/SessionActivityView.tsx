@@ -76,7 +76,7 @@ export function SessionActivityView({ session }: Props) {
         }}
       >
         <StatusDot phase={session.phase} />
-        <span className="op-bar-name">orchestration</span>
+        <span className="op-bar-name">operating</span>
         {session.activeSubagents > 0 && (
           <span className="op-badge sonnet">{session.activeSubagents} sub</span>
         )}
