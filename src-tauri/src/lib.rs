@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize, SlavePty};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize, SlavePty};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -45,6 +45,10 @@ struct Pty {
     /// find which listening ports belong to THIS session — see `session_ports`.
     /// None until the deferred child execs, same as `killer`.
     pid: Option<u32>,
+    /// The child itself, kept so the reader thread can ask whether a failed read
+    /// actually means the session ended (`child_state` → `reader_action`). A killer
+    /// can only end a process, not report on it. None until the deferred child execs.
+    child: Option<Arc<Mutex<Box<dyn Child + Send + Sync>>>>,
     cwd: String,
 }
 
@@ -62,6 +66,156 @@ struct PendingStart {
 /// terminal_write across ALL terminals fail forever.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The read that just came back from a pty master, classified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadOutcome {
+    /// `Ok(n)`, n > 0 — output in hand.
+    Bytes(usize),
+    /// `Ok(0)` — nothing more to read from this side of the pty.
+    Eof,
+    /// `ErrorKind::Interrupted` — a signal landed mid-read. Not a failure at all.
+    Interrupted,
+    /// Any other `Err`.
+    Failed,
+}
+
+/// What we know about a pty's child at this instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildState {
+    /// `try_wait` says it is still running.
+    Alive,
+    /// `try_wait` returned an exit status — the session really is over.
+    Exited,
+    /// No child handle yet (deferred launch hasn't exec'd), or `try_wait` itself
+    /// failed. Treated exactly like `Alive`: never end a session we cannot prove
+    /// is over.
+    Unknown,
+}
+
+/// What the reader thread should do with one read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReaderAction {
+    /// Bytes are in hand — emit them.
+    Deliver,
+    /// The session is not over: read again.
+    Retry,
+    /// The child is gone (or the pty is unrecoverable) — tear the session down.
+    Teardown,
+}
+
+/// How many consecutive fruitless reads (EOF or error) we tolerate while the child still
+/// looks alive before giving up on the pty itself. Reaching this means the fd is broken in
+/// a way that isn't recovering — a slave that closed while the child lingers, EBADF — and
+/// without the cap the reader would spin for the life of the app while the lane could never
+/// be cleaned up. Generous on purpose: a genuinely transient hiccup clears on the next read.
+const MAX_TRANSIENT_READ_RETRIES: u32 = 100;
+/// Backoff between those retries, so a tight EOF loop can't burn a core.
+const READ_RETRY_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Classify a `read` result. Split out from the policy so both halves are testable.
+fn classify_read(res: &std::io::Result<usize>) -> ReadOutcome {
+    match res {
+        Ok(0) => ReadOutcome::Eof,
+        Ok(n) => ReadOutcome::Bytes(*n),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadOutcome::Interrupted,
+        Err(_) => ReadOutcome::Failed,
+    }
+}
+
+/// The pty reader's teardown policy, as a pure function — the reader thread itself can't be
+/// tested, but this can.
+///
+/// The bug it exists for: the loop used to `break` on `Ok(0) | Err(_)`, so ANY read error
+/// was taken as the child dying. One transient hiccup removed the ptys entry and emitted
+/// `terminal:exit`, the frontend marked the lane ended — while the real `claude` process was
+/// still running, now orphaned with nothing reading its output. A read error is evidence
+/// about the READ, not about the CHILD; only the child's own status ends a session.
+fn reader_action(read: ReadOutcome, child: ChildState, consecutive_retries: u32) -> ReaderAction {
+    match read {
+        ReadOutcome::Bytes(_) => ReaderAction::Deliver,
+        // POSIX says retry, and a signal says nothing about the child — so this never
+        // counts toward the cap either.
+        ReadOutcome::Interrupted => ReaderAction::Retry,
+        ReadOutcome::Eof | ReadOutcome::Failed => match child {
+            ChildState::Exited => ReaderAction::Teardown,
+            ChildState::Alive | ChildState::Unknown => {
+                if consecutive_retries >= MAX_TRANSIENT_READ_RETRIES {
+                    ReaderAction::Teardown
+                } else {
+                    ReaderAction::Retry
+                }
+            }
+        },
+    }
+}
+
+/// Ask a pty's child whether it is still running. `Unknown` when there is no child yet or
+/// when `try_wait` fails — see `ChildState`.
+fn child_state(mgr: &Arc<PtyManager>, id: &str) -> ChildState {
+    // Clone the handle out from under the ptys lock, then wait on it OUTSIDE that lock:
+    // try_wait is a syscall, and the ptys map is taken by every other terminal command.
+    let child = lock(&mgr.ptys).get(id).and_then(|p| p.child.clone());
+    let Some(child) = child else { return ChildState::Unknown };
+    let status = lock(&child).try_wait();
+    match status {
+        Ok(Some(_)) => ChildState::Exited,
+        Ok(None) => ChildState::Alive,
+        Err(_) => ChildState::Unknown,
+    }
+}
+
+/// Pump one pty's output to the frontend until its child is gone, then tear the session
+/// down (drop the handle, free the port, emit `terminal:exit`). Shared by the agent-session
+/// and scratch-shell spawn paths so the retry policy above can't drift between them.
+fn pump_pty(
+    app: tauri::AppHandle,
+    mgr: Arc<PtyManager>,
+    id: String,
+    mut reader: Box<dyn Read + Send>,
+) {
+    let mut buf = [0u8; 8192];
+    let mut retries: u32 = 0;
+    loop {
+        let res = reader.read(&mut buf);
+        let outcome = classify_read(&res);
+        // Only ask about the child when the read gave us nothing: the hot path (bytes in
+        // hand) must not pay for a lock plus a waitpid per chunk. `reader_action` ignores
+        // the child state for `Bytes` anyway.
+        let child = match outcome {
+            ReadOutcome::Bytes(_) => ChildState::Alive,
+            _ => child_state(&mgr, &id),
+        };
+        match reader_action(outcome, child, retries) {
+            ReaderAction::Teardown => break,
+            ReaderAction::Retry => {
+                if outcome != ReadOutcome::Interrupted {
+                    retries += 1;
+                    std::thread::sleep(READ_RETRY_BACKOFF);
+                }
+                continue;
+            }
+            ReaderAction::Deliver => {}
+        }
+        retries = 0;
+        let ReadOutcome::Bytes(n) = outcome else { continue };
+        mgr.note_activity(&id);
+        mgr.push_history(&id, &buf[..n]);
+        // Grid handshake: write alacritty's replies (colour/device/cursor) back.
+        let resp = gridterm::feed(&app, &id, &buf[..n], n < buf.len());
+        if !resp.is_empty() {
+            if let Some(p) = lock(&mgr.ptys).get(&id) { let _ = p.tx.send(resp); }
+        }
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+        let _ = app.emit("terminal:data", TerminalDataPayload { id: id.clone(), data });
+    }
+    lock(&mgr.ptys).remove(&id);
+    mgr.release_port(&id); // no-op for a scratch shell, which reserves none
+    mgr.clear_history(&id);
+    gridterm::dispose(&id);
+    let _ = app.emit("terminal:exit", id.clone());
 }
 
 /// Move a pty's writer onto its own thread fed by an mpsc channel. Returns the
@@ -575,13 +729,13 @@ fn terminal_spawn(
     // grid width every line mis-wraps (the cascading-margin corruption). Launching after
     // the resize guarantees pty width == grid width from Claude's first byte. Reader/writer
     // attach immediately; the reader thread just blocks until the child produces output.
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        // Deferred launch: pid arrives with the child in `start_pending`.
-        Pty { tx, master: pair.master, killer: None, pid: None, cwd: cwd.clone() },
+        // Deferred launch: pid + child arrive in `start_pending`.
+        Pty { tx, master: pair.master, killer: None, pid: None, child: None, cwd: cwd.clone() },
     );
     lock(&mgr.pending).insert(id.clone(), PendingStart { cmd, slave: pair.slave });
 
@@ -607,31 +761,7 @@ fn terminal_spawn(
 
     let emit_id = id.clone();
     let mgr_arc = mgr.inner().clone();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    mgr_arc.note_activity(&emit_id);
-                    mgr_arc.push_history(&emit_id, &buf[..n]);
-                    // Grid handshake: write alacritty's replies (colour/device/cursor) back.
-                    let resp = gridterm::feed(&app, &emit_id, &buf[..n], n < buf.len());
-                    if !resp.is_empty() {
-                        if let Some(p) = lock(&mgr_arc.ptys).get(&emit_id) { let _ = p.tx.send(resp); }
-                    }
-                    use base64::Engine;
-                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
-                }
-            }
-        }
-        lock(&mgr_arc.ptys).remove(&emit_id);
-        mgr_arc.release_port(&emit_id);
-        mgr_arc.clear_history(&emit_id);
-        gridterm::dispose(&emit_id);
-        let _ = app.emit("terminal:exit", emit_id.clone());
-    });
+    std::thread::spawn(move || pump_pty(app, mgr_arc, emit_id, reader));
 
     Ok(id)
 }
@@ -649,8 +779,10 @@ fn start_pending(mgr: &Arc<PtyManager>, id: &str) {
             if let Some(p) = lock(&mgr.ptys).get_mut(id) {
                 p.killer = Some(killer);
                 p.pid = pid;
+                // Kept (not dropped as it used to be) so the reader thread can ask whether
+                // a failed read means this child actually died — see `reader_action`.
+                p.child = Some(Arc::new(Mutex::new(child)));
             }
-            // `child` drops here; the process keeps running (killer holds the kill capability).
         }
         Err(e) => eprintln!("[operator] failed to launch deferred pty {id}: {e}"),
     }
@@ -704,40 +836,20 @@ fn shell_spawn(
     let pid = child.process_id();
     drop(pair.slave);
 
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let tx = spawn_writer(app.clone(), id.clone(), writer);
     lock(&mgr.ptys).insert(
         id.clone(),
-        Pty { tx, master: pair.master, killer: Some(killer), pid, cwd: cwd.clone() },
+        Pty {
+            tx, master: pair.master, killer: Some(killer), pid,
+            child: Some(Arc::new(Mutex::new(child))), cwd: cwd.clone(),
+        },
     );
 
     let emit_id = id.clone();
     let mgr_arc = mgr.inner().clone();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    mgr_arc.note_activity(&emit_id);
-                    mgr_arc.push_history(&emit_id, &buf[..n]);
-                    // Grid handshake: write alacritty's replies (colour/device/cursor) back.
-                    let resp = gridterm::feed(&app, &emit_id, &buf[..n], n < buf.len());
-                    if !resp.is_empty() {
-                        if let Some(p) = lock(&mgr_arc.ptys).get(&emit_id) { let _ = p.tx.send(resp); }
-                    }
-                    use base64::Engine;
-                    let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app.emit("terminal:data", TerminalDataPayload { id: emit_id.clone(), data });
-                }
-            }
-        }
-        lock(&mgr_arc.ptys).remove(&emit_id);
-        mgr_arc.clear_history(&emit_id);
-        gridterm::dispose(&emit_id);
-        let _ = app.emit("terminal:exit", emit_id.clone());
-    });
+    std::thread::spawn(move || pump_pty(app, mgr_arc, emit_id, reader));
 
     Ok(id)
 }
@@ -1815,6 +1927,104 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- pty reader teardown policy (see reader_action) -------------------------------
+    // The reader thread can't be tested (it owns a real pty), so the decision it makes on
+    // every read lives in a pure function and is pinned here instead.
+
+    #[test]
+    fn classify_read_separates_eof_from_interruption_from_real_failure() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(classify_read(&Ok(0)), ReadOutcome::Eof);
+        assert_eq!(classify_read(&Ok(64)), ReadOutcome::Bytes(64));
+        assert_eq!(
+            classify_read(&Err(Error::from(ErrorKind::Interrupted))),
+            ReadOutcome::Interrupted,
+        );
+        assert_eq!(classify_read(&Err(Error::from(ErrorKind::Other))), ReadOutcome::Failed);
+    }
+
+    /// THE REGRESSION: a read error while the child is alive used to end the session,
+    /// leaving the real `claude` orphaned. It must now keep reading.
+    #[test]
+    fn a_failed_read_never_ends_a_session_whose_child_is_still_alive() {
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, ChildState::Alive, 0),
+            ReaderAction::Retry,
+        );
+        assert_eq!(
+            reader_action(ReadOutcome::Eof, ChildState::Alive, 0),
+            ReaderAction::Retry,
+        );
+    }
+
+    /// A child we can't ask about (deferred launch not exec'd yet, or try_wait itself
+    /// failed) is treated as alive — we never end a session we can't prove is over.
+    #[test]
+    fn an_unknown_child_is_given_the_benefit_of_the_doubt() {
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, ChildState::Unknown, 0),
+            ReaderAction::Retry,
+        );
+        assert_eq!(
+            reader_action(ReadOutcome::Eof, ChildState::Unknown, 0),
+            ReaderAction::Retry,
+        );
+    }
+
+    /// The only genuine end-of-session: nothing left to read AND the child has exited.
+    #[test]
+    fn a_confirmed_exit_tears_the_session_down() {
+        assert_eq!(
+            reader_action(ReadOutcome::Eof, ChildState::Exited, 0),
+            ReaderAction::Teardown,
+        );
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, ChildState::Exited, 0),
+            ReaderAction::Teardown,
+        );
+    }
+
+    /// EINTR is a signal, not a death — retried whatever the child is doing, and it
+    /// doesn't consume the transient budget (the caller skips the increment).
+    #[test]
+    fn an_interrupted_read_is_always_retried() {
+        for child in [ChildState::Alive, ChildState::Unknown, ChildState::Exited] {
+            assert_eq!(
+                reader_action(ReadOutcome::Interrupted, child, MAX_TRANSIENT_READ_RETRIES + 5),
+                ReaderAction::Retry,
+                "EINTR must never end a session ({child:?})",
+            );
+        }
+    }
+
+    /// Bytes are delivered no matter what the child status says — output that arrived
+    /// before the child exited still belongs on screen.
+    #[test]
+    fn bytes_are_always_delivered() {
+        for child in [ChildState::Alive, ChildState::Exited, ChildState::Unknown] {
+            assert_eq!(
+                reader_action(ReadOutcome::Bytes(1), child, 0),
+                ReaderAction::Deliver,
+                "({child:?})",
+            );
+        }
+    }
+
+    /// The safety valve: a pty that keeps failing while its child lingers is eventually
+    /// given up on, so a broken fd can't spin the reader for the life of the app.
+    #[test]
+    fn a_pty_that_never_recovers_is_eventually_torn_down() {
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, ChildState::Alive, MAX_TRANSIENT_READ_RETRIES - 1),
+            ReaderAction::Retry,
+            "still inside the budget",
+        );
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, ChildState::Alive, MAX_TRANSIENT_READ_RETRIES),
+            ReaderAction::Teardown,
+        );
+    }
 
     #[test]
     fn shell_quote_wraps_in_single_quotes() {
