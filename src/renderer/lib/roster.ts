@@ -217,6 +217,26 @@ export function reorderRoles(roles: Role[], dragId: string, targetId: string, ed
   return reorderByIds(roles, dragId, targetId, edge)
 }
 
+/** Apply a partial edit to one lane, returning the new roster. Unknown id → unchanged.
+ *
+ *  Pure, and taking the roster as an argument, precisely so callers can apply it to the
+ *  CURRENT project rather than to the snapshot they rendered with: building the next roster
+ *  from a stale props copy meant two quick edits (recolour a lane, then rename another
+ *  before the first render landed) both started from the same old array, and the second
+ *  silently reverted the first. */
+export function patchRoleIn(roster: Role[] | undefined, id: string, patch: Partial<Role>): Role[] {
+  return (roster ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r))
+}
+
+/** Remove a lane and unassign its queued tasks, against the CURRENT project — same
+ *  stale-snapshot hazard as `patchRoleIn`. Returns the patch to apply. */
+export function removeRoleFrom(project: Project, id: string): Pick<Project, 'roster' | 'tasks'> {
+  return {
+    roster: (project.roster ?? []).filter((r) => r.id !== id),
+    tasks: (project.tasks ?? []).map((t) => (t.roleId === id ? { ...t, roleId: undefined } : t)),
+  }
+}
+
 /** A short, unique role id from a name (for user-added roles); falls back to a counter. */
 export function roleIdFrom(name: string, existing: Role[]): string {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'role'

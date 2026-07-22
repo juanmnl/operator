@@ -101,8 +101,12 @@ enum ReaderAction {
     Deliver,
     /// The session is not over: read again.
     Retry,
-    /// The child is gone (or the pty is unrecoverable) — tear the session down.
+    /// The child is confirmed gone — clean up, nothing left to kill.
     Teardown,
+    /// The pty is unrecoverable but the child was NOT proven dead. Tear down AND kill it:
+    /// we're about to stop reading its output forever, so leaving it running would orphan
+    /// a live `claude` exactly the way the original bug did.
+    KillAndTeardown,
 }
 
 /// How many consecutive fruitless reads (EOF or error) we tolerate while the child still
@@ -142,7 +146,7 @@ fn reader_action(read: ReadOutcome, child: ChildState, consecutive_retries: u32)
             ChildState::Exited => ReaderAction::Teardown,
             ChildState::Alive | ChildState::Unknown => {
                 if consecutive_retries >= MAX_TRANSIENT_READ_RETRIES {
-                    ReaderAction::Teardown
+                    ReaderAction::KillAndTeardown
                 } else {
                     ReaderAction::Retry
                 }
@@ -156,7 +160,17 @@ fn reader_action(read: ReadOutcome, child: ChildState, consecutive_retries: u32)
 fn child_state(mgr: &Arc<PtyManager>, id: &str) -> ChildState {
     // Clone the handle out from under the ptys lock, then wait on it OUTSIDE that lock:
     // try_wait is a syscall, and the ptys map is taken by every other terminal command.
-    let child = lock(&mgr.ptys).get(id).and_then(|p| p.child.clone());
+    let child = {
+        let ptys = lock(&mgr.ptys);
+        match ptys.get(id) {
+            // No entry at all: `terminal_kill` removed it and already fired the killer, so
+            // this session is over by definition. Reporting `Unknown` here would make the
+            // reader retry for the whole backoff budget after an explicit close.
+            None => return ChildState::Exited,
+            Some(p) => p.child.clone(),
+        }
+    };
+    // Entry present but no child yet — the deferred launch hasn't exec'd.
     let Some(child) = child else { return ChildState::Unknown };
     let status = lock(&child).try_wait();
     match status {
@@ -189,6 +203,12 @@ fn pump_pty(
         };
         match reader_action(outcome, child, retries) {
             ReaderAction::Teardown => break,
+            ReaderAction::KillAndTeardown => {
+                // Give up on the fd, but not before ending the process behind it: from
+                // here nothing will ever read its output again.
+                kill_and_reap(&mgr, &id);
+                break;
+            }
             ReaderAction::Retry => {
                 if outcome != ReadOutcome::Interrupted {
                     retries += 1;
@@ -211,11 +231,32 @@ fn pump_pty(
         let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
         let _ = app.emit("terminal:data", TerminalDataPayload { id: id.clone(), data });
     }
-    lock(&mgr.ptys).remove(&id);
+    // `remove` returning None means `terminal_kill` already tore this lane down (it removes
+    // the entry, fires the killer, frees the port and clears history). Emitting
+    // `terminal:exit` again would run the frontend's exit path a second time — and that path
+    // completes the lane's running tasks, so a close would capture diffs and re-run check
+    // commands twice. Clean up what's ours and stay quiet.
+    let was_live = lock(&mgr.ptys).remove(&id).is_some();
+    gridterm::dispose(&id);
+    if !was_live { return }
     mgr.release_port(&id); // no-op for a scratch shell, which reserves none
     mgr.clear_history(&id);
-    gridterm::dispose(&id);
     let _ = app.emit("terminal:exit", id.clone());
+}
+
+/// End a pty's child and reap it, without waiting on the caller's thread. Used when the
+/// reader gives up on an unrecoverable fd: the process must not outlive the only thing
+/// that was reading it.
+fn kill_and_reap(mgr: &Arc<PtyManager>, id: &str) {
+    let child = lock(&mgr.ptys).get(id).and_then(|p| p.child.clone());
+    let Some(child) = child else { return };
+    // Reaping happens on its own thread: `wait` blocks, and this runs on the reader thread
+    // during teardown.
+    std::thread::spawn(move || {
+        let mut c = lock(&child);
+        let _ = c.kill();
+        let _ = c.wait();
+    });
 }
 
 /// Move a pty's writer onto its own thread fed by an mpsc channel. Returns the
@@ -523,10 +564,18 @@ fn strip_nested_session_env(cmd: &mut CommandBuilder) {
 // saw the port down and started a server, and Vite silently falls back to port+1 when the
 // bind is taken — which is exactly how per-agent servers multiplied).
 fn dev_port_is_live(port: u16) -> bool {
-    use std::net::{SocketAddr, TcpStream};
+    use std::net::{Ipv6Addr, SocketAddr, TcpStream};
     use std::time::Duration;
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+    // BOTH loopbacks: Vite (via Node's localhost resolution) binds [::1] ONLY on this
+    // machine, so a v4-only probe reads a live server as down — the "ALREADY LIVE" hint
+    // never fires and a second server gets started on the v4 side of the same port.
+    let addrs = [
+        SocketAddr::from(([127, 0, 0, 1], port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ];
+    addrs
+        .iter()
+        .any(|a| TcpStream::connect_timeout(a, Duration::from_millis(150)).is_ok())
 }
 
 // The appended-system-prompt note teaching an agent its dev-server port etiquette. Three
@@ -772,16 +821,31 @@ fn terminal_spawn(
 fn start_pending(mgr: &Arc<PtyManager>, id: &str) {
     let Some(PendingStart { cmd, slave }) = lock(&mgr.pending).remove(id) else { return };
     match slave.spawn_command(cmd) {
-        Ok(child) => {
-            let killer = child.clone_killer();
-            let pid = child.process_id();
+        Ok(mut child) => {
             drop(slave);
-            if let Some(p) = lock(&mgr.ptys).get_mut(id) {
-                p.killer = Some(killer);
-                p.pid = pid;
-                // Kept (not dropped as it used to be) so the reader thread can ask whether
-                // a failed read means this child actually died — see `reader_action`.
-                p.child = Some(Arc::new(Mutex::new(child)));
+            let mut ptys = lock(&mgr.ptys);
+            match ptys.get_mut(id) {
+                Some(p) => {
+                    p.killer = Some(child.clone_killer());
+                    p.pid = child.process_id();
+                    // Kept (not dropped as it used to be) so the reader thread can ask whether
+                    // a failed read means this child actually died — see `reader_action`.
+                    p.child = Some(Arc::new(Mutex::new(child)));
+                }
+                None => {
+                    // RACE: `terminal_kill` ran between the `pending` take above and this
+                    // exec — it removed the ptys entry and fired a killer that was still
+                    // None, so nothing reached this process. It would be left running with
+                    // no handle, no reader, and no way to ever kill it. End it here instead.
+                    // Reaping goes on its own thread: `wait` blocks and this may be a
+                    // command thread.
+                    drop(ptys);
+                    eprintln!("[operator] pty {id} was killed mid-launch; reaping the child");
+                    std::thread::spawn(move || {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    });
+                }
             }
         }
         Err(e) => eprintln!("[operator] failed to launch deferred pty {id}: {e}"),
@@ -2012,17 +2076,45 @@ mod tests {
     }
 
     /// The safety valve: a pty that keeps failing while its child lingers is eventually
-    /// given up on, so a broken fd can't spin the reader for the life of the app.
+    /// given up on, so a broken fd can't spin the reader for the life of the app. Because
+    /// the child was never proven dead, that teardown must KILL it — walking away from a
+    /// live `claude` nothing is reading is the very orphan this whole policy exists to stop.
     #[test]
-    fn a_pty_that_never_recovers_is_eventually_torn_down() {
+    fn a_pty_that_never_recovers_is_torn_down_and_its_child_killed() {
         assert_eq!(
             reader_action(ReadOutcome::Failed, ChildState::Alive, MAX_TRANSIENT_READ_RETRIES - 1),
             ReaderAction::Retry,
             "still inside the budget",
         );
+        for child in [ChildState::Alive, ChildState::Unknown] {
+            assert_eq!(
+                reader_action(ReadOutcome::Failed, child, MAX_TRANSIENT_READ_RETRIES),
+                ReaderAction::KillAndTeardown,
+                "a child that was never proven dead must not be left running ({child:?})",
+            );
+        }
+    }
+
+    /// A child that exited on its own needs no killing, however long the reader struggled.
+    #[test]
+    fn a_confirmed_exit_never_escalates_to_a_kill() {
         assert_eq!(
-            reader_action(ReadOutcome::Failed, ChildState::Alive, MAX_TRANSIENT_READ_RETRIES),
+            reader_action(ReadOutcome::Eof, ChildState::Exited, MAX_TRANSIENT_READ_RETRIES + 10),
             ReaderAction::Teardown,
+        );
+    }
+
+    /// `terminal_kill` removes the ptys entry and fires the killer. A reader that then asks
+    /// about the child must hear "over" — reporting `Unknown` would keep it retrying for the
+    /// entire backoff budget after an explicit close.
+    #[test]
+    fn a_removed_pty_entry_reads_as_a_dead_child() {
+        let mgr = Arc::new(PtyManager::default());
+        assert_eq!(child_state(&mgr, "no-such-terminal"), ChildState::Exited);
+        assert_eq!(
+            reader_action(ReadOutcome::Failed, child_state(&mgr, "no-such-terminal"), 0),
+            ReaderAction::Teardown,
+            "a killed lane stops reading at once, and needs no second kill",
         );
     }
 
@@ -2112,6 +2204,17 @@ mod tests {
     #[test]
     fn dev_port_is_live_detects_a_listener() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(dev_port_is_live(port));
+        drop(listener);
+        assert!(!dev_port_is_live(port));
+    }
+
+    /// The real-world shape on this machine: Vite listening on [::1] ONLY. A v4-only
+    /// probe called this "down" and told the next lane to start a second server.
+    #[test]
+    fn dev_port_is_live_sees_an_ipv6_only_listener() {
+        let listener = std::net::TcpListener::bind("[::1]:0").expect("bind v6");
         let port = listener.local_addr().expect("addr").port();
         assert!(dev_port_is_live(port));
         drop(listener);

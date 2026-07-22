@@ -1,4 +1,4 @@
-import type { Project, Role, ProjectTask } from '../../../shared/types'
+import type { Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
@@ -22,7 +22,7 @@ export function ProjectView({
   project: Project
   tab: ProjectTab
   onSelectTab: (t: ProjectTab) => void
-  onUpdateProject?: (id: string, patch: Partial<Project>) => void
+  onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   liveRoles?: Record<string, string>
   /** roleId → live session runtime (phase/usage), for the mission-control read. */

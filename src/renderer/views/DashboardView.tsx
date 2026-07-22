@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings } from '../lib/roster'
 import { reorderByIds } from '../lib/reorder'
 import { sessionLabel } from '../lib/session-label'
-import { loadSessionAccents, persistSessionAccents, withSessionAccent } from '../lib/session-accents'
+import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { routeDispatch, liveLaneNames } from '../lib/dispatch'
 import { submitQueue } from '../lib/submit-queue'
@@ -463,8 +463,11 @@ export function DashboardView() {
   }, [])
 
   // Patch a project by id (roster edits, rename, …) and persist via the effect below.
-  const updateProject = useCallback((id: string, patch: Partial<Project>) => {
-    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))
+  // `patch` may be a function of the CURRENT project rather than a fixed object: a caller
+  // holding a rendered snapshot (the roster board) would otherwise compute its next state
+  // from a stale copy, so two edits in quick succession lost the earlier one.
+  const updateProject = useCallback((id: string, patch: ProjectPatch) => {
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...(typeof patch === 'function' ? patch(p) : patch) } : p)))
   }, [])
 
   // Open a folder as its Project workspace (Agents/Roster) — this is now how "New Session"
@@ -1303,11 +1306,10 @@ export function DashboardView() {
     // No lane → per-session override. Without a saved key there's nowhere durable to put
     // it, so skip rather than write an entry that can't be read back.
     if (!session.savedKey) return
-    setSessionAccents((prev) => {
-      const next = withSessionAccent(prev, session.savedKey!, accent)
-      persistSessionAccents(next)
-      return next
-    })
+    // Merge against what's on disk right now, not this instance's snapshot — the other app
+    // instance shares this localStorage (see saveSessionAccent). Done outside the state
+    // updater so the updater stays pure.
+    setSessionAccents(saveSessionAccent(session.savedKey, accent))
   }, [roleOf, projects, updateProject])
 
   // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.

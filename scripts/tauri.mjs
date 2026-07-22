@@ -12,12 +12,16 @@ const args = process.argv.slice(2);
 const isDev = args[0] === "dev";
 
 function isFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.once("listening", () => srv.close(() => resolve(true)));
-    srv.listen(port, "127.0.0.1");
-  });
+  // Check BOTH loopbacks (parity with the backend's dual-stack port_free): a port held
+  // on [::1] only — Vite's usual bind here — must not read as free on 127.0.0.1.
+  const freeOn = (host) =>
+    new Promise((resolve) => {
+      const srv = net.createServer();
+      srv.once("error", () => resolve(false));
+      srv.once("listening", () => srv.close(() => resolve(true)));
+      srv.listen(port, host);
+    });
+  return freeOn("127.0.0.1").then((v4) => (v4 ? freeOn("::1") : false));
 }
 
 async function pickPort() {

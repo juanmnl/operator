@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { ACCENT_SWATCHES, DEFAULT_LANE_ACCENTS, normalizeHex, sameAccent } from './lane-accents'
-import { parseSessionAccents, withSessionAccent, suggestedAccent } from './session-accents'
+import { parseSessionAccents, withSessionAccent, suggestedAccent, saveSessionAccent, loadSessionAccents, SESSION_ACCENTS_KEY } from './session-accents'
 
 describe('lane-accents', () => {
   it('offers the six default lane accents first, then the extension', () => {
@@ -55,5 +55,25 @@ describe('session-accents', () => {
     expect(suggestedAccent('abc')).toBe(suggestedAccent('abc'))
     expect(DEFAULT_LANE_ACCENTS).toContain(suggestedAccent('abc'))
     expect(DEFAULT_LANE_ACCENTS).toContain(suggestedAccent(''))
+  })
+
+  /// Two app instances share one localStorage, so a save must merge with what's there
+  /// rather than overwrite the whole map with this instance's snapshot.
+  it('saveSessionAccent merges with what another instance already wrote', () => {
+    localStorage.setItem(SESSION_ACCENTS_KEY, JSON.stringify({ a: '#111111' }))
+    // This instance loaded before the other one wrote 'b'…
+    const stale = loadSessionAccents()
+    localStorage.setItem(SESSION_ACCENTS_KEY, JSON.stringify({ a: '#111111', b: '#222222' }))
+    // …and now picks a colour for 'c'. The other instance's 'b' must survive.
+    const merged = saveSessionAccent('c', '#333333')
+    expect(merged).toEqual({ a: '#111111', b: '#222222', c: '#333333' })
+    expect(loadSessionAccents()).toEqual(merged)
+    expect(stale).toEqual({ a: '#111111' }) // the snapshot that would have clobbered it
+  })
+
+  it('saveSessionAccent clears one key without disturbing the others', () => {
+    localStorage.setItem(SESSION_ACCENTS_KEY, JSON.stringify({ a: '#111111', b: '#222222' }))
+    expect(saveSessionAccent('a')).toEqual({ b: '#222222' })
+    expect(loadSessionAccents()).toEqual({ b: '#222222' })
   })
 })

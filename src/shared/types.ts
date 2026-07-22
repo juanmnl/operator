@@ -204,6 +204,12 @@ export interface Project {
   // Deferred seams (not populated this phase): moodboard, contextNotes, chatThreadId.
 }
 
+/** An edit to a project: either a fixed patch, or one computed from the project as it is
+ *  RIGHT NOW. Surfaces that derive their next state from a rendered snapshot (the roster
+ *  board) must use the function form — otherwise two edits landing in the same tick both
+ *  build on the same stale copy and the first is lost. */
+export type ProjectPatch = Partial<Project> | ((current: Project) => Partial<Project>)
+
 /** One routed `OPERATOR-DISPATCH` directive, kept as a project activity log. */
 export interface DispatchRecord {
   /** The backend's dedupe id (stable across transcript re-reads). */

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { Project, Role, TokenUsage } from '../../../shared/types'
-import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom, isCoordinator, reorderRoles } from '../../lib/roster'
+import type { Project, ProjectPatch, Role, TokenUsage } from '../../../shared/types'
+import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom, isCoordinator, reorderRoles, patchRoleIn, removeRoleFrom } from '../../lib/roster'
 import { AccentPicker } from '../AccentPicker'
 
 /** Live runtime for a lane's session (from the transcript observer). */
@@ -30,7 +30,7 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
 
 export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal }: {
   project?: Project
-  onUpdateProject?: (id: string, patch: Partial<Project>) => void
+  onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
@@ -93,17 +93,19 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   const taskCounts: Record<string, number> = {}
   for (const t of project.tasks ?? []) if (t.roleId) taskCounts[t.roleId] = (taskCounts[t.roleId] ?? 0) + 1
   const setRoles = (next: Role[]) => onUpdateProject?.(project.id, { roster: next })
-  const patchRole = (id: string, patch: Partial<Role>) => setRoles(roles.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  // Role edits are applied to the project as it is when the update lands, NOT to the
+  // `roles` array this render closed over: recolouring one lane and renaming another
+  // before the first render arrived had both start from the same stale roster, so the
+  // second write reverted the first (see patchRoleIn).
+  const patchRole = (id: string, patch: Partial<Role>) =>
+    onUpdateProject?.(project.id, (cur) => ({ roster: patchRoleIn(cur.roster, id, patch) }))
   const addRole = () => {
     const name = 'New role'
     setRoles([...roles, { id: roleIdFrom(name + ' ' + (roles.length + 1), roles), name, model: 'sonnet', effort: 'high' }])
   }
   // Removing a role also unassigns its queued tasks (back to the backlog) — otherwise they'd
   // carry a stale roleId that no group matches and drop out of the queue UI.
-  const removeRole = (id: string) => onUpdateProject?.(project.id, {
-    roster: roles.filter((r) => r.id !== id),
-    tasks: (project.tasks ?? []).map((t) => (t.roleId === id ? { ...t, roleId: undefined } : t)),
-  })
+  const removeRole = (id: string) => onUpdateProject?.(project.id, (cur) => removeRoleFrom(cur, id))
 
   return (
     <div style={{ boxSizing: 'border-box', fontFamily: 'var(--font-body)' }}>

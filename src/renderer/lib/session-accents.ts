@@ -44,6 +44,18 @@ export function persistSessionAccents(map: SessionAccents): void {
   try { localStorage.setItem(SESSION_ACCENTS_KEY, JSON.stringify(map)) } catch { /* quota / private mode */ }
 }
 
+/** Apply one override to what is CURRENTLY stored, persist that, and return the merged map.
+ *
+ *  Two app instances share one localStorage, so writing a component's in-memory map back
+ *  wholesale silently dropped every accent the OTHER instance had picked since this one
+ *  loaded — last writer won the whole map, not just its own key. Re-reading first narrows
+ *  that to the single key actually being changed. */
+export function saveSessionAccent(key: string, accent?: string): SessionAccents {
+  const merged = withSessionAccent(loadSessionAccents(), key, accent)
+  persistSessionAccents(merged)
+  return merged
+}
+
 /** Suggest a starting colour for a lane-less session so the picker doesn't open on
  *  "nothing selected" — deterministic per key, so the same agent always proposes the same
  *  swatch rather than flickering between renders. */

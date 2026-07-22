@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 import type { Project } from '../../shared/types'
 
 describe('roster', () => {
@@ -71,6 +71,53 @@ describe('roster', () => {
     expect(ids(reorderRoles(roster, 'operator', 'code', 'after'))).toEqual(['research', 'code', 'operator', 'review', 'design', 'qa'])
     // Drag UPWARD.
     expect(ids(reorderRoles(roster, 'qa', 'research', 'before'))).toEqual(['operator', 'qa', 'research', 'code', 'review', 'design'])
+  })
+
+  /// The lost-edit bug: the board built its next roster from the props snapshot it had
+  /// rendered with, so two edits landing before a re-render both started from the same old
+  /// array and the second reverted the first. Applying the patch to the CURRENT roster is
+  /// what makes them compose.
+  it('patchRoleIn edits one lane against the roster it is given', () => {
+    const roster = defaultRoster()
+    const recoloured = patchRoleIn(roster, 'code', { accent: '#ff0000' })
+    expect(recoloured.find((r) => r.id === 'code')?.accent).toBe('#ff0000')
+    // Every other lane is untouched, and the input is not mutated.
+    expect(recoloured.filter((r) => r.id !== 'code')).toEqual(roster.filter((r) => r.id !== 'code'))
+    expect(roster.find((r) => r.id === 'code')?.accent).toBe('#7ee787')
+
+    // Two edits in a row COMPOSE when the second is applied to the result of the first —
+    // this is exactly what re-reading the current project buys us.
+    const renamed = patchRoleIn(recoloured, 'design', { name: 'Visuals' })
+    expect(renamed.find((r) => r.id === 'code')?.accent).toBe('#ff0000')
+    expect(renamed.find((r) => r.id === 'design')?.name).toBe('Visuals')
+
+    // …and the stale-snapshot path is what loses one: both from `roster` = first edit gone.
+    const stale = patchRoleIn(roster, 'design', { name: 'Visuals' })
+    expect(stale.find((r) => r.id === 'code')?.accent).toBe('#7ee787')
+  })
+
+  it('patchRoleIn tolerates an unknown id and a rosterless project', () => {
+    const roster = defaultRoster()
+    expect(patchRoleIn(roster, 'nope', { name: 'x' })).toEqual(roster)
+    expect(patchRoleIn(undefined, 'code', { name: 'x' })).toEqual([])
+  })
+
+  /// Removing a lane also unassigns its queued tasks — otherwise they keep a roleId no
+  /// group matches and drop out of the queue UI entirely.
+  it('removeRoleFrom drops the lane and returns its tasks to the backlog', () => {
+    const project: Project = {
+      id: 'p', name: 'Demo', path: '/tmp/demo', createdAt: 'now', lastActiveAt: 'now',
+      roster: defaultRoster(),
+      tasks: [
+        { id: 't1', text: 'a', roleId: 'code', createdAt: 'now' },
+        { id: 't2', text: 'b', roleId: 'design', createdAt: 'now' },
+      ],
+    }
+    const patch = removeRoleFrom(project, 'code')
+    expect(patch.roster!.some((r) => r.id === 'code')).toBe(false)
+    expect(patch.roster).toHaveLength(defaultRoster().length - 1)
+    expect(patch.tasks![0].roleId).toBeUndefined() // back to the unassigned backlog
+    expect(patch.tasks![1].roleId).toBe('design') // another lane's task is untouched
   })
 
   it('reorderRoles is a no-op for unknown ids or a self-drop', () => {
