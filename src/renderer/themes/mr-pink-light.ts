@@ -35,6 +35,13 @@ export const mrPinkLightVars = {
   '--fg': '#2c2c2c',
   '--fg-muted': '#777777',
   '--accent': '#a21caf',
+  // Lane accents are user data (Project roster), all picked against the DARK canvas —
+  // undimmed they collapse here (code #7ee787 = 1.44:1). Mixing 60% --fg into an
+  // accent before drawing it as TEXT clears 4.5:1 for every default lane accent on the
+  // DARKEST surface a title sits on (--bg-surface, and the sidebar's running-row tint —
+  // once mixed toward --fg the dark backdrops are the hard case, not the light ones),
+  // and keeps its hue. See lib/lane-color.
+  '--lane-ink-blend': '70%',
   '--btn-bg': '#E1DBE1',
   '--red': '#c0392b',
   '--green': '#27ae60',

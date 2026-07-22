@@ -5,6 +5,7 @@ import { RecentLists, type RecentSession, type RecentProject } from './RecentLis
 import { relativeTime } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
 import { sessionLabel } from '../../lib/session-label'
+import { laneTextColor } from '../../lib/lane-color'
 
 interface ActivityDashboardProps {
   sessions: AgentSession[]
@@ -76,14 +77,20 @@ export function ActivityDashboard({
               textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--fg-muted)',
             }}>
               <span data-dash-project style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}</span>
-              <span style={{ opacity: 0.6, flexShrink: 0 }}>· {g.sessions.length}</span>
+              {/* No extra opacity on top of --fg-muted: the token already carries the
+                  recede, and stacking 0.6 over it measured 2.97:1 dark / 2.25:1 light. */}
+              <span style={{ flexShrink: 0 }}>· {g.sessions.length}</span>
             </div>
 
             {g.sessions.map((session) => {
               const role: Role | undefined = session.roleId ? g.project?.roster?.find((r) => r.id === session.roleId) : undefined
               // WHO the agent is, not what it was first told to do (see lib/session-label).
               const label = sessionLabel({ session, role, customName: customNames[session.id] })
-              const labelIsRole = !!role && label === role.name
+              // A lane keeps its role treatment even after a rename — same rule as the
+              // sidebar: the name is the session's, the colour is the lane's. Keying this
+              // on `label === role.name` instead made a renamed lane read as an
+              // unassigned session here while the sidebar still showed it as its lane.
+              const labelIsRole = !!role
               const lastActivity = session.activity?.length
                 ? session.activity[session.activity.length - 1]
                 : null
@@ -112,7 +119,7 @@ export function ActivityDashboard({
                           treatment it already has in the sidebar. A renamed or lane-less
                           session stays plain. */}
                       <span data-dash-title style={labelIsRole
-                        ? { fontSize: 12, fontWeight: 600, color: role!.accent || 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.1em' }
+                        ? { fontSize: 12, fontWeight: 600, color: laneTextColor(role!.accent), textTransform: 'uppercase', letterSpacing: '0.1em' }
                         : { fontSize: 12, fontWeight: 500, color: 'var(--fg)' }}>
                         {label}
                       </span>
@@ -128,7 +135,7 @@ export function ActivityDashboard({
                     <div style={{
                       fontSize: 10, color: 'var(--fg-muted)', marginTop: 2,
                       display: 'flex', gap: 8, alignItems: 'baseline',
-                      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+                      fontFamily: 'var(--font-mono)',
                       overflow: 'hidden',
                     }}>
                       {lastActivity ? (

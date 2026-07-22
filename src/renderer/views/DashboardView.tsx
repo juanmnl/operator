@@ -3,6 +3,9 @@ import { AgentSession, SavedSession, Project, Role, ProjectTask, SessionConfig, 
 import { resolveProject } from '../lib/resolve-project'
 import { defaultRoster, orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings } from '../lib/roster'
 import { reorderByIds } from '../lib/reorder'
+import { sessionLabel } from '../lib/session-label'
+import { loadSessionAccents, persistSessionAccents, withSessionAccent } from '../lib/session-accents'
+import { AccentPicker } from '../components/AccentPicker'
 import { routeDispatch, liveLaneNames } from '../lib/dispatch'
 import { submitQueue } from '../lib/submit-queue'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -1203,7 +1206,7 @@ export function DashboardView() {
     // project/role linkage + the launch model/effort. Overlay them onto the tracked session
     // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
     // badge) the moment the observer starts tracking it.
-    const operatorFields = { projectId: t.projectId, roleId: t.roleId, model: t.model, effortLevel: t.effortLevel }
+    const operatorFields = { projectId: t.projectId, roleId: t.roleId, savedKey: t.key, model: t.model, effortLevel: t.effortLevel }
     // Model precedence: the tab's model (launch config / the user's pill pick — updated the
     // instant they act) wins over the transcript, which lags an assistant turn behind and
     // would otherwise revert a fresh /model switch. The transcript fills the blank for
@@ -1266,6 +1269,46 @@ export function DashboardView() {
     if (!dragTid || !targetTid || dragTid === targetTid) return
     setTerminals((prev) => reorderByIds(prev, dragTid, targetTid, edge))
   }
+
+  // --- Agent colour --------------------------------------------------------------------
+  // A lane's colour belongs to its Role (roster = source of truth, so every surface
+  // recolours together). A session with NO lane keeps a per-session override, keyed by the
+  // stable saved key rather than the per-run session id.
+  const [sessionAccents, setSessionAccents] = useState<Record<string, string>>(() => loadSessionAccents())
+  const [accentPicker, setAccentPicker] = useState<{ sessionId: string; top: number; left: number } | null>(null)
+
+  const roleOf = useCallback((session: AgentSession): Role | undefined => {
+    if (!session.roleId) return undefined
+    return projects.find((p) => p.id === session.projectId)?.roster?.find((r) => r.id === session.roleId)
+  }, [projects])
+
+  // The colour a session actually draws with: its lane's, else its own override. This is
+  // exactly where `role?.accent` used to be read, so every call site keeps its own fallback.
+  const accentOf = useCallback((session: AgentSession): string | undefined => {
+    const role = roleOf(session)
+    if (role?.accent) return role.accent
+    return session.savedKey ? sessionAccents[session.savedKey] : undefined
+  }, [roleOf, sessionAccents])
+
+  const setAccentForSession = useCallback((session: AgentSession, accent: string) => {
+    const role = roleOf(session)
+    if (role) {
+      // On a lane → write the ROSTER, so the board, sidebar, rail and dashboard all follow.
+      const project = projects.find((p) => p.id === session.projectId)
+      if (project?.roster) {
+        updateProject(project.id, { roster: project.roster.map((r) => (r.id === role.id ? { ...r, accent } : r)) })
+      }
+      return
+    }
+    // No lane → per-session override. Without a saved key there's nowhere durable to put
+    // it, so skip rather than write an entry that can't be read back.
+    if (!session.savedKey) return
+    setSessionAccents((prev) => {
+      const next = withSessionAccent(prev, session.savedKey!, accent)
+      persistSessionAccents(next)
+      return next
+    })
+  }, [roleOf, projects, updateProject])
 
   // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.
   const shortcutIndices = useMemo(() => {
@@ -1598,10 +1641,16 @@ export function DashboardView() {
 
     // Session switches
     allSidebarSessions.forEach((s, i) => {
+      const project = s.projectId ? projects.find((p) => p.id === s.projectId) : undefined
+      const role = s.roleId ? project?.roster?.find((r) => r.id === s.roleId) : undefined
       actions.push({
         id: `select-${s.id}`,
         group: 'Session',
-        label: customNames[s.id] || s.summary || s.projectName || 'Session',
+        // The one label ladder (lib/session-label), same as the sidebar, the rail and the
+        // dashboard: custom name → lane → its own first prompt → the model it runs → the
+        // project. Built from the RAW summary, this showed Operator's injected dev-server
+        // preamble as the session's title — every launched lane reading identically.
+        label: sessionLabel({ session: s, role, customName: customNames[s.id], fallback: s.projectName || 'Session' }),
         detail: s.workingDirectory,
         hint: i < 9 ? `⌘${i + 1}` : undefined,
         run: () => handleSelectSession(s),
@@ -1755,8 +1804,23 @@ export function DashboardView() {
       activeSession, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
       selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
 
+  const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
+  const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
+
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
+      {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
+          rail scrollers, which clip their overflow. */}
+      {accentPicker && accentTarget && (
+        <AccentPicker
+          top={accentPicker.top}
+          left={accentPicker.left}
+          value={accentOf(accentTarget)}
+          title={accentTargetRole ? `${accentTargetRole.name} lane` : (customNames[accentTarget.id] || accentTarget.projectName)}
+          onPick={(accent) => { setAccentForSession(accentTarget, accent); setAccentPicker(null) }}
+          onClose={() => setAccentPicker(null)}
+        />
+      )}
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The rail always hosts the macOS
           traffic lights, so the content card never slides under them. */}
@@ -1778,6 +1842,8 @@ export function DashboardView() {
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           onExpand={toggleSidebar}
+          accentOf={accentOf}
+          onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
         />
       ) : (
       <Sidebar
@@ -1801,6 +1867,8 @@ export function DashboardView() {
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
+        accentOf={accentOf}
+        onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
         onReorderGroup={handleReorderGroup}
         onReorderSession={handleReorderSession}
         onNewSession={handleNewSession}

@@ -31,6 +31,10 @@ interface SidebarProps {
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
+  /** Effective accent for a session: its lane's colour, or a per-session override. */
+  accentOf?: (session: AgentSession) => string | undefined
+  /** Right-click on a row's status dot → open the colour picker anchored under it. */
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
   onReorderGroup: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   /** Reorder a session within its project group (drag one row onto another). */
   onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
@@ -52,7 +56,7 @@ interface SidebarProps {
   onInstallUpdate?: () => void
 }
 
-export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, onReorderGroup, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
+export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, activeSessionId, customNames, activeFolderPrefs, globalPrefsActive, agentsViewActive, usageViewActive, prefsViewActive, effortLevels, fanInfo, shortcutIndices, stats, isDark, onShowDashboard, onSelectSession, onRenameSession, onCloseSession, accentOf, onPickAccent, onReorderGroup, onReorderSession, onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenUsage, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: SidebarProps) {
   // Id of the folder group currently being dragged for reorder — lifted here so a
   // drag can target any other group (each FolderGroup is a drop zone).
   const [dragGroup, setDragGroup] = useState<string | null>(null)
@@ -225,6 +229,8 @@ export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, ac
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
             onCloseSession={onCloseSession}
+            accentOf={accentOf}
+            onPickAccent={onPickAccent}
             onOpenFolderPrefs={onOpenFolderPrefs}
             dragGroup={dragGroup}
             setDragGroup={setDragGroup}
@@ -450,6 +456,8 @@ function FolderGroup({
   onSelectSession,
   onRenameSession,
   onCloseSession,
+  accentOf,
+  onPickAccent,
   onOpenFolderPrefs,
   dragGroup,
   setDragGroup,
@@ -478,6 +486,10 @@ function FolderGroup({
   effortLevels: Record<string, string>
   fanInfo: Record<string, { index: number; total: number }>
   shortcutIndices: Record<string, number>
+  /** Effective accent for a session: its lane's colour, or a per-session override. */
+  accentOf?: (session: AgentSession) => string | undefined
+  /** Right-click on a row's status dot → open the colour picker. */
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
@@ -710,7 +722,7 @@ function FolderGroup({
               active={session.id === activeSessionId}
               effortLevel={effort}
               labelIsRole={labelIsRole}
-              roleColor={role?.accent}
+              roleColor={accentOf ? accentOf(session) : role?.accent}
               fanInfo={fan}
               currentTask={currentTaskOf(session, project)}
               closable
@@ -718,6 +730,7 @@ function FolderGroup({
               onClick={() => onSelectSession(session)}
               onRename={(name) => onRenameSession(session.id, name)}
               onClose={() => onCloseSession(session)}
+              onPickAccent={onPickAccent && ((anchor) => onPickAccent(session, anchor))}
             />
           </div>
         )

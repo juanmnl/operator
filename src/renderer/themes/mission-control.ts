@@ -35,6 +35,9 @@ export const missionControlVars = {
   '--fg': '#eef1f3',
   '--fg-muted': '#8a94a0',
   '--accent': '#2fe39a',
+  // Lane accents are user data (Project roster) chosen against this dark canvas —
+  // they already read at 10-13:1 here, so text draws them unmixed. See lib/lane-color.
+  '--lane-ink-blend': '0%',
   '--btn-bg': '#161b21',
   '--red': '#ff5f56',
   '--green': '#2fe39a',

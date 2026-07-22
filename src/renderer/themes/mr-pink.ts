@@ -32,6 +32,9 @@ export const mrPinkVars = {
   '--fg': '#F6F8F7',
   '--fg-muted': '#adadad',
   '--accent': '#D58FDB',
+  // Lane accents are user data (Project roster) chosen against this dark canvas —
+  // they already read at 10-13:1 here, so text draws them unmixed. See lib/lane-color.
+  '--lane-ink-blend': '0%',
   '--btn-bg': '#1E1E25',
   '--red': '#ff6057',
   '--green': '#84eea7',

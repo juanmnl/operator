@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
 import { sessionWaveStatus } from '../../lib/session-status'
+import { laneTextColor } from '../../lib/lane-color'
 
 interface SessionItemProps {
   session: AgentSession
@@ -23,9 +24,11 @@ interface SessionItemProps {
   onClick: () => void
   onRename: (newName: string) => void
   onClose: () => void
+  /** Right-click on the status dot → open the colour picker anchored under it. */
+  onPickAccent?: (anchor: { top: number; left: number }) => void
 }
 
-export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onPickAccent }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [hovered, setHovered] = useState(false)
@@ -135,7 +138,19 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         outline: 'none',
       }}
     >
-      <StatusWave status={status} seed={session.id} />
+      <span
+        data-accent-orb={session.id}
+        onContextMenu={onPickAccent && ((e) => {
+          // Right-click the orb to recolour; left-click falls through to row select.
+          e.preventDefault()
+          e.stopPropagation()
+          const r = e.currentTarget.getBoundingClientRect()
+          onPickAccent({ top: r.bottom + 6, left: r.left })
+        })}
+        style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}
+      >
+        <StatusWave status={status} seed={session.id} accent={roleColor} />
+      </span>
       {/* Left group: the session name with its lane badge sitting immediately after it, so the
           lane reads as part of the session — not a tag floating in the right cluster. */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -179,7 +194,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
                 the tracked-uppercase treatment shared with the phase words. A plain session name
                 reads full-strength when running, a touch dimmer when quiet. */}
             {labelIsRole ? (
-              <span style={{ color: roleColor || 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+              <span style={{ color: laneTextColor(roleColor), textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
                 {label}
               </span>
             ) : (

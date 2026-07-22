@@ -4,6 +4,7 @@ import { StatusWave, WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
 import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
+import { laneTextColor } from '../../lib/lane-color'
 
 interface SidebarRailProps {
   sessions: AgentSession[]
@@ -16,6 +17,10 @@ interface SidebarRailProps {
   onNewSession: () => void
   /** Expand the sidebar back to full width. */
   onExpand: () => void
+  /** Effective accent for a session: its lane's colour, or a per-session override. */
+  accentOf?: (session: AgentSession) => string | undefined
+  /** Right-click on the orb → open the colour picker anchored under it. */
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
 }
 
 function getDotStatus(session: AgentSession): WaveStatus {
@@ -57,7 +62,7 @@ const panelIcon = (
 // Collapsed "rail" — a Slack-style narrow strip for quick access to running
 // sessions plus the expand toggle. Hosts the macOS traffic lights (paddingTop)
 // so the content card to its right never slides under them.
-export function SidebarRail({ sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand }: SidebarRailProps) {
+export function SidebarRail({ sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand, accentOf, onPickAccent }: SidebarRailProps) {
   const [hovered, setHovered] = useState<{ id: string; top: number; left: number } | null>(null)
   // Cluster sessions by project (same keying as the expanded sidebar's groups) so the
   // rail reads as per-project clusters instead of one undifferentiated column of agents.
@@ -166,12 +171,22 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
           // project to the same folder initials.
           const label = sessionLabel({ session, role, customName: customNames[session.id] })
           const initial = initialOf(role?.name || label)
+          const accent = accentOf ? accentOf(session) : role?.accent
           const idx = shortcutIndices[session.id]
           const task = currentTaskOf(session, project)
           return (
             <Fragment key={session.id}>
             <button
               onClick={() => onSelectSession(session)}
+              onContextMenu={(e) => {
+                if (!onPickAccent) return
+                // Right-click is the colour affordance; left-click still selects.
+                e.preventDefault()
+                e.stopPropagation()
+                const r = e.currentTarget.getBoundingClientRect()
+                setHovered(null) // the hover card would sit on top of the popover
+                onPickAccent(session, { top: r.bottom + 6, left: r.right + 8 })
+              }}
               aria-label={idx ? `${label} (⌘${idx})` : label}
               style={{
                 position: 'relative',
@@ -211,13 +226,13 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
                   distinguishable at a glance. The dots carry the live status, tinted
                   with the lane's accent so the rail also says WHICH agent. */}
               <span style={{ position: 'relative', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={role?.accent} />
+                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={accent} />
                 <span style={{
                   position: 'absolute', inset: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 700, lineHeight: 1,
                   fontFamily: "var(--font-body)",
-                  color: role?.accent || 'var(--fg)',
+                  color: accent ? laneTextColor(accent) : 'var(--fg)',
                   letterSpacing: initial.length > 1 ? -0.5 : 0,
                   // Slight halo so the glyph reads cleanly over the dot grid.
                   textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
@@ -245,7 +260,7 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
-                  <span style={{ fontSize: 11.5, color: role?.accent || 'var(--fg)' }}>{label}</span>
+                  <span style={{ fontSize: 11.5, color: accent ? laneTextColor(accent) : 'var(--fg)' }}>{label}</span>
                   {idx && <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5 }}>⌘{idx}</span>}
                 </div>
                 {task && (

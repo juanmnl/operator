@@ -74,6 +74,10 @@ export interface AgentSession {
   projectId?: string
   /** Orchestration role (lane) this session was launched against, if any. */
   roleId?: string
+  /** The saved-session key (Operator-side, stable across restarts — unlike `id`, which is
+   *  a per-run `local-<terminalId>` for untracked sessions). Keys the per-session accent
+   *  override, so a colour picked on a lane-less agent survives a relaunch. */
+  savedKey?: string
   /** Model alias this session was launched with (Operator-side; the transcript omits it). */
   model?: string
   /** Reasoning effort this session was launched with (Operator-side). */

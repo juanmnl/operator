@@ -28,4 +28,19 @@ const rows = await p.evaluate(() => {
 })
 console.log('--- palette rows (' + rows.length + ') ---')
 console.log(rows.slice(0, 60).join('\n'))
+
+// --- Row titles go through the shared label ladder --------------------------------
+// Read the titles from the rows themselves ([data-row], see CommandPalette's Row): first
+// child of the row's text column. Operator prepends a dev-server instruction to every
+// lane's opening prompt, and a session summarised by its FIRST prompt would show that
+// boilerplate as its title — so every launched agent reads identically. Same assertion
+// the dashboard harness makes (lib/session-label is the one ladder for both).
+const titles = await p.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-row]'))
+    .map((r) => r.firstElementChild?.firstElementChild?.textContent?.trim() || '')
+    .filter(Boolean))
+console.log('row titles:', JSON.stringify(titles.slice(0, 40)))
+console.log('none start with "First, start"/"First, make sure":',
+  titles.every(t => !/^First, (start|make sure)/i.test(t)))
+console.log('preamble+task row reads the real task:', titles.includes('Wire up the booking form'))
 await b.close()

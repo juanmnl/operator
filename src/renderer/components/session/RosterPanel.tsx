@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Project, Role, TokenUsage } from '../../../shared/types'
 import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, defaultRoster, roleIdFrom, isCoordinator, reorderRoles } from '../../lib/roster'
+import { AccentPicker } from '../AccentPicker'
 
 /** Live runtime for a lane's session (from the transcript observer). */
 export interface LaneSession {
@@ -70,6 +71,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   // Lanes ticked for a batch launch. Held as ids (not Role objects) so an edit to a
   // role while it's selected doesn't strand a stale copy.
   const [selected, setSelected] = useState<string[]>([])
+  // Which lane's colour picker is open, and where it's anchored.
+  const [accentFor, setAccentFor] = useState<{ roleId: string; top: number; left: number } | null>(null)
   // Drag-to-reorder: which lane is being dragged, and the drop line's position.
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
@@ -195,6 +198,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             coordinator={isCoordinator(role.id)}
             live={!!liveRoles?.[role.id]}
             phase={laneSessions?.[role.id]?.phase}
+            onPickAccent={(anchor) => setAccentFor({ roleId: role.id, ...anchor })}
             runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
             queued={taskCounts[role.id] ?? 0}
             selected={picked.includes(role.id)}
@@ -218,11 +222,28 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
       >
         + Add agent
       </button>
+
+      {/* Lane colour picker. The roster is the source of truth for a lane's colour, so
+          writing it here recolours every surface that resolves through the role. */}
+      {accentFor && (() => {
+        const target = roles.find((r) => r.id === accentFor.roleId)
+        if (!target) return null
+        return (
+          <AccentPicker
+            top={accentFor.top}
+            left={accentFor.left}
+            value={target.accent}
+            title={`${target.name} lane`}
+            onPick={(accent) => { patchRole(target.id, { accent }); setAccentFor(null) }}
+            onClose={() => setAccentFor(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onDragStart, onDragEnd, onPatch, onRemove, onLaunch, onView }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onDragStart, onDragEnd, onPatch, onRemove, onLaunch, onView, onPickAccent }: {
   role: Role
   /** Drag-to-reorder, driven from the grip handle so text stays selectable. */
   onDragStart?: () => void
@@ -232,6 +253,8 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
   live?: boolean
   /** The live session's phase (running/compacting/waiting/idle) — shown in the pill. */
   phase?: string
+  /** Right-click the identity dot → colour picker for this lane. */
+  onPickAccent?: (anchor: { top: number; left: number }) => void
   /** The task currently running on this lane (latest), for the "working on" line. */
   runningTask?: string
   queued?: number
@@ -311,7 +334,17 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
         {/* The lane's colour — identity only. Selection is carried by the card itself
             (tint + inset ring), so there's no checkbox competing with it. Fixed 14px slot
             keeps every card's name on one vertical rule. */}
-        <span style={{ width: 14, flexShrink: 0, display: 'grid', placeItems: 'center' }}>
+        <span
+          data-accent-orb={role.id}
+          title={onPickAccent ? `${role.name} — right-click to recolour` : undefined}
+          onContextMenu={onPickAccent && ((e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const r = e.currentTarget.getBoundingClientRect()
+            onPickAccent({ top: r.bottom + 6, left: r.left })
+          })}
+          style={{ width: 14, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+        >
           <span style={{
             width: selected ? 9 : 7, height: selected ? 9 : 7, borderRadius: '50%',
             background: accent, transition: 'width 120ms ease, height 120ms ease',

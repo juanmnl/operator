@@ -32,6 +32,9 @@ export const nineteen84Vars = {
   '--fg': '#f1f1f1',
   '--fg-muted': '#8888aa',
   '--accent': '#46BDFF',
+  // Lane accents are user data (Project roster) chosen against this dark canvas —
+  // they already read at 10-13:1 here, so text draws them unmixed. See lib/lane-color.
+  '--lane-ink-blend': '0%',
   // A raised dark-blue surface (not the bright accent) — buttons use white --fg
   // text, which was unreadable on the cyan accent. Matches the other dark themes.
   '--btn-bg': '#1c1f54',
