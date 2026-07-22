@@ -33,6 +33,17 @@ const DORMANT_ID = deriveProjectId(DORMANT_PATH)
 // Older than `now` so the sort order (lastActiveAt desc) is actually exercised.
 const earlier = new Date(Date.parse(now) - 36e5).toISOString()
 
+// A SECOND project with a LIVE session, so the dashboard's per-project grouping has more
+// than one group to draw (and the sidebar more than one live cluster). Kept separate from
+// the dormant project above, which the Recent list depends on having nothing running.
+const SECOND_PATH = '/Users/dev/el-encanto'
+const SECOND_ID = deriveProjectId(SECOND_PATH)
+
+// Operator's injected dev-server preamble, verbatim, glued to the real task exactly as a
+// launch prompt builds it. The transcript summarises a session by this first prompt, so
+// without lib/session-label's cleaner every such row reads as the instruction, not the work.
+const DEV_PREAMBLE = "First, start this project's dev server in the BACKGROUND on the port Operator reserved for you (named in your system prompt — pass it via --port or the PORT env), and don't block the terminal on it."
+
 export const MOCK_PROJECTS = [
   {
     id: PROJECT_ID,
@@ -67,6 +78,16 @@ export const MOCK_PROJECTS = [
     tasks: [],
     dispatches: [],
   },
+  {
+    id: SECOND_ID,
+    path: SECOND_PATH,
+    name: 'el-encanto',
+    createdAt: earlier,
+    lastActiveAt: now,
+    roster: [{ id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787' }],
+    tasks: [],
+    dispatches: [],
+  },
 ]
 
 const session = (o: Partial<AgentSession> & { id: string; terminalId: string }): AgentSession => ({
@@ -90,10 +111,18 @@ export const MOCK_SESSIONS: AgentSession[] = [
     todos: [{ content: 'Extract routeDispatch into lib/dispatch', status: 'in_progress' }, { content: 'Add unit tests', status: 'pending' }],
     usage: { input: 41200, output: 8300, cacheRead: 120400 } }),
   session({ id: 's-res', terminalId: 't2', roleId: 'research', model: 'sonnet', phase: 'compacting', summary: 'Profile the settings list' }),
+  // Second project, no lane (so the label ladder falls through to the summary) and a
+  // summary that opens with the dev-server preamble — the row must read "Wire up the
+  // booking form", never the instruction.
+  session({
+    id: 's-enc', terminalId: 't3', model: 'sonnet', phase: 'running',
+    workingDirectory: SECOND_PATH, projectName: 'el-encanto', projectId: SECOND_ID,
+    summary: `${DEV_PREAMBLE}\n\nWire up the booking form`,
+  }),
 ]
 
 const MOCK_TERMINALS = MOCK_SESSIONS.map((s) => ({
-  id: s.terminalId!, pid: 0, cwd: PROJECT_PATH, command: 'claude', alive: true,
+  id: s.terminalId!, pid: 0, cwd: s.workingDirectory, command: 'claude', alive: true,
   devPort: s.terminalId === 't1' ? 1421 : undefined,
 }))
 
@@ -103,9 +132,11 @@ const MOCK_TERMINALS = MOCK_SESSIONS.map((s) => ({
 // summary and none of the lane colouring/coordinator behaviour can be exercised.
 const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
   key: `key-${s.terminalId}`,
-  cwd: PROJECT_PATH,
-  projectName: 'operator',
-  projectId: PROJECT_ID,
+  // Per-session, NOT the first project's constants: the re-attach path reads the project
+  // from here, so hardcoding would file the second project's agent under the first.
+  cwd: s.workingDirectory,
+  projectName: s.projectName,
+  projectId: s.projectId,
   roleId: s.roleId,
   model: s.model,
   effortLevel: s.effortLevel,

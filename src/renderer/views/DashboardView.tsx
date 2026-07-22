@@ -2032,6 +2032,7 @@ export function DashboardView() {
         {contentMode === 'splash' && allSidebarSessions.length > 0 && (
           <ActivityDashboard
             sessions={allSidebarSessions}
+            projects={projects}
             customNames={customNames}
             onSelectSession={handleSelectSession}
             onNewSession={handleNewSession}

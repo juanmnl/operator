@@ -4,8 +4,7 @@ import type { Project } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
 import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
-import { modelFamilyLabel } from '../../lib/roster'
-import { isInjectedTurn } from '../../lib/format'
+import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 
 interface SidebarProps {
@@ -509,6 +508,7 @@ function FolderGroup({
     // move a compact title; other groups show a before/after drop line.
     <div
       key={groupId}
+      data-project-group={groupId}
       onDragOver={(e) => {
         if (!dragGroup || dragGroup === groupId) return
         e.preventDefault()
@@ -654,19 +654,11 @@ function FolderGroup({
         const effort = session.terminalId ? effortLevels[session.terminalId] : null
         const fan = session.terminalId ? fanInfo[session.terminalId] : undefined
         const role = session.roleId ? roster?.find((r) => r.id === session.roleId) : undefined
-        // Default name: the role (orchestration lane) if launched on one; otherwise the model
-        // it's running (Opus/Sonnet/…) — cleaner than the transcript summary, which can pick up
-        // Claude's <local-command-*> reminder text. Summary/"Session" only when neither is known.
+        // Name: custom → lane → the session's own first prompt → the model it runs →
+        // generic. The ladder itself lives in lib/session-label, shared with the collapsed
+        // rail and the Activity Dashboard so one agent reads the same on all three.
         const autoName = group.length > 1 ? `Session ${i + 1}` : 'Session'
-        // '<synthetic>' is Claude Code's API-error placeholder — never a display name.
-        const modelName = session.model && !session.model.startsWith('<') ? modelFamilyLabel(session.model) : undefined
-        // The transcript summary can capture Claude Code's injected plumbing turns instead of
-        // the real prompt — filter exactly those (a genuine prompt may legitimately start
-        // with '<', e.g. "<Modal> crashes on mount").
-        const cleanSummary = session.summary && !isInjectedTurn(session.summary) ? session.summary : undefined
-        // Default name: role (lane) → the user's first prompt → the running model → generic.
-        // Summary before model so parallel same-model sessions stay distinguishable.
-        const defaultLabel = role?.name || cleanSummary || modelName || autoName
+        const label = sessionLabel({ session, role, customName, fallback: autoName })
         // A lane keeps its role treatment (colour + tracked uppercase) even after the user
         // renames it — the name is the session's, the colour is the lane's, and losing the
         // colour on rename made a renamed lane indistinguishable from an unassigned session.
@@ -714,7 +706,7 @@ function FolderGroup({
           >
             <SessionItem
               session={session}
-              label={customName || defaultLabel}
+              label={label}
               active={session.id === activeSessionId}
               effortLevel={effort}
               labelIsRole={labelIsRole}

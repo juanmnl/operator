@@ -22,8 +22,12 @@ console.log('forget buttons (want 0):', await p.locator('[data-forget]').count()
 console.log('recent excludes live project:', !(await recentRows()).includes('operator'))
 
 // --- Session reorder within the group -------------------------------------------
-const order = () => p.evaluate(() =>
-  Array.from(document.querySelectorAll('[data-session-row]')).map(el => el.getAttribute('data-session-row')))
+// Scoped to the 'operator' project's group: the mock now has a live session in a second
+// project too, and an unscoped query would mix both groups' rows into one list.
+const order = () => p.evaluate(() => {
+  const g = document.querySelector('[data-project-group^="operator-"]')
+  return Array.from(g?.querySelectorAll('[data-session-row]') ?? []).map(el => el.getAttribute('data-session-row'))
+})
 console.log('session order before:', JSON.stringify(await order()))
 const rows = p.locator('[data-session-row]')
 const src = await rows.nth(0).boundingBox()

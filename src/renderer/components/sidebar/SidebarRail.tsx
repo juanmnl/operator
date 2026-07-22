@@ -2,8 +2,7 @@ import { Fragment, useState } from 'react'
 import { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
-import { modelFamilyLabel } from '../../lib/roster'
-import { isInjectedTurn } from '../../lib/format'
+import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 
 interface SidebarRailProps {
@@ -161,13 +160,11 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
           const active = session.id === activeSessionId
           const project = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
           const role: Role | undefined = session.roleId ? project?.roster?.find((r) => r.id === session.roleId) : undefined
-          // Same label ladder as the expanded sidebar (see Sidebar.tsx): custom name →
-          // lane → first prompt → running model → generic. The rail used to fall back
-          // straight to the folder name, so collapsing renamed every agent in a project
-          // to the same folder initials.
-          const cleanSummary = session.summary && !isInjectedTurn(session.summary) ? session.summary : undefined
-          const modelName = session.model && !session.model.startsWith('<') ? modelFamilyLabel(session.model) : undefined
-          const label = customNames[session.id] || role?.name || cleanSummary || modelName || 'Session'
+          // Same label ladder as the expanded sidebar and the dashboard (lib/session-label):
+          // custom name → lane → first prompt → running model → generic. The rail used to
+          // fall back straight to the folder name, so collapsing renamed every agent in a
+          // project to the same folder initials.
+          const label = sessionLabel({ session, role, customName: customNames[session.id] })
           const initial = initialOf(role?.name || label)
           const idx = shortcutIndices[session.id]
           const task = currentTaskOf(session, project)
