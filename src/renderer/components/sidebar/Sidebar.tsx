@@ -156,14 +156,16 @@ export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, ac
           }}
         >
           <LogoMark size={16} animated={false} />
-          {/* Name + version share a baseline so the small version sits on the
-              same line as "Operator" instead of floating mid-height. */}
-          <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)', letterSpacing: -0.3 }}>
+          {/* Name + version are optically CENTERED on each other (lineHeight 1 so
+              the flex centering is exact — with inherited line-heights the two
+              line boxes differ and the small tag sags below center, which is the
+              misalignment baseline-align produced too). */}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1, color: 'var(--fg)', letterSpacing: -0.3 }}>
               Operator
             </span>
             {version && (
-              <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.55, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 9, lineHeight: 1, color: 'var(--fg-muted)', opacity: 0.55, fontVariantNumeric: 'tabular-nums', marginTop: 1 }}>
                 v{version}
               </span>
             )}
@@ -251,10 +253,13 @@ export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, ac
               onClick={toggleRecent}
               style={{
                 display: 'flex', alignItems: 'center', gap: 5, width: '100%',
-                fontSize: 10, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase',
+                // fontFamily (not the `font` shorthand — that resets size/weight and
+                // made this header render huge) + same size/weight as project headers.
+                fontFamily: 'inherit', fontSize: 10, fontWeight: 500, letterSpacing: 0.5,
+                textTransform: 'uppercase',
                 color: 'var(--fg-muted)', opacity: 0.7, padding: '4px 12px 4px', margin: 0,
                 background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none',
-                textAlign: 'left', font: 'inherit',
+                textAlign: 'left',
               }}
             >
               <span style={{ display: 'inline-block', fontSize: 8, transform: recentCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform 120ms' }}>▸</span>
@@ -348,7 +353,7 @@ export function Sidebar({ sessions, projects, onOpenProject, activeProjectId, ac
             display: 'flex', alignItems: 'center',
             opacity: agentsViewActive ? 1 : 0.85,
           }}
-          title="Agents — configure models per task"
+          title="Agents — every agent across your projects"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <rect x="3" y="5.5" width="10" height="7.5" rx="2" stroke="var(--fg-muted)" strokeWidth="1.1" />

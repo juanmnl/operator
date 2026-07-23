@@ -26,10 +26,11 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
   //    legibly distinct from "busy" even before the colour registers.
   running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
   compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
-  // Waiting for the user's reply → slow unison pulse in the waiting hue. Claude
-  // has stopped working, so it doesn't shimmer like the busy states — it gently
-  // breathes to say "your turn".
-  waiting:    { animate: true,  unison: true, durMin: 2.4, durMax: 2.4, maxOp: 0.8, staticOp: 0.5, fillPeak: 'var(--status-waiting, var(--fg))' },
+  // Motion is the ONLY busy signal: the shimmer/pulse belongs to states where the
+  // agent is actively working. Waiting means it has stopped and handed the turn
+  // back — not busy — so it rests STATIC like idle, distinguished only by carrying
+  // the lane accent a touch brighter (staticOp) than a truly-idle orb.
+  waiting:    { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.58 },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.42 },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.5 },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: 0.16 },
@@ -61,7 +62,14 @@ export function StatusWave({ status, size = 13, seed = 0, accent }: { status: Wa
     const tempo = 0.82 + rand(s + 0.5) * 0.42 // ~[0.82, 1.24]
     return DOTS.map((d, i) => {
       if (!cfg.animate) {
-        return { ...d, style: { opacity: cfg.staticOp, fill: 'var(--fg-muted)' } as React.CSSProperties }
+        // A resting orb still says WHICH lane: fill with the lane accent, slightly
+        // desaturated toward the muted ink and dimmed by the state's staticOp so a
+        // quiet lane recedes without going colourless. No accent (a non-lane
+        // session) → the neutral muted gray. Motion stays the only busy signal.
+        const restFill = accent
+          ? `color-mix(in srgb, ${accent} 82%, var(--fg-muted))`
+          : 'var(--fg-muted)'
+        return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties }
       }
       // Unison (your-turn pulse): every dot shares one period and phase so the
       // disc breathes as a single beacon. Otherwise each dot gets its own period
@@ -79,19 +87,19 @@ export function StatusWave({ status, size = 13, seed = 0, accent }: { status: Wa
         } as React.CSSProperties,
       }
     })
-  }, [effective, seed]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effective, seed, accent]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <span style={{
       flexShrink: 0, display: 'inline-flex', lineHeight: 0,
       ['--tw-max' as string]: cfg.maxOp,
       // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
-      // (scaled-up). Set per state: resting tint only for waiting, peak tint for any
-      // active state so the dots that grow take on the status colour.
-      // `accent` (an orchestration lane's colour) re-tints the MOVING half of the
-      // animation so a collapsed rail reads as "which agent" at a glance. It only
-      // overrides the animated states — idle/ended stay the frozen gray that makes
-      // a quiet session recede.
+      // (scaled-up). Only the animated (busy) states set these; `accent` (an
+      // orchestration lane's colour) re-tints the moving half so a collapsed rail
+      // reads as "which agent" at a glance. The resting/static states (waiting,
+      // idle, error, ended) don't animate — they carry the lane accent directly on
+      // each dot's fill (dimmed by staticOp, see the memo above), so a quiet lane
+      // keeps its colour while still receding.
       ...(cfg.fill ? { ['--tw-fill' as string]: (cfg.animate && accent) || cfg.fill } : null),
       ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: (cfg.animate && accent) || cfg.fillPeak } : null),
     }}>

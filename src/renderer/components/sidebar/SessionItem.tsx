@@ -47,12 +47,12 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
     idle: 'idle', ended: 'ended', error: 'error',
   }
   const phaseLabel = PHASE_LABEL[status] ?? status
-  // The animated status logo (StatusWave) already signals busy / your-turn / idle, so the
-  // phase WORD is redundant for those — and a bright-green "YOUR TURN" on every waiting row
-  // was loud. Keep a QUIET word only where the logo can't disambiguate: muted for active work
-  // (running/compacting), red for error. Waiting + idle show no word — the logo carries them.
+  // The status logo animates ONLY for busy work now (running/compacting), so the phase WORD
+  // carries the states the motionless logo can't: a QUIET "your turn" for waiting (its orb no
+  // longer pulses), plus muted active-work words and red for error. Idle alone shows no word —
+  // a resting orb needs no label. Keeping the words muted avoids the loud "YOUR TURN" of old.
   const isRunning = status === 'running'
-  const showPhase = status === 'running' || status === 'compacting' || status === 'error'
+  const showPhase = status === 'running' || status === 'compacting' || status === 'waiting' || status === 'error'
   const phaseColor = status === 'error' ? 'var(--color-error, #f85149)' : 'var(--fg-muted)'
 
   useEffect(() => {
@@ -194,7 +194,17 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
                 the tracked-uppercase treatment shared with the phase words. A plain session name
                 reads full-strength when running, a touch dimmer when quiet. */}
             {labelIsRole ? (
-              <span style={{ color: laneTextColor(roleColor), textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600 }}>
+              <span style={{
+                // The lane name reads in its accent ONLY when this session is the
+                // selected/focused row; otherwise it takes the same neutral ink as a
+                // regular session title, so an unselected lane doesn't shout its colour
+                // down the rail. "Which lane" still lives in the orb at rest (StatusWave
+                // now carries a dimmed lane tint). Weight/tracking are unchanged.
+                color: active
+                  ? laneTextColor(roleColor)
+                  : (isRunning ? 'var(--fg)' : 'color-mix(in srgb, var(--fg) 80%, transparent)'),
+                textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600,
+              }}>
                 {label}
               </span>
             ) : (
