@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — heal-interval soak harness (throwaway)</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; }
+      #term { padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <!-- THROWAWAY diagnostic harness (not part of the app, not committed) — mounts a
+         real xterm with TerminalPane.tsx's exact repaint/heal logic copied in, then
+         drives continuous ticking output (spinner + elapsed timer, same trigger
+         garble-triage.md describes) so the 1Hz heal interval's sub-pixel translate3d
+         nudge fires repeatedly against a REAL WebKit compositor. Screenshot-looped by
+         soak.mjs to check for visible flicker/pulse. Deleted after the QA run. -->
+    <div id="term"></div>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>
