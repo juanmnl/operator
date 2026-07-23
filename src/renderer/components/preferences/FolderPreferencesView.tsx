@@ -37,7 +37,13 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
   }, [load])
 
   const handleSaveMd = useCallback(async (filePath: string, content: string) => {
-    await window.operator.folderPrefsSaveMd(filePath, content)
+    // save_md_file now surfaces fs errors; re-load either way so the editor
+    // shows what's actually on disk rather than pretending the save landed.
+    try {
+      await window.operator.folderPrefsSaveMd(filePath, content)
+    } catch (e) {
+      console.error('folderPrefsSaveMd failed:', e)
+    }
     load()
   }, [load])
 

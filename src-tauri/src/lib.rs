@@ -1664,7 +1664,7 @@ fn folder_prefs_save_settings(path: String, settings: serde_json::Value) {
 }
 
 #[tauri::command]
-fn folder_prefs_save_md(path: String, content: String) {
+fn folder_prefs_save_md(path: String, content: String) -> Result<(), String> {
     folderprefs::save_md_file(&path, &content)
 }
 

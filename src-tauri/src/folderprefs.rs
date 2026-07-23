@@ -117,12 +117,12 @@ pub fn save_settings_file(path: &str, updates: Value) {
     }
 }
 
-pub fn save_md_file(path: &str, content: &str) {
+pub fn save_md_file(path: &str, content: &str) -> Result<(), String> {
     let p = Path::new(path);
     if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
-    let _ = std::fs::write(p, content);
+    std::fs::write(p, content).map_err(|e| format!("write {}: {e}", p.display()))
 }
 
 pub fn create_file(path: &str, kind: &str) {

@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
 import { buildTerminalOptions, getMacOptionIsMeta } from '../../lib/terminal-options'
+import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
@@ -182,6 +183,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
 
     termRef.current = term
     fitRef.current = fitAddon
+    // Expose this live instance so app-level code (e.g. the ⌘K buffer-dump
+    // diagnostic) can read its buffer. Unregistered on dispose below.
+    registerTerminal(terminalId, term)
 
     // Key routing: app chords (Cmd+K/N/B/W, Cmd+1..9) are owned by the window
     // shortcut handler in DashboardView. Decline the Cmd (meta) variants here so
@@ -306,18 +310,39 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (!activeRef.current) return
       try { term.refresh(0, term.rows - 1) } catch { /* disposed */ }
     }
-    // term.refresh() rewrites the row DOM, but WKWebView sometimes doesn't
-    // RECOMPOSITE the (stale) layer, so an old glyph lingers on screen even though
-    // the DOM is correct (the residual ✳/👀). Nudging an identity 3D transform on
-    // the xterm element invalidates its compositor layer → forces a real repaint.
-    // Heavier than refresh, so only on settle + the periodic heal, never per-chunk.
+    // term.refresh() rewrites the row DOM, but WKWebView often marks that change
+    // dirty WITHOUT flushing it to the compositor, so a stale glyph lingers on
+    // screen even though the DOM is correct (the residual ✳/👀; sub-row/per-glyph
+    // in current captures — see dev/garble-triage.md, 2026-07-22). The heal is to
+    // force a compositor COMMIT right after the refresh, which flushes the pending
+    // row update. WHICH invalidation trick actually commits, and why the others
+    // were rejected (this was measured by mechanism, not by the visual harness —
+    // headless WebKit renders correctly, so it has no stale rect to prove a heal
+    // against; only the live app can confirm efficacy):
+    //   • translateZ(0) ↔ ''  — NO-OP, the previously shipped version. Both values
+    //     are the IDENTITY matrix, so WebKit collapses the change to nothing and no
+    //     commit happens (project_terminal_ornament_width_drift.md, 2026-07-20).
+    //   • a NON-identity sub-pixel translate ('' → translate3d(0, 0.02px, 0) → '')
+    //     — CHOSEN. The matrix genuinely changes, forcing a style recalc + a
+    //     compositor commit that flushes the dirty rows. 0.02px is far below one
+    //     device pixel so nothing visibly moves, and the element stays fully OPAQUE.
+    //   • opacity nudge (0.99 ↔ 1) — BURNED: shipped v0.8.5, reverted v0.8.6. The
+    //     sub-1 frame let the splash/dashboard layer bleed THROUGH the terminal.
+    //     Never reintroduce opacity OR visibility/content-visibility toggles — same
+    //     blank/transparent-frame bleed.
+    //   • width/padding nudge — REJECTED: it changes layout, tripping xterm's
+    //     ResizeObserver → a full buffer reflow (the one thing we must not do here).
+    // If live testing shows 0.02px is still collapsed by pixel-snapping, bump the
+    // value or switch to a will-change/contain cycle (layer rebuild) — both force a
+    // commit too, but are heavier per call. Heavier than refresh either way, so this
+    // runs only on settle + the periodic heal, never per-chunk.
     const hardRepaint = () => {
       if (!activeRef.current) return
       try {
         term.refresh(0, term.rows - 1)
         const el = term.element as HTMLElement | null
         if (el) {
-          el.style.transform = 'translateZ(0)'
+          el.style.transform = 'translate3d(0, 0.02px, 0)'
           requestAnimationFrame(() => { if (termRef.current === term) el.style.transform = '' })
         }
       } catch { /* disposed */ }
@@ -488,6 +513,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       textarea?.removeEventListener('paste', onPaste, { capture: true } as EventListenerOptions)
       window.removeEventListener('focus', refocusIfActive)
       document.removeEventListener('visibilitychange', onVisibility)
+      unregisterTerminal(terminalId)
       term.dispose()
       termRef.current = null
       fitRef.current = null
