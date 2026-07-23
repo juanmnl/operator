@@ -12,6 +12,8 @@ import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
+import { getTerminal } from '../lib/terminal-registry'
+import { homeDir, join } from '@tauri-apps/api/path'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
@@ -21,7 +23,7 @@ import { CanvasConversation } from '../components/session/CanvasConversation'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
-import { AgentLibraryView } from '../components/agents/AgentLibraryView'
+import { AgentsHubView } from '../components/agents/AgentsHubView'
 import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
@@ -938,7 +940,23 @@ export function DashboardView() {
   // Orchestration: launch a session on a project's role (lane) — spawns in the project
   // root with the role's model/effort/permission and tags the session with roleId. An
   // optional `prompt` is handed to Claude as the first message (delegation).
+  //
+  // In-flight guard: launching takes seconds (worktreeCreate + terminalSpawn) and the
+  // UI's live-lane filtering only updates after the spawn resolves, so a double-click
+  // (RosterPanel Launch, hub PassiveCard) would otherwise spawn two worktrees + two
+  // ptys for one lane. Concurrent callers JOIN the pending launch; a joiner's prompt
+  // is typed into the spawned pty instead of being dropped.
+  const launchInFlightRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
   const handleLaunchRole = useCallback(async (project: Project, role: Role, prompt?: string, launchDevServer = false, opts?: { focus?: boolean }): Promise<TerminalTab | undefined> => {
+    const laneKey = `${project.id}:${role.id}`
+    const pending = launchInFlightRef.current.get(laneKey)
+    if (pending) {
+      const tab = await pending
+      const joined = prompt?.trim()
+      if (tab && joined) void submitQueue.submit(tab.id, joined)
+      return tab
+    }
+    const run = (async (): Promise<TerminalTab | undefined> => {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
     const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
     // The agent picks up its assigned QUEUED tasks as its opening work; they move to running
@@ -969,6 +987,13 @@ export function DashboardView() {
     // Now the terminal (and worktree) exist — stamp the picked-up tasks with their lane.
     if (tabs[0] && queued.length) markTasksRunning(project.id, queued.map((t) => t.id), tabs[0].id, laneOf(tabs[0]))
     return tabs[0]
+    })()
+    launchInFlightRef.current.set(laneKey, run)
+    try {
+      return await run
+    } finally {
+      launchInFlightRef.current.delete(laneKey)
+    }
   }, [handleLaunchSession, markTasksRunning])
   launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
 
@@ -1589,6 +1614,49 @@ export function DashboardView() {
     allSidebarSessions.find((s) => s.id === activeSessionId) ??
     (activeTerminalId ? allSidebarSessions.find((s) => s.terminalId === activeTerminalId) : undefined)
 
+  // Debug diagnostic (⌘K "Dump terminal buffer"): make the recurring composer
+  // garble decidable — buffer corruption vs pixel-only compositing. Walks the LIVE
+  // xterm buffer read-only (the on-screen rows + ~50 lines of scrollback tail) via
+  // translateToString and writes it to ~/.operator/terminal-dumps/. If the dumped
+  // buffer is clean while the screen is garbled → the corruption is pixel-only.
+  const handleDumpBuffer = useCallback(async () => {
+    const tid = activeSession?.terminalId ?? activeTerminalId
+    if (!tid) { pushToast({ text: 'No active terminal to dump', kind: 'error' }); return }
+    const term = getTerminal(tid)
+    if (!term) { pushToast({ text: 'Terminal buffer not available', kind: 'error' }); return }
+
+    const buf = term.buffer.active
+    const rows = term.rows
+    const TAIL = 50
+    const start = Math.max(0, buf.length - (rows + TAIL))
+    const lines: string[] = []
+    for (let i = start; i < buf.length; i++) {
+      lines.push(buf.getLine(i)?.translateToString(true) ?? '')
+    }
+
+    const now = new Date()
+    const sid = activeSession?.id ?? tid
+    const shortId = sid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'session'
+    const ts = now.toISOString().replace(/[:.]/g, '-')
+    const content =
+      [`# terminal buffer dump`,
+        `timestamp: ${now.toISOString()}`,
+        `sessionId: ${sid}`,
+        `terminalId: ${tid}`,
+        `size: ${term.cols}x${rows}  bufferLength: ${buf.length}  dumped: ${start}..${buf.length - 1}`,
+        ``].join('\n') + lines.join('\n') + '\n'
+
+    try {
+      // folderPrefsSaveMd is a generic verbatim text writer that creates parent
+      // dirs — reused here so the diagnostic needs no new bridge/Rust surface.
+      const path = await join(await homeDir(), '.operator', 'terminal-dumps', `${shortId}-${ts}.txt`)
+      await window.operator.folderPrefsSaveMd(path, content)
+      pushToast({ text: 'Terminal buffer dumped', kind: 'success', detail: path })
+    } catch (e) {
+      pushToast({ text: 'Buffer dump failed', kind: 'error', detail: String(e) })
+    }
+  }, [activeSession, activeTerminalId, pushToast])
+
   // Adopt transcript-reported model CHANGES into the tab. The first report just fills the
   // blank for account-default launches (handled by the ?? merge in localSessions); a change
   // from one reported model to another means the model really switched mid-session (e.g. the
@@ -1781,13 +1849,23 @@ export function DashboardView() {
     // Static entries
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
-      { id: 'agents', group: 'Settings', label: 'Agents — configure models per task', run: handleOpenAgents },
+      { id: 'agents', group: 'Settings', label: 'Agents — fleet across all projects', run: handleOpenAgents },
       { id: 'usage', group: 'Settings', label: 'Usage & cost', run: handleOpenUsage },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
       { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
       { id: 'theme', group: 'View', label: currentTheme.isDark ? 'Switch to light mode' : 'Switch to dark mode', run: handleToggleTheme },
     )
+
+    // Debug: dump the active terminal's live buffer to disk (buffer-vs-pixel triage).
+    if (activeSession?.terminalId ?? activeTerminalId) {
+      actions.push({
+        id: 'dump-terminal-buffer', group: 'Settings',
+        label: 'Dump terminal buffer (debug)',
+        detail: 'Writes the live xterm buffer to ~/.operator/terminal-dumps/',
+        run: () => { void handleDumpBuffer() },
+      })
+    }
 
     // One entry per registered theme, so every palette (incl. Mission Control
     // and 1984) is reachable — not just the binary light/dark toggle.
@@ -1803,7 +1881,7 @@ export function DashboardView() {
 
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
-      activeSession, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
+      activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
       selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
@@ -1911,7 +1989,17 @@ export function DashboardView() {
           />
         )}
 
-        {contentMode === 'agents' && <AgentLibraryView />}
+        {contentMode === 'agents' && (
+          <AgentsHubView
+            projects={projects}
+            sessions={allSidebarSessions}
+            accentOf={accentOf}
+            customNames={customNames}
+            onFocusSession={handleSelectSession}
+            onLaunchRole={(project, role) => { void handleLaunchRole(project, role, undefined, false, { focus: true }) }}
+            onOpenProject={handleOpenProject}
+          />
+        )}
 
         {contentMode === 'project' && projectView && (() => {
           const proj = projects.find((p) => p.id === projectView.id)

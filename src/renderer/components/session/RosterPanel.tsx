@@ -167,17 +167,27 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
         />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* Responsive card grid: auto-fill so columns adapt to the panel width (1 when narrow,
+          2–3 at typical/main widths). align-items:stretch keeps every card in a row the same
+          height; the cards pin their controls to the bottom so the actions line up. */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        gap: 10,
+        alignItems: 'stretch',
+      }}>
         {roles.map((role) => (
-          // Wrapper owns the drag/drop; the card keeps its own layout. The drop line
-          // renders on the hovered edge so the landing slot is unambiguous.
+          // Wrapper owns the drag/drop; the card keeps its own layout. The drop line renders
+          // on the hovered edge so the landing slot is unambiguous. In the grid the roster is
+          // still a LINEAR order, so "before/after" is decided by the horizontal midpoint —
+          // left/right within a row, wrapping across rows. (Not a true 2D drop; see report.)
           <div
             key={role.id}
             onDragOver={(e) => {
               if (!dragId || dragId === role.id) return
               e.preventDefault()
               const r = e.currentTarget.getBoundingClientRect()
-              setDropAt({ id: role.id, edge: e.clientY < r.top + r.height / 2 ? 'before' : 'after' })
+              setDropAt({ id: role.id, edge: e.clientX < r.left + r.width / 2 ? 'before' : 'after' })
             }}
             onDragLeave={() => setDropAt((d) => (d?.id === role.id ? null : d))}
             onDrop={(e) => {
@@ -186,10 +196,12 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
               setDragId(null); setDropAt(null)
             }}
             style={{
-              // A 2px line, not a colour-changing border on a rounded element (WKWebView
-              // repaint rule) — and never a persistent left stripe.
-              borderTop: dropAt?.id === role.id && dropAt.edge === 'before' ? '2px solid var(--accent)' : '2px solid transparent',
-              borderBottom: dropAt?.id === role.id && dropAt.edge === 'after' ? '2px solid var(--accent)' : '2px solid transparent',
+              display: 'flex',
+              // A 2px vertical line on the drop edge — on the wrapper (no border-radius), so
+              // no colour-CHANGING border on a rounded element (WKWebView repaint rule); the
+              // border is always 2px so the grid never reflows as it toggles colour.
+              borderLeft: dropAt?.id === role.id && dropAt.edge === 'before' ? '2px solid var(--accent)' : '2px solid transparent',
+              borderRight: dropAt?.id === role.id && dropAt.edge === 'after' ? '2px solid var(--accent)' : '2px solid transparent',
               opacity: dragId === role.id ? 0.45 : 1,
             }}
           >
@@ -212,18 +224,24 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           />
           </div>
         ))}
-      </div>
 
-      <button
-        onClick={addRole}
-        style={{
-          marginTop: 10, width: '100%', padding: '8px 0', cursor: 'pointer',
-          border: '1.5px dashed var(--border)', borderRadius: 'var(--radius-md)', background: 'transparent',
-          color: 'var(--fg-muted)', outline: 'none', fontFamily: 'inherit', fontSize: 11,
-        }}
-      >
-        + Add agent
-      </button>
+        {/* Ghost "add" card, in the grid flow so it fills the next slot rather than a full row. */}
+        <button
+          onClick={addRole}
+          title="Add an agent lane"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            minHeight: 128, padding: 12, cursor: 'pointer',
+            border: '1.5px dashed var(--border)', borderRadius: 'var(--radius-md)', background: 'transparent',
+            color: 'var(--fg-muted)', outline: 'none', fontFamily: 'inherit', fontSize: 11,
+            transition: 'background 120ms ease, color 120ms ease',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
+        >
+          + Add agent
+        </button>
+      </div>
 
       {/* Lane colour picker. The roster is the source of truth for a lane's colour, so
           writing it here recolours every surface that resolves through the role. */}
@@ -289,6 +307,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
     <div
       onClick={onCardClick}
       style={{
+        display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, boxSizing: 'border-box',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius-md)', padding: '11px 13px',
         cursor: selectable ? 'pointer' : 'default',
@@ -311,11 +330,11 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
       onMouseEnter={(e) => { if (!live && !selected) e.currentTarget.style.background = 'var(--overlay-medium)' }}
       onMouseLeave={(e) => { if (!live && !selected) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
     >
-      {/* Identity row: grip + colour dot/tick + name + live pill + remove. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {/* Grip: only this is draggable, so the card's text stays selectable and the
-            tick box stays clickable. Roster order drives the board, the ⌘K launch
-            list, and which lane reads as the project's lead. */}
+      {/* TOP — identity: grip + colour dot + name + remove. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        {/* Grip: only this is draggable, so the card's text stays selectable and the inner
+            controls stay clickable. Roster order drives the board, the ⌘K launch list, and
+            which lane reads as the project's lead. */}
         <span
           draggable
           onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart?.() }}
@@ -334,8 +353,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
           </svg>
         </span>
         {/* The lane's colour — identity only. Selection is carried by the card itself
-            (tint + inset ring), so there's no checkbox competing with it. Fixed 14px slot
-            keeps every card's name on one vertical rule. */}
+            (tint + inset ring), so there's no checkbox competing with it. */}
         <span
           data-accent-orb={role.id}
           title={onPickAccent ? `${role.name} — right-click to recolour` : undefined}
@@ -345,7 +363,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
             const r = e.currentTarget.getBoundingClientRect()
             onPickAccent({ top: r.bottom + 6, left: r.left })
           })}
-          style={{ width: 14, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+          style={{ width: 12, flexShrink: 0, display: 'grid', placeItems: 'center' }}
         >
           <span style={{
             width: selected ? 9 : 7, height: selected ? 9 : 7, borderRadius: '50%',
@@ -367,24 +385,6 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
             style={{ flex: 1, minWidth: 0, textAlign: 'left', fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--fg)', background: 'transparent', border: 'none', outline: 'none', cursor: 'text', padding: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >{role.name}</button>
         )}
-        {coordinator && (
-          <span title="Operator — runs the roster: routes work to the other lanes, does it itself when none fits" style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, opacity: 0.85 }}>
-            operates
-          </span>
-        )}
-        {queued > 0 && (
-          <span title={`${queued} queued task${queued > 1 ? 's' : ''} for this agent`} style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 6px' }}>
-            {queued} queued
-          </span>
-        )}
-        {live && (
-          <span title="This lane has a live session" style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`, borderRadius: 6, padding: '2px 6px' }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />
-            {/* The phase, not a generic "live" — running/compacting/waiting is the
-                actual answer to "who's doing what right now". */}
-            {phase && phase !== 'idle' ? phase : 'live'}
-          </span>
-        )}
         {/* The coordinator is the roster's hub — the lane that routes to every other. Removing
             it would leave the roster with no dispatcher, so it's kept (workers stay removable). */}
         {!coordinator && (
@@ -392,89 +392,124 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
         )}
       </div>
 
-      {/* Mission line — what the live lane is working on. The per-lane token readout that
-          used to sit here is HIDDEN for now: it priced attention it didn't earn on a board
-          that's about who's doing what, not spend. (formatTokens + the usage plumbing are
+      {/* Status row — the live badge (RUNNING/WAITING/…), the queued-count chip, and the
+          coordinator tag. Rendered only when there's something to say, so a plain idle card
+          stays quiet. */}
+      {(live || queued > 0 || coordinator) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 9, flexWrap: 'wrap' }}>
+          {live && (
+            <span title="This lane has a live session" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`, borderRadius: 6, padding: '2px 6px' }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />
+              {/* The phase, not a generic "live" — running/compacting/waiting is the
+                  actual answer to "who's doing what right now". */}
+              {phase && phase !== 'idle' ? phase : 'live'}
+            </span>
+          )}
+          {queued > 0 && (
+            <span title={`${queued} queued task${queued > 1 ? 's' : ''} for this agent`} style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 6px' }}>
+              {queued} queued
+            </span>
+          )}
+          {coordinator && (
+            <span title="Operator — runs the roster: routes work to the other lanes, does it itself when none fits" style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, opacity: 0.85 }}>
+              operates
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* MIDDLE — what the live lane is working on, clamped to two lines. The per-lane token
+          readout that used to sit here is HIDDEN for now: it priced attention it didn't earn
+          on a board about who's doing what, not spend. (formatTokens + the usage plumbing are
           left in place; the Usage & cost view still reports it.) */}
       {live && runningTask && (
-        <div style={{ marginTop: 8, paddingLeft: 22 }}>
-          <span title={runningTask} style={{ display: 'block', fontSize: 11, lineHeight: 1.4, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ marginTop: 9 }}>
+          <span title={runningTask} style={{
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            fontSize: 11, lineHeight: 1.4, color: 'var(--fg-muted)',
+          }}>
             ▸ {runningTask}
           </span>
         </div>
       )}
 
-      {/* Config + action on one row. The MODEL/EFFORT/WORKTREE captions are gone: with the
-          alternatives dimmed, the lit value IS the answer, and four captions per card ×
-          six cards was most of the visual weight on this board. A thin divider separates
-          the two groups; worktree carries its own word so it needs no caption either. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap', paddingLeft: 22 }}>
-        <Segmented options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))} value={role.model} onChange={(id) => onPatch({ model: id })} accent={accent} />
-        <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
-        <Segmented options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))} value={role.effort ?? 'high'} onChange={(id) => onPatch({ effort: id as Role['effort'] })} accent={accent} />
-        <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
-        <button
-          onClick={() => onPatch({ useWorktree: !role.useWorktree })}
-          title="Run this lane in an isolated git worktree — its tasks get their own diff, mergeable back when done"
-          aria-pressed={!!role.useWorktree}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 7px', borderRadius: 5,
-            border: 'none', background: role.useWorktree ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
-            color: role.useWorktree ? accent : 'var(--fg-muted)', opacity: role.useWorktree ? 1 : 0.4,
-            cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
-          }}
-        >
-          <span style={{
-            width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-            border: `1px solid ${role.useWorktree ? 'transparent' : 'var(--fg-muted)'}`,
-            background: role.useWorktree ? accent : 'transparent',
-          }} />
-          worktree
-        </button>
-        {live ? (
-          <button onClick={onView} className="actions-footer-btn" style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }} title={`View the live ${role.name} session`}>View →</button>
-        ) : (
+      {/* BOTTOM — compact controls, pinned to the card's base so actions line up across a row.
+          Captions are omitted: with the alternatives dimmed, the lit value IS the answer. */}
+      <div style={{ marginTop: 'auto', paddingTop: 12 }}>
+        {/* Model + worktree. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Segmented options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))} value={role.model} onChange={(id) => onPatch({ model: id })} accent={accent} />
           <button
-            onClick={onLaunch}
-            className="actions-footer-btn is-primary"
-            style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }}
-            title={queued > 0 ? `Launch ${role.name} and start its ${queued} queued task${queued > 1 ? 's' : ''}` : `Launch a ${role.name} session (${role.model})`}
+            onClick={() => onPatch({ useWorktree: !role.useWorktree })}
+            title="Run this lane in an isolated git worktree — its tasks get their own diff, mergeable back when done"
+            aria-pressed={!!role.useWorktree}
+            style={{
+              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 7px', borderRadius: 5,
+              border: 'none', background: role.useWorktree ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
+              color: role.useWorktree ? accent : 'var(--fg-muted)', opacity: role.useWorktree ? 1 : 0.4,
+              cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
+            }}
           >
-            {queued > 0 ? `Launch ${queued} →` : 'Launch →'}
+            <span style={{
+              width: 9, height: 9, borderRadius: 2, flexShrink: 0,
+              border: `1px solid ${role.useWorktree ? 'transparent' : 'var(--fg-muted)'}`,
+              background: role.useWorktree ? accent : 'transparent',
+            }} />
+            worktree
           </button>
-        )}
-      </div>
+        </div>
+        {/* Effort + primary action. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <Segmented options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))} value={role.effort ?? 'high'} onChange={(id) => onPatch({ effort: id as Role['effort'] })} accent={accent} />
+          {live ? (
+            <button onClick={onView} className="actions-footer-btn" style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }} title={`View the live ${role.name} session`}>View →</button>
+          ) : (
+            <button
+              onClick={onLaunch}
+              className="actions-footer-btn is-primary"
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }}
+              title={queued > 0 ? `Launch ${role.name} and start its ${queued} queued task${queued > 1 ? 's' : ''}` : `Launch a ${role.name} session (${role.model})`}
+            >
+              {queued > 0 ? `Launch ${queued} →` : 'Launch →'}
+            </button>
+          )}
+        </div>
 
-      {/* The lane's standing charter — appended to its system prompt at launch. Collapsed
-          to a one-line preview; click to edit in place (blur saves, Esc cancels). */}
-      <div style={{ marginTop: 8, paddingLeft: 22 }}>
-        {editingPrompt ? (
-          <textarea
-            autoFocus
-            defaultValue={role.prompt ?? ''}
-            onBlur={(e) => { onPatch({ prompt: e.target.value.trim() }); setEditingPrompt(false) }}
-            onKeyDown={(e) => { if (e.key === 'Escape') { (e.target as HTMLTextAreaElement).value = role.prompt ?? ''; (e.target as HTMLTextAreaElement).blur() } }}
-            rows={4}
-            style={{
-              width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'var(--font-body)',
-              fontSize: 11, lineHeight: 1.5, color: 'var(--fg)', background: 'var(--overlay-subtle)',
-              border: '1px solid var(--border)', borderRadius: 8, padding: '7px 9px', outline: 'none',
-            }}
-          />
-        ) : (
-          <button
-            onClick={() => setEditingPrompt(true)}
-            title={promptPreview ? `${promptPreview}\n\nClick to edit this lane's prompt` : 'Add a standing prompt for this lane'}
-            style={{
-              display: 'block', width: '100%', textAlign: 'left', background: 'transparent', border: 'none',
-              padding: 0, cursor: 'text', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10.5,
-              lineHeight: 1.45, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              opacity: 0.72, fontStyle: promptPreview ? 'italic' : 'normal',
-            }}
-          >
-            {promptPreview || <em style={{ opacity: 0.6 }}>no charter — click to add</em>}
-          </button>
-        )}
+        {/* The lane's standing charter — appended to its system prompt at launch. Demoted to a
+            tiny disclosure so it no longer eats a full line per card: the affordance carries
+            the text in its tooltip; clicking expands the editor in place (blur saves, Esc
+            cancels). */}
+        <div style={{ marginTop: 10 }}>
+          {editingPrompt ? (
+            <textarea
+              autoFocus
+              defaultValue={role.prompt ?? ''}
+              onBlur={(e) => { onPatch({ prompt: e.target.value.trim() }); setEditingPrompt(false) }}
+              onKeyDown={(e) => { if (e.key === 'Escape') { (e.target as HTMLTextAreaElement).value = role.prompt ?? ''; (e.target as HTMLTextAreaElement).blur() } }}
+              rows={4}
+              style={{
+                width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'var(--font-body)',
+                fontSize: 11, lineHeight: 1.5, color: 'var(--fg)', background: 'var(--overlay-subtle)',
+                border: '1px solid var(--border)', borderRadius: 8, padding: '7px 9px', outline: 'none',
+              }}
+            />
+          ) : (
+            <button
+              onClick={() => setEditingPrompt(true)}
+              title={promptPreview ? `${promptPreview}\n\nClick to edit this lane's charter` : 'Add a standing charter for this lane'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none',
+                padding: 0, cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9,
+                letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)', opacity: 0.7,
+              }}
+            >
+              <svg width="6" height="8" viewBox="0 0 6 8" fill="none" style={{ display: 'block' }}>
+                <path d="M1 1l3 3-3 3" stroke="var(--fg-muted)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {promptPreview ? 'charter' : '+ charter'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

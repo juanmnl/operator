@@ -56,7 +56,7 @@ function modelTier(model?: string): string {
   return ''
 }
 
-export function AgentLibraryView() {
+export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = {}) {
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [projectPath, setProjectPath] = useState<string | null>(null)
   const [selected, setSelected] = useState<AgentDefinition | null>(null)
@@ -138,15 +138,18 @@ export function AgentLibraryView() {
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
       {/* Header — centered, wider column than the doc pages since this is a
-          list+editor workspace (still balanced instead of pinned left). */}
-      <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Agents</h2>
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7, lineHeight: 1.6 }}>
-          Define subagents and pick which model handles each kind of task. Saved as{' '}
-          <code style={{ background: 'var(--bg-surface)', padding: '0 4px', borderRadius: 3 }}>.claude/agents/*.md</code>{' '}
-          — Claude Code delegates to them by their description.
-        </p>
-      </div>
+          list+editor workspace (still balanced instead of pinned left). Suppressed when
+          embedded in the Agents hub, which supplies its own header + tab. */}
+      {!embedded && (
+        <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+          <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Agents</h2>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7, lineHeight: 1.6 }}>
+            Define subagents and pick which model handles each kind of task. Saved as{' '}
+            <code style={{ background: 'var(--bg-surface)', padding: '0 4px', borderRadius: 3 }}>.claude/agents/*.md</code>{' '}
+            — Claude Code delegates to them by their description.
+          </p>
+        </div>
+      )}
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
         {/* List column */}
