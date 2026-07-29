@@ -71,3 +71,34 @@ describe('liveLaneNames', () => {
     expect(liveLaneNames(tabs, roster, 'p1', 'src')).toEqual([])
   })
 })
+
+describe('routeDispatch against an EMPTY roster (rosters no longer auto-seed)', () => {
+  const tabs: Array<{ id: string; projectId?: string; roleId?: string; ended?: boolean }> = []
+
+  it('creates a lane from its template when the token names a preset', () => {
+    const r = routeDispatch('code', [], tabs, 'p1')
+    expect(r.kind).toBe('create')
+    if (r.kind !== 'create') throw new Error('unreachable')
+    // The tuned template, not a bare shell — model/effort/accent/charter all arrive with it.
+    expect(r.role).toMatchObject({ id: 'code', name: 'Code', model: 'opus', effort: 'high' })
+    expect(r.role.prompt).toBeTruthy()
+  })
+
+  it('matches a preset by NAME and case-insensitively, like a real lane', () => {
+    expect(routeDispatch('Design', [], tabs, 'p1').kind).toBe('create')
+    expect(routeDispatch('QA', [], tabs, 'p1').kind).toBe('create')
+  })
+
+  it('does NOT invent a lane for a typo — that goes to the visible backlog', () => {
+    expect(routeDispatch('cod', [], tabs, 'p1').kind).toBe('unassigned')
+    expect(routeDispatch('frontend', [], tabs, 'p1').kind).toBe('unassigned')
+  })
+
+  it('prefers an EXISTING lane over the template of the same name', () => {
+    const mine = [{ id: 'code', name: 'Code', model: 'haiku', effort: 'low' as const }]
+    const r = routeDispatch('code', mine, tabs, 'p1')
+    expect(r.kind).toBe('queue')
+    if (r.kind !== 'queue') throw new Error('unreachable')
+    expect(r.role.model).toBe('haiku') // the user's tuning wins, not the preset's
+  })
+})

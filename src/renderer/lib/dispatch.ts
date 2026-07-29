@@ -1,3 +1,4 @@
+import { presetFor } from './roster'
 import type { Role } from '../../shared/types'
 
 // Pure dispatch-routing logic, extracted from DashboardView's onOrchestratorDispatch
@@ -19,7 +20,10 @@ export type DispatchRoute<T extends RoutableTab> =
   | { kind: 'send'; role: Role; tab: T }
   /** The role is defined but has no live lane → queue for it. */
   | { kind: 'queue'; role: Role }
-  /** No such role in the roster → unassigned backlog. */
+  /** The roster has no such lane, but the token names one of the six TEMPLATES → add the
+   *  lane from its preset, then run the task on it. The dispatch is the demand. */
+  | { kind: 'create'; role: Role }
+  /** No such role, and no preset by that name → unassigned backlog. */
   | { kind: 'unassigned' }
 
 /** Resolve a dispatch's target role (by id OR case-insensitive name) and decide its route.
@@ -34,7 +38,16 @@ export function routeDispatch<T extends RoutableTab>(
 ): DispatchRoute<T> {
   const token = roleToken.toLowerCase()
   const role = roster.find((r) => r.id === roleToken || r.name.toLowerCase() === token)
-  if (!role) return { kind: 'unassigned' }
+  // No such lane YET. If the token names one of the six templates, the dispatch itself is the
+  // demand — create the lane from its preset and run the task on it. That keeps an unattended
+  // orchestration run working against an empty roster without reintroducing auto-seeding: a
+  // lane only appears because work was explicitly addressed to it. A token that matches no
+  // preset (a typo like `[cod]`) must NOT invent a junk lane — it falls through to unassigned,
+  // which is visible and reassignable.
+  if (!role) {
+    const preset = presetFor(roleToken)
+    return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
+  }
   const tab = tabs.find((t) => t.projectId === projectId && t.roleId === role.id && !t.ended)
   return tab ? { kind: 'send', role, tab } : { kind: 'queue', role }
 }

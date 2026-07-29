@@ -127,7 +127,11 @@ export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
 // Sensible starting roster seeded on project creation — the user's own framing:
 // Fable orchestrates, Sonnet researches, Opus writes code. Fully editable afterwards.
 // (Ids are stable, human-readable, and unique within a fresh roster — safe as React keys.)
-export function defaultRoster(): Role[] {
+/** The six lane TEMPLATES. These are good defaults — tuned model, effort, accent and charter
+ *  per role — and they remain exactly that: templates. Nothing seeds them into a project any
+ *  more (2026-07-28: a new project arrives with an EMPTY roster and grows on demand), so this
+ *  is the menu behind "+ Add agent" and the source a dispatch creates a lane from. */
+export function rolePresets(): Role[] {
   return [
     // Orchestrator: fast coordination. Research: strong reading, cheaper for breadth. The rest
     // pin the most capable model where quality matters most (code / review / design), Sonnet
@@ -139,6 +143,22 @@ export function defaultRoster(): Role[] {
     { id: 'design', name: 'Design', model: 'opus', effort: 'normal', accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
     { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', accent: '#ffd43b', prompt: DEFAULT_ROLE_PROMPTS.qa },
   ]
+}
+
+/** The full preset set as a roster. NOT used for seeding — kept because the lane-accent
+ *  palette and the roster tests both want the canonical six in order. */
+export function defaultRoster(): Role[] {
+  return rolePresets()
+}
+
+/** A preset matching a dispatch token — by id or by name, case-insensitively, the same way
+ *  `routeDispatch` matches real lanes. Returns a fresh copy, so a created lane can be edited
+ *  without mutating the template. `undefined` for anything that isn't one of the six: a typo
+ *  like `[cod]` must NOT invent a junk lane. */
+export function presetFor(token: string): Role | undefined {
+  const t = token.trim().toLowerCase()
+  const hit = rolePresets().find((r) => r.id.toLowerCase() === t || r.name.toLowerCase() === t)
+  return hit ? { ...hit } : undefined
 }
 
 /** One roster line for the coordinator's team list: identity + what the lane is for

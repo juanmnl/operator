@@ -25,7 +25,13 @@ const getArg = (flag, def) => {
 }
 const port = Number(getArg('--port', process.env.OPERATOR_DEV_PORT || '1421'))
 const outPath = resolve(repoRoot, getArg('--out', 'scripts/visual/out/terminal.png'))
-const url = `http://localhost:${port}/scripts/visual/index.html`
+// Which harness page to shoot, and what to frame. The defaults keep the original terminal
+// glyph capture verbatim; `--page chat --sel "#chat"` shoots the canvas-chat harness.
+const pageName = getArg('--page', 'index')
+const selector = getArg('--sel', '#term')
+// Optional query string for the harness page, e.g. `--query "theme=mission-control-light"`.
+const query = getArg('--query', '')
+const url = `http://localhost:${port}/scripts/visual/${pageName}.html${query ? `?${query}` : ''}`
 
 mkdirSync(dirname(outPath), { recursive: true })
 
@@ -68,7 +74,7 @@ try {
   await page.goto(url, { waitUntil: 'load' })
   await page.waitForFunction('window.__visualReady === true', { timeout: 15000 })
 
-  const term = page.locator('#term')
+  const term = page.locator(selector)
   await term.screenshot({ path: outPath })
   await browser.close()
 
