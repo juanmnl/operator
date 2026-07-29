@@ -163,6 +163,11 @@ export interface ProjectTask {
   createdAt: string
   startedAt?: string
   doneAt?: string
+  /** Set when a task was closed by STARTUP RECONCILIATION rather than by its lane finishing:
+   *  it was running on a pty from a previous run, so it can never complete normally (see
+   *  lib/task-lifecycle). Distinct from doneAt because it means "its run ended", NOT
+   *  "verified complete" — the done row says so. */
+  reconciledAt?: string
 }
 
 /** Launch-time config for a single Claude Code session (model/effort/permissions/etc.) —
@@ -201,7 +206,13 @@ export interface Project {
   tasks?: ProjectTask[]
   /** Recent orchestrator dispatches (who asked whom to do what) — capped tail, newest last. */
   dispatches?: DispatchRecord[]
-  // Deferred seams (not populated this phase): moodboard, contextNotes, chatThreadId.
+  /** Free text about what this project IS — the thing the folder name can't tell you.
+   *  Written by the user, edited from the gallery card's ⋯ menu, and shown there as a
+   *  two-line snippet. Absent or empty = no description; the card just omits the row. */
+  contextNotes?: string
+  // The moodboard is BUILT — it just isn't a field here: its images live on disk under the
+  // project's asset dir, reached by id via moodboardAdd/moodboardList, so nothing about it
+  // needs to ride in projects.json. Remaining deferred seam: chatThreadId.
 }
 
 /** An edit to a project: either a fixed patch, or one computed from the project as it is
@@ -257,12 +268,32 @@ export interface SavedSession {
   lastActiveAt: string
 }
 
+/** A tool call as a first-class transcript block. Mirrors `ToolBlock` in src-tauri/core.rs. */
+export interface ToolBlock {
+  name: string
+  /** What it acted on (path, command, pattern) — same summarizer as the activity timeline. */
+  target?: string
+  /** Which agent made the call. Present on 100% of real tool_use blocks (30,699 sampled);
+   *  this is what makes a subagent's work attributable without inventing a mechanism. */
+  caller?: string
+  /** Result text, CAPPED at parse time (2000 chars — see TOOL_RESULT_CAP in transcript.rs;
+   *  the real p99 is 172KB and the max seen is 3.5MB). Empty until the result arrives. */
+  output?: string
+  /** Length of the ORIGINAL result, so the UI can say "the first 2,000 of 71,194". */
+  outputChars?: number
+  truncated?: boolean
+  /** The tool_use id, so a late result finds its call. */
+  id?: string
+}
+
 export interface NarrationEntry {
-  kind: 'text' | 'thinking' | 'user'
+  kind: 'text' | 'thinking' | 'user' | 'tool'
   text: string
   timestamp: string
   /** Cache-file paths for images the user dropped into this turn (load via imageDataUrl). */
   images?: string[]
+  /** Set only on `kind: 'tool'`. Absent on every entry written before this existed. */
+  tool?: ToolBlock
 }
 
 export interface TodoItem {

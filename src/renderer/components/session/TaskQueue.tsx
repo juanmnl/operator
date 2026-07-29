@@ -98,7 +98,7 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
             style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, padding: '3px 8px', borderRadius: 6,
               border: '1px solid var(--border)', background: 'transparent', cursor: role ? 'pointer' : 'default',
-              color: role ? 'var(--accent)' : 'var(--fg-muted)', opacity: role ? 1 : 0.5, outline: 'none',
+              color: role ? 'var(--accent)' : 'var(--fg-muted)',  outline: 'none',
             }}
           >
             Send →
@@ -208,7 +208,7 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
       {/* Queue — flat while all-unassigned, grouped per agent once anything is assigned. */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 10 }}>
         {allTasks.length === 0 && (
-          <p style={{ fontSize: 10.5, color: 'var(--fg-muted)', textAlign: 'center', padding: '4px 0', opacity: 0.7 }}>
+          <p style={{ fontSize: 10.5, color: 'var(--fg-muted)', textAlign: 'center', padding: '4px 0', }}>
             No tasks yet. Add one above and assign it to an agent — or leave it for an agent to pick up.
           </p>
         )}
@@ -245,8 +245,20 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
                 return (
                   <div key={task.id}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
-                      <span style={{ color: 'var(--accent)', fontSize: 11, flexShrink: 0 }}>✓</span>
+                      {/* A reconciled task was closed because its RUN ended, not because it was
+                          seen to finish — so it doesn't get the completion tick. Marking ~200
+                          stranded tasks with a plain ✓ would have claimed work was verified
+                          that nobody verified. Re-queue (↩) is right there if it wasn't done. */}
+                      <span
+                        style={{ color: task.reconciledAt ? 'var(--fg-muted)' : 'var(--accent)', fontSize: 11, flexShrink: 0 }}
+                        title={task.reconciledAt ? 'Closed automatically: the session running it ended before it reported back' : undefined}
+                      >{task.reconciledAt ? '⋯' : '✓'}</span>
                       <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--fg-muted)', textDecoration: 'line-through', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.text}>{task.text}</span>
+                      {task.reconciledAt && (
+                        <span data-task-reconciled style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)', flexShrink: 0 }}>
+                          unconfirmed
+                        </span>
+                      )}
                       {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--fg-muted)', flexShrink: 0 }}>{role.name}</span>}
                       {checkChip(task)}
                       {diffToggle(task)}
