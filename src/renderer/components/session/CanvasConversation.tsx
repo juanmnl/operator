@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { AgentSession, NarrationEntry } from '../../../shared/types'
+import type { AgentSession, NarrationEntry, Role } from '../../../shared/types'
 import { parseBlocks, type Block, type Span } from '../../lib/canvas-md'
+import { MEASURE_FORM } from '../settings/PageShell'
 import { stripDispatchLines } from '../../lib/roster'
+import { sessionLabel } from '../../lib/session-label'
+import { laneTextColor } from '../../lib/lane-color'
+import { fmtDur } from '../../lib/format'
+import { isRenderableTurn } from '../../lib/chat-turns'
+import { coalesceTools, runLabel, runDetail, type ToolRun } from '../../lib/tool-blocks'
+import { chatSignal } from '../../lib/chat-signal'
+import { StatusWave } from '../sidebar/StatusWave'
+import { stripAnsi } from '../../lib/terminal'
 import { ChatComposer } from './ChatComposer'
 
 // Canvas chat SPIKE — renders the conversation PAINTED on one <canvas> instead of the
@@ -19,17 +28,44 @@ import { ChatComposer } from './ChatComposer'
 // ---- theme snapshot (read CSS vars once per relayout) --------------------------------
 interface Theme {
   fg: string; fgMuted: string; accent: string
-  border: string; codeBg: string; fontBody: string; fontMono: string
+  /** The lane's colour as TEXT (ink-blended for light themes) — the agent turn's name. */
+  laneInk: string
+  /** The lane's colour at FULL strength — the turn's orb. Dots aren't held to a text
+   *  contrast ratio, so they carry the lane identity undiluted (see lib/lane-color). */
+  laneDot: string
+  border: string; codeBg: string; userBg: string; fontBody: string; fontMono: string
 }
-function readTheme(el: HTMLElement): Theme {
+// `laneTextColor` returns a `color-mix(… var(--fg) var(--lane-ink-blend))` expression, and
+// canvas `fillStyle` parses neither color-mix nor var(). Resolving it means letting CSS do
+// it: a throwaway probe INSIDE the scroller inherits the theme's --fg/--lane-ink-blend, and
+// its computed `color` comes back as a flat rgb() the canvas can paint.
+function resolveColor(el: HTMLElement, css: string, fallback: string): string {
+  const probe = document.createElement('span')
+  probe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none'
+  probe.style.color = css
+  el.appendChild(probe)
+  const out = getComputedStyle(probe).color
+  probe.remove()
+  return out || fallback
+}
+function readTheme(el: HTMLElement, laneAccent?: string): Theme {
   const s = getComputedStyle(el)
   const v = (n: string, f: string) => s.getPropertyValue(n).trim() || f
+  const fgMuted = v('--fg-muted', '#8a8f98')
+  // No lane (an unassigned session) keeps the original muted treatment — a chat with no
+  // role to name shouldn't invent a colour for itself.
+  const accent = laneAccent?.trim()
   return {
     fg: v('--fg', '#eef1f3'),
-    fgMuted: v('--fg-muted', '#8a8f98'),
+    fgMuted,
     accent: v('--accent', '#7ee787'),
+    laneInk: accent ? resolveColor(el, laneTextColor(accent), fgMuted) : fgMuted,
+    laneDot: accent || fgMuted,
     border: v('--border', '#2a2a35'),
     codeBg: 'rgba(127,127,127,0.13)',
+    // §3's user-turn tint. Neutral grey rather than an accent wash: it marks WHOSE turn it
+    // is, it is not a state, and a coloured fill would break the no-accent-fill rule.
+    userBg: 'rgba(127,127,127,0.07)',
     fontBody: v('--font-body', 'Archivo, system-ui, sans-serif'),
     fontMono: v('--font-mono', 'JetBrains Mono, ui-monospace, monospace'),
   }
@@ -37,12 +73,21 @@ function readTheme(el: HTMLElement): Theme {
 
 // ---- layout model --------------------------------------------------------------------
 const MARGIN = 18, TURN_GAP = 22, BLOCK_GAP = 7, HEADER_H = 22
+/** Code/table measure (§1): wider than prose because they're scanned, not read. */
+const MEASURE_WIDE = 960
+/** A tool line is punctuation: one line, tight, muted. */
+const TOOL_LH = 19
+const TOOL_MARK = '⟩'
 const PROSE = 13.5, PROSE_LH = 21, CODE = 12, CODE_LH = 18
 
 type Seg = { text: string; x: number; font: string; color: string; code?: boolean; strike?: boolean; href?: string; w?: number }
 type Op =
   | { kind: 'header'; x: number; y: number; role: 'user' | 'agent'; label: string; time: string; top: number; bottom: number }
   | { kind: 'codebg'; x: number; y: number; w: number; h: number; top: number; bottom: number }
+  // §3: the quiet container behind a USER turn. Not a bubble — no right-alignment, no accent
+  // fill, no left-edge stripe; a tint is the marker, and it is what lets you find your own
+  // instructions when skimming back.
+  | { kind: 'userbg'; x: number; y: number; w: number; h: number; top: number; bottom: number }
   | { kind: 'rule'; x: number; y: number; w: number; top: number; bottom: number }
   | { kind: 'vbar'; x: number; y: number; h: number; top: number; bottom: number }
   | { kind: 'segs'; y: number; h: number; segs: Seg[]; top: number; bottom: number }
@@ -235,7 +280,9 @@ function emitTable(ctx: CanvasRenderingContext2D, ops: Op[], blk: Extract<Block,
 
 // Emit an agent answer's blocks as positioned ops at column [x, x+width], returning the
 // next Y. Prose is full-width (no bubble) — role is conveyed by the header marker above.
-function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x: number, startY: number, width: number, t: Theme): number {
+/** `wideX`/`wideWidth` are the CODE/TABLE measure — wider than prose on purpose (§1). They
+ *  default to the prose column so callers that don't care (the thinking preview) are unchanged. */
+function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x: number, startY: number, width: number, t: Theme, wideX: number = x, wideWidth: number = width): number {
   let y = startY
   const pushLines = (lines: Seg[][], lh: number, dx: number, prefix?: Seg) => {
     lines.forEach((segs, li) => {
@@ -249,16 +296,17 @@ function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x
     if (blk.type === 'hr') {
       ops.push({ kind: 'rule', x, y: y + 5, w: width, top: y + 5, bottom: y + 6 }); y += 11
     } else if (blk.type === 'code') {
-      const codeLines = flowCode(ctx, blk.text, width - 20, CODE, t)
+      // Code runs at the WIDE measure (§1) — scanned, not read line by line.
+      const codeLines = flowCode(ctx, blk.text, wideWidth - 20, CODE, t)
       const labelH = blk.lang ? 15 : 0
       const boxH = codeLines.length * CODE_LH + 14 + labelH
-      ops.push({ kind: 'codebg', x, y, w: width, h: boxH, top: y, bottom: y + boxH })
+      ops.push({ kind: 'codebg', x: wideX, y, w: wideWidth, h: boxH, top: y, bottom: y + boxH })
       if (blk.lang) {
-        ops.push({ kind: 'segs', y: y + 5, h: 14, segs: [{ text: blk.lang.toUpperCase(), x: x + 10, font: `600 9px ${t.fontMono}`, color: t.fgMuted }], top: y + 5, bottom: y + 19 })
+        ops.push({ kind: 'segs', y: y + 5, h: 14, segs: [{ text: blk.lang.toUpperCase(), x: wideX + 10, font: `600 9px ${t.fontMono}`, color: t.fgMuted }], top: y + 5, bottom: y + 19 })
       }
       let cy = y + 7 + labelH
       for (const cl of codeLines) {
-        ops.push({ kind: 'segs', y: cy, h: CODE_LH, segs: [{ text: cl, x: x + 10, font: `${CODE}px ${t.fontMono}`, color: t.fg }], top: cy, bottom: cy + CODE_LH }); cy += CODE_LH
+        ops.push({ kind: 'segs', y: cy, h: CODE_LH, segs: [{ text: cl, x: wideX + 10, font: `${CODE}px ${t.fontMono}`, color: t.fg }], top: cy, bottom: cy + CODE_LH }); cy += CODE_LH
       }
       y += boxH
     } else if (blk.type === 'heading') {
@@ -281,7 +329,7 @@ function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x
       ops.push({ kind: 'vbar', x, y, h: lines.length * PROSE_LH, top: y, bottom: y + lines.length * PROSE_LH })
       pushLines(lines, PROSE_LH, 14)
     } else if (blk.type === 'table') {
-      y = emitTable(ctx, ops, blk, x, y, width, t)
+      y = emitTable(ctx, ops, blk, wideX, y, wideWidth, t)
     } else {
       const { lines } = flowSpans(ctx, blk.spans, width, PROSE, t.fg, t)
       pushLines(lines, PROSE_LH, 0)
@@ -290,29 +338,103 @@ function emitBlocks(ctx: CanvasRenderingContext2D, ops: Op[], blocks: Block[], x
   return y
 }
 
-function layout(ctx: CanvasRenderingContext2D, turns: NarrationEntry[], cssW: number, t: Theme): Layout {
+/** One line of a thought, as a preview. Kept short — the point of the collapsed state is
+ *  that it costs a line, not a screen. */
+function thoughtPreview(text: string, max = 96): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+function layout(ctx: CanvasRenderingContext2D, turns: (NarrationEntry | ToolRun)[], cssW: number, t: Theme, expanded: Set<string>, agentLabel: string): Layout {
   const ops: Op[] = []
   const bounds: TurnBound[] = []
-  const contentL = MARGIN, contentW = Math.max(120, cssW - MARGIN * 2)
+  // §1 — CAP THE MEASURE. At a 1680px window the column ran 1400px ≈ 180 characters per
+  // line, which is why the panel read as a log rather than as writing. 720 is MEASURE_FORM,
+  // the app's existing prose measure (settings pages) — reused rather than inventing a
+  // chat-specific number. Centred in the PANEL, which already sits beside the sidebar.
+  //
+  // Code and tables are SCANNED, not read line by line, so they get a wider cap; wrapping a
+  // code sample to a paragraph's measure helps nobody.
+  const avail = Math.max(120, cssW - MARGIN * 2)
+  const contentW = Math.min(MEASURE_FORM, avail)
+  const contentL = Math.round((cssW - contentW) / 2)
+  const wideW = Math.min(MEASURE_WIDE, avail)
+  const wideL = Math.round((cssW - wideW) / 2)
   let y = 16
+  // Who spoke last, so a run of turns from one side reads as one block (§3).
+  let prevRole: 'user' | 'agent' | null = null
 
   for (const m of turns) {
     const role: 'user' | 'agent' = m.kind === 'user' ? 'user' : 'agent'
     const turnTop = y
     const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    ops.push({ kind: 'header', x: contentL, y, role, label: role === 'user' ? 'You' : 'Agent', time, top: y, bottom: y + HEADER_H })
-    y += HEADER_H
 
-    if (role === 'user') {
-      for (const rawline of m.text.split('\n')) {
+    // TOOL RUN — the action stream, rendered as PUNCTUATION between prose (critique §A):
+    // one muted line per run of same-tool calls, no card, no header, no box. A wall of cards
+    // is exactly what this must not become, so a run of seven reads costs one line.
+    if (m.kind === 'toolrun') {
+      const label = runLabel(m)
+      const detail = runDetail(m)
+      const seg: Seg[] = [{ text: `${TOOL_MARK} ${label}`, font: `11px ${t.fontBody}`, color: t.fgMuted, x: 0 }]
+      if (detail) seg.push({ text: `  ${detail}`, font: `10.5px ${t.fontMono}`, color: t.fgMuted, x: 0 })
+      // Lay the segments end to end (flowSpans is for wrapped prose; this line never wraps).
+      let sx = 0
+      for (const sgm of seg) { ctx.font = sgm.font!; sgm.x = contentL + sx; sx += ctx.measureText(sgm.text).width }
+      ops.push({ kind: 'segs', y, h: TOOL_LH, segs: seg, top: y, bottom: y + TOOL_LH })
+      y += TOOL_LH
+      bounds.push({ top: turnTop, bottom: y, text: label, key: `toolrun:${m.timestamp}:${m.name}`, kind: 'toolrun' })
+      y += Math.round(TURN_GAP / 2) // tighter than a turn — it is punctuation, not a turn
+      continue
+    }
+
+    // THINKING — the third state (critique §3): neither thrown away nor always inlined. One
+    // muted line you can click open, so the reasoning is recoverable without it competing
+    // with the answer for the reader's attention.
+    if (m.kind === 'thinking') {
+      const open = expanded.has(blockKey(m))
+      ops.push({ kind: 'header', x: contentL, y, role: 'agent', label: open ? 'Thought ▾' : 'Thought ▸', time, top: y, bottom: y + HEADER_H })
+      y += HEADER_H
+      const body = open ? m.text : thoughtPreview(m.text)
+      for (const rawline of body.split('\n')) {
         if (rawline.trim() === '') { y += Math.round(PROSE_LH * 0.5); continue }
-        const { lines } = flowSpans(ctx, [{ text: rawline }], contentW, PROSE, t.fg, t)
+        const { lines } = flowSpans(ctx, [{ text: rawline }], contentW, PROSE, t.fgMuted, t)
         for (const segs of lines) {
-          ops.push({ kind: 'segs', y, h: PROSE_LH, segs: segs.map((s) => ({ ...s, x: contentL + s.x })), top: y, bottom: y + PROSE_LH }); y += PROSE_LH
+          ops.push({ kind: 'segs', y, h: PROSE_LH, segs: segs.map((sg) => ({ ...sg, x: contentL + sg.x })), top: y, bottom: y + PROSE_LH }); y += PROSE_LH
         }
       }
+      bounds.push({ top: turnTop, bottom: y, text: m.text, key: blockKey(m), kind: m.kind })
+      y += TURN_GAP
+      prevRole = null // a thought interrupts the run; the next answer re-announces its lane
+      continue
+    }
+
+    // §3: consecutive turns from the same speaker don't repeat the header, and a user turn
+    // has none at all (its tint is the identity; the timestamp lives on hover).
+    if (role === 'agent' && prevRole !== 'agent') {
+      ops.push({ kind: 'header', x: contentL, y, role, label: agentLabel, time, top: y, bottom: y + HEADER_H })
+      y += HEADER_H
+    }
+    prevRole = role
+
+    if (role === 'user') {
+      // The tint says "you", so the YOU label is redundant — dropping it is most of the
+      // density win (a one-word turn was costing what a decision costs). The container is
+      // measured first, then back-filled once its height is known.
+      const bgIndex = ops.length
+      const padX = 11, padY = 8
+      y += padY
+      const innerW = contentW - padX * 2
+      for (const rawline of m.text.split('\n')) {
+        if (rawline.trim() === '') { y += Math.round(PROSE_LH * 0.5); continue }
+        const { lines } = flowSpans(ctx, [{ text: rawline }], innerW, PROSE, t.fg, t)
+        for (const segs of lines) {
+          ops.push({ kind: 'segs', y, h: PROSE_LH, segs: segs.map((s) => ({ ...s, x: contentL + padX + s.x })), top: y, bottom: y + PROSE_LH }); y += PROSE_LH
+        }
+      }
+      y += padY
+      ops.splice(bgIndex, 0, { kind: 'userbg', x: contentL, y: turnTop, w: contentW, h: y - turnTop, top: turnTop, bottom: y })
     } else {
-      y = emitBlocks(ctx, ops, cachedBlocks(m.text), contentL, y, contentW, t)
+      y = emitBlocks(ctx, ops, cachedBlocks(m.text), contentL, y, contentW, t, wideL, wideW)
     }
 
     bounds.push({ top: turnTop, bottom: y, text: m.text, key: blockKey(m), kind: m.kind })
@@ -333,11 +455,38 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath()
 }
 
-export function CanvasConversation({ session, onModelChange, onEffortChange }: {
+// A canvas header is drawn, not laid out, so a long first-prompt summary would run under
+// the timestamp instead of ellipsing. The sidebar can afford the full ladder; here it gets
+// clipped to a name-sized string.
+const NAME_MAX = 32
+function shortLabel(s: string): string {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > NAME_MAX ? `${flat.slice(0, NAME_MAX - 1)}…` : flat
+}
+
+export function CanvasConversation({ session, role, customName, accent, onModelChange, onEffortChange }: {
   session?: AgentSession
+  /** The lane this session runs on — names the agent's turns. */
+  role?: Role
+  /** A user rename, which outranks the lane name (same ladder as the sidebar). */
+  customName?: string
+  /** The colour the session actually draws with (lane's, else its own override) — pass
+   *  the dashboard's `accentOf` so chat agrees with the sidebar on a lane-less session. */
+  accent?: string
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
 }) {
+  // WHO is talking, by the one shared ladder (lib/session-label): a rename, then the lane,
+  // then its own first prompt, then the model. This surface used to hardcode 'Agent', which
+  // is exactly the three-surfaces-three-rules drift that ladder exists to prevent.
+  const agentLabel = shortLabel(
+    session ? sessionLabel({ session, role, customName, fallback: 'Agent' }) : 'Agent',
+  )
+  const laneAccent = accent ?? role?.accent
+  // Read through refs so `relayout` (declared below, closing over these) keeps its lean dep
+  // list; the effect further down syncs them and repaints when the lane changes under us.
+  const labelRef = useRef(agentLabel)
+  const laneRef = useRef(laneAccent)
   // Same durable-history + live-tail merge as ConversationPanel (kept local so the spike
   // doesn't touch the shipping panel). history = full ordered record from the SQLite store;
   // session.messages = freshest tail that may lag ~1s. Dedupe by (timestamp|len|head).
@@ -359,18 +508,36 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
     const byKey = new Map<string, NarrationEntry>()
     const order: string[] = []
     for (const m of [...history, ...(session?.messages ?? [])]) {
-      if (m.kind !== 'user' && m.kind !== 'text') continue
+      // One predicate for what the reading surface may show (lib/chat-turns): real prompts
+      // and answers, minus Claude Code's plumbing turns, minus SIGNATURE-ONLY thinking blocks
+      // — which is all of them in practice, so the collapsible Thought block could never
+      // open. The parse path stays, so it lights up by itself if real thinking text ever
+      // arrives; what it must not do is render an empty disclosure.
+      if (!isRenderableTurn(m)) continue
       const k = blockKey(m) // key on the RAW text — history and tail must dedupe identically
       if (byKey.has(k)) continue
       // Orchestrator dispatch directives are protocol, not prose — the dispatch log shows
-      // them; strip from the reading surface (drop the turn if that's all it was).
-      const text = m.kind === 'text' ? stripDispatchLines(m.text) : m.text
+      // them; strip from the reading surface (drop the turn if that's all it was). ANSI comes
+      // off everything: terminal output quoted in an answer arrives with raw SGR codes, which
+      // paint as replacement glyphs plus a literal "[1m" on a canvas that has no notion of
+      // escape sequences.
+      const text = stripAnsi(m.kind === 'text' ? stripDispatchLines(m.text) : m.text)
       if (!text.trim()) { byKey.set(k, m); continue } // consumed, but still deduped
       byKey.set(k, text === m.text ? m : { ...m, text })
       order.push(k)
     }
-    return order.map((k) => byKey.get(k)!)
+    // Fold consecutive same-tool calls into runs LAST, so dedupe and filtering still see
+    // individual entries (lib/tool-blocks).
+    return coalesceTools(order.map((k) => byKey.get(k)!))
   }, [history, session?.messages])
+
+  // Dev-only test seam: the transcript is PAINTED, so a harness has no DOM to query for
+  // "what is chat actually showing". Publishing the laid-out turns makes the reading surface
+  // assertable (injected-turn filtering, ANSI stripping, dispatch-line stripping). The guard
+  // compiles the whole thing out of production builds.
+  useEffect(() => {
+    if (import.meta.env.DEV) (window as unknown as { __canvasTurns?: unknown[] }).__canvasTurns = turns
+  }, [turns])
 
   // Per-answer reading state (starred / dismissed), search + saved-only filter — ported
   // from the DOM ConversationPanel so the canvas panel has the same affordances.
@@ -381,6 +548,9 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
   const q = search.trim().toLowerCase()
 
   const visible = useMemo(() => turns.filter((m) => {
+    // A tool RUN is punctuation, not an answer: it can't be starred or dismissed, and in
+    // saved-only mode it drops with everything else. Search still matches its label.
+    if (m.kind === 'toolrun') return !savedOnly && (!q || runLabel(m).toLowerCase().includes(q))
     const k = blockKey(m)
     if (m.kind === 'text' && dismissed.has(k)) return false           // dismissed answers hide
     if (savedOnly && !(m.kind === 'text' && saved.has(k))) return false // saved-only ⇒ user turns drop too
@@ -397,12 +567,40 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
   const [spacerH, setSpacerH] = useState(0)
   const stickRef = useRef(true)
   const [flash, setFlash] = useState<string | null>(null)
+  // Liveness (dev/briefs/chat-signals-and-interrupt.md). `signal` is a pure read of fields
+  // already on the wire — the same ones driving the sidebar orb — so chat finally says what
+  // the agent is doing instead of going silent for minutes at a time.
+  const signal = chatSignal(session)
+  // Elapsed is measured from the last PHASE CHANGE, not from session start: "12s" means "12s
+  // in this state", which is the number a waiting human is actually asking for.
+  const phaseKey = `${session?.status ?? ''}:${session?.phase ?? ''}:${session?.lastToolName ?? ''}`
+  const [phaseSince, setPhaseSince] = useState(() => Date.now())
+  useEffect(() => { setPhaseSince(Date.now()) }, [phaseKey])
+  // Below a second there is nothing worth reporting — "3ms" is noise where the brief's
+  // example is "12s". The clock appears once the wait is real.
+  const [elapsedMs, setElapsedMs] = useState(0)
+  useEffect(() => {
+    if (!signal?.animate) { setElapsedMs(0); return } // only a BUSY state has a clock worth watching
+    setElapsedMs(Date.now() - phaseSince)
+    const iv = window.setInterval(() => setElapsedMs(Date.now() - phaseSince), 1000)
+    return () => clearInterval(iv)
+  }, [signal?.animate, phaseSince])
+  // Scrolled away from the live edge → the jump-to-latest control appears, and doubles as the
+  // running indicator (one control, two jobs).
+  const [atEdge, setAtEdge] = useState(true)
+  // Which `thinking` turns are open. A ref alongside the state because layout() runs from a
+  // callback that must not re-subscribe on every toggle.
+  const [expandedThoughts, setExpandedThoughts] = useState<Set<string>>(() => new Set())
+  const expandedRef = useRef(expandedThoughts)
+  expandedRef.current = expandedThoughts
+  const flashMsgRef = useRef<((m: string) => void) | null>(null)
   // Hover action toolbar: which turn the pointer is over (key + kind + viewport y). Updated
   // only when the hovered turn CHANGES (hoverKeyRef guard) so mousemove stays cheap.
   const [hover, setHover] = useState<{ key: string; kind: string; y: number } | null>(null)
   const hoverKeyRef = useRef<string | null>(null)
 
   const flashMsg = useCallback((m: string) => { setFlash(m); setTimeout(() => setFlash(null), 1100) }, [])
+  flashMsgRef.current = flashMsg
 
   const paint = useCallback(() => {
     const canvas = canvasRef.current, scroller = scrollRef.current
@@ -425,16 +623,22 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
       if (op.bottom < vTop || op.top > vBot) continue
       const y = op.top - scrollTop
       if (op.kind === 'header') {
-        const c = op.role === 'user' ? t.accent : t.fgMuted
-        ctx.beginPath(); ctx.arc(op.x + 3, y + 7, 3, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill()
+        // The agent side wears its LANE's colour — orb at full strength, name ink-blended
+        // so it stays legible on light themes. The user side keeps the app accent.
+        const isUser = op.role === 'user'
+        ctx.beginPath(); ctx.arc(op.x + 3, y + 7, 3, 0, Math.PI * 2)
+        ctx.fillStyle = isUser ? t.accent : t.laneDot; ctx.fill()
         const hadLS = 'letterSpacing' in ctx
         if (hadLS) (ctx as unknown as { letterSpacing: string }).letterSpacing = '0.1em'
-        ctx.font = `600 10px ${t.fontMono}`; ctx.fillStyle = c
+        ctx.font = `600 10px ${t.fontMono}`; ctx.fillStyle = isUser ? t.accent : t.laneInk
         ctx.fillText(op.label.toUpperCase(), op.x + 12, y + 2)
         const lw = ctx.measureText(op.label.toUpperCase()).width
         if (hadLS) (ctx as unknown as { letterSpacing: string }).letterSpacing = '0px'
         ctx.font = `10px ${t.fontBody}`; ctx.fillStyle = t.fgMuted
         ctx.globalAlpha = 0.7; ctx.fillText(op.time, op.x + 12 + lw + 10, y + 2); ctx.globalAlpha = 1
+      } else if (op.kind === 'userbg') {
+        roundRect(ctx, op.x, y, op.w, op.h, 10)
+        ctx.fillStyle = t.userBg; ctx.fill()
       } else if (op.kind === 'codebg') {
         roundRect(ctx, op.x, y, op.w, op.h, 7); ctx.fillStyle = t.codeBg; ctx.fill()
       } else if (op.kind === 'rule') {
@@ -474,15 +678,27 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
     if (!scroller || !canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    themeRef.current = readTheme(scroller)
+    themeRef.current = readTheme(scroller, laneRef.current)
     const cssW = scroller.clientWidth
     if (cssW < 40) return
     ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0)
-    const lay = layout(ctx, visibleRef.current, cssW, themeRef.current)
+    const lay = layout(ctx, visibleRef.current, cssW, themeRef.current, expandedRef.current, labelRef.current)
     layoutRef.current = lay
+    // Same dev-only seam as __canvasTurns: WHERE each turn was laid out, so a harness can
+    // click a specific one (a canvas offers nothing to query or target).
+    if (import.meta.env.DEV) (window as unknown as { __canvasBounds?: unknown }).__canvasBounds = lay.bounds
     setSpacerH(lay.height)
     paint()
   }, [paint])
+
+  // Opening or closing a thought changes the whole document's height below it.
+  useEffect(() => { relayout() }, [expandedThoughts, relayout])
+
+  useEffect(() => {
+    labelRef.current = agentLabel
+    laneRef.current = laneAccent
+    relayout()
+  }, [agentLabel, laneAccent, relayout])
 
   // Mount: own the ResizeObserver; re-layout on container resize.
   useEffect(() => {
@@ -508,7 +724,10 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
 
   const onScroll = () => {
     const el = scrollRef.current
-    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    if (el) {
+      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      setAtEdge(stickRef.current)
+    }
     clearHover() // a hover toolbar's y goes stale after scroll — re-hover to show it again
     paint()
   }
@@ -584,8 +803,20 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
           onClick={(e) => {
             const el = scrollRef.current; if (!el) return
             const rect = el.getBoundingClientRect()
-            const href = linkAtXY(e.clientX - rect.left, e.clientY - rect.top + el.scrollTop)
-            if (href) window.operator.openExternal?.(href)
+            const py = e.clientY - rect.top + el.scrollTop
+            const href = linkAtXY(e.clientX - rect.left, py)
+            if (href) { window.operator.openExternal?.(href); return }
+            // A click anywhere on a collapsed thought opens it (and closes it again) — the
+            // whole row is the affordance, since a 9px chevron on a canvas is not a target.
+            const b = layoutRef.current.bounds.find((tb) => py >= tb.top && py <= tb.bottom)
+            if (b?.kind === 'thinking') {
+              setExpandedThoughts((prev) => {
+                const next = new Set(prev)
+                if (next.has(b.key)) next.delete(b.key)
+                else next.add(b.key)
+                return next
+              })
+            }
           }}
           onMouseMove={onMove}
           onDoubleClick={(e) => {
@@ -602,7 +833,7 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
         <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, display: 'block', pointerEvents: 'none' }} />
 
         {visible.length === 0 && (
-          <div style={{ position: 'absolute', top: 14, left: 18, fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg-muted)', opacity: 0.7 }}>
+          <div style={{ position: 'absolute', top: 14, left: 18, fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg-muted)', }}>
             {q ? `No matches for “${search.trim()}”.` : savedOnly ? 'No saved answers yet — star one to keep it here.' : 'The agent’s answers will appear here as it responds.'}
           </div>
         )}
@@ -629,6 +860,41 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
           </div>
         )}
 
+        {/* Jump-to-latest — and the running indicator, which is the same control: what you
+            are returning TO is the reason to return. Only shown once you've scrolled off the
+            live edge; while busy it carries the activity + its clock. */}
+        {!atEdge && (
+          <button
+            data-jump-latest
+            onClick={() => {
+              const el = scrollRef.current
+              if (!el) return
+              stickRef.current = true
+              setAtEdge(true)
+              el.scrollTop = el.scrollHeight
+              paint()
+            }}
+            title="Jump to the latest message"
+            style={{
+              position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)',
+              display: 'inline-flex', alignItems: 'center', gap: 7, maxWidth: '80%',
+              padding: '5px 11px', borderRadius: 999, cursor: 'pointer', outline: 'none',
+              border: '1px solid var(--border)', background: 'var(--overlay-medium)',
+              backdropFilter: 'blur(3px)', fontFamily: 'var(--font-body)', fontSize: 11,
+              color: 'var(--fg)', boxShadow: '0 4px 14px rgba(0,0,0,0.3)',
+            }}
+          >
+            {signal && <StatusWave status={signal.kind === 'ended' ? 'ended' : signal.kind} seed={session?.id ?? 'chat'} size={12} accent={laneAccent} />}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {signal ? signal.label : 'Latest'}
+            </span>
+            {signal?.animate && elapsedMs >= 1000 && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>{fmtDur(elapsedMs)}</span>
+            )}
+            <span style={{ color: 'var(--fg-muted)' }}>↓</span>
+          </button>
+        )}
+
         {flash && (
           <div style={{
             position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)',
@@ -640,7 +906,40 @@ export function CanvasConversation({ session, onModelChange, onEffortChange }: {
           </div>
         )}
       </div>
-      <ChatComposer session={session} onSend={() => { stickRef.current = true }} onModelChange={onModelChange} onEffortChange={onEffortChange} />
+      {/* Status line — at the foot of the reading surface, where the eye already is while
+          waiting. Absent entirely when a live session is idle: no row, no space, because
+          "nothing is happening" is the one state that needs no words. Motion comes from the
+          app's ONE motion idiom (StatusWave), so running/compacting shimmer and waiting rests
+          static — never a second animation vocabulary. */}
+      {signal && (
+        <div
+          data-chat-status={signal.kind}
+          style={{
+            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
+            // Same measure and centre line as the transcript column above it.
+            width: '100%', maxWidth: MEASURE_FORM, margin: '0 auto', boxSizing: 'border-box',
+            padding: '5px 4px 0', fontFamily: 'var(--font-body)', fontSize: 11,
+            color: 'var(--fg-muted)',
+          }}
+        >
+          <StatusWave status={signal.kind === 'ended' ? 'ended' : signal.kind} seed={session?.id ?? 'chat'} size={13} accent={laneAccent} />
+          {/* --fg, not --fg-muted: this IS the line's content ("Editing", "Your turn"), and
+              muted 11px measured 4.16:1 on Mr Pink light / 4.30:1 on 1984 light — under the
+              body floor. The muted ink belongs to the clock beside it. */}
+          <span data-chat-status-label style={{ color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {signal.label}
+          </span>
+          {signal.animate && elapsedMs >= 1000 && (
+            <span data-chat-status-elapsed style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>
+              {fmtDur(elapsedMs)}
+            </span>
+          )}
+          {/* §2: the status line is now purely informational — what it's doing and for how
+              long. Its STOP moved into the composer's orb, because two stop controls on
+              screen at once is one too many. */}
+        </div>
+      )}
+      <ChatComposer session={session} laneAccent={laneAccent} onSend={() => { stickRef.current = true }} onModelChange={onModelChange} onEffortChange={onEffortChange} />
     </div>
   )
 }

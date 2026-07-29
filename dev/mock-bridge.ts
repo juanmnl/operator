@@ -52,6 +52,9 @@ export const MOCK_PROJECTS = [
     createdAt: now,
     lastActiveAt: now,
     checkCommand: 'npm test',
+    // Deliberately longer than two lines, so the gallery card's clamp is exercised rather
+    // than assumed — an unclamped note would set the height of every card in its grid row.
+    contextNotes: 'Mission control for working agents — the Tauri desktop app that hosts Claude Code, shows every tool call live, and lets a roster of lanes work in parallel git worktrees. Ship signed releases from CI; never regenerate the updater key.',
     roster: [
       { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: 'You are Operator — you operate this project. Route each task to the best-suited lane.' },
       { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: 'Investigate and report — never change code.' },
@@ -62,6 +65,14 @@ export const MOCK_PROJECTS = [
       { id: 'task-1', text: 'Fix the login button alignment on mobile', roleId: 'design', status: 'queued', createdAt: now },
       { id: 'task-2', text: 'Why does the settings list render slowly?', roleId: 'research', status: 'queued', createdAt: now },
       { id: 'task-3', text: 'Extract the dispatch router', roleId: 'code', status: 'running', terminalId: 't1', cwd: PROJECT_PATH, createdAt: now, startedAt: now },
+      // STRANDED by a previous run: `t-dead` is a pty id from a backend run that is over, so
+      // the completion matcher could never match it again. Startup reconciliation must close
+      // it out (see lib/task-lifecycle) — without this fixture the harness can't see the bug.
+      { id: 'task-4', text: 'Ship the release notes', roleId: 'code', status: 'running', terminalId: 't-dead', cwd: PROJECT_PATH, createdAt: earlier, startedAt: earlier },
+      { id: 'task-5', text: 'Audit the colour tokens', roleId: 'design', status: 'running', terminalId: 't-dead', cwd: PROJECT_PATH, createdAt: earlier, startedAt: earlier },
+      // Genuinely queued but UNASSIGNED — nothing routes these automatically; they must at
+      // least be visible and assignable in the queue (brief defect 3).
+      { id: 'task-6', text: 'Decide the pricing page copy', status: 'queued', createdAt: earlier },
     ],
     dispatches: [],
   },
@@ -84,6 +95,9 @@ export const MOCK_PROJECTS = [
     name: 'el-encanto',
     createdAt: earlier,
     lastActiveAt: now,
+    // A short one — the common case, and the check that a one-line note doesn't leave the
+    // card's footer floating away from its neighbours'.
+    contextNotes: 'Booking site for the restaurant. Astro + Sanity.',
     roster: [{ id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787' }],
     tasks: [],
     dispatches: [],
@@ -107,7 +121,11 @@ const session = (o: Partial<AgentSession> & { id: string; terminalId: string }):
 
 export const MOCK_SESSIONS: AgentSession[] = [
   session({ id: 's-op', terminalId: 't0', roleId: 'operator', model: 'fable', phase: 'waiting', summary: 'Coordinate the mobile fixes' }),
+  // Carries effortLevel + permissionMode so the SessionToolbar's right cluster renders in
+  // full (MCP badge · effort · permission · panel toggle) — the alignment of those four is
+  // otherwise unverifiable in the harness.
   session({ id: 's-code', terminalId: 't1', roleId: 'code', model: 'opus', phase: 'running', summary: 'Extract the dispatch router',
+    effortLevel: 'high', permissionMode: 'bypassPermissions',
     todos: [{ content: 'Extract routeDispatch into lib/dispatch', status: 'in_progress' }, { content: 'Add unit tests', status: 'pending' }],
     usage: { input: 41200, output: 8300, cacheRead: 120400 } }),
   session({ id: 's-res', terminalId: 't2', roleId: 'research', model: 'sonnet', phase: 'compacting', summary: 'Profile the settings list' }),
@@ -153,12 +171,121 @@ const MOCK_DORMANT = [
   { key: 'key-old-2', cwd: '/tmp/el-encanto', projectName: 'el-encanto', claudeSessionId: 'old-2', lastActiveAt: earlier },
 ]
 
+// Claude-file fixtures for the FolderPreferences tabs. Both scopes are present so the
+// per-file SettingsFileTabBar has something to switch between, and each section has real
+// rows to render rather than an empty state.
+const MOCK_MD_FILES = [
+  { path: '~/.claude/CLAUDE.md', label: 'CLAUDE.md', scope: 'global' as const, exists: true,
+    content: '# Global notes\n\nPrefer small, reviewable diffs.\n' },
+  { path: `${PROJECT_PATH}/CLAUDE.md`, label: 'CLAUDE.md', scope: 'project' as const, exists: true,
+    content: '# operator\n\nTranscript-driven; no hook. Read the Obsidian hub before starting.\n' },
+]
+
+const MOCK_SETTINGS_FILES = [
+  {
+    path: '~/.claude/settings.json', label: 'settings.json', scope: 'global' as const,
+    readOnly: false, exists: true,
+    settings: {
+      permissions: { allow: ['Bash(npm test)', 'Read(**)'], deny: ['Bash(rm -rf *)'], ask: [] },
+      effortLevel: 'high' as const,
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pre' }] }] },
+      enabledPlugins: { 'some-plugin@marketplace': true },
+    },
+  },
+  {
+    path: `${PROJECT_PATH}/.claude/settings.json`, label: 'settings.json', scope: 'project' as const,
+    readOnly: false, exists: true,
+    settings: {
+      permissions: { allow: ['Bash(cargo build)'], deny: [], ask: ['Bash(git push)'] },
+      effortLevel: 'normal' as const,
+    },
+  },
+]
+
+const MOCK_AGENTS = [
+  {
+    name: 'code-reviewer', description: 'Review a diff for correctness and risk before it lands.',
+    model: 'opus', tools: [], scope: 'user' as const, path: '~/.claude/agents/code-reviewer.md',
+    prompt: 'Review the diff. Report only defects you can demonstrate.',
+  },
+  {
+    name: 'doc-writer', description: 'Draft and update project documentation from the code.',
+    model: 'sonnet', tools: [], scope: 'project' as const, projectPath: PROJECT_PATH,
+    path: `${PROJECT_PATH}/.claude/agents/doc-writer.md`,
+    prompt: 'Write docs that match what the code actually does.',
+  },
+]
+
+// A transcript with the shapes that actually stress the reading surface: a long prose answer,
+// fenced code, a bullet list, back-to-back short turns, and `thinking` blocks between them.
+//
+// THE THINKING ENTRIES ARE EMPTY ON PURPOSE — do not "fix" them by adding prose. Claude Code
+// emits thinking blocks carrying a `signature` and no text; the reasoning is redacted at
+// source. Measured across 326 real transcripts in ~/.claude/projects: 17,682 thinking blocks,
+// 17,682 of them empty, zero with text. A fixture with prose in them is more generous than
+// reality, and it validated a collapsible Thought block that could never open — which is
+// exactly how that shipped. Fixtures must match what the pipeline really produces.
+const t = (min: number) => new Date(Date.parse(now) - min * 60_000).toISOString()
+const MOCK_CHAT = [
+  { kind: 'user' as const, text: 'Extract the dispatch router out of DashboardView — it is 200 lines of routing inside a 2400-line component.', timestamp: t(42) },
+  { kind: 'thinking' as const, text: '', timestamp: t(41) },
+  { kind: 'text' as const, text: "I'll pull the routing into `lib/dispatch.ts`. The seam is the callback boundary: the effect stays in the view (it owns the subscription), but the decision — *which lane does this directive belong to* — becomes a pure function that takes the roster and the directive and returns a target.\n\nThat keeps the side effects where they already are and makes the interesting half testable.", timestamp: t(40) },
+  { kind: 'user' as const, text: 'Does that cover the case where the named lane is not live yet?', timestamp: t(38) },
+  { kind: 'thinking' as const, text: '', timestamp: t(37) },
+  { kind: 'text' as const, text: "Not today — it silently drops them. Here's the shape I'd give it:\n\n```ts\nexport function routeDispatch(d: Directive, roster: Role[], live: Set<string>): Target {\n  const role = roster.find((r) => r.id === d.role)\n  if (!role) return { kind: 'unknown', role: d.role }\n  return live.has(role.id)\n    ? { kind: 'send', roleId: role.id }\n    : { kind: 'queue', roleId: role.id }\n}\n```\n\nSo a directive for a dormant lane becomes a **queued task** on that lane instead of vanishing. Three reasons that beats auto-launching:\n\n- launching is expensive and surprising — it spawns a pty and a worktree\n- the task board is already the place work waits\n- it is reversible: you can reassign a queued task, but you cannot un-spawn a session\n\nThe `unknown` case still needs a decision — drop it, or surface it as an unassigned task?", timestamp: t(36) },
+  { kind: 'user' as const, text: 'Surface it. Unassigned.', timestamp: t(30) },
+  { kind: 'text' as const, text: 'Done. `routeDispatch` now returns `{ kind: "queue", roleId: undefined }` for an unknown lane, and the queue renders it in the unassigned group.', timestamp: t(29) },
+  { kind: 'user' as const, text: 'ok', timestamp: t(28) },
+  { kind: 'user' as const, text: 'and add tests', timestamp: t(27) },
+  { kind: 'text' as const, text: 'Added `lib/dispatch.test.ts` — six cases: known+live, known+dormant, unknown, empty roster, duplicate role ids, and a directive whose role name differs only by case.', timestamp: t(26) },
+  // The four turns from the injected-turns report, verbatim (dev/briefs/chat-injected-turns.md).
+  // The first three carry role "user" but nobody typed them — Claude Code's own plumbing —
+  // and one of them ships raw SGR codes. Only 'hi' may render as a user turn. These stay in the
+  // fixture on purpose: they are what chat.db ALREADY holds, so they exercise the renderer-side
+  // guard that the backend fix can't reach.
+  { kind: 'user' as const, text: '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages as the user did not type them.</local-command-caveat>', timestamp: t(3) },
+  { kind: 'user' as const, text: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>', timestamp: t(3) },
+  { kind: 'user' as const, text: '<local-command-stdout>Set model to \x1b[1mSonnet 5\x1b[22m and saved as your default.</local-command-stdout>', timestamp: t(2) },
+  { kind: 'user' as const, text: 'hi', timestamp: t(1) },
+  // Real tool_use/tool_result shapes (dev/briefs/structured-transcript-build.md). Measured over
+  // 300 transcripts: `caller` is present on 100% of 30,699 calls, results are median 365 chars
+  // with a 3.5MB max — so `output` here is ALREADY CAPPED at 2000, exactly as transcript.rs
+  // stores it, and `outputChars` keeps the original length. Do not paste a full result in.
+  { kind: 'tool' as const, text: 'Read src/renderer/lib/dispatch.ts', timestamp: t(20),
+    tool: { name: 'Read', target: 'src/renderer/lib/dispatch.ts', caller: 'lead', id: 'tu_1', output: 'export function routeDispatch…', outputChars: 812 } },
+  { kind: 'tool' as const, text: 'Read src/renderer/views/DashboardView.tsx', timestamp: t(20),
+    tool: { name: 'Read', target: 'src/renderer/views/DashboardView.tsx', caller: 'lead', id: 'tu_2', output: 'import { useEffect }…', outputChars: 2400 } },
+  { kind: 'tool' as const, text: 'Read src/shared/types.ts', timestamp: t(20),
+    tool: { name: 'Read', target: 'src/shared/types.ts', caller: 'lead', id: 'tu_3', output: 'export interface AgentSession…', outputChars: 1200 } },
+  // A different caller must NOT fold into the run above — this is the subagent mechanism.
+  { kind: 'tool' as const, text: 'Grep useEffect', timestamp: t(19),
+    tool: { name: 'Grep', target: 'useEffect', caller: 'subagent-research', id: 'tu_4', output: '42 matches', outputChars: 10 } },
+  // An oversized result, stored the way the parser stores it: capped + marked.
+  { kind: 'tool' as const, text: 'Bash npm test', timestamp: t(18),
+    tool: { name: 'Bash', target: 'npm test', caller: 'lead', id: 'tu_5',
+      output: 'x'.repeat(2000), outputChars: 71194, truncated: true } },
+]
+
 export function installMockBridge() {
+  // `?empty=1` boots a VIRGIN app — no projects, no saved sessions, no live ptys — which is
+  // the only way to see first-run states (the gallery's welcome splash) in the harness.
+  const empty = new URLSearchParams(location.search).get('empty') === '1'
+  // `?lost=1` strips the dormant project's path, which is the ONLY thing the gallery's
+  // "folder not on record" card variant keys on (`lost = !project.path`). Without a flag
+  // that state is unreachable in the harness — nothing in the UI can clear a path.
+  const lost = new URLSearchParams(location.search).get('lost') === '1'
+  if (lost) {
+    const p = MOCK_PROJECTS.find((x) => x.id === DORMANT_ID)
+    if (p) (p as { path: string }).path = ''
+  }
   // Seed the stores the renderer reads at boot so it lands on a populated UI.
   try {
-    localStorage.setItem('operator.projects', JSON.stringify(MOCK_PROJECTS))
-    localStorage.setItem('operator.savedSessions', JSON.stringify([...MOCK_SAVED, ...MOCK_DORMANT]))
-    localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
+    if (empty) localStorage.clear()
+    else {
+      localStorage.setItem('operator.projects', JSON.stringify(MOCK_PROJECTS))
+      localStorage.setItem('operator.savedSessions', JSON.stringify([...MOCK_SAVED, ...MOCK_DORMANT]))
+      localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
+    }
   } catch { /* ignore */ }
 
   // The dispatch subscription is capturable so a driver can fire directives as if the
@@ -167,30 +294,57 @@ export function installMockBridge() {
 
   const bridge: Record<string, unknown> = {
     // --- subscriptions: push the fixture once, then stay quiet -------------------
-    onSessionUpdate: (cb: (s: AgentSession[]) => void) => { setTimeout(() => cb(MOCK_SESSIONS), 0); return () => {} },
+    // Capturable so a driver can push PHASE changes as the transcript tailer would:
+    //   window.__mockPhase('s-code', { phase: 'waiting', lastToolName: null })
+    // The chat liveness signals are a pure read of these fields, so this is the only lever a
+    // harness needs to drive running / compacting / waiting / idle / ended.
+    onSessionUpdate: (cb: (s: AgentSession[]) => void) => {
+      setTimeout(() => cb(empty ? [] : MOCK_SESSIONS), 0)
+      ;(window as unknown as { __mockPhase: unknown }).__mockPhase = (id: string, patch: Partial<AgentSession>) => {
+        cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, ...patch } : x)))
+      }
+      return () => {}
+    },
     onOrchestratorDispatch: (cb: (d: unknown) => void) => { dispatchCb = cb; return () => { dispatchCb = null } },
     onTerminalData: sub, onTerminalExit: sub,
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     // --- reads ------------------------------------------------------------------
-    getSessions: async () => MOCK_SESSIONS,
-    chatHistory: async () => [],
+    getSessions: async () => (empty ? [] : MOCK_SESSIONS),
+    // A real-shaped transcript so the chat view can be READ, not just compiled: alternating
+    // turns, a long answer, code, a list, and signature-only (empty) `thinking` entries —
+    // which is what Claude Code actually emits. See MOCK_CHAT's note: this fixture once
+    // carried invented thinking PROSE, and that is what validated a disclosure control whose
+    // body could never open.
+    chatHistory: async (id: string) => (id === 's-code' ? MOCK_CHAT : []),
     imageDataUrl: async () => '',
-    terminalList: async () => MOCK_TERMINALS,
+    terminalList: async () => (empty ? [] : MOCK_TERMINALS),
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => [...MOCK_SAVED, ...MOCK_DORMANT],
-    loadProjects: async () => MOCK_PROJECTS,
-    agentsList: async () => [],
+    loadSessions: async () => (empty ? [] : [...MOCK_SAVED, ...MOCK_DORMANT]),
+    loadProjects: async () => (empty ? [] : MOCK_PROJECTS),
+    // Two subagents so the library renders its list AND its editor pane (the Field labels
+    // there are a second de-facto field-label style — an empty list hides them entirely).
+    agentsList: async () => MOCK_AGENTS,
     getUsageStats: async () => ({ totalCost: 0, totalTokens: 0, days: [], projects: [], models: [] }),
     getUsageInsights: async () => ({ busiestHour: 0, streakDays: 0, topProject: null, hourly: [], weekday: [] }),
     getVersion: async () => '0.8.8-mock',
     checkUpdate: async () => null,
-    folderPrefsLoad: async () => ({ projectPath: PROJECT_PATH, projectName: 'operator', settingsFiles: [], mdFiles: [] }),
-    folderPrefsLoadGlobal: async () => ({ projectPath: '~/.claude', projectName: 'Global', settingsFiles: [], mdFiles: [] }),
-    getMcpServers: async () => ({ servers: [], error: null }),
+    // Populated, not empty: with `settingsFiles: []` every FolderPreferences tab renders its
+    // "no settings file" empty state, so a theme/contrast sweep would measure blank pages and
+    // report a false pass. These exercise the real editors (md cards, permission lists,
+    // General's field labels, hook rows, plugin rows).
+    folderPrefsLoad: async () => ({ projectPath: PROJECT_PATH, projectName: 'operator', settingsFiles: MOCK_SETTINGS_FILES, mdFiles: MOCK_MD_FILES }),
+    folderPrefsLoadGlobal: async () => ({ projectPath: '~/.claude', projectName: 'Global', settingsFiles: MOCK_SETTINGS_FILES.filter((f) => f.scope.startsWith('global')), mdFiles: MOCK_MD_FILES.filter((f) => f.scope === 'global') }),
+    getMcpServers: async () => ({
+      servers: [
+        { name: 'chrome-devtools', type: 'stdio', source: 'user' },
+        { name: 'figma', type: 'http', source: 'project' },
+      ],
+      error: null,
+    }),
     inspectRepo: async () => ({ isRepo: true, root: PROJECT_PATH, branch: 'main', dirty: false }),
     worktreeStatus: async () => ({ exists: false }),
     worktreeDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),
@@ -200,7 +354,9 @@ export function installMockBridge() {
     pickFolder: async () => PROJECT_PATH,
 
     // --- writes: recorded so the harness can assert what the UI attempted --------
-    terminalWrite: (id: string, data: string) => { calls.push({ fn: 'terminalWrite', id, data }) },
+    // `at` timestamps let a driver measure the SUBMIT TIMELINE (paste → watchdog CR),
+    // which is what the long-message split in dev/briefs/ is diagnosed from.
+    terminalWrite: (id: string, data: string) => { calls.push({ fn: 'terminalWrite', id, data, at: Date.now() }) },
     // Spawns return a real-ish tab so launch flows (auto-launch dispatch, project
     // resume) actually add a session row the driver can assert on.
     terminalSpawn: async (cwd: string, opts?: unknown) => {
@@ -210,7 +366,7 @@ export function installMockBridge() {
     runCheck: async () => ({ ok: true, output: 'mock: checks green' }),
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,
     showMainWindow: noop, startWindowDrag: noop, toggleWindowMaximize: noop, quitApp: noop,
-    growWindowWidth: noop, openExternal: noop, setDockIcon: noop, terminalStart: noop,
+    growWindowWidth: noop, openExternal: noop, revealPath: async () => {}, setDockIcon: noop, terminalStart: noop,
     terminalResize: noop, terminalKill: async () => {}, shellSpawn: async () => 'sh0',
     gridtermAttach: noop, gridtermResize: noop, gridtermScroll: noop, gridtermSetTheme: noop, gridtermDetach: noop,
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,

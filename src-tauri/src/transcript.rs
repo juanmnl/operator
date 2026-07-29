@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
-use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem, TokenUsage};
+use crate::backend::{first_line, now_iso, summarize, ActivityEntry, AgentSession, NarrationEntry, Sessions, TodoItem, TokenUsage, ToolBlock};
 use crate::chatstore::ChatStore;
 use crate::PtyManager;
 
@@ -84,6 +84,9 @@ struct Track {
     active_subagents: i32,
     in_sidechain: bool,
     last_tool_name: Option<String>,
+    /// tool_use id → the narration seq its block was written at, so a result arriving later
+    /// can re-queue that exact row for the store (see the tool_result handler).
+    tool_seqs: HashMap<String, u64>,
     /// Model from the latest assistant message (the actual running model).
     model: Option<String>,
     /// Cumulative token usage across the session's assistant messages.
@@ -123,6 +126,7 @@ impl Track {
             active_subagents: 0,
             in_sidechain: false,
             last_tool_name: None,
+            tool_seqs: HashMap::new(),
             model: None,
             usage: TokenUsage::default(),
             last_usage_msg_id: None,
@@ -140,16 +144,36 @@ impl Track {
     /// Record one narration entry: assign its durable seq, queue it for the chat
     /// store, append to the in-memory tail (capped), and mark dirty. The single choke
     /// point so seq assignment + persistence can't be forgotten at a call site.
-    fn push_narration(&mut self, entry: NarrationEntry) {
+    fn push_narration(&mut self, entry: NarrationEntry) -> u64 {
         let seq = self.narration_seq;
         self.narration_seq += 1;
         self.pending.push((seq, entry.clone()));
         self.narration.push(entry);
         if self.narration.len() > NARRATION_CAP {
-            let drop = self.narration.len() - NARRATION_CAP;
-            self.narration.drain(0..drop);
+            // Tool blocks now share this cap with prose, and a tool-heavy turn can produce
+            // dozens of them — enough to evict the answers the user is actually reading. So
+            // eviction takes the oldest TOOL entries first and only falls back to prose when
+            // there are none left. Order is preserved either way (this drops, never reorders).
+            //
+            // Safe because the cap only bounds the live tail shipped in `session:update`:
+            // every entry is already queued for chat.db, and the reading surface merges the
+            // durable history with this tail. Nothing is lost, only deferred to the store.
+            let mut over = self.narration.len() - NARRATION_CAP;
+            let mut i = 0;
+            while over > 0 && i < self.narration.len() {
+                if self.narration[i].kind == "tool" {
+                    self.narration.remove(i);
+                    over -= 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if over > 0 {
+                self.narration.drain(0..over);
+            }
         }
         self.dirty = true;
+        seq
     }
 
     /// Read any new transcript lines and fold them into this track's state.
@@ -239,7 +263,47 @@ impl Track {
             for b in arr {
                 if b.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
                     if let Some(id) = b.get("tool_use_id").and_then(|i| i.as_str()) {
+                        // Attach the result to its call, CAPPED (see TOOL_RESULT_CAP). The
+                        // content is either a string or an array of blocks; both flatten to
+                        // text here rather than being dropped as they were before.
+                        let raw = tool_result_text(b.get("content"));
+                        if !raw.is_empty() {
+                            let chars = raw.chars().count();
+                            let capped: String = raw.chars().take(TOOL_RESULT_CAP).collect();
+                            if let Some(entry) = self
+                                .narration
+                                .iter_mut()
+                                .rev()
+                                .find(|e| e.tool.as_ref().and_then(|t| t.id.as_deref()) == Some(id))
+                            {
+                                if let Some(tb) = entry.tool.as_mut() {
+                                    tb.output = capped;
+                                    tb.output_chars = chars;
+                                    tb.truncated = chars > TOOL_RESULT_CAP;
+                                }
+                                // The row was already queued (and probably already written)
+                                // when the CALL was seen, with an empty output. Mutating the
+                                // in-memory entry does not reach the store on its own — and
+                                // the store's INSERT OR IGNORE would drop a re-insert on the
+                                // same (session_id, seq). So re-queue it here and let the
+                                // store UPSERT: without this the capped output is captured,
+                                // carries a DB column, and is never persisted.
+                                let updated = entry.clone();
+                                if let Some(&seq) = self.tool_seqs.get(id) {
+                                    self.pending.push((seq, updated));
+                                }
+                                self.dirty = true;
+                            }
+                        }
                         self.open_tools.remove(id);
+                        // The status line reads `last_tool_name` as the CURRENT verb
+                        // ("Editing"). Leaving it set after the last tool closes made a
+                        // thinking agent report the tool it finished minutes ago — a signal
+                        // that lies is worse than no signal. Cleared only when nothing is
+                        // open, so a burst of parallel calls still reports the latest.
+                        if self.open_tools.is_empty() {
+                            self.last_tool_name = None;
+                        }
                     }
                 }
             }
@@ -257,12 +321,24 @@ impl Track {
             // <system-reminder>, …) — Claude Code's machinery, not the user's words; they
             // made ugly "<local-command-cavea…" session titles. Matched by exact prefix,
             // NOT a bare '<' — a genuine prompt may start with markup ("<Modal> crashes").
-            if self.summary.is_none() && !is_injected_turn(&text) {
+            let injected = is_injected_turn(&text);
+            if self.summary.is_none() && !injected {
                 let line = first_line(&text, 60);
                 if !line.is_empty() {
                     self.summary = Some(line);
                     self.dirty = true;
                 }
+            }
+            // …and the SAME filter guards the reading surface. These lines carry role "user"
+            // in the JSONL but nobody typed them, so chat was rendering Claude Code's own
+            // plumbing — a caveat banner, the /model command, its stdout — as three
+            // consecutive YOU turns above the one real prompt. The filter had only ever been
+            // wired to the session-title guard above.
+            //
+            // NOTE: `last_was_user_prompt` is deliberately left set. It drives phase
+            // detection, not display, and an injected line still means the pty saw input.
+            if injected {
+                return;
             }
             // Capture the human prompt for the Chat panel so it reads as a real
             // conversation (user turn + assistant answer), not a one-sided log.
@@ -275,7 +351,7 @@ impl Track {
             // Dropped images live as base64 image blocks alongside the text; cache them
             // to files once and carry the (small) paths so the Chat panel can show them.
             let images = extract_user_images(content);
-            self.push_narration(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts, images });
+            self.push_narration(NarrationEntry { kind: "user".to_string(), text: prompt, timestamp: ts, images, tool: None });
         }
     }
 
@@ -341,7 +417,7 @@ impl Track {
                             kind: btype.to_string(),
                             text: s.to_string(),
                             timestamp: ts.to_string(),
-                            images: Vec::new(),
+                            images: Vec::new(), tool: None
                         });
                     }
                 }
@@ -396,6 +472,32 @@ impl Track {
                 _ => {}
             }
             let summary = summarize(&name, input);
+            // …and as a first-class block in the TRANSCRIPT, not only in the activity
+            // timeline. `caller` is what makes a subagent's call attributable — it is on
+            // every real tool_use and was never read until now.
+            let caller = b.get("caller").and_then(|c| c.as_str()).map(|c| c.to_string());
+            let tool_id = b.get("id").and_then(|i| i.as_str()).map(|i| i.to_string());
+            let tool_seq = self.push_narration(NarrationEntry {
+                kind: "tool".to_string(),
+                // A plain-text fallback so any surface that doesn't know this kind still
+                // reads sensibly, and so search over the transcript finds the call.
+                text: match &summary.target {
+                    Some(t) => format!("{name} {t}"),
+                    None => name.clone(),
+                },
+                timestamp: ts.to_string(),
+                images: Vec::new(),
+                tool: Some(ToolBlock {
+                    name: name.clone(),
+                    target: summary.target.clone(),
+                    caller,
+                    id: tool_id,
+                    ..Default::default()
+                }),
+            });
+            if let Some(tid) = b.get("id").and_then(|i| i.as_str()) {
+                self.tool_seqs.insert(tid.to_string(), tool_seq);
+            }
             let is_delegate = name == "Task" || name == "Agent";
             let detail = if is_delegate { summary.preview.clone() } else { None };
             let kind = if is_delegate { "delegate" } else { "tool" };
@@ -634,6 +736,48 @@ fn dispatch_id(session_id: &str, role: &str, task: &str) -> String {
     format!("{h:016x}")
 }
 
+/// A tool result's content is either a plain string or an array of blocks. Flatten the array
+/// to its TEXT — storing `v.to_string()` kept a third of real results as raw JSON, so the
+/// transcript would have shown `[{"type":"text","text":"..."}]` instead of the output.
+fn tool_result_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(arr)) => {
+            let mut out = String::new();
+            for b in arr {
+                if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(s);
+                }
+            }
+            // A non-text block array (an image result, say) has no text to show; the JSON
+            // would be noise, so it stays empty and the block simply carries no output.
+            out
+        }
+        Some(Value::Null) | None => String::new(),
+        Some(v) => v.to_string(),
+    }
+}
+
+/// Cap on a `tool_result`'s text at PARSE time — before it is ever persisted.
+///
+/// Measured over 300 real transcripts (30,699 tool results): median 365 chars, p75 1.6k,
+/// p90 10k, p95 71k, p99 172k, **max 3.5MB**, and 314MB of result text in total. chat.db is
+/// already ~5.8MB with a 4.1MB WAL; persisting that tail would dwarf the conversation it is
+/// supposed to annotate, and no reader wants a 3.5MB blob pasted into a transcript.
+///
+/// 2000 was chosen over 500/1000/4000 because it is the knee of this distribution for the job
+/// the text has to do: the block is punctuation at rest, and expanding it is for "what did
+/// that command print / what did that error say". 2000 chars is ~25 lines — a screenful — and
+/// leaves 77% of results whole (500 would truncate 45% of them; 4000 buys 8 more points of
+/// coverage for 47% more bytes). Worst case per result goes from 3.5MB to 2KB.
+///
+/// The ORIGINAL length is kept on the block, so the UI says "the first 2,000 of 71,194" and
+/// offers the file rather than pretending the cap is the whole thing.
+const TOOL_RESULT_CAP: usize = 2000;
+
 /// Claude Code's injected plumbing turns that masquerade as user prompts. Mirrors the
 /// frontend filter in lib/format.ts (isInjectedTurn) — keep the two prefix lists in sync.
 fn is_injected_turn(text: &str) -> bool {
@@ -797,6 +941,175 @@ fn refresh_tray_menu(app: &tauri::AppHandle, sessions: &[(String, String)]) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn track() -> Track {
+        Track::new("t0".into(), NewTrack {
+            claude_session_id: "s0".into(),
+            cwd: "/tmp".into(),
+            permission_mode: None,
+        })
+    }
+
+    /// A tool call becomes a transcript block carrying its caller — and its result is CAPPED
+    /// on the way in, because the real p99 is 172KB and the max seen is 3.5MB.
+    #[test]
+    fn tool_calls_become_blocks_with_a_capped_result() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [
+                { "type": "tool_use", "id": "tu_1", "name": "Bash", "caller": "subagent-7",
+                  "input": { "command": "npm test" } }
+            ] }
+        }), "2026-07-28T10:00:00Z");
+
+        let block = t.narration.iter().find(|e| e.kind == "tool").expect("no tool block");
+        let tb = block.tool.as_ref().expect("no ToolBlock");
+        assert_eq!(tb.name, "Bash");
+        assert_eq!(tb.caller.as_deref(), Some("subagent-7"), "caller must be captured");
+        assert_eq!(tb.id.as_deref(), Some("tu_1"));
+        assert!(tb.output.is_empty(), "no result yet");
+
+        // The result arrives, far over the cap.
+        let huge = "x".repeat(TOOL_RESULT_CAP * 10);
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_1", "content": huge } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        let tb = t.narration.iter().find(|e| e.kind == "tool").unwrap().tool.as_ref().unwrap();
+        assert_eq!(tb.output.chars().count(), TOOL_RESULT_CAP, "result must be capped at parse time");
+        assert_eq!(tb.output_chars, TOOL_RESULT_CAP * 10, "the ORIGINAL length must survive");
+        assert!(tb.truncated);
+    }
+
+    /// A result that fits is stored whole and not marked truncated — the common case (median
+    /// is 365 chars, so 77% of real results are under the cap).
+    #[test]
+    fn a_small_tool_result_is_stored_whole() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [ { "type": "tool_use", "id": "tu_2", "name": "Read", "input": { "file_path": "/tmp/x" } } ] }
+        }), "2026-07-28T10:00:00Z");
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_2", "content": "ok" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        let tb = t.narration.iter().find(|e| e.kind == "tool").unwrap().tool.as_ref().unwrap();
+        assert_eq!(tb.output, "ok");
+        assert_eq!(tb.output_chars, 2);
+        assert!(!tb.truncated);
+    }
+
+    /// A tool_result turn is not a user prompt — it must not reach chat as one.
+    #[test]
+    fn a_tool_result_turn_is_not_a_user_turn() {
+        let mut t = track();
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "nope", "content": "x" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        assert!(t.narration.iter().all(|e| e.kind != "user"));
+    }
+
+    /// Release blocker 1: a closed tool must stop being reported as what the agent is doing.
+    #[test]
+    fn last_tool_name_clears_when_the_last_tool_closes() {
+        let mut t = track();
+        t.apply_assistant(&json!({ "message": { "content": [
+            { "type": "tool_use", "id": "a", "name": "Edit", "input": {} },
+            { "type": "tool_use", "id": "b", "name": "Bash", "input": {} },
+        ] } }), "2026-07-28T10:00:00Z");
+        assert_eq!(t.last_tool_name.as_deref(), Some("Bash"));
+
+        // One of two closing keeps the verb — work is still in flight.
+        t.apply_user(&json!({ "message": { "content": [ { "type": "tool_result", "tool_use_id": "a", "content": "ok" } ] },
+                             "timestamp": "2026-07-28T10:00:01Z" }));
+        assert_eq!(t.last_tool_name.as_deref(), Some("Bash"), "a tool is still open");
+
+        // The last one closing clears it, so the status line falls back to "Thinking".
+        t.apply_user(&json!({ "message": { "content": [ { "type": "tool_result", "tool_use_id": "b", "content": "ok" } ] },
+                             "timestamp": "2026-07-28T10:00:02Z" }));
+        assert_eq!(t.last_tool_name, None, "no tool open — the verb must not linger");
+    }
+
+    /// Release blocker 7: the captured output has to REACH the store. The row is written when
+    /// the call is seen; the result arrives later and must re-queue that same seq.
+    #[test]
+    fn a_tool_result_is_queued_for_persistence() {
+        let mut t = track();
+        t.apply_assistant(&json!({ "message": { "content": [
+            { "type": "tool_use", "id": "tu_9", "name": "Bash", "input": { "command": "ls" } }
+        ] } }), "2026-07-28T10:00:00Z");
+        let seq = t.pending.last().expect("call not queued").0;
+        t.pending.clear(); // simulate the tailer flushing it to chat.db
+
+        t.apply_user(&json!({ "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "tu_9", "content": "a.txt\nb.txt" }
+        ] }, "timestamp": "2026-07-28T10:00:01Z" }));
+
+        let (requeued_seq, entry) = t.pending.last().cloned().expect("result never queued for the store");
+        assert_eq!(requeued_seq, seq, "must rewrite the SAME row, not append a new one");
+        assert_eq!(entry.tool.unwrap().output, "a.txt\nb.txt");
+    }
+
+    /// Release blocker 7: a block-array result is TEXT, not raw JSON (a third of real ones).
+    #[test]
+    fn a_block_array_result_is_flattened_to_text() {
+        let mut t = track();
+        t.apply_assistant(&json!({ "message": { "content": [
+            { "type": "tool_use", "id": "tu_x", "name": "Read", "input": {} }
+        ] } }), "2026-07-28T10:00:00Z");
+        t.apply_user(&json!({ "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_x",
+            "content": [ { "type": "text", "text": "line one" }, { "type": "text", "text": "line two" } ] } ] },
+            "timestamp": "2026-07-28T10:00:01Z" }));
+        let tb = t.narration.iter().find(|e| e.kind == "tool").unwrap().tool.as_ref().unwrap();
+        assert_eq!(tb.output, "line one\nline two", "must not store raw JSON");
+    }
+
+    /// Release blocker 4: a tool-heavy turn must not evict the prose the user is reading.
+    #[test]
+    fn the_narration_cap_evicts_tool_blocks_before_prose() {
+        let mut t = track();
+        t.push_narration(NarrationEntry { kind: "text".into(), text: "the answer".into(),
+            timestamp: "t".into(), images: vec![], tool: None });
+        for i in 0..NARRATION_CAP + 20 {
+            t.push_narration(NarrationEntry { kind: "tool".into(), text: format!("call {i}"),
+                timestamp: "t".into(), images: vec![], tool: Some(ToolBlock::default()) });
+        }
+        assert_eq!(t.narration.len(), NARRATION_CAP);
+        assert!(t.narration.iter().any(|e| e.text == "the answer"), "prose was evicted by tool spam");
+    }
+
+    /// A user-role line that is really Claude Code's plumbing must produce NO narration
+    /// entry — it used to render in chat as if the user had typed it.
+    #[test]
+    fn injected_turns_produce_no_narration() {
+        let injected = [
+            "<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>",
+            "<command-name>/model</command-name>",
+            "<command-message>model</command-message>",
+            "<command-args>sonnet</command-args>",
+            "<local-command-stdout>Set model to \u{1b}[1mSonnet 5\u{1b}[22m</local-command-stdout>",
+            "<system-reminder>plan mode is active</system-reminder>",
+        ];
+        for text in injected {
+            let mut t = track();
+            t.apply_user(&json!({ "message": { "content": text }, "timestamp": "2026-07-28T10:17:00Z" }));
+            assert!(t.narration.is_empty(), "injected turn leaked into chat: {text}");
+            assert!(t.summary.is_none(), "injected turn became the session title: {text}");
+        }
+    }
+
+    /// …while a genuine prompt still lands, including one that merely STARTS with markup.
+    #[test]
+    fn real_prompts_still_reach_chat() {
+        for text in ["hi", "<Modal> crashes on mount"] {
+            let mut t = track();
+            t.apply_user(&json!({ "message": { "content": text }, "timestamp": "2026-07-28T10:17:00Z" }));
+            assert_eq!(t.narration.len(), 1, "real prompt was dropped: {text}");
+            assert_eq!(t.narration[0].kind, "user");
+            assert_eq!(t.narration[0].text, text);
+        }
+    }
 
     #[test]
     fn derive_phase_running_when_tool_open() {
