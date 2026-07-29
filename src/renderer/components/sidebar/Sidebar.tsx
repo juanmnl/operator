@@ -333,10 +333,34 @@ export function Sidebar({
           WebkitAppRegion: 'no-drag',
         }}
       >
+        {/* EMPTY — now a real state, not an edge case: rosters start empty and grow on demand,
+            so this is what every new project's sidebar shows first. The old copy named a place
+            ("add one on the roster") without going there, which is the shape of the bug that
+            made a deleted lane feel unrecoverable. It is a CONTROL now, and it routes to the one
+            surface that owns adding a lane — the roster board, where the templates live. The
+            sidebar deliberately does NOT duplicate the preset menu: one way to add a lane. */}
         {laneRows.length === 0 && adHocRows.length === 0 && (
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', padding: '6px 8px', lineHeight: 1.5, margin: 0 }}>
-            No agents yet — add one on the roster.
-          </p>
+          <div data-sidebar-no-lanes style={{ padding: '4px 8px 0' }}>
+            <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--fg) 72%, transparent)', lineHeight: 1.5, margin: '0 0 8px' }}>
+              No agents yet. An agent is a lane on this project — its own model, effort and brief.
+            </p>
+            <button
+              onClick={onOpenProjectHome}
+              title="Open the roster and pick an agent"
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%',
+                height: 30, padding: '0 10px', boxSizing: 'border-box', cursor: 'pointer',
+                border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
+                background: 'transparent', color: 'var(--fg-muted)', outline: 'none',
+                fontFamily: 'inherit', fontSize: 11,
+                transition: 'background 120ms ease, color 120ms ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
+            >
+              + Add an agent
+            </button>
+          </div>
         )}
 
         {laneRows.map(renderRow)}

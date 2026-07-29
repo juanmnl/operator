@@ -48,7 +48,7 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal }: {
   project?: Project
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
@@ -59,6 +59,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   laneSessions?: Record<string, LaneSession>
   /** Focus an already-live lane's session (the "View" action). */
   onFocusTerminal?: (terminalId: string) => void
+  /** Close a lane's live session (the ■ on a live card). Distinct from deleting the lane. */
+  onCloseTerminal?: (terminalId: string) => void
 }) {
   const roster = project?.roster
 
@@ -270,6 +272,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             selected={false}
             onPatch={(patch) => patchRole(role.id, patch)}
             onRemove={() => removeRole(role.id)}
+            onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
             onLaunch={() => onLaunchRole?.(project, role, devServer)}
             onView={() => { const tid = liveRoles?.[role.id]; if (tid) onFocusTerminal?.(tid) }}
           />
@@ -409,7 +412,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onLaunch, onView, onPickAccent }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent }: {
   role: Role
   /** Present when this card is an EXPANDED idle row — collapses back to its LaneRow. */
   onCollapse?: () => void
@@ -431,11 +434,24 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
   onToggleSelect?: () => void
   onPatch: (patch: Partial<Role>) => void
   onRemove: () => void
+  /** Close the lane's live SESSION. A different verb from deleting the lane, so it gets a
+   *  different control — this is the one the user reaches for on a running card. */
+  onCloseSession?: () => void
   onLaunch: () => void
   onView: () => void
 }) {
   const [editingName, setEditingName] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState(false)
+  // Arms the lane-delete confirm (see the ✕ below); auto-disarms so a stray first click
+  // can't leave a live trigger sitting there.
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
+  const [confirmingClose, setConfirmingClose] = useState(false)
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+  }, [])
   const accent = role.accent || 'var(--accent)'
   const promptPreview = (role.prompt ?? '').trim()
 
@@ -542,10 +558,87 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
             style={{ flexShrink: 0, width: 20, height: 20, padding: 0, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none', fontSize: 9 }}
           >▴</button>
         )}
+        {/* CLOSE THE SESSION — the verb the user actually reached for on a running card, and
+            the one that was missing entirely: with delete correctly blocked while live, a live
+            card otherwise offers no way to stop its agent at all. Ends the pty; the lane and
+            all its configuration stay. Live cards only — there is nothing to close otherwise. */}
+        {live && onCloseSession && (
+          <button
+            onClick={() => {
+              if (!confirmingClose) {
+                setConfirmingClose(true)
+                closeTimerRef.current = setTimeout(() => setConfirmingClose(false), 2500)
+                return
+              }
+              if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+              setConfirmingClose(false)
+              onCloseSession()
+            }}
+            title={confirmingClose
+              ? `Click again to close the ${role.name} session — the lane and its config stay`
+              : `Close the ${role.name} session (the lane stays)`}
+            aria-label={confirmingClose ? `Confirm closing ${role.name} session` : `Close ${role.name} session`}
+            data-close-session={confirmingClose ? 'confirm' : 'idle'}
+            style={{
+              flexShrink: 0, height: 20, padding: confirmingClose ? '0 6px' : 0,
+              width: confirmingClose ? undefined : 20,
+              display: 'grid', placeItems: 'center', border: 'none', borderRadius: 4,
+              background: confirmingClose ? 'var(--overlay-medium)' : 'transparent',
+              color: confirmingClose ? 'var(--fg)' : 'var(--fg-muted)',
+              cursor: 'pointer', outline: 'none',
+              fontFamily: 'var(--font-mono)', fontSize: confirmingClose ? 9 : 12,
+              letterSpacing: confirmingClose ? '0.06em' : undefined,
+              textTransform: confirmingClose ? 'uppercase' : undefined,
+            }}
+          >{confirmingClose ? 'stop?' : '■'}</button>
+        )}
         {/* The coordinator is the roster's hub — the lane that routes to every other. Removing
             it would leave the roster with no dispatcher, so it's kept (workers stay removable). */}
-        {!coordinator && (
-          <button onClick={onRemove} title="Remove agent" style={{ flexShrink: 0, width: 20, height: 20, padding: 0, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none', fontSize: 12 }}>✕</button>
+        {!coordinator && !live && (
+          // DELETING A LANE IS DESTRUCTIVE and this ✕ used to do it in one unguarded click:
+          // it removes the lane's whole configuration — model, effort, accent, charter — and
+          // unassigns every task pointing at it. Reported as "I closed the active agent, it
+          // disappeared everywhere, can't add it anymore", because on a LIVE card ✕ reads as
+          // "close this session", not "delete this lane".
+          //
+          // So the two verbs stop sharing a glyph: a LIVE card carries no delete control at
+          // all (deleting a running lane would leave its pty with nothing in the roster to
+          // represent it — an orphan; stop it first), and on an idle card the click arms a
+          // confirm that names what is lost. Same click-again-to-confirm idiom as closing a
+          // session, which was already the better guarded of the two despite being the less
+          // destructive action.
+          <button
+            onClick={() => {
+              if (!confirmingRemove) {
+                setConfirmingRemove(true)
+                removeTimerRef.current = setTimeout(() => setConfirmingRemove(false), 2500)
+                return
+              }
+              if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+              setConfirmingRemove(false)
+              onRemove()
+            }}
+            title={confirmingRemove
+              ? `Click again to delete the ${role.name} lane: its model, effort, colour and charter go${queued > 0 ? `, and ${queued} queued task${queued > 1 ? 's' : ''} return to the backlog` : ''}`
+              : `Delete the ${role.name} lane`}
+            aria-label={confirmingRemove ? `Confirm deleting ${role.name}` : `Delete ${role.name}`}
+            data-role-remove={confirmingRemove ? 'confirm' : 'idle'}
+            style={{
+              flexShrink: 0, width: confirmingRemove ? 26 : 20, height: 20, padding: 0,
+              display: 'grid', placeItems: 'center', border: 'none', borderRadius: 4,
+              // Armed = a TRANSPARENT ERROR TINT plus full-strength ink, not a solid fill.
+              // The solid --color-error this first carried broke the no-fills-for-state rule
+              // and measured 2.81:1 on 1984-light — unreadable on the one control where
+              // misreading it destroys a lane. Same treatment as the chat Stop button, and
+              // for the same measured reason. The ink is --fg (the highest-contrast token),
+              // and the glyph changes ✕ → ✕?, so the state is carried three ways without a
+              // fill. The border stays constant: a colour-CHANGING border on a radiused
+              // element is the WKWebView repaint trap.
+              background: confirmingRemove ? 'color-mix(in srgb, var(--color-error, #f85149) 18%, transparent)' : 'transparent',
+              color: confirmingRemove ? 'var(--fg)' : 'var(--fg-muted)',
+              cursor: 'pointer', outline: 'none', fontSize: 12,
+            }}
+          >{confirmingRemove ? '✕?' : '✕'}</button>
         )}
       </div>
 

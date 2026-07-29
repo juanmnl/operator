@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 import type { Project } from '../../shared/types'
 
 describe('roster', () => {
@@ -208,5 +208,45 @@ describe('roleLaunchSettings', () => {
       .toEqual({ permissionMode: 'bypassPermissions', effortLevel: 'low' })
     expect(roleLaunchSettings({ id: 'qa', name: 'QA', model: 'sonnet' }, undefined))
       .toEqual({ permissionMode: 'default', effortLevel: 'high' })
+  })
+})
+
+// --- lane deletion is destructive (dev/briefs/lane-delete-is-destructive.md) --------------
+// Shipped in v0.10.0: the ✕ on a lane card called this in ONE unguarded click, taking the
+// lane's model/effort/accent/charter with it and unassigning its tasks. The guard is in the
+// UI (confirm + blocked while live); this pins what the function itself destroys, so the
+// blast radius stays documented and nobody re-points a single click at it.
+describe('removeRoleFrom — what a lane deletion actually costs', () => {
+  const project = (): Project => ({
+    id: 'p', name: 'P', path: '/p', createdAt: 't', lastActiveAt: 't',
+    roster: [
+      { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal' },
+      { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: 'Investigate and report.' },
+    ],
+    tasks: [
+      { id: 't1', text: 'why slow?', roleId: 'research', createdAt: 't' },
+      { id: 't2', text: 'other', roleId: 'operator', createdAt: 't' },
+    ],
+  })
+
+  it('destroys the whole lane configuration, not just the row', () => {
+    const next = removeRoleFrom(project(), 'research')
+    expect(next.roster?.map((r) => r.id)).toEqual(['operator'])
+    // Model, effort, accent and charter all go with it — that is the data loss the user hit.
+    expect(next.roster?.find((r) => r.id === 'research')).toBeUndefined()
+  })
+
+  it('unassigns its tasks rather than deleting them (they land in the backlog)', () => {
+    const next = removeRoleFrom(project(), 'research')
+    expect(next.tasks?.find((t) => t.id === 't1')?.roleId).toBeUndefined()
+    expect(next.tasks?.find((t) => t.id === 't2')?.roleId).toBe('operator') // untouched
+  })
+
+  it('a preset lane can be restored afterwards, charter included', () => {
+    const next = removeRoleFrom(project(), 'research')
+    const preset = rolePresets().find((r) => r.id === 'research')!
+    expect(next.roster?.some((r) => r.id === 'research')).toBe(false)
+    expect(preset.prompt, 'the preset must carry a charter, or restoring is lossy').toBeTruthy()
+    expect(preset.model).toBe('sonnet')
   })
 })

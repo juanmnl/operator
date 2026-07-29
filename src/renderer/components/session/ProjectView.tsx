@@ -15,7 +15,7 @@ const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodb
 
 export function ProjectView({
   project, tab, onSelectTab, onBack,
-  onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal,
+  onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   resumableCount, onResumeProject,
 }: {
@@ -30,6 +30,7 @@ export function ProjectView({
   /** roleId → live session runtime (phase/usage), for the mission-control read. */
   laneSessions?: Record<string, LaneSession>
   onFocusTerminal?: (terminalId: string) => void
+  onCloseTerminal?: (terminalId: string) => void
   onAddTask: (text: string, roleId?: string) => void
   onAssignTask: (taskId: string, roleId?: string) => void
   onRemoveTask: (taskId: string) => void
@@ -106,6 +107,7 @@ export function ProjectView({
               liveRoles={liveRoles}
               laneSessions={laneSessions}
               onFocusTerminal={onFocusTerminal}
+              onCloseTerminal={onCloseTerminal}
             />
             <TaskQueue
               project={project}

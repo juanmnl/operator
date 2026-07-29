@@ -2227,6 +2227,13 @@ export function DashboardView() {
               liveRoles={live}
               laneSessions={laneSessions}
               onFocusTerminal={focusTerminal}
+              // Closing a lane's session from its card goes through the SAME path as closing it
+              // from the sidebar — pty kill, running tasks completed with their diff + check,
+              // worktree chained behind. A second close route must not become a second lifecycle.
+              onCloseTerminal={(tid) => {
+                const s = sessions.find((x) => x.terminalId === tid)
+                if (s) void handleCloseSession(s)
+              }}
               onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
               onAssignTask={(taskId, roleId) => assignProjectTask(proj.id, taskId, roleId)}
               onRemoveTask={(taskId) => removeProjectTasks(proj.id, [taskId])}
