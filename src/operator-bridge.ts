@@ -9,7 +9,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { open } from '@tauri-apps/plugin-dialog'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch, exit } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
@@ -211,6 +211,9 @@ export function installBridge(): void {
 
     // Open a URL in the system browser (clickable terminal links).
     openExternal: (url: string) => { void openUrl(url) },
+    // Reveal a path in Finder (the gallery's per-project action). Rejects quietly if the
+    // path is gone — the caller treats it as a no-op rather than surfacing an OS error.
+    revealPath: (path: string) => revealItemInDir(path).catch(() => {}),
     // Swap the live macOS dock icon between the 'light' (cream) and 'dark'
     // variants. Only affects the running app — the renderer re-applies the saved
     // choice on launch (see App.tsx). No-op off macOS.

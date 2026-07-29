@@ -57,6 +57,8 @@ declare global {
       /** Grow/shrink the OS window width by `delta` CSS px (negative shrinks). */
       growWindowWidth: (delta: number) => void
       openExternal: (url: string) => void
+      /** Show a path in the OS file manager (Finder) — the gallery's "Reveal in Finder". */
+      revealPath: (path: string) => Promise<void>
       /** Swap the live macOS dock icon between the 'light' and 'dark' variants. */
       setDockIcon: (variant: 'light' | 'dark') => void
       /** Write a pasted image (base64) to a temp file; resolves to its path. */
