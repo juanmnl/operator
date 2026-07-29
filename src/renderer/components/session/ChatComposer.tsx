@@ -4,6 +4,10 @@ import type { AgentSession } from '../../../shared/types'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { modelFamilyLabel as displayModel } from '../../lib/roster'
 import { submitQueue } from '../../lib/submit-queue'
+import { chatSignal } from '../../lib/chat-signal'
+import { MEASURE_FORM } from '../settings/PageShell'
+import { StatusWave } from '../sidebar/StatusWave'
+import { interruptSession } from '../../lib/interrupt'
 
 // The chat composer — the two-way input for the reading panel. It drives the SAME Claude
 // Code session as the terminal (this is the hybrid path, not a terminal replacement): the
@@ -20,6 +24,8 @@ import { submitQueue } from '../../lib/submit-queue'
 // Colours follow the app's transparent-tint aesthetic (no solid accent fills, no focus ring).
 
 const MAX_H = 140
+/** §2: the send/stop control is an ORB — big enough to read as a status, not just a button. */
+const ORB = 32, ORB_WAVE = 17
 
 const MODELS = [
   { id: 'opus', label: 'Opus' },
@@ -47,8 +53,10 @@ const SLASH = [
 
 interface Attachment { name: string; path: string; url: string }
 
-export function ChatComposer({ session, onSend, onModelChange, onEffortChange }: {
+export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEffortChange }: {
   session?: AgentSession
+  /** The lane's colour, so the composer's orb is the SAME orb as the sidebar's (§2). */
+  laneAccent?: string
   onSend?: () => void
   /** Persist a `/model` switch back onto the session so the pill survives a tab switch. */
   onModelChange?: (model: string) => void
@@ -62,11 +70,21 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
   const [model, setModel] = useState<string | null>(session?.model ?? null)
   const [effort, setEffort] = useState<string | null>(session?.effortLevel ?? null)
   const [menu, setMenu] = useState<'model' | 'effort' | 'slash' | null>(null)
+  // "Other…" in the model menu — a free-typed id for a tier Claude Code's CLI accepts before
+  // Operator has a preset for it. The listed tiers never need this: Claude Code resolves
+  // `opus`/`sonnet`/… to the current point release on its own.
+  const [customModel, setCustomModel] = useState(false)
+  const [customModelId, setCustomModelId] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const live = !!session?.terminalId
+  // While the agent is working, the send action IS the stop action. The composer used to
+  // disable only on session DEATH, so mid-run you got a normal send box and no way to stop —
+  // the one moment you most want one. Interrupt is Claude Code's own ESC, never a kill.
+  const signal = chatSignal(session)
+  const busy = !!signal?.interruptible && live
   const canSend = (draft.trim().length > 0 || attachments.length > 0) && live
 
   // Reset transient state + re-seed the pills from the newly-active session.
@@ -83,6 +101,12 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
   useEffect(() => {
     if (session?.model) setModel(session.model)
   }, [session?.model])
+
+  // Whenever the model menu isn't the open one, drop the custom-id draft — covers every close
+  // path (pick, outside click, pill toggle, session switch) in one place.
+  useEffect(() => {
+    if (menu !== 'model') { setCustomModel(false); setCustomModelId('') }
+  }, [menu])
 
   // Revoke object URLs on unmount so previews don't leak.
   useEffect(() => () => { attachments.forEach((a) => URL.revokeObjectURL(a.url)) }, [attachments])
@@ -149,6 +173,13 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
     onModelChange?.(id)
   }
 
+  // A hand-typed id goes out exactly like a preset — `/model <id>` to the pty, and Claude
+  // Code is the one that validates it (it reports an unknown id in the transcript).
+  const submitCustomModel = () => {
+    const id = customModelId.trim()
+    if (id) pickModel(id)
+  }
+
   // Effort lives in global settings (Claude Code reads it there); applies to new turns.
   const pickEffort = async (id: string) => {
     setEffort(id)
@@ -175,7 +206,12 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
   return (
     <div
       ref={rootRef}
-      style={{ flexShrink: 0, padding: '10px 12px', fontFamily: 'var(--font-body)', position: 'relative' }}
+      // §1: the composer shares the transcript's measure and centre line — it used to span
+      // the full panel under a capped column.
+      style={{
+        flexShrink: 0, padding: '10px 4px 12px', fontFamily: 'var(--font-body)', position: 'relative',
+        width: '100%', maxWidth: MEASURE_FORM, margin: '0 auto', boxSizing: 'border-box',
+      }}
       onDragOver={(e) => { if (imageFilesFrom(e.dataTransfer).length || e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!dragOver) setDragOver(true) } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) }}
       onDrop={(e) => { e.preventDefault(); setDragOver(false); void attach(imageFilesFrom(e.dataTransfer)) }}
@@ -186,7 +222,19 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
       />
 
       {/* Popover menus (open upward, above the composer). */}
-      {menu === 'model' && <PopMenu title="Model" onClose={() => setMenu(null)} items={MODELS.map((m) => ({ key: m.id, label: m.label, active: m.id === model, onClick: () => pickModel(m.id) }))} />}
+      {menu === 'model' && (
+        <PopMenu
+          title="Model"
+          onClose={() => setMenu(null)}
+          items={[
+            ...MODELS.map((m) => ({ key: m.id, label: m.label, active: m.id === model, onClick: () => pickModel(m.id) })),
+            { key: 'custom', label: 'Other…', hint: 'Model id', keepOpen: true, onClick: () => setCustomModel(true) },
+          ]}
+          footer={customModel && (
+            <CustomModelRow value={customModelId} onChange={setCustomModelId} onSubmit={submitCustomModel} />
+          )}
+        />
+      )}
       {menu === 'effort' && <PopMenu title="Reasoning effort" onClose={() => setMenu(null)} items={EFFORTS.map((m) => ({ key: m.id, label: m.label, active: m.id === effort, onClick: () => pickEffort(m.id) }))} />}
       {menu === 'slash' && <PopMenu title="Commands" onClose={() => setMenu(null)} items={SLASH.map((c) => ({ key: c.cmd, label: c.label, hint: c.hint, onClick: () => runSlash(c.cmd) }))} />}
 
@@ -235,25 +283,74 @@ export function ChatComposer({ session, onSend, onModelChange, onEffortChange }:
           <IconBtn title="Attach images" onClick={() => fileRef.current?.click()} disabled={!live}><PaperclipIcon /></IconBtn>
           <IconBtn title="Commands" onClick={() => setMenu(menu === 'slash' ? null : 'slash')} active={menu === 'slash'} disabled={!live}><SlashIcon /></IconBtn>
           <Pill label={modelLabel ?? 'Model'} muted={!modelLabel} active={menu === 'model'} onClick={() => setMenu(menu === 'model' ? null : 'model')} disabled={!live} />
+          {busy && draft.trim().length > 0 && (
+            <span style={{
+              marginLeft: 'auto', marginRight: 2, flexShrink: 0,
+              fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+            }}>
+              ↵ sends into this turn
+            </span>
+          )}
           <Pill label={effortLabel ? `Effort · ${effortLabel}` : 'Effort'} muted={!effortLabel} active={menu === 'effort'} onClick={() => setMenu(menu === 'effort' ? null : 'effort')} disabled={!live} />
+          {/* §2 — THE ORB IS THE CONTROL. "The orb tells the truth about the lane; the ring
+              is the verb." The core is the same StatusWave the sidebar, roster and gallery
+              use, carrying the LANE ACCENT and the state from chatSignal — it never becomes a
+              send icon. What changes around it is a ring and a glyph, which is where the
+              action lives:
+                • idle/waiting + empty  → status light, NOT a button (no action to take)
+                • idle/waiting + text   → accent ring + arrow → send
+                • running/compacting    → error-tinted ring + square → stop
+                • no live session       → grey, reduced, aria-disabled
+              Stop reads from the square + the ring, never red ink (--color-error measures
+              2.81:1 on 1984-light). Motion stays the busy signal — no second idiom here. */}
           <button
-            onClick={send}
-            disabled={!canSend}
-            title="Send to the agent (Enter)"
+            onClick={busy ? () => interruptSession(session?.terminalId) : send}
+            disabled={!busy && !canSend}
+            aria-disabled={!busy && !canSend}
+            data-composer-action={busy ? 'stop' : canSend ? 'send' : 'idle'}
+            title={busy
+              ? 'Stop (Esc) — the session keeps running'
+              : canSend ? 'Send to the agent (Enter)' : undefined}
+            aria-label={busy ? 'Stop' : canSend ? 'Send' : 'Agent status'}
             style={{
-              marginLeft: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 28, height: 28, padding: 0, borderRadius: '50%',
-              cursor: canSend ? 'pointer' : 'default', outline: 'none',
-              color: canSend ? 'var(--accent)' : 'var(--fg-muted)',
-              border: `1px solid ${canSend ? 'color-mix(in srgb, var(--accent) 55%, transparent)' : 'var(--border)'}`,
-              background: canSend ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
-              opacity: live ? 1 : 0.5,
-              transition: 'color 120ms ease, background 120ms ease, border-color 120ms ease',
+              marginLeft: 'auto', position: 'relative', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: ORB, height: ORB, padding: 0, borderRadius: '50%',
+              // A status light is not a button: no pointer, no hover promise, no action.
+              cursor: busy || canSend ? 'pointer' : 'default', outline: 'none',
+              background: 'transparent',
+              border: `1px solid ${busy
+                ? 'color-mix(in srgb, var(--color-error, #f85149) 55%, var(--border))'
+                : canSend ? 'color-mix(in srgb, var(--accent) 55%, transparent)' : 'transparent'}`,
+              opacity: live ? 1 : 0.45,
+              transition: 'border-color 120ms ease, opacity 120ms ease',
             }}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M8 12.5V4M8 4L4.5 7.5M8 4l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <StatusWave
+              status={live ? (signal?.kind === 'ended' ? 'ended' : signal?.kind ?? 'idle') : 'ended'}
+              seed={session?.id ?? 'composer'}
+              size={ORB_WAVE}
+              accent={live ? laneAccent : undefined}
+            />
+            {/* The verb, overlaid on the lane's own state — present only when there IS one. */}
+            {(busy || canSend) && (
+              <span style={{
+                position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+                color: busy ? 'var(--fg)' : 'var(--accent)', pointerEvents: 'none',
+                // A halo so the glyph reads over the wave's dots, same trick as the rail.
+                filter: 'drop-shadow(0 0 3px var(--bg-terminal)) drop-shadow(0 0 3px var(--bg-terminal))',
+              }}>
+                {busy ? (
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                    <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" />
+                  </svg>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 12.5V4M8 4L4.5 7.5M8 4l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -270,7 +367,7 @@ function IconBtn({ children, title, onClick, active, disabled }: { children: Rea
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0,
         borderRadius: 7, border: 'none', background: 'transparent', outline: 'none',
-        cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.4 : 1,
+        cursor: disabled ? 'default' : 'pointer', 
         color: active ? 'var(--accent)' : 'var(--fg-muted)',
       }}
     >{children}</button>
@@ -284,7 +381,7 @@ function Pill({ label, onClick, active, muted, disabled }: { label: string; onCl
       style={{
         display: 'flex', alignItems: 'center', gap: 4, height: 24, padding: '0 8px',
         borderRadius: 7, border: '1px solid var(--border)', background: 'transparent', outline: 'none',
-        cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.4 : 1,
+        cursor: disabled ? 'default' : 'pointer', 
         fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.03em',
         color: active ? 'var(--accent)' : muted ? 'var(--fg-muted)' : 'var(--fg)',
         borderColor: active ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)',
@@ -296,7 +393,14 @@ function Pill({ label, onClick, active, muted, disabled }: { label: string; onCl
   )
 }
 
-function PopMenu({ title, items, onClose }: { title: string; items: { key: string; label: string; hint?: string; active?: boolean; onClick: () => void }[]; onClose: () => void }) {
+function PopMenu({ title, items, footer, onClose }: {
+  title: string
+  /** `keepOpen` = the item reveals more UI in this menu (the custom-model row) rather than
+   *  committing a choice, so the click must not close it. */
+  items: { key: string; label: string; hint?: string; active?: boolean; keepOpen?: boolean; onClick: () => void }[]
+  footer?: ReactNode
+  onClose: () => void
+}) {
   return (
     <div
       style={{
@@ -311,7 +415,7 @@ function PopMenu({ title, items, onClose }: { title: string; items: { key: strin
       {items.map((it) => (
         <button
           key={it.key}
-          onClick={() => { it.onClick(); if (!it.active) onClose?.() }}
+          onClick={() => { it.onClick(); if (!it.active && !it.keepOpen) onClose?.() }}
           style={{
             display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left',
             padding: '7px 12px', border: 'none', background: 'transparent', outline: 'none', cursor: 'pointer',
@@ -325,6 +429,42 @@ function PopMenu({ title, items, onClose }: { title: string; items: { key: strin
           {it.active && <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>}
         </button>
       ))}
+      {footer}
+    </div>
+  )
+}
+
+/** Free-typed model id, revealed by the menu's "Other…" entry. Enter or ↵ sends it as
+ *  `/model <id>`, so a tier the CLI already supports is usable without an Operator release. */
+function CustomModelRow({ value, onChange, onSubmit }: { value: string; onChange: (v: string) => void; onSubmit: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px 9px', borderTop: '1px solid var(--border)' }}>
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        // Enter commits; the composer's own key handling must not see these keys.
+        onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); onSubmit() } }}
+        placeholder="model id or alias"
+        style={{
+          flex: 1, minWidth: 0, boxSizing: 'border-box', padding: '4px 7px',
+          borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-terminal)',
+          color: 'var(--fg)', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 11,
+        }}
+      />
+      <button
+        onClick={onSubmit}
+        disabled={!value.trim()}
+        title="Switch this session to the typed model"
+        style={{
+          flexShrink: 0, height: 24, padding: '0 9px', borderRadius: 6, outline: 'none',
+          cursor: value.trim() ? 'pointer' : 'default', opacity: value.trim() ? 1 : 0.4,
+          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.03em',
+          color: 'var(--accent)',
+          border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
+          background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+        }}
+      >Set</button>
     </div>
   )
 }

@@ -12,9 +12,44 @@ function typeColor(type?: string): string {
   return (type && TYPE_VARS[type]) || 'var(--fg-muted)'
 }
 
+// ONE metric for every item in the toolbar's right cluster. They used to be sized two
+// different ways — the badges by `padding: 2px` + `lineHeight: 16px` (a 20px box), the panel
+// toggle by a fixed 22×22 — so they never shared a box height, and nothing declared
+// `flexShrink: 0` or `nowrap`. Under width pressure (measured: ≤ ~780px) that squeezed the
+// badges until their text WRAPPED to two lines (a 36px-tall "2 MCP" beside a 20px "High")
+// and squashed the icon button to 17px wide, while the row's own space-between let the
+// localhost chip ride over the Console/Chat/Preview control.
+//
+// So: same height, contents centred by flex (not by line-height), nothing shrinks, nothing
+// wraps. The transparent 1px border keeps the bordered localhost chip exactly the same box
+// as the borderless ones — and each element's border colour is CONSTANT, so this doesn't
+// trip the WKWebView "no colour-changing border on a radiused element" rule.
+const CHIP_H = 22
+const chipBase: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  height: CHIP_H,
+  padding: '0 8px',
+  boxSizing: 'border-box',
+  flexShrink: 0,
+  whiteSpace: 'nowrap',
+  fontFamily: 'inherit',
+  fontSize: 9,
+  fontWeight: 500,
+  lineHeight: 1,
+  borderRadius: 3,
+  border: '1px solid transparent',
+  background: 'transparent',
+}
+
 interface SessionToolbarProps {
   projectPath: string
   projectName: string
+  /** Up one level: back to Project Home (agents, tasks, moodboard). The session view was
+   *  the only level with no up-navigation — Project Home appeared solely as a side effect of
+   *  unfocusing the session, which is why the moodboard read as missing. */
+  onOpenProjectHome?: () => void
   /** Terminal id of the active session — used to resolve its reserved dev port. */
   terminalId?: string | null
   /** Port sniffed from the session's actual dev-server banner; wins over the
@@ -35,7 +70,7 @@ interface SessionToolbarProps {
   onToggleSidebar?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -87,8 +122,11 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
         borderBottom: '1px solid var(--border)',
         fontFamily: "var(--font-body)",
       }}>
-        {/* Left cluster: sidebar toggle · title · Console·Chat·Preview main-view toggle. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        {/* Left cluster: sidebar toggle · title · Console·Chat·Preview main-view toggle.
+            `overflow: hidden` is the second half of the collision fix: the right cluster
+            never shrinks, so this side is the one that must give — and when even the
+            ellipsised title has run out of room it clips instead of riding over the badges. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
         {onToggleSidebar && (
           <button
             onClick={onToggleSidebar}
@@ -99,7 +137,7 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               width: 24, height: 22, padding: 0,
               background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
-              color: 'var(--fg-muted)', opacity: 0.85, cursor: 'pointer',
+              color: 'var(--fg-muted)', cursor: 'pointer',
               // @ts-expect-error Electron-specific CSS property
               WebkitAppRegion: 'no-drag',
             }}
@@ -126,7 +164,32 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
-          {!branchCoversProject && <span>{projectName}</span>}
+          {/* The breadcrumb rung. Rendered UNCONDITIONALLY — the old `branchCoversProject`
+              dedupe hid the project name whenever a worktree branch contained it, which is
+              most worktree sessions, i.e. it would hide the way back exactly where people
+              live. A control may be redundant with a nearby label; it may not disappear. */}
+          {onOpenProjectHome ? (
+            <button
+              data-back-to-project
+              onClick={onOpenProjectHome}
+              title={`Back to ${projectName} — its agents, tasks and moodboard`}
+              aria-label={`Back to ${projectName}`}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                margin: 0, padding: '1px 5px 1px 3px', borderRadius: 'var(--radius-sm)',
+                background: 'transparent', border: 'none', outline: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 'inherit', fontWeight: 'inherit',
+                color: 'var(--fg)', maxWidth: 220, minWidth: 0,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                transition: 'background 120ms ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <span aria-hidden style={{ fontSize: 12, lineHeight: 1, opacity: 0.75 }}>‹</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{projectName}</span>
+            </button>
+          ) : (!branchCoversProject && <span>{projectName}</span>)}
           {branch && (
             <span style={{
               display: 'inline-flex',
@@ -183,6 +246,7 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
           display: 'flex',
           alignItems: 'center',
           gap: 6,
+          flexShrink: 0,
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}>
@@ -194,19 +258,11 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
               onClick={() => window.operator.openExternal(`http://localhost:${detectedDevPort}`)}
               title={`Open http://localhost:${detectedDevPort} in your browser`}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '2px 7px',
-                fontSize: 9,
-                fontWeight: 500,
-                fontFamily: 'inherit',
-                background: 'transparent',
+                ...chipBase,
                 color: 'var(--accent)',
-                border: '1px solid var(--accent)',
-                borderRadius: 3,
+                borderColor: 'var(--accent)',
                 cursor: 'pointer',
-                lineHeight: '16px',
+                outline: 'none',
                 opacity: 0.85,
               }}
             >
@@ -222,23 +278,18 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
               directly beneath it, not the toolbar's far-right edge (which now holds the
               Console/Chat/Preview segmented control). */}
           {mcpServers.length > 0 && (
-            <div style={{ position: 'relative' }}>
+            // `display: flex`, not the default block: an inline-flex chip inside a block
+            // wrapper sits on that wrapper's text baseline, which added ~2px of descender
+            // space below it and pushed this badge 1px lower than its neighbours.
+            <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
               <button
                 onClick={() => setMcpExpanded(!mcpExpanded)}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  padding: '2px 7px',
-                  fontSize: 9,
-                  fontWeight: 500,
-                  fontFamily: 'inherit',
+                  ...chipBase,
                   background: mcpExpanded ? 'var(--overlay-subtle)' : 'transparent',
                   color: 'var(--fg-muted)',
-                  border: 'none',
-                  borderRadius: 3,
                   cursor: 'pointer',
-                  lineHeight: '16px',
+                  outline: 'none',
                 }}
               >
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
@@ -254,19 +305,7 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
 
           {/* Effort level badge */}
           {effortLevel && (
-            <span
-              style={{
-                padding: '2px 8px',
-                fontSize: 9,
-                fontWeight: 500,
-                fontFamily: 'inherit',
-                textTransform: 'capitalize',
-                background: 'transparent',
-                color: 'var(--fg-muted)',
-                borderRadius: 3,
-                lineHeight: '16px',
-              }}
-            >
+            <span style={{ ...chipBase, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>
               {effortLevel}
             </span>
           )}
@@ -275,14 +314,8 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
           {permissionMode && permissionMode !== 'default' && (
             <span
               style={{
-                padding: '2px 8px',
-                fontSize: 9,
-                fontWeight: 500,
-                fontFamily: 'inherit',
-                background: 'transparent',
+                ...chipBase,
                 color: permissionMode === 'bypassPermissions' ? 'var(--red)' : 'var(--yellow)',
-                borderRadius: 3,
-                lineHeight: '16px',
                 opacity: 0.7,
               }}
             >
@@ -296,9 +329,10 @@ export function SessionToolbar({ projectPath, projectName, detectedDevPort, effo
               onClick={onTogglePanel}
               title={panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff / Preview)'}
               style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 22, height: 22, padding: 0, marginLeft: 4,
-                background: 'transparent', border: 'none', borderRadius: 4,
+                ...chipBase,
+                width: CHIP_H, padding: 0, marginLeft: 4,
+                justifyContent: 'center',
+                borderRadius: 4,
                 cursor: 'pointer', outline: 'none',
                 color: panelOpen ? 'var(--accent)' : 'var(--fg-muted)',
               }}
@@ -361,7 +395,7 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
               <div style={{ fontSize: 11, color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {server.name}
               </div>
-              <div style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 1 }}>
+              <div style={{ fontSize: 9, color: 'var(--fg-muted)', marginTop: 1 }}>
                 {server.source}
               </div>
             </div>
