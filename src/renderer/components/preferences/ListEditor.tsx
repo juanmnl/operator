@@ -37,7 +37,7 @@ export function ListEditor({
       overflow: 'hidden',
     }}>
       {items.length === 0 && (
-        <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--fg-muted)', opacity: 0.5 }}>
+        <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--fg-muted)', }}>
           {emptyLabel}
         </div>
       )}
@@ -66,7 +66,7 @@ export function ListEditor({
                 cursor: 'pointer',
                 fontSize: 14,
                 padding: '0 4px',
-                opacity: 0.5,
+                
                 lineHeight: 1,
               }}
             >

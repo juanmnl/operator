@@ -79,7 +79,7 @@ export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
           />
 
           {userTodos.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', opacity: 0.7, padding: '2px 2px', lineHeight: 1.5 }}>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', padding: '2px 2px', lineHeight: 1.5 }}>
               List what you want done — then “Send to agent” hands them to the session.
             </div>
           ) : (
@@ -117,7 +117,7 @@ function TodoRow({ todo }: { todo: TodoItem }) {
       <span style={{
         fontSize: 12.5, flex: 1,
         color: done ? 'var(--fg-muted)' : 'var(--fg)',
-        opacity: done ? 0.6 : 1,
+        
         textDecoration: done ? 'line-through' : 'none',
         fontWeight: active ? 600 : 400,
       }}>

@@ -20,12 +20,12 @@ export function HooksSection({ settingsFiles }: HooksSectionProps) {
 
   return (
     <div>
-      <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 16px', lineHeight: 1.6, opacity: 0.7 }}>
+      <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 16px', lineHeight: 1.6, }}>
         Hooks are managed by Operator and your Claude Code configuration. They are shown here for transparency and cannot be edited through this UI.
       </p>
 
       {allHooks.length === 0 && (
-        <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.5 }}>
+        <p style={{ fontSize: 12, color: 'var(--fg-muted)', }}>
           No hooks configured.
         </p>
       )}

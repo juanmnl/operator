@@ -63,7 +63,7 @@ function CreateFileDropdown({ files, onCreate }: { files: SettingsFile[]; onCrea
         border: '1px dashed rgba(255,255,255,0.15)',
         borderRadius: 4,
         cursor: 'pointer',
-        opacity: 0.7,
+        
       }}
     >
       <option value="" disabled>+ Create</option>

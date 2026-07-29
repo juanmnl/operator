@@ -64,7 +64,8 @@ function MdFileCard({ file, onSave, onCreate }: { file: ClaudeMdFile; onSave: (p
           <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg)' }}>
             {file.label}
           </div>
-          <div style={{ fontSize: 10, color: 'var(--fg-muted)', marginTop: 2, opacity: 0.6 }}>
+          {/* No opacity over --fg-muted — the token already carries the recede. */}
+          <div style={{ fontSize: 10, color: 'var(--fg-muted)', marginTop: 2 }}>
             {SCOPE_DESC[file.scope] || ''}
           </div>
         </div>

@@ -71,7 +71,7 @@ export function RecentLists({ sessions, projects, onRestore, onForget, onOpenFol
                     {s.customName || s.projectName}
                   </div>
                   <div style={{
-                    fontSize: 9, color: 'var(--fg-muted)', opacity: 0.55, marginTop: 1,
+                    fontSize: 9, color: 'var(--fg-muted)', marginTop: 1,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: mono,
                   }}>
                     {(s.worktreeBranch ? `⎇ ${s.worktreeBranch}` : s.cwd.replace(/^\/Users\/[^/]+/, '~'))}
@@ -93,7 +93,7 @@ export function RecentLists({ sessions, projects, onRestore, onForget, onOpenFol
                 <button
                   onClick={() => onForget(s.key)}
                   title="Forget this session"
-                  style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: 13, padding: '0 4px', opacity: 0.4, fontFamily: 'inherit' }}
+                  style={{ background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: 13, padding: '0 4px', fontFamily: 'inherit' }}
                 >
                   ×
                 </button>
@@ -119,7 +119,7 @@ export function RecentLists({ sessions, projects, onRestore, onForget, onOpenFol
               >
                 <span style={{ fontSize: 11, color: 'var(--fg)', flexShrink: 0 }}>{p.name}</span>
                 <span style={{
-                  fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5,
+                  fontSize: 10, color: 'var(--fg-muted)', 
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, fontFamily: mono,
                 }}>
                   {p.path.replace(/^\/Users\/[^/]+/, '~')}

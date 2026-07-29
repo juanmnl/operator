@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { AgentDefinition, AgentScope } from '../../../shared/types'
+import { pageTitle, pageSubtitle, fieldLabel, MEASURE_FORM, MEASURE_GRID } from '../settings/PageShell'
 
 // Model choices surfaced as a dropdown — the headline of the whole view.
 // Empty value = omit the field (inherit the parent session's model).
@@ -13,6 +14,10 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: 'default', label: 'Account default' },
 ]
 
+// Sentinel `<select>` value (never a stored model) that swaps the dropdown for a free-typed
+// id — see the Model field in Editor.
+const CUSTOM_MODEL = '__custom'
+
 const EFFORT_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Default' },
   { value: 'low', label: 'Low' },
@@ -22,16 +27,17 @@ const EFFORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'max', label: 'Max' },
 ]
 
-// Per-model cost hint shown at the point of choosing — routing intelligence:
-// pick the cheap model for grunt work, the expensive one only where it pays off.
-// Rates are public per-MTok input/output (see usage dashboard for the math).
-const MODEL_COST: Record<string, string> = {
+// Per-model hint shown at the point of choosing — routing intelligence: what each
+// model is FOR, so grunt work goes cheap and the expensive one is saved for where it
+// pays off. Deliberately no $/Mtok figures here — they read as noise while picking a
+// model, and Operator no longer reports spend anywhere (the Usage & cost view is gone).
+const MODEL_HINT: Record<string, string> = {
   '': 'Runs on whatever model the session uses.',
-  haiku: '$1 in · $5 out per Mtok — cheapest & fastest. Good for extraction, search, simple edits.',
-  sonnet: '$3 in · $15 out per Mtok — balanced. Good default for most coding.',
-  opus: '$5 in · $25 out per Mtok — most capable. Reserve for hard reasoning & review.',
-  fable: '$10 in · $50 out per Mtok — frontier. Only for the most demanding work.',
-  opusplan: 'Opus while planning, Sonnet while executing — Opus rates for the plan only.',
+  haiku: 'Cheapest & fastest — good for extraction, search, simple edits.',
+  sonnet: 'Balanced — a good default for most coding.',
+  opus: 'Most capable — reserve for hard reasoning & review.',
+  fable: 'Frontier — only for the most demanding work.',
+  opusplan: 'Opus while planning, Sonnet while executing.',
   default: 'Falls back to your account default model.',
 }
 
@@ -137,13 +143,16 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
-      {/* Header — centered, wider column than the doc pages since this is a
-          list+editor workspace (still balanced instead of pinned left). Suppressed when
-          embedded in the Agents hub, which supplies its own header + tab. */}
+      {/* Standalone header. It wears PageShell's TOKENS rather than PageShell itself: the
+          shell's body is a single scroller with a measure box, and this page's body is a
+          two-pane list+editor where each column scrolls on its own — wrapping that in the
+          shell's scroller would break the panes and re-inset their scrollbars. Same type,
+          same measure, same data-attrs the theme pass probes. Suppressed when embedded in
+          the Agents hub, which supplies the real PageShell header + tabs. */}
       {!embedded && (
-        <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-          <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Agents</h2>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7, lineHeight: 1.6 }}>
+        <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: MEASURE_GRID, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+          <h2 data-page-title style={pageTitle}>Agents</h2>
+          <p data-page-subtitle style={{ ...pageSubtitle }}>
             Define subagents and pick which model handles each kind of task. Saved as{' '}
             <code style={{ background: 'var(--bg-surface)', padding: '0 4px', borderRadius: 3 }}>.claude/agents/*.md</code>{' '}
             — Claude Code delegates to them by their description.
@@ -151,7 +160,11 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
         </div>
       )}
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+      {/* Full width, NOT capped at 1100: the two columns below are the scrollers, and a
+          capped ancestor parks their scrollbars at its edge instead of the window's. The
+          measure moves inside — the list column is a fixed 240, and the editor caps its own
+          form width — so the split-pane still reads deliberate at any window size. */}
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, width: '100%', boxSizing: 'border-box' }}>
         {/* List column */}
         <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto', padding: '12px 10px' }}>
           <ListGroup
@@ -184,7 +197,7 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
         <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
           {!selected ? (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-              <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, textAlign: 'center', lineHeight: 1.7 }}>
+              <p style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', lineHeight: 1.7 }}>
                 Select an agent to edit, or create one.<br />Each agent can run on its own model.
               </p>
             </div>
@@ -219,18 +232,18 @@ function ListGroup({ title, sub, agents, selectedPath, onSelect, onAdd }: {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 6px 6px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', opacity: 0.7 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', }}>
           {title}{sub ? ` · ${sub}` : ''}
         </span>
         {onAdd && (
           <button onClick={onAdd} title={`New ${title.toLowerCase()} agent`} style={{
             background: 'none', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer',
-            fontSize: 15, lineHeight: 1, padding: 0, opacity: 0.6,
+            fontSize: 15, lineHeight: 1, padding: 0, 
           }}>+</button>
         )}
       </div>
       {agents.length === 0 && (
-        <p style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, padding: '2px 6px 0' }}>None yet</p>
+        <p style={{ fontSize: 10, color: 'var(--fg-muted)', padding: '2px 6px 0' }}>None yet</p>
       )}
       {agents.map((a) => {
         const active = a.path && a.path === selectedPath
@@ -252,7 +265,7 @@ function ListGroup({ title, sub, agents, selectedPath, onSelect, onAdd }: {
               <span className={`op-badge${modelTier(a.model) ? ' ' + modelTier(a.model) : ''}`}>
                 {modelLabel(a.model)}
               </span>
-              <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+              <span style={{ fontSize: 10, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                 {a.description || 'No description'}
               </span>
             </div>
@@ -276,8 +289,19 @@ function Editor({ agent, isNew, dirty, error, onPatch, onToggleTool, onPickProje
   onCancel: () => void
 }) {
   const tools = new Set(agent.tools ?? [])
+  // Escape hatch for a model tier Claude Code's CLI accepts before Operator ships a preset
+  // for it: "Other…" swaps the dropdown for a free-typed id. An agent already saved with a
+  // non-preset model opens in this mode too, so editing one can't silently rewrite its model
+  // back to a preset. (The listed tiers never need this — Claude Code resolves opus/sonnet/…
+  // to the current point release itself.)
+  const [customOpen, setCustomOpen] = useState(false)
+  const customModel = customOpen || !MODEL_OPTIONS.some((m) => m.value === (agent.model || ''))
+  // Reset only when a DIFFERENT agent loads (path = file identity) — keying on name/model
+  // would collapse the input while the user is typing into it.
+  useEffect(() => { setCustomOpen(false) }, [agent.path])
+
   return (
-    <div style={{ padding: '18px 24px', maxWidth: 640 }}>
+    <div style={{ padding: '18px 24px', maxWidth: MEASURE_FORM }}>
       <Field label="Name" hint="Lowercase identifier, e.g. code-reviewer. Sets the filename.">
         <input
           value={agent.name}
@@ -297,10 +321,34 @@ function Editor({ agent, isNew, dirty, error, onPatch, onToggleTool, onPickProje
         />
       </Field>
 
-      <Field label="Model" hint={MODEL_COST[agent.model || ''] ?? 'Which model runs this agent — the headline of its config.'}>
-        <select value={agent.model || ''} onChange={(e) => onPatch({ model: e.target.value })} style={{ ...textInput, cursor: 'pointer' }}>
+      <Field
+        label="Model"
+        hint={customModel
+          ? 'Any model id or alias your Claude Code CLI accepts — for a tier with no preset here yet.'
+          : MODEL_HINT[agent.model || ''] ?? 'Which model runs this agent — the headline of its config.'}
+      >
+        <select
+          value={customModel ? CUSTOM_MODEL : (agent.model || '')}
+          onChange={(e) => {
+            // Picking "Other…" only reveals the input — it keeps whatever id is set, so the
+            // field is pre-filled to edit rather than blanked.
+            if (e.target.value === CUSTOM_MODEL) { setCustomOpen(true); return }
+            setCustomOpen(false)
+            onPatch({ model: e.target.value })
+          }}
+          style={{ ...textInput, cursor: 'pointer' }}
+        >
           {MODEL_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          <option value={CUSTOM_MODEL}>Other — type a model id…</option>
         </select>
+        {customModel && (
+          <input
+            value={agent.model || ''}
+            onChange={(e) => onPatch({ model: e.target.value })}
+            placeholder="Exactly as you'd type it after /model"
+            style={{ ...textInput, marginTop: 6, fontFamily: 'var(--font-mono)' }}
+          />
+        )}
       </Field>
 
       <div style={{ display: 'flex', gap: 12 }}>
@@ -334,7 +382,7 @@ function Editor({ agent, isNew, dirty, error, onPatch, onToggleTool, onPickProje
                   borderRadius: 5, border: '1px solid var(--border)',
                   background: on ? 'var(--btn-bg)' : 'transparent',
                   color: on ? 'var(--fg)' : 'var(--fg-muted)',
-                  opacity: on ? 1 : 0.7,
+                  
                 }}
               >
                 {tool}
@@ -401,8 +449,12 @@ function Editor({ agent, isNew, dirty, error, onPatch, onToggleTool, onPickProje
 function Field({ label, hint, children, style }: { label: string; hint?: string; children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{ marginBottom: 16, ...style }}>
-      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--fg)', marginBottom: 2 }}>{label}</label>
-      {hint && <p style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6, margin: '0 0 6px', lineHeight: 1.4 }}>{hint}</p>}
+      {/* The shared token, not a local 11/600 restatement — a second field-label style is the
+          exact drift PageShell exists to end, and it lived one layer below the page chrome. */}
+      <label style={{ display: 'block', ...fieldLabel, marginBottom: 2 }}>{label}</label>
+      {/* No opacity over --fg-muted: at 0.6 this hint measured 2.16–3.46:1, under even the
+          3:1 meta floor on five of six palettes. */}
+      {hint && <p style={{ fontSize: 10, color: 'var(--fg-muted)', margin: '0 0 6px', lineHeight: 1.4 }}>{hint}</p>}
       {children}
     </div>
   )

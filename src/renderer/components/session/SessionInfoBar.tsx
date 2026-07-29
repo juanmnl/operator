@@ -61,7 +61,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
         }} />
         <span
           title={`Session started ${started}`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: 'var(--fg-muted)', }}
         >
           {/* Clock glyph so the bare time reads as "when this session started". */}
           <svg width="9" height="9" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} aria-hidden>
@@ -71,7 +71,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
           {started}
         </span>
         {session.lastToolName && (
-          <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
+          <span style={{ fontSize: 10, color: 'var(--fg-muted)', }}>
             {session.lastToolName}
           </span>
         )}
@@ -110,7 +110,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
               background: 'var(--bg-surface)',
               borderRadius: 8,
               padding: '0px 6px',
-              opacity: 0.9,
+              
               cursor: 'pointer',
               textDecoration: 'underline dotted',
               textUnderlineOffset: 2,
@@ -124,7 +124,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
           marginLeft: 'auto',
           fontSize: 7,
           color: 'var(--fg-muted)',
-          opacity: 0.3,
+          
           transform: expanded ? 'rotate(180deg)' : 'none',
           transition: 'transform 0.15s',
           display: 'inline-block',
@@ -141,7 +141,7 @@ export function SessionInfoBar({ session, worktreePath, onReviewChanges, onViewA
           display: 'flex',
           flexDirection: 'column',
           gap: 2,
-          opacity: 0.7,
+          
         }}>
           <span>{session.workingDirectory}</span>
           <div style={{ display: 'flex', gap: 16 }}>

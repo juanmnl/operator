@@ -5,6 +5,7 @@ import { PermissionsSection } from './PermissionsSection'
 import { GeneralSection } from './GeneralSection'
 import { HooksSection } from './HooksSection'
 import { PluginsSection } from './PluginsSection'
+import { PageShell } from '../settings/PageShell'
 
 interface FolderPreferencesViewProps {
   projectPath: string
@@ -61,51 +62,14 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: "var(--font-body)", overflow: 'hidden' }}>
-      {/* Header — centered max-width column (matches PrefsView so every page is
-          balanced on a wide window instead of pinned left). */}
-      <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', margin: 0 }}>
-          {projectName}
-        </h2>
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.6 }}>
-          {projectPath}
-        </p>
-      </div>
-
-      {/* Tab bar */}
-      <div style={{
-        display: 'flex',
-        gap: 0,
-        padding: '16px 24px 0',
-        borderBottom: '1px solid var(--border)',
-        flexShrink: 0,
-        maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box',
-      }}>
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: '8px 14px',
-              fontSize: 12,
-              fontWeight: 500,
-              fontFamily: 'inherit',
-              color: tab === activeTab ? 'var(--fg)' : 'var(--fg-muted)',
-              background: 'none',
-              border: 'none',
-              borderBottom: tab === activeTab ? '2px solid var(--accent)' : '2px solid transparent',
-              cursor: 'pointer',
-              marginBottom: -1,
-            }}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-
-      {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <PageShell
+      title={projectName}
+      subtitle={projectPath}
+      measure="form"
+      tabs={TABS.map((t) => ({ id: t, label: t }))}
+      active={activeTab}
+      onSelectTab={(id) => setActiveTab(id as typeof TABS[number])}
+    >
         {activeTab === 'Instructions' && (
           <InstructionsSection
             mdFiles={prefs.mdFiles}
@@ -136,7 +100,6 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
             onSave={handleSaveSettings}
           />
         )}
-      </div>
-    </div>
+    </PageShell>
   )
 }

@@ -67,7 +67,7 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
       />
 
       {isReadOnly && (
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 16px', opacity: 0.7 }}>
+        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 16px', }}>
           These settings are managed by your organization and cannot be edited.
         </p>
       )}
@@ -99,7 +99,7 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
                   border: 'none',
                   cursor: isReadOnly ? 'default' : 'pointer',
                   borderRight: level !== 'low' ? '1px solid var(--border)' : 'none',
-                  opacity: isReadOnly ? 0.5 : 1,
+                  
                 }}
               >
                 {level}

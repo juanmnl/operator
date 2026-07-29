@@ -29,7 +29,7 @@ export function CanvasDiffPanel({ path }: { path?: string | null }) {
         gap: 6, padding: 24, textAlign: 'center', fontFamily: "var(--font-body)",
       }}>
         <span style={{ fontFamily: 'var(--font-disp)', fontSize: 15, fontWeight: 600, color: 'var(--fg)', opacity: 0.9 }}>No changes</span>
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.7, maxWidth: 280, lineHeight: 1.5 }}>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)', maxWidth: 280, lineHeight: 1.5 }}>
           Edits the agent makes in this session’s working tree show up here.
         </span>
       </div>

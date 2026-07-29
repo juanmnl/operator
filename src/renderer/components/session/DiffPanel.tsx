@@ -124,11 +124,11 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
       }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg)' }}>Review changes</span>
         {data?.branch && (
-          <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6 }}>
+          <span style={{ fontSize: 10, color: 'var(--fg-muted)', }}>
             {data.branch}
           </span>
         )}
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5 }}>
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', }}>
           {data ? `${data.files.length} file${data.files.length === 1 ? '' : 's'}` : 'loading…'}
         </span>
         <div style={{ flex: 1 }} />
@@ -165,7 +165,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
               }}
             >
               <span style={{
-                fontSize: 9, color: 'var(--fg-muted)', opacity: 0.6, width: 14, flexShrink: 0,
+                fontSize: 9, color: 'var(--fg-muted)', width: 14, flexShrink: 0,
                 textAlign: 'center',
               }}>
                 {f.status.trim() || '·'}
@@ -176,7 +176,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
                 {f.path}
               </span>
               {(f.added > 0 || f.removed > 0) && (
-                <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.7, flexShrink: 0 }}>
+                <span style={{ fontSize: 9, color: 'var(--fg-muted)', flexShrink: 0 }}>
                   {f.added > 0 && <span style={{ color: 'var(--add-fg)' }}>+{f.added}</span>}
                   {f.added > 0 && f.removed > 0 && ' '}
                   {f.removed > 0 && <span style={{ color: 'var(--del-fg)' }}>-{f.removed}</span>}
@@ -185,7 +185,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
             </button>
           ))}
           {data && data.files.length === 0 && (
-            <div style={{ padding: '12px', fontSize: 11, color: 'var(--fg-muted)', opacity: 0.6 }}>
+            <div style={{ padding: '12px', fontSize: 11, color: 'var(--fg-muted)', }}>
               No changes
             </div>
           )}
@@ -205,7 +205,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
               ))}
             </pre>
           ) : (
-            <div style={{ padding: 16, color: 'var(--fg-muted)', fontSize: 11, opacity: 0.5 }}>
+            <div style={{ padding: 16, color: 'var(--fg-muted)', fontSize: 11, }}>
               {data ? 'Select a file to see its diff' : 'Loading diff…'}
             </div>
           )}

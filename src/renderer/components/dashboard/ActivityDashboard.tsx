@@ -48,7 +48,7 @@ export function ActivityDashboard({
               ? `${active.length} agent${active.length === 1 ? '' : 's'} at work`
               : 'All quiet for now'}
           </h2>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '2px 0 0', opacity: 0.6 }}>
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '2px 0 0', }}>
             {active.length > 0
               ? "Here's what they're up to right now."
               : 'Pick up a session below, or start something new.'}
@@ -157,7 +157,7 @@ export function ActivityDashboard({
                   </div>
 
                   <span style={{
-                    fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5,
+                    fontSize: 10, color: 'var(--fg-muted)', 
                     flexShrink: 0, width: 70, textAlign: 'right',
                     fontVariantNumeric: 'tabular-nums',
                   }}>

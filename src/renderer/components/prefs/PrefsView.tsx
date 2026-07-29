@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { PageShell, sectionHeader, sectionDesc, SECTION_GAP } from '../settings/PageShell'
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
@@ -199,28 +200,16 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   }
 
   return (
-    <div style={{
-      flex: 1, display: 'flex', flexDirection: 'column',
-      fontFamily: "var(--font-body)", overflow: 'hidden',
-    }}>
-      {/* Header + content share one centered max-width column (margin:0 auto on a
-          flex item centers it via auto-margins, and still fills narrow windows) so
-          the page is balanced instead of pinned to the left on a wide window. */}
-      <div style={{ padding: '16px 24px 0', flexShrink: 0, maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>
-          Operator preferences
-        </h2>
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 0', opacity: 0.7 }}>
-          App-level behavior. Per-project Claude Code settings live in the project's gear menu.
-        </p>
-      </div>
-
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', maxWidth: 720, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <section style={{ marginBottom: 28 }}>
-          <h3 style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg-muted)', margin: '0 0 2px' }}>
+    <PageShell
+      title="Operator preferences"
+      subtitle="App-level behavior. Per-project Claude Code settings live in the project's gear menu."
+      measure="form"
+    >
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
             Updates
           </h3>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={sectionDesc}>
             Operator checks for updates on launch and every few hours.{' '}
             {version ? <>You're on <strong style={{ color: 'var(--fg)' }}>v{version}</strong>.</> : null}
           </p>
@@ -263,9 +252,9 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
           </div>
         </section>
 
-        <section style={{ marginBottom: 28 }}>
+        <section style={{ marginBottom: SECTION_GAP }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 2 }}>
-            <h3 style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg-muted)', margin: 0 }}>
+            <h3 data-section-header style={sectionHeader}>
               Theme
             </h3>
             {/* Light/Dark applies within whichever identity is selected. */}
@@ -289,7 +278,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               })}
             </div>
           </div>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={sectionDesc}>
             Also switchable from the command palette (⌘K → “Theme: …”).
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
@@ -305,11 +294,11 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
           </div>
         </section>
 
-        <section style={{ marginBottom: 28 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
             Dock icon
           </h3>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={sectionDesc}>
             Pick the app icon that suits your dock. Applies instantly; restored on every launch.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 150px))', gap: 10 }}>
@@ -319,11 +308,11 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
           </div>
         </section>
 
-        <section style={{ marginBottom: 28 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
             Sounds
           </h3>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={sectionDesc}>
             A soft chime when a session finishes its turn and is waiting on you, so you can look away.
           </p>
           <button
@@ -353,11 +342,11 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
           </button>
         </section>
 
-        <section style={{ marginBottom: 28 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', margin: '0 0 2px' }}>
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
             Terminal
           </h3>
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={sectionDesc}>
             With the Option key as Meta, ⌥-combos send Esc sequences for shells and editors
             (readline/emacs). Off (default), ⌥ composes characters — ⌥e→é, ⌥3→#, and non-US layouts.
           </p>
@@ -392,7 +381,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               the gaps between words (the struck-through / colour-spilled rows). Alt-screen
               repaints the whole viewport, so drift can't accumulate — at the cost of the
               native scrollback, which Claude's own scrolling replaces. */}
-          <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '18px 0 12px', opacity: 0.7 }}>
+          <p data-section-desc style={{ ...sectionDesc, margin: '18px 0 12px' }}>
             Fullscreen runs Claude in an alt-screen viewport that repaints whole frames, which
             avoids the overprinting that can garble classic-mode output. The trade-off: no native
             terminal scrollback — you scroll inside Claude instead. Applies to newly-started sessions.
@@ -424,7 +413,6 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
 
         </section>
 
-      </div>
-    </div>
+    </PageShell>
   )
 }

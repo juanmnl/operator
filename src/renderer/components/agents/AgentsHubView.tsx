@@ -5,6 +5,7 @@ import { sessionWaveStatus } from '../../lib/session-status'
 import { sessionLabel } from '../../lib/session-label'
 import { modelFamilyLabel } from '../../lib/roster'
 import { AgentLibraryView } from './AgentLibraryView'
+import { PageShell } from '../settings/PageShell'
 
 interface AgentsHubProps {
   projects: Project[]
@@ -61,21 +62,20 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
   }, [projects, sessions])
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-body)', overflow: 'hidden' }}>
-      {/* Header + tab switch. */}
-      <div style={{ padding: '16px 24px 12px', flexShrink: 0, borderBottom: '1px solid var(--border)', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
-        <h2 style={{ fontFamily: 'var(--font-disp)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--fg)', margin: 0 }}>Agents</h2>
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '4px 0 12px', opacity: 0.7, lineHeight: 1.6 }}>
-          Every agent across your projects — live sessions and the idle lanes waiting to be launched.
-        </p>
-        <div style={{ display: 'flex', gap: 4 }}>
-          <Tab label="Fleet" active={tab === 'fleet'} onClick={() => setTab('fleet')} />
-          <Tab label="Subagent library" active={tab === 'library'} onClick={() => setTab('library')} />
-        </div>
-      </div>
-
+    <PageShell
+      title="Agents"
+      subtitle="Every agent across your projects — live sessions and the idle lanes waiting to be launched."
+      measure="grid"
+      tabs={[{ id: 'fleet', label: 'Fleet' }, { id: 'library', label: 'Subagent library' }]}
+      active={tab}
+      onSelectTab={(id) => setTab(id as 'fleet' | 'library')}
+      // The library is a split pane that scrolls its own two columns; the fleet is a card
+      // grid that wants the page scroller. See PageShell's `scroll` prop.
+      scroll={tab === 'library' ? 'child' : 'page'}
+    >
       {tab === 'fleet' ? (
-        <div style={{ flex: 1, overflow: 'auto', maxWidth: 1100, width: '100%', margin: '0 auto', boxSizing: 'border-box', padding: '16px 24px 40px' }}>
+        // PageShell owns the scroller and the measure (grid = 1100), so this is content only.
+        <>
           {/* Global roll-up. */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
             <RollupChip n={liveCount} label={liveCount === 1 ? 'live agent' : 'live agents'} />
@@ -85,7 +85,7 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
 
           {groups.length === 0 ? (
             <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-              <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, lineHeight: 1.7 }}>
+              <p style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
                 No agents yet. Open a project and launch a lane to see it here.
               </p>
             </div>
@@ -104,7 +104,7 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
                   title={g.project.path ? 'Open project workspace' : undefined}
                 >
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{g.project.name}</span>
-                  <span style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)', opacity: 0.7 }}>
+                  <span style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
                     {g.active.length} live · {g.passive.length} idle
                   </span>
                 </button>
@@ -147,31 +147,15 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
               </section>
             ))
           )}
-        </div>
+        </>
       ) : (
         <AgentLibraryView embedded />
       )}
-    </div>
+    </PageShell>
   )
 }
 
-function Tab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: '5px 12px', fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.04em',
-        textTransform: 'uppercase', cursor: 'pointer', borderRadius: 'var(--radius-sm)', outline: 'none',
-        border: '1px solid var(--border)',
-        // Surface wash for the active tab — never an accent fill.
-        background: active ? 'var(--overlay-medium)' : 'transparent',
-        color: active ? 'var(--fg)' : 'var(--fg-muted)',
-      }}
-    >
-      {label}
-    </button>
-  )
-}
+// (The local Tab component is gone — PageShell owns the tab bar now.)
 
 function RollupChip({ n, label }: { n: number; label: string }) {
   return (
@@ -187,7 +171,7 @@ function RollupChip({ n, label }: { n: number; label: string }) {
 
 function SubHead({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', opacity: 0.7, margin: '2px 0 8px' }}>
+    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.16em', color: 'var(--fg-muted)', margin: '2px 0 8px' }}>
       {children}
     </div>
   )
@@ -257,7 +241,7 @@ function PassiveCard({ name, model, worktree, seed, accent, onClick }: {
       </div>
       <span style={{
         flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em',
-        color: 'var(--fg-muted)', opacity: hover ? 0.9 : 0, transition: 'opacity 120ms ease',
+        color: 'var(--fg-muted)', opacity: hover ? 1 : 0, transition: 'opacity 120ms ease',
       }}>
         launch ▷
       </span>

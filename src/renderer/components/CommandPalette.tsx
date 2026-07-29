@@ -97,7 +97,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
         </div>
         {a.detail && (
           <div style={{
-            fontSize: 10, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 1,
+            fontSize: 10, color: 'var(--fg-muted)', marginTop: 1,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
           }}>
@@ -107,12 +107,12 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
       </div>
       {/* While searching there are no section headers, so tag the group inline. */}
       {searching && a.group && (
-        <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--fg-muted)', opacity: 0.6, flexShrink: 0 }}>
+        <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--fg-muted)', flexShrink: 0 }}>
           {a.group}
         </span>
       )}
       {a.hint && (
-        <span style={{ fontSize: 10, color: 'var(--fg-muted)', opacity: 0.55, flexShrink: 0, fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace" }}>
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0, fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace" }}>
           {a.hint}
         </span>
       )}
@@ -162,7 +162,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
         />
         <div ref={listRef} style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
           {ordered.length === 0 && (
-            <div style={{ padding: '20px 16px', fontSize: 12, color: 'var(--fg-muted)', opacity: 0.6, textAlign: 'center' }}>
+            <div style={{ padding: '20px 16px', fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center' }}>
               No matches
             </div>
           )}
@@ -175,7 +175,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
                 {header && (
                   <div style={{
                     padding: '10px 20px 4px', fontFamily: 'var(--font-mono)', fontSize: 9.5,
-                    textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--fg-muted)', opacity: 0.7,
+                    textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--fg-muted)', 
                   }}>
                     {header}
                   </div>
@@ -189,7 +189,7 @@ export function CommandPalette({ actions, onClose }: CommandPaletteProps) {
         <div style={{
           flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14,
           padding: '7px 16px', borderTop: '1px solid var(--border)',
-          fontSize: 10, color: 'var(--fg-muted)', opacity: 0.6,
+          fontSize: 10, color: 'var(--fg-muted)', 
         }}>
           <Legend k="↑↓" label="navigate" />
           <Legend k="↵" label="open" />

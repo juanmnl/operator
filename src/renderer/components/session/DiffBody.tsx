@@ -131,11 +131,11 @@ function FilePath({ path }: { path: string }) {
         // direction:rtl truncates the path from the LEFT (ellipsis at the start). Keep
         // the separating "/" OUT of this span — as a neutral char, rtl bidi reorders it
         // away from the dir, which glued the dir name onto the filename.
-        <span style={{ color: 'var(--fg-muted)', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
+        <span style={{ color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }}>
           {dir}
         </span>
       )}
-      {slash >= 0 && <span style={{ flexShrink: 0, color: 'var(--fg-muted)', opacity: 0.7 }}>/</span>}
+      {slash >= 0 && <span style={{ flexShrink: 0, color: 'var(--fg-muted)', }}>/</span>}
       <span style={{ flexShrink: 0, color: 'var(--fg)', fontWeight: 500 }}>{name}</span>
     </span>
   )

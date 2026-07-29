@@ -535,7 +535,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               </span>
               {found.length > 0 && (
                 <span style={{ display: 'block', marginTop: 12 }}>
-                  <span style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', opacity: 0.7, marginBottom: 6 }}>
+                  <span style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 6 }}>
                     Found {found.length === 1 ? 'a server' : 'servers'} — pick one to preview:
                   </span>
                   <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
@@ -563,7 +563,7 @@ function Centered({ title, children }: { title: string; children?: React.ReactNo
     }}>
       <span style={{ fontSize: 12, color: 'var(--fg)' }}>{title}</span>
       {children && (
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.75, maxWidth: 320, lineHeight: 1.5 }}>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)', maxWidth: 320, lineHeight: 1.5 }}>
           {children}
         </span>
       )}

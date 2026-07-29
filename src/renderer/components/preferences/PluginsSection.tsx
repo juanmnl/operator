@@ -32,10 +32,10 @@ export function PluginsSection({ settingsFiles, onSave }: PluginsSectionProps) {
   if (allPlugins.size === 0) {
     return (
       <div>
-        <p style={{ fontSize: 12, color: 'var(--fg-muted)', opacity: 0.5 }}>
+        <p style={{ fontSize: 12, color: 'var(--fg-muted)', }}>
           No plugins configured in any settings file.
         </p>
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '8px 0 0', opacity: 0.4 }}>
+        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '8px 0 0', }}>
           Plugins are managed through Claude Code CLI. Configure them there and they'll appear here.
         </p>
       </div>
@@ -45,7 +45,7 @@ export function PluginsSection({ settingsFiles, onSave }: PluginsSectionProps) {
   return (
     <div>
       {writeTarget && (
-        <p style={{ fontSize: 10, color: 'var(--fg-muted)', margin: '0 0 12px', opacity: 0.6 }}>
+        <p style={{ fontSize: 10, color: 'var(--fg-muted)', margin: '0 0 12px', }}>
           Changes save to: {writeTarget.label}
         </p>
       )}
@@ -71,7 +71,7 @@ export function PluginsSection({ settingsFiles, onSave }: PluginsSectionProps) {
               <div style={{ fontSize: 12, color: 'var(--fg)', fontWeight: 500 }}>
                 {name}
               </div>
-              <div style={{ fontSize: 9, color: 'var(--fg-muted)', marginTop: 2, opacity: 0.5 }}>
+              <div style={{ fontSize: 9, color: 'var(--fg-muted)', marginTop: 2, }}>
                 from {source.label}
               </div>
             </div>

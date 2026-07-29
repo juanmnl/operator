@@ -86,7 +86,7 @@ export function SessionActivityView({ session }: Props) {
         <span style={{
           fontSize: 7,
           color: 'var(--fg-muted)',
-          opacity: 0.4,
+          
           transform: showDetails ? 'rotate(180deg)' : 'none',
           transition: 'transform 0.15s',
           display: 'inline-block',
@@ -132,7 +132,7 @@ export function SessionActivityView({ session }: Props) {
             <p style={{ fontFamily: 'var(--font-disp)', fontSize: 15, fontWeight: 600, color: 'var(--fg)', opacity: 0.9 }}>
               No activity yet
             </p>
-            <p style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.6, marginTop: 6, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6, lineHeight: 1.6 }}>
               Tool calls and subagent delegations will appear here as the agent works.
             </p>
           </div>
