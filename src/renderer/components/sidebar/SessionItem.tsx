@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useHoverCard } from '../../lib/use-hover-card'
 import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
 import { sessionWaveStatus } from '../../lib/session-status'
@@ -31,10 +32,6 @@ interface SessionItemProps {
 export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onPickAccent }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
-  const [hovered, setHovered] = useState(false)
-  // Fixed-position card: the sidebar scroller clips overflow, so an absolutely
-  // positioned one would be cut off at its edge.
-  const [card, setCard] = useState<{ top: number; left: number } | null>(null)
   const [confirmingClose, setConfirmingClose] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -66,6 +63,12 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
   }, [])
 
+  // Shared with SidebarRail (lib/use-hover-card): row-moves-under-cursor AND
+  // cursor-leaves-the-window, plus the one-card-app-wide guarantee.
+  const hover = useHoverCard(session.id)
+  const { card, hovered } = hover
+  const endHover = () => { hover.dismiss(); setConfirmingClose(false) }
+
   const commitRename = () => {
     const trimmed = editValue.trim()
     if (trimmed && trimmed !== label) {
@@ -90,6 +93,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
 
   return (
     <div
+      ref={hover.ref as React.RefObject<HTMLDivElement>}
       role="button"
       tabIndex={0}
       onClick={onClick}
@@ -99,12 +103,8 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         setEditValue(label)
         setEditing(true)
       }}
-      onMouseEnter={(e) => {
-        setHovered(true)
-        const r = e.currentTarget.getBoundingClientRect()
-        setCard({ top: r.top, left: r.right + 8 })
-      }}
-      onMouseLeave={() => { setHovered(false); setConfirmingClose(false); setCard(null) }}
+      onMouseEnter={hover.onMouseEnter}
+      onMouseLeave={endHover}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -275,7 +275,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
             fontSize: 8,
             fontWeight: 600,
             color: 'var(--fg-muted)',
-            opacity: 0.5,
+            
             flexShrink: 0,
             textTransform: 'uppercase',
           }}
@@ -287,7 +287,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         <span
           style={{
             fontSize: 9, color: 'var(--fg-muted)',
-            opacity: 0.4, flexShrink: 0,
+            flexShrink: 0,
             fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
           }}
           title={`Switch with ⌘${shortcutIndex}`}
@@ -310,7 +310,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
             lineHeight: '14px',
             cursor: 'pointer',
             flexShrink: 0,
-            opacity: confirmingClose ? 1 : 0.5,
+            
           }}
         >
           {confirmingClose ? '×?' : '×'}

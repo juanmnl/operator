@@ -15,6 +15,13 @@ export function relativeTime(iso: string, opts: { subMinuteSeconds?: boolean } =
   return `${Math.round(h / 24)}d ago`
 }
 
+/** Collapse the user's home directory to `~` for display: /Users/me/dev/app → ~/dev/app.
+ *  Pattern-based (no fs/home lookup) so it stays a pure formatter: matches the macOS and
+ *  Linux home layouts only, and returns anything else unchanged. */
+export function tildePath(path: string): string {
+  return path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
+}
+
 /** Dollar cost, precision scaled to magnitude: $123 / $12.34 / $0.123. */
 export function fmtCost(n: number): string {
   if (n >= 100) return `$${n.toFixed(0)}`

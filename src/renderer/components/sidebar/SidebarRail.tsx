@@ -1,12 +1,16 @@
-import { Fragment, useState } from 'react'
+import { Fragment } from 'react'
 import { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
 import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 import { laneTextColor } from '../../lib/lane-color'
+import { useHoverCard } from '../../lib/use-hover-card'
 
 interface SidebarRailProps {
+  /** The project this rail is scoped to (same scope as the expanded sidebar). */
+  project: Project | null
+  /** Live sessions of THIS project (already scoped upstream). */
   sessions: AgentSession[]
   /** Projects, to resolve each session's roleId → its lane (colour + name). */
   projects: Project[]
@@ -15,8 +19,12 @@ interface SidebarRailProps {
   shortcutIndices: Record<string, number>
   onSelectSession: (session: AgentSession) => void
   onNewSession: () => void
-  /** Expand the sidebar back to full width. */
+  /** Expand the sidebar back to full width. No longer a toggle button of its own (the
+   *  toolbar owns that) — this is what the project badge does, since switching project
+   *  means reaching the switcher, which lives in the expanded sidebar. */
   onExpand: () => void
+  /** Leave every project — the project badge's secondary action. */
+  onShowGallery: () => void
   /** Effective accent for a session: its lane's colour, or a per-session override. */
   accentOf?: (session: AgentSession) => string | undefined
   /** Right-click on the orb → open the colour picker anchored under it. */
@@ -52,37 +60,18 @@ function shortNameOf(name: string): string {
   return words.slice(0, 3).map((w) => w[0]).join('').toUpperCase()
 }
 
-const panelIcon = (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
-    <line x1="6.25" y1="3.25" x2="6.25" y2="12.75" />
-  </svg>
-)
-
 // Collapsed "rail" — a Slack-style narrow strip for quick access to running
-// sessions plus the expand toggle. Hosts the macOS traffic lights (paddingTop)
-// so the content card to its right never slides under them.
-export function SidebarRail({ sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand, accentOf, onPickAccent }: SidebarRailProps) {
-  const [hovered, setHovered] = useState<{ id: string; top: number; left: number } | null>(null)
-  // Cluster sessions by project (same keying as the expanded sidebar's groups) so the
-  // rail reads as per-project clusters instead of one undifferentiated column of agents.
-  const groups: Array<{ key: string; name: string; sessions: AgentSession[] }> = []
-  {
-    const byKey = new Map<string, { key: string; name: string; sessions: AgentSession[] }>()
-    for (const session of sessions) {
-      const proj = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
-      const key = session.projectId || `name:${session.projectName || 'Unknown'}`
-      let g = byKey.get(key)
-      if (!g) {
-        g = { key, name: proj?.name || session.projectName || 'Unknown', sessions: [] }
-        byKey.set(key, g)
-        groups.push(g)
-      }
-      g.sessions.push(session)
-    }
-  }
-  // A single project needs no tags/dividers — keep the rail as clean as before.
-  const showGroupChrome = groups.length > 1
+// sessions. Hosts the macOS traffic lights (paddingTop) so the content card to
+// its right never slides under them.
+//
+// It does NOT carry its own show-sidebar toggle: SessionToolbar's is the single
+// persistent one (it works in both states, so a second copy here was the same
+// control twice). Expanding from the rail is still one click — the project badge
+// below does it, since the switcher it leads to lives in the expanded sidebar.
+export function SidebarRail({ project, sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand, onShowGallery, accentOf, onPickAccent }: SidebarRailProps) {
+  // No project clustering any more: the rail is scoped to ONE project, so the tags and
+  // seams that separated clusters have nothing left to separate. The project itself is
+  // named once, by the badge at the top.
   return (
     <div
       style={{
@@ -97,27 +86,32 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
         WebkitAppRegion: 'drag',
       }}
     >
-      {/* Top: clears the traffic lights, holds the expand toggle. */}
-      <DragRegion style={{ paddingTop: 40, paddingBottom: 6, display: 'flex', justifyContent: 'center', width: '100%' }}>
+      {/* Top: bare strip that clears the traffic lights (and stays draggable). */}
+      <DragRegion style={{ paddingTop: 40, paddingBottom: 2, width: '100%' }} />
+
+      {/* Which project you're in, at 1–2 chars. Expanding is where the switcher lives, so
+          that's what a click does; the title spells out the ⌘⇧O way out. */}
+      {project && (
         <button
           onClick={onExpand}
-          title="Show sidebar"
-          aria-label="Show sidebar"
+          onContextMenu={(e) => { e.preventDefault(); onShowGallery() }}
+          title={`${project.name} — click to switch project, right-click for all projects (⌘⇧O)`}
+          aria-label={`Project ${project.name}`}
           style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 30, height: 26, padding: 0,
+            flexShrink: 0, marginBottom: 4, padding: '2px 6px',
             background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
-            color: 'var(--fg-muted)', opacity: 0.85, cursor: 'pointer',
-            transition: 'opacity 120ms ease, background 120ms ease',
+            cursor: 'pointer', outline: 'none',
+            fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 600,
+            letterSpacing: '0.12em', textTransform: 'uppercase',
+            color: 'var(--fg-muted)', 
+            maxWidth: 56, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'no-drag',
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.background = 'transparent' }}
         >
-          {panelIcon}
+          {shortNameOf(project.name)}
         </button>
-      </DragRegion>
+      )}
 
       {/* Quick-access process icons. */}
       <div
@@ -136,35 +130,12 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        {groups.map((g, gi) => (
-          <Fragment key={g.key}>
-            {/* Faint seam + compact project tag between clusters — separation comes from
-                the hairline and the label, per the no-accent-fill / no-stripe rules. */}
-            {showGroupChrome && gi > 0 && (
-              <div style={{ width: 28, height: 1, flexShrink: 0, background: 'var(--border)', margin: '5px 0 3px' }} />
-            )}
-            {showGroupChrome && (
-              <div
-                title={g.name}
-                style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 8, fontWeight: 500,
-                  letterSpacing: '0.12em', textTransform: 'uppercase',
-                  color: 'var(--fg-muted)', opacity: 0.75,
-                  maxWidth: 56, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  marginBottom: 1,
-                  // NOT pointer-events:none — the tag is an abbreviation ("uwazi_app" → "UA"),
-                  // so the title tooltip is the only way to decode it, and hit-testing skips
-                  // a pointer-events:none element, meaning the tooltip could never fire.
-                  cursor: 'default',
-                }}
-              >
-                {shortNameOf(g.name)}
-              </div>
-            )}
-            {g.sessions.map((session) => {
+        {sessions.map((session) => {
           const active = session.id === activeSessionId
-          const project = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
-          const role: Role | undefined = session.roleId ? project?.roster?.find((r) => r.id === session.roleId) : undefined
+          // The session's own project — normally the scoped one, but resolved per session so
+          // a legacy row with a different projectId still finds its lane.
+          const sessionProject = session.projectId ? projects.find((p) => p.id === session.projectId) : undefined
+          const role: Role | undefined = session.roleId ? sessionProject?.roster?.find((r) => r.id === session.roleId) : undefined
           // Same label ladder as the expanded sidebar and the dashboard (lib/session-label):
           // custom name → lane → first prompt → running model → generic. The rail used to
           // fall back straight to the folder name, so collapsing renamed every agent in a
@@ -173,118 +144,22 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
           const initial = initialOf(role?.name || label)
           const accent = accentOf ? accentOf(session) : role?.accent
           const idx = shortcutIndices[session.id]
-          const task = currentTaskOf(session, project)
+          const task = currentTaskOf(session, sessionProject)
           return (
-            <Fragment key={session.id}>
-            <button
-              onClick={() => onSelectSession(session)}
-              onContextMenu={(e) => {
-                if (!onPickAccent) return
-                // Right-click is the colour affordance; left-click still selects.
-                e.preventDefault()
-                e.stopPropagation()
-                const r = e.currentTarget.getBoundingClientRect()
-                setHovered(null) // the hover card would sit on top of the popover
-                onPickAccent(session, { top: r.bottom + 6, left: r.right + 8 })
-              }}
-              aria-label={idx ? `${label} (⌘${idx})` : label}
-              style={{
-                position: 'relative',
-                width: 40,
-                height: 40,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 0,
-                borderRadius: 11,
-                // No dynamic (colour-changing) border on this rounded button — that
-                // re-rasterizes the rounded border layer in WKWebView on toggle. The
-                // active state is carried by the background wash + the accent pill
-                // below; the border stays a constant transparent for layout stability.
-                border: '1px solid transparent',
-                background: active ? 'var(--overlay-medium)' : 'transparent',
-                cursor: 'pointer',
-                transition: 'background 120ms ease',
-              }}
-              onMouseEnter={(e) => {
-                if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)'
-                // Fixed-position card: the rail scroller clips overflow, so an absolutely
-                // positioned one would be cut off at the 64px rail edge.
-                const r = e.currentTarget.getBoundingClientRect()
-                setHovered({ id: session.id, top: r.top, left: r.right + 8 })
-              }}
-              onMouseLeave={(e) => {
-                if (!active) e.currentTarget.style.background = 'transparent'
-                setHovered((h) => (h?.id === session.id ? null : h))
-              }}
-            >
-              {/* Active left pill (Slack-style). */}
-              {active && (
-                <span style={{ position: 'absolute', left: -10, top: 9, bottom: 9, width: 3, borderRadius: 2, background: 'var(--accent)' }} />
-              )}
-              {/* Lane initials on top of the animated dot-logo so sessions stay
-                  distinguishable at a glance. The dots carry the live status, tinted
-                  with the lane's accent so the rail also says WHICH agent. */}
-              <span style={{ position: 'relative', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={accent} />
-                <span style={{
-                  position: 'absolute', inset: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 11, fontWeight: 700, lineHeight: 1,
-                  fontFamily: "var(--font-body)",
-                  color: accent ? laneTextColor(accent) : 'var(--fg)',
-                  letterSpacing: initial.length > 1 ? -0.5 : 0,
-                  // Slight halo so the glyph reads cleanly over the dot grid.
-                  textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
-                  pointerEvents: 'none',
-                }}>
-                  {initial}
-                </span>
-              </span>
-            </button>
-            {hovered?.id === session.id && (
-              <div
-                style={{
-                  position: 'fixed',
-                  top: hovered.top,
-                  left: hovered.left,
-                  zIndex: 60,
-                  maxWidth: 260,
-                  padding: '7px 10px',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'var(--bg-surface)',
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
-                  pointerEvents: 'none',
-                  fontFamily: 'var(--font-mono)',
-                  lineHeight: 1.35,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
-                  <span style={{ fontSize: 11.5, color: accent ? laneTextColor(accent) : 'var(--fg)' }}>{label}</span>
-                  {idx && <span style={{ fontSize: 9, color: 'var(--fg-muted)', opacity: 0.5 }}>⌘{idx}</span>}
-                </div>
-                {task && (
-                  // The live task, clamped to two lines — a long plan item shouldn't
-                  // grow the card into a wall of text.
-                  <div style={{
-                    marginTop: 3,
-                    fontSize: 10.5,
-                    color: 'var(--fg-muted)',
-                    display: '-webkit-box',
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                  }}>
-                    {task}
-                  </div>
-                )}
-              </div>
-            )}
-            </Fragment>
+            <RailRow
+              key={session.id}
+              session={session}
+              active={active}
+              label={label}
+              initial={initial}
+              accent={accent}
+              idx={idx}
+              task={task}
+              onSelectSession={onSelectSession}
+              onPickAccent={onPickAccent}
+            />
           )
         })}
-          </Fragment>
-        ))}
       </div>
 
       {/* Bottom: new session. */}
@@ -315,5 +190,135 @@ export function SidebarRail({ sessions, projects, activeSessionId, customNames, 
         </button>
       </div>
     </div>
+  )
+}
+
+/** One rail entry. Split out of the map so it can own a hook: the hover card is the SHARED
+ *  implementation (lib/use-hover-card), which is what the expanded sidebar's rows use — the
+ *  rail previously carried a copy of the card with none of the hardening, so it was exposed
+ *  to both the row-moves-under-the-cursor and the cursor-leaves-the-window failures. */
+function RailRow({ session, active, label, initial, accent, idx, task, onSelectSession, onPickAccent }: {
+  session: AgentSession
+  active: boolean
+  label: string
+  initial: string
+  accent?: string
+  idx?: number
+  task?: string
+  onSelectSession: (s: AgentSession) => void
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
+}) {
+  const hover = useHoverCard(session.id)
+  return (
+    <Fragment>
+            <Fragment key={session.id}>
+            <button
+              ref={hover.ref as React.RefObject<HTMLButtonElement>}
+              onClick={() => onSelectSession(session)}
+              onContextMenu={(e) => {
+                if (!onPickAccent) return
+                // Right-click is the colour affordance; left-click still selects.
+                e.preventDefault()
+                e.stopPropagation()
+                const r = e.currentTarget.getBoundingClientRect()
+                hover.dismiss() // the hover card would sit on top of the popover
+                onPickAccent(session, { top: r.bottom + 6, left: r.right + 8 })
+              }}
+              aria-label={idx ? `${label} (⌘${idx})` : label}
+              style={{
+                position: 'relative',
+                width: 40,
+                height: 40,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                borderRadius: 11,
+                // No dynamic (colour-changing) border on this rounded button — that
+                // re-rasterizes the rounded border layer in WKWebView on toggle. The
+                // active state is carried by the background wash + the accent pill
+                // below; the border stays a constant transparent for layout stability.
+                border: '1px solid transparent',
+                background: active ? 'var(--overlay-medium)' : 'transparent',
+                cursor: 'pointer',
+                transition: 'background 120ms ease',
+              }}
+              onMouseEnter={(e) => {
+                if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)'
+                // Fixed-position card: the rail scroller clips overflow, so an absolutely
+                // positioned one would be cut off at the 64px rail edge. Positioning and
+                // dismissal are the SHARED implementation (lib/use-hover-card) — this used to
+                // trust enter/leave alone, which left cards frozen on screen.
+                hover.onMouseEnter(e)
+              }}
+              onMouseLeave={(e) => {
+                if (!active) e.currentTarget.style.background = 'transparent'
+                hover.onMouseLeave()
+              }}
+            >
+              {/* Active left pill (Slack-style). */}
+              {active && (
+                <span style={{ position: 'absolute', left: -10, top: 9, bottom: 9, width: 3, borderRadius: 2, background: 'var(--accent)' }} />
+              )}
+              {/* Lane initials on top of the animated dot-logo so sessions stay
+                  distinguishable at a glance. The dots carry the live status, tinted
+                  with the lane's accent so the rail also says WHICH agent. */}
+              <span style={{ position: 'relative', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={accent} />
+                <span style={{
+                  position: 'absolute', inset: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 11, fontWeight: 700, lineHeight: 1,
+                  fontFamily: "var(--font-body)",
+                  color: accent ? laneTextColor(accent) : 'var(--fg)',
+                  letterSpacing: initial.length > 1 ? -0.5 : 0,
+                  // Slight halo so the glyph reads cleanly over the dot grid.
+                  textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
+                  pointerEvents: 'none',
+                }}>
+                  {initial}
+                </span>
+              </span>
+            </button>
+            {hover.card && (
+              <div
+                style={{
+                  position: 'fixed',
+                  top: hover.card.top,
+                  left: hover.card.left,
+                  zIndex: 60,
+                  maxWidth: 260,
+                  padding: '7px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-surface)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
+                  pointerEvents: 'none',
+                  fontFamily: 'var(--font-mono)',
+                  lineHeight: 1.35,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: 11.5, color: accent ? laneTextColor(accent) : 'var(--fg)' }}>{label}</span>
+                  {idx && <span style={{ fontSize: 9, color: 'var(--fg-muted)', }}>⌘{idx}</span>}
+                </div>
+                {task && (
+                  // The live task, clamped to two lines — a long plan item shouldn't
+                  // grow the card into a wall of text.
+                  <div style={{
+                    marginTop: 3,
+                    fontSize: 10.5,
+                    color: 'var(--fg-muted)',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}>
+                    {task}
+                  </div>
+                )}
+              </div>
+            )}
+            </Fragment>
+    </Fragment>
   )
 }

@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { isAppChord } from './key-routing'
 
-const chord = (key: string, mods: { metaKey?: boolean; ctrlKey?: boolean } = {}) => ({
+const chord = (key: string, mods: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean } = {}) => ({
   metaKey: !!mods.metaKey,
   ctrlKey: !!mods.ctrlKey,
+  shiftKey: !!mods.shiftKey,
   key,
 })
 
@@ -29,6 +30,16 @@ describe('isAppChord', () => {
     expect(isAppChord(chord('k'))).toBe(false)
     expect(isAppChord(chord('1'))).toBe(false)
     expect(isAppChord(chord('a', { metaKey: true }))).toBe(false)
+  })
+
+  it('matches the SHIFTED navigation pair only when shifted', () => {
+    // ⌘⇧O = all projects, ⌘⇧P = project switcher. The browser reports the shifted key as
+    // uppercase, which is why the check is case-insensitive.
+    expect(isAppChord(chord('O', { metaKey: true, shiftKey: true }))).toBe(true)
+    expect(isAppChord(chord('P', { metaKey: true, shiftKey: true }))).toBe(true)
+    // Unshifted ⌘O / ⌘P have no app meaning and must stay the terminal's.
+    expect(isAppChord(chord('o', { metaKey: true }))).toBe(false)
+    expect(isAppChord(chord('p', { metaKey: true }))).toBe(false)
   })
 
   it('does not match unrelated modified keys', () => {

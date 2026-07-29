@@ -14,7 +14,7 @@ type ProjectTab = 'roster' | 'moodboard'
 const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodboard' }
 
 export function ProjectView({
-  project, tab, onSelectTab,
+  project, tab, onSelectTab, onBack,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   resumableCount, onResumeProject,
@@ -22,6 +22,8 @@ export function ProjectView({
   project: Project
   tab: ProjectTab
   onSelectTab: (t: ProjectTab) => void
+  /** Back to the gallery — the drill-in needs a visible way out even with the sidebar collapsed. */
+  onBack?: () => void
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   liveRoles?: Record<string, string>
@@ -42,6 +44,21 @@ export function ProjectView({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       <DragRegion style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
+        {/* Leading back-chevron: the way out of the drill-in, present even when the sidebar
+            (with its logo) is collapsed. */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            title="All projects (⌘⇧O)"
+            aria-label="All projects"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 16, height: 16, padding: 0, marginRight: -6, flexShrink: 0,
+              background: 'none', border: 'none', outline: 'none', cursor: 'pointer',
+              color: 'var(--fg-muted)', fontSize: 12, lineHeight: 1,
+            }}
+          >‹</button>
+        )}
         <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, fontWeight: 600, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>

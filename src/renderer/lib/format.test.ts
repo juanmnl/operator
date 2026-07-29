@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { relativeTime, fmtCost, fmtTokens, modelLabel, fmtDuration, fmtDur, isInjectedTurn } from './format'
+import { relativeTime, fmtCost, fmtTokens, modelLabel, fmtDuration, fmtDur, isInjectedTurn, tildePath } from './format'
 
 // relativeTime is anchored to Date.now(); build isos as offsets from "now" so the
 // tests are deterministic regardless of wall-clock.
@@ -76,11 +76,30 @@ describe('isInjectedTurn', () => {
   it('matches Claude Code plumbing turns by exact prefix', () => {
     expect(isInjectedTurn('<local-command-caveat>Caveat: …')).toBe(true)
     expect(isInjectedTurn('  <command-name>/model</command-name>')).toBe(true)
+    // The command's OUTPUT is injected too — it rendered as a fourth "YOU" turn, ANSI and all.
+    expect(isInjectedTurn('<local-command-stdout>Set model to \x1b[1mSonnet 5\x1b[22m</local-command-stdout>')).toBe(true)
     expect(isInjectedTurn('<system-reminder>…')).toBe(true)
     expect(isInjectedTurn('<synthetic>')).toBe(true)
   })
   it('does NOT match genuine prompts that merely start with markup', () => {
     expect(isInjectedTurn('<Modal> crashes on mount, why?')).toBe(false)
     expect(isInjectedTurn('fix the header')).toBe(false)
+  })
+})
+
+describe('tildePath', () => {
+  it('collapses the macOS and Linux home dirs', () => {
+    expect(tildePath('/Users/jane/Developer/operator')).toBe('~/Developer/operator')
+    expect(tildePath('/home/jane/src/app')).toBe('~/src/app')
+  })
+
+  it('collapses the home dir itself, with no trailing slash left behind', () => {
+    expect(tildePath('/Users/jane')).toBe('~')
+  })
+
+  it('leaves paths outside a home dir alone', () => {
+    expect(tildePath('/opt/tools/repo')).toBe('/opt/tools/repo')
+    expect(tildePath('/Usersland/jane/app')).toBe('/Usersland/jane/app')
+    expect(tildePath('')).toBe('')
   })
 })

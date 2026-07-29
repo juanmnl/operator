@@ -1,86 +1,76 @@
-// Drive the sidebar's affordances: the "Recent" projects list (collapse + open a
-// project) and drag-reorder of a session row within its project group.
+// Drive the SCOPED sidebar's affordances (post project-first navigation): the AGENTS list is
+// the project's roster — live lanes as session rows, idle lanes as launch rows — so the drag
+// that used to reorder sessions within a folder group now reorders the ROSTER, which is what
+// orders those rows. The old Recent list, group disclosure and close-all-in-group are gone
+// with FolderGroup; the gallery + switcher are covered by dev/drive-navigation.mjs.
+//
+// Run against a vite dev server: `npx vite --port 1440` then `node dev/drive-sidebar.mjs`.
 import { webkit } from 'playwright'
 const b = await webkit.launch()
 const p = await b.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
 p.on('pageerror', e => console.log('ERR', String(e).slice(0, 200)))
-await p.goto('http://localhost:1429/dev/mock.html', { waitUntil: 'load' })
-await p.waitForTimeout(2500)
+await p.goto('http://localhost:1440/dev/mock.html', { waitUntil: 'load' })
+await p.waitForTimeout(3000)
+
+// The mock re-attaches live ptys on boot, which scopes us into the operator project.
+const laneOrder = () => p.evaluate(() => Array.from(document.querySelectorAll('[data-lane-row],[data-session-row]'))
+  .map(el => el.getAttribute('data-lane-row') || el.getAttribute('data-session-row')))
+console.log('rows:', JSON.stringify(await laneOrder()))
+console.log('no folder groups left:', (await p.locator('[data-project-group]').count()) === 0)
+console.log('no Recent list left  :', (await p.getByText(/Recent ·/).count()) === 0)
 await p.screenshot({ path: '/tmp/sidebar-before.png' })
 
-// --- Recent projects: rendered, and scoped to projects with nothing live ---------
-// (Read-only checks here; the interactive ones run LAST, since opening a project
-// navigates away and would change what the session-row steps below are looking at.)
-const header = p.locator('button', { hasText: 'Recent · ' })
-console.log('recent header:', await header.count())
-const recentRows = () => p.evaluate(() =>
-  Array.from(document.querySelectorAll('[data-recent-project]')).map(el => el.textContent.trim()))
-console.log('recent rows:', JSON.stringify(await recentRows()))
-// No per-row dismiss on a project row (that was the old per-session list).
-console.log('forget buttons (want 0):', await p.locator('[data-forget]').count())
-// The live project must NOT also appear under Recent.
-console.log('recent excludes live project:', !(await recentRows()).includes('operator'))
-
-// --- Session reorder within the group -------------------------------------------
-// Scoped to the 'operator' project's group: the mock now has a live session in a second
-// project too, and an unscoped query would mix both groups' rows into one list.
-const order = () => p.evaluate(() => {
-  const g = document.querySelector('[data-project-group^="operator-"]')
-  return Array.from(g?.querySelectorAll('[data-session-row]') ?? []).map(el => el.getAttribute('data-session-row'))
+// --- Nothing may spill out of the 220px sidebar ----------------------------------
+// The wrapper clips with overflow:hidden, so an over-wide row doesn't scroll — it gets
+// SLICED at the edge (the footer icon row did exactly that with seven icons: the theme
+// toggle was cut down the middle). Assert the box, don't eyeball it.
+const spill = await p.evaluate(() => {
+  const sidebar = Array.from(document.querySelectorAll('div')).find(d => getComputedStyle(d).width === '220px')
+  if (!sidebar) return ['no sidebar found']
+  const edge = sidebar.getBoundingClientRect().right
+  return Array.from(sidebar.querySelectorAll('*'))
+    .filter(el => { const b = el.getBoundingClientRect(); return b.width > 0 && b.right > edge + 0.5 })
+    .map(el => `${(el.getAttribute('title') || el.textContent || el.tagName).trim().slice(0, 28)} +${Math.round(el.getBoundingClientRect().right - edge)}px`)
 })
-console.log('session order before:', JSON.stringify(await order()))
-const rows = p.locator('[data-session-row]')
-const src = await rows.nth(0).boundingBox()
-const dst = await rows.nth(2).boundingBox()
-await p.mouse.move(src.x + src.width / 2, src.y + src.height / 2)
-await p.mouse.down()
-await p.mouse.move(dst.x + dst.width / 2, dst.y + dst.height - 3, { steps: 12 })
-await p.mouse.move(dst.x + dst.width / 2, dst.y + dst.height - 1, { steps: 4 })
-await p.screenshot({ path: '/tmp/sidebar-dragging.png' })
-await p.mouse.up()
+console.log('overflowing the sidebar (want []):', JSON.stringify(spill))
+
+// --- Lane drag: dropping row 1 onto row 3 must rewrite the ROSTER order ----------
+// Use locator.dragTo, NOT a hand-rolled mouse down/move/up: in WebKit the native drag loop
+// swallows a synthetic mouseup, so the hand-rolled version ends in `dragend` with no `drop`
+// and silently "passes" by changing nothing. dragTo drives the real DnD protocol.
+const rows = p.locator('[data-lane-row], [data-session-row]')
+await rows.nth(0).dragTo(rows.nth(2))
 await p.waitForTimeout(500)
-console.log('session order after :', JSON.stringify(await order()))
+console.log('rows after drag:', JSON.stringify(await laneOrder()))
 await p.screenshot({ path: '/tmp/sidebar-after.png' })
 
-// --- Project section: collapse, expand, close-all -------------------------------
-const chevron = p.getByLabel(/^(Collapse|Expand) operator$/)
-console.log('group chevron:', await chevron.count())
-await chevron.click()
-await p.waitForTimeout(300)
-console.log('rows when group collapsed:', JSON.stringify(await order()))
-await p.screenshot({ path: '/tmp/sidebar-group-collapsed.png' })
-await chevron.click()
-await p.waitForTimeout(300)
-console.log('rows when group expanded :', JSON.stringify(await order()))
-// Close the whole section (ends all three agents; hover the header to reveal ×).
-await p.locator('div', { hasText: /^operator$/ }).first().hover().catch(() => {})
-const closeAll = p.getByLabel('Close all agents in operator')
-await closeAll.click({ force: true })
-await p.waitForTimeout(600)
-console.log('rows after close-all:', JSON.stringify(await order()))
-await p.screenshot({ path: '/tmp/sidebar-closed.png' })
-
-// --- Recent projects, interactive: collapse, expand, open a workspace ------------
-await header.click()
-await p.waitForTimeout(300)
-console.log('recent rows after collapse:', JSON.stringify(await recentRows()))
-await p.screenshot({ path: '/tmp/sidebar-collapsed.png' })
-await header.click()
-await p.waitForTimeout(300)
-console.log('recent rows after expand :', JSON.stringify(await recentRows()))
-// Click a Recent row → its workspace opens, and the click spawns nothing.
-const spawnsBefore = await p.evaluate(() => window.__calls.filter(c => c.fn === 'terminalSpawn').length)
-// By name, not .first(): close-all put 'operator' at the top of Recent, and its saved
-// sessions were just forgotten — only uwazi_app still has a dormant agent to resume.
-await p.locator('[data-recent-project]', { hasText: 'uwazi_app' }).click()
+// --- An idle lane launches; a live lane focuses ----------------------------------
+const spawns = () => p.evaluate(() => window.__calls.filter(c => c.fn === 'terminalSpawn').length)
+const before = await spawns()
+// A LIVE lane row carries both attributes (the session's id and its role's); an idle one
+// only has data-lane-row, which is how the harness tells them apart.
+const idle = p.locator('[data-lane-row]:not([data-session-row])').first()
+if (await idle.count()) {
+  await idle.click()
+  await p.waitForTimeout(1200)
+  console.log('idle lane launched:', (await spawns()) === before + 1)
+}
+await p.locator('[data-session-row]').first().click()
 await p.waitForTimeout(500)
-// The workspace = ProjectView (its Moodboard tab), sitting there waiting to launch —
-// its "Resume N agents" button proves it's the CLICKED project (only that one has a
-// dormant saved session), and that per-session restore still has a home.
-console.log('workspace opened:', await p.getByText('Moodboard', { exact: true }).first().isVisible().catch(() => false))
-// (Case-insensitive: the button is uppercased by CSS, which is what Playwright reads.)
-console.log('resume button:', await p.locator('button', { hasText: /^resume \d+ agent/i }).count())
-console.log('spawns from the click (want 0):',
-  (await p.evaluate(() => window.__calls.filter(c => c.fn === 'terminalSpawn').length)) - spawnsBefore)
-await p.screenshot({ path: '/tmp/sidebar-recent-open.png' })
+console.log('live row focuses (terminal visible):', (await p.locator('.xterm').count()) > 0)
+
+// --- Closing the last session leaves you at Project Home, not the gallery --------
+for (let i = 0; i < 8 && (await p.locator('[data-session-row]').count()) > 0; i++) {
+  const row = p.locator('[data-session-row]').first()
+  await row.hover()
+  await p.waitForTimeout(150)
+  const x = row.locator('button[title]').filter({ hasText: '×' }).first()
+  if (!(await x.count())) break
+  await x.click()       // arms the confirm
+  await x.click()       // confirms
+  await p.waitForTimeout(400)
+}
+await p.waitForTimeout(600)
+console.log('still inside the project after closing all:', (await p.getByText(/^Projects ·/).count()) === 0)
+await p.screenshot({ path: '/tmp/sidebar-closed.png' })
 await b.close()

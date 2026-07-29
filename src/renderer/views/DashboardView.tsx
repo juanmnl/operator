@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { defaultRoster, orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings, reorderRoles, presetFor } from '../lib/roster'
+import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { reorderByIds } from '../lib/reorder'
+import { reconcileStaleRunning } from '../lib/task-lifecycle'
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
@@ -24,18 +26,15 @@ import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
 import { AgentsHubView } from '../components/agents/AgentsHubView'
-import { UsageView } from '../components/usage/UsageView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
-import { ActivityDashboard } from '../components/dashboard/ActivityDashboard'
-import { RecentLists } from '../components/dashboard/RecentLists'
+import { ProjectGallery } from '../components/dashboard/ProjectGallery'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
 import { playYourTurnChime } from '../lib/sounds'
 import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
-import { LogoMark } from '../components/LogoMark'
 import { DragRegion } from '../components/DragRegion'
 
 interface TerminalTab {
@@ -125,10 +124,23 @@ export function DashboardView() {
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
-  const [usageViewActive, setUsageViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
-  // Project workspace (Agents roster + Moodboard), opened from a project title in the sidebar.
-  const [projectView, setProjectView] = useState<{ id: string; tab: 'roster' | 'moodboard' } | null>(null)
+  // WHERE YOU ARE. The durable navigation scope: null = at the gallery (outside every
+  // project), set = inside that project — the sidebar is scoped to it and it SURVIVES
+  // visiting Preferences / Agents / Claude files / a session. Only the switcher's "All projects",
+  // the logo and ⌘⇧O clear it. Split out of the old `projectView`, which conflated "which
+  // project" with "show the workspace" and so was nulled by every view-switch handler.
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    try { return localStorage.getItem('operator.activeProjectId') } catch { return null }
+  })
+  // Which tab of Project Home is showing. Independent of scope, so leaving and returning
+  // to a project puts you back on the tab you were reading.
+  const [projectTab, setProjectTab] = useState<'roster' | 'moodboard'>('roster')
+  // Gallery sub-view: the project grid, or the cross-project ActivityDashboard behind the
+  // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
+  const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
+  // Project-switcher popover (sidebar header, ⌘⇧P).
+  const [switcherOpen, setSwitcherOpen] = useState(false)
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -341,7 +353,6 @@ export function DashboardView() {
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setPrefsViewActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -350,17 +361,6 @@ export function DashboardView() {
 
   const handleOpenAgents = useCallback(() => {
     setAgentsViewActive(true)
-    setPrefsViewActive(false)
-    setUsageViewActive(false)
-    setGlobalPrefsActive(false)
-    setActiveFolderPrefs(null)
-    setActiveSessionId(null)
-    setActiveTerminalId(null)
-  }, [])
-
-  const handleOpenUsage = useCallback(() => {
-    setUsageViewActive(true)
-    setAgentsViewActive(false)
     setPrefsViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
@@ -371,41 +371,44 @@ export function DashboardView() {
   const handleOpenPrefs = useCallback(() => {
     setPrefsViewActive(true)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setProjectView(null)
+    // NB: scope (activeProjectId) is deliberately kept — an overlay view is somewhere you
+    // VISIT from inside a project, so leaving it returns you there (spec §4 rule 5).
   }, [])
 
-  // A recent-project click: open its workspace if we already know it as a Project (so you can
-  // launch/manage its agents even with nothing live), else fall back to starting fresh there.
-  // Open a project's workspace (Agents roster + Moodboard) — from its title in the sidebar.
-  // Clears the active session so the project area can surface (see contentMode).
+  // Enter a project: sets the navigation scope and drops the active session so Project
+  // Home can surface (see contentMode). Landing tab resets to the roster when you switch
+  // to a DIFFERENT project; re-entering the one you were in keeps the tab you left on.
   const handleOpenProject = useCallback((projectId: string) => {
-    setProjectView((prev) => ({ id: projectId, tab: prev?.id === projectId ? prev.tab : 'roster' }))
+    setActiveProjectId((prev) => {
+      if (prev !== projectId) setProjectTab('roster')
+      return projectId
+    })
     setPrefsViewActive(false)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
   }, [])
 
-
-  // Clicking the "Operator" header clears every view so the content area falls
-  // through to the splash — the live active-sessions dashboard.
-  const handleShowDashboard = useCallback(() => {
+  // Leave every project — the logo, the switcher's "All projects" and ⌘⇧O. This is the ONE
+  // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
+  const handleShowGallery = useCallback(() => {
     setPrefsViewActive(false)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-    setProjectView(null)
+    setActiveProjectId(null)
+    // …and land on the PROJECT GRID. Without this, leaving via "All projects" reopened
+    // whatever gallery sub-view you last used — including the activity page, which on a
+    // machine with nothing running is an empty screen where the projects should be.
+    setGalleryTab('projects')
   }, [])
 
   const rememberRecent = useCallback((cwd: string) => {
@@ -460,8 +463,34 @@ export function DashboardView() {
           : p)
       }
       // New project → seed the default orchestration roster (editable afterwards).
-      return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: defaultRoster() }]
+      // EMPTY roster. A new project used to arrive with six lanes nobody asked for, sitting
+      // in the sidebar looking like they were waiting for something. The six live on as
+      // templates behind "+ Add agent" (lib/roster rolePresets) and as what a dispatch
+      // creates from — the objection was to auto-SEEDING, not to the definitions.
+      return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: [] }]
     })
+  }, [])
+
+  // Forget a project: drops it from the store (and from the gallery). Its folder, worktrees
+  // and any live sessions are untouched — this only removes Operator's record of it, so
+  // re-opening the folder brings it back with a fresh roster.
+  // Forgetting must ALSO strip the project's id off everything that references it. A live
+  // session left stamped with a deleted project id is a dangling scope pointer: it survives
+  // into sessions.json, and re-focusing that session made the scope-validation effect and the
+  // focus-implies-scope backstop fight each other to React's update ceiling (measured: 5084
+  // scope writes before "Maximum update depth exceeded"). The guard in the backstop below
+  // stops the loop; this stops the dangling data that armed it.
+  const forgottenProjectsRef = useRef(new Set<string>())
+  const forgetProject = useCallback((id: string) => {
+    forgottenProjectsRef.current.add(id)
+    setProjects((prev) => prev.filter((p) => p.id !== id))
+    setActiveProjectId((cur) => (cur === id ? null : cur))
+    setTerminals((prev) => (prev.some((t) => t.projectId === id)
+      ? prev.map((t) => (t.projectId === id ? { ...t, projectId: undefined } : t))
+      : prev))
+    setSavedSessions((prev) => (prev.some((sv) => sv.projectId === id)
+      ? prev.map((sv) => (sv.projectId === id ? { ...sv, projectId: undefined } : sv))
+      : prev))
   }, [])
 
   // Patch a project by id (roster edits, rename, …) and persist via the effect below.
@@ -523,6 +552,9 @@ export function DashboardView() {
   // Latest projects snapshot for async task helpers (diff capture) without re-subscribing.
   const projectsRef = useRef(projects)
   projectsRef.current = projects
+  // Live pty set for the completion matcher below (which must not re-subscribe per render).
+  const terminalsRef = useRef(terminals)
+  terminalsRef.current = terminals
   // Lifecycle transitions. Dispatching a task marks it running (with its lane) instead of
   // deleting it, so it stays visible until done. `terminalId` is optional — the lane pickup
   // path doesn't know the new terminal id yet, so it matches on roleId for auto-complete.
@@ -588,8 +620,16 @@ export function DashboardView() {
   // worktree, so the stat survives the dir. `lane` backfills provenance the pickup path missed.
   const completeTerminalTasks = useCallback(async (terminalId: string, roleId?: string, projectId?: string, lane?: TaskLane) => {
     const now = new Date().toISOString()
+    // A task whose stamped terminal is DEAD is matchable by its lane. The old fallback
+    // required `!t.terminalId`, i.e. it only rescued tasks that had never been stamped —
+    // but stamping is exactly what markTasksRunning does, so a task could never be completed
+    // once its pty was gone (see lib/task-lifecycle).
+    const liveIds = new Set(terminalsRef.current.map((t) => t.id))
     const isMatch = (t: ProjectTask) =>
-      t.status === 'running' && (t.terminalId === terminalId || (!!roleId && t.roleId === roleId && !t.terminalId))
+      t.status === 'running' && (
+        t.terminalId === terminalId
+        || (!!roleId && t.roleId === roleId && (!t.terminalId || !liveIds.has(t.terminalId)))
+      )
     const matched: { projectId: string; ids: string[]; task: ProjectTask }[] = []
     for (const p of projectsRef.current) {
       if (projectId && p.id !== projectId) continue
@@ -636,8 +676,8 @@ export function DashboardView() {
   // task as its opening brief (without stealing focus). Dedupe by dispatch id plus the
   // in-flight guard below bound any re-dispatch loop.
   // Latest routing inputs held in a ref so the subscription is set up once (no missed events).
-  const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch })
-  dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch }
+  const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject })
+  dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject }
   // handleLaunchRole is declared further down; the subscription reaches it through a ref.
   const launchRoleRef = useRef<((project: Project, role: Role, prompt?: string, launchDevServer?: boolean, opts?: { focus?: boolean }) => Promise<TerminalTab | undefined>) | null>(null)
   // One launch per (project, lane) at a time: a burst of dispatches to the same idle lane
@@ -671,6 +711,16 @@ export function DashboardView() {
         const liveHint = live.length ? ` Lanes running now: ${live.join(', ')}.` : ' No other lanes are running.'
         void submitQueue.submit(srcTab.id, `[Operator] ${msg}${liveHint}`)
       }
+      // A dispatch named a template lane the project doesn't have yet: add it, then fall
+      // through to the launch path below. `updateProject`'s function form reads the CURRENT
+      // project, so two dispatches naming different new lanes in the same tick both land.
+      if (route.kind === 'create') {
+        dispatchRef.current.updateProject(project.id, (cur) => ({
+          roster: (cur.roster ?? []).some((r) => r.id === route.role.id)
+            ? (cur.roster ?? [])
+            : [...(cur.roster ?? []), route.role],
+        }))
+      }
       if (route.kind === 'send') {
         const { role, tab } = route
         // Queued, not written directly: a coordinator that emits several dispatches at once
@@ -681,7 +731,7 @@ export function DashboardView() {
         addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
         record('sent')
         toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
-      } else if (route.kind === 'queue') {
+      } else if (route.kind === 'queue' || route.kind === 'create') {
         // Idle lane → LAUNCH it with the task as its opening brief (the user asked for
         // dispatches to start the agent, not park work in the queue). If the launch fails,
         // the task falls back to the queue so it's never lost.
@@ -710,7 +760,9 @@ export function DashboardView() {
         }
         record('launched')
         toast({ text: `Launching ${role.name}`, kind: 'info', detail: preview })
-        feedback(`The "${role.name}" lane wasn't running — Operator is LAUNCHING it now with your task as its opening brief.`)
+        feedback(route.kind === 'create'
+          ? `This project had no "${role.name}" lane, so Operator CREATED one from its template and is launching it now with your task as its opening brief.`
+          : `The "${role.name}" lane wasn't running — Operator is LAUNCHING it now with your task as its opening brief.`)
       } else {
         addTask(project.id, d.task) // unknown role → unassigned backlog
         record('unassigned')
@@ -806,6 +858,63 @@ export function DashboardView() {
     }).catch(() => setSavedHydrated(true))
   }, [])
 
+  // Scope is durable — relaunch lands you back inside your last project, at Project Home.
+  useEffect(() => {
+    try {
+      if (activeProjectId) localStorage.setItem('operator.activeProjectId', activeProjectId)
+      else localStorage.removeItem('operator.activeProjectId')
+    } catch { /* quota */ }
+  }, [activeProjectId])
+
+  // …falling back to the gallery when the restored project is gone from the store. Gated on
+  // hydration: projects.json arrives async, so checking any earlier would drop a valid scope
+  // during the window where `projects` is still the (possibly empty) localStorage seed.
+  useEffect(() => {
+    if (!savedHydrated || !activeProjectId) return
+    if (!projects.some((p) => p.id === activeProjectId)) setActiveProjectId(null)
+  }, [savedHydrated, activeProjectId, projects])
+
+  // The invariant behind spec §4 rule 1, as a backstop: whatever session is focused, the
+  // scope contains it. Every user-facing path sets both itself; this catches the ones that
+  // don't go through a handler at all — notably the pty re-attach after a webview reload,
+  // which restores a focused terminal that may not belong to the restored scope.
+  useEffect(() => {
+    if (!activeTerminalId) return
+    const tab = terminals.find((t) => t.id === activeTerminalId)
+    if (!tab?.projectId || tab.projectId === activeProjectId) return
+    // ONLY adopt a scope the store actually holds. Without this, a tab stamped with a
+    // forgotten project id ping-pongs with the validation effect above — that one clears the
+    // scope because it isn't in `projects`, this one restores it from the tab, forever.
+    // Anchoring both effects to the same source of truth is what breaks the cycle.
+    if (!projects.some((p) => p.id === tab.projectId)) return
+    setActiveProjectId(tab.projectId)
+  }, [activeTerminalId, terminals, activeProjectId, projects])
+
+  // Spec §4 rule 9: a session launched before projects existed carries no projectId, so it
+  // belongs to no scope and a project-first sidebar could never show it. Resolve each unknown
+  // cwd to its canonical project once, register it, and stamp the tab — after which it lands
+  // in that project like any other. Anything unresolvable (folder gone) stays reachable from
+  // the gallery's activity view only.
+  const resolvingCwdsRef = useRef(new Set<string>())
+  useEffect(() => {
+    for (const t of terminals) {
+      if (t.projectId) continue
+      const cwd = t.sourceCwd ?? t.cwd
+      if (!cwd || resolvingCwdsRef.current.has(cwd)) continue
+      resolvingCwdsRef.current.add(cwd)
+      void resolveProject(cwd)
+        .then((proj) => {
+          // Don't re-adopt a project the user forgot in THIS run: its sessions keep running
+          // with no scope (reachable from the gallery's activity view), which is what
+          // "forget" means. Opening the folder again still registers it explicitly.
+          if (forgottenProjectsRef.current.has(proj.id)) return
+          upsertProject(proj)
+          setTerminals((prev) => prev.map((x) => ((x.sourceCwd ?? x.cwd) === cwd && !x.projectId ? { ...x, projectId: proj.id } : x)))
+        })
+        .catch(() => { /* unresolvable — leave it unscoped */ })
+    }
+  }, [terminals, upsertProject])
+
   // Re-attach the sidebar to ptys that survived a renderer/webview reload. The Rust
   // backend (and its running ptys) outlive a reload, but React state resets, so the
   // sidebar would otherwise go blank. Once the durable store is hydrated, intersect
@@ -814,16 +923,19 @@ export function DashboardView() {
   // ptys → terminal_list is empty → nothing re-attaches (the restorable-sessions
   // splash handles cold starts instead).
   const reattachedRef = useRef(false)
+  // Set once the re-attach has resolved (either way) — the task reconciliation below must
+  // not run until the live pty set is actually known.
+  const [reattachDone, setReattachDone] = useState(false)
   useEffect(() => {
     if (!savedHydrated || reattachedRef.current) return
     reattachedRef.current = true
     const p = window.operator.terminalList?.()
-    if (!p) return
+    if (!p) { setReattachDone(true); return }
     p.then((all) => {
       // Exclude scratch shells (`sh` ids from ShellModal) — those belong to the
       // toolbar modal, not the sidebar. Claude sessions use `t` ids.
       const live = (Array.isArray(all) ? all : []).filter((t) => !t.id.startsWith('sh'))
-      if (live.length === 0) return
+      if (live.length === 0) return // nothing survived; `finally` still settles reattachDone
       const byId = new Map(savedSessions.filter((s) => s.terminalId).map((s) => [s.terminalId!, s]))
       setTerminals((prev) => {
         if (prev.length > 0) return prev // already populated (a launch raced the re-attach)
@@ -847,8 +959,34 @@ export function DashboardView() {
       })
       setActiveTerminalId((cur) => cur ?? live[0].id)
       setActiveSessionId((cur) => cur ?? `local-${live[0].id}`)
-    }).catch(() => { /* no re-attach */ })
+    })
+      .catch(() => { /* no re-attach */ })
+      .finally(() => setReattachDone(true))
   }, [savedHydrated, savedSessions])
+
+  // Close out tasks left `running` by a previous run. `ProjectTask.terminalId` is a pty id
+  // from the CURRENT backend run, so a task carrying a dead one can never be matched again by
+  // the completion path — which is why the store had ~200 tasks stuck in `running`, one
+  // project with 26 running and zero done. Runs ONCE, after re-attach has established which
+  // ptys really survived (any earlier and it would close tasks whose terminal is about to
+  // come back). See lib/task-lifecycle for why they land on `done` rather than `queued`.
+  const reconciledRef = useRef(false)
+  useEffect(() => {
+    if (!savedHydrated || !reattachDone || reconciledRef.current) return
+    reconciledRef.current = true
+    const liveIds = new Set(terminals.map((t) => t.id))
+    const now = new Date().toISOString()
+    setProjects((prev) => {
+      let changed = false
+      const next = prev.map((p) => {
+        const tasks = reconcileStaleRunning(p.tasks, liveIds, now)
+        if (tasks === p.tasks) return p
+        changed = true
+        return { ...p, tasks }
+      })
+      return changed ? next : prev
+    })
+  }, [savedHydrated, reattachDone, terminals])
 
   const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string; focus?: boolean }): Promise<TerminalTab[]> => {
     // Write effort level to global settings (Claude Code reads it from there)
@@ -923,7 +1061,7 @@ export function DashboardView() {
       if (i === 0 && opts?.focus !== false) {
         setActiveTerminalId(result.terminalId)
         setActiveSessionId(`local-${result.terminalId}`)
-        setProjectView(null) // launching switches to the new agent's console
+        setActiveProjectId(proj.id) // launching switches to the new agent's console, in its project
       }
     }
 
@@ -999,11 +1137,14 @@ export function DashboardView() {
 
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
-    if (!terminals.some((t) => t.id === terminalId)) return
+    const tab = terminals.find((t) => t.id === terminalId)
+    if (!tab) return
     setActiveTerminalId(terminalId)
     const hook = sessions.find((s) => s.terminalId === terminalId)
     setActiveSessionId(hook?.id ?? `local-${terminalId}`)
-    setProjectView(null) // reveal the session's console
+    // Focusing a session implies its project scope, so the sidebar always contains what
+    // you're looking at (spec §4 rule 1).
+    if (tab.projectId) setActiveProjectId(tab.projectId)
   }, [terminals, sessions])
 
   // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
@@ -1017,6 +1158,7 @@ export function DashboardView() {
       void submitQueue.submit(liveTab.id, t)
       setActiveTerminalId(liveTab.id)
       setActiveSessionId(`local-${liveTab.id}`)
+      setActiveProjectId(project.id)
     } else {
       void handleLaunchRole(project, role, t)
     }
@@ -1046,8 +1188,23 @@ export function DashboardView() {
       arr.push(t); byRole.set(t.roleId, arr)
     }
     for (const [roleId, tasks] of byRole) {
-      const role = project.roster?.find((r) => r.id === roleId)
-      if (!role) continue
+      let role = project.roster?.find((r) => r.id === roleId)
+      // The lane is gone (deleted, or never created now that rosters start empty). Silently
+      // skipping is how these tasks became permanently stuck — recreate the lane from its
+      // template if the id names one, otherwise hand the task back to the visible backlog.
+      if (!role) {
+        const preset = presetFor(roleId)
+        if (preset) {
+          role = preset
+          updateProject(project.id, (cur) => ({
+            roster: (cur.roster ?? []).some((r) => r.id === preset.id) ? (cur.roster ?? []) : [...(cur.roster ?? []), preset],
+          }))
+        } else {
+          for (const t of tasks) assignProjectTask(project.id, t.id, undefined)
+          pushToast({ text: `No "${roleId}" lane — ${tasks.length} task${tasks.length > 1 ? 's' : ''} moved to unassigned`, kind: 'info' })
+          continue
+        }
+      }
       const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === roleId)
       if (liveTab) {
         const text = tasks.map((t, i) => `${i + 1}. ${t.text}`).join('\n')
@@ -1057,7 +1214,7 @@ export function DashboardView() {
         void handleLaunchRole(project, role) // picks up its queue
       }
     }
-  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
+  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, updateProject, assignProjectTask, pushToast])
 
   // Re-open a previously saved session. `resume` continues the prior Claude
   // conversation (--resume); otherwise it starts the agent clean in the same
@@ -1099,6 +1256,7 @@ export function DashboardView() {
     setTerminals((prev) => [...prev, tab])
     setActiveTerminalId(result.terminalId)
     setActiveSessionId(`local-${result.terminalId}`)
+    setActiveProjectId(tab.projectId ?? null) // restoring focuses the session → scope follows it
     if (saved.customName) {
       setCustomNames((prev) => {
         const next = { ...prev, [`local-${result.terminalId}`]: saved.customName! }
@@ -1111,7 +1269,6 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [rememberRecent, upsertProject])
 
@@ -1180,9 +1337,12 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setPrefsViewActive(false)
-    setProjectView(null)
+    // The single rule that keeps every entry point honest — ⌘1-9, the ⌘K palette, a toast,
+    // the Agents hub, a restore: selecting a session scopes you to its project, so you can
+    // never end up focused on a session that isn't in the sidebar (spec §4 rule 1). A legacy
+    // session with no projectId can't be scoped, so it leaves scope alone (spec §4 rule 9).
+    if (session.projectId) setActiveProjectId(session.projectId)
     if (session.terminalId && localTerminalIds.has(session.terminalId)) {
       setActiveTerminalId(session.terminalId)
     } else {
@@ -1219,7 +1379,6 @@ export function DashboardView() {
     setActiveTerminalId(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
-    setUsageViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -1259,37 +1418,34 @@ export function DashboardView() {
 
   const allSidebarSessions = localSessions
 
-  // Drag-to-reorder FOLDER GROUPS in the sidebar: move the dragged project's whole
-  // block of terminals to sit before/after the drop-target project, in the canonical
-  // `terminals` order (which drives the sidebar list + ⌘1..9). `edge` is which side
-  // of the target the group was dropped on. (Per-run; not persisted across restarts.)
-  const handleReorderGroup = (draggedId: string, targetId: string, edge: 'before' | 'after') => {
-    if (draggedId === targetId) return
-    // Group identity mirrors the sidebar: projectId, or a basename key for legacy sessions.
-    const groupIdOf = (s: AgentSession) => s.projectId || `name:${s.projectName || 'Unknown'}`
-    const tidsOf = (id: string) =>
-      allSidebarSessions.filter((s) => groupIdOf(s) === id).map((s) => s.terminalId).filter(Boolean) as string[]
-    const draggedTids = tidsOf(draggedId)
-    const targetTids = tidsOf(targetId)
-    if (draggedTids.length === 0 || targetTids.length === 0) return
-    const dSet = new Set(draggedTids)
-    setTerminals((prev) => {
-      const moved = prev.filter((t) => dSet.has(t.id))
-      if (moved.length === 0) return prev
-      const rest = prev.filter((t) => !dSet.has(t.id))
-      const anchor = edge === 'after' ? targetTids[targetTids.length - 1] : targetTids[0]
-      let idx = rest.findIndex((t) => t.id === anchor)
-      if (idx < 0) return prev
-      if (edge === 'after') idx += 1
-      const next = [...rest]
-      next.splice(idx, 0, ...moved)
-      return next
-    })
-  }
+  // The scoped world: with navigation now project-first, the sidebar, ⌘1-9 and the rail all
+  // read from THIS list — the live sessions of the project you're in — so the numbers on the
+  // rows are the numbers the shortcuts use (spec §4 rule 4). Legacy sessions carry no
+  // projectId and so belong to no scope; they stay reachable from the gallery's activity view.
+  const activeProject = useMemo(
+    () => (activeProjectId ? projects.find((p) => p.id === activeProjectId) ?? null : null),
+    [activeProjectId, projects],
+  )
+  const scopedSessions = useMemo(
+    () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
+    [allSidebarSessions, activeProjectId],
+  )
+  // What each project is doing — the switcher's per-row orb and state label. Rolled up by
+  // lib/project-status so the popover and the gallery card read a project identically.
+  const projectActivities = useMemo(() => {
+    const byProject: Record<string, AgentSession[]> = {}
+    for (const s of allSidebarSessions) {
+      if (!s.projectId) continue
+      ;(byProject[s.projectId] ??= []).push(s)
+    }
+    const out: Record<string, ProjectActivity> = {}
+    for (const p of projects) out[p.id] = projectActivity(byProject[p.id] ?? [], p.roster?.length ?? 0)
+    return out
+  }, [allSidebarSessions, projects])
 
-  // Drag-to-reorder AGENT SESSIONS within a project group: move the dragged terminal
-  // before/after the drop target in the canonical `terminals` order (which drives the
-  // sidebar list + ⌘1..9). Same per-run contract as group reorder above.
+  // Drag-to-reorder the sidebar's AD-HOC session rows: move the dragged terminal before/after
+  // the drop target in the canonical `terminals` order (which drives the list + ⌘1..9).
+  // Per-run; not persisted across restarts.
   const handleReorderSession = (draggedId: string, targetId: string, edge: 'before' | 'after') => {
     const tidOf = (id: string) => allSidebarSessions.find((s) => s.id === id)?.terminalId
     const dragTid = tidOf(draggedId)
@@ -1297,6 +1453,14 @@ export function DashboardView() {
     if (!dragTid || !targetTid || dragTid === targetTid) return
     setTerminals((prev) => reorderByIds(prev, dragTid, targetTid, edge))
   }
+
+  // Dragging a LANE row reorders the roster itself — the roster is what orders those rows,
+  // so anything else would be a drag with no effect. Same helper (and therefore the same
+  // result) as dragging the lane on the roster board.
+  const handleReorderLane = useCallback((draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => {
+    if (!activeProjectId) return
+    updateProject(activeProjectId, (p) => ({ roster: reorderRoles(p.roster ?? [], draggedRoleId, targetRoleId, edge) }))
+  }, [activeProjectId, updateProject])
 
   // --- Agent colour --------------------------------------------------------------------
   // A lane's colour belongs to its Role (roster = source of truth, so every surface
@@ -1337,19 +1501,33 @@ export function DashboardView() {
     setSessionAccents(saveSessionAccent(session.savedKey, accent))
   }, [roleOf, projects, updateProject])
 
-  // ⌘1..9 maps to terminals[0..8] — map each session id to its 1-based index.
+  // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
+  // hint on a row is the chord that reaches it. Kept as the single source both the hints and
+  // the key handler read from.
+  const shortcutTerminals = useMemo(() => {
+    if (!activeProjectId) return []
+    const scoped = terminals.filter((t) => t.projectId === activeProjectId)
+    // In the order the sidebar DRAWS them — roster order for lanes, then the ad-hoc rows —
+    // so ⌘1..9 counts down the list you can see rather than down the launch order.
+    const roster = projects.find((p) => p.id === activeProjectId)?.roster ?? []
+    const byRole = new Map(scoped.filter((t) => t.roleId).map((t) => [t.roleId!, t]))
+    const lanes = roster.map((r) => byRole.get(r.id)).filter((t): t is TerminalTab => !!t)
+    const seen = new Set(lanes.map((t) => t.id))
+    return [...lanes, ...scoped.filter((t) => !seen.has(t.id))].slice(0, 9)
+  }, [terminals, activeProjectId, projects])
   const shortcutIndices = useMemo(() => {
     const map: Record<string, number> = {}
-    terminals.slice(0, 9).forEach((t, i) => {
+    shortcutTerminals.forEach((t, i) => {
       const session = localSessions.find((s) => s.terminalId === t.id)
       if (session) map[session.id] = i + 1
     })
     return map
-  }, [terminals, localSessions])
+  }, [shortcutTerminals, localSessions])
 
+  // The sidebar's count is of the project you're IN, matching the list above it.
   const sidebarStats = useMemo(() => ({
-    activeSessions: allSidebarSessions.filter((s) => s.status === 'active').length,
-  }), [allSidebarSessions])
+    activeSessions: scopedSessions.filter((s) => s.status === 'active').length,
+  }), [scopedSessions])
 
   // Notify main process of active session for widget visibility
   useEffect(() => {
@@ -1533,6 +1711,19 @@ export function DashboardView() {
       // Shared predicate with the terminal's key handler (lib/key-routing) so the
       // two can't disagree about which chords belong to the app vs the pty.
       if (!isAppChord(e)) return
+      // Navigation chords take the shifted variants: ⌘⇧O leaves for the gallery, ⌘⇧P opens
+      // the project switcher. Checked before the unshifted keys so ⌘⇧P can't read as ⌘P.
+      if (e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault()
+        handleShowGallery()
+        return
+      }
+      if (e.shiftKey && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault()
+        // Only meaningful inside a project — at the gallery the switcher has no anchor.
+        if (activeProjectId) setSwitcherOpen((v) => !v)
+        return
+      }
       if (e.key === 'k' || e.key === 'K') {
         e.preventDefault()
         setPaletteOpen((open) => !open)
@@ -1557,7 +1748,7 @@ export function DashboardView() {
         }
       } else if (e.key >= '1' && e.key <= '9') {
         const idx = parseInt(e.key, 10) - 1
-        const t = terminals[idx]
+        const t = shortcutTerminals[idx]
         if (t) {
           e.preventDefault()
           // Synthesize a select via the same path used by sidebar click
@@ -1569,13 +1760,14 @@ export function DashboardView() {
             setActiveSessionId(`local-${t.id}`)
             setActiveFolderPrefs(null)
             setGlobalPrefsActive(false)
+            if (t.projectId) setActiveProjectId(t.projectId) // scope follows focus (rule 1)
           }
         }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, terminals, sessions])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
 
   // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
   // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise
@@ -1689,22 +1881,21 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'usage' | 'prefs' | 'localTerminal' | 'project' | 'splash' = useMemo(() => {
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
-    if (usageViewActive) return 'usage'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     // Only 'localTerminal' if the active id still refers to a live terminal — a
     // stale activeTerminalId (e.g. left set after its tab was removed) would
     // otherwise render neither the terminal container (needs terminals.length>0)
-    // nor the splash (needs contentMode==='splash'), i.e. a blank screen.
+    // nor the gallery, i.e. a blank screen.
     if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
-    // Project workspace shows only when nothing else claims the area (openProject clears the
-    // active session so this can surface); any lingering state is masked by the checks above.
-    if (projectView && projects.some((p) => p.id === projectView.id)) return 'project'
-    return 'splash'
-  }, [prefsViewActive, agentsViewActive, usageViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, projectView, projects])
+    // Inside a project with no session focused → Project Home. (The old `splash` mode is
+    // gone: with no scope it's the gallery, with scope it's the project.)
+    if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
+    return 'gallery'
+  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -1804,7 +1995,7 @@ export function DashboardView() {
     }
     actions.push(
       { id: 'toggle-sidebar', group: 'View', label: sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', run: toggleSidebar },
-      { id: 'dashboard', group: 'View', label: 'Show activity dashboard', run: handleShowDashboard },
+      { id: 'gallery', group: 'View', label: 'All projects', hint: '⌘⇧O', run: handleShowGallery },
       { id: 'scratch-shell', group: 'New', label: 'Open scratch terminal', run: () => { setShellStarted(true); setShellOpen(true) } },
     )
 
@@ -1850,7 +2041,6 @@ export function DashboardView() {
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
       { id: 'agents', group: 'Settings', label: 'Agents — fleet across all projects', run: handleOpenAgents },
-      { id: 'usage', group: 'Settings', label: 'Usage & cost', run: handleOpenUsage },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
       { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
@@ -1880,9 +2070,9 @@ export function DashboardView() {
     })
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenUsage, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowDashboard, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -1903,18 +2093,21 @@ export function DashboardView() {
       )}
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The rail always hosts the macOS
-          traffic lights, so the content card never slides under them. */}
+          traffic lights, so the content card never slides under them — EXCEPT at the
+          gallery, where the whole strip collapses to 0 and the gallery's own header
+          reserves that space instead (spec §2A). */}
       <div
         style={{
-          width: sidebarCollapsed ? 64 : 220,
+          width: contentMode === 'gallery' ? 0 : sidebarCollapsed ? 64 : 220,
           flexShrink: 0,
           overflow: 'hidden',
           transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
         }}
       >
-      {sidebarCollapsed ? (
+      {contentMode === 'gallery' ? null : sidebarCollapsed ? (
         <SidebarRail
-          sessions={allSidebarSessions}
+          project={activeProject}
+          sessions={scopedSessions}
           projects={projects}
           activeSessionId={activeSessionId}
           customNames={customNames}
@@ -1922,40 +2115,45 @@ export function DashboardView() {
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           onExpand={toggleSidebar}
+          onShowGallery={handleShowGallery}
           accentOf={accentOf}
           onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
         />
       ) : (
       <Sidebar
-        sessions={allSidebarSessions}
+        project={activeProject}
+        sessions={scopedSessions}
         projects={projects}
+        activities={projectActivities}
         onOpenProject={handleOpenProject}
-        activeProjectId={contentMode === 'project' ? projectView?.id ?? null : null}
+        onOpenProjectHome={() => activeProjectId && handleOpenProject(activeProjectId)}
+        projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
         customNames={customNames}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
         agentsViewActive={agentsViewActive}
-        usageViewActive={usageViewActive}
         prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
         fanInfo={fanInfo}
         shortcutIndices={shortcutIndices}
         stats={sidebarStats}
         isDark={currentTheme.isDark}
-        onShowDashboard={handleShowDashboard}
+        onShowGallery={handleShowGallery}
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
+        onLaunchRole={(project, role) => { void handleLaunchRole(project, role) }}
         accentOf={accentOf}
         onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
-        onReorderGroup={handleReorderGroup}
         onReorderSession={handleReorderSession}
+        onReorderLane={handleReorderLane}
+        switcherOpen={switcherOpen}
+        onSwitcherOpenChange={setSwitcherOpen}
         onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
         onOpenAgents={handleOpenAgents}
-        onOpenUsage={handleOpenUsage}
         onOpenPrefs={handleOpenPrefs}
         onToggleTheme={handleToggleTheme}
         version={appVersion}
@@ -1969,8 +2167,13 @@ export function DashboardView() {
         position: 'relative', flex: 1,
         display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden',
       }}>
-        {/* Drag region — full height only when no session toolbar is acting as drag region */}
-        {contentMode !== 'localTerminal' && (
+        {/* Drag region — only where nothing else is acting as one. Three modes bring their
+            own: the session toolbar (`localTerminal`), the gallery's taller header (which
+            also clears the traffic lights, since no rail sits beside it), and ProjectView's
+            own 44px strip — adding this 40px spacer on top of that double-counted to 84px.
+            PageShell's pages (prefs / agents / folderPrefs) have NO strip of their own and
+            still need it. */}
+        {contentMode !== 'localTerminal' && contentMode !== 'gallery' && contentMode !== 'project' && (
           <DragRegion style={{ height: 40, flexShrink: 0 }} />
         )}
 
@@ -2001,8 +2204,8 @@ export function DashboardView() {
           />
         )}
 
-        {contentMode === 'project' && projectView && (() => {
-          const proj = projects.find((p) => p.id === projectView.id)
+        {contentMode === 'project' && activeProjectId && (() => {
+          const proj = projects.find((p) => p.id === activeProjectId)
           if (!proj) return null
           const live: Record<string, string> = {}
           for (const t of terminals) if (t.projectId === proj.id && t.roleId) live[t.roleId] = t.id
@@ -2016,8 +2219,9 @@ export function DashboardView() {
           return (
             <ProjectView
               project={proj}
-              tab={projectView.tab}
-              onSelectTab={(t) => setProjectView((prev) => (prev ? { ...prev, tab: t } : prev))}
+              tab={projectTab}
+              onSelectTab={setProjectTab}
+              onBack={handleShowGallery}
               onUpdateProject={updateProject}
               onLaunchRole={(project, role, dev) => handleLaunchRole(project, role, undefined, dev)}
               liveRoles={live}
@@ -2035,8 +2239,6 @@ export function DashboardView() {
           )
         })()}
 
-        {contentMode === 'usage' && <UsageView />}
-
         {contentMode === 'prefs' && (
           <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} onToggleTheme={handleToggleTheme} />
         )}
@@ -2048,6 +2250,7 @@ export function DashboardView() {
               key={activeSession.workingDirectory}
               projectPath={activeSession.workingDirectory}
               projectName={activeSession.projectName}
+              onOpenProjectHome={activeProjectId ? () => handleOpenProject(activeProjectId) : undefined}
               terminalId={activeTerminalId}
               detectedDevPort={detectedDevPort}
               effortLevel={tab?.effortLevel}
@@ -2160,6 +2363,9 @@ export function DashboardView() {
                 {mainView === 'chat' && (
                   <CanvasConversation
                     session={activeSession}
+                    role={roleOf(activeSession)}
+                    customName={customNames[activeSession.id]}
+                    accent={accentOf(activeSession)}
                     onModelChange={(m) => patchActiveTerminal({ model: m })}
                     onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
                   />
@@ -2187,103 +2393,29 @@ export function DashboardView() {
           </div>
         )}
 
-        {contentMode === 'splash' && allSidebarSessions.length > 0 && (
-          <ActivityDashboard
-            sessions={allSidebarSessions}
+        {/* The launcher: full-bleed, no sidebar and no rail beside it (see the wrapper
+            above), so "outside a project" is unmistakable. */}
+        {contentMode === 'gallery' && (
+          <ProjectGallery
             projects={projects}
+            sessions={allSidebarSessions}
+            tab={galleryTab}
+            onSelectTab={setGalleryTab}
+            accentOf={accentOf}
             customNames={customNames}
+            onOpenProject={handleOpenProject}
+            onOpenFolder={handleNewSession}
+            onRenameProject={(id, name) => updateProject(id, { name })}
+            onSetProjectNotes={(id, contextNotes) => updateProject(id, { contextNotes })}
+            onForgetProject={forgetProject}
+            onOpenFolderPrefs={handleOpenFolderPrefs}
             onSelectSession={handleSelectSession}
-            onNewSession={handleNewSession}
             restorableSessions={restorableSessions}
             recentProjects={recentProjects}
             onRestore={handleRestoreSession}
             onForget={forgetSavedSession}
-            onOpenFolder={openProjectOrFolder}
+            onOpenFolderPath={openProjectOrFolder}
           />
-        )}
-
-        {contentMode === 'splash' && allSidebarSessions.length === 0 && (
-          <div
-            className="scroll-hidden"
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'flex-start',
-              fontFamily: "var(--font-body)",
-              padding: '40px 40px',
-              overflow: 'auto',
-              minHeight: 0,
-              maxWidth: 480,
-              margin: '0 auto',
-            }}
-          >
-            {/* margin-top:auto on first + margin-bottom:auto on last child centers the
-                block when it fits, but keeps the top reachable/scrollable when it overflows. */}
-            <div style={{ marginTop: 'auto', marginBottom: 20 }}><LogoMark size={96} cells={11} /></div>
-            <div style={{ textAlign: 'center', marginBottom: 32 }}>
-              <p style={{
-                fontSize: 13,
-                color: 'var(--fg)',
-                fontWeight: 500,
-                lineHeight: 1.7,
-                margin: 0,
-              }}>
-                Welcome to your mission control.
-              </p>
-              <p style={{
-                fontSize: 12,
-                color: 'var(--fg-muted)',
-                lineHeight: 1.7,
-                margin: '12px 0 0',
-              }}>
-                Kick off a Claude Code session, hand it to an agent and the model
-                that suit the task, and let it work in its own git worktree. You'll
-                see every tool call and subagent as it happens.
-              </p>
-              <p style={{
-                fontSize: 11,
-                color: 'var(--fg-muted)',
-                lineHeight: 1.7,
-                margin: '10px 0 0',
-                opacity: 0.6,
-              }}>
-                Got a big job? Fan it out across as many agents as you like —
-                and keep an eye on what each one's doing, and what it costs.
-              </p>
-            </div>
-
-            <button
-              onClick={handleNewSession}
-              style={{
-                padding: '7px 20px',
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                color: 'var(--fg)',
-                fontSize: 12,
-                fontFamily: 'inherit',
-                cursor: 'pointer',
-              }}
-            >
-              + New Session
-            </button>
-            <p style={{ fontSize: 11, color: 'var(--fg-muted)', opacity: 0.5, marginTop: 8 }}>
-              Cmd+N · Cmd+K for command palette
-            </p>
-
-            <RecentLists
-              sessions={restorableSessions}
-              projects={recentProjects}
-              onRestore={handleRestoreSession}
-              onForget={forgetSavedSession}
-              onOpenFolder={openProjectOrFolder}
-            />
-
-            {/* spacer keeps the splash block vertically centered */}
-            <div style={{ marginBottom: 'auto' }} />
-          </div>
         )}
 
         {/* Consolidated action bar — the SINGLE place for session actions (scratch Terminal,
@@ -2361,6 +2493,9 @@ export function DashboardView() {
           />
           <CanvasPanel
             session={activeSession}
+            role={activeSession ? roleOf(activeSession) : undefined}
+            customName={activeSession ? customNames[activeSession.id] : undefined}
+            accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
