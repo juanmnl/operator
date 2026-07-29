@@ -566,6 +566,10 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
   visibleRef.current = visible
   const [spacerH, setSpacerH] = useState(0)
   const stickRef = useRef(true)
+  /** True until the first layout has been positioned — that one snaps (trap 3). */
+  const firstPaintRef = useRef(true)
+  /** Last known max scroll offset, to tell content GROWTH from a plain re-layout. */
+  const lastMaxRef = useRef(0)
   const [flash, setFlash] = useState<string | null>(null)
   // Liveness (dev/briefs/chat-signals-and-interrupt.md). `signal` is a pure read of fields
   // already on the wire — the same ones driving the sidebar orb — so chat finally says what
@@ -713,18 +717,109 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
   // Re-layout whenever the VISIBLE set changes (new turns, search, saved filter, dismiss).
   useEffect(() => { relayout() }, [visible, relayout])
 
+  // --- the feed ---------------------------------------------------------------------------
+  // "Chat messages should go up like a typewriter" — the paper rising as content lands, NOT a
+  // character reveal (we get transcript text in chunks; a typed-out reveal would misrepresent
+  // when the work happened).
+  //
+  // Driven from a rAF loop rather than `behavior: 'smooth'` because this is a VIRTUALIZED
+  // CANVAS: every scroll event repaints and recomputes the visible slice, so a native smooth
+  // scroll multiplies repaints across its whole flight on a schedule we don't control. Here
+  // position and paint advance together, once per frame.
+  const feedRef = useRef<{ raf: number; target: number } | null>(null)
+  const animatingRef = useRef(false)
+
+  const cancelFeed = useCallback(() => {
+    if (feedRef.current) cancelAnimationFrame(feedRef.current.raf)
+    feedRef.current = null
+    animatingRef.current = false
+  }, [])
+
+  /** Scroll `el` to `target`, animated when that reads as paper moving and snapped when it
+   *  doesn't. Returns nothing; callers don't wait on it. */
+  const feedTo = useCallback((el: HTMLDivElement, target: number, opts?: { animate?: boolean }) => {
+    cancelFeed()
+    const from = el.scrollTop
+    const delta = target - from
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    // Only small deltas animate. A session switch, a history load or first paint drops
+    // thousands of pixels, and sliding through content nobody asked to see is worse than a
+    // jump. Above roughly a viewport, snap.
+    const tooFar = Math.abs(delta) > el.clientHeight
+    if (opts?.animate === false || reduced || tooFar || Math.abs(delta) < 2) {
+      el.scrollTop = target
+      paint()
+      return
+    }
+    animatingRef.current = true
+    // ~260ms, ease-out. Deliberately NOT the busy idiom's timing: this is view movement, not
+    // a state signal — it should read as paper moving, not as something working.
+    const DUR = 260
+    const start = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / DUR)
+      const eased = 1 - Math.pow(1 - t, 3)
+      // Re-read the target each frame: content can land mid-flight, and the bottom moves.
+      const dest = feedRef.current?.target ?? target
+      el.scrollTop = from + (dest - from) * eased
+      paint()
+      if (t < 1) {
+        feedRef.current = { raf: requestAnimationFrame(step), target: dest }
+      } else {
+        feedRef.current = null
+        animatingRef.current = false
+        // Settle: recompute stick from where we actually landed (see onScroll).
+        stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+        setAtEdge(stickRef.current)
+      }
+    }
+    feedRef.current = { raf: requestAnimationFrame(step), target }
+  }, [cancelFeed, paint])
+
+  useEffect(() => cancelFeed, [cancelFeed])
+
   // Stick to bottom once the spacer grows (scrollTop can't exceed the current max until the
   // DOM updates). Suppressed while searching / saved-only so results don't jump to the end.
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el && stickRef.current && !q && !savedOnly) { el.scrollTop = el.scrollHeight; paint() }
-  }, [spacerH, q, savedOnly, paint])
+    if (el && stickRef.current && !q && !savedOnly) {
+      const max = Math.max(0, el.scrollHeight - el.clientHeight)
+      const prev = lastMaxRef.current
+      lastMaxRef.current = max
+      // WebKit PINS a scroller that sits at its maximum: append content and scrollTop follows
+      // the new bottom by itself, in one jump, before we get a say. So to feed, first put the
+      // paper back where it was — the reader's last line stays put — and animate up from
+      // there. Without this the whole animation is a no-op in the one case it exists for.
+      if (!firstPaintRef.current && prev > 0 && max > prev) {
+        el.scrollTop = prev
+        feedTo(el, max)
+      } else {
+        feedTo(el, max, { animate: false })
+      }
+      firstPaintRef.current = false
+    }
+  }, [spacerH, q, savedOnly, feedTo])
+
+  const onUserScroll = useCallback(() => {
+    // Unconditional, and it releases stick outright. Cancelling alone was not enough: the
+    // layout effect re-fires on the next render, sees stick still true, and starts a FRESH
+    // feed to the bottom — so the reader gets pulled back one frame after pulling away.
+    // Releasing here means the app stops following; onScroll re-engages stick by itself if
+    // they end up back at the live edge.
+    cancelFeed()
+    stickRef.current = false
+    setAtEdge(false)
+  }, [cancelFeed])
 
   const clearHover = useCallback(() => { if (hoverKeyRef.current) { hoverKeyRef.current = null; setHover(null) } }, [])
 
   const onScroll = () => {
     const el = scrollRef.current
-    if (el) {
+    // While OUR animation is in flight, leave stick alone. A smooth scroll fires a stream of
+    // scroll events, and mid-flight the distance to the bottom still exceeds the 80px
+    // threshold — so recomputing here would switch stick off partway through its own
+    // animation and stall the feed. It is recomputed on settle instead.
+    if (el && !animatingRef.current) {
       stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
       setAtEdge(stickRef.current)
     }
@@ -825,6 +920,13 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
             const b = layoutRef.current.bounds.find((tb) => py >= tb.top && py <= tb.bottom)
             if (b) { navigator.clipboard?.writeText(b.text).catch(() => {}); flashMsg('Copied message') }
           }}
+          // NEVER fight the pointer. A wheel, a trackpad gesture, a drag or a key cancels our
+          // scroll outright and leaves stick wherever the user's own position puts it — the
+          // feed is a convenience, and it loses every argument with a real input.
+          onWheel={onUserScroll}
+          onTouchStart={onUserScroll}
+          onPointerDown={onUserScroll}
+          onKeyDown={onUserScroll}
           className="scroll-hidden"
           style={{ position: 'absolute', inset: 0, overflow: 'auto' }}
         >
@@ -871,8 +973,9 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
               if (!el) return
               stickRef.current = true
               setAtEdge(true)
-              el.scrollTop = el.scrollHeight
-              paint()
+              // Same mechanism as the feed, so returning to the live edge reads as the same
+              // motion — and the same guard, so a jump from far up the document snaps.
+              feedTo(el, Math.max(0, el.scrollHeight - el.clientHeight))
             }}
             title="Jump to the latest message"
             style={{
