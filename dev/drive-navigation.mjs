@@ -1,6 +1,6 @@
 // Drive PROJECT-FIRST NAVIGATION end-to-end through the real renderer (see
 // dev/project-first-navigation.md): the gallery (no sidebar beside it) → entering a project
-// from a card → the scoped sidebar → the switcher popover → back out, by menu and by ⌘⇧O.
+// from a card → the scoped sidebar → back out, via the RAIL's foot controls and ⌘⇧O.
 // Also covers the ‹ back chevron on Project Home, the scoped rail, and launching an idle lane.
 //
 // Run against a vite dev server: `npx vite --port 1440` then `node dev/drive-navigation.mjs`.
@@ -50,15 +50,17 @@ await p.screenshot({ path: '/tmp/nav-2-project.png' })
 console.log('3 scoped (no other project rows):', !(await p.evaluate(() =>
   Array.from(document.querySelectorAll('[data-session-row]')).some(el => el.textContent?.includes('booking')))))
 
-// 4. Open the switcher from the header row.
-await p.locator('.drag-region [role="button"]').first().click()
-await p.waitForTimeout(500)
-const switcher = await p.evaluate(() => Array.from(document.querySelectorAll('button')).map(b => b.textContent?.trim()).filter(t => t && (t.includes('All projects') || t.includes('Open folder'))))
-console.log('4 switcher footer actions:', JSON.stringify(switcher))
-await p.screenshot({ path: '/tmp/nav-3-switcher.png' })
+// 4. Project navigation lives at the RAIL's foot now — the sidebar header is identity only.
+const railFoot = await p.evaluate(() => ({
+  controls: Array.from(document.querySelectorAll('[data-rail-gallery], [data-rail-open-folder]')).map(b => b.getAttribute('aria-label')),
+  headerIsInert: !document.querySelector('[data-switcher-trigger]') && document.querySelectorAll('.drag-region [role="button"]').length === 0,
+}))
+console.log('4 rail foot controls:', JSON.stringify(railFoot.controls), '(expect All projects + Open folder)')
+console.log('4 sidebar header carries no navigation:', railFoot.headerIsInert, '(expect true)')
+await p.screenshot({ path: '/tmp/nav-3-rail-foot.png' })
 
-// 5. "All projects…" → back to the gallery, sidebar gone again.
-await p.getByText('All projects…').first().click()
+// 5. "All projects" → back to the gallery, sidebar gone again.
+await p.locator('[data-rail-gallery]').click()
 await p.waitForTimeout(800)
 console.log('5 back at gallery:', (await p.locator('[data-session-row]').count()) === 0 && (await p.getByText(/^Projects ·/).count()) > 0)
 
@@ -73,14 +75,17 @@ await p.waitForTimeout(700)
 console.log('6 ⌘⇧O returned to gallery:', (await p.getByText(/^Projects ·/).count()) > 0)
 await p.screenshot({ path: '/tmp/nav-4-after-shortcut.png' })
 
-// 7. Back in, Esc must close the switcher WITHOUT leaving the project.
+// 7. Back in: a rail tile switches project without going via the gallery.
 await p.locator('[role="button"]').filter({ hasText: 'operator' }).first().click()
 await p.waitForTimeout(700)
-await p.locator('.drag-region [role="button"]').first().click()
-await p.waitForTimeout(400)
-await p.keyboard.press('Escape')
-await p.waitForTimeout(400)
-console.log('7 Esc closed switcher, still in project:', (await p.getByText('All projects…').count()) === 0 && (await p.locator('[data-lane-row]').count()) > 0)
+const scopedBefore = await p.evaluate(() => document.querySelector('[data-sidebar-project-name]')?.textContent?.trim())
+await p.locator('[data-rail-tile]').nth(1).click()
+await p.waitForTimeout(900)
+const scopedAfter = await p.evaluate(() => document.querySelector('[data-sidebar-project-name]')?.textContent?.trim())
+console.log('7 a rail tile switches project in place:', scopedBefore, '→', scopedAfter, '·', scopedBefore !== scopedAfter && (await p.locator('[data-lane-row], [data-session-row]').count()) > 0)
+// …and back, so the steps below run against the same project they always did.
+await p.locator('[data-rail-tile]').first().click()
+await p.waitForTimeout(900)
 await p.screenshot({ path: '/tmp/nav-5-sidebar.png' })
 
 // 8. The section "+" opens Project Home, which must carry the back chevron.

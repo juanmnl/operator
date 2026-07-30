@@ -266,6 +266,20 @@ const MOCK_CHAT = [
       output: 'x'.repeat(2000), outputChars: 71194, truncated: true } },
 ]
 
+/** `?chat=long` synthesizes a REAL-LENGTH transcript (300 turns) on top of the fixture.
+ *  A three-turn fixture answers none of the questions the feed animation raises: whether the
+ *  virtualized canvas still paints smoothly per frame, and whether stick survives an animation
+ *  on a document tall enough to have somewhere to scroll from. Shapes are the fixture's own. */
+function longChat(base: typeof MOCK_CHAT) {
+  const out = [...base]
+  for (let i = 0; i < 300; i++) {
+    out.push(i % 2 === 0
+      ? { kind: 'user' as const, text: `Follow-up ${i}: what about the ${i % 3 === 0 ? 'worktree' : 'queue'} case?`, timestamp: t(300 - i) }
+      : { kind: 'text' as const, text: `Answer ${i}. ${'The routing stays in the view; the decision becomes a pure function. '.repeat(1 + (i % 4))}`, timestamp: t(300 - i) })
+  }
+  return out
+}
+
 export function installMockBridge() {
   // `?empty=1` boots a VIRGIN app — no projects, no saved sessions, no live ptys — which is
   // the only way to see first-run states (the gallery's welcome splash) in the harness.
@@ -291,6 +305,8 @@ export function installMockBridge() {
   // The dispatch subscription is capturable so a driver can fire directives as if the
   // transcript tailer parsed them: `window.__mockDispatch({ id, terminalId, role, task })`.
   let dispatchCb: ((d: unknown) => void) | null = null
+  // Declared before `bridge` so explicitly-mocked methods can record into it too.
+  const calls: Array<Record<string, unknown>> = []
 
   const bridge: Record<string, unknown> = {
     // --- subscriptions: push the fixture once, then stay quiet -------------------
@@ -302,6 +318,12 @@ export function installMockBridge() {
       setTimeout(() => cb(empty ? [] : MOCK_SESSIONS), 0)
       ;(window as unknown as { __mockPhase: unknown }).__mockPhase = (id: string, patch: Partial<AgentSession>) => {
         cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, ...patch } : x)))
+      }
+      // Append a turn the way the transcript tailer does, so a driver can watch the feed.
+      const extra: unknown[] = []
+      ;(window as unknown as { __mockAppend: unknown }).__mockAppend = (id: string, text: string) => {
+        extra.push({ kind: 'text', text, timestamp: new Date().toISOString() })
+        cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, messages: [...extra] } as AgentSession : x)))
       }
       return () => {}
     },
@@ -316,7 +338,10 @@ export function installMockBridge() {
     // which is what Claude Code actually emits. See MOCK_CHAT's note: this fixture once
     // carried invented thinking PROSE, and that is what validated a disclosure control whose
     // body could never open.
-    chatHistory: async (id: string) => (id === 's-code' ? MOCK_CHAT : []),
+    chatHistory: async (id: string) => {
+      if (id !== 's-code') return []
+      return new URLSearchParams(location.search).get('chat') === 'long' ? longChat(MOCK_CHAT) : MOCK_CHAT
+    },
     imageDataUrl: async () => '',
     terminalList: async () => (empty ? [] : MOCK_TERMINALS),
     terminalHistory: async () => '',
@@ -367,7 +392,13 @@ export function installMockBridge() {
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,
     showMainWindow: noop, startWindowDrag: noop, toggleWindowMaximize: noop, quitApp: noop,
     growWindowWidth: noop, openExternal: noop, revealPath: async () => {}, setDockIcon: noop, terminalStart: noop,
-    terminalResize: noop, terminalKill: async () => {}, shellSpawn: async () => 'sh0',
+    terminalResize: noop,
+    // Recorded, not just no-op'd: __calls only captures methods that AREN'T explicitly mocked
+    // (the Proxy fallback below), so an explicitly-mocked kill was invisible to drivers — a
+    // close that worked read as a close that never fired. Anything a driver needs to assert
+    // on must push to `calls` itself.
+    terminalKill: async (id: string) => { calls.push({ fn: 'terminalKill', args: [id] }) },
+    shellSpawn: async () => 'sh0',
     gridtermAttach: noop, gridtermResize: noop, gridtermScroll: noop, gridtermSetTheme: noop, gridtermDetach: noop,
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,
     installUpdate: async () => {}, savePastedImage: async () => '/tmp/x.png',
@@ -375,7 +406,6 @@ export function installMockBridge() {
 
   // Anything not explicitly mocked resolves to a harmless no-op, so a newly added
   // bridge method can't crash the harness before it's been taught about it.
-  const calls: Array<Record<string, unknown>> = []
   let spawnN = 0
   ;(window as unknown as { __calls: unknown[] }).__calls = calls
   ;(window as unknown as { __mockDispatch: unknown }).__mockDispatch = (d: unknown) => dispatchCb?.(d)

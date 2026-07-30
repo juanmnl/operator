@@ -72,4 +72,47 @@ await p.evaluate(() => window.__mockAppend('s-code', 'Reduced motion answer. '.r
 await p.waitForTimeout(80)            // inside the flight window, but there should BE no flight
 const rm = await pos(p)
 console.log('5 reduced motion snaps straight to the bottom:', rm.fromBottom < 5, `(${rm.fromBottom}px after 80ms)`)
+await p.close()
+
+// --- 6. a plain CLICK does not stop the feed following (review P1) ---
+// The regression this pins: pointerdown fired on every click, so opening a link, toggling a
+// thought, or just clicking to focus the panel silently detached the feed.
+p = await open(b)
+await p.mouse.click(700, 400)
+await p.evaluate(() => window.__mockAppend('s-code', 'A turn lands after a plain click. '.repeat(6)))
+await p.waitForTimeout(900)
+const clicked = await pos(p)
+console.log('6 a click leaves the feed following:', clicked.fromBottom < 5, `(${clicked.fromBottom}px from bottom)`)
+console.log('6 and no jump control appears:', (await p.locator('[data-jump-latest]').count()) === 0)
+
+// --- 7. a DRAG still wins (the cancellation that should survive) ---
+await p.mouse.move(700, 400)
+await p.mouse.down()
+await p.mouse.move(700, 300, { steps: 8 })
+await p.mouse.up()
+await p.waitForTimeout(100)
+console.log('7 a drag still releases stick:', (await p.locator('[data-jump-latest]').count()) > 0)
+await p.close()
+
+// --- 8. a wheel at the live edge does not detach the feed (review P1) ---
+// Nothing is left to scroll, so NO scroll event follows — the recovery path that re-engages
+// stick can never fire, and the feed used to be dead for the rest of the session.
+p = await open(b)
+await p.evaluate(`(() => {
+  const el = ${scroller()}
+  window.__samples = []
+  el.addEventListener('scroll', () => window.__samples.push(Math.round(el.scrollTop)), { passive: true })
+})()`)
+await p.mouse.move(700, 400)
+await p.mouse.wheel(0, 600)           // flick downward at the bottom: an over-scroll
+await p.waitForTimeout(120)
+// The premise of the bug, asserted rather than assumed: no scroll event follows, so the
+// onScroll recovery that re-engages stick genuinely cannot run.
+console.log('8 wheel at the edge fires no scroll event:',
+  (await p.evaluate(() => window.__samples.length)) === 0)
+await p.evaluate(() => window.__mockAppend('s-code', 'A turn lands after the over-scroll flick. '.repeat(6)))
+await p.waitForTimeout(900)
+const flicked = await pos(p)
+console.log('8 and the feed still follows:', flicked.fromBottom < 5, `(${flicked.fromBottom}px from bottom)`)
+console.log('8 and no jump control appears:', (await p.locator('[data-jump-latest]').count()) === 0)
 await b.close()

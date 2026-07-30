@@ -1,5 +1,9 @@
 // Drive the gallery card's new description row: snippet + 2-line clamp, the ⋯ editor,
 // persistence through the real updateProject path, and the no-description case.
+//
+// Selectors are scoped to [data-project-card], NOT [role="button"]: the Previous shelf's
+// rows carry role="button" too, and a global match folded 30px rows into the "every card
+// is the same height" assertion below.
 import { webkit } from 'playwright'
 const PORT = process.env.MOCK_PORT || 1440
 const b = await webkit.launch()
@@ -10,7 +14,7 @@ await p.waitForTimeout(2600)
 await p.keyboard.press('Meta+Shift+O')
 await p.waitForTimeout(800)
 
-const geom = () => p.evaluate(() => Array.from(document.querySelectorAll('[role="button"]')).map((c) => {
+const geom = () => p.evaluate(() => Array.from(document.querySelectorAll('[data-project-card]')).map((c) => {
   const r = c.getBoundingClientRect()
   const rows = Array.from(c.children).map((el) => el.getBoundingClientRect())
   return {
@@ -38,7 +42,7 @@ console.log('2 long note clamped:', JSON.stringify(clamp), '(expect lines 2, scr
 
 // No-description card renders no snippet row.
 const uwaziRows = await p.evaluate(() => {
-  const c = Array.from(document.querySelectorAll('[role="button"]')).find((x) => x.textContent?.includes('uwazi_app'))
+  const c = Array.from(document.querySelectorAll('[data-project-card]')).find((x) => x.textContent?.includes('uwazi_app'))
   return c ? c.children.length : null
 })
 console.log('3 no-description card block count:', uwaziRows, '(expect 3: headline + add-prompt + footer)')
@@ -49,7 +53,7 @@ const beforeHover = await p.evaluate(() => {
   const btn = c?.querySelector('[data-card-add-notes]')
   return { h: c ? Math.round(c.getBoundingClientRect().height) : null, opacity: btn ? getComputedStyle(btn).opacity : null }
 })
-await p.locator('[role="button"]').filter({ hasText: 'uwazi_app' }).first().hover()
+await p.locator('[data-project-card]').filter({ hasText: 'uwazi_app' }).first().hover()
 await p.waitForTimeout(300)
 const afterHover = await p.evaluate(() => {
   const c = Array.from(document.querySelectorAll('[data-project-card]')).find((x) => x.querySelector('[data-card-add-notes]'))
@@ -60,7 +64,7 @@ console.log('3b add-notes prompt hidden→shown:', beforeHover.opacity, '→', a
 console.log('3b no layout shift on hover:', beforeHover.h === afterHover.h, `(${beforeHover.h} → ${afterHover.h})`)
 
 // ---- the editor -------------------------------------------------------------------
-await p.locator('[role="button"]').filter({ hasText: 'uwazi_app' }).first().hover()
+await p.locator('[data-project-card]').filter({ hasText: 'uwazi_app' }).first().hover()
 await p.waitForTimeout(200)
 await p.locator('button[aria-label="uwazi_app actions"]').click()
 await p.waitForTimeout(350)
@@ -77,7 +81,7 @@ await p.locator('textarea[placeholder^="What is this project"]').fill('Document 
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(600)
 const saved = await p.evaluate(() => {
-  const c = Array.from(document.querySelectorAll('[role="button"]')).find((x) => x.textContent?.includes('uwazi_app'))
+  const c = Array.from(document.querySelectorAll('[data-project-card]')).find((x) => x.textContent?.includes('uwazi_app'))
   return c?.textContent?.includes('Document management') ? 'shown' : 'MISSING'
 })
 console.log('6 committed to card:', saved)
@@ -96,7 +100,7 @@ await p.locator('textarea[placeholder^="What is this project"]').fill('THROWAWAY
 await p.keyboard.press('Escape')
 await p.waitForTimeout(500)
 console.log('7 Escape cancelled:', await p.evaluate(() => {
-  const c = Array.from(document.querySelectorAll('[role="button"]')).find((x) => x.textContent?.includes('uwazi_app'))
+  const c = Array.from(document.querySelectorAll('[data-project-card]')).find((x) => x.textContent?.includes('uwazi_app'))
   return !c?.textContent?.includes('THROWAWAY') && c?.textContent?.includes('Document management')
 }))
 await b.close()

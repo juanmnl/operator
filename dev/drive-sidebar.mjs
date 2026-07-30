@@ -6,10 +6,11 @@
 //
 // Run against a vite dev server: `npx vite --port 1440` then `node dev/drive-sidebar.mjs`.
 import { webkit } from 'playwright'
+const PORT = process.env.MOCK_PORT || 1440
 const b = await webkit.launch()
 const p = await b.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
 p.on('pageerror', e => console.log('ERR', String(e).slice(0, 200)))
-await p.goto('http://localhost:1440/dev/mock.html', { waitUntil: 'load' })
+await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
 await p.waitForTimeout(3000)
 
 // The mock re-attaches live ptys on boot, which scopes us into the operator project.
@@ -33,6 +34,38 @@ const spill = await p.evaluate(() => {
     .map(el => `${(el.getAttribute('title') || el.textContent || el.tagName).trim().slice(0, 28)} +${Math.round(el.getBoundingClientRect().right - edge)}px`)
 })
 console.log('overflowing the sidebar (want []):', JSON.stringify(spill))
+
+// --- Footer layout ---------------------------------------------------------------
+// Two things that only read correctly when they're in the right place: the active COUNT
+// belongs to the lanes (so it sits INSIDE their scroller, hugging the last row), and the app
+// IDENTITY belongs to the app's own icon row. The identity is the fragile one — with flexWrap
+// on, an auto-margined item drops to a line of its own the moment it doesn't fit, which is a
+// silent regression that looks like the old layout.
+const footer = await p.evaluate(() => {
+  const count = document.querySelector('[data-sidebar-active-count]')
+  const ident = document.querySelector('[data-sidebar-identity]')
+  const lastLane = Array.from(document.querySelectorAll('[data-lane-row], [data-session-row]')).pop()
+  const icons = ident ? Array.from(ident.parentElement.querySelectorAll(':scope > button')) : []
+  const iconRow = icons.filter((b) => b !== ident)
+  return {
+    count: count?.textContent?.trim() ?? null,
+    // Directly under the lanes, not stranded at the foot of the sidebar: within a row's
+    // height of the last one.
+    countHugsLanes: count && lastLane
+      ? count.getBoundingClientRect().top - lastLane.getBoundingClientRect().bottom < 32
+      : null,
+    identity: ident?.textContent?.trim() ?? null,
+    // Same line as the icons? Compare vertical centres, not tops — the boxes differ in height.
+    identityInIconRow: ident && iconRow.length
+      ? Math.abs((ident.getBoundingClientRect().top + ident.getBoundingClientRect().bottom) / 2
+        - (iconRow[0].getBoundingClientRect().top + iconRow[0].getBoundingClientRect().bottom) / 2) < 4
+      : null,
+    identityTruncated: ident ? ident.scrollWidth > ident.clientWidth : null,
+  }
+})
+console.log('footer:', JSON.stringify(footer))
+console.log('  active count hugs the last lane:', footer.countHugsLanes, '(expect true)')
+console.log('  identity shares the icon row (never wrapped below it):', footer.identityInIconRow, '(expect true)')
 
 // --- Lane drag: dropping row 1 onto row 3 must rewrite the ROSTER order ----------
 // Use locator.dragTo, NOT a hand-rolled mouse down/move/up: in WebKit the native drag loop

@@ -51,9 +51,11 @@ console.log('1 compact rows (idle):', JSON.stringify(mixed.rows))
 await p.screenshot({ path: '/tmp/operator-shots/roster-mixed.png' })
 
 // ---- 2. The complaint: a project with NOTHING live ------------------------------------
-await p.locator('.drag-region [role="button"]').first().click()
-await p.waitForTimeout(450)
-await p.locator('[data-switcher-row]').filter({ hasText: 'uwazi_app' }).click()
+// Via the gallery: the project-switcher popover is gone, and uwazi_app has nothing running
+// so it has no rail tile either (the rail shows what's OPEN).
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(800)
+await p.locator('[data-project-card]').filter({ hasText: 'uwazi_app' }).first().click()
 await p.waitForTimeout(900)
 await openRoster()
 const quiet = await board()
@@ -73,9 +75,9 @@ await p.screenshot({ path: '/tmp/operator-shots/roster-all-idle.png' })
 
 // ---- 4. ⌄ expands the SAME RoleCard in place ------------------------------------------
 // Back to `operator` — uwazi_app has no Design lane.
-await p.locator('.drag-region [role="button"]').first().click()
-await p.waitForTimeout(450)
-await p.locator('[data-switcher-row]').filter({ hasText: 'operator' }).first().click()
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(800)
+await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
 await p.waitForTimeout(900)
 await openRoster()
 await p.locator('[data-roster-row="design"]').hover()
@@ -177,5 +179,61 @@ const added = await p.evaluate(() => {
 console.log('7 new lane opens as a CARD (not a row):', !!added.asCard && !added.asRow, JSON.stringify(added))
 console.log('7 lanes before add:', JSON.stringify(newIds))
 await p.screenshot({ path: '/tmp/operator-shots/roster-new-lane.png' })
+
+
+// ---- 8. Deleting a lane is DESTRUCTIVE and must not be one click ------------------------
+// dev/briefs/lane-delete-is-destructive.md — shipped in v0.10.0: ✕ on a live card deleted the
+// lane (model, effort, accent, charter) and unassigned its tasks, with no confirm and no undo,
+// while its session kept running orphaned.
+// Earlier steps navigate away (a launch focuses its console); get back to Project Home.
+await p.keyboard.press('Meta+Shift+O'); await p.waitForTimeout(700)
+await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click(); await p.waitForTimeout(900)
+await openRoster()
+const rosterIds = () => p.evaluate(() => {
+  const proj = JSON.parse(localStorage.getItem('operator.projects') || '[]').find((x) => x.name === 'operator')
+  return (proj?.roster ?? []).map((r) => r.id)
+})
+console.log('8 roster before:', JSON.stringify(await rosterIds()))
+
+// A LIVE lane cannot be deleted at all — deleting it would orphan its pty.
+// A LIVE card carries NO delete control — the two verbs no longer share a glyph, and a
+// running lane cannot be orphaned by a stray click.
+console.log('8 a live lane offers no delete control:', (await p.locator('[data-role-card="code"] [data-role-remove]').count()) === 0)
+console.log('8 so its lane survives:', (await rosterIds()).includes('code'))
+
+// ...but it DOES carry the verb the user actually reached for. With delete correctly gone
+// from a live card, a live card that offered nothing would leave no way to stop the agent —
+// which is how "close the active agent" got aimed at the delete control in the first place.
+const liveCard = p.locator('[data-role-card="code"]')
+const kills = () => p.evaluate(() => window.__calls.filter((c) => c.fn === 'terminalKill').length)
+console.log('8 a live lane DOES offer close-session:', (await liveCard.locator('[data-close-session]').count()) === 1)
+await liveCard.locator('[data-close-session]').click(); await p.waitForTimeout(300)
+console.log('8 close arms on the first click, kills nothing:',
+  (await liveCard.locator('[data-close-session="confirm"]').count()) === 1 && (await kills()) === 0)
+await liveCard.locator('[data-close-session]').click(); await p.waitForTimeout(800)
+console.log('8 close fires on the second, and the LANE survives:',
+  (await kills()) === 1 && (await rosterIds()).includes('code'))
+
+// An IDLE lane arms a confirm on the first click, and only deletes on the second.
+// Pick the idle lane DYNAMICALLY rather than hardcoding one: earlier steps launch lanes, so
+// any named lane may already be live by now (and a live card carries no delete control at
+// all), which made a fixed choice fail depending on what ran before it.
+const idleId = await p.evaluate(() => document.querySelector('[data-roster-row]')?.getAttribute('data-roster-row') ?? null)
+if (!idleId) throw new Error('no idle lane left to exercise the delete confirm')
+await p.locator(`[data-roster-row="${idleId}"]`).hover(); await p.waitForTimeout(200)
+await p.locator(`[data-roster-row="${idleId}"] button[aria-label^="Configure"]`).click(); await p.waitForTimeout(600)
+const idleX = p.locator(`[data-role-card="${idleId}"] [data-role-remove]`).first()
+await idleX.click(); await p.waitForTimeout(300)
+console.log('8 first click ARMS a confirm, deletes nothing:',
+  (await idleX.getAttribute('data-role-remove')) === 'confirm' && (await rosterIds()).includes(idleId))
+await idleX.click(); await p.waitForTimeout(600)
+const afterDelete = await rosterIds()
+console.log('8 second click deletes it:', !afterDelete.includes(idleId), JSON.stringify(afterDelete))
+
+// …and it can be re-added from the preset, charter intact.
+await p.locator('button').filter({ hasText: '+ Add agent' }).first().click().catch(() => {})
+await p.waitForTimeout(600)
+console.log('8 a restore path exists on this screen:', (await p.locator('button').filter({ hasText: /Design/ }).count()) > 0)
+
 
 await b.close()

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — chat lane-identity harness</title>
+    <style>
+      html, body { margin: 0; background: #0b0d10; }
+      #chat { display: flex; gap: 12px; padding: 12px; }
+      #chat > div { width: 520px; height: 460px; position: relative; overflow: hidden; border-radius: 10px; }
+    </style>
+  </head>
+  <body>
+    <!-- Standalone visual-verification page for the CANVAS chat's lane identity: who the
+         agent turn says it is, and what colour its name + orb take. Two panes side by side —
+         a lane-assigned session and a lane-less one — so a screenshot shows both the role
+         treatment and the muted fallback. Served by `vite`, driven by capture.mjs:
+           node scripts/visual/capture.mjs --page chat --sel "#chat" --out scripts/visual/out/chat.png -->
+    <div id="chat"></div>
+    <script type="module" src="./chat-harness.tsx"></script>
+  </body>
+</html>

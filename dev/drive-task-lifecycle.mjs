@@ -36,19 +36,24 @@ console.log('1 chip counts (lane:queued):', JSON.stringify(chips))
 // --- 2. Stranded tasks were reconciled on load ------------------------------------------
 const lifecycle = await p.evaluate(() => {
   const proj = JSON.parse(localStorage.getItem('operator.projects') || '[]').find((x) => x.name === 'operator')
-  const by = { queued: 0, running: 0, done: 0, reconciled: 0 }
+  const by = { queued: 0, running: 0, done: 0, abandoned: 0, reconciled: 0 }
   for (const t of proj?.tasks ?? []) {
-    by[t.status ?? 'queued']++
+    by[t.status ?? 'queued'] = (by[t.status ?? 'queued'] ?? 0) + 1
     if (t.reconciledAt) by.reconciled++
   }
   return by
 })
 console.log('2 durable task states after load:', JSON.stringify(lifecycle))
-console.log('2 the dead-pty tasks were closed out:', lifecycle.reconciled === 2 && lifecycle.running === 1)
+// `abandoned`, not `done`: reconciliation knows the run ended, never that the work finished.
+console.log('2 the dead-pty tasks were ABANDONED (not silently "done"):', lifecycle.abandoned === 2 && lifecycle.running === 1)
 
 // --- 3. A reconciled task admits it is unconfirmed ---------------------------------------
-// The done list is collapsed by default — expand it first.
-await p.locator('button').filter({ hasText: /^▸?\s*Done · \d+$/ }).first().click()
+// The closed list (done + abandoned) is collapsed by default — expand it first. Its header
+// counts abandoned separately, because "Closed · 68" reading as 68 finished tasks was the same
+// lie in aggregate that `status: 'done'` was per task.
+const closedHeader = await p.locator('[data-task-closed-header]').first().textContent()
+console.log('3 closed header:', JSON.stringify(closedHeader?.trim()))
+await p.locator('[data-task-closed-header]').first().click()
 await p.waitForTimeout(500)
 const marks = await p.evaluate(() => Array.from(document.querySelectorAll('[data-task-reconciled]')).map((e) => e.textContent?.trim()))
 console.log('3 "unconfirmed" markers on the done rows:', marks.length, JSON.stringify(marks.slice(0, 2)))

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Operator — QA real-data harness</title></head>
+  <body>
+    <!-- DEV-ONLY, QA-only, throwaway: boots the real renderer against REAL chat.db/roster
+         data (dev/qa-real-bridge.ts) instead of dev/mock-bridge.ts's authored fixtures.
+         See dev/qa-chat-regression.md. Never bundled into the app. -->
+    <div id="root"></div>
+    <script type="module" src="./qa-real-main.tsx"></script>
+  </body>
+</html>
