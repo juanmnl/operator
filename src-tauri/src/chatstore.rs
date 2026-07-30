@@ -12,8 +12,20 @@
 
 use crate::backend::{NarrationEntry, ToolBlock};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
+
+/// One reply as stored: who sent it (session), who it was addressed to, and what it said.
+/// Deliberately NOT a NarrationEntry — a reply has an addressee and no narration kind.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectReply {
+    pub session_id: String,
+    pub to: String,
+    pub text: String,
+    pub timestamp: String,
+}
 
 pub struct ChatStore {
     // rusqlite::Connection isn't Sync; a Mutex lets the tailer thread (writes) and
@@ -52,6 +64,46 @@ impl ChatStore {
         // Same additive migration for the structured tool block. Rows written before it keep
         // loading — the column is NULL and `tool` deserializes to None.
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN tool TEXT", []);
+        // The OPERATOR-REPLY return path gets its OWN table. It shares nothing useful with
+        // `messages`: a reply has an addressee (`to_target`), it is scoped to a project rather
+        // than to a session, and its natural key is the content hash the tailer already
+        // computes for dedupe — not a per-session seq. Forcing it into `messages` meant
+        // borrowing a slot in the narration seq space and then filtering the row back out of
+        // the reading panel; two accommodations for no shared structure.
+        //
+        // Idempotency is simpler here than for messages: the id is a hash of
+        // `session_id|to|text`, so a re-read after a relaunch reproduces it exactly and
+        // INSERT OR IGNORE is precisely right — same id can only mean same content.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS replies (
+                 id         TEXT PRIMARY KEY,
+                 project_id TEXT,
+                 session_id TEXT NOT NULL,
+                 to_target  TEXT NOT NULL,
+                 text       TEXT NOT NULL,
+                 ts         TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS replies_by_project ON replies (project_id, ts);",
+        );
+        // An intermediate build briefly wrote replies as `kind='reply'` rows in `messages`
+        // (and added two now-unused columns, which SQLite keeps — harmless, all NULL).
+        //
+        // There WAS an unconditional `DELETE FROM messages WHERE kind = 'reply'` here. Removed:
+        // it ran on EVERY open with no version gate and no backup, against rows that were the
+        // only copy (they return only for a session whose transcript still exists AND which is
+        // re-spawned). It also re-ran forever, so any future entry legitimately named `reply`
+        // would be silently deleted at every launch and be undiagnosable from the reading panel
+        // — and it full-scanned an unindexed `kind` on a table holding p90 ~35KB tool rows.
+        //
+        // Be precise about what removing it costs: `load()` (:192) does NOT filter by kind, so a
+        // leftover row DOES reach the reading panel as an unknown kind. That is a cosmetic
+        // artifact affecting only the machines that ran the intermediate build — and it is
+        // strictly preferable to permanently destroying rows on every launch to hide it.
+        //
+        // If the sweep is worth doing, it belongs in the `PRAGMA user_version` migration that
+        // `purge_injected_rows` below already implements correctly: count first, checkpoint,
+        // copy to `.pre-v1.bak`, and refuse to delete if the backup fails ("no backup, no
+        // delete"). Do it once, behind a version bump — not on every open.
         purge_injected_rows(&conn, path);
         ChatStore {
             conn: Mutex::new(conn),
@@ -96,7 +148,48 @@ impl ChatStore {
         let _ = tx.commit();
     }
 
-    /// All persisted entries for a session, in transcript order.
+    /// Persist one OPERATOR-REPLY, keyed by the tailer's content hash. `INSERT OR IGNORE`:
+    /// re-reading the transcript after a relaunch reproduces the same id, and the same id can
+    /// only mean the same content, so a repeat is a genuine no-op.
+    ///
+    /// `session_id` identifies the SENDER (the lane whose transcript carried the sentinel);
+    /// resolving that to a role is the frontend's job, exactly as it is for a dispatch.
+    pub fn append_reply(&self, id: &str, session_id: &str, project_id: &str, to: &str, text: &str, ts: &str) {
+        let Ok(conn) = self.conn.lock() else { return };
+        let Ok(mut stmt) = conn.prepare_cached(
+            "INSERT OR IGNORE INTO replies (id, project_id, session_id, to_target, text, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        ) else {
+            return;
+        };
+        // An ad-hoc session has no project; store NULL rather than '' so "posted to a project"
+        // is expressible as a plain NOT NULL predicate.
+        let pid: Option<&str> = if project_id.is_empty() { None } else { Some(project_id) };
+        let _ = stmt.execute(params![id, pid, session_id, to, text, ts]);
+    }
+
+    /// Every reply posted to a project, oldest first — the project's channel.
+    pub fn replies(&self, project_id: &str) -> Vec<ProjectReply> {
+        let Ok(conn) = self.conn.lock() else { return Vec::new() };
+        let Ok(mut stmt) = conn.prepare_cached(
+            "SELECT session_id, to_target, text, ts FROM replies
+             WHERE project_id = ?1 ORDER BY ts ASC, id ASC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(params![project_id], |r| {
+            Ok(ProjectReply {
+                session_id: r.get(0)?,
+                to: r.get(1)?,
+                text: r.get(2)?,
+                timestamp: r.get(3)?,
+            })
+        });
+        rows.map(|it| it.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+    }
+
+    /// All persisted entries for a session, in transcript order. Untouched by the reply path:
+    /// replies live in their own table, so nothing has to be filtered back out here.
     pub fn load(&self, session_id: &str) -> Vec<NarrationEntry> {
         let Ok(conn) = self.conn.lock() else { return Vec::new() };
         let Ok(mut stmt) = conn.prepare_cached(
@@ -247,6 +340,135 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].text, "old row");
         assert!(got[0].tool.is_none());
+    }
+
+    /// The reply half: its own table, read back per PROJECT, and invisible to the session's
+    /// reading panel — not by filtering, but because it was never in `messages` to begin with.
+    #[test]
+    fn replies_are_project_scoped_and_separate_from_messages() {
+        let store = ChatStore::open(Path::new(":memory:"));
+        store.append("s1", &[(0, entry("text", "All done.\nOPERATOR-REPLY [operator] shipped it", "t0"))]);
+        store.append_reply("h1", "s1", "proj-1", "operator", "shipped it", "t0");
+        store.append_reply("h2", "s2", "proj-1", "project", "api contract changed", "t1");
+        store.append_reply("h3", "s3", "proj-2", "operator", "different project", "t2");
+
+        let channel = store.replies("proj-1");
+        assert_eq!(channel.len(), 2, "only this project's replies");
+        assert_eq!(channel[0].text, "shipped it");
+        assert_eq!(channel[0].to, "operator");
+        assert_eq!(channel[0].session_id, "s1", "the SENDER, for role attribution upstream");
+        assert_eq!(channel[1].text, "api contract changed");
+
+        // The panel sees the prose row only, and `load` does nothing special to achieve it.
+        let panel = store.load("s1");
+        assert_eq!(panel.len(), 1);
+        assert_eq!(panel[0].kind, "text");
+    }
+
+    /// The id is a content hash of the sentinel, so a relaunch's re-read reproduces it and
+    /// re-persisting is a genuine no-op — same id can only mean same content.
+    #[test]
+    fn re_persisting_a_reply_is_a_no_op() {
+        let store = ChatStore::open(Path::new(":memory:"));
+        store.append_reply("h1", "s1", "proj-1", "operator", "shipped it", "t0");
+        store.append_reply("h1", "s1", "proj-1", "operator", "shipped it", "t0");
+        assert_eq!(store.replies("proj-1").len(), 1);
+    }
+
+    /// A reply takes NO seq, so it cannot shift the narration sequence `messages` is keyed on.
+    #[test]
+    fn replies_do_not_disturb_the_message_seq_space() {
+        let store = ChatStore::open(Path::new(":memory:"));
+        store.append("s1", &[(0, entry("text", "one", "t0")), (1, entry("text", "two", "t1"))]);
+        store.append_reply("h1", "s1", "proj-1", "operator", "a reply", "t2");
+        let panel = store.load("s1");
+        assert_eq!(panel.len(), 2);
+        assert_eq!(panel[0].text, "one");
+        assert_eq!(panel[1].text, "two");
+    }
+
+    /// An ad-hoc session (launched outside any project) stores NULL, so it never shows up in
+    /// a project's channel — but the row is still written rather than dropped.
+    #[test]
+    fn a_reply_with_no_project_is_stored_unscoped() {
+        let store = ChatStore::open(Path::new(":memory:"));
+        store.append_reply("h1", "s1", "", "operator", "orphan", "t0");
+        assert!(store.replies("").is_empty(), "empty is stored as NULL, not as a project id");
+        let conn = store.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM replies WHERE project_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// `CREATE TABLE IF NOT EXISTS` must be a no-op on a db that already has the table, with
+    /// its rows intact — the migration path for anyone upgrading.
+    #[test]
+    fn opening_a_db_that_already_has_the_replies_table_keeps_its_rows() {
+        let dir = std::env::temp_dir().join(format!("operator-replies-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("chat.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = ChatStore::open(&path);
+            store.append_reply("h1", "s1", "proj-1", "operator", "survives", "t0");
+        }
+        let reopened = ChatStore::open(&path);
+        let channel = reopened.replies("proj-1");
+        assert_eq!(channel.len(), 1);
+        assert_eq!(channel[0].text, "survives");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sweep for the intermediate build that wrote replies INTO `messages`: such a row
+    /// would now surface in the reading panel as an unknown kind, so opening clears it.
+    /// Opening the store must NEVER destroy rows it didn't write. This replaces an earlier test
+    /// that asserted a stray `kind='reply'` row was swept on open: that sweep was an
+    /// unconditional `DELETE` on every launch, with no `user_version` gate and no backup, against
+    /// rows that were their own only copy. Cosmetic tidying is not worth permanent deletion —
+    /// if it's ever wanted it goes in the backup-protected migration `purge_injected_rows` uses.
+    #[test]
+    fn opening_the_store_never_deletes_rows_it_did_not_write() {
+        let dir = std::env::temp_dir().join(format!("operator-stray-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("chat.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = ChatStore::open(&path);
+            store.append("s1", &[(0, entry("text", "real prose", "t0"))]);
+            let conn = store.conn.lock().unwrap();
+            conn.execute("INSERT INTO messages (session_id, seq, kind, text, ts) VALUES ('s1', 1, 'reply', 'stray', 't1')", []).unwrap();
+        }
+        // Reopen twice: the old bug re-ran on EVERY open, so once is not a sufficient probe.
+        drop(ChatStore::open(&path));
+        let reopened = ChatStore::open(&path);
+        let conn = reopened.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        drop(conn);
+        assert_eq!(n, 2, "opening the store destroyed a row it did not write");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "documents the removed unconditional sweep; see opening_the_store_never_deletes_rows_it_did_not_write"]
+    fn a_stray_reply_row_left_in_messages_is_swept() {
+        let dir = std::env::temp_dir().join(format!("operator-stray-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("chat.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = ChatStore::open(&path);
+            store.append("s1", &[(0, entry("text", "real prose", "t0"))]);
+            let conn = store.conn.lock().unwrap();
+            conn.execute("INSERT INTO messages (session_id, seq, kind, text, ts) VALUES ('s1', 1, 'reply', 'stray', 't1')", []).unwrap();
+        }
+        let reopened = ChatStore::open(&path);
+        let panel = reopened.load("s1");
+        assert_eq!(panel.len(), 1, "the stray reply row is gone");
+        assert_eq!(panel[0].text, "real prose");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

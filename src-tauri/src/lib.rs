@@ -638,6 +638,11 @@ fn terminal_spawn(
     // Orchestration awareness note — appended to the system prompt so an agent knows its
     // role + its sibling lanes in the project (see the frontend roster).
     orchestration_note: Option<String>,
+    // The project this session belongs to. The tailer stamps it on any OPERATOR-REPLY the
+    // session posts, so the reply lands in the right project's channel. Passed in rather than
+    // derived: project ids are the frontend's canonical-repo-root scheme, and a second
+    // implementation here would be free to drift from it.
+    project_id: Option<String>,
     grid: Option<bool>,
     term_bg: Option<String>,
     term_fg: Option<String>,
@@ -805,7 +810,12 @@ fn terminal_spawn(
     // transcript mapping is exact.
     reg.register(
         id.clone(),
-        transcript::NewTrack { claude_session_id: session_id, cwd: cwd.clone(), permission_mode },
+        transcript::NewTrack {
+            claude_session_id: session_id,
+            cwd: cwd.clone(),
+            permission_mode,
+            project_id: project_id.unwrap_or_default(),
+        },
     );
 
     let emit_id = id.clone();
@@ -1571,6 +1581,17 @@ fn chat_history(
     store.load(&id)
 }
 
+/// Every OPERATOR-REPLY posted to a project, oldest first. Read-only, like `chat_history`:
+/// replies are written by the tailer alone (a lane posts one by emitting the sentinel into
+/// its own transcript), so there is deliberately no write command here.
+#[tauri::command]
+fn project_replies(
+    store: tauri::State<Arc<chatstore::ChatStore>>,
+    project_id: String,
+) -> Vec<chatstore::ProjectReply> {
+    store.replies(&project_id)
+}
+
 /// Delete pasted-image temp files older than 3 days. Nothing else ever cleans
 /// $TMPDIR/operator-pastes and macOS's tmp reaper is unreliable, so dragged
 /// screenshots (100s of KB each) pile up indefinitely. The path is consumed the
@@ -1980,6 +2001,7 @@ pub fn run() {
             save_pasted_image,
             set_dock_icon,
             chat_history,
+            project_replies,
             image_data_url,
             renderer_heartbeat,
             app_ready
