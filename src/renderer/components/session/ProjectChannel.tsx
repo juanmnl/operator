@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Project, ProjectReply } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { laneTextColor } from '../../lib/lane-color'
+import { parseInline } from '../../lib/canvas-md'
 import {
-  buildChannelFeed, groupByDay, channelInitials,
+  buildChannelFeed, groupByDay, channelInitials, isContinuation, isActionableChip,
   type ChannelEntry, type ChannelSession, type ChipTone,
 } from '../../lib/project-channel'
 import {
@@ -28,6 +29,17 @@ export type SendResult =
 /** One measure for the header and the feed, so they share a left edge at every scrollbar width. */
 const MEASURE = 720
 
+/** …but NOT for prose. The shell wants 720 — the header, the composer and the meta line all use
+ *  the width. The BODY does not: at 12px, a 652px text column runs ~105 characters, well past the
+ *  60–80 a reader tracks comfortably, and these are dense operational briefs rather than chat.
+ *  Capping the body alone decouples the two: the row keeps its full-width meta line and the prose
+ *  gets a readable measure. 470px MEASURES at ~78 characters in the body's own computed font —
+ *  the top of the comfortable band. Sized by measuring, not by assuming a px-per-character: my
+ *  first pass at 520 looked right arithmetically and came out at 87, still outside the band. The
+ *  top of the band rather than the middle is deliberate — a narrower column would push the p90
+ *  dispatch into many more lines and make the 4-line clamp hide more than it reveals. */
+const PROSE = 470
+
 // Chip ink. The accent-derived tones are MIXED toward --fg, not used raw: bare `var(--accent)`
 // at this size measured 2.92:1 on Mission Control light and 2.44:1 on 1984 light — under the 3:1
 // floor for supporting text. 55% keeps the hue and clears it on all six (same treatment, same
@@ -40,9 +52,29 @@ const WARN_INK = 'color-mix(in srgb, var(--color-warning) 55%, var(--fg))'
 const TONE: Record<ChipTone, string> = {
   accent: ACCENT_INK,
   progress: 'var(--status-compacting)',
-  warn: ACCENT_INK,
+  // Was ACCENT_INK — byte-identical to `accent`, so `held · needs your approval` and the two
+  // brakes painted the exact same colour as `delivered`. A dispatch waiting on the user looked
+  // like one that had already landed, which is the one confusion this chip exists to prevent.
+  // WARN_INK was already defined and measured; it just wasn't wired to the tone that needs it.
+  warn: WARN_INK,
   muted: 'var(--fg-muted)',
 }
+
+/** How many lines of a body show before it folds.
+ *
+ *  Sized against the real store, not by eye. At the PROSE measure a line is ~80 characters, and
+ *  `~/.operator/projects.json` has a median dispatch task of 520 characters and a p90 of 1165 —
+ *  roughly 6.5 and 15 lines. A 6-line clamp would leave the MEDIAN entry all but unfolded and
+ *  catch only the tail, which is most of the wall still standing. Four folds the median, keeps
+ *  the ask ("Read dev/briefs/X.md and do it…") which is the part a skim actually reads, and puts
+ *  the rest one click away. */
+const CLAMP_LINES = 4
+
+/** Past this, the body renders as plain text with no inline pass. Bodies are capped elsewhere,
+ *  so this is a backstop rather than a live limit — but the reading panels' freeze
+ *  (project_chat_markdown_freeze) came from re-parsing markup on every update, and this surface
+ *  re-renders on every `session:update`. Cheap parser, memoised, and still capped. */
+const INLINE_CAP = 8192
 
 export function ProjectChannel({
   project, replies, sessions, onApproveDispatch, onRejectDispatch, onMarkRead, onSend,
@@ -73,10 +105,33 @@ export function ProjectChannel({
   )
   const days = useMemo(() => groupByDay(feed), [feed])
 
+  // What the pause has actually cost. Counted off the chips the data layer already wrote, so this
+  // can never claim a loss that the store doesn't record.
+  const heldByPause = useMemo(
+    () => feed.filter((e) => e.chip.label.includes('agent↔agent paused')).length,
+    [feed],
+  )
+
   // Reading the channel clears its unread count. Keyed on the newest timestamp so re-rendering
   // with the same feed doesn't write repeatedly.
   const newest = feed.length ? feed[feed.length - 1].at : null
   useEffect(() => { if (newest) onMarkRead?.(project.id, newest) }, [project.id, newest, onMarkRead])
+
+  // How tall the pinned chrome currently is, so the day divider can stick directly under it.
+  // Measured rather than hardcoded: the paused notice appears and disappears with the feed's
+  // contents, and a fixed offset would leave the divider either overlapped or floating.
+  const chromeRef = useRef<HTMLDivElement>(null)
+  const [chromeH, setChromeH] = useState(45)
+  useLayoutEffect(() => {
+    const el = chromeRef.current
+    if (!el) return
+    const measure = () => setChromeH(Math.round(el.getBoundingClientRect().height))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Land at the bottom: a channel's newest entry is the one you came to read.
   const endRef = useRef<HTMLDivElement>(null)
@@ -89,8 +144,16 @@ export function ProjectChannel({
           `auto` so the classic scrollbar's 6px is reserved in both states and the centred measure
           box can't re-centre 3px when the feed grows past the fold. */}
       <div className="channel-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'scroll' }}>
+        {/* ONE sticky block for all the pinned chrome — the header and, when it applies, the
+            paused notice. They used to be two independent stickies at `top: 0` and `top: 45`,
+            which works right up until something else needs to pin BELOW them: a hardcoded offset
+            can't know whether the notice is showing. Measured instead (see `chromeH`), so the day
+            divider can sit under whatever chrome is actually there. */}
+        <div ref={chromeRef} style={{
+          position: 'sticky', top: 0, zIndex: 3, background: 'var(--bg-terminal)',
+        }}>
         <DragRegion style={{
-          position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-terminal)',
+          background: 'var(--bg-terminal)',
           borderBottom: '1px solid var(--border)',
         }}>
           <div style={{
@@ -137,6 +200,57 @@ export function ProjectChannel({
           </div>
         </DragRegion>
 
+        {/* THE PAUSE, WHERE ITS CONSEQUENCE IS. The header pill states the setting; it does not
+            say that anything was lost by it, and it is the quietest thing in the header precisely
+            when it matters most. This notice is different: it appears only once the pause has
+            actually cost something — at least one message posted to the room that reached nobody
+            — and it says how many, in the feed, next to them. No standing nag: the switch ships
+            paused, so a banner on every launch would be furniture within a day. */}
+        {/* Inside the sticky chrome block, so it is pinned with the header rather than beside
+            it. The feed opens scrolled to its newest entry, so a notice parked at the top of the
+            document is one nobody ever sees. */}
+        {chatterPaused && heldByPause > 0 && (
+          <div style={{
+            background: 'var(--bg-terminal)',
+            maxWidth: MEASURE, margin: '0 auto', padding: '10px 16px', boxSizing: 'border-box',
+          }}>
+            <div data-channel-paused-banner style={{
+              display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+              padding: '7px 10px', borderRadius: 'var(--radius-sm)',
+              // Transparent tint + a static hairline, per house style — never a solid fill, and
+              // never a colour-changing border on a radiused element.
+              background: 'color-mix(in srgb, var(--color-warning) 9%, transparent)',
+              border: '1px solid var(--border)',
+            }}>
+              {/* Plain --fg, not WARN_INK. This is the one full sentence in the banner, so it
+                  answers to the 4.5:1 body floor rather than the 3:1 one the chips use — and
+                  WARN_INK measured 4.27:1 on 1984 light, just under it. The amber tint behind it
+                  and the amber chips it refers to already carry the tone; the sentence only has
+                  to be read. */}
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--fg)' }}>
+                {heldByPause} message{heldByPause === 1 ? '' : 's'} posted here reached no one.
+              </span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--fg-muted)' }}>
+                Agent→agent delivery is paused, so lanes can post but nothing is typed into another
+                lane's session. Your own messages are unaffected.
+              </span>
+              {onToggleChatter && (
+                <button
+                  data-channel-paused-resume
+                  onClick={onToggleChatter}
+                  style={{
+                    flexShrink: 0, padding: '2px 9px', borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border)', background: 'var(--btn-bg)',
+                    color: 'var(--fg)', cursor: 'pointer', outline: 'none',
+                    fontFamily: 'var(--font-body)', fontSize: 11,
+                  }}
+                >Let them deliver</button>
+              )}
+            </div>
+          </div>
+        )}
+        </div>
+
         <div style={{ maxWidth: MEASURE, margin: '0 auto', padding: '14px 16px 24px', boxSizing: 'border-box' }}>
           {feed.length === 0 ? (
             <p data-channel-empty style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--fg-muted)', margin: 0 }}>
@@ -146,8 +260,17 @@ export function ProjectChannel({
             </p>
           ) : days.map((group) => (
             <div key={group.day}>
-              {/* Day separator: a hairline with the date sitting on it. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 12px' }}>
+              {/* Day separator: a hairline with the date sitting on it — and STICKY, because a
+                  static one only tells you the date while it happens to be on screen. Scrolled
+                  into the middle of a long feed every timestamp read `04:05` with nothing saying
+                  which day that was. It pins under whatever chrome is showing (`chromeH`), and
+                  carries the field colour so rows pass under it rather than through it. */}
+              <div style={{
+                position: 'sticky', top: chromeH, zIndex: 1,
+                background: 'var(--bg-terminal)',
+                display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 12px',
+                paddingTop: 6, paddingBottom: 6,
+              }}>
                 <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                 <span data-channel-day style={{
                   flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
@@ -157,11 +280,14 @@ export function ProjectChannel({
                 </span>
                 <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
               </div>
-              {group.entries.map((e) => (
+              {group.entries.map((e, i) => (
                 <ChannelRow
                   key={e.id}
                   entry={e}
                   projectId={project.id}
+                  // Day buckets never merge across the separator: `group.entries` is one day, so
+                  // the first row of a day always prints its author.
+                  continuation={isContinuation(group.entries[i - 1], e)}
                   onApprove={onApproveDispatch}
                   onReject={onRejectDispatch}
                 />
@@ -177,9 +303,124 @@ export function ProjectChannel({
   )
 }
 
-function ChannelRow({ entry, projectId, onApprove, onReject }: {
+/** Inline markdown, through the app's OWN tokenizer (`lib/canvas-md`'s `parseInline`) — the same
+ *  one CanvasConversation uses, and deliberately NOT react-markdown, which is what pegged
+ *  WebContent in the reading panels. It is a single pass that emits unmatched markers as literal
+ *  text, so a lone backtick degrades to a backtick instead of eating the rest of the line.
+ *
+ *  Worth it because backticks are not an edge case here: 11% of the real store's dispatch tasks
+ *  and 2 of 6 rows in chat.db carry them, and every one of those was rendering as raw punctuation
+ *  around a path. */
+function InlineText({ text }: { text: string }) {
+  const spans = useMemo(() => (text.length > INLINE_CAP ? null : parseInline(text)), [text])
+  if (!spans) return <>{text}</>
+  return (
+    <>
+      {spans.map((s, i) => (s.code ? (
+        <code
+          key={i}
+          data-channel-code
+          style={{
+            fontFamily: 'var(--font-mono)', fontSize: 11,
+            // Neutral wash, not an accent: a path is not a state. Mirrors the canvas renderer's
+            // `codeBg`, via the token so it tracks all six palettes.
+            background: 'var(--overlay-medium)',
+            padding: '0.5px 4px', borderRadius: 3, wordBreak: 'break-all',
+          }}
+        >
+          {s.text}
+        </code>
+      ) : (
+        <span
+          key={i}
+          style={{
+            fontWeight: s.bold ? 600 : undefined,
+            fontStyle: s.italic ? 'italic' : undefined,
+            textDecoration: s.strike ? 'line-through' : undefined,
+          }}
+        >
+          {s.text}
+        </span>
+      )))}
+    </>
+  )
+}
+
+/** A body, folded to CLAMP_LINES with a control to open it.
+ *
+ *  The control only appears when the text ACTUALLY overflows — measured, not guessed from a
+ *  character count, because the panel is resizable and the same string wraps differently at every
+ *  width. A "Show more" on a body that is already whole is a control that does nothing, and the
+ *  measure is re-taken on resize for the same reason. */
+function ChannelBody({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const measure = useCallback(() => {
+    const el = ref.current
+    if (!el || expanded) return
+    // +1 absorbs sub-pixel line-height rounding, which otherwise reports a 6-line body as
+    // overflowing its own 6-line clamp.
+    setOverflows(el.scrollHeight > el.clientHeight + 1)
+  }, [expanded])
+
+  useLayoutEffect(() => { measure() }, [measure, text])
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measure])
+
+  return (
+    <>
+      <div
+        ref={ref}
+        data-channel-text
+        data-channel-clamped={!expanded && overflows ? '' : undefined}
+        style={{
+          fontSize: 12, lineHeight: 1.55, color: 'var(--fg)',
+          maxWidth: PROSE,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 2,
+          ...(expanded ? {} : {
+            display: '-webkit-box',
+            WebkitBoxOrient: 'vertical' as const,
+            WebkitLineClamp: CLAMP_LINES,
+            overflow: 'hidden',
+          }),
+        }}
+      >
+        <InlineText text={text} />
+      </div>
+      {overflows && (
+        <button
+          data-channel-more
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          style={{
+            marginTop: 3, padding: 0, background: 'none', border: 'none', outline: 'none',
+            cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 9,
+            textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--fg-muted)',
+            transition: 'color 120ms ease',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--fg-muted)' }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </>
+  )
+}
+
+function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
   entry: ChannelEntry
   projectId: string
+  /** Same author as the row above, close in time: the identity is already on screen, so this row
+   *  drops the avatar and the name and keeps everything that varies. */
+  continuation?: boolean
   onApprove?: (projectId: string, id: string) => void
   onReject?: (projectId: string, id: string) => void
 }) {
@@ -188,52 +429,89 @@ function ChannelRow({ entry, projectId, onApprove, onReject }: {
   const dispatchId = entry.kind === 'dispatch' ? entry.id.slice('dispatch:'.length) : null
   const held = !!entry.chip.actionable && !!dispatchId
   return (
-    <div data-channel-row={entry.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'flex-start' }}>
+    <div
+      data-channel-row={entry.id}
+      data-channel-continuation={continuation ? '' : undefined}
+      style={{
+        display: 'flex', gap: 10, alignItems: 'flex-start',
+        // A run reads as one block: continuation rows sit close, and the air goes between
+        // blocks instead of being spread evenly over every row.
+        padding: continuation ? '3px 0' : '10px 0 3px',
+      }}
+    >
       {/* CIRCLE — lane vocabulary. Accent tint + a STATIC hairline (a colour-changing border on a
           radiused element re-rasterizes in WKWebView), initials through laneTextColor so they
           clear 4.5:1 on the three light palettes where a raw accent collapses to ~1.4. A human or
-          unresolved author gets a neutral fill instead of a borrowed lane colour. */}
-      <span
-        data-channel-avatar
-        style={{
-          flexShrink: 0, width: 26, height: 26, borderRadius: '50%',
-          display: 'grid', placeItems: 'center',
-          background: accent ? `color-mix(in srgb, ${accent} 16%, transparent)` : 'var(--overlay-medium)',
-          border: `1px solid ${accent ? `color-mix(in srgb, ${accent} 38%, transparent)` : 'var(--border)'}`,
-          color: accent ? laneTextColor(accent) : 'var(--fg-muted)',
-          fontSize: 9.5, fontWeight: 600, letterSpacing: '0.02em', lineHeight: 1,
-        }}
-      >
-        {channelInitials(entry.authorLabel)}
-      </span>
+          unresolved author gets a neutral fill instead of a borrowed lane colour.
+          On a continuation the gutter is HELD OPEN and left empty, so every body in a run keeps
+          the same left edge — the column is what makes the run read as one speaker. */}
+      {continuation ? (
+        <span aria-hidden style={{ flexShrink: 0, width: 26 }} />
+      ) : (
+        <span
+          data-channel-avatar
+          style={{
+            flexShrink: 0, width: 26, height: 26, borderRadius: '50%',
+            display: 'grid', placeItems: 'center',
+            background: accent ? `color-mix(in srgb, ${accent} 16%, transparent)` : 'var(--overlay-medium)',
+            border: `1px solid ${accent ? `color-mix(in srgb, ${accent} 38%, transparent)` : 'var(--border)'}`,
+            color: accent ? laneTextColor(accent) : 'var(--fg-muted)',
+            fontSize: 9.5, fontWeight: 600, letterSpacing: '0.02em', lineHeight: 1,
+          }}
+        >
+          {channelInitials(entry.authorLabel)}
+        </span>
+      )}
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
-          <span data-channel-author style={{
-            fontSize: 11.5, fontWeight: 600,
-            color: accent ? laneTextColor(accent) : 'var(--fg)',
-          }}>
-            {entry.authorLabel}
-          </span>
+          {!continuation && (
+            <span data-channel-author style={{
+              fontSize: 11.5, fontWeight: 600,
+              color: accent ? laneTextColor(accent) : 'var(--fg)',
+            }}>
+              {entry.authorLabel}
+            </span>
+          )}
+          {/* WHO IS TALKING TO WHOM is the primary axis of a channel, and this was tertiary ink —
+              9.5px muted mono, byte-identical to the timestamp beside it. The arrow stays muted
+              (it is punctuation); the NAME steps up to body ink and size so the routing reads
+              before the metadata does. */}
           {entry.targetLabel && (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)' }}>
-              → {entry.targetLabel}
+            <span style={{ fontSize: 11, color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>
+              →{' '}
+              <span data-channel-target style={{
+                fontWeight: 500, color: 'color-mix(in srgb, var(--fg) 82%, transparent)',
+              }}>
+                {entry.targetLabel}
+              </span>
             </span>
           )}
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {entry.at.slice(11, 16)}
           </span>
-          <span data-channel-chip style={{
-            fontFamily: 'var(--font-mono)', fontSize: 8.5, textTransform: 'uppercase',
-            letterSpacing: '0.06em', color: TONE[entry.chip.tone],
-          }}>
+          {/* An ACTIONABLE state gets a shape, not just an ink. `2 queued` and `held · needs your
+              approval` are the two things in this feed you might still have to do something
+              about, and at 8.5px a colour swap alone was not carrying them against a row of
+              `delivered`. A transparent tint, per house style — never a solid accent fill, and no
+              border, so nothing colour-changing lands on a radiused element. */}
+          <span
+            data-channel-chip
+            data-channel-chip-actionable={isActionableChip(entry.chip) ? '' : undefined}
+            style={{
+              fontFamily: 'var(--font-mono)', fontSize: 8.5, textTransform: 'uppercase',
+              letterSpacing: '0.06em', color: TONE[entry.chip.tone],
+              ...(isActionableChip(entry.chip) ? {
+                padding: '1.5px 6px', borderRadius: 'var(--radius-sm)',
+                background: `color-mix(in srgb, ${TONE[entry.chip.tone]} 13%, transparent)`,
+              } : null),
+            }}
+          >
             {entry.chip.label}
           </span>
         </div>
         {/* Prose, in the body face: this is what an agent said, not a protocol line. */}
-        <div data-channel-text style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 2 }}>
-          {entry.text}
-        </div>
+        <ChannelBody text={entry.text} />
         {held && (
           <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
             <button

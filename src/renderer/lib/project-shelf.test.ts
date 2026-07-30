@@ -4,6 +4,7 @@ import type { ProjectActivity } from './project-status'
 import {
   FILTER_THRESHOLD, STALE_DAYS,
   isActiveProject, byActivityThenRecency, partitionProjects, matchProject, staleProjects,
+  byRailOrder, reorderRail,
 } from './project-shelf'
 
 const NOW = Date.parse('2026-07-29T12:00:00.000Z')
@@ -127,5 +128,80 @@ describe('staleProjects', () => {
 describe('FILTER_THRESHOLD', () => {
   it('is the switcher\'s existing threshold, so the refactor changes nothing', () => {
     expect(FILTER_THRESHOLD).toBe(8)
+  })
+})
+
+describe('rail order — the user places the tiles, nothing recomputes them', () => {
+  const proj = (id: string, railOrder?: number): Project => ({
+    id, path: `/x/${id}`, name: id,
+    createdAt: '2026-07-01T00:00:00.000Z', lastActiveAt: '2026-07-01T00:00:00.000Z',
+    ...(railOrder === undefined ? {} : { railOrder }),
+  })
+  const ids = (list: Project[]) => list.map((p) => p.id)
+  const sorted = (list: Project[]) => ids([...list].sort(byRailOrder))
+
+  it('leaves a store nobody has dragged in its own order — no migration needed', () => {
+    // Every existing projects.json looks like this: not one railOrder in it.
+    const store = [proj('a'), proj('b'), proj('c')]
+    expect(sorted(store)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('does NOT use Infinity arithmetic — two unplaced projects must not compare as NaN', () => {
+    // `(a ?? Infinity) - (b ?? Infinity)` is NaN, and a NaN comparator yields an arbitrary order
+    // that looks fine on 3 items and shuffles on 20.
+    expect(byRailOrder(proj('a'), proj('b'))).toBe(0)
+    expect(Number.isNaN(byRailOrder(proj('a'), proj('b')))).toBe(false)
+  })
+
+  it('sorts placed projects before unplaced ones, so a new project lands at the END', () => {
+    // The defined slot for a brand-new project, and for one that appears because something just
+    // went live in it: after everything the user has arranged, never inside it.
+    const store = [proj('fresh'), proj('placed', 1), proj('first', 0)]
+    expect(sorted(store)).toEqual(['first', 'placed', 'fresh'])
+  })
+
+  it('moves a tile and stamps a TOTAL order across the whole store', () => {
+    const store = [proj('a'), proj('b'), proj('c')]
+    const next = reorderRail(store, 'c', 'a', 'before')
+    expect(sorted(next)).toEqual(['c', 'a', 'b'])
+    // Every project carries a number afterwards — not just the ones that moved.
+    expect(next.every((p) => typeof p.railOrder === 'number')).toBe(true)
+  })
+
+  it('restamps projects that are OFF the rail too, so they cannot collide later', () => {
+    // The bug this prevents: numbering only the visible tiles leaves an off-rail project holding
+    // a stale index that now belongs to someone else — and it only shows when it comes back.
+    const store = [proj('visible1'), proj('offrail'), proj('visible2')]
+    const next = reorderRail(store, 'visible2', 'visible1', 'before')
+    const orders = next.map((p) => p.railOrder)
+    expect(new Set(orders).size).toBe(orders.length) // all distinct
+    expect(sorted(next)).toEqual(['visible2', 'visible1', 'offrail'])
+  })
+
+  it('survives a round trip through JSON — this is what makes it durable', () => {
+    const next = reorderRail([proj('a'), proj('b'), proj('c')], 'c', 'a', 'before')
+    const reloaded = JSON.parse(JSON.stringify(next)) as Project[]
+    expect(sorted(reloaded)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('keeps a second drag stable rather than re-deriving from scratch', () => {
+    let store = reorderRail([proj('a'), proj('b'), proj('c')], 'c', 'a', 'before') // c a b
+    store = reorderRail(store, 'b', 'c', 'before') // b c a
+    expect(sorted(store)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('returns the SAME object for a project whose position did not change', () => {
+    // The store's persist effect diffs serialized JSON; churning new objects would write on
+    // every render.
+    const store = reorderRail([proj('a'), proj('b')], 'a', 'b', 'after') // b a
+    const again = reorderRail(store, 'a', 'b', 'after') // unchanged
+    expect(again[0]).toBe(store[0])
+    expect(again[1]).toBe(store[1])
+  })
+
+  it('is a no-op when a tile is dropped on itself', () => {
+    const store = [proj('a', 0), proj('b', 1)]
+    expect(ids(reorderRail(store, 'a', 'a', 'before'))).toEqual(['a', 'b'])
+    expect(sorted(reorderRail(store, 'a', 'a', 'before'))).toEqual(['a', 'b'])
   })
 })

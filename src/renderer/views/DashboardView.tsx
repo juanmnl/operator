@@ -9,6 +9,7 @@ import {
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { reorderByIds } from '../lib/reorder'
+import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { sessionLabel } from '../lib/session-label'
@@ -2023,6 +2024,16 @@ export function DashboardView() {
   // Dragging a LANE row reorders the roster itself — the roster is what orders those rows,
   // so anything else would be a drag with no effect. Same helper (and therefore the same
   // result) as dragging the lane on the roster board.
+  // Drag-to-reorder the PROJECT RAIL. `reorderRail` restamps the durable `railOrder` field across
+  // the whole store (see lib/project-shelf), and the persist effect below writes it to
+  // projects.json — so the arrangement survives a restart, which is the acceptance test here.
+  // Deliberately NOT the array's own order: that happens to be stable today, but nothing declares
+  // it, and the sidebar's own reorder is already a shipped example of a position that looks saved
+  // and isn't.
+  const handleReorderProject = useCallback((draggedId: string, targetId: string, edge: 'before' | 'after') => {
+    setProjects((prev) => reorderRail(prev, draggedId, targetId, edge))
+  }, [])
+
   const handleReorderLane = useCallback((draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => {
     if (!activeProjectId) return
     updateProject(activeProjectId, (p) => ({ roster: reorderRoles(p.roster ?? [], draggedRoleId, targetRoleId, edge) }))
@@ -2689,6 +2700,7 @@ export function DashboardView() {
         onOpenFolder={handleNewSession}
         onOpenAgents={handleOpenAgents}
         agentsActive={contentMode === 'agents'}
+        onReorder={handleReorderProject}
       />
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so

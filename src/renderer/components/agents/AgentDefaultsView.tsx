@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Project, Role } from '../../../shared/types'
 import { ROSTER_MODELS, rolePresets } from '../../lib/roster'
 import { laneTextColor } from '../../lib/lane-color'
+import { Segmented } from '../Segmented'
 import {
   pinnedFieldCounts, type GlobalRoleDefaults,
 } from '../../lib/model-config'
@@ -38,7 +39,6 @@ const EFFORTS = [
   { id: 'high' as const, label: 'High', for: 'think it through' },
 ]
 
-const CONTROL_OFF = 'var(--fg-muted)'
 
 export function AgentDefaultsView({ defaults, onPatch, projects, onResetPinned }: {
   defaults: GlobalRoleDefaults
@@ -160,97 +160,51 @@ function RoleDefaultRow({ preset, value, onPatch }: {
         </span>
       </div>
 
-      <Picker
+      {/* The SAME control the roster cards use — imported, not reimplemented. This view carried
+          its own near-identical copy (`Picker`), which is how the app ended up answering "which
+          one, and did you choose it?" in three dialects. `chosen` here means the same thing
+          `pinned` means there: set at this layer rather than inherited from the one below. */}
+      <Segmented
+        name="model"
         label="model"
         options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label, hint: MODEL_FOR[m.id] }))}
         value={model}
-        preset={preset.model ?? 'sonnet'}
+        origin={value.model === undefined ? 'inherited' : 'pinned'}
+        inheritedFrom="the built-in preset"
         accent={accent}
         onChange={(id) => onPatch({ model: id })}
         onClear={() => onPatch({ model: undefined })}
       />
-      <Picker
+      <Segmented
+        name="effort"
         label="effort"
         options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label, hint: e.for }))}
         value={effort}
-        preset={preset.effort ?? 'high'}
+        origin={value.effort === undefined ? 'inherited' : 'pinned'}
+        inheritedFrom="the built-in preset"
         accent={accent}
         onChange={(id) => onPatch({ effort: id as Role['effort'] })}
         onClear={() => onPatch({ effort: undefined })}
       />
 
-      {/* Worktree is a plain boolean HERE — a global either isolates this lane or doesn't. The
-          tri-state lives on the lane itself, where "off" has to be able to beat this. */}
-      <button
-        data-default-worktree={preset.id}
-        onClick={() => onPatch({ useWorktree: !worktree })}
-        aria-pressed={worktree}
-        title={worktree
-          ? `Every ${preset.name} lane launches in its own git worktree — an attributable diff, mergeable back.`
-          : `${preset.name} lanes launch in the project root, sharing it with the other lanes.`}
-        style={{
-          marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5,
-          padding: '2px 7px', borderRadius: 5, border: 'none',
-          background: worktree && accent ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
-          color: worktree && accent ? laneTextColor(accent) : CONTROL_OFF,
-          cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9.5,
-        }}
-      >
-        <span style={{
-          width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-          border: `1px solid ${worktree ? 'transparent' : 'var(--fg-muted)'}`,
-          background: worktree ? (accent ?? 'var(--fg-muted)') : 'transparent',
-        }} />
-        worktree
-      </button>
-    </div>
-  )
-}
-
-/** A labelled option row. The lit value is the answer; muted ink means it is still the built-in
- *  preset, accent means you chose it. Clicking your own choice again clears it back to the preset —
- *  the same route home the roster cards use, so the gesture is learned once. */
-function Picker({ label, options, value, preset, accent, onChange, onClear }: {
-  label: string
-  options: Array<{ id: string; label: string; hint?: string }>
-  value: string
-  preset: string
-  accent?: string
-  onChange: (id: string) => void
-  onClear: () => void
-}) {
-  const tint = accent ? laneTextColor(accent) : 'var(--accent)'
-  const chosen = value !== preset || options.every((o) => o.id !== preset)
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{
-        fontFamily: 'var(--font-mono)', fontSize: 8.5, textTransform: 'uppercase',
-        letterSpacing: '0.1em', color: 'var(--fg-muted)',
-      }}>{label}</span>
-      <div style={{ display: 'inline-flex', gap: 1, flexWrap: 'wrap' }}>
-        {options.map((o) => {
-          const active = o.id === value
-          return (
-            <button
-              key={o.id}
-              data-default-option={`${label}:${o.id}`}
-              data-default-state={active ? (chosen ? 'chosen' : 'preset') : 'off'}
-              onClick={() => { if (!active) onChange(o.id); else if (chosen) onClear() }}
-              title={!active
-                ? `${o.label} — ${o.hint ?? ''}`.trim()
-                : chosen
-                  ? `${o.label} — your default. Click to go back to the built-in (${preset}).`
-                  : `${o.label} — the built-in default${o.hint ? ` (${o.hint})` : ''}.`}
-              style={{
-                fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
-                padding: '2px 7px', borderRadius: 5, cursor: 'pointer', outline: 'none', border: 'none',
-                color: active && chosen ? tint : active ? 'var(--fg)' : CONTROL_OFF,
-                background: active && chosen ? `color-mix(in srgb, ${accent ?? 'var(--accent)'} 12%, transparent)` : 'transparent',
-              }}
-            >{o.label}</button>
-          )
-        })}
+      {/* Worktree, in the same control as everything else on this row. It was a 9px box with a
+          hairline border, i.e. a fourth way of saying the same thing; two options and a ring say
+          it once. A global either isolates this lane or doesn't — the tri-state lives on the lane
+          itself, where "off" has to be able to beat this. */}
+      <div style={{ marginLeft: 'auto' }}>
+        <Segmented
+          name="worktree"
+          label="worktree"
+          options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
+          value={worktree ? 'on' : 'off'}
+          origin={value.useWorktree === undefined ? 'inherited' : 'pinned'}
+          inheritedFrom="the built-in preset"
+          accent={accent}
+          onChange={(id) => onPatch({ useWorktree: id === 'on' })}
+          onClear={() => onPatch({ useWorktree: undefined })}
+        />
       </div>
     </div>
   )
 }
+

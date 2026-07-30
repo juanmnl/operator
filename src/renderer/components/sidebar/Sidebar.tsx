@@ -444,20 +444,30 @@ export function Sidebar({
       </div>
 
       {/* Bottom bar — the app's own row: its tools, then its identity.
+          This row and the ProjectRail's foot are ONE cluster: they meet at the bottom-left
+          corner, 1px apart across the sidebar's left hairline, and both bottom out at the same
+          y. So they share one spec — 26x26 box, radius 7, 14px ink, `--fg-muted` at rest, and
+          the same hover — via FootButton below. They used to differ on every one of those
+          (22x20 box, radius 8, 13 vs 14 ink, and no hover at all on this side), which put the
+          two rows' glyphs on baselines 3px apart and left half the corner dead to the pointer.
           Sized to FIT: n icons + gaps + padding must stay inside the 220px sidebar, or the
           wrapper's overflow:hidden slices the last one in half at the edge (that's what it did
-          with seven — the theme toggle was cut down the middle). Making room for the version
-          cost 2px of icon padding and 3px of gap: six 20px icons at gap 5 come to 145 + 12
-          padding = 157, leaving ~58px — measured against the widest version string we'd
-          plausibly ship ("v0.10.11" needs 56px at 9.5 mono). The icon BOX is untouched at
-          14px; this is spacing, not squashing.
+          with seven — the theme toggle was cut down the middle). At the shared 26px box: four
+          icons + three 5px gaps + 16px padding = 135, leaving 85px for the version — still
+          comfortably past the widest string we'd plausibly ship ("v0.10.11" needs 56px at 9.5
+          mono). Growing the box did not cost the version anything, because the icons that were
+          squeezed to 20px wide are only four now, not six.
+          Padding is 10 LEFT / 6 RIGHT on purpose, and it is alignment rather than a typo: at
+          10 the first icon's ink lands on x=68, the exact column the lane orbs above it sit on
+          (align ink, not boxes — the old 6 put the footer 6px left of its own column). The
+          right stays on the sidebar's outer inset, which is what the version belongs to.
           The version takes `flex: 1 1 0` rather than `marginLeft: auto` deliberately: with
           `flexWrap` on, an auto-margined item WRAPS to a second line the moment it doesn't fit
           (wrapping is decided before shrinking), which is what it did. At flex-basis 0 it
           claims the leftover and ellipsises instead, so a long version string can never push
-          it onto a line of its own. `flexWrap` stays as the guard for a seventh ICON. */}
+          it onto a line of its own. `flexWrap` stays as the guard for a fifth ICON. */}
       <div style={{
-        padding: '6px 6px 10px',
+        padding: '6px 6px 10px 10px',
         display: 'flex',
         alignItems: 'center',
         flexWrap: 'wrap',
@@ -465,11 +475,12 @@ export function Sidebar({
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
-        {/* All footer icons share one 14px box (viewBox 16, stroke 1.1) and the
-            same button padding; spacing comes from the row's `gap` alone, so they
-            read as a single uniform set. The gear keeps viewBox 24 with a
-            proportional stroke (1.6/24 ≈ 1.1/16). `flexShrink: 0` on each keeps them
-            square — a squashed icon box is worse than a wrapped row. */}
+        {/* All footer icons share one 14px ink box (viewBox 16, stroke 1.2) inside FootButton's
+            26px square; spacing comes from the row's `gap` alone, so they read as a single
+            uniform set — and as the same set as the rail's foot. The gear keeps viewBox 24 with
+            a proportional stroke (1.8/24 = 1.2/16). Every stroke is `currentColor`: they used
+            to be hardcoded `var(--fg-muted)`, which is precisely why these four could not
+            answer hover while the three beside them could. */}
         {/* No "open another folder" here any more: opening a folder REGISTERS A PROJECT, which
             is project navigation, and that now lives at the rail's foot beside "All projects".
             Two identical + buttons 44px apart is how you get one that nobody trusts.
@@ -478,116 +489,156 @@ export function Sidebar({
             strip animates to width 0 at the gallery, which is precisely where you'd reach for a
             cross-project view. It is at the rail's foot, which is present in every state. */}
         {/* This project's Claude files (.claude) — was the per-group prefs button. */}
-        <button
+        <FootButton
           onClick={() => project && onOpenFolderPrefs(project.path, project.name)}
           disabled={!project?.path}
-          style={{
-            background: activeFolderPrefs && activeFolderPrefs === project?.path ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: project?.path ? 'pointer' : 'default',
-            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: project?.path ? (activeFolderPrefs === project?.path ? 1 : 0.85) : 0.35,
-          }}
-          title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
+          active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
+          label={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <button
+          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
+        </FootButton>
+        <FootButton
           onClick={onOpenGlobalPrefs}
-          style={{
-            background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: globalPrefsActive ? 1 : 0.85,
-          }}
-          title="Global Claude files (~/.claude)"
+          active={globalPrefsActive}
+          label="Global Claude files (~/.claude)"
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
-          </svg>
-        </button>
+          <circle cx="8" cy="8" r="6" />
+          <ellipse cx="8" cy="8" rx="2.5" ry="6" />
+          <path d="M2 8h12" />
+        </FootButton>
         {/* Settings (Operator preferences) — sits in the bottom row, just before the theme toggle. */}
-        <button
+        <FootButton
           onClick={onOpenPrefs}
-          title="Operator preferences"
-          style={{
-            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: prefsViewActive ? 1 : 0.85,
-          }}
+          active={prefsViewActive}
+          label="Operator preferences"
+          viewBox="0 0 24 24"
+          strokeWidth={1.8}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </FootButton>
         {/* Theme toggle — last icon in the bottom row, after settings. */}
-        <button
+        <FootButton
           onClick={onToggleTheme}
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center', opacity: 0.85,
-          }}
+          label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         >
           {isDark ? (
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it. */}
-              <circle cx="8" cy="8" r="2.6" fill="var(--fg-muted)" />
-              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
-            </svg>
+            <>
+              {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it.
+                  It fills with currentColor, so it tracks the hover like every stroke here. */}
+              <circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none" />
+              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" strokeLinecap="round" />
+            </>
           ) : (
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            </svg>
+            <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
           )}
-        </button>
+        </FootButton>
 
         {/* The app's identity, on the app's row. It used to head a stats line of its own,
             which paired it with a count that belongs to the project — two different scopes on
-            one line, 40px above a section about other projects entirely. */}
-        <span
-          data-sidebar-identity
-          title={`Operator${version ? ` v${version}` : ''}`}
-          style={{
-            flex: '1 1 0', minWidth: 0, textAlign: 'right',
-            fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
-            fontVariantNumeric: 'tabular-nums',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}
-        >
-          {version ? `v${version}` : 'Operator'}
-        </span>
-        {update && (
-          <button
-            onClick={onInstallUpdate}
-            title={`Update ${update.version} available — install & restart`}
-            aria-label={`Install update ${update.version}`}
+            one line, 40px above a section about other projects entirely.
+            It also used to be RIGHT-aligned, which parked it against the far edge of a 220px row
+            while four small icons huddled at the left, with ~90px of dead space between them and
+            nothing to justify it. The row is one thing — the app's tools, then the app's name —
+            so it now reads as one left-anchored cluster and the slack falls at the outer edge.
+            THE OBVIOUS FIX IS A TRAP. Making this `flex: '0 1 auto'` (or `marginLeft: auto`)
+            reintroduces the exact bug the comment above documents: with `flexWrap` on, wrapping
+            is decided BEFORE shrinking, so a basis of `auto` puts a long version string on a line
+            of its own the moment it doesn't fit. The basis has to stay 0. So the BOX still claims
+            all the leftover — it just no longer pushes its text to the far side of itself. The
+            dead space is still there; it is simply outboard of the content now instead of
+            splitting it in half. */}
+        <div style={{
+          flex: '1 1 0', minWidth: 0, marginLeft: 4,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <span
+            data-sidebar-identity
+            title={`Operator${version ? ` v${version}` : ''}`}
             style={{
-              flexShrink: 0,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: 14, height: 14, padding: 0,
-              background: 'transparent', color: 'var(--accent)',
-              border: '1px solid var(--accent)', borderRadius: 999,
-              cursor: 'pointer', outline: 'none',
+              minWidth: 0,
+              fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+              fontVariantNumeric: 'tabular-nums',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}
           >
-            {/* Arrow centered in the viewBox + a 0.5px optical nudge (a chevron reads high). */}
-            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'translateY(0.5px)' }}>
-              <path d="M6 9V3M3 5.5l3-2.5 3 2.5" />
-            </svg>
-          </button>
-        )}
+            {version ? `v${version}` : 'Operator'}
+          </span>
+          {update && (
+            <button
+              onClick={onInstallUpdate}
+              title={`Update ${update.version} available — install & restart`}
+              aria-label={`Install update ${update.version}`}
+              style={{
+                flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 14, height: 14, padding: 0,
+                background: 'transparent', color: 'var(--accent)',
+                border: '1px solid var(--accent)', borderRadius: 999,
+                cursor: 'pointer', outline: 'none',
+              }}
+            >
+              {/* Arrow centered in the viewBox + a 0.5px optical nudge (a chevron reads high). */}
+              <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'translateY(0.5px)' }}>
+                <path d="M6 9V3M3 5.5l3-2.5 3 2.5" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
     </div>
+  )
+}
+
+/** One control in the sidebar's footer row — deliberately the SAME shape as ProjectRail's
+ *  `RailFootButton`, because the two rows meet at the bottom-left corner and a user reads them
+ *  as one L of app chrome. 26x26 box, radius 7, 14px ink, `--fg-muted` at rest, background +
+ *  ink lifting together on hover. Keep the two in step; if one moves, move both.
+ *
+ *  No `opacity` anywhere: `--fg-muted` IS the recede, and multiplying it (this row used to sit
+ *  at 0.85, and 0.35 when disabled) lands at 1.8–2.9:1 on the three light palettes — decoration
+ *  rather than a control. Disabled recedes by mixing toward the sidebar's own background, which
+ *  is a real colour that stays measurable, and by going inert to the pointer. 65% is measured,
+ *  not guessed: it holds 2.22–3.92:1 across all six palettes (`dev/drive-corner-balance.mjs`),
+ *  a clear step below the 3.80–7.38:1 of rest without dropping out of sight the way 0.35 did.
+ *
+ *  Background-only for the active state, per the rail's note: a colour-changing border on a
+ *  radiused element re-rasterizes in WKWebView. */
+function FootButton({ onClick, label, active, disabled, viewBox = '0 0 16 16', strokeWidth = 1.2, children }: {
+  onClick: () => void
+  label: string
+  active?: boolean
+  disabled?: boolean
+  /** 24 for the gear, which is drawn at that scale; its stroke is scaled to match (1.8/24 = 1.2/16). */
+  viewBox?: string
+  strokeWidth?: number
+  children: React.ReactNode
+}) {
+  const rest = active ? 'var(--overlay-subtle)' : 'transparent'
+  const ink = disabled
+    ? 'color-mix(in srgb, var(--fg-muted) 65%, var(--bg-sidebar))'
+    : active ? 'var(--fg)' : 'var(--fg-muted)'
+  return (
+    <button
+      data-sidebar-foot-btn
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      aria-current={active || undefined}
+      style={{
+        width: 26, height: 26, padding: 0, flexShrink: 0, display: 'grid', placeItems: 'center',
+        background: rest, border: 'none', borderRadius: 7,
+        color: ink, cursor: disabled ? 'default' : 'pointer', outline: 'none',
+        transition: 'background 120ms ease, color 120ms ease',
+      }}
+      onMouseEnter={(e) => { if (disabled) return; e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
+      onMouseLeave={(e) => { if (disabled) return; e.currentTarget.style.background = rest; e.currentTarget.style.color = ink }}
+    >
+      <svg width="14" height="14" viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
+    </button>
   )
 }
 
