@@ -259,15 +259,28 @@ export interface DispatchRecord {
   /** The resolved target lane; absent when the role didn't match (→ unassigned). */
   toRoleId?: string
   task: string
+  /** Set when this record is the DELIVERY of a lane's `OPERATOR-REPLY` rather than a dispatch of
+   *  its own: the reply's content-hash id. The reply itself already lives in chat.db; this record
+   *  exists only to say what happened when we tried to hand it to the addressee, and the channel
+   *  merges it into that reply's row instead of drawing a second one. It is also the delivery
+   *  seen-set — a transcript re-read reproduces the same hash, so a reply is never delivered
+   *  twice. */
+  replyId?: string
   /** sent = typed into a live lane · launched = idle lane spawned with the task ·
    *  queued = task queued (lane idle, pre-auto-launch records or a failed launch) ·
    *  unassigned = unknown role ·
    *  pending-approval = a NON-coordinator lane asked for this and it has NOT been delivered;
    *    it waits for an explicit human approval and never expires into delivery ·
    *  rejected = a pending one was declined; terminal, and never delivered.
-   *  Historical records predate the last two and keep whatever they were — nothing
-   *  reclassifies them, because a `sent` record means it already went. */
-  outcome: 'sent' | 'launched' | 'queued' | 'unassigned' | 'pending-approval' | 'rejected'
+   *  The last three are agent→agent delivery brakes, and only ever appear with `replyId`:
+   *  hop-limit = the chain hit its budget with no human in it · pair-brake = that ordered pair
+   *  was sending too fast and is suspended · paused = the human's kill switch was on.
+   *  All three mean NOTHING was typed anywhere, and none of them retries on its own.
+   *  Historical records predate everything after `unassigned` and keep whatever they were —
+   *  nothing reclassifies them, because a `sent` record means it already went. */
+  outcome:
+    | 'sent' | 'launched' | 'queued' | 'unassigned' | 'pending-approval' | 'rejected'
+    | 'hop-limit' | 'pair-brake' | 'paused'
 }
 
 /** A lane's `OPERATOR-REPLY`, as the tailer emits it live. The return path's event shape —
@@ -287,9 +300,11 @@ export interface OperatorReply {
   text: string
 }
 
-/** One stored reply, as read back per project (chat.db). No `id`: the row is identified by
- *  its (sessionId, seq) like every other message. */
+/** One stored reply, as read back per project (chat.db). */
 export interface ProjectReply {
+  /** The row's key: the same content hash `OperatorReply.id` carries, so a delivery outcome
+   *  recorded against a live reply still matches it after a reload. */
+  id: string
   /** The SENDER's session — resolve to a lane via its terminal's roleId. */
   sessionId: string
   to: string

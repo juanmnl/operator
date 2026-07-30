@@ -57,14 +57,35 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): ChannelChip 
       return { label: 'declined', tone: 'muted' }
     case 'unassigned':
       return { label: 'no matching lane', tone: 'muted' }
+    // The agent→agent brakes. All three mean nothing was typed anywhere, and none retries on its
+    // own — so each one names WHY, because "not delivered" alone would send you reading code.
+    case 'hop-limit':
+      return { label: 'held · chain limit reached', tone: 'warn' }
+    case 'pair-brake':
+      return { label: 'held · pair sending too fast', tone: 'warn' }
+    case 'paused':
+      return { label: 'held · agent↔agent paused', tone: 'muted' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }
   }
 }
 
-/** A reply is already posted by the time it exists — there is no other state it could be in. */
+/** A reply that nothing tried to hand on: it is in the channel, and that is its whole state.
+ *  A broadcast (`to: project`) and any reply predating agent→agent delivery look like this. */
 export const REPLY_CHIP: ChannelChip = { label: 'posted', tone: 'accent' }
+
+/** A reply's chip once delivery has been ATTEMPTED. The reply row keeps being the one row for
+ *  that reply — the delivery record is metadata about it, never a second entry in the feed —
+ *  so the outcome is folded into this chip. `undefined` = no attempt, i.e. just posted. */
+export function chipForReplyDelivery(outcome: DispatchRecord['outcome'] | undefined): ChannelChip {
+  if (!outcome) return REPLY_CHIP
+  if (outcome === 'sent' || outcome === 'launched') return { label: 'posted · delivered', tone: 'accent' }
+  const chip = chipForOutcome(outcome)
+  // Never actionable: a brake is released by time, a human message, or the kill switch — not by
+  // an Approve button, which belongs to the dispatch gate and has different rules.
+  return { label: `posted · ${chip.label.replace(/^held · /, '')}`, tone: chip.tone }
+}
 
 /** Enough of a session to attribute a reply. */
 export interface ChannelSession { id: string; roleId?: string }
@@ -91,14 +112,25 @@ export function buildChannelFeed(
   // everyone" reads as one message rather than six near-identical ones.
   const groups = new Map<string, DispatchRecord[]>()
   for (const d of dispatches ?? []) {
-    if (!d.groupId) continue
+    if (!d.groupId || d.replyId) continue
     const g = groups.get(d.groupId)
     if (g) g.push(d)
     else groups.set(d.groupId, [d])
   }
   const seenGroups = new Set<string>()
 
+  // A `replyId` record is the DELIVERY of a reply, not a message of its own. It folds into that
+  // reply's row: one reply, one row, whatever happened to it. Newest wins, so a record written
+  // after a brake released reflects the current truth.
+  const deliveryByReply = new Map<string, DispatchRecord>()
   for (const d of dispatches ?? []) {
+    if (!d.replyId) continue
+    const prev = deliveryByReply.get(d.replyId)
+    if (!prev || prev.at <= d.at) deliveryByReply.set(d.replyId, d)
+  }
+
+  for (const d of dispatches ?? []) {
+    if (d.replyId) continue // folded into the reply's own row below
     const from = roleById(d.fromRoleId)
     const to = roleById(d.toRoleId)
     if (d.groupId) {
@@ -148,7 +180,7 @@ export function buildChannelFeed(
       // `project` is the broadcast token: addressed to the room, not to a lane.
       targetLabel: r.to.toLowerCase() === 'project' ? null : (roleById(r.to.toLowerCase())?.name ?? r.to),
       text: r.text,
-      chip: REPLY_CHIP,
+      chip: chipForReplyDelivery(deliveryByReply.get(r.id)?.outcome),
     })
   }
 

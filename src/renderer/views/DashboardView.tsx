@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings, reorderRoles, presetFor } from '../lib/roster'
+import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, type DeliveryState } from '../lib/agent-delivery'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { reorderByIds } from '../lib/reorder'
 import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
@@ -155,6 +156,33 @@ export function DashboardView() {
   const [channelReadAt, setChannelReadAt] = useState<Record<string, string>>(() => {
     try { return JSON.parse(localStorage.getItem('operator.channelReadAt') || '{}') } catch { return {} }
   })
+  /** The kill switch for agent→agent delivery, and it DEFAULTS TO PAUSED.
+   *
+   *  Two agents that can each answer the other ping-pong indefinitely at ~1s a hop — that is the
+   *  default behaviour of two cooperative agents, not an edge case — and the bill arrives whether
+   *  or not anyone is watching. So the feature ships off: replies still post to the channel and are
+   *  still readable, they are simply not typed into anyone's session until you turn this on. The
+   *  guardrails in lib/agent-delivery (hop budget, pair brake, length cap) are what make it safe to
+   *  turn on; this is what makes it safe to ship. Human→lane is a different path and unaffected. */
+  const [chatterPaused, setChatterPaused] = useState<boolean>(() => {
+    try { return localStorage.getItem('operator.chatterPaused') !== '0' } catch { return true }
+  })
+  const toggleChatterPaused = useCallback(() => {
+    setChatterPaused((p) => {
+      const next = !p
+      try { localStorage.setItem('operator.chatterPaused', next ? '1' : '0') } catch { /* quota */ }
+      return next
+    })
+  }, [])
+  /** Hop counts, pair windows and suspensions for agent→agent delivery. Deliberately in a ref and
+   *  NOT persisted: a restart is a natural circuit-breaker reset, and a hop chain that survives one
+   *  would be unkillable by the only recovery every user knows. */
+  const deliveryStateRef = useRef<DeliveryState>(emptyDeliveryState())
+  /** The reply subscription mounts once, so it reads the switch through a ref — the file's idiom
+   *  for a mount-once subscription reaching fresh state. Pausing must take effect on the NEXT
+   *  reply, not on the next remount: a kill switch you have to restart to apply is not one. */
+  const chatterPausedRef = useRef(chatterPaused)
+  chatterPausedRef.current = chatterPaused
   // Load the project's replies whenever a project is SCOPED — not only when the channel opens.
   // Gating it on `channelActive` made the sidebar's unread badge under-count: it saw dispatches
   // but zero replies until you opened the channel, i.e. the badge disagreed with the feed it was
@@ -845,11 +873,11 @@ export function DashboardView() {
   const launchRoleRef = useRef<((project: Project, role: Role, prompt?: string, launchDevServer?: boolean, opts?: { focus?: boolean }) => Promise<TerminalTab | undefined>) | null>(null)
   // One launch per (project, lane) at a time: a burst of dispatches to the same idle lane
   // must join the session being spawned, not fan out into sibling lanes.
-  // The RETURN path. Deliberately much smaller than the dispatch subscription below: a reply
-  // routes into no pty, and the tailer has already persisted it (project-scoped) before this
-  // fires — so there is nothing here to deliver and nothing to store. All this does is
-  // dedupe across transcript re-reads, resolve the two identities the backend can't
-  // (which lane SENT it, and which lane the `to` token names), and surface it.
+  // The RETURN path, and since step 3 it is also a SEND path: a lane's reply is typed into the
+  // addressee's session. The tailer has already persisted the reply itself (project-scoped) before
+  // this fires, so nothing here stores the message — what it does is resolve the two identities the
+  // backend can't (which lane SENT it, which lane the `to` token names), decide whether handing it
+  // on is safe, and record what happened either way.
   useEffect(() => {
     const SEEN_KEY = 'operator.reply.seen'
     const unsub = window.operator.onOrchestratorReply?.((r) => {
@@ -858,7 +886,7 @@ export function DashboardView() {
       if (seen.includes(r.id)) return // already handled (dedupe across transcript re-reads)
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
 
-      const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
+      const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === r.terminalId)
       const project = projs.find((p) => p.id === (r.projectId || srcTab?.projectId))
       const roster = project?.roster ?? []
@@ -876,6 +904,66 @@ export function DashboardView() {
         kind: 'info',
         detail: preview,
       })
+
+      // DELIVERY — the step that makes agents actually talk to each other, and the only place in
+      // the app where one agent's words become another agent's prompt. Every branch below is a
+      // refusal to send; lib/agent-delivery owns the decision, this owns the plumbing.
+      //
+      // A broadcast (`to === 'project'`) is never delivered to anyone: it is addressed to the room,
+      // and fanning it out would multiply one message by the roster on every hop — the fastest way
+      // to a runaway. It posts to the channel and stops there.
+      if (!to || !from || !project) return
+      // Durable double-delivery guard. The seen-set above is the fast one, but it lives in
+      // localStorage; the record does not, so a cleared cache can't re-deliver a month of replies.
+      if (project.dispatches?.some((x) => x.replyId === r.id)) return
+
+      const target = tabs.find((t) => t.roleId === to.id && t.projectId === project.id && !t.ended)
+      const { decision, state } = evaluateDelivery({
+        from: from.id,
+        to: to.id,
+        text: r.text,
+        targetLive: !!target,
+        paused: chatterPausedRef.current,
+        now: Date.now(),
+        state: deliveryStateRef.current,
+      })
+      // The returned state already carries the hop the recipient inherits — assigning it here as
+      // well would be a second copy of the rule that bounds the chain.
+      deliveryStateRef.current = state
+      // Record the outcome either way, keyed to the reply. This is what puts the brake on screen:
+      // the channel folds it into that reply's row, so a stopped chain reads as "posted · chain
+      // limit reached" instead of looking like the addressee ignored it.
+      const record = (outcome: DispatchRecord['outcome']) => log(project.id, {
+        id: crypto.randomUUID(), at: new Date().toISOString(),
+        fromRoleId: from.id, toRoleId: to.id, task: r.text, outcome, replyId: r.id,
+      })
+
+      if (decision.kind === 'block') {
+        record(decision.reason === 'queued' ? 'queued' : decision.reason)
+        // Surface WHY. A message that silently fails to arrive is indistinguishable from an agent
+        // that ignored you, and that ambiguity is what makes people stop trusting the feature.
+        // `queued` is the ordinary case (nobody home) so the chip alone carries it; a brake means
+        // something is looping and is worth interrupting the user for.
+        //
+        // NOTHING is written back to the SENDER's pty on a block — deliberately. A "wasn't
+        // delivered" note is itself a prompt, so the one moment we've decided the lanes are talking
+        // too much is the worst moment to make one of them talk again. The cost is real (the sender
+        // may wait on an answer that never comes) and it is the cheaper of the two.
+        if (decision.reason !== 'queued') {
+          // 'info', not 'error': a tripped circuit-breaker is the system working. It still needs
+          // to be seen, which is what the note is for.
+          toast({ text: `Not delivered to ${to.name}`, kind: 'info', detail: decision.note })
+        }
+        return
+      }
+      if (!target) return // belt: evaluateDelivery already blocks a dead target
+      // One pty writer, shared with dispatch: serialized per terminal with a length-scaled
+      // watchdog, so two arrivals can't merge into one composer draft.
+      void submitQueue.submit(target.id, deliveryPrefix(from.name) + decision.text)
+      record('sent')
+      if (decision.truncated) {
+        toast({ text: `Trimmed a long message to ${to.name}`, kind: 'info', detail: 'The full text is in the channel.' })
+      }
     })
     return () => unsub?.()
   }, [])
@@ -1063,6 +1151,10 @@ export function DashboardView() {
       // Delivered ones go through the shared queue: serialized per terminal with a length-scaled
       // watchdog, so two sends can't merge into one composer draft.
       if (rec.outcome === 'sent' && rec.terminalId) void submitQueue.submit(rec.terminalId, rec.task)
+      // A HUMAN in the conversation is what makes the agent→agent hop budget recover, and it is
+      // the only thing that does — the alternative would be a timer, i.e. a chain that becomes
+      // legitimate again by waiting. Whoever you just addressed starts a fresh chain.
+      if (rec.toRoleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, rec.toRoleId)
       logDispatch(projectId, {
         id: crypto.randomUUID(), at,
         fromHuman: true, toRoleId: rec.toRoleId, task: rec.task, outcome: rec.outcome,
@@ -2660,6 +2752,8 @@ export function DashboardView() {
             onRejectDispatch={rejectDispatch}
             onMarkRead={markChannelRead}
             onSend={sendChannelMessage}
+            chatterPaused={chatterPaused}
+            onToggleChatter={toggleChatterPaused}
           />
         )}
 

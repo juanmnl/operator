@@ -18,8 +18,8 @@ export type SendResult =
 // The project CHANNEL — one time-ordered read of what the lanes have said to each other.
 //
 // It renders two stores that already exist and were never shown together: `Project.dispatches`
-// (who asked whom to do what, and how it landed) and chat.db's OPERATOR-REPLY rows. It sends
-// NOTHING. The composer at the foot is deliberately inert — see the note there.
+// (who asked whom to do what, and how it landed) and chat.db's OPERATOR-REPLY rows. The composer
+// sends a HUMAN message; the header carries the kill switch for the lanes messaging each other.
 //
 // Vocabulary, and it matters: an author avatar is a CIRCLE. Squares are the PROJECT vocabulary
 // (ProjectRail's tiles); circles are the lane/session vocabulary (StatusWave orbs, SessionItem).
@@ -43,6 +43,7 @@ const TONE: Record<ChipTone, string> = {
 
 export function ProjectChannel({
   project, replies, sessions, onApproveDispatch, onRejectDispatch, onMarkRead, onSend,
+  chatterPaused, onToggleChatter,
 }: {
   project: Project
   /** Read from chat.db via projectReplies(); [] until a lane emits its first OPERATOR-REPLY. */
@@ -57,6 +58,11 @@ export function ProjectChannel({
   onMarkRead?: (projectId: string, at: string) => void
   /** Send a human message. Absent = the composer stays inert (step 1's behaviour). */
   onSend?: (projectId: string, text: string, target: ChannelTarget) => SendResult
+  /** The kill switch's state. `true` (the shipped default) = a lane's reply is posted here but
+   *  NEVER typed into the addressee's session. Human→lane is a different path and unaffected. */
+  chatterPaused?: boolean
+  /** Flip it. Absent = the control is not rendered at all. */
+  onToggleChatter?: () => void
 }) {
   const feed = useMemo(
     () => buildChannelFeed(project.dispatches, replies, project.roster, sessions),
@@ -90,9 +96,41 @@ export function ProjectChannel({
           }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>channel</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)' }}>
+            {/* Shrinks and ellipsizes so the switch beside it can never be pushed out of the
+                header (with no wrap, an unshrinkable name would simply overflow it away). */}
+            <span style={{
+              minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+            }}>
               {project.name}
             </span>
+            {/* The kill switch. Two agents that can each answer the other ping-pong indefinitely at
+                ~1s a hop, so this ships ON (paused) and the user opts in. Label states what IS,
+                not what the click does — a control that reads "Pause" while already paused is how
+                you turn chatter on by accident while trying to stop it. */}
+            {onToggleChatter && (
+              <button
+                onClick={onToggleChatter}
+                data-chatter-toggle
+                aria-pressed={!chatterPaused}
+                title={chatterPaused
+                  ? 'Agents post to the channel but nothing reaches their sessions. Click to let them deliver.'
+                  : 'Agents are delivering messages to each other. Click to halt it.'}
+                style={{
+                  marginLeft: 'auto', flexShrink: 0, cursor: 'pointer', outline: 'none',
+                  fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+                  letterSpacing: '0.1em', padding: '3px 8px', borderRadius: 'var(--radius-sm)',
+                  // The border stays STATIC and the state rides on the ink: a colour-CHANGING
+                  // border on a border-radius element re-rasterizes in WKWebView, and this one
+                  // changes on a click.
+                  background: chatterPaused ? 'transparent' : 'var(--overlay-medium)',
+                  border: '1px solid var(--border)',
+                  color: chatterPaused ? 'var(--fg-muted)' : 'var(--color-warning)',
+                }}
+              >
+                {chatterPaused ? 'Agent↔agent paused' : 'Agent↔agent live'}
+              </button>
+            )}
           </div>
         </DragRegion>
 

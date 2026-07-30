@@ -21,6 +21,10 @@ use std::sync::Mutex;
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectReply {
+    /// The row's own key — the same content hash the live `ReplyEvent` carries, so a delivery
+    /// outcome recorded against a live reply still matches it after a reload. Read-only: the
+    /// write path already computed it.
+    pub id: String,
     pub session_id: String,
     pub to: String,
     pub text: String,
@@ -172,17 +176,18 @@ impl ChatStore {
     pub fn replies(&self, project_id: &str) -> Vec<ProjectReply> {
         let Ok(conn) = self.conn.lock() else { return Vec::new() };
         let Ok(mut stmt) = conn.prepare_cached(
-            "SELECT session_id, to_target, text, ts FROM replies
+            "SELECT id, session_id, to_target, text, ts FROM replies
              WHERE project_id = ?1 ORDER BY ts ASC, id ASC",
         ) else {
             return Vec::new();
         };
         let rows = stmt.query_map(params![project_id], |r| {
             Ok(ProjectReply {
-                session_id: r.get(0)?,
-                to: r.get(1)?,
-                text: r.get(2)?,
-                timestamp: r.get(3)?,
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                to: r.get(2)?,
+                text: r.get(3)?,
+                timestamp: r.get(4)?,
             })
         });
         rows.map(|it| it.filter_map(|r| r.ok()).collect()).unwrap_or_default()

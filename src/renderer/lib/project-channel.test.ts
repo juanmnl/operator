@@ -17,6 +17,9 @@ const d = (o: Partial<DispatchRecord> = {}): DispatchRecord => ({
   ...o,
 })
 const r = (o: Partial<ProjectReply> = {}): ProjectReply => ({
+  // The content-hash id the tailer computes — carried so a delivery outcome recorded against a
+  // live reply still matches the same row after a reload.
+  id: 'reply-1',
   sessionId: 'sess-code',
   to: 'operator',
   text: 'done',
