@@ -166,9 +166,14 @@ export function SidebarRail({ project, sessions, projects, activeSessionId, cust
         })}
       </div>
 
-      {/* Bottom: new session. */}
+      {/* Bottom: new session.
+          6 at the BOTTOM, 8 elsewhere, and the 2px is the whole point: this 34px button and the
+          ProjectRail's foot are the entire bottom-left corner in the collapsed state, and at a
+          flat 8 its centre sat on 867 against the rail's 869. Measured, not eyeballed — two
+          strips 1px apart across a hairline show a 2px stagger clearly. The expanded state's
+          footer row already lands on 869; this puts the collapsed state on the same line. */}
       <div style={{
-        padding: 8, display: 'flex', justifyContent: 'center', width: '100%',
+        padding: '8px 8px 6px', display: 'flex', justifyContent: 'center', width: '100%',
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>

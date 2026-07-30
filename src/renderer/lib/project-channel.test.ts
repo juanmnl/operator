@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { DispatchRecord, ProjectReply, Role } from '../../shared/types'
 import {
   buildChannelFeed, chipForOutcome, unreadEntries, groupByDay, channelInitials, REPLY_CHIP,
+  isContinuation, CONTINUATION_WINDOW_MS, type ChannelEntry,
 } from './project-channel'
 
 const roster: Role[] = [
@@ -319,5 +320,54 @@ describe('groupByDay buckets on the LOCAL day', () => {
       entry('c', '2026-07-30T22:00:00.000Z'), // out of order on purpose
     ], GYE)
     expect(days.map((d) => d.day)).toEqual(['2026-07-30', '2026-07-31', '2026-07-30'])
+  })
+})
+
+describe('isContinuation — collapsing a run of one author', () => {
+  // The rule exists because the real store's dominant shape is a long run of one sender: the
+  // longest in ~/.operator/projects.json is 33 consecutive `operator` dispatches, then 29, then
+  // 25. Each of those was drawing its own avatar and name.
+  const e = (o: Partial<ChannelEntry> = {}): ChannelEntry => ({
+    id: 'x', kind: 'dispatch', at: '2026-07-30T10:00:00.000Z',
+    authorLabel: 'Operator', targetLabel: 'Code', text: 'go', chip: { label: 'delivered', tone: 'accent' },
+    ...o,
+  })
+
+  it('has nothing to continue at the top of a day', () => {
+    expect(isContinuation(undefined, e())).toBe(false)
+  })
+
+  it('continues the same author within the window', () => {
+    const prev = e({ at: '2026-07-30T10:00:00.000Z' })
+    expect(isContinuation(prev, e({ at: '2026-07-30T10:07:00.000Z' }))).toBe(true)
+  })
+
+  it('starts a new block once the window has passed', () => {
+    const prev = e({ at: '2026-07-30T10:00:00.000Z' })
+    const after = new Date(Date.parse(prev.at) + CONTINUATION_WINDOW_MS + 1000).toISOString()
+    expect(isContinuation(prev, e({ at: after }))).toBe(false)
+  })
+
+  it('never continues across authors', () => {
+    const prev = e({ authorLabel: 'Research' })
+    expect(isContinuation(prev, e({ at: '2026-07-30T10:01:00.000Z' }))).toBe(false)
+  })
+
+  it('keeps a human distinct from a lane that happens to share the label', () => {
+    // Provenance is the whole reason `fromHuman` exists — it must not be collapsed away.
+    const prev = e({ authorLabel: 'You', fromHuman: true })
+    expect(isContinuation(prev, e({ authorLabel: 'You', at: '2026-07-30T10:01:00.000Z' }))).toBe(false)
+  })
+
+  it('only collapses IDENTITY — a run to different targets is still one run', () => {
+    // The target and chip stay on every row; if they didn't, a run of one author would hide the
+    // only thing that varies inside it.
+    const prev = e({ targetLabel: 'Code' })
+    expect(isContinuation(prev, e({ targetLabel: 'Design', at: '2026-07-30T10:02:00.000Z' }))).toBe(true)
+  })
+
+  it('refuses to continue backwards in time', () => {
+    const prev = e({ at: '2026-07-30T10:05:00.000Z' })
+    expect(isContinuation(prev, e({ at: '2026-07-30T10:00:00.000Z' }))).toBe(false)
   })
 })

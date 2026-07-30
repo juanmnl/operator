@@ -230,6 +230,20 @@ export interface Project {
    *  Written by the user, edited from the gallery card's ⋯ menu, and shown there as a
    *  two-line snippet. Absent or empty = no description; the card just omits the row. */
   contextNotes?: string
+  /** The user's chosen position in the ProjectRail, and the ONLY thing that orders it.
+   *
+   *  A total order over every project, not just the ones currently on the rail: a drag restamps
+   *  all of them, so a project that is off the rail today (nothing live in it) still holds a
+   *  place for when it comes back.
+   *
+   *  `undefined` = never placed. Those sort AFTER everything placed, in store order — which is
+   *  creation order, since every write path in DashboardView appends. That is the defined slot
+   *  for a brand-new project and for one that appears because something just went live in it:
+   *  the end of the rail, never the middle of an arrangement the user has learned.
+   *
+   *  No migration needed. An existing store has none of these, they all read as unplaced, and
+   *  the rail renders in store order exactly as it did before the first drag. */
+  railOrder?: number
   /** When the user shelved this project. Absent = ACTIVE; present = PREVIOUS.
    *  A decision, never a measurement. Cleared automatically the moment a session launches
    *  here (upsertProject) — a running agent must never hide in a collapsed section.

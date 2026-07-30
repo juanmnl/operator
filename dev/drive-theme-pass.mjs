@@ -387,6 +387,25 @@ for (const [key, label] of THEMES) {
   ])
   for (const r of headerProbes) rows.push({ theme: key, ...r })
 
+  // ---- 3b. The bottom-left corner's ICONS ----------------------------------------
+  // These went unmeasured for their whole life, and not by oversight: `__contrast` reads an
+  // element's `color`, and both strips' icons used to paint with a hardcoded `stroke="var(
+  // --fg-muted)"` instead — so there was nothing for it to read, and the `opacity: 0.85` the
+  // sidebar footer stacked on top of that token was invisible to the one harness whose job is
+  // to catch exactly that. Both rows now set `color` and draw with `currentColor`, which is
+  // what makes them probeable at all.
+  const cornerProbes = await p.evaluate(() => {
+    const side = document.querySelector('[data-sidebar-foot-btn]')
+    if (side) side.setAttribute('data-probe-side-foot', '')
+    const rail = document.querySelector('[data-rail-gallery]')
+    if (rail) rail.setAttribute('data-probe-rail-foot', '')
+    return [
+      window.__contrast('[data-probe-rail-foot]', 'rail foot icon', true),
+      window.__contrast('[data-probe-side-foot]', 'sidebar footer icon', true),
+    ]
+  })
+  for (const r of cornerProbes) rows.push({ theme: key, ...r })
+
   // ---- 4. Collapsed rail --------------------------------------------------------
   await p.keyboard.press('Meta+b')
   await p.waitForTimeout(800)
@@ -440,6 +459,23 @@ for (const [key, label] of THEMES) {
     window.__contrast('[data-page-title]', 'agentsHub · pageTitle'),
     window.__contrast('[data-page-subtitle]', 'agentsHub · pageSubtitle', true),
   ]))
+  // The Fleet tab's character cards. The lane NAME is the one ink here that comes from user data
+  // rather than a token (laneTextColor over a per-lane accent), and the loadout line is the card's
+  // reason to exist at rest — the thing that replaced an em dash reading as missing data.
+  settingsProbes.push(...await p.evaluate(() => {
+    const live = document.querySelector('[data-agent-card][data-agent-live]')
+    const idle = Array.from(document.querySelectorAll('[data-agent-card]')).find((c) => !c.hasAttribute('data-agent-live'))
+    if (live) { live.children[0].children[1].setAttribute('data-probe-live-name', ''); live.children[1].setAttribute('data-probe-live-loadout', '') }
+    if (idle) { idle.children[0].children[1].setAttribute('data-probe-idle-name', ''); idle.children[1].setAttribute('data-probe-idle-loadout', '') }
+    const q = document.querySelector('[data-agent-queued]')
+    if (q) q.setAttribute('data-probe-queued', '')
+    return [
+      window.__contrast('[data-probe-live-name]', 'agentCard · live name'),
+      window.__contrast('[data-probe-idle-name]', 'agentCard · idle name'),
+      window.__contrast('[data-probe-live-loadout]', 'agentCard · loadout', true),
+      window.__contrast('[data-probe-queued]', 'agentCard · queued badge', true),
+    ]
+  }))
   // The DEFAULTS tab: a lane name in its accent (laneTextColor), and the option pickers — where
   // the "chosen" state is accent ink at 9.5px, the size that collapses on the light palettes.
   await p.locator('[data-page-tab="defaults"]').click()
@@ -454,10 +490,11 @@ for (const [key, label] of THEMES) {
   await p.evaluate(PROBE)
   settingsProbes.push(...await p.evaluate(() => [
     window.__contrast('[data-default-row="operator"] [data-default-name]', 'defaults · lane name'),
-    window.__contrast('[data-default-state="chosen"]', 'defaults · chosen option', true),
-    window.__contrast('[data-default-state="preset"]', 'defaults · preset option', true),
-    window.__contrast('[data-default-state="off"]', 'defaults · other option', true),
-    window.__contrast('[data-default-worktree="operator"]', 'defaults · worktree toggle', true),
+    // This view now renders the SHARED Segmented, so it exposes the same hooks the roster does.
+    window.__contrast('[data-segment-state="pinned"]', 'defaults · chosen option', true),
+    window.__contrast('[data-segment-state="inherited"]', 'defaults · preset option', true),
+    window.__contrast('[data-segment-state="off"]', 'defaults · other option', true),
+    window.__contrast('[data-segmented="worktree"] [aria-checked="true"]', 'defaults · worktree toggle', true),
   ]))
   await p.screenshot({ path: `${OUT}/${key}-10-defaults.png` })
 
@@ -530,8 +567,10 @@ for (const [key, label] of THEMES) {
     window.__contrast('[data-segment-state="off"]', 'roster · unselected value', true),
     // The BUTTON, not the 9px swatch beside it — a filled colour chip has no text to measure,
     // and pointing a contrast probe at one reports 1.00 and reads as a defect.
-    window.__contrast('[data-worktree-toggle="on"]', 'roster · worktree pinned on', true),
-    window.__contrast('[data-worktree-toggle="inherit"]', 'roster · worktree inherited', true),
+    // The tri-state box is gone; worktree is the same segmented control as model and effort, so
+    // the selected option is what carries the ink.
+    window.__contrast('[data-segmented="worktree"][data-segmented-origin="pinned"] [aria-checked="true"]', 'roster · worktree pinned on', true),
+    window.__contrast('[data-segmented="worktree"][data-segmented-origin="inherited"] [aria-checked="true"]', 'roster · worktree inherited', true),
   ]))
 
   for (const r of settingsProbes) rows.push({ theme: key, ...r })

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project, ProjectPatch, Role, TokenUsage } from '../../../shared/types'
 import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, rolePresets, roleIdFrom, isCoordinator, reorderRoles, patchRoleIn, removeRoleFrom } from '../../lib/roster'
 import { AccentPicker } from '../AccentPicker'
-import { laneTextColor } from '../../lib/lane-color'
+import { Segmented } from '../Segmented'
 import {
-  resolveAgentConfig, configOrigins, worktreeStateOf, nextWorktreeState,
+  resolveAgentConfig, configOrigins, worktreeStateOf,
   type GlobalRoleDefaults, type ConfigOrigin,
 } from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
@@ -45,7 +45,6 @@ export function formatTokens(n: number): string {
  *  72% is the same step-down the gallery card's description uses, deliberately: one
  *  "readable but secondary" ink in the app beats two neighbouring ones. At 68% this
  *  measured 4.45:1 on Mr Pink light — 0.05 under the bar. */
-const CONTROL_OFF = 'color-mix(in srgb, var(--fg) 72%, transparent)'
 
 const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'high', label: 'High' },
@@ -709,54 +708,39 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
         {/* Model + worktree. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Segmented
+            name="model"
             options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))}
             value={resolved.model}
-            pinned={origins.model === 'pinned'}
+            origin={origins.model === 'pinned' ? 'pinned' : 'inherited'}
             inheritedFrom={ORIGIN_LABEL[origins.model]}
             onChange={(id) => onPatch({ model: id })}
             onClear={() => onPatch({ model: undefined })}
             accent={accent}
           />
-          {/* WORKTREE — genuinely tri-state, because `false` is a choice ("do not isolate this
-              lane"), not an absence. It used to be `!role.useWorktree`: an unconditional boolean, so
-              the first click pinned the lane forever with no route back to inherit. The cycle is
-              inherit → on → off → inherit, and the three states LOOK different — a control that
-              reads the same inherited-on as pinned-on is what makes a global setting look broken. */}
-          <button
-            data-worktree-toggle={wt}
-            onClick={() => onPatch({ useWorktree: nextWorktreeState(wt) })}
-            title={wt === 'inherit'
-              ? `Worktree: inherited (${resolved.useWorktree ? 'on' : 'off'}) from your Agents defaults. Click to pin it on for this lane.`
-              : wt === 'on'
-                ? 'Worktree: pinned ON for this lane. Click to pin it off.'
-                : 'Worktree: pinned OFF for this lane. Click to go back to inheriting your Agents default.'}
-            aria-pressed={wt === 'inherit' ? undefined : wt === 'on'}
-            style={{
-              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 7px', borderRadius: 5,
-              border: 'none',
-              background: wt === 'on' ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
-              // Off state recedes by TOKEN only — an opacity on top of --fg-muted is the
-              // stacked-fade bug (same rule as Segmented above). An INHERITED lane sits in the
-              // muted ink whichever way it resolves: the accent means "you chose this".
-              // laneTextColor, NOT the raw accent: measured 1.07–1.22:1 at this size on the three
-              // light palettes (a pre-existing collapse this control shared with the segments).
-              color: wt === 'on' ? laneTextColor(accent) : CONTROL_OFF,
-              cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
-            }}
-          >
-            {/* Pinned-on = filled. Pinned-off = an empty box with a solid hairline. Inherited = a
-                DASHED hairline, filled only if the inherited value is on. */}
-            <span data-worktree-state={wt} style={{
-              width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-              border: wt === 'on'
-                ? '1px solid transparent'
-                : `1px ${wt === 'inherit' ? 'dashed' : 'solid'} var(--fg-muted)`,
-              background: wt === 'on'
-                ? accent
-                : wt === 'inherit' && resolved.useWorktree ? 'var(--fg-muted)' : 'transparent',
-            }} />
-            worktree
-          </button>
+          {/* WORKTREE — the same control as the two rows above it, and that is the whole fix.
+              It used to be a 9px box encoding THREE states in border-STYLE: dashed = inherited,
+              solid = pinned, filled = on. A dashed vs solid 1px edge on a 9px box is not a
+              perceptible difference at reading distance, it was carrying the entire
+              pinned/inherited distinction, and inherited-on (grey fill) and pinned-on (accent
+              fill) looked like different things while meaning the same one. It also read as a
+              checkbox and behaved as a tri-state cycle, which is why it felt funky: a checkbox
+              has two states and this had three.
+              As a two-option segmented, the third state stops needing a drawing of its own —
+              "inherited" is simply the absence of the pin ring, exactly as on model and effort.
+              Clicking the lit option clears back to inherit, the same gesture as the other rows. */}
+          <div style={{ marginLeft: 'auto' }}>
+            <Segmented
+              name="worktree"
+              label="worktree"
+              options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
+              value={resolved.useWorktree ? 'on' : 'off'}
+              origin={wt === 'inherit' ? 'inherited' : 'pinned'}
+              inheritedFrom={ORIGIN_LABEL[origins.useWorktree]}
+              onChange={(id) => onPatch({ useWorktree: id === 'on' })}
+              onClear={() => onPatch({ useWorktree: undefined })}
+              accent={accent}
+            />
+          </div>
         </div>
         {/* Effort + primary action. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
@@ -765,7 +749,8 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
           <Segmented
             options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))}
             value={resolved.effort}
-            pinned={origins.effort === 'pinned'}
+            name="effort"
+            origin={origins.effort === 'pinned' ? 'pinned' : 'inherited'}
             inheritedFrom={ORIGIN_LABEL[origins.effort]}
             onChange={(id) => onPatch({ effort: id as Role['effort'] })}
             onClear={() => onPatch({ effort: undefined })}
@@ -1112,21 +1097,6 @@ function LaneRow({
   )
 }
 
-// A compact segmented control (transparent tint, accent for the active segment — no fills).
-/** A row of choices that reads as a VALUE, not as four equal options.
- *
- *  Six cards × (4 models + 3 efforts) put 42 equally-weighted words on this board, which
- *  is why it read as noise. The alternatives are still one click away, but they recede;
- *  the chosen one carries the LANE's colour, so scanning the column tells you each lane's
- *  model without reading a label. The container border is gone — a box inside a card
- *  inside a list was one nesting level too many.
- *
- *  The recede is the TOKEN, never a stacked opacity: `--fg-muted × 0.4` measured 1.8–2.9:1
- *  across the six palettes (invisible on the light three), and because the brighten was a
- *  per-button opacity, only the one pill under the cursor ever came back — the other three
- *  sat there reading as disabled. Unselected pills now rest at CONTROL_OFF (see its note: a
- *  control's label is body text, not meta) and hover swaps the token to `--fg`. See the
- *  muted-opacity rule; this is its third recurrence. */
 /** Where a resolved value came from, in words the card can print. */
 const ORIGIN_LABEL: Record<ConfigOrigin, string> = {
   pinned: 'pinned on this lane',
@@ -1134,64 +1104,4 @@ const ORIGIN_LABEL: Record<ConfigOrigin, string> = {
   project: "this project's defaults",
   preset: 'the built-in preset',
   fallback: 'the fallback',
-}
-
-/** The lit value is the answer, and its INK says whether you chose it.
- *
- *  accent  = pinned on this lane. Click it again to clear back to inherit — that is the route home,
- *            and it needs no extra chrome on an already-dense card.
- *  muted   = inherited (global default, project default, or the built-in preset). The title names
- *            which. Clicking the lit segment does nothing: there is nothing to clear. */
-function Segmented({ options, value, onChange, accent, pinned = true, inheritedFrom, onClear }: {
-  options: Array<{ id: string; label: string }>
-  value: string
-  onChange: (id: string) => void
-  accent?: string
-  /** False = this value is inherited, so it is drawn in muted ink rather than the lane accent. */
-  pinned?: boolean
-  /** Human-readable source, for the title. */
-  inheritedFrom?: string
-  /** Clear the pin back to inherit. Absent = no route home (a control with no inherit state). */
-  onClear?: () => void
-}) {
-  // Same reason as the worktree toggle: a raw lane accent as 9.5px text collapses on the light
-  // palettes; laneTextColor folds in each theme's --lane-ink-blend.
-  const tint = accent ? laneTextColor(accent) : 'var(--accent)'
-  return (
-    <div style={{ display: 'inline-flex', gap: 1, flexWrap: 'wrap' }}>
-      {options.map((o) => {
-        const active = o.id === value
-        // THREE distinct appearances, and they have to be three: the lit value must still read as
-        // lit when it is inherited, or nobody can tell which option is selected.
-        //   off      → CONTROL_OFF, no wash
-        //   inherited → full --fg, no wash (selected, but you didn't choose it)
-        //   pinned   → lane accent + a faint wash (you chose this)
-        const lit = active && pinned ? tint : active ? 'var(--fg)' : CONTROL_OFF
-        return (
-          <button
-            key={o.id}
-            data-segment={o.id}
-            data-segment-state={active ? (pinned ? 'pinned' : 'inherited') : 'off'}
-            onClick={() => { if (!active) onChange(o.id); else if (pinned) onClear?.() }}
-            title={!active
-              ? `Switch to ${o.label}`
-              : pinned
-                ? `${o.label} — pinned on this lane. Click to clear it and inherit instead.`
-                : `${o.label} — inherited from ${inheritedFrom ?? 'the default'}. Change it for every project on the Agents → Defaults tab.`}
-            style={{
-              fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
-              padding: '2px 7px', borderRadius: 5, cursor: 'pointer', outline: 'none', border: 'none',
-              color: lit,
-              // An inherited value gets no accent WASH either: the tint is the "you chose this"
-              // signal, and washing an inherited one makes the two indistinguishable at a glance.
-              background: active && pinned ? `color-mix(in srgb, ${tint} 12%, transparent)` : 'transparent',
-              transition: 'color 120ms ease',
-            }}
-            onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = 'var(--fg)' }}
-            onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = CONTROL_OFF }}
-          >{o.label}</button>
-        )
-      })}
-    </div>
-  )
 }

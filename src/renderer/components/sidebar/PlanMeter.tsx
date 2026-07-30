@@ -16,8 +16,19 @@ import {
 // keep absent and zero apart: no data draws the track alone, never a full or empty-looking bar
 // that reads as a number.
 
-const R = 8.2          // ring radius inside a 22px box
-const STROKE = 2.2
+// Sized to the corner, not to the 22px box it's drawn in. Drawn ink is 2*(R + STROKE/2), so
+// R 8.2 / stroke 2.2 came to 18.6px against the 14px icons either side of it — a third larger,
+// and the only saturated thing in a strip of neutral chrome, which made the meter read as the
+// corner's primary control. At 16 it is at optical parity (a ring reads smaller than a filled
+// glyph at equal size) and still unmistakably a ring. The arc is parametric in R, so the
+// reading is unchanged — only the size is.
+// Both numbers matter, and the SECOND one is the trap: shrinking the radius alone makes the ring
+// proportionally CHUNKIER (at R6/stroke2.2 the band is 18% of the diameter against the original
+// 13%), so it stays the loudest thing in the strip no matter how small it gets. Thickness is what
+// reads as weight here. 12px across with a 1.5 band is 12.5% — slightly finer than the original
+// ratio, which is what makes it recede to telemetry beside the ~11px verbs.
+const R = 6
+const STROKE = 1.5
 
 export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
   limits: PlanLimits | null

@@ -1,5 +1,6 @@
 import type { Project } from '../../shared/types'
 import type { ProjectActivity } from './project-status'
+import { reorderByIds } from './reorder'
 
 // Durable membership + ordering + query over the project store. Deliberately NOT part of
 // lib/project-status: that module answers "what is this project doing right now" (pure over
@@ -64,6 +65,38 @@ export function byActivityThenRecency(
   return (a, b) =>
     ((activities[b.id]?.live ?? 0) > 0 ? 1 : 0) - ((activities[a.id]?.live ?? 0) > 0 ? 1 : 0)
     || b.lastActiveAt.localeCompare(a.lastActiveAt)
+}
+
+/** The ProjectRail's order: the user's, or store order for anything they haven't placed.
+ *
+ *  Stable-sort contract: returning 0 for two unplaced projects leaves them in store order, which
+ *  is creation order. Do not "simplify" this to `(a.railOrder ?? Infinity) - (b.railOrder ?? …)`
+ *  — Infinity minus Infinity is NaN, and a NaN comparator silently returns an arbitrary order. */
+export function byRailOrder(a: Project, b: Project): number {
+  const ao = a.railOrder, bo = b.railOrder
+  if (ao == null && bo == null) return 0
+  if (ao == null) return 1
+  if (bo == null) return -1
+  return ao - bo
+}
+
+/** Move one project before/after another and restamp `railOrder` across the WHOLE store.
+ *
+ *  Restamping everything, rather than just the tiles on screen, is what keeps the order total.
+ *  Numbering only the visible subset would collide with the stale numbers still held by projects
+ *  that are currently off the rail, and the collision would only surface later — when one of them
+ *  goes live and lands in an arbitrary slot.
+ *
+ *  Reuses `reorderByIds`, the same helper the roster board and the sidebar's session rows use.
+ *  There is exactly one implementation of "move this before that" in the app; keep it that way. */
+export function reorderRail(
+  projects: Project[], dragId: string, targetId: string, edge: 'before' | 'after',
+): Project[] {
+  const next = reorderByIds([...projects].sort(byRailOrder), dragId, targetId, edge)
+  const idx = new Map(next.map((p, i) => [p.id, i]))
+  // Return the SAME object for an unchanged project so the store's JSON-diff persist effect
+  // doesn't churn a write when nothing moved.
+  return projects.map((p) => (p.railOrder === idx.get(p.id) ? p : { ...p, railOrder: idx.get(p.id) }))
 }
 
 /** Split the store into the two shelves, each already ordered: active = live-first then
