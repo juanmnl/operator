@@ -32,7 +32,12 @@ console.log('spawns after dupe:', (await calls('terminalSpawn')).length)
 
 // 3. Dispatch to the LIVE code lane → typed into its pty via the submit queue.
 await p.evaluate(() => window.__mockDispatch({ id: 'd-test-2', sessionId: 's-op', terminalId: 't0', role: 'code', task: 'Add a regression test' }))
-await p.waitForTimeout(1500) // submit + 800ms nudge window
+await p.waitForTimeout(600)
+// Confirm it, as the transcript would. An UNCONFIRMED submission now holds its lane for the
+// rescue horizon — correct behaviour (message 2 must not be pasted onto an uncommitted message
+// 1), but it means every dispatch in this driver has to be given its turn.
+await p.evaluate(() => window.__mockUserTurn('s-code', 'Add a regression test'))
+await p.waitForTimeout(900)
 const writes = (await calls('terminalWrite')).filter(w => w.id === 't1')
 console.log('t1 writes:', JSON.stringify(writes.map(w => w.data)))
 
@@ -46,8 +51,11 @@ const nudgeDelay = async (chars) => {
   await p.evaluate((n) => window.__mockDispatch({
     id: `d-len-${n}`, sessionId: 's-op', terminalId: 't0', role: 'code', task: 'L'.repeat(n),
   }), chars)
-  // Wait past the scaled nudge: floor 800 + 1.5ms/char, capped at 6s.
-  await p.waitForTimeout(Math.min(6000, 800 + chars * 1.5) + 900)
+  // Confirm the turn the way the transcript would, then let the queue settle. Without this the
+  // lane waits out the full rescue horizon and every later dispatch queues behind it.
+  await p.waitForTimeout(400)
+  await p.evaluate((n) => window.__mockUserTurn('s-code', 'L'.repeat(n)), chars)
+  await p.waitForTimeout(900)
   const fresh = (await calls('terminalWrite')).slice(before).filter((w) => w.id === 't1')
   const paste = fresh.find((w) => w.data.startsWith('\x1b[200~'))
   const nudge = fresh.find((w) => w.data === '\r')
@@ -56,9 +64,32 @@ const nudgeDelay = async (chars) => {
            // The message must go out INTACT in one paste — the bug shipped half of it.
            whole: !!paste && paste.data.includes('L'.repeat(chars)) }
 }
-console.log('\nlength sweep — one paste + one nudge each, nudge delay scaling with length:')
+console.log('\nlength sweep — CONFIRMED at every length: one whole paste, and no rescue CR needed:')
 for (const n of [200, 500, 1000, 2000, 4000]) {
   const r = await nudgeDelay(n)
-  console.log(`  ${String(n).padStart(5)} chars  pastes ${r.pastes}  nudges ${r.nudges}  whole-message ${r.whole}  nudge@ ${r.delay}ms`)
+  console.log(`  ${String(n).padStart(5)} chars  pastes ${r.pastes}  rescue-CRs ${r.nudges}  whole-message ${r.whole}`)
+}
+
+// 5. LATENCY SWEEP — the escalation (dev/briefs/dispatch-split-closed-loop.md). Length was the
+// wrong axis: a 203-char dispatch split on a machine at load 4.0, using 18% of the nudge budget.
+// So hold LENGTH constant and vary how long the turn takes to appear, which is what the machine
+// actually varies. `__mockUserTurn` is the transcript confirming the turn started.
+const REPORTED = 'Third: read dev/briefs/plan-usage-stale.md and do it. Usage meter fetches once at mount and never refetches, so it shows a session % from an expired window. Result -> dev/briefs/plan-usage-stale-RESULT.md'
+const commitAfter = async (label, ms) => {
+  const before = (await calls('terminalWrite')).length
+  await p.evaluate(([t, i]) => window.__mockDispatch({ id: i, sessionId: 's-op', terminalId: 't0', role: 'code', task: t }),
+    [REPORTED, `d-lat-${label}`])
+  await p.waitForTimeout(300)
+  // The turn appears `ms` after the paste — the TUI finally committing under load.
+  if (ms !== null) { await p.waitForTimeout(ms); await p.evaluate((t) => window.__mockUserTurn('s-code', t), REPORTED) }
+  await p.waitForTimeout(900)
+  const fresh = (await calls('terminalWrite')).slice(before).filter((w) => w.id === 't1')
+  return { crs: fresh.filter((w) => w.data === '\r').length, pastes: fresh.filter((w) => w.data.startsWith('\x1b[200~')).length }
+}
+console.log(`\nlatency sweep — ${REPORTED.length} chars held constant, commit latency varied.`)
+console.log('  a CR sent while the paste is still committing is what splits it, so 0 CRs = safe:')
+for (const [label, ms] of [['fast', 200], ['loaded', 1500], ['very slow', 4000], ['never', null]]) {
+  const r = await commitAfter(label, ms)
+  console.log(`  commit@${String(ms ?? 'never').padStart(5)}ms  pastes ${r.pastes}  rescue-CRs ${r.crs}${ms === null ? '  (still waiting — the rescue is 30s away, not 1.1s)' : ''}`)
 }
 await b.close()

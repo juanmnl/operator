@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, ProjectReply } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { laneTextColor } from '../../lib/lane-color'
+import { localTime } from '../../lib/local-time'
 import {
   buildChannelFeed, groupByDay, channelInitials,
   type ChannelEntry, type ChannelSession, type ChipTone,
@@ -221,7 +222,7 @@ function ChannelRow({ entry, projectId, onApprove, onReject }: {
             </span>
           )}
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            {entry.at.slice(11, 16)}
+            {localTime(entry.at)}
           </span>
           <span data-channel-chip style={{
             fontFamily: 'var(--font-mono)', fontSize: 8.5, textTransform: 'uppercase',

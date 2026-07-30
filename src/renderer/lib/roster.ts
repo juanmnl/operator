@@ -116,13 +116,16 @@ const REPLY_PROTOCOL =
   `now", no step-by-step, no thinking aloud, no restating the task. One line, and only when it ` +
   `earns one.`
 
-/** Appended to every NON-coordinator charter. The belt to the router's braces: the enforcement
+/** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
+ *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was
+ *  appended, and deriving that by stripping the suffix beats freezing a second copy of six
+ *  paragraphs. The belt to the router's braces: the enforcement
  *  that matters is `dispatchNeedsApproval` (lib/dispatch), because charter text is advisory and
  *  models route around it — Research's charter already said "never change code" and it obeyed
  *  that literally, then wrote an implementation brief and dispatched Code to build it. Saying the
  *  boundary out loud is still worth it: a lane that knows the rule recommends instead of
  *  commissioning, and never waits on a dispatch that was never going to auto-deliver. */
-const NO_COMMISSIONING = ' You do not commission work. If you conclude something should be built, ' +
+export const NO_COMMISSIONING = ' You do not commission work. If you conclude something should be built, ' +
   'recommend it in your report and name who should do it — the coordinator decides. Do not ' +
   'dispatch implementation tasks; a dispatch from a non-coordinator lane is held for the user to ' +
   'approve, so it will not run on its own.'

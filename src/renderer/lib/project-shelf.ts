@@ -23,6 +23,39 @@ export function isActiveProject(p: Project, activity?: ProjectActivity): boolean
   return !p.archivedAt || (activity?.live ?? 0) > 0
 }
 
+/** Would writing `archivedAt` actually move this project to Previous *right now*?
+ *
+ *  `isActiveProject` lifts a project with a live session back onto the active shelf whatever its
+ *  record says — correct, because a running agent must never hide inside a collapsed section. But
+ *  the shelve action pushed a toast reading "It moves to Previous" unconditionally, so shelving a
+ *  busy project produced a success message, an Undo button, and no visible change. That is the
+ *  shape of bug that teaches people a control is broken.
+ *
+ *  So the toast asks this first. Same rule as `isActiveProject`, stated from the caller's side. */
+export function shelvingMoves(activity?: ProjectActivity): boolean {
+  return (activity?.live ?? 0) === 0
+}
+
+/** The sessions CLOSE will end, and how many of them are mid-task.
+ *
+ *  Pure over the session list so the sequencing is testable without a pty. `running` is only
+ *  reported, never blocking: closing is reversible housekeeping and does not earn a modal, but
+ *  ending a lane mid-turn loses that turn's work, so the count is named in the toast rather than
+ *  discovered afterwards.
+ *
+ *  Scoped by `projectId` alone — closing one project must never touch another's lanes, and a
+ *  session with no project cannot be attributed to this one. */
+export function closePlan(
+  projectId: string,
+  sessions: ReadonlyArray<{ id: string; projectId?: string; status?: string; phase?: string; terminalId?: string }>,
+): { sessions: string[]; running: number } {
+  const live = sessions.filter((s) => s.projectId === projectId && s.status !== 'ended' && !!s.terminalId)
+  return {
+    sessions: live.map((s) => s.id),
+    running: live.filter((s) => s.phase === 'running' || s.phase === 'compacting').length,
+  }
+}
+
 /** Live first, then most recently RUN. The one ordering, shared by the gallery grid and the
  *  switcher popover, which each carried a copy. */
 export function byActivityThenRecency(

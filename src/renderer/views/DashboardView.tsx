@@ -1,21 +1,24 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor, rolePresets, isCoordinator } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, pruneGlobals, clearSeededRoleFields, seedGlobalDefaults,
-  clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
+  migrateSeededWorktreeDefaults, clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
+import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
+import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
-import { submitQueue } from '../lib/submit-queue'
+import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
+import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
@@ -94,6 +97,28 @@ type MainView = 'terminal' | 'chat' | 'preview'
 // conversation), but dropped in Chat view where it's already the main surface.
 type PanelTab = 'plan' | 'diff' | 'chat'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
+// The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
+// reading localStorage — nothing branches on the value, only on its presence. Storage being
+// unreachable reads as DONE, because a prune that can't remember it ran would run every launch.
+const PRUNE_KEY = 'operator.seededLanePrunedAt'
+function seededLanePruneDone(): boolean {
+  try { return !!localStorage.getItem(PRUNE_KEY) } catch { return true }
+}
+function markSeededLanePruneDone() {
+  try { localStorage.setItem(PRUNE_KEY, new Date().toISOString()) } catch { /* quota */ }
+}
+
+// Same one-shot bookkeeping for the role-defaults seed migration (worktree posture). Separate key
+// from the lane prune: they answer to different stores and must be able to run independently — a
+// user who has done one has not necessarily done the other.
+const SEED_MIGRATION_KEY = 'operator.worktreeSeedMigratedAt'
+function seedMigrationDone(): boolean {
+  try { return !!localStorage.getItem(SEED_MIGRATION_KEY) } catch { return true }
+}
+function markSeedMigrationDone() {
+  try { localStorage.setItem(SEED_MIGRATION_KEY, new Date().toISOString()) } catch { /* quota */ }
+}
+
 const LAYOUT_KEY = 'operator.sessionLayouts'
 const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
 function loadLayouts(): Record<string, SessionLayout> {
@@ -181,8 +206,33 @@ export function DashboardView() {
       const stored = pruneGlobals((raw ?? {}) as GlobalRoleDefaults)
       // First run seeds the worktree posture only — see seedGlobalDefaults for why model and
       // effort are deliberately left to the built-in presets.
-      setRoleDefaults(Object.keys(stored).length ? stored : seedGlobalDefaults())
+      if (!Object.keys(stored).length) {
+        setRoleDefaults(seedGlobalDefaults())
+        // A store seeded TODAY is already on the new posture, so the migration below has nothing
+        // to do here — ever. Recording that now is what stops it re-scanning on every later launch.
+        markSeedMigrationDone()
+        setRoleDefaultsHydrated(true)
+        return
+      }
+      // …and for everyone else, ONCE: the seed only runs on an empty store, so a changed default
+      // reaches an existing install through this and nothing else (see
+      // `migrateSeededWorktreeDefaults` for how narrowly it decides).
+      if (seedMigrationDone()) { setRoleDefaults(stored); setRoleDefaultsHydrated(true); return }
+      const { globals, roles } = migrateSeededWorktreeDefaults(stored)
+      markSeedMigrationDone()
+      setRoleDefaults(globals)
       setRoleDefaultsHydrated(true)
+      if (roles.length) {
+        // Where a lane RUNS is not something to change under someone silently — an isolated lane
+        // lands its work on a branch, which is a different answer to "where is my diff?". Undo
+        // restores the stored posture and leaves the flag set: undo means keep it.
+        const named = roles.map((id) => rolePresets().find((r) => r.id === id)?.name ?? id)
+        pushToast({
+          text: `${named.join(' and ')} now run in their own worktree`,
+          detail: 'Change it under Agents → Defaults.',
+          action: { label: 'Undo', run: () => setRoleDefaults(stored) },
+        })
+      }
     }).catch(() => setRoleDefaultsHydrated(true))
   }, [])
   useEffect(() => {
@@ -436,7 +486,29 @@ export function DashboardView() {
     // dashboard re-render every second even when nothing changed (a real idle-energy
     // sink). The push delivers the same updates at the same ~1s tailer cadence, only
     // when there's something to deliver.
-    const unsubSession = window.operator.onSessionUpdate(setSessions)
+    // CLOSING THE DISPATCH LOOP. Every session update is also the answer to "did the thing we
+    // typed actually become a turn?" — the transcript records real human prompts as `user`
+    // narration entries (transcript.rs `apply_user`), so a submission awaiting confirmation can
+    // simply be looked for. Confirming here is what lets the submit queue skip its rescue CR,
+    // and that CR arriving against an already-committed paste is what split long dispatches in
+    // half. Reading it off an event we already receive costs nothing and adds no polling.
+    const unsubSession = window.operator.onSessionUpdate((next) => {
+      setSessions(next)
+      for (const s of next) {
+        if (!s.terminalId) continue
+        // A tracked session means a transcript is being tailed, which is what makes waiting for a
+        // turn worth doing at all. Told to the queue so it can wait patiently here and NOT on a
+        // pty nobody is reading — see `rescueDelayFor`.
+        if (!s.id.startsWith('local-')) submitQueue.observable(s.terminalId)
+        const waiting = submitQueue.pending(s.terminalId)
+        if (!waiting) continue
+        const turns = userTurnsSince(s.messages, waiting.at)
+        // Only 'delivered' confirms. A 'split' is the failure this whole change exists to
+        // catch, so it must NOT satisfy the loop — letting it through would report the broken
+        // half as a success and leave the tail stranded exactly as before.
+        if (matchSubmission(waiting.text, turns) === 'delivered') submitQueue.confirm(s.terminalId)
+      }
+    })
 
     const unsubExit = window.operator.onTerminalExit((id) => {
       // Don't drop the tab — unmounting the pane blanks the final output. xterm
@@ -586,12 +658,27 @@ export function DashboardView() {
       // effect below) — correct, since that agent really is live, but it looks like a mystery
       // write if nobody wrote it down. Note that merely OPENING a project does not come
       // through here: see handleOpenProject.
-      // New project → seed the default orchestration roster (editable afterwards).
-      // EMPTY roster. A new project used to arrive with six lanes nobody asked for, sitting
-      // in the sidebar looking like they were waiting for something. The six live on as
-      // templates behind "+ Add agent" (lib/roster rolePresets) and as what a dispatch
-      // creates from — the objection was to auto-SEEDING, not to the definitions.
-      return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: [] }]
+      // New project → ONE lane: Operator.
+      //
+      // This PARTLY REVERSES `dev/briefs/roster-on-demand.md`, deliberately — do not "restore"
+      // the empty default as a regression fix. That brief was right about the real objection
+      // (six lanes nobody asked for, sitting in the sidebar looking like they were waiting for
+      // something) but overshot to zero, and zero is a dead end rather than a blank canvas:
+      // `OPERATOR-DISPATCH [lane] …` addresses a lane by id, so a project with no roster has
+      // nothing to talk to and nothing that can create the others. Operator is the coordinator —
+      // the lane that receives an intent and routes it — so it is the one lane worth seeding.
+      // The other five stay templates behind "+ Add agent" (lib/roster rolePresets).
+      //
+      // The empty state that brief added is still needed: a user can still delete their way to
+      // zero, which is their decision to make.
+      // Seeded WITHOUT model/effort, on purpose. Copying the preset verbatim would write
+      // `model: 'fable'` onto the lane, and a value on the lane is a PIN — it beats the user's
+      // global role default (lib/model-config's cascade), which is the exact mistake
+      // `clearSeededRoleFields` exists to undo. Absent means inherit, so the cascade resolves it
+      // to the same place while leaving a global default able to reach it.
+      const preset = rolePresets().find((role) => isCoordinator(role.id))!
+      const operator: Role[] = [{ id: preset.id, name: preset.name, accent: preset.accent, prompt: preset.prompt }]
+      return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: operator }]
     })
   }, [])
 
@@ -713,14 +800,69 @@ export function DashboardView() {
     const set = new Set(ids)
     setProjects((prev) => prev.map((p) => (set.has(p.id) ? { ...p, archivedAt: at } : p)))
     const only = ids.length === 1 ? projectsRef.current.find((p) => p.id === ids[0]) : undefined
+    // HONESTY: a project with a live lane is lifted straight back onto the active shelf
+    // (`isActiveProject`), so "it moves to Previous" was a success message for something that
+    // visibly did not happen — flag written, Undo offered, nothing moved. The flag is still
+    // written, because it IS the user's decision and it takes effect the moment the lane ends;
+    // what changes is that the toast stops claiming a move it can't make.
+    const stuck = ids.filter((id) => !shelvingMoves(activitiesRef.current[id]))
+    const detail = only
+      ? stuck.length
+        ? 'Still running, so it stays on Active.'
+        : 'It moves to Previous. Launching an agent here brings it straight back.'
+      : stuck.length
+        ? `${stuck.length} still running, so they stay on Active.`
+        : 'They keep their rosters, tasks and notes. Launching an agent brings one back.'
     pushToast({
       text: only ? `Shelved ${only.name}` : `Shelved ${ids.length} projects`,
-      detail: only
-        ? 'It moves to Previous. Launching an agent here brings it straight back.'
-        : 'They keep their rosters, tasks and notes. Launching an agent brings one back.',
+      detail,
       action: {
         label: 'Undo',
         run: () => setProjects((prev) => prev.map((p) => (set.has(p.id) ? { ...p, archivedAt: undefined } : p))),
+      },
+    })
+  }, [pushToast])
+
+  /** CLOSE a project: end its live sessions, then shelve it.
+   *
+   *  The verb that did not exist. Closing meant clicking ■ on every live lane by hand, then
+   *  Shelve, and knowing to do it in that order — and doing it in the other order produced the
+   *  false "moved to Previous" above.
+   *
+   *  SEQUENCE MATTERS and is the whole reason this is one action: the sessions are ended and
+   *  awaited FIRST, and only then is `archivedAt` written. Writing the flag first re-creates the
+   *  lie, because the project is still lifted onto Active while the lanes are alive.
+   *
+   *  Reuses `handleCloseSession` per lane — the same path the ■ button takes, which already kills
+   *  the pty, finishes its running tasks, removes the worktree dir (keeping the branch) and drops
+   *  the saved session. No second teardown route, and nothing pattern-kills: every session is
+   *  closed by id, and only ones stamped with THIS project.
+   *
+   *  Data — roster, tasks, notes, branches — is untouched, exactly as Shelve promises. */
+  const closeProject = useCallback(async (id: string) => {
+    const project = projectsRef.current.find((p) => p.id === id)
+    if (!project) return
+    const plan = closePlan(id, sessionsRef.current)
+    const live = sessionsRef.current.filter((s) => plan.sessions.includes(s.id))
+    // Awaited: `handleCloseSession` kills the pty before returning, so by the time this resolves
+    // the lanes really are gone and the shelf write below is telling the truth.
+    for (const s of live) await handleCloseSessionRef.current(s)
+    const at = new Date().toISOString()
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, archivedAt: at } : p)))
+    setActiveProjectId((cur) => (cur === id ? null : cur))
+    const n = plan.sessions.length
+    pushToast({
+      text: n ? `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended` : `Closed ${project.name}`,
+      // Undo puts the project back on Active. It CANNOT bring the sessions back — the ptys are
+      // gone — and saying otherwise is the same class of lie this change exists to remove.
+      // The half that must survive the clamp is the one that could mislead: Undo brings the
+      // project back to Active, and cannot bring back a pty that has been killed.
+      detail: n
+        ? 'Undo restores the shelf, not the agents.'
+        : 'It moves to Previous. Launching an agent here brings it straight back.',
+      action: {
+        label: 'Undo',
+        run: () => setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, archivedAt: undefined } : p))),
       },
     })
   }, [pushToast])
@@ -878,6 +1020,13 @@ export function DashboardView() {
     }
   }, [attachTaskDiffStats, runTaskChecks])
   // Fresh closure over terminals + completeTerminalTasks for the mount-time exit subscription.
+  /** Per-project liveness, and the per-lane close path — both declared far below the shelve and
+   *  close actions that need them, so they arrive through refs assigned on render. */
+  const activitiesRef = useRef<Record<string, ProjectActivity>>({})
+  const handleCloseSessionRef = useRef<(s: AgentSession) => Promise<void>>(async () => {})
+  /** `focusTerminal` is declared much further down, so the undelivered toast reaches it the
+   *  same way the exit handler reaches its own late sibling — through a ref assigned on render. */
+  const focusTerminalRef = useRef<(id: string) => void>(() => {})
   const exitCompleteRef = useRef<(id: string) => void>(() => {})
   exitCompleteRef.current = (id: string) => {
     const tab = terminals.find((t) => t.id === id)
@@ -892,6 +1041,41 @@ export function DashboardView() {
       ? { ...p, dispatches: (p.dispatches ?? []).map((d) => (d.id === id ? { ...d, outcome, toRoleId: toRoleId ?? d.toRoleId } : d)) }
       : p)))
   }, [])
+
+  /** THE LAST STEP OF THE LOOP: a submission that went to the pty and never became a turn.
+   *
+   *  It does not retry. A dispatch that re-sends itself unattended is how the same work gets
+   *  done twice, and the failure it recovers from is rare enough that a human deciding is the
+   *  right cost. What it must do is stop the log LYING: the record said `sent`, the lane never
+   *  started, and until now those two facts never met — which is precisely how a stranded task
+   *  could sit in a composer for an hour while the channel showed it delivered.
+   *
+   *  Matched by TEXT rather than by a terminal id, because a record carries no terminal: the
+   *  submitted string is `deliveryPrefix(...) + task` on the agent→agent path and the bare task
+   *  elsewhere, so an endsWith covers both without either path having to hand anything over. */
+  const reportUndelivered = useCallback((terminalId: string, text: string) => {
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+    const project = projectsRef.current.find((p) => p.id === tab?.projectId)
+    const rec = [...(project?.dispatches ?? [])].reverse()
+      .find((d) => (d.outcome === 'sent' || d.outcome === 'launched') && text.endsWith(d.task))
+    if (project && rec) setDispatchOutcome(project.id, rec.id, 'undelivered')
+    const lane = tab?.roleId
+      ? (project?.roster ?? []).find((r) => r.id === tab.roleId)?.name ?? tab.roleId
+      : 'That lane'
+    // Actionable, so it stays until dismissed: the recovery is to look at the lane, and a toast
+    // that disappears on its own would be a notice nobody was guaranteed to see about work
+    // nobody is doing.
+    pushToast({
+      text: `${lane} never started the task it was sent`,
+      // One ellipsised line, minus the action button — about 40 characters land (Toast.tsx).
+      detail: 'It may still be sitting in its composer.',
+      kind: 'error',
+      action: { label: 'Show', run: () => { if (tab) focusTerminalRef.current(tab.id) } },
+    })
+  }, [pushToast, setDispatchOutcome])
+
+  // Installed rather than imported: lib/submit-queue must not learn what a project is.
+  useEffect(() => { onUndeliveredSubmission(reportUndelivered) }, [reportUndelivered])
 
   const logDispatch = useCallback((projectId: string, rec: DispatchRecord) => {
     setProjects((prev) => prev.map((p) => (p.id === projectId
@@ -1294,6 +1478,14 @@ export function DashboardView() {
     return { projects: [...projById.values()], sessions }
   }, [])
 
+  // The seeded-lane prune's one-shot flag. Read once into a ref: the hydrate effect below is the
+  // only reader, and it must decide from the value as it was at mount.
+  const pruneDoneRef = useRef<boolean>(seededLanePruneDone())
+  const markPruneDone = useCallback(() => {
+    pruneDoneRef.current = true
+    markSeededLanePruneDone()
+  }, [])
+
   // Block file-writes until the durable store has been read, so we never clobber
   // it with the (possibly staler) localStorage seed on launch.
   const [savedHydrated, setSavedHydrated] = useState(false)
@@ -1323,19 +1515,48 @@ export function DashboardView() {
         // which is what makes it safe to run unattended on hydrate.
         const reconciled = renamed.map(clearSeededRoleFields)
         const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
-        if (rewrites) {
+        // …and then, ONCE per install, the seeded-lane PRUNE: projects created before seeding was
+        // removed still carry six lanes nobody asked for, so drop the ones that were never used and
+        // never edited (lib/prune-seeded-lanes decides; it errs toward keeping).
+        //
+        // The flag is what makes this one-time, and it is not an optimisation: the predicate can't
+        // tell a leftover seeded lane from one the user just added back and hasn't launched yet, so
+        // without it every "+ Add agent" would be undone at the next launch. It is set even when
+        // nothing was pruned — the scan happened, the answer was none.
+        const prune = pruneDoneRef.current ? null : pruneSeededIdleLanes(reconciled, nextSaved)
+        // A scan that found nothing is finished the moment it ran, whatever else this branch
+        // writes — and it has to be recorded here, not only alongside a successful prune, or a
+        // store with nothing to drop would re-scan on every launch and eventually catch a lane
+        // the user added back in the meantime.
+        if (prune && !prune.lanes) markPruneDone()
+        if (rewrites || prune?.lanes) {
           // No backup, no write. A failed copy means we keep the pinned values rather than rewrite
           // rosters with no way back — the same rule chatstore's purge follows.
           try {
             const stamp = new Date().toISOString().replace(/[:.]/g, '-')
             await window.operator.backupProjects?.(stamp)
-            setProjects(reconciled)
+            setProjects(prune?.lanes ? prune.projects : reconciled)
+            if (prune?.lanes) {
+              markPruneDone()
+              // Removing lanes off-screen during launch is the kind of change you notice a day
+              // later, so it announces itself and stays until dismissed (an `action` toast does).
+              // Undo restores the pre-prune rosters and leaves the flag SET — undo means "keep
+              // them", so the next launch must not prune them again.
+              pushToast({
+                text: `Tidied ${prune.lanes} unused lane${prune.lanes === 1 ? '' : 's'} from ${prune.touched} project${prune.touched === 1 ? '' : 's'}`,
+                // The detail line is ONE line with an ellipsis (Toast.tsx) and the Undo button eats
+                // into it: ~40 characters land, so this says why and lets the button say the rest.
+                detail: 'Never launched, never edited.',
+                action: { label: 'Undo', run: () => setProjects(reconciled) },
+              })
+            }
           } catch (e) {
             console.warn('roster reconcile skipped — projects.json backup failed:', e)
             setProjects(renamed)
           }
         } else {
           setProjects(renamed)
+          if (prune) markPruneDone()
         }
       } else {
         try {
@@ -1697,6 +1918,7 @@ export function DashboardView() {
     // you're looking at (spec §4 rule 1).
     if (tab.projectId) setActiveProjectId(tab.projectId)
   }, [terminals, sessions])
+  focusTerminalRef.current = focusTerminal
 
   // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
   // (bracketed paste + CR) and focus it; otherwise launch the lane with the task. The
@@ -1886,6 +2108,7 @@ export function DashboardView() {
     // area returns to the workspace instead of staying stuck in settings.
     setActiveFolderPrefs(null)
   }, [terminals, forgetSavedSession, completeTerminalTasks])
+  handleCloseSessionRef.current = handleCloseSession
 
   const handleSelectSession = useCallback((session: AgentSession) => {
     const localTerminalIds = new Set(terminals.map((t) => t.id))
@@ -2007,6 +2230,7 @@ export function DashboardView() {
     for (const p of projects) out[p.id] = projectActivity(byProject[p.id] ?? [], p.roster?.length ?? 0)
     return out
   }, [allSidebarSessions, projects])
+  activitiesRef.current = projectActivities
 
 
   // Drag-to-reorder the sidebar's AD-HOC session rows: move the dragged terminal before/after
@@ -3034,6 +3258,7 @@ export function DashboardView() {
             onSetProjectNotes={(id, contextNotes) => updateProject(id, { contextNotes })}
             onForgetProject={forgetProject}
             onArchiveProject={archiveProject}
+            onCloseProject={(id) => { void closeProject(id) }}
             onArchiveProjects={archiveProjects}
             onRestoreProject={restoreProject}
             onOpenFolderPrefs={handleOpenFolderPrefs}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   readable, hasData, toneFor, TONE_FILL, limitRows, glanceLine, updatedAgo, ringDash,
+  resetAtOf, windowEnded, freshnessOf, hasCurrentData, FRESH_MS, STALE_MS,
   WARN_AT, DANGER_AT, type PlanLimits,
 } from './plan-limits'
 
@@ -128,5 +129,101 @@ describe('ringDash', () => {
       const { dash, gap, circumference } = ringDash(pct, 8.2)
       expect(dash + gap).toBeCloseTo(circumference, 6)
     }
+  })
+})
+
+// --- the reset clause, and the window it names (dev/briefs/plan-usage-stale.md) -----------
+// The reported failure: session shown at 12% next to `resets Jul 30 at 9:59am`, read after 10am.
+// Not stale — provably false, from data already in hand.
+describe('resetAtOf', () => {
+  const fetched = '2026-07-30T18:00:00.000Z' // 1pm in America/Guayaquil (UTC-5, no DST)
+
+  it('parses the phrasing the CLI actually emits — zoned, with minutes', () => {
+    const at = resetAtOf('Jul 30 at 8:30pm (America/Guayaquil)', fetched)
+    expect(at).toBe(Date.UTC(2026, 6, 31, 1, 30)) // 8:30pm UTC-5 → 01:30 UTC next day
+  })
+
+  it('parses a whole-hour zoned clause, and a 12-hour boundary', () => {
+    expect(resetAtOf('Jul 30 at 2am (America/Guayaquil)', fetched)).toBe(Date.UTC(2026, 6, 30, 7, 0))
+    // 12am is hour 0, 12pm is hour 12 — the modulo trap.
+    expect(resetAtOf('Aug 4 at 12:59am (America/Guayaquil)', fetched)).toBe(Date.UTC(2026, 7, 4, 5, 59))
+    expect(resetAtOf('Aug 4 at 12pm (America/Guayaquil)', fetched)).toBe(Date.UTC(2026, 7, 4, 17, 0))
+  })
+
+  it('reads an unzoned clause as local time', () => {
+    // No zone named → the machine's own, which is what the CLI meant by omitting it.
+    expect(resetAtOf('Jul 30 at 2am', fetched)).toBe(new Date(2026, 6, 30, 2, 0).getTime())
+  })
+
+  it('parses the relative forms, anchored to when we FETCHED it', () => {
+    const t = Date.parse(fetched)
+    expect(resetAtOf('in 3 hours', fetched)).toBe(t + 3 * 3_600_000)
+    expect(resetAtOf('in 45 minutes', fetched)).toBe(t + 45 * 60_000)
+    expect(resetAtOf('in 4 hr 55 min', fetched)).toBe(t + 4 * 3_600_000 + 55 * 60_000)
+  })
+
+  it('rolls the YEAR forward, since the clause never carries one', () => {
+    const dec = '2026-12-31T20:00:00.000Z'
+    const at = resetAtOf('Jan 1 at 2am (America/Guayaquil)', dec)
+    expect(at).toBe(Date.UTC(2027, 0, 1, 7, 0)) // next year, not ten months ago
+  })
+
+  it('DECLINES every phrasing it cannot pin exactly', () => {
+    // Each is a real fixture from planlimits.rs's tests. Declining falls back to the plain age
+    // thresholds; guessing would blank a number the user can see is fine.
+    for (const clause of ['tomorrow', 'Sunday', 'Aug 4', 'later', 'in 3', 'in a while', '', '   ']) {
+      expect(resetAtOf(clause, fetched), clause).toBeNull()
+    }
+    expect(resetAtOf(null, fetched)).toBeNull()
+    expect(resetAtOf('Jul 30 at 2am', undefined)).toBeNull()   // no anchor → no year, no answer
+    expect(resetAtOf('Jul 30 at 2am', 'not a date')).toBeNull()
+  })
+
+  it('declines an unknown timezone rather than silently using local', () => {
+    expect(resetAtOf('Jul 30 at 2am (Mars/Olympus)', fetched)).toBeNull()
+  })
+})
+
+describe('windowEnded / freshnessOf', () => {
+  const at = (iso: string) => Date.parse(iso)
+  const reading = (over: Partial<PlanLimits> = {}): PlanLimits => ({
+    sessionPct: 12, weekPct: 40,
+    sessionResets: 'in 2 hours',
+    fetchedAt: '2026-07-30T18:00:00.000Z',
+    ...over,
+  })
+
+  it('is the REPORTED BUG: a reading whose own reset time has passed', () => {
+    const l = reading()
+    const t = at('2026-07-30T18:00:00.000Z')
+    expect(windowEnded(l, t + 60_000)).toBe(false)
+    expect(windowEnded(l, t + 2 * 3_600_000)).toBe(true)
+    // …and the meter stops asserting the number, rather than showing 12% from a dead window.
+    expect(hasCurrentData(l, t + 2 * 3_600_000)).toBe(false)
+    expect(freshnessOf(l, t + 2 * 3_600_000)).toBe('expired')
+  })
+
+  it('separates "a bit old" from "we know this window ended"', () => {
+    const t = at('2026-07-30T18:00:00.000Z')
+    expect(freshnessOf(reading(), t)).toBe('current')
+    expect(freshnessOf(reading(), t + FRESH_MS + 1)).toBe('aging')      // past TTL, window open
+    expect(freshnessOf(reading(), t + 2 * 3_600_000)).toBe('expired')   // window closed
+    // Aging still shows its numbers — they are drifting, not false.
+    expect(hasCurrentData(reading(), t + FRESH_MS + 1)).toBe(true)
+  })
+
+  it('never reads an unparseable clause as ended — it falls back to the age thresholds', () => {
+    const l = reading({ sessionResets: 'Sunday' })
+    const t = at('2026-07-30T18:00:00.000Z')
+    // Six hours on: a parseable clause would have called this closed long ago. This one can't be
+    // read, so it is merely OLD — and only the STALE_MS catch-all eventually retires it.
+    expect(windowEnded(l, t + 6 * 3_600_000)).toBe(false)
+    expect(freshnessOf(l, t + 30 * 60_000)).toBe('aging')       // old, but not disproven
+    expect(freshnessOf(l, t + STALE_MS + 1)).toBe('expired')    // …until the catch-all bites
+  })
+
+  it('treats a reading with no reset clause the same way', () => {
+    const l = reading({ sessionResets: undefined })
+    expect(windowEnded(l, at('2026-07-31T18:00:00.000Z'))).toBe(false)
   })
 })

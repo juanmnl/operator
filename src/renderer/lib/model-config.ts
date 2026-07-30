@@ -121,19 +121,62 @@ export function hasGlobalFor(globals: GlobalRoleDefaults | undefined, roleId: st
 /** The shipped starting point for the global layer, seeded once when the store is empty.
  *
  *  Only `useWorktree`, and only because it is the field where "no preference" is the least useful
- *  answer: a worktree earns its cost for lanes that WRITE and mostly gets in the way for lanes that
- *  read and coordinate. Model and effort are deliberately left absent — `rolePresets()` is already
- *  a considered tiering, and duplicating it into the user's own file would turn every preset into a
- *  pin, which is the exact mistake §4 exists to undo. */
+ *  answer. Model and effort are deliberately left absent — `rolePresets()` is already a considered
+ *  tiering, and duplicating it into the user's own file would turn every preset into a pin, which
+ *  is the exact mistake §4 exists to undo.
+ *
+ *  2026-07-30: `operator` and `research` flipped ON. The original split was "lanes that WRITE get
+ *  isolation; lanes that read and coordinate don't", which read the two lanes' output as nothing —
+ *  but both of them do write to the repo (a coordinator lands merges and edits notes; a research
+ *  lane's deliverable is a file, because a lane's chat answer is invisible to everyone else). Two
+ *  lanes writing into the same checkout while an isolated Code lane works is the collision the
+ *  worktree posture exists to prevent, and their diffs were the ones with no attribution. */
 export function seedGlobalDefaults(): GlobalRoleDefaults {
   return {
     code: { useWorktree: true },
     design: { useWorktree: true },
-    operator: { useWorktree: false },
-    research: { useWorktree: false },
+    operator: { useWorktree: true },
+    research: { useWorktree: true },
     review: { useWorktree: false },
     qa: { useWorktree: false },
   }
+}
+
+/** The roles whose seeded worktree posture CHANGED, and what the old seed wrote for them.
+ *
+ *  Frozen history, like the retired charters in lib/prune-seeded-lanes: it describes what shipped,
+ *  so it never needs updating. If a future flip needs migrating, that is a new entry with its own
+ *  one-shot flag — not an edit to this one, which would re-run against users already migrated. */
+const LEGACY_WORKTREE_SEED: Record<string, boolean> = { operator: false, research: false }
+
+/** Bring a stored `role-defaults.json` up to the new seed.
+ *
+ *  Needed because the seed only ever runs on an EMPTY store: everyone who has launched the app
+ *  already has all six roles written to disk, so a changed default would reach nobody without
+ *  this. The problem is the same one `clearSeededRoleFields` has — a seeded value is
+ *  indistinguishable from a deliberate one — and for a boolean it is worse, since "off" has only
+ *  one spelling.
+ *
+ *  So the rule is per FIELD and as narrow as it can be: flip a role only where it still holds the
+ *  exact value the OLD seed wrote. Absent is left absent (absent means "inherit", which is a
+ *  deliberate no-preference the user had to choose), and a role already on the new value is not
+ *  reported as changed. What makes it safe to run unattended is the caller: it runs once, behind a
+ *  flag, and says what it did with an Undo. Returns the input by reference when nothing applies. */
+export function migrateSeededWorktreeDefaults(
+  globals: GlobalRoleDefaults,
+): { globals: GlobalRoleDefaults; roles: string[] } {
+  const seed = seedGlobalDefaults()
+  const roles: string[] = []
+  const next: GlobalRoleDefaults = { ...globals }
+  for (const [id, legacy] of Object.entries(LEGACY_WORKTREE_SEED)) {
+    const now = seed[id]?.useWorktree
+    const stored = globals[id]?.useWorktree
+    if (now === undefined || now === legacy) continue // this role's seed didn't actually move
+    if (stored !== legacy) continue // absent, or already the new value, or deliberately something else
+    next[id] = { ...globals[id], useWorktree: now }
+    roles.push(id)
+  }
+  return roles.length ? { globals: next, roles } : { globals, roles }
 }
 
 /** Drop empty entries so the store never accumulates `{ code: {} }` rows that read as configured. */

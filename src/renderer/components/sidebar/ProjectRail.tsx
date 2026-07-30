@@ -128,7 +128,13 @@ export function ProjectRail({
             below are navigation verbs. It needs no session and no project — `claude -p "/usage"`
             spawns its own short-lived process — so it is live at the gallery and on first launch,
             which is exactly when you're deciding what to start. */}
-        <PlanMeter limits={planLimits.limits} loading={planLimits.loading} onRefresh={planLimits.refresh} />
+        <PlanMeter
+          limits={planLimits.limits}
+          loading={planLimits.loading}
+          now={planLimits.now}
+          onRefresh={planLimits.refresh}
+          onRevalidate={planLimits.revalidate}
+        />
         <span style={{ width: 22, height: 1, background: 'var(--border)', margin: '5px 0' }} />
         <RailFootButton
           attr="data-rail-gallery"
