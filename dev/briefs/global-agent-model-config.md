@@ -24,11 +24,56 @@ most of this work — see §4.
 
 ## Build
 
+### 0. Three fields, not two — worktree is the third
+
+`useWorktree` (`types.ts:127`) joins model and effort as a global per-role default. User's rationale:
+worktree isolation is a per-lane *posture*, and setting it by hand is 114 toggles across 19 projects
+— the same problem the model default solves.
+
+**It behaves differently from the other two, and that difference is the work.** `model` is a string,
+so `undefined` and `''` can both mean "unset". `useWorktree` is a **boolean, where `false` is a
+meaningful explicit choice** — "definitely do not isolate this lane" is not the same as "no
+preference". So it needs a genuine tri-state:
+
+| stored | meaning |
+|---|---|
+| absent (`undefined`) | inherit the global default |
+| `true` | pinned ON for this lane, whatever the global says |
+| `false` | pinned OFF for this lane, whatever the global says |
+
+**Verified good news:** `rolePresets()` never sets `useWorktree`, and all **78** stored roles have it
+**absent**. So a global default takes effect immediately for this field, and §4's preset-comparison
+migration does not need to touch it at all.
+
+**The bug to fix while you are here:** `RosterPanel.tsx:693` writes
+`onPatch({ useWorktree: !role.useWorktree })` — an unconditional boolean, so the first click pins the
+lane forever with no route back to inherit. Give it a way home: either cycle inherit → on → off →
+inherit, or keep the binary toggle and add a small reset-to-default affordance beside it. Either way
+**the control must show which of the three states it is in** — a toggle that looks identical when
+inherited-on and when pinned-on makes the global setting appear broken.
+
+**Suggested defaults, not a mandate** (the user's read, and mine): worktrees earn their cost for
+lanes that WRITE (`code`, `design`) and mostly get in the way for lanes that read and coordinate
+(`research`, `review`, `operator`, `qa`). Seed the global defaults that way, and say in your result
+what you chose — it is a judgement call the user should be able to see and override in one place,
+which is the entire point of the feature.
+
+**Also worth knowing about the launch path:** if `worktreeCreate` fails, `DashboardView.tsx:1459-1467`
+logs a warning and launches in the project root anyway. A lane the user believes is isolated can
+silently not be. Do not fix that here — but if a global default makes worktrees the norm, that silent
+fallback gets hit far more often, so **file it** in your result as a follow-up.
+
 ### 1. Global role defaults — a new durable layer
 
 ```ts
 // keyed by role id: 'operator' | 'code' | 'research' | 'review' | 'design' | 'qa' | custom
-type GlobalRoleDefaults = Record<string, { model?: string; effortLevel?: 'high'|'normal'|'low'; permissionMode?: string }>
+type GlobalRoleDefaults = Record<string, {
+  model?: string
+  effortLevel?: 'high'|'normal'|'low'
+  permissionMode?: string
+  /** See §0 — tri-state at the ROLE level (absent = inherit this), plain boolean here. */
+  useWorktree?: boolean
+}>
 ```
 
 Persist to `~/.operator/` (new file, or a `roleDefaults` key in a global settings file) — **not**
@@ -46,8 +91,19 @@ export function resolveAgentConfig(role, globalRoleDefaults, projectDefaults): R
 ```
 
 **Both** `DashboardView.tsx:1239` and `:1167` must route through this. Two resolvers is how this
-drifts apart. Treat `undefined` **and** `''` as "not set" — `Project.defaults` already stores
-`model: ''` in real data, so empty string is ambiguous and must not mean "pinned to nothing".
+drifts apart. Treat `undefined` **and** `''` as "not set" for STRING fields — `Project.defaults`
+already stores `model: ''` in real data, so empty string is ambiguous and must not mean "pinned to
+nothing".
+
+**`useWorktree` is the exception and must be handled separately: only `undefined` means "not set".**
+An explicit `false` is a pin and has to beat the global default. If you write the resolver with a
+generic truthy check it will silently swallow every deliberate opt-out — which is the one bug that
+would make a user distrust the whole feature, because their lane keeps isolating after they turned it
+off. Cover it with its own test.
+
+There is a third consumer beyond those two launch paths: `roleLaunchSettings` (`lib/roster.ts:84`)
+already resolves effort and permission mode against `Project.defaults`. Fold it into
+`resolveAgentConfig` rather than leaving a fourth place that answers the same question.
 
 ### 3. Where it's edited — the Agents view, NOT Preferences
 
@@ -130,6 +186,12 @@ layer overrides it; it does not replace it.
 - **The user's exact story, as a test**: set global `operator → opus`; assert every project's operator
   lane resolves to opus, including projects whose stored role still says `fable` because it matched
   the preset; assert a project that explicitly pinned `sonnet` keeps sonnet.
+- **The worktree tri-state, as its own test**: global `code → useWorktree: true`; a role with the
+  field absent resolves TRUE; a role with `false` resolves **FALSE** (the pin wins); a role with
+  `true` resolves true. Then flip the global to `false` and re-assert all three. This is the case a
+  truthy check silently breaks.
+- The roster control round-trips all three states: inherit → pinned on → pinned off → back to
+  inherit, and the stored record ends with the field **absent** again, not `false`.
 - Both launch paths resolve identically for identical inputs — assert it.
 - The hydrate migration is idempotent (twice = once) and backs up before its first write.
 - Launch a lane after changing only the global model and confirm the pty command carries it

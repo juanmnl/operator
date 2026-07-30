@@ -7,6 +7,7 @@ import { byActivityThenRecency } from '../../lib/project-shelf'
 import { projectAccent, projectInitials } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard } from '../../lib/use-hover-card'
+import { PlanMeter, usePlanLimits } from './PlanMeter'
 
 // The persistent project rail — 44px, full height, outboard of the sidebar. It is the ONE
 // surface that never goes away: here with the sidebar expanded, with it collapsed to the 64px
@@ -56,6 +57,7 @@ export function ProjectRail({
   /** Agents is a VIEW, unlike the two navigation verbs, so it can be the current one. */
   agentsActive?: boolean
 }) {
+  const planLimits = usePlanLimits()
   // Same comparator as the gallery grid and the switcher popover. Never a third ordering.
   const shown = projects
     .filter((p) => (activities[p.id]?.live ?? 0) > 0 || p.id === activeProjectId)
@@ -122,6 +124,11 @@ export function ProjectRail({
           <circle cx="6" cy="9" r="0.9" fill="currentColor" stroke="none" />
           <circle cx="10" cy="9" r="0.9" fill="currentColor" stroke="none" />
         </RailFootButton>
+        {/* USAGE sits beside Agents, above the seam: both are cross-project VIEWS, where the two
+            below are navigation verbs. It needs no session and no project — `claude -p "/usage"`
+            spawns its own short-lived process — so it is live at the gallery and on first launch,
+            which is exactly when you're deciding what to start. */}
+        <PlanMeter limits={planLimits.limits} loading={planLimits.loading} onRefresh={planLimits.refresh} />
         <span style={{ width: 22, height: 1, background: 'var(--border)', margin: '5px 0' }} />
         <RailFootButton
           attr="data-rail-gallery"

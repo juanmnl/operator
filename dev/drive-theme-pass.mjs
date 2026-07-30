@@ -431,13 +431,36 @@ for (const [key, label] of THEMES) {
   await p.screenshot({ path: `${OUT}/${key}-9-folderprefs.png` })
 
   // AgentsHubView (grid measure) and, behind its second tab, AgentLibraryView.
-  await p.locator('button[title="Agents — every agent across your projects"]').click()
+  // Reached from the RAIL foot now, not the sidebar footer — the hub is cross-project, and the
+  // sidebar it used to live in animates to width 0 at the gallery.
+  await p.locator('[data-rail-agents]').click()
   await p.waitForTimeout(800)
   await p.evaluate(PROBE)
   settingsProbes.push(...await p.evaluate(() => [
     window.__contrast('[data-page-title]', 'agentsHub · pageTitle'),
     window.__contrast('[data-page-subtitle]', 'agentsHub · pageSubtitle', true),
   ]))
+  // The DEFAULTS tab: a lane name in its accent (laneTextColor), and the option pickers — where
+  // the "chosen" state is accent ink at 9.5px, the size that collapses on the light palettes.
+  await p.locator('[data-page-tab="defaults"]').click()
+  await p.waitForTimeout(600)
+  await p.evaluate(PROBE)
+  settingsProbes.push(...await p.evaluate(() => {
+    // Choose one, so the accent-ink state exists to be measured rather than assumed.
+    document.querySelector('[data-default-row="operator"] [data-default-option="model:opus"]')?.click()
+    return []
+  }))
+  await p.waitForTimeout(300)
+  await p.evaluate(PROBE)
+  settingsProbes.push(...await p.evaluate(() => [
+    window.__contrast('[data-default-row="operator"] [data-default-name]', 'defaults · lane name'),
+    window.__contrast('[data-default-state="chosen"]', 'defaults · chosen option', true),
+    window.__contrast('[data-default-state="preset"]', 'defaults · preset option', true),
+    window.__contrast('[data-default-state="off"]', 'defaults · other option', true),
+    window.__contrast('[data-default-worktree="operator"]', 'defaults · worktree toggle', true),
+  ]))
+  await p.screenshot({ path: `${OUT}/${key}-10-defaults.png` })
+
   await p.locator('[data-page-tab="library"]').click()
   await p.waitForTimeout(700)
   // The editor pane only exists once an agent is selected — an unselected library has no
@@ -458,6 +481,59 @@ for (const [key, label] of THEMES) {
     ]
   }))
   await p.screenshot({ path: `${OUT}/${key}-10-agentlibrary.png` })
+
+  // The PLAN METER's popover: percentages, reset lines, and the three threshold fills — the
+  // 75%/90% colours must stay distinguishable from the normal one on the LIGHT palettes, which is
+  // where accent-vs-warning collapses.
+  await p.goto(`http://localhost:${PORT}/dev/mock.html?usage=high`, { waitUntil: 'load' })
+  await p.waitForTimeout(2800)
+  await p.locator('[data-rail-usage]').click()
+  await p.waitForTimeout(600)
+  await p.evaluate(PROBE)
+  settingsProbes.push(...await p.evaluate(() => [
+    window.__contrast('[data-usage-row="session"] [data-usage-value]', 'planMeter · percentage'),
+    window.__contrast('[data-usage-row="session"] p', 'planMeter · reset line', true),
+    window.__contrast('[data-usage-updated]', 'planMeter · updated', true),
+  ]))
+  notes.push(`${key} plan-meter fills — ` + await p.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-usage-bar]'))
+      .map((b) => `${b.getAttribute('data-usage-tone')} ${getComputedStyle(b).backgroundColor}`).join(' / ')))
+  // Distinguishable, not merely different: compare the three fills pairwise in sRGB.
+  notes.push(`${key} plan-meter fill separation — ` + await p.evaluate(() => {
+    const rgb = (s) => (s.match(/\d+/g) ?? []).slice(0, 3).map(Number)
+    const cols = Array.from(document.querySelectorAll('[data-usage-bar]')).map((b) => rgb(getComputedStyle(b).backgroundColor))
+    const dist = (a, c) => Math.round(Math.hypot(a[0] - c[0], a[1] - c[1], a[2] - c[2]))
+    const pairs = []
+    for (let i = 0; i < cols.length; i++) for (let j = i + 1; j < cols.length; j++) pairs.push(dist(cols[i], cols[j]))
+    return `min pairwise ΔRGB ${Math.min(...pairs)} (want > 60)`
+  }))
+  await p.screenshot({ path: `${OUT}/${key}-11-planmeter.png` })
+  await p.keyboard.press('Escape')
+
+  // The roster card's own three-state segments: an INHERITED lit value must clear the body floor,
+  // because it is the selected value — not decoration — and it is drawn in a different ink now.
+  await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+  await p.waitForTimeout(2600)
+  // The app may boot already scoped to a project, so go out to the gallery first and come back in.
+  await p.locator('[data-rail-gallery]').click()
+  await p.waitForTimeout(700)
+  await p.locator('[data-project-card]').first().click()
+  await p.waitForTimeout(1000)
+  // PIN one value first, so the accent-ink "pinned" state exists to be measured rather than
+  // assumed absent — the fixture's lanes all inherit their model.
+  await p.evaluate(() => document.querySelector('[data-role-card] [data-segment-state="off"]')?.click())
+  await p.waitForTimeout(400)
+  await p.evaluate(PROBE)
+  settingsProbes.push(...await p.evaluate(() => [
+    window.__contrast('[data-segment-state="pinned"]', 'roster · pinned value', true),
+    window.__contrast('[data-segment-state="inherited"]', 'roster · inherited value'),
+    window.__contrast('[data-segment-state="off"]', 'roster · unselected value', true),
+    // The BUTTON, not the 9px swatch beside it — a filled colour chip has no text to measure,
+    // and pointing a contrast probe at one reports 1.00 and reads as a defect.
+    window.__contrast('[data-worktree-toggle="on"]', 'roster · worktree pinned on', true),
+    window.__contrast('[data-worktree-toggle="inherit"]', 'roster · worktree inherited', true),
+  ]))
+
   for (const r of settingsProbes) rows.push({ theme: key, ...r })
 
   // ---- 5. First run (virgin app) -------------------------------------------------

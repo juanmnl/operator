@@ -280,6 +280,10 @@ export function installBridge(): void {
     loadSessions: () => invoke('load_sessions') as Promise<unknown[]>,
     saveProjects: (projects: unknown[]) => { void invoke('save_projects', { projects }) },
     loadProjects: () => invoke('load_projects') as Promise<unknown[]>,
+    saveRoleDefaults: (defaults: unknown) => { void invoke('save_role_defaults', { defaults }) },
+    loadRoleDefaults: () => invoke('load_role_defaults') as Promise<Record<string, unknown>>,
+    backupProjects: (stamp: string) => invoke('backup_projects', { stamp }) as Promise<string>,
+    planLimits: (force?: boolean) => invoke('plan_limits', { force: force ?? false }) as Promise<unknown>,
     projectAssetDir: (id: string) => invoke('project_asset_dir', { id }) as Promise<string>,
     // Project-scoped moodboard (inspiration images).
     moodboardAdd: (id: string, dataB64: string, ext: string) => invoke('moodboard_add', { id, data: dataB64, ext }) as Promise<string>,

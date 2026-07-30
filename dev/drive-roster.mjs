@@ -236,4 +236,75 @@ await p.waitForTimeout(600)
 console.log('8 a restore path exists on this screen:', (await p.locator('button').filter({ hasText: /Design/ }).count()) > 0)
 
 
+// ========================================================================================
+// 9. GLOBAL PER-ROLE DEFAULTS — "Operator uses Opus from now on", configured once.
+// The claim under test is the whole feature: change one control on Agents → Defaults, then
+// launch a lane in a PROJECT and assert the spawn carries it.
+// ========================================================================================
+const spawnModelFor = () => p.evaluate(() =>
+  window.__calls.filter((c) => c.fn === 'terminalSpawn').map((c) => (c.opts ?? {}).model ?? null))
+
+// The mock's rosters are SEEDED (operator → fable, exactly the preset), which is the case that
+// used to make a global default do nothing at all.
+await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+await p.waitForTimeout(3000)
+// After the hydrate migration the seeded values are gone, which is what lets a global reach them.
+console.log('9 stored roster model after the seeded-field migration:', JSON.stringify(await p.evaluate(() =>
+  (JSON.parse(localStorage.getItem('operator.projects') || '[]')
+    .find((x) => x.name === 'operator')?.roster ?? []).map((r) => [r.id, r.model ?? null]))), '(expect nulls = inherits)')
+
+// Set the global from the rail — before any project is scoped, which is the point of the placement.
+await p.locator('[data-rail-agents]').click()
+await p.waitForTimeout(700)
+await p.locator('[data-page-tab="defaults"]').click()
+await p.waitForTimeout(500)
+console.log('9 the Defaults tab lists every lane:', await p.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-default-row]')).map((r) => r.getAttribute('data-default-row'))))
+await p.locator('[data-default-row="operator"] [data-default-option="model:opus"]').click()
+await p.waitForTimeout(400)
+console.log('9 operator → Opus is now MY default:', await p.evaluate(() =>
+  document.querySelector('[data-default-row="operator"] [data-default-option="model:opus"]')?.getAttribute('data-default-state')), '(expect "chosen")')
+// A lane that is IDLE in the fixture, so the launch below can actually spawn one. Design's preset
+// is Opus; Haiku is unmistakably not it. (Picked from the roster rather than hardcoded — earlier
+// groups launch and delete lanes, so which ones are idle by now depends on what ran before.)
+const idleLane = await p.evaluate(() => {
+  const roster = JSON.parse(localStorage.getItem('operator.projects') || '[]').find((x) => x.name === 'operator')?.roster ?? []
+  const live = new Set(['operator', 'code', 'research'])
+  return (roster.find((r) => !live.has(r.id)) ?? roster[roster.length - 1])?.id ?? null
+})
+console.log('9 idle lane under test:', idleLane)
+await p.locator(`[data-default-row="${idleLane}"] [data-default-option="model:haiku"]`).click()
+await p.waitForTimeout(400)
+console.log('9 …persisted to the durable store:', JSON.stringify(await p.evaluate(() =>
+  window.__calls.filter((c) => c.fn === 'save_role_defaults' || c.fn === 'saveRoleDefaults').slice(-1)[0]?.args?.[0]
+    ?? window.__roleDefaults ?? null)))
+
+// Now open the project and launch the operator lane.
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(700)
+await p.locator('[data-project-card]').first().click()
+await p.waitForTimeout(900)
+const before9 = (await spawnModelFor()).length
+// Expand the idle lane's row to its card, then launch from it.
+await p.locator(`[data-roster-row="${idleLane}"]`).hover(); await p.waitForTimeout(200)
+await p.locator(`[data-roster-row="${idleLane}"] button[aria-label^="Configure"]`).click()
+await p.waitForTimeout(500)
+console.log('9 the card names the RESOLVED model, never "(undefined)":', await p.evaluate((id) =>
+  document.querySelector(`[data-role-card="${id}"] .actions-footer-btn.is-primary`)?.getAttribute('title'), idleLane))
+// Measured BEFORE the launch: it swaps the view, taking the cards with it.
+console.log('9 an inherited value is drawn differently from a pinned one:', JSON.stringify(await p.evaluate(() => ({
+  pinned: document.querySelectorAll('[data-segment-state="pinned"]').length,
+  inherited: document.querySelectorAll('[data-segment-state="inherited"]').length,
+}))), '(expect inherited > 0 — the seeded fields were cleared)')
+console.log('9 worktree shows THREE states, not two:', await p.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-worktree-state]')).map((e) => e.getAttribute('data-worktree-state'))))
+await p.locator(`[data-role-card="${idleLane}"] .actions-footer-btn.is-primary`).click()
+await p.waitForTimeout(1600)
+const models9 = await spawnModelFor()
+console.log('9 THE SPAWN CARRIES IT:', JSON.stringify(models9.slice(before9)), '(expect ["haiku"] — the preset is opus and the roster pins nothing)')
+
+// And a lane that PINNED a model keeps it, global or not.
+
+await p.screenshot({ path: '/tmp/operator-shots/roster-global-defaults.png' })
+
 await b.close()

@@ -114,8 +114,14 @@ export interface TokenUsage {
 export interface Role {
   id: string
   name: string
-  /** Model alias: 'fable' | 'opus' | 'sonnet' | 'haiku' (or a full model id). */
-  model: string
+  /** Model alias: 'fable' | 'opus' | 'sonnet' | 'haiku' (or a full model id).
+   *
+   *  OPTIONAL, and that is the point: absent means "inherit" — the global role default, then the
+   *  built-in preset (see lib/model-config `resolveAgentConfig`). It was required, which made every
+   *  seeded roster entry indistinguishable from a deliberate pin and left a global default with
+   *  nothing to override. Never read it directly for a launch; go through the resolver. */
+  model?: string
+  /** Absent = inherit, exactly as with `model`. */
   effort?: 'high' | 'normal' | 'low'
   permissionMode?: string
   /** Optional `.claude/agents` definition name to launch this lane as. */

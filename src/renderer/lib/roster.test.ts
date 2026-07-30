@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, roleLaunchSettings, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 import type { Project } from '../../shared/types'
 
 describe('roster', () => {
@@ -9,7 +9,7 @@ describe('roster', () => {
     const ids = roster.map((r) => r.id)
     expect(new Set(ids).size).toBe(ids.length) // unique — safe as React keys
     const models = new Set<string>(ROSTER_MODELS.map((m) => m.id))
-    for (const r of roster) expect(models.has(r.model)).toBe(true)
+    for (const r of roster) expect(models.has(r.model!)).toBe(true) // presets always pin one
   })
 
   it('matches the user framing: Fable orchestrates, Sonnet research, Opus code', () => {
@@ -221,23 +221,7 @@ describe('migrateLegacyCoordinator', () => {
   })
 })
 
-describe('roleLaunchSettings', () => {
-  it('falls back to the project defaults when the role does not pin a mode', () => {
-    // The regression: projects saved with permissionMode 'auto' were launching lanes
-    // with permission prompts because the role-level undefined won.
-    const role = { id: 'code', name: 'Code', model: 'opus' }
-    expect(roleLaunchSettings(role, { permissionMode: 'auto', effortLevel: 'normal' }))
-      .toEqual({ permissionMode: 'auto', effortLevel: 'normal' })
-  })
-
-  it('role pins beat project defaults; hard defaults apply when neither pins', () => {
-    const role = { id: 'code', name: 'Code', model: 'opus', effort: 'low' as const, permissionMode: 'bypassPermissions' }
-    expect(roleLaunchSettings(role, { permissionMode: 'auto', effortLevel: 'normal' }))
-      .toEqual({ permissionMode: 'bypassPermissions', effortLevel: 'low' })
-    expect(roleLaunchSettings({ id: 'qa', name: 'QA', model: 'sonnet' }, undefined))
-      .toEqual({ permissionMode: 'default', effortLevel: 'high' })
-  })
-})
+// `roleLaunchSettings` moved into `resolveAgentConfig` — its cases live in model-config.test.ts.
 
 // --- lane deletion is destructive (dev/briefs/lane-delete-is-destructive.md) --------------
 // Shipped in v0.10.0: the ✕ on a lane card called this in ONE unguarded click, taking the

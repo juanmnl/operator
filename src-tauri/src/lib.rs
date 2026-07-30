@@ -9,6 +9,8 @@ mod worktree;
 mod agents;
 #[path = "usage.rs"]
 mod usage;
+#[path = "planlimits.rs"]
+mod planlimits;
 #[path = "folderprefs.rs"]
 mod folderprefs;
 #[path = "transcript.rs"]
@@ -1249,6 +1251,64 @@ fn load_projects() -> serde_json::Value {
         .unwrap_or_else(|| serde_json::Value::Array(vec![]))
 }
 
+// --- Global role defaults (~/.operator/role-defaults.json) -------------------
+// The user-owned layer over the built-in `rolePresets()`: per-role-id model / effort /
+// permission mode that EVERY project inherits. Same opaque-JSON, atomic tmp+rename contract as
+// projects.json — the shape lives in the frontend (`GlobalRoleDefaults`), so there is no schema
+// here to drift out of sync with it.
+//
+// A file rather than localStorage on purpose: the launch path reads it, and it has to survive a
+// profile reset the same way a project does.
+
+fn role_defaults_file() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::Path::new(&home).join(".operator").join("role-defaults.json")
+}
+
+#[tauri::command]
+fn save_role_defaults(defaults: serde_json::Value) {
+    let path = role_defaults_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&defaults) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, &path); // atomic swap
+        }
+    }
+}
+
+#[tauri::command]
+fn load_role_defaults() -> serde_json::Value {
+    std::fs::read_to_string(role_defaults_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        // An OBJECT, not an array: this is keyed by role id. An empty one means "inherit
+        // everything", which is exactly the state before the user has configured anything.
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
+}
+
+/// Copy `projects.json` to `~/.operator/backups/projects-<stamp>.json` before a migration
+/// rewrites rosters. Returns the backup path, or an error — the caller must treat a failed
+/// backup as a reason NOT to write ("no backup, no delete", as in chatstore's purge).
+#[tauri::command]
+fn backup_projects(stamp: String) -> Result<String, String> {
+    if !safe_segment(&stamp) {
+        return Err("invalid stamp".into());
+    }
+    let src = projects_file();
+    if !src.exists() {
+        return Err("no projects.json to back up".into());
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = std::path::Path::new(&home).join(".operator").join("backups");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(format!("projects-{stamp}.json"));
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 /// A single path segment is safe (no `/`, `..`, or exotic chars) so it can't escape its
 /// parent dir. Used to validate project ids and moodboard filenames (traversal guard, same
 /// containment spirit as image_data_url).
@@ -1654,6 +1714,20 @@ fn agent_delete(path: String) -> agents::OkResult {
     agents::delete_agent(&path)
 }
 
+/// The plan's session/weekly percentages, via `claude -p "/usage"` (see planlimits.rs).
+/// Cached with a 5-minute TTL and guarded to one process at a time; `force` skips the TTL.
+#[tauri::command]
+async fn plan_limits(force: Option<bool>) -> planlimits::PlanLimits {
+    // On a blocking thread: it spawns a subprocess and waits on a network round-trip, and the
+    // async runtime's workers must not be parked on that.
+    tauri::async_runtime::spawn_blocking(move || planlimits::fetch(force))
+        .await
+        .unwrap_or_else(|e| planlimits::PlanLimits {
+            note: Some(format!("Reading plan usage failed: {e}")),
+            ..Default::default()
+        })
+}
+
 #[tauri::command]
 async fn get_usage_stats(days: Option<i64>) -> Result<usage::UsageStats, String> {
     // Heavy transcript scan — run off the main thread so the UI stays responsive.
@@ -1990,6 +2064,10 @@ pub fn run() {
             load_sessions,
             save_projects,
             load_projects,
+            save_role_defaults,
+            load_role_defaults,
+            plan_limits,
+            backup_projects,
             project_asset_dir,
             moodboard_add,
             moodboard_list,

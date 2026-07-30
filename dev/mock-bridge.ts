@@ -368,6 +368,28 @@ export function installMockBridge() {
     agentsList: async () => MOCK_AGENTS,
     getUsageStats: async () => ({ totalCost: 0, totalTokens: 0, days: [], projects: [], models: [] }),
     getUsageInsights: async () => ({ busiestHour: 0, streakDays: 0, topProject: null, hourly: [], weekday: [] }),
+    // Shape-exact with `plan_limits`, values verbatim from this machine's `claude -p "/usage"`.
+    // `?usage=` swaps the case: `none` = an account the CLI can't report on (which must render as
+    // ABSENT, never 0%), `high` = past both colour thresholds.
+    planLimits: async (force?: boolean) => {
+      calls.push({ fn: 'planLimits', force })
+      const mode = new URLSearchParams(location.search).get('usage')
+      if (mode === 'none') {
+        return { fetchedAt: new Date().toISOString(), note: "Couldn't find usage lines in the CLI's reply: You are using the Anthropic API with pay-as-you-go billing." }
+      }
+      const high = mode === 'high'
+      return {
+        sessionPct: high ? 93 : 66,
+        sessionResets: 'Jul 30 at 2am (America/Guayaquil)',
+        weekPct: high ? 78 : 39,
+        weekResets: 'Aug 4 at 1am (America/Guayaquil)',
+        modelLabel: 'Fable',
+        modelPct: 0,
+        modelResets: 'Aug 4 at 1am (America/Guayaquil)',
+        plan: 'You are currently using your subscription to power your Claude Code usage',
+        fetchedAt: new Date().toISOString(),
+      }
+    },
     getVersion: async () => '0.8.8-mock',
     checkUpdate: async () => null,
     // Populated, not empty: with `settingsFiles: []` every FolderPreferences tab renders its
@@ -384,6 +406,17 @@ export function installMockBridge() {
       error: null,
     }),
     inspectRepo: async () => ({ isRepo: true, root: PROJECT_PATH, branch: 'main', dirty: false }),
+    // Shape-exact with the real command's success branch: `{ path, branch, baseBranch }`. It used
+    // to fall through the Proxy to `undefined`, and the launch path's `'error' in result` THREW on
+    // that — so the moment worktrees became a global default, every launch in the harness aborted.
+    worktreeCreate: async (cwd: string) => {
+      calls.push({ fn: 'worktreeCreate', cwd })
+      return { path: `${cwd}/.worktrees/mock`, branch: 'operator/mock', baseBranch: 'main' }
+    },
+    worktreeRemove: async (cwd: string, sourceCwd: string) => {
+      calls.push({ fn: 'worktreeRemove', cwd, sourceCwd })
+      return { ok: true }
+    },
     worktreeStatus: async () => ({ exists: false }),
     worktreeDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),
     branchDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),

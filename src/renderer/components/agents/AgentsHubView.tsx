@@ -5,6 +5,8 @@ import { sessionWaveStatus } from '../../lib/session-status'
 import { sessionLabel } from '../../lib/session-label'
 import { modelFamilyLabel } from '../../lib/roster'
 import { AgentLibraryView } from './AgentLibraryView'
+import { AgentDefaultsView } from './AgentDefaultsView'
+import type { GlobalRoleDefaults } from '../../lib/model-config'
 import { PageShell } from '../settings/PageShell'
 
 interface AgentsHubProps {
@@ -16,6 +18,11 @@ interface AgentsHubProps {
   onFocusSession: (s: AgentSession) => void
   onLaunchRole: (project: Project, role: Role) => void
   onOpenProject: (projectId: string) => void
+  /** The GLOBAL per-role launch defaults, and the two verbs that change them. Absent = the
+   *  Defaults tab isn't offered (nothing can be edited, so nothing pretends to be). */
+  roleDefaults?: GlobalRoleDefaults
+  onPatchRoleDefault?: (roleId: string, patch: GlobalRoleDefaults[string]) => void
+  onResetPinnedRoleFields?: () => void
 }
 
 // The phase word shown on an active card — the same quiet vocabulary as the sidebar.
@@ -25,8 +32,12 @@ const PHASE_LABEL: Record<string, string> = {
 
 type Group = { project: Project; active: AgentSession[]; passive: Role[] }
 
-export function AgentsHubView({ projects, sessions, accentOf, customNames, onFocusSession, onLaunchRole, onOpenProject }: AgentsHubProps) {
-  const [tab, setTab] = useState<'fleet' | 'library'>('fleet')
+export function AgentsHubView({ projects, sessions, accentOf, customNames, onFocusSession, onLaunchRole, onOpenProject, roleDefaults, onPatchRoleDefault, onResetPinnedRoleFields }: AgentsHubProps) {
+  const [tab, setTab] = useState<'fleet' | 'library' | 'defaults'>('fleet')
+  // The Defaults tab answers "how are they configured" beside "what is running" — one place called
+  // Agents, reachable from the rail before any project is scoped. That reachability is the reason
+  // it lives here and not in Preferences.
+  const canEditDefaults = !!onPatchRoleDefault
 
   const { groups, liveCount, idleCount } = useMemo(() => {
     // A launched session counts as "active"; an ended one falls back to its lane being idle.
@@ -66,14 +77,25 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
       title="Agents"
       subtitle="Every agent across your projects — live sessions and the idle lanes waiting to be launched."
       measure="grid"
-      tabs={[{ id: 'fleet', label: 'Fleet' }, { id: 'library', label: 'Subagent library' }]}
+      tabs={[
+        { id: 'fleet', label: 'Fleet' },
+        ...(canEditDefaults ? [{ id: 'defaults', label: 'Defaults' }] : []),
+        { id: 'library', label: 'Subagent library' },
+      ]}
       active={tab}
-      onSelectTab={(id) => setTab(id as 'fleet' | 'library')}
+      onSelectTab={(id) => setTab(id as 'fleet' | 'library' | 'defaults')}
       // The library is a split pane that scrolls its own two columns; the fleet is a card
       // grid that wants the page scroller. See PageShell's `scroll` prop.
       scroll={tab === 'library' ? 'child' : 'page'}
     >
-      {tab === 'fleet' ? (
+      {tab === 'defaults' ? (
+        <AgentDefaultsView
+          defaults={roleDefaults ?? {}}
+          onPatch={(roleId, patch) => onPatchRoleDefault?.(roleId, patch)}
+          projects={projects}
+          onResetPinned={() => onResetPinnedRoleFields?.()}
+        />
+      ) : tab === 'fleet' ? (
         // PageShell owns the scroller and the measure (grid = 1100), so this is content only.
         <>
           {/* Global roll-up. */}

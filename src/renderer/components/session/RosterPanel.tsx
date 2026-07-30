@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project, ProjectPatch, Role, TokenUsage } from '../../../shared/types'
 import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, rolePresets, roleIdFrom, isCoordinator, reorderRoles, patchRoleIn, removeRoleFrom } from '../../lib/roster'
 import { AccentPicker } from '../AccentPicker'
+import { laneTextColor } from '../../lib/lane-color'
+import {
+  resolveAgentConfig, configOrigins, worktreeStateOf, nextWorktreeState,
+  type GlobalRoleDefaults, type ConfigOrigin,
+} from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
 
 /** Live runtime for a lane's session (from the transcript observer). */
@@ -48,8 +53,11 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, roleDefaults }: {
   project?: Project
+  /** The GLOBAL per-role defaults. A lane whose field is absent inherits from here, and the card
+   *  has to SAY so — a resolved value drawn like a pinned one makes the global look broken. */
+  roleDefaults?: GlobalRoleDefaults
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   /** roleId → live terminalId, for live dots. */
@@ -271,6 +279,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             queued={taskCounts[role.id] ?? 0}
             selected={false}
             onPatch={(patch) => patchRole(role.id, patch)}
+            roleDefaults={roleDefaults}
+            projectDefaults={project.defaults}
             onRemove={() => removeRole(role.id)}
             onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
             onLaunch={() => onLaunchRole?.(project, role, devServer)}
@@ -365,6 +375,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   onToggleSelect={() => toggleSelect(role.id)}
                   onCollapse={() => setExpanded(null)}
                   onPatch={(patch) => patchRole(role.id, patch)}
+                  roleDefaults={roleDefaults}
+                  projectDefaults={project.defaults}
                   onRemove={() => removeRole(role.id)}
                   onLaunch={() => onLaunchRole?.(project, role, devServer)}
                   onView={() => {}}
@@ -412,8 +424,11 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent, roleDefaults, projectDefaults }: {
   role: Role
+  /** The global per-role layer, so the card can distinguish inherited from pinned. */
+  roleDefaults?: GlobalRoleDefaults
+  projectDefaults?: Project['defaults']
   /** Present when this card is an EXPANDED idle row — collapses back to its LaneRow. */
   onCollapse?: () => void
   /** Drag-to-reorder, driven from the grip handle so text stays selectable. */
@@ -440,6 +455,11 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
   onLaunch: () => void
   onView: () => void
 }) {
+  // What this lane will ACTUALLY launch with, and where each field came from. The card shows the
+  // resolved value — a lane reading "Fable" while it launches Opus is worse than no readout.
+  const resolved = resolveAgentConfig(role, roleDefaults, projectDefaults)
+  const origins = configOrigins(role, roleDefaults, projectDefaults)
+  const wt = worktreeStateOf(role)
   const [editingName, setEditingName] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState(false)
   // Arms the lane-delete confirm (see the ✕ below); auto-disarms so a stray first click
@@ -688,31 +708,69 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
       <div style={{ marginTop: 'auto', paddingTop: 12 }}>
         {/* Model + worktree. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Segmented options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))} value={role.model} onChange={(id) => onPatch({ model: id })} accent={accent} />
+          <Segmented
+            options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))}
+            value={resolved.model}
+            pinned={origins.model === 'pinned'}
+            inheritedFrom={ORIGIN_LABEL[origins.model]}
+            onChange={(id) => onPatch({ model: id })}
+            onClear={() => onPatch({ model: undefined })}
+            accent={accent}
+          />
+          {/* WORKTREE — genuinely tri-state, because `false` is a choice ("do not isolate this
+              lane"), not an absence. It used to be `!role.useWorktree`: an unconditional boolean, so
+              the first click pinned the lane forever with no route back to inherit. The cycle is
+              inherit → on → off → inherit, and the three states LOOK different — a control that
+              reads the same inherited-on as pinned-on is what makes a global setting look broken. */}
           <button
-            onClick={() => onPatch({ useWorktree: !role.useWorktree })}
-            title="Run this lane in an isolated git worktree — its tasks get their own diff, mergeable back when done"
-            aria-pressed={!!role.useWorktree}
+            data-worktree-toggle={wt}
+            onClick={() => onPatch({ useWorktree: nextWorktreeState(wt) })}
+            title={wt === 'inherit'
+              ? `Worktree: inherited (${resolved.useWorktree ? 'on' : 'off'}) from your Agents defaults. Click to pin it on for this lane.`
+              : wt === 'on'
+                ? 'Worktree: pinned ON for this lane. Click to pin it off.'
+                : 'Worktree: pinned OFF for this lane. Click to go back to inheriting your Agents default.'}
+            aria-pressed={wt === 'inherit' ? undefined : wt === 'on'}
             style={{
               marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 7px', borderRadius: 5,
-              border: 'none', background: role.useWorktree ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
+              border: 'none',
+              background: wt === 'on' ? `color-mix(in srgb, ${accent} 12%, transparent)` : 'transparent',
               // Off state recedes by TOKEN only — an opacity on top of --fg-muted is the
-              // stacked-fade bug (same rule as Segmented above).
-              color: role.useWorktree ? accent : CONTROL_OFF,
+              // stacked-fade bug (same rule as Segmented above). An INHERITED lane sits in the
+              // muted ink whichever way it resolves: the accent means "you chose this".
+              // laneTextColor, NOT the raw accent: measured 1.07–1.22:1 at this size on the three
+              // light palettes (a pre-existing collapse this control shared with the segments).
+              color: wt === 'on' ? laneTextColor(accent) : CONTROL_OFF,
               cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
             }}
           >
-            <span style={{
+            {/* Pinned-on = filled. Pinned-off = an empty box with a solid hairline. Inherited = a
+                DASHED hairline, filled only if the inherited value is on. */}
+            <span data-worktree-state={wt} style={{
               width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-              border: `1px solid ${role.useWorktree ? 'transparent' : 'var(--fg-muted)'}`,
-              background: role.useWorktree ? accent : 'transparent',
+              border: wt === 'on'
+                ? '1px solid transparent'
+                : `1px ${wt === 'inherit' ? 'dashed' : 'solid'} var(--fg-muted)`,
+              background: wt === 'on'
+                ? accent
+                : wt === 'inherit' && resolved.useWorktree ? 'var(--fg-muted)' : 'transparent',
             }} />
             worktree
           </button>
         </div>
         {/* Effort + primary action. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-          <Segmented options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))} value={role.effort ?? 'high'} onChange={(id) => onPatch({ effort: id as Role['effort'] })} accent={accent} />
+          {/* Effort has the SAME weight as the model — it is the other spend dial, and the one
+              users forget. Never tucked behind a disclosure. */}
+          <Segmented
+            options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))}
+            value={resolved.effort}
+            pinned={origins.effort === 'pinned'}
+            inheritedFrom={ORIGIN_LABEL[origins.effort]}
+            onChange={(id) => onPatch({ effort: id as Role['effort'] })}
+            onClear={() => onPatch({ effort: undefined })}
+            accent={accent}
+          />
           {live ? (
             <button onClick={onView} className="actions-footer-btn" style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }} title={`View the live ${role.name} session`}>View →</button>
           ) : (
@@ -720,7 +778,9 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
               onClick={onLaunch}
               className="actions-footer-btn is-primary"
               style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 14px' }}
-              title={queued > 0 ? `Launch ${role.name} and start its ${queued} queued task${queued > 1 ? 's' : ''}` : `Launch a ${role.name} session (${role.model})`}
+              // The RESOLVED model, not `role.model` — an inherited lane has none of its own, and
+              // "(undefined)" in a tooltip is how a working cascade reads as a bug.
+              title={queued > 0 ? `Launch ${role.name} and start its ${queued} queued task${queued > 1 ? 's' : ''}` : `Launch a ${role.name} session (${resolved.model})`}
             >
               {queued > 0 ? `Launch ${queued} →` : 'Launch →'}
             </button>
@@ -1067,27 +1127,64 @@ function LaneRow({
  *  sat there reading as disabled. Unselected pills now rest at CONTROL_OFF (see its note: a
  *  control's label is body text, not meta) and hover swaps the token to `--fg`. See the
  *  muted-opacity rule; this is its third recurrence. */
-function Segmented({ options, value, onChange, accent }: {
+/** Where a resolved value came from, in words the card can print. */
+const ORIGIN_LABEL: Record<ConfigOrigin, string> = {
+  pinned: 'pinned on this lane',
+  global: 'your Agents defaults',
+  project: "this project's defaults",
+  preset: 'the built-in preset',
+  fallback: 'the fallback',
+}
+
+/** The lit value is the answer, and its INK says whether you chose it.
+ *
+ *  accent  = pinned on this lane. Click it again to clear back to inherit — that is the route home,
+ *            and it needs no extra chrome on an already-dense card.
+ *  muted   = inherited (global default, project default, or the built-in preset). The title names
+ *            which. Clicking the lit segment does nothing: there is nothing to clear. */
+function Segmented({ options, value, onChange, accent, pinned = true, inheritedFrom, onClear }: {
   options: Array<{ id: string; label: string }>
   value: string
   onChange: (id: string) => void
   accent?: string
+  /** False = this value is inherited, so it is drawn in muted ink rather than the lane accent. */
+  pinned?: boolean
+  /** Human-readable source, for the title. */
+  inheritedFrom?: string
+  /** Clear the pin back to inherit. Absent = no route home (a control with no inherit state). */
+  onClear?: () => void
 }) {
-  const tint = accent || 'var(--accent)'
+  // Same reason as the worktree toggle: a raw lane accent as 9.5px text collapses on the light
+  // palettes; laneTextColor folds in each theme's --lane-ink-blend.
+  const tint = accent ? laneTextColor(accent) : 'var(--accent)'
   return (
     <div style={{ display: 'inline-flex', gap: 1, flexWrap: 'wrap' }}>
       {options.map((o) => {
         const active = o.id === value
+        // THREE distinct appearances, and they have to be three: the lit value must still read as
+        // lit when it is inherited, or nobody can tell which option is selected.
+        //   off      → CONTROL_OFF, no wash
+        //   inherited → full --fg, no wash (selected, but you didn't choose it)
+        //   pinned   → lane accent + a faint wash (you chose this)
+        const lit = active && pinned ? tint : active ? 'var(--fg)' : CONTROL_OFF
         return (
           <button
             key={o.id}
-            onClick={() => onChange(o.id)}
-            title={active ? undefined : `Switch to ${o.label}`}
+            data-segment={o.id}
+            data-segment-state={active ? (pinned ? 'pinned' : 'inherited') : 'off'}
+            onClick={() => { if (!active) onChange(o.id); else if (pinned) onClear?.() }}
+            title={!active
+              ? `Switch to ${o.label}`
+              : pinned
+                ? `${o.label} — pinned on this lane. Click to clear it and inherit instead.`
+                : `${o.label} — inherited from ${inheritedFrom ?? 'the default'}. Change it for every project on the Agents → Defaults tab.`}
             style={{
               fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
               padding: '2px 7px', borderRadius: 5, cursor: 'pointer', outline: 'none', border: 'none',
-              color: active ? tint : CONTROL_OFF,
-              background: active ? `color-mix(in srgb, ${tint} 12%, transparent)` : 'transparent',
+              color: lit,
+              // An inherited value gets no accent WASH either: the tint is the "you chose this"
+              // signal, and washing an inherited one makes the two indistinguishable at a glance.
+              background: active && pinned ? `color-mix(in srgb, ${tint} 12%, transparent)` : 'transparent',
               transition: 'color 120ms ease',
             }}
             onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = 'var(--fg)' }}

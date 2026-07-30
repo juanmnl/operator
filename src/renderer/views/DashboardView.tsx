@@ -1,8 +1,12 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings, reorderRoles, presetFor } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, type DeliveryState } from '../lib/agent-delivery'
+import {
+  resolveAgentConfig, pruneGlobals, clearSeededRoleFields, seedGlobalDefaults,
+  clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
+} from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { reorderByIds } from '../lib/reorder'
 import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
@@ -159,6 +163,36 @@ export function DashboardView() {
   /** Bumped when a reply arrives, to re-read the store. The setter's identity is stable, which is
    *  what lets the mount-once reply subscription reach it without a ref. */
   const [replyTick, setReplyTick] = useState(0)
+  /** GLOBAL per-role defaults — the user-owned layer over `rolePresets()`, from
+   *  `~/.operator/role-defaults.json`. Every project inherits it; see lib/model-config. */
+  const [roleDefaults, setRoleDefaults] = useState<GlobalRoleDefaults>({})
+  /** The launch path is reached from a mount-once dispatch subscription, so it reads the defaults
+   *  through a ref — a lane launched by a dispatch must use the CURRENT config, not the one that
+   *  existed when the subscription was set up. */
+  const roleDefaultsRef = useRef<GlobalRoleDefaults>({})
+  roleDefaultsRef.current = roleDefaults
+  /** Blocks the persist effect until the file has been read, so an empty initial state can't
+   *  overwrite real defaults — the same rule `savedHydrated` enforces for sessions/projects. */
+  const [roleDefaultsHydrated, setRoleDefaultsHydrated] = useState(false)
+  useEffect(() => {
+    const p = window.operator.loadRoleDefaults?.()
+    if (!p) { setRoleDefaultsHydrated(true); return }
+    void p.then((raw) => {
+      const stored = pruneGlobals((raw ?? {}) as GlobalRoleDefaults)
+      // First run seeds the worktree posture only — see seedGlobalDefaults for why model and
+      // effort are deliberately left to the built-in presets.
+      setRoleDefaults(Object.keys(stored).length ? stored : seedGlobalDefaults())
+      setRoleDefaultsHydrated(true)
+    }).catch(() => setRoleDefaultsHydrated(true))
+  }, [])
+  useEffect(() => {
+    if (!roleDefaultsHydrated) return
+    window.operator.saveRoleDefaults?.(pruneGlobals(roleDefaults))
+  }, [roleDefaults, roleDefaultsHydrated])
+  /** Edit one role's global default. `undefined` clears the field back to the built-in preset. */
+  const patchRoleDefault = useCallback((roleId: string, patch: GlobalRoleDefaults[string]) => {
+    setRoleDefaults((prev) => pruneGlobals({ ...prev, [roleId]: { ...prev[roleId], ...patch } }))
+  }, [])
   /** The kill switch for agent→agent delivery, and it DEFAULTS TO PAUSED.
    *
    *  Two agents that can each answer the other ping-pong indefinitely at ~1s a hop — that is the
@@ -1178,6 +1212,30 @@ export function DashboardView() {
     return { ok: true as const, delivered, skipped: plan.skipped.map((r) => r.name) }
   }, [logDispatch])
 
+  /** Clear EVERY per-lane model/effort pin across every project, so the global defaults win.
+   *
+   *  Distinct from the hydrate migration, which only clears fields that match their preset. This is
+   *  the harder case — a user who really did pin models per project and has changed their mind — so
+   *  it is explicit, confirmed in the UI with a named count, and backed up first. A failed backup
+   *  ABORTS: there is no undo for this other than the file it copies. */
+  const resetPinnedRoleFields = useCallback(async () => {
+    const before = projectsRef.current
+    const counts = pinnedFieldCounts(before)
+    if (!counts.fields) return
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const at = await window.operator.backupProjects?.(stamp)
+      setProjects(clearAllPinnedRoleFields(before))
+      pushToast({
+        text: `Cleared ${counts.fields} pinned setting${counts.fields === 1 ? '' : 's'} on ${counts.lanes} lane${counts.lanes === 1 ? '' : 's'}`,
+        kind: 'info',
+        detail: at ? `Every lane now inherits your Agents defaults. Backup: ${at}` : 'Every lane now inherits your Agents defaults.',
+      })
+    } catch (e) {
+      pushToast({ text: 'Nothing was changed', kind: 'error', detail: `projects.json could not be backed up, so the pins were left alone. ${String(e)}` })
+    }
+  }, [pushToast])
+
   /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
     const project = projectsRef.current.find((p) => p.id === projectId)
@@ -1254,7 +1312,31 @@ export function DashboardView() {
       if (Array.isArray(pList) && pList.length) {
         // projects.json exists → no path backfill, but rosters saved before the
         // Orchestrator→Operator rename still migrate (persisted by the effect below).
-        setProjects((pList as Project[]).map(migrateLegacyCoordinator))
+        const renamed = (pList as Project[]).map(migrateLegacyCoordinator)
+        // …and then the SEEDED-FIELD migration: clear every roster field that exactly equals its
+        // built-in preset, so it reads as inherited and a global default can reach it. Content-
+        // sniffing and idempotent — `clearSeededRoleFields` returns the same object when there is
+        // nothing to do, so the second run finds nothing and the third is free.
+        //
+        // Clearing a field that equals the preset is a NO-OP today: the cascade falls straight
+        // through to the same preset value. It only becomes meaningful once a global default is set,
+        // which is what makes it safe to run unattended on hydrate.
+        const reconciled = renamed.map(clearSeededRoleFields)
+        const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
+        if (rewrites) {
+          // No backup, no write. A failed copy means we keep the pinned values rather than rewrite
+          // rosters with no way back — the same rule chatstore's purge follows.
+          try {
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+            await window.operator.backupProjects?.(stamp)
+            setProjects(reconciled)
+          } catch (e) {
+            console.warn('roster reconcile skipped — projects.json backup failed:', e)
+            setProjects(renamed)
+          }
+        } else {
+          setProjects(renamed)
+        }
       } else {
         try {
           const migrated = await migrateProjects(saved)
@@ -1458,8 +1540,11 @@ export function DashboardView() {
       let worktreeBase: string | undefined
       if (config.useWorktree) {
         const result = await window.operator.worktreeCreate(cwd)
-        if ('error' in result) {
-          console.warn('Worktree creation failed:', result.error)
+        // `!result` first: `'error' in undefined` THROWS, and it threw out of the whole launch —
+        // so a worktree backend that answered unexpectedly took the session with it rather than
+        // falling back. Now it degrades the same way a reported error does.
+        if (!result || 'error' in result) {
+          console.warn('Worktree creation failed:', result && 'error' in result ? result.error : 'no result')
         } else {
           spawnCwd = result.path
           worktreeBranch = result.branch
@@ -1569,17 +1654,19 @@ export function DashboardView() {
       : ''
     const combined = [prompt?.trim(), taskBlock].filter(Boolean).join('\n\n')
     if (queued.length) markTasksRunning(project.id, queued.map((t) => t.id)) // claim first (no double pickup)
-    // Role pins win; a role without its own pin inherits the project's saved defaults
-    // (e.g. permissionMode 'auto' — otherwise lanes regress to permission prompts).
-    const settings = roleLaunchSettings(role, project.defaults)
+    // THE ONE RESOLVER (lib/model-config). Per field: this lane's pin → the global role default →
+    // the project's saved defaults → the built-in preset. Nothing here reads `role.model` or
+    // `role.useWorktree` directly any more — that is what made every seeded value look pinned and
+    // left a global default with nothing to override.
+    const settings = resolveAgentConfig(role, roleDefaultsRef.current, project.defaults)
     const tabs = await handleLaunchSession(
       project.path,
       {
-        effortLevel: settings.effortLevel,
+        effortLevel: settings.effort,
         permissionMode: settings.permissionMode as SessionConfig['permissionMode'],
-        model: role.model,
+        model: settings.model,
         allowedTools: '',
-        useWorktree: !!role.useWorktree, // isolated lane → attributable diff + merge-back
+        useWorktree: settings.useWorktree, // isolated lane → attributable diff + merge-back
         launchDevServer,
         count: 1,
         prompt: combined,
@@ -1780,7 +1867,9 @@ export function DashboardView() {
     if (tab?.worktreeBranch && tab?.sourceCwd) {
       void finishTasks.then(async () => {
         const result = await window.operator.worktreeRemove(tab.cwd, tab.sourceCwd!)
-        if (!result.ok) console.warn('Worktree removal failed:', result.error)
+        // `result?.ok` — an unexpected answer became an unhandled rejection here, and with
+        // worktrees now a global default this path runs on every close of a writing lane.
+        if (!result?.ok) console.warn('Worktree removal failed:', result?.error ?? 'no result')
       })
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
@@ -2706,6 +2795,9 @@ export function DashboardView() {
             onFocusSession={handleSelectSession}
             onLaunchRole={(project, role) => { void handleLaunchRole(project, role, undefined, false, { focus: true }) }}
             onOpenProject={handleOpenProject}
+            roleDefaults={roleDefaults}
+            onPatchRoleDefault={patchRoleDefault}
+            onResetPinnedRoleFields={resetPinnedRoleFields}
           />
         )}
 
@@ -2750,6 +2842,7 @@ export function DashboardView() {
               // DispatchLog would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
+              roleDefaults={roleDefaults}
               resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />

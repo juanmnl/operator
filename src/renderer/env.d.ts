@@ -5,6 +5,20 @@ declare module '*.png' {
 
 import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply } from '../shared/types'
 
+interface PlanLimits {
+  sessionPct?: number | null
+  sessionResets?: string | null
+  weekPct?: number | null
+  weekResets?: string | null
+  modelLabel?: string | null
+  modelPct?: number | null
+  modelResets?: string | null
+  plan?: string | null
+  fetchedAt: string
+  /** The CLI ran but said something unexpected. Shown, never swallowed. */
+  note?: string | null
+}
+
 declare global {
   interface Window {
     operator: {
@@ -97,6 +111,17 @@ declare global {
       /** Durable project store (~/.operator/projects.json), same crash-safe pattern. */
       saveProjects: (projects: unknown[]) => void
       loadProjects: () => Promise<unknown[]>
+      /** GLOBAL per-role launch defaults (~/.operator/role-defaults.json) — an object keyed by
+       *  role id, opaque to Rust exactly like projects.json. */
+      saveRoleDefaults?: (defaults: unknown) => void
+      loadRoleDefaults?: () => Promise<Record<string, unknown>>
+      /** Copy projects.json to ~/.operator/backups/ before a migration rewrites rosters.
+       *  Rejects rather than silently continuing — no backup, no write. */
+      backupProjects?: (stamp: string) => Promise<string>
+      /** The plan's session/weekly limits, read from `claude -p "/usage"` by the backend and
+       *  cached there (5-min TTL). `force` skips the cache for an explicit refresh. Never
+       *  rejects: an unreadable answer comes back with empty fields and a `note`. */
+      planLimits?: (force?: boolean) => Promise<PlanLimits>
       /** Lazily create + return ~/.operator/projects/<id>/ (moodboard/context asset dir). */
       projectAssetDir: (id: string) => Promise<string>
       /** Project-scoped moodboard: copy an image in (→ filename), list, load one, remove. */

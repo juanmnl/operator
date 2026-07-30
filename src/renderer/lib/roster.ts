@@ -78,15 +78,11 @@ export function migrateLegacyCoordinator(p: Project): Project {
   return next
 }
 
-/** Launch-time settings for a lane: the role's own pins, falling back to the project's
- *  saved defaults (so a project configured for e.g. auto-permissions launches lanes
- *  without permission prompts even when the role doesn't pin a mode itself). */
-export function roleLaunchSettings(role: Role, defaults?: Project['defaults']): { effortLevel: 'high' | 'normal' | 'low'; permissionMode: string } {
-  return {
-    effortLevel: role.effort ?? defaults?.effortLevel ?? 'high',
-    permissionMode: role.permissionMode ?? defaults?.permissionMode ?? 'default',
-  }
-}
+// `roleLaunchSettings` used to live here, resolving effort + permission mode against
+// `Project.defaults`. It has been FOLDED INTO `resolveAgentConfig` (lib/model-config): it was a
+// second place answering the same question, and once a global per-role layer exists a second answer
+// is a divergence waiting to happen. Import the resolver instead — it is deliberately the only
+// thing that decides a launch's model, effort, permission mode or worktree posture.
 
 const OPERATOR_CHARTER =
   'You are Operator — you operate this project. Know the team (the lanes below), and route each ' +
@@ -200,9 +196,17 @@ export function presetFor(token: string): Role | undefined {
 
 /** One roster line for the coordinator's team list: identity + what the lane is for
  *  (first sentence of its charter), so Operator can route by purpose, not just by name. */
+/** A lane's model for PROSE (the coordinator's team list). `Role.model` is optional now, so an
+ *  inherited lane would read "—" without falling through to its preset — telling the coordinator a
+ *  teammate has no model. The global layer isn't reachable from here, and doesn't need to be: this
+ *  is a description of capability, not a launch decision. */
+function laneModel(r: Role): string {
+  return modelFamilyLabel(r.model ?? rolePresets().find((p) => p.id === r.id)?.model)
+}
+
 function laneSummary(r: Role): string {
   const purpose = r.prompt?.trim().split(/(?<=[.!?])\s/)[0]?.slice(0, 90)
-  return `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})${purpose ? ` — ${purpose}` : ''}`
+  return `"${r.name}" (id: ${r.id}, ${laneModel(r)})${purpose ? ` — ${purpose}` : ''}`
 }
 
 /** The awareness note appended to an agent's system prompt so it knows its own lane and its
@@ -238,7 +242,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
   }
 
   const list = siblings.length
-    ? siblings.map((r) => `"${r.name}" (id: ${r.id}, ${modelFamilyLabel(r.model)})`).join(', ')
+    ? siblings.map((r) => `"${r.name}" (id: ${r.id}, ${laneModel(r)})`).join(', ')
     : 'none yet'
   return (
     `You are the "${role.name}" agent (model ${modelFamilyLabel(role.model)}) in the "${projectName}" project, ` +
