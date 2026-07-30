@@ -94,6 +94,32 @@ const OPERATOR_CHARTER =
   'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
   'right one isn’t available, do it yourself rather than forcing a bad fit.'
 
+/** The RETURN path, appended to every lane's orchestration note — coordinator included.
+ *
+ *  It exists in the parser (transcript.rs), the store (chat.db `replies`) and the view
+ *  (ProjectChannel) and had **zero rows**, because nothing ever told a lane the sentinel was
+ *  there. This is that half.
+ *
+ *  Two things it must be honest about, or a lane will believe it is having a conversation:
+ *  a reply is NOT delivered into anyone's session, and it does NOT stand in for a result file.
+ *
+ *  The WHEN matters more than the HOW. "Post your progress" produces narration, and a channel
+ *  full of narration is one nobody reads — so the trigger is scoped to the three moments that
+ *  carry information the room doesn't already have, with the anti-cases named explicitly
+ *  because models default to announcing themselves. */
+const REPLY_PROTOCOL =
+  `To post to the project channel, output a line EXACTLY in this form, alone on its own line:\n` +
+  `OPERATOR-REPLY [<lane-id or "project">] <one line>\n` +
+  `It appears in the project's channel, where the user and every lane can read it. It is NOT ` +
+  `delivered into anyone's session — nobody is interrupted, and nobody is guaranteed to read it ` +
+  `at any given moment. It does NOT replace a result file: if your brief names an output path, ` +
+  `write that file. The channel is the headline; the file is the work.\n` +
+  `Post only when the room needs to know something: a task you were given is FINISHED (one line ` +
+  `— what landed, and where the detail is), you are BLOCKED on something that belongs to another ` +
+  `lane, or you found something that CHANGES another lane's work. Do not narrate: no "starting ` +
+  `now", no step-by-step, no thinking aloud, no restating the task. One line, and only when it ` +
+  `earns one.`
+
 /** Appended to every NON-coordinator charter. The belt to the router's braces: the enforcement
  *  that matters is `dispatchNeedsApproval` (lib/dispatch), because charter text is advisory and
  *  models route around it — Research's charter already said "never change code" and it obeyed
@@ -206,7 +232,8 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `It's typed into that lane if it's running; if the lane is idle, Operator LAUNCHES it ` +
       `with your task as its opening brief — either way the work starts, and Operator notes ` +
       `back to you how each dispatch landed. If no lane fits a task, just do it yourself ` +
-      `rather than forcing a poor fit.`
+      `rather than forcing a poor fit.\n` +
+      REPLY_PROTOCOL
     )
   }
 
@@ -217,11 +244,16 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `You are the "${role.name}" agent (model ${modelFamilyLabel(role.model)}) in the "${projectName}" project, ` +
     `operated by Operator. The project's other agent lanes are: ${list}.\n` +
     charter +
-    `To hand a task to another lane, output a line EXACTLY in this form, alone on its own line:\n` +
+    `A dispatch to another lane takes this form, alone on its own line:\n` +
     `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
-    `Operator routes it to that lane — typed into it if it's running, otherwise the lane is ` +
-    `launched with the task. Only dispatch work that clearly belongs to another lane; do your ` +
-    `own role's work yourself, and stay scoped to it when a task is handed to you.`
+    // Corrected when the authority gate shipped: this used to promise "typed into it if it's
+    // running", which is now only true for the coordinator. A lane told its dispatch delivers
+    // will sit waiting on work that was held — and NO_COMMISSIONING in its charter already says
+    // the rule, so the note contradicting it was the worst of both.
+    `but a dispatch from your lane is HELD for the user to approve — Operator does not deliver ` +
+    `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
+    `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
+    REPLY_PROTOCOL
   )
 }
 

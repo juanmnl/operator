@@ -1,9 +1,29 @@
-# Brief — close the loop: deliver replies, with guardrails against runaway chatter
+# Brief — channel step 3: deliver replies, with guardrails against runaway chatter
 
 Goal: **agents keep talking between them.** Today they can't, for one specific reason.
 
 Read `dev/briefs/research-project-chat-return-path-RESULT.md` first — it is the feasibility audit
 and every claim below is sourced from it. Do not re-derive.
+
+## AMENDED — what changed under this brief since it was written
+
+This was written before the channel existed. Four things now exist that it assumed didn't:
+
+1. **`ProjectChannel.tsx`** is the surface. The **kill switch belongs in its header** (the
+   "Pause agent↔agent" control in the design), not somewhere invented. Design:
+   `https://claude.ai/code/artifact/03cc9418-5fd3-4cf0-b88a-3c3c6b4c3a99`
+2. **`DispatchRecord` gained `fromHuman?: true` and `groupId?: string`** (step 2). A lane→lane
+   message is neither — `fromRoleId` names the sender, as it always did.
+3. **Lanes are now TAUGHT `OPERATOR-REPLY`** (`orchestrationNote`, teach-lanes-to-reply). So replies
+   will start appearing on their own the moment lanes run. Until this step ships they persist and
+   render but are not delivered — which is the correct intermediate state, not a bug.
+4. **Step 2 set a precedent you must follow: a message NEVER auto-launches a lane.** A dispatch
+   launches an idle lane because a dispatch is work; a message is not, and spawning a session from a
+   text box is an unbounded spawn. A reply to an idle lane is `queued`, never a launch. §5 below
+   already said this — it is now also consistent with shipped behaviour, so do not diverge.
+
+Also inherit step 2's **2000-char hard cap, enforced at both the composer and immediately before
+`submitQueue`** — a paste plus `⌘↵` must not slip past the first check. Same reasoning as §3 here.
 
 ## What already works
 

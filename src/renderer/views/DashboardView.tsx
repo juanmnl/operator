@@ -15,6 +15,10 @@ import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
+import { ProjectChannel } from '../components/session/ProjectChannel'
+import { buildChannelFeed, unreadEntries } from '../lib/project-channel'
+import { planChannelSend, validateChannelMessage, type ChannelLane, type ChannelTarget } from '../lib/channel-send'
+import type { ProjectReply } from '../../shared/types'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
 import { getTerminal } from '../lib/terminal-registry'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -141,6 +145,40 @@ export function DashboardView() {
   // Gallery sub-view: the project grid, or the cross-project ActivityDashboard behind the
   // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
   const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
+  /** The project channel (read-only agent feed) is the content area. Project-scoped, so it is a
+   *  contentMode rather than a projectTab — the sidebar row switches to it and activeProjectId
+   *  still scopes it. */
+  const [channelActive, setChannelActive] = useState(false)
+  /** OPERATOR-REPLY rows for the scoped project, read from chat.db. Empty until a lane emits one. */
+  const [channelReplies, setChannelReplies] = useState<ProjectReply[]>([])
+  /** projectId → ISO timestamp of the newest entry the user has seen. */
+  const [channelReadAt, setChannelReadAt] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('operator.channelReadAt') || '{}') } catch { return {} }
+  })
+  // Load the project's replies whenever a project is SCOPED — not only when the channel opens.
+  // Gating it on `channelActive` made the sidebar's unread badge under-count: it saw dispatches
+  // but zero replies until you opened the channel, i.e. the badge disagreed with the feed it was
+  // advertising. One query per project switch is nothing.
+  //
+  // Read-only: chat.db is tailer-write / frontend-read and this adds no write path. Re-read on
+  // scope change rather than polling — the tailer ticks at 1s and this is history, not a console.
+  useEffect(() => {
+    if (!activeProjectId) { setChannelReplies([]); return }
+    let cancelled = false
+    void window.operator.projectReplies?.(activeProjectId)
+      .then((rows) => { if (!cancelled) setChannelReplies(rows ?? []) })
+      .catch(() => { if (!cancelled) setChannelReplies([]) })
+    return () => { cancelled = true }
+  }, [channelActive, activeProjectId])
+
+  const markChannelRead = useCallback((projectId: string, at: string) => {
+    setChannelReadAt((prev) => {
+      if (prev[projectId] === at) return prev // same feed head — don't churn localStorage
+      const next = { ...prev, [projectId]: at }
+      try { localStorage.setItem('operator.channelReadAt', JSON.stringify(next)) } catch { /* quota */ }
+      return next
+    })
+  }, [])
   // Project-switcher popover (sidebar header, ⌘⇧P).
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
@@ -389,6 +427,7 @@ export function DashboardView() {
   // OPEN ≠ REVIVE, LAUNCH = REVIVE (upsertProject's auto-lift); that asymmetry is the whole
   // ergonomics of the shelf, so don't "fix" this by adding a restore here.
   const handleOpenProject = useCallback((projectId: string) => {
+    setChannelActive(false) // entering a project lands on its home, not on whatever was open
     setActiveProjectId((prev) => {
       if (prev !== projectId) setProjectTab('roster')
       return projectId
@@ -404,6 +443,7 @@ export function DashboardView() {
   // Leave every project — the logo, the switcher's "All projects" and ⌘⇧O. This is the ONE
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
   const handleShowGallery = useCallback(() => {
+    setChannelActive(false)
     setPrefsViewActive(false)
     setAgentsViewActive(false)
     setGlobalPrefsActive(false)
@@ -994,6 +1034,44 @@ export function DashboardView() {
       terminalId: srcTab?.id, projectId, approving: true,
     })
   }, [])
+
+  /** Send a HUMAN message from the project channel to one lane, or to everyone.
+   *
+   *  Reuses the dispatch delivery primitive (`submitQueue.submit`) — there is exactly one path
+   *  that writes to a pty and this is not a second one. What it deliberately does NOT reuse is
+   *  dispatch's idle-lane LAUNCH: see planChannelSend for why a message must never spawn a session.
+   *
+   *  Returns what happened so the composer can report it without guessing. */
+  const sendChannelMessage = useCallback((projectId: string, text: string, target: ChannelTarget) => {
+    // Second enforcement point, and the one that actually matters: the composer checks too, but a
+    // paste followed immediately by ⌘↵ must not be able to outrun it.
+    const check = validateChannelMessage(text)
+    if (!check.ok) return { ok: false as const, error: check.error }
+
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    if (!project) return { ok: false as const, error: 'No project in scope.' }
+    const roster = project.roster ?? []
+    const lanes: ChannelLane[] = roster.map((role) => ({
+      role,
+      terminalId: pickLaneTab(withActivity(terminalsRef.current), projectId, role.id)?.id,
+    }))
+    const plan = planChannelSend(text, target, lanes, crypto.randomUUID())
+    if (!plan.records.length) return { ok: false as const, error: 'No lane to send to.' }
+
+    const at = new Date().toISOString()
+    for (const rec of plan.records) {
+      // Delivered ones go through the shared queue: serialized per terminal with a length-scaled
+      // watchdog, so two sends can't merge into one composer draft.
+      if (rec.outcome === 'sent' && rec.terminalId) void submitQueue.submit(rec.terminalId, rec.task)
+      logDispatch(projectId, {
+        id: crypto.randomUUID(), at,
+        fromHuman: true, toRoleId: rec.toRoleId, task: rec.task, outcome: rec.outcome,
+        ...(rec.groupId ? { groupId: rec.groupId } : {}),
+      })
+    }
+    const delivered = plan.records.filter((r) => r.outcome === 'sent').length
+    return { ok: true as const, delivered, skipped: plan.skipped.map((r) => r.name) }
+  }, [logDispatch])
 
   /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
@@ -1714,6 +1792,15 @@ export function DashboardView() {
     () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
     [allSidebarSessions, activeProjectId],
   )
+  /** Unread = entries newer than this project's lastReadAt. Computed from the SAME merge the view
+   *  renders, so the badge can never disagree with the feed. */
+  const channelUnread = useMemo(() => {
+    if (!activeProject) return 0
+    const feed = buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster,
+      allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })))
+    return unreadEntries(feed, channelReadAt[activeProject.id] ?? null).length
+  }, [activeProject, channelReplies, allSidebarSessions, channelReadAt])
+
   // What each project is doing — the switcher's per-row orb and state label. Rolled up by
   // lib/project-status so the popover and the gallery card read a project identically.
   const projectActivities = useMemo(() => {
@@ -2168,7 +2255,7 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'channel' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
     if (globalPrefsActive) return 'globalPrefs'
@@ -2180,9 +2267,12 @@ export function DashboardView() {
     if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
     // Inside a project with no session focused → Project Home. (The old `splash` mode is
     // gone: with no scope it's the gallery, with scope it's the project.)
+    // The channel outranks Project Home but not a focused session: opening a lane from the
+    // channel should show the lane, not bounce back to the feed.
+    if (channelActive && activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'channel'
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
-  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
+  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, channelActive, activeProjectId, projects])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -2436,6 +2526,9 @@ export function DashboardView() {
         project={activeProject}
         sessions={scopedSessions}
         onRestoreProject={restoreProject}
+        onOpenChannel={() => { setChannelActive(true); setActiveSessionId(null); setActiveTerminalId(null) }}
+        channelActive={contentMode === 'channel'}
+        channelUnread={channelUnread}
         onOpenProjectHome={() => activeProjectId && handleOpenProject(activeProjectId)}
         projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
@@ -2557,6 +2650,18 @@ export function DashboardView() {
             />
           )
         })()}
+
+        {contentMode === 'channel' && activeProject && (
+          <ProjectChannel
+            project={activeProject}
+            replies={channelReplies}
+            sessions={allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId }))}
+            onApproveDispatch={approveDispatch}
+            onRejectDispatch={rejectDispatch}
+            onMarkRead={markChannelRead}
+            onSend={sendChannelMessage}
+          />
+        )}
 
         {contentMode === 'prefs' && (
           <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} onToggleTheme={handleToggleTheme} />

@@ -102,9 +102,17 @@ for (const [key, label] of THEMES) {
       set: (v) => {
         real = v
         const origLoad = v.loadProjects
-        v.loadProjects = async () => ((await origLoad()) ?? []).map((p) => (p.name === 'uwazi_app'
-          ? { ...p, lastActiveAt: new Date(Date.now() - 40 * 86400000).toISOString() }
-          : p))
+        v.loadProjects = async () => ((await origLoad()) ?? []).map((p) => {
+          if (p.name === 'uwazi_app') return { ...p, lastActiveAt: new Date(Date.now() - 40 * 86400000).toISOString() }
+          // The channel probes need a feed with a RESOLVED lane author — its name and avatar
+          // initials are drawn in the lane accent through laneTextColor, which is the one ink
+          // here that comes from user data rather than a token.
+          if (p.name === 'operator') return { ...p, dispatches: [
+            { id: 'tp1', at: '2026-07-30T09:00:00.000Z', fromRoleId: 'operator', toRoleId: 'code', task: 'A delivered task, for the accent-ink probe.', outcome: 'sent' },
+            { id: 'tp2', at: '2026-07-30T09:10:00.000Z', fromRoleId: 'research', toRoleId: 'code', task: 'A held task, for the warn chip.', outcome: 'pending-approval' },
+          ] }
+          return p
+        })
       },
     })
   })
@@ -277,6 +285,38 @@ for (const [key, label] of THEMES) {
   // The sidebar's own crop, so lane rows are legible in the contact sheet.
   await p.screenshot({ path: `${OUT}/${key}-3b-sidebar-crop.png`, clip: { x: 0, y: 0, width: 240, height: 900 } })
 
+  // ---- 2·channel. The project channel's own ink -----------------------------------
+  // The author name and the avatar initials are drawn in the LANE ACCENT through
+  // laneTextColor — the one place in this view where the colour comes from user data rather
+  // than a token, which is exactly what collapses on a light palette without the blend.
+  await p.locator('[data-channel-nav]').first().click()
+  await p.waitForTimeout(900)
+  await p.evaluate(PROBE)
+  const channelProbes = await p.evaluate(() => {
+    // Probe a row whose author RESOLVED to a lane (those carry the accent ink); an unresolved
+    // author is drawn in --fg-muted and is not the interesting case.
+    const rows = Array.from(document.querySelectorAll('[data-channel-row]')) // feed rows only now
+    const withAccent = rows.find((r) => (r.querySelector('[data-channel-author]')?.getAttribute('style') || '').includes('lane-ink-blend'))
+    if (withAccent) withAccent.setAttribute('data-probe-channel', '')
+    // The held row carries the warn tone — also accent-derived, so also worth measuring.
+    const held = rows.find((r) => r.querySelector('[data-channel-approve]'))
+    if (held) held.setAttribute('data-probe-held', '')
+    return [
+      window.__contrast('[data-probe-channel] [data-channel-author]', 'channel author name'),
+      window.__contrast('[data-probe-channel] [data-channel-avatar]', 'channel avatar initials'),
+      window.__contrast('[data-probe-channel] [data-channel-text]', 'channel message body'),
+      window.__contrast('[data-probe-channel] [data-channel-chip]', 'channel chip · delivered', true),
+      window.__contrast('[data-probe-held] [data-channel-chip]', 'channel chip · held', true),
+      window.__contrast('[data-channel-composer-note]', 'channel composer note', true),
+    ]
+  })
+  await p.screenshot({ path: `${OUT}/${key}-3d-channel.png` })
+  // Back to the roster for the steps below.
+  await p.keyboard.press('Meta+Shift+O')
+  await p.waitForTimeout(700)
+  await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
+  await p.waitForTimeout(800)
+
   // ---- 2b. The roster board: only live lanes are cards, idle lanes are compact rows ----
   await p.locator('button[aria-label="Open the roster"]').click()
   await p.waitForTimeout(800)
@@ -435,7 +475,7 @@ for (const [key, label] of THEMES) {
   })
   await p.screenshot({ path: `${OUT}/${key}-7-lost-card.png` })
 
-  for (const r of [...railProbes, ...galleryProbes, ...tidyProbes, ...sheetProbes, ...shelfProbes, ...sidebarProbes, ...lostProbes]) rows.push({ theme: key, ...r })
+  for (const r of [...railProbes, ...channelProbes, ...galleryProbes, ...tidyProbes, ...sheetProbes, ...shelfProbes, ...sidebarProbes, ...lostProbes]) rows.push({ theme: key, ...r })
   if (hoverBorder) notes.push(`${key} card hover — border ${hoverBorder.border} / bg ${hoverBorder.bg}`)
   if (rowHover) notes.push(`${key} previous-row hover — border-width ${rowHover.border} / bg ${rowHover.bg} / restore opacity ${rowHover.restoreOpacity}`)
   await ctx.close()

@@ -278,3 +278,75 @@ describe('removeRoleFrom — what a lane deletion actually costs', () => {
     expect(preset.model).toBe('sonnet')
   })
 })
+
+describe('orchestrationNote — the return path', () => {
+  const roster = rolePresets()
+  const op = roster.find((r) => r.id === 'operator')!
+  const code = roster.find((r) => r.id === 'code')!
+
+  it('teaches BOTH sentinels, to the coordinator and to a lane', () => {
+    for (const role of [op, code]) {
+      const note = orchestrationNote('proj', role, roster)
+      expect(note).toContain('OPERATOR-DISPATCH [<lane-id>]')
+      expect(note).toContain('OPERATOR-REPLY [<lane-id or "project">]')
+    }
+  })
+
+  it('is honest that a reply is not delivered and does not replace the result file', () => {
+    // A lane that believes it is having a conversation will wait for an answer that never comes;
+    // one that thinks the channel IS the deliverable will skip writing the file.
+    const note = orchestrationNote('proj', code, roster)
+    expect(note).toContain('NOT delivered into anyone')
+    expect(note).toContain('does NOT replace a result file')
+  })
+
+  it('scopes WHEN to reply, and names the anti-cases', () => {
+    // "Post your progress" floods the channel; a flooded channel is one nobody reads.
+    const note = orchestrationNote('proj', code, roster)
+    expect(note).toContain('FINISHED')
+    expect(note).toContain('BLOCKED')
+    expect(note).toContain("CHANGES another lane's work")
+    expect(note).toContain('Do not narrate')
+    expect(note).toContain('starting now')
+  })
+
+  it('tells a LANE its dispatch is held, matching the authority gate', () => {
+    // The note used to promise delivery ("typed into it if it's running"), which is true only for
+    // the coordinator now — and it contradicted NO_COMMISSIONING in the same prompt.
+    const lane = orchestrationNote('proj', code, roster)
+    expect(lane).toContain('HELD for the user to approve')
+    // The coordinator's own note keeps the delivery promise, because for it that is still true.
+    expect(orchestrationNote('proj', op, roster)).toContain('either way the work starts')
+    expect(orchestrationNote('proj', op, roster)).not.toContain('HELD for the user to approve')
+  })
+
+  it('still appends NO_COMMISSIONING to every non-coordinator charter', () => {
+    // A reply REPORTS; it must not become a second commissioning route.
+    for (const r of roster.filter((x) => x.id !== 'operator')) {
+      expect(r.prompt).toContain('You do not commission work')
+    }
+    expect(rolePresets().find((r) => r.id === 'operator')!.prompt).not.toContain('You do not commission work')
+  })
+
+  it('keeps the note to a sane size — it rides on EVERY launch', () => {
+    // Measured: coordinator 2221 chars, lane 2136. The guard is against a slow slide, not the
+    // current value; a note that outgrows the charter it accompanies has stopped being a note.
+    for (const role of [op, code]) {
+      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(2600)
+    }
+  })
+})
+
+describe('stripDispatchLines — quotation guards must not regress', () => {
+  it('removes an AUTHORED reply line from displayed prose', () => {
+    expect(stripDispatchLines('Done.\n\nOPERATOR-REPLY [operator] shipped it\n\nAnything else?'))
+      .toBe('Done.\n\nAnything else?')
+  })
+
+  it('KEEPS a quoted or mid-line mention — it is prose about the protocol, not a directive', () => {
+    const inline = 'Post progress with OPERATOR-REPLY [project] when you finish.'
+    expect(stripDispatchLines(inline)).toBe(inline)
+    const both = 'Use OPERATOR-DISPATCH [code] to delegate and OPERATOR-REPLY [project] to report.'
+    expect(stripDispatchLines(both)).toBe(both)
+  })
+})

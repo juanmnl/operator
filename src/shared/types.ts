@@ -247,6 +247,15 @@ export interface DispatchRecord {
   at: string
   /** The lane that emitted the directive (unknown for non-role sessions). */
   fromRoleId?: string
+  /** Absent = a lane authored it (`fromRoleId` names which). Present = the HUMAN sent it from the
+   *  project channel. Provenance has to be recorded here or it is lost: delivery types into a pty
+   *  either way, so in the target's own transcript a channel message and the user typing directly
+   *  are the same `user` turn. NOT modelled as `fromRoleId: 'user'` — a roster could legitimately
+   *  hold a lane with that id, and every existing consumer reads `fromRoleId` as a roster id. */
+  fromHuman?: true
+  /** Shared by the N records of one fan-out send, so the channel can collapse them into a single
+   *  row and report "delivered 4/6 · 2 queued" instead of six near-identical entries. */
+  groupId?: string
   /** The resolved target lane; absent when the role didn't match (→ unassigned). */
   toRoleId?: string
   task: string
