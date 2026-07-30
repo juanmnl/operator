@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Project, Role, ProjectTask } from '../../../shared/types'
 import { taskHasDiffSource } from '../../lib/task-diff'
+import { isClosed } from '../../lib/task-lifecycle'
 import { TaskDiffCard } from './TaskDiffCard'
 
 // The project's task backlog. Add tasks (the input grows vertically as you type), optionally
@@ -30,7 +31,11 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
   const allTasks = project.tasks ?? []
   // Split by lifecycle. The add/assign/group machinery below operates on QUEUED only.
   const running = allTasks.filter((t) => t.status === 'running')
-  const done = allTasks.filter((t) => t.status === 'done')
+  // done ∪ abandoned. An abandoned task belongs in the closed section, not in limbo: it matches
+  // none of the three buckets on its own, so filtering only `done` here made 50 reconciled
+  // tasks vanish from the UI entirely — worse than leaving them stuck `running`.
+  const closed = allTasks.filter(isClosed)
+  const abandonedCount = closed.filter((t) => t.status === 'abandoned').length
   const tasks = allTasks.filter((t) => (t.status ?? 'queued') === 'queued')
   // Only tasks assigned to a LIVE role count as dispatchable (Start all skips stale roleIds).
   const assignedQueued = tasks.filter((t) => t.roleId && roles.some((r) => r.id === t.roleId)).length
@@ -228,20 +233,26 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
         ))}
       </div>
 
-      {/* Done — collapsed by default; expand to review or clear. */}
-      {done.length > 0 && (
+      {/* Closed (done + abandoned) — collapsed by default; expand to review or clear. */}
+      {closed.length > 0 && (
         <div style={{ marginTop: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button onClick={() => setShowDone((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', padding: 0, fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
+            <button data-task-closed-header onClick={() => setShowDone((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', padding: 0, fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
               <span style={{ display: 'inline-block', transform: showDone ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▸</span>
-              Done · {done.length}
+              {/* Counted and labelled honestly: an abandoned task is NOT a finished one, and
+                  a header that says "Done · 68" when 50 of them were closed by reconciliation
+                  is the same lie in aggregate that `status: 'done'` was per task. */}
+              Closed · {closed.length}{abandonedCount > 0 ? ` · ${abandonedCount} abandoned` : ''}
             </button>
-            <button onClick={() => done.forEach((t) => onRemoveTask(t.id))} title="Clear all done tasks" style={{ marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10, color: 'var(--fg-muted)' }}>Clear</button>
+            <button onClick={() => closed.forEach((t) => onRemoveTask(t.id))} title="Clear all closed tasks" style={{ marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10, color: 'var(--fg-muted)' }}>Clear</button>
           </div>
           {showDone && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-              {done.map((task) => {
+              {closed.map((task) => {
                 const role = roleOf(task.roleId)
+                // Abandoned, or a `done` row that reconciliation closed: either way nobody saw
+                // it finish, so it gets the ⋯ rather than the completion tick.
+                const unverified = task.status === 'abandoned' || !!task.reconciledAt
                 return (
                   <div key={task.id}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px' }}>
@@ -250,13 +261,13 @@ export function TaskQueue({ project, roles, liveRoles, onAddTask, onAssignTask, 
                           stranded tasks with a plain ✓ would have claimed work was verified
                           that nobody verified. Re-queue (↩) is right there if it wasn't done. */}
                       <span
-                        style={{ color: task.reconciledAt ? 'var(--fg-muted)' : 'var(--accent)', fontSize: 11, flexShrink: 0 }}
-                        title={task.reconciledAt ? 'Closed automatically: the session running it ended before it reported back' : undefined}
-                      >{task.reconciledAt ? '⋯' : '✓'}</span>
+                        style={{ color: unverified ? 'var(--fg-muted)' : 'var(--accent)', fontSize: 11, flexShrink: 0 }}
+                        title={unverified ? 'Closed automatically: the session running it ended before it reported back' : undefined}
+                      >{unverified ? '⋯' : '✓'}</span>
                       <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--fg-muted)', textDecoration: 'line-through', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.text}>{task.text}</span>
-                      {task.reconciledAt && (
+                      {unverified && (
                         <span data-task-reconciled style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--fg-muted)', flexShrink: 0 }}>
-                          unconfirmed
+                          {task.status === 'abandoned' ? 'abandoned' : 'unconfirmed'}
                         </span>
                       )}
                       {role && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, color: 'var(--fg-muted)', flexShrink: 0 }}>{role.name}</span>}

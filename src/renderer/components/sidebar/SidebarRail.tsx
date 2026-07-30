@@ -72,6 +72,10 @@ export function SidebarRail({ project, sessions, projects, activeSessionId, cust
   // No project clustering any more: the rail is scoped to ONE project, so the tags and
   // seams that separated clusters have nothing left to separate. The project itself is
   // named once, by the badge at the top.
+  //
+  // It also carries NO cross-project orbs. A version of this briefly did; the persistent
+  // ProjectRail now sits 44px to the left in every state, including this one, so a cluster
+  // here would be the same dots twice over.
   return (
     <div
       style={{

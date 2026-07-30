@@ -6,6 +6,26 @@ import type { Role } from '../../shared/types'
 // terminalWrite / addTask / toast / feedback). An agent emitted `OPERATOR-DISPATCH
 // [role] task`; given the project's roster + its live tabs, decide where it goes.
 
+/** The coordinator lanes. `orchestrator` is the pre-rename id, still present on old rosters.
+ *  Membership is by ROLE ID, not by charter text: charters are advisory and models route around
+ *  them — Research's says "never change code" and it complied literally, then wrote an
+ *  implementation brief and dispatched Code to build it. 23 of 100 dispatches in the real store
+ *  came from non-coordinator lanes. */
+export const COORDINATOR_ROLE_IDS = ['operator', 'orchestrator']
+
+/** Does this dispatch deliver on its own, or does it need a human to approve it first?
+ *
+ *  Only the coordinator commissions work unsupervised — that IS its job. Every other lane's
+ *  dispatch is held for approval, which is not the same as blocking it: lanes still talk to each
+ *  other, they just cannot SILENTLY commission work.
+ *
+ *  An unknown sender (`undefined` — an ad-hoc session with no lane) needs approval too. It is
+ *  still an agent emitting a directive, and defaulting an unidentified sender to "trusted" is
+ *  the wrong way round. */
+export function dispatchNeedsApproval(fromRoleId: string | undefined): boolean {
+  return !fromRoleId || !COORDINATOR_ROLE_IDS.includes(fromRoleId.toLowerCase())
+}
+
 /** The minimum a tab must expose to be routable — the handler passes full TerminalTabs. */
 export interface RoutableTab {
   id: string
@@ -13,6 +33,28 @@ export interface RoutableTab {
   roleId?: string
   /** Pty exited but the pane is still mounted — an ended lane is NOT a live target. */
   ended?: boolean
+  /** The lane's last activity, used ONLY to break a duplicate tie deterministically. */
+  lastActivityAt?: string
+}
+
+/** THE resolution of "which terminal is this role's lane", used by dispatch routing and by the
+ *  launch path's reuse guard. One function on purpose: if the two disagreed, a dispatch and a
+ *  relaunch could pick different duplicates of the same role and each would look correct.
+ *
+ *  Duplicates should not exist — the launch path now reuses a live lane instead of spawning a
+ *  second — but the real store held 4-5 per role, so this has to be defined for them rather
+ *  than left to `find()`'s array order, which is whatever the reattach happened to produce.
+ *  Most recently ACTIVE wins: of several live lanes on one role, the one that spoke last is the
+ *  one the user is actually working with. Ties fall to the latest in input order. */
+export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string): T | undefined {
+  let best: T | undefined
+  for (const t of tabs) {
+    if (t.projectId !== projectId || t.roleId !== roleId || t.ended) continue
+    if (!best) { best = t; continue }
+    // >= so a later tab wins an exact tie (and an undefined timestamp loses to a real one).
+    if ((t.lastActivityAt ?? '') >= (best.lastActivityAt ?? '')) best = t
+  }
+  return best
 }
 
 export type DispatchRoute<T extends RoutableTab> =
@@ -48,7 +90,7 @@ export function routeDispatch<T extends RoutableTab>(
     const preset = presetFor(roleToken)
     return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
   }
-  const tab = tabs.find((t) => t.projectId === projectId && t.roleId === role.id && !t.ended)
+  const tab = pickLaneTab(tabs, projectId, role.id)
   return tab ? { kind: 'send', role, tab } : { kind: 'queue', role }
 }
 

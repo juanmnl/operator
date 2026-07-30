@@ -778,26 +778,44 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
 
   useEffect(() => cancelFeed, [cancelFeed])
 
+  // Both feed refs are per-COMPONENT, and this component is not keyed per session — it
+  // persists across a switch. So they must be reset by hand, before the layout effect below
+  // reads them for the new transcript (declaration order decides that, hence: above it).
+  // Without this, `firstPaintRef` only ever protected the first session opened in an app run,
+  // and `lastMaxRef` carried the PREVIOUS session's document height into the new one — which
+  // rewinds and animates through content the reader has never seen, on a session they just
+  // opened. The `tooFar` snap guard hid part of that band by accident; it is sized for one
+  // append, not for a whole different transcript.
+  useLayoutEffect(() => {
+    cancelFeed()
+    firstPaintRef.current = true
+    lastMaxRef.current = 0
+  }, [session?.id, cancelFeed])
+
   // Stick to bottom once the spacer grows (scrollTop can't exceed the current max until the
   // DOM updates). Suppressed while searching / saved-only so results don't jump to the end.
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el && stickRef.current && !q && !savedOnly) {
-      const max = Math.max(0, el.scrollHeight - el.clientHeight)
-      const prev = lastMaxRef.current
-      lastMaxRef.current = max
-      // WebKit PINS a scroller that sits at its maximum: append content and scrollTop follows
-      // the new bottom by itself, in one jump, before we get a say. So to feed, first put the
-      // paper back where it was — the reader's last line stays put — and animate up from
-      // there. Without this the whole animation is a no-op in the one case it exists for.
-      if (!firstPaintRef.current && prev > 0 && max > prev) {
-        el.scrollTop = prev
-        feedTo(el, max)
-      } else {
-        feedTo(el, max, { animate: false })
-      }
-      firstPaintRef.current = false
+    if (!el) return
+    const max = Math.max(0, el.scrollHeight - el.clientHeight)
+    const prev = lastMaxRef.current
+    // Written on EVERY layout, not only while sticking. It means "the height as of the last
+    // layout", and the rewind below measures one append against it — so any stretch of NOT
+    // sticking (reading back, a search, saved-only) used to freeze it and leave the rewind
+    // measured against an arbitrarily old height, sliding through already-read content.
+    lastMaxRef.current = max
+    if (!stickRef.current || q || savedOnly) return
+    // WebKit PINS a scroller that sits at its maximum: append content and scrollTop follows
+    // the new bottom by itself, in one jump, before we get a say. So to feed, first put the
+    // paper back where it was — the reader's last line stays put — and animate up from
+    // there. Without this the whole animation is a no-op in the one case it exists for.
+    if (!firstPaintRef.current && prev > 0 && max > prev) {
+      el.scrollTop = prev
+      feedTo(el, max)
+    } else {
+      feedTo(el, max, { animate: false })
     }
+    firstPaintRef.current = false
   }, [spacerH, q, savedOnly, feedTo])
 
   const onUserScroll = useCallback(() => {
@@ -810,6 +828,52 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
     stickRef.current = false
     setAtEdge(false)
   }, [cancelFeed])
+
+  // A WHEEL THAT CANNOT SCROLL MUST NOT DETACH THE FEED. Releasing stick is safe only because
+  // onScroll re-engages it when the reader lands back at the live edge — and that recovery
+  // needs a scroll event to actually fire. At the scroll limit none does: a downward flick at
+  // the bottom (or any wheel in a transcript shorter than the viewport) scrolls nothing, so
+  // stick was released with nothing left to restore it and every later turn pushed the view
+  // further behind. Flicking down to "get to the end" is exactly the gesture of someone who
+  // wants to FOLLOW output, so at the limit it re-engages instead of detaching.
+  const onWheelScroll = useCallback((e: React.WheelEvent) => {
+    const el = scrollRef.current
+    // No vertical intent (a horizontal/trackpad-sideways gesture) — leave stick alone.
+    if (e.deltaY === 0) return
+    if (el) {
+      const max = Math.max(0, el.scrollHeight - el.clientHeight)
+      // Rounding: scrollTop is fractional under zoom, so `>= max` alone can miss the edge.
+      if (max <= 0 || (e.deltaY > 0 && el.scrollTop >= max - 1)) {
+        cancelFeed()
+        stickRef.current = true
+        setAtEdge(true)
+        return
+      }
+    }
+    onUserScroll()
+  }, [cancelFeed, onUserScroll])
+
+  // A DRAG, NOT A CLICK. pointerdown fires on every click, and this scroller carries three
+  // click affordances (open a link, toggle a thought, focus the panel) — so clicking anything
+  // in the transcript silently stopped the app following the conversation and raised
+  // jump-to-latest as if the reader had scrolled away. The thought toggle was the worst of
+  // them: the click released stick, then its relayout ran with stick already false, so
+  // opening a thought at the live edge also skipped the re-feed that absorbs its height.
+  // Movement under a held button is the earliest signal that actually means "I am scrolling".
+  const dragFromRef = useRef<{ x: number; y: number } | null>(null)
+  const onPointerDownScroll = useCallback((e: React.PointerEvent) => {
+    dragFromRef.current = { x: e.clientX, y: e.clientY }
+  }, [])
+  const onPointerMoveScroll = useCallback((e: React.PointerEvent) => {
+    const from = dragFromRef.current
+    if (!from) return
+    if (e.buttons === 0) { dragFromRef.current = null; return }
+    // 3px of slop: a click with a shaky hand is still a click.
+    if (Math.abs(e.clientX - from.x) < 3 && Math.abs(e.clientY - from.y) < 3) return
+    dragFromRef.current = null
+    onUserScroll()
+  }, [onUserScroll])
+  const onPointerUpScroll = useCallback(() => { dragFromRef.current = null }, [])
 
   const clearHover = useCallback(() => { if (hoverKeyRef.current) { hoverKeyRef.current = null; setHover(null) } }, [])
 
@@ -920,13 +984,17 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
             const b = layoutRef.current.bounds.find((tb) => py >= tb.top && py <= tb.bottom)
             if (b) { navigator.clipboard?.writeText(b.text).catch(() => {}); flashMsg('Copied message') }
           }}
-          // NEVER fight the pointer. A wheel, a trackpad gesture, a drag or a key cancels our
-          // scroll outright and leaves stick wherever the user's own position puts it — the
-          // feed is a convenience, and it loses every argument with a real input.
-          onWheel={onUserScroll}
+          // NEVER fight the pointer. A wheel or a drag cancels our scroll outright and leaves
+          // stick wherever the user's own position puts it — the feed is a convenience, and
+          // it loses every argument with a real input. But only for input that MEANS scroll:
+          // see onWheelScroll (a wheel with nowhere to go) and onPointerMoveScroll (a click
+          // is not a drag) — over-eager cancellation is its own bug, and was two of them.
+          onWheel={onWheelScroll}
           onTouchStart={onUserScroll}
-          onPointerDown={onUserScroll}
-          onKeyDown={onUserScroll}
+          onPointerDown={onPointerDownScroll}
+          onPointerMove={onPointerMoveScroll}
+          onPointerUp={onPointerUpScroll}
+          onPointerCancel={onPointerUpScroll}
           className="scroll-hidden"
           style={{ position: 'absolute', inset: 0, overflow: 'auto' }}
         >

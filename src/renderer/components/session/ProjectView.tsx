@@ -17,6 +17,7 @@ export function ProjectView({
   project, tab, onSelectTab, onBack,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
+  onApproveDispatch, onRejectDispatch,
   resumableCount, onResumeProject,
 }: {
   project: Project
@@ -37,6 +38,9 @@ export function ProjectView({
   onSendTask: (task: ProjectTask) => void
   onStartAll: () => void
   onSetTaskStatus: (taskId: string, status: ProjectTask['status']) => void
+  /** Approve / decline a dispatch a NON-coordinator lane asked for. Absent = read-only log. */
+  onApproveDispatch?: (projectId: string, id: string) => void
+  onRejectDispatch?: (projectId: string, id: string) => void
   /** Saved-but-not-live agents of this project — resumable as a group. */
   resumableCount?: number
   onResumeProject?: () => void
@@ -97,7 +101,15 @@ export function ProjectView({
           </button>
         )}
       </DragRegion>
-      <div style={{ flex: 1, minHeight: 0, overflowY: tab === 'roster' ? 'auto' : undefined }}>
+      {/* `scroll`, not `auto`, because the roster below is a CENTRED measure box. styles.css
+          gives ::-webkit-scrollbar an explicit width, which makes it a classic scrollbar that
+          eats 6px of the content box — so a centred child re-centred 3px to the left the
+          moment the roster grew past the fold (measured: 374 → 371). Always-on reserves that
+          6px in both states; the track is transparent and a short roster draws no thumb, so
+          nothing about it is visible.
+          The toolbar header above is full-width and NOT centred, so it never moved: this view
+          needs the reservation, not PageShell's move-the-header-inside restructure. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: tab === 'roster' ? 'scroll' : undefined }}>
         {tab === 'roster' && (
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '10px 16px 28px' }}>
             <RosterPanel
@@ -120,7 +132,7 @@ export function ProjectView({
               onStartAll={onStartAll}
               onSetTaskStatus={onSetTaskStatus}
             />
-            <DispatchLog project={project} />
+            <DispatchLog project={project} onApprove={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))} onReject={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))} />
           </div>
         )}
         {tab === 'moodboard' && (

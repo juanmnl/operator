@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeDispatch, liveLaneNames, type RoutableTab } from './dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab } from './dispatch'
 import type { Role } from '../../shared/types'
 
 const roster: Role[] = [
@@ -100,5 +100,74 @@ describe('routeDispatch against an EMPTY roster (rosters no longer auto-seed)', 
     expect(r.kind).toBe('queue')
     if (r.kind !== 'queue') throw new Error('unreachable')
     expect(r.role.model).toBe('haiku') // the user's tuning wins, not the preset's
+  })
+})
+
+describe('pickLaneTab — deterministic duplicate resolution', () => {
+  // Duplicates shouldn't exist any more (the launch path reuses a live lane), but the real
+  // store held 4-5 sessions per role, so which one is "the lane" has to be DEFINED rather
+  // than left to array order.
+  const tab = (id: string, over: Record<string, unknown> = {}) =>
+    ({ id, projectId: 'p1', roleId: 'code', ...over })
+
+  it('prefers the most recently ACTIVE of several live duplicates', () => {
+    const tabs = [
+      tab('a', { lastActivityAt: '2026-07-01T00:00:00Z' }),
+      tab('c', { lastActivityAt: '2026-07-30T00:00:00Z' }),
+      tab('b', { lastActivityAt: '2026-07-15T00:00:00Z' }),
+    ]
+    expect(pickLaneTab(tabs, 'p1', 'code')?.id).toBe('c')
+    // Order of the input must not change the answer.
+    expect(pickLaneTab([...tabs].reverse(), 'p1', 'code')?.id).toBe('c')
+  })
+
+  it('never returns an ended lane, or one from another project or role', () => {
+    expect(pickLaneTab([tab('a', { ended: true })], 'p1', 'code')).toBeUndefined()
+    expect(pickLaneTab([tab('a', { projectId: 'other' })], 'p1', 'code')).toBeUndefined()
+    expect(pickLaneTab([tab('a', { roleId: 'qa' })], 'p1', 'code')).toBeUndefined()
+  })
+
+  it('falls back to the latest in input order when activity is unknown', () => {
+    expect(pickLaneTab([tab('a'), tab('b')], 'p1', 'code')?.id).toBe('b')
+    // A real timestamp beats an absent one regardless of position.
+    expect(pickLaneTab([tab('a', { lastActivityAt: '2026-07-01T00:00:00Z' }), tab('b')], 'p1', 'code')?.id).toBe('a')
+  })
+
+  it('routeDispatch resolves through it — the two cannot disagree', () => {
+    const roster = [{ id: 'code', name: 'Code', model: 'opus' }]
+    const tabs = [
+      tab('old', { lastActivityAt: '2026-07-01T00:00:00Z' }),
+      tab('new', { lastActivityAt: '2026-07-30T00:00:00Z' }),
+    ]
+    const route = routeDispatch('code', roster, tabs, 'p1')
+    expect(route.kind).toBe('send')
+    expect(route.kind === 'send' && route.tab.id).toBe('new')
+  })
+})
+
+describe('dispatchNeedsApproval — a read-only lane must not commission work', () => {
+  it('lets the COORDINATOR dispatch unsupervised — that is its job', () => {
+    expect(dispatchNeedsApproval('operator')).toBe(false)
+    expect(dispatchNeedsApproval('orchestrator')).toBe(false) // pre-rename id, still on old rosters
+    expect(dispatchNeedsApproval('OPERATOR')).toBe(false)     // ids are compared case-insensitively
+  })
+
+  it('HOLDS every other lane, including the ones caught doing it', () => {
+    // The real store: 16 dispatches from research, 3 design, 2 code, 2 qa.
+    for (const role of ['research', 'code', 'design', 'qa', 'review']) {
+      expect(dispatchNeedsApproval(role)).toBe(true)
+    }
+  })
+
+  it('HOLDS an unidentified sender rather than trusting it', () => {
+    // An ad-hoc session with no lane is still an agent emitting a directive.
+    expect(dispatchNeedsApproval(undefined)).toBe(true)
+    expect(dispatchNeedsApproval('')).toBe(true)
+  })
+
+  it('is keyed on role ID, not on charter text', () => {
+    // Charter text is advisory: Research's already said "never change code", and it complied
+    // literally while dispatching Code to build what it had specced.
+    expect(COORDINATOR_ROLE_IDS).toEqual(['operator', 'orchestrator'])
   })
 })

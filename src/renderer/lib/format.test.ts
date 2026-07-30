@@ -4,6 +4,7 @@ import { relativeTime, fmtCost, fmtTokens, modelLabel, fmtDuration, fmtDur, isIn
 // relativeTime is anchored to Date.now(); build isos as offsets from "now" so the
 // tests are deterministic regardless of wall-clock.
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+const DAY = 86_400_000
 
 describe('relativeTime', () => {
   it('defaults to "just now" under a minute', () => {
@@ -23,6 +24,17 @@ describe('relativeTime', () => {
     expect(relativeTime(ago(5 * 60_000))).toBe('5m ago')
     expect(relativeTime(ago(3 * 3_600_000))).toBe('3h ago')
     expect(relativeTime(ago(2 * 86_400_000))).toBe('2d ago')
+  })
+
+  it('climbs to weeks, months and years for long spans', () => {
+    expect(relativeTime(ago(6 * DAY))).toBe('6d ago')
+    expect(relativeTime(ago(7 * DAY))).toBe('1w ago') // days stop at 7
+    expect(relativeTime(ago(31 * DAY))).toBe('4w ago') // last week rung
+    expect(relativeTime(ago(32 * DAY))).toBe('1mo ago') // …and the first month rung
+    expect(relativeTime(ago(127 * DAY))).toBe('4mo ago') // the case that motivated this
+    expect(relativeTime(ago(350 * DAY))).toBe('11mo ago') // months stop at 12
+    expect(relativeTime(ago(365 * DAY))).toBe('1y ago')
+    expect(relativeTime(ago(3 * 365 * DAY))).toBe('3y ago')
   })
 })
 

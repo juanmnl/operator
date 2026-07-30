@@ -2,14 +2,11 @@ import { useRef, useState } from 'react'
 import { AgentSession, Role } from '../../../shared/types'
 import type { Project } from '../../../shared/types'
 import { SessionItem } from './SessionItem'
-import { ProjectSwitcher } from './ProjectSwitcher'
 import { StatusWave } from './StatusWave'
-import { LogoMark } from '../LogoMark'
 import { DragRegion } from '../DragRegion'
 import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
-import type { ProjectActivity } from '../../lib/project-status'
 
 // The sidebar is SCOPED to one project (`activeProjectId` upstream) — it is never a
 // cross-project accordion again. That's what let the folder-group wrapper, its disclosure,
@@ -20,17 +17,20 @@ import type { ProjectActivity } from '../../lib/project-status'
 // running. A lane with a live session is a SessionItem (click = focus); a lane without one
 // is a quiet row (click = launch it). Ad-hoc sessions — launched outside any lane, so they
 // have no roleId — follow underneath, live-only.
+//
+// It shows ONE project and nothing else. An `ALSO ACTIVE` section listing every other active
+// project briefly lived below the team; it was removed. Cross-project orientation is the
+// persistent ProjectRail's job (ProjectRail.tsx), which does it in 44px and in every state
+// including the gallery — a second list of the same projects in here was the same information
+// twice. The one cross-project thing that remains is the `previous` chip in the header, and
+// that isn't orientation: it's the only way to un-shelve a project you've navigated into.
 
 interface SidebarProps {
   /** The project this sidebar is scoped to. Null only in the instant before scope resolves;
    *  at the gallery the sidebar isn't rendered at all. */
   project: Project | null
-  /** Every known project — the switcher's list. */
-  projects: Project[]
   /** Live sessions of THIS project (already scoped upstream). */
   sessions: AgentSession[]
-  /** projectId → its rolled-up state, for the switcher's per-project orb + label. */
-  activities: Record<string, ProjectActivity>
   activeSessionId: string | null
   customNames: Record<string, string>
   activeFolderPrefs: string | null
@@ -47,10 +47,8 @@ interface SidebarProps {
   /** Counts for the bottom status row. */
   stats: { activeSessions: number }
   isDark: boolean
-  /** Leave every project — the logo and the switcher's "All projects". */
-  onShowGallery: () => void
-  /** Switch scope to another project. */
-  onOpenProject: (projectId: string) => void
+  /** Un-shelve THIS project — the `previous` chip in the header row. */
+  onRestoreProject?: (projectId: string) => void
   /** Open THIS project's home (roster) — the project row and the section's `+`. */
   onOpenProjectHome: () => void
   onSelectSession: (session: AgentSession) => void
@@ -66,7 +64,6 @@ interface SidebarProps {
   onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   /** Reorder two lane rows — writes the ROSTER, which is what orders them. */
   onReorderLane?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
-  onNewSession: () => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
   onOpenAgents: () => void
@@ -77,9 +74,6 @@ interface SidebarProps {
   /** A newer release found by the updater, or null. */
   update?: { version: string } | null
   onInstallUpdate?: () => void
-  /** Open/close the switcher popover from outside (⌘⇧P). */
-  switcherOpen: boolean
-  onSwitcherOpenChange: (open: boolean) => void
 }
 
 /** One row of the AGENTS list: a lane (live or idle) or an ad-hoc session. */
@@ -88,13 +82,13 @@ type Row =
   | { kind: 'session'; session: AgentSession }
 
 export function Sidebar({
-  project, projects, sessions, activities, activeSessionId, customNames, activeFolderPrefs,
+  project, sessions, activeSessionId, customNames, activeFolderPrefs,
   globalPrefsActive, agentsViewActive, prefsViewActive, projectHomeActive,
   effortLevels, fanInfo, shortcutIndices, stats, isDark,
-  onShowGallery, onOpenProject, onOpenProjectHome, onSelectSession, onRenameSession, onCloseSession,
+  onRestoreProject, onOpenProjectHome, onSelectSession, onRenameSession, onCloseSession,
   onLaunchRole, accentOf, onPickAccent, onReorderSession, onReorderLane,
-  onNewSession, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenPrefs,
-  onToggleTheme, version, update, onInstallUpdate, switcherOpen, onSwitcherOpenChange,
+  onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenPrefs,
+  onToggleTheme, version, update, onInstallUpdate,
 }: SidebarProps) {
   // Row drag state — one list now, so this is all the reorder state there is.
   const [dragRow, setDragRow] = useState<{ kind: Row['kind']; id: string } | null>(null)
@@ -228,44 +222,61 @@ export function Sidebar({
         WebkitAppRegion: 'drag',
       }}
     >
-      {/* Header = the project switcher. It carries WHERE YOU ARE, which is why the app name
-          and version moved down to the footer. The top padding clears the traffic lights and
-          stays bare titlebar, so the window is still draggable from up there. */}
+      {/* Header = IDENTITY ONLY. It says where you are and nothing else — no switcher trigger,
+          no logo-to-gallery. Moving between projects is the rail's job now (a tile per open
+          project, "All projects" and "Open folder" at its foot), and it does that job in every
+          state including the gallery, where this sidebar isn't rendered at all. A second set of
+          the same controls here was the same navigation twice, in the surface that has the
+          weaker claim to it.
+          The top padding clears the traffic lights and stays bare titlebar, so the window is
+          still draggable from up there. */}
       <DragRegion style={{ paddingTop: 40, padding: '40px 10px 8px 12px' }}>
         <div
-          data-switcher-trigger
-          role="button"
-          tabIndex={0}
-          onClick={() => onSwitcherOpenChange(!switcherOpen)}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSwitcherOpenChange(!switcherOpen) } }}
-          title="Switch project (⌘⇧P) — leaving stops nothing"
+          data-sidebar-project
           style={{
             display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-            padding: '3px 4px', borderRadius: 6, cursor: 'pointer', outline: 'none',
-            background: switcherOpen ? 'var(--overlay-subtle)' : 'transparent',
+            padding: '3px 4px', minHeight: 22,
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'no-drag',
           }}
         >
-          <button
-            onClick={(e) => { e.stopPropagation(); onShowGallery() }}
-            title="All projects (⌘⇧O)"
-            aria-label="All projects"
-            style={{
-              display: 'flex', alignItems: 'center', flexShrink: 0,
-              background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer', outline: 'none',
-            }}
-          >
-            <LogoMark size={16} animated={false} />
-          </button>
-          <span style={{
+          <span data-sidebar-project-name style={{
             flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.2,
-            color: projectHomeActive ? 'var(--accent)' : 'var(--fg)', letterSpacing: -0.3,
+            // Accent marks "Project Home is what's on screen", but bare var(--accent) at 13px
+            // measured 2.69:1 on Mission Control light and 2.22:1 on 1984 light — body text
+            // under half the 4.5 floor. It had never been probed: the old theme-pass step
+            // measured the switcher popover this header used to open, not the header itself.
+            // Mixed 45% toward --fg it keeps the hue and clears the floor everywhere
+            // (4.99–12.85 across the six palettes).
+            color: projectHomeActive ? 'color-mix(in srgb, var(--accent) 55%, var(--fg))' : 'var(--fg)',
+            letterSpacing: -0.3,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {project?.name ?? 'No project'}
           </span>
-          <span style={{ flexShrink: 0, fontSize: 8, color: 'var(--fg-muted)', }}>⌄</span>
+          {/* You can browse into a shelved project from the gallery's Previous shelf, and
+              nothing in here used to say so. The chip is the state AND the way out of it —
+              one control, in the one place you'd look. Same treatment as the card's
+              "folder not on record" chip: transparent, hairline, tracked. */}
+          {project?.archivedAt && (
+            <button
+              data-previous-chip
+              onClick={() => onRestoreProject?.(project.id)}
+              title={`${project.name} is shelved — click to bring it back to Active`}
+              style={{
+                flexShrink: 0, padding: '1px 6px',
+                fontFamily: 'var(--font-mono)', fontSize: 9,
+                textTransform: 'uppercase', letterSpacing: '0.1em',
+                background: 'transparent', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)', color: 'var(--fg-muted)',
+                cursor: 'pointer', outline: 'none',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--fg-muted)' }}
+            >
+              previous
+            </button>
+          )}
         </div>
         {project?.path && (
           <div
@@ -274,25 +285,15 @@ export function Sidebar({
               // 9.5px and no opacity over --fg-muted — at 9px × 0.65 this path measured
               // 2.2:1 on the light palettes, i.e. decoration rather than text.
               fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
-              padding: '2px 4px 0 28px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              // Was indented 28px to clear the logo that used to sit beside the name; with the
+              // logo gone it lines up under the name instead.
+              padding: '2px 4px 0 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}
           >
             {tildePath(project.path)}
           </div>
         )}
       </DragRegion>
-
-      {switcherOpen && (
-        <ProjectSwitcher
-          projects={projects}
-          activeProjectId={project?.id ?? null}
-          activities={activities}
-          onPick={(id) => { onSwitcherOpenChange(false); onOpenProject(id) }}
-          onShowGallery={() => { onSwitcherOpenChange(false); onShowGallery() }}
-          onOpenFolder={() => { onSwitcherOpenChange(false); onNewSession() }}
-          onClose={() => onSwitcherOpenChange(false)}
-        />
-      )}
 
       {/* AGENTS — the project's team. */}
       <div style={{
@@ -382,23 +383,160 @@ export function Sidebar({
             {adHocRows.map(renderRow)}
           </>
         )}
+
+        {/* The count belongs to the LANES, so it sits with them — inside the scroller, hugging
+            the last row, rather than stranded at the foot of the sidebar where it read as a
+            property of the whole app. It counts THIS project only; do not "helpfully" make it
+            count everything, or it starts contradicting ALSO ACTIVE 40px below.
+            Silent at zero: every lane above already says "idle". */}
+        {stats.activeSessions > 0 && (
+          <div data-sidebar-active-count title={`${stats.activeSessions} agent${stats.activeSessions === 1 ? '' : 's'} running in this project`} style={{
+            padding: '8px 8px 2px',
+            fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {stats.activeSessions} active
+          </div>
+        )}
       </div>
 
-      {/* Stats row — at-a-glance count, and the app identity that the header gave up. */}
+      {/* Bottom bar — the app's own row: its tools, then its identity.
+          Sized to FIT: n icons + gaps + padding must stay inside the 220px sidebar, or the
+          wrapper's overflow:hidden slices the last one in half at the edge (that's what it did
+          with seven — the theme toggle was cut down the middle). Making room for the version
+          cost 2px of icon padding and 3px of gap: six 20px icons at gap 5 come to 145 + 12
+          padding = 157, leaving ~58px — measured against the widest version string we'd
+          plausibly ship ("v0.10.11" needs 56px at 9.5 mono). The icon BOX is untouched at
+          14px; this is spacing, not squashing.
+          The version takes `flex: 1 1 0` rather than `marginLeft: auto` deliberately: with
+          `flexWrap` on, an auto-margined item WRAPS to a second line the moment it doesn't fit
+          (wrapping is decided before shrinking), which is what it did. At flex-basis 0 it
+          claims the leftover and ellipsises instead, so a long version string can never push
+          it onto a line of its own. `flexWrap` stays as the guard for a seventh ICON. */}
       <div style={{
-        padding: '4px 14px 0',
+        padding: '6px 6px 10px',
         display: 'flex',
-        alignItems: 'baseline',
-        gap: 6,
-        fontSize: 10,
-        color: 'var(--fg-muted)',
-        fontVariantNumeric: 'tabular-nums',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 5,
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
-        <span>{stats.activeSessions} active</span>
-        <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-          Operator{version ? ` v${version}` : ''}
+        {/* All footer icons share one 14px box (viewBox 16, stroke 1.1) and the
+            same button padding; spacing comes from the row's `gap` alone, so they
+            read as a single uniform set. The gear keeps viewBox 24 with a
+            proportional stroke (1.6/24 ≈ 1.1/16). `flexShrink: 0` on each keeps them
+            square — a squashed icon box is worse than a wrapped row. */}
+        {/* No "open another folder" here any more: opening a folder REGISTERS A PROJECT, which
+            is project navigation, and that now lives at the rail's foot beside "All projects".
+            Two identical + buttons 44px apart is how you get one that nobody trusts. */}
+        <button
+          onClick={onOpenAgents}
+          style={{
+            background: agentsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
+            display: 'flex', alignItems: 'center',
+            opacity: agentsViewActive ? 1 : 0.85,
+          }}
+          title="Agents — every agent across your projects"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="3" y="5.5" width="10" height="7.5" rx="2" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <path d="M8 3v2.5" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+            <circle cx="8" cy="2.5" r="1" fill="var(--fg-muted)" />
+            <circle cx="6" cy="9" r="0.9" fill="var(--fg-muted)" />
+            <circle cx="10" cy="9" r="0.9" fill="var(--fg-muted)" />
+          </svg>
+        </button>
+        {/* This project's Claude files (.claude) — was the per-group prefs button. */}
+        <button
+          onClick={() => project && onOpenFolderPrefs(project.path, project.name)}
+          disabled={!project?.path}
+          style={{
+            background: activeFolderPrefs && activeFolderPrefs === project?.path ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: project?.path ? 'pointer' : 'default',
+            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
+            display: 'flex', alignItems: 'center',
+            opacity: project?.path ? (activeFolderPrefs === project?.path ? 1 : 0.85) : 0.35,
+          }}
+          title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <button
+          onClick={onOpenGlobalPrefs}
+          style={{
+            background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
+            display: 'flex', alignItems: 'center',
+            opacity: globalPrefsActive ? 1 : 0.85,
+          }}
+          title="Global Claude files (~/.claude)"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
+          </svg>
+        </button>
+        {/* Settings (Operator preferences) — sits in the bottom row, just before the theme toggle. */}
+        <button
+          onClick={onOpenPrefs}
+          title="Operator preferences"
+          style={{
+            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
+            border: 'none', cursor: 'pointer',
+            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
+            display: 'flex', alignItems: 'center',
+            opacity: prefsViewActive ? 1 : 0.85,
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        {/* Theme toggle — last icon in the bottom row, after settings. */}
+        <button
+          onClick={onToggleTheme}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
+            display: 'flex', alignItems: 'center', opacity: 0.85,
+          }}
+        >
+          {isDark ? (
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it. */}
+              <circle cx="8" cy="8" r="2.6" fill="var(--fg-muted)" />
+              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.1" />
+            </svg>
+          )}
+        </button>
+
+        {/* The app's identity, on the app's row. It used to head a stats line of its own,
+            which paired it with a count that belongs to the project — two different scopes on
+            one line, 40px above a section about other projects entirely. */}
+        <span
+          data-sidebar-identity
+          title={`Operator${version ? ` v${version}` : ''}`}
+          style={{
+            flex: '1 1 0', minWidth: 0, textAlign: 'right',
+            fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+            fontVariantNumeric: 'tabular-nums',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >
+          {version ? `v${version}` : 'Operator'}
         </span>
         {update && (
           <button
@@ -420,134 +558,6 @@ export function Sidebar({
             </svg>
           </button>
         )}
-      </div>
-
-      {/* Bottom bar.
-          Sized to FIT: n icons × 24 + (n-1) × gap + padding must stay inside the 220px
-          sidebar, or the wrapper's overflow:hidden slices the last icon in half at the edge
-          (that's what it did with seven — the theme toggle was cut down the middle). Six at
-          gap 8 and padding 12 come to 196 of 220, so there's ~24px of slack. `flexWrap` is
-          the structural guard behind that arithmetic: a future seventh icon drops to a
-          second line instead of silently spilling out of the sidebar again. */}
-      <div style={{
-        padding: '6px 12px 10px',
-        display: 'flex',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: 8,
-        // @ts-expect-error Electron-specific CSS property
-        WebkitAppRegion: 'no-drag',
-      }}>
-        {/* All footer icons share one 14px box (viewBox 16, stroke 1.1) and the
-            same button padding; spacing comes from the row's `gap` alone, so they
-            read as a single uniform set. The gear keeps viewBox 24 with a
-            proportional stroke (1.6/24 ≈ 1.1/16). `flexShrink: 0` on each keeps them
-            square — a squashed icon box is worse than a wrapped row. */}
-        <button
-          onClick={onNewSession}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center', opacity: 0.85,
-          }}
-          title="Open another folder as a project"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M8 3v10M3 8h10" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
-          </svg>
-        </button>
-        <button
-          onClick={onOpenAgents}
-          style={{
-            background: agentsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: agentsViewActive ? 1 : 0.85,
-          }}
-          title="Agents — every agent across your projects"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <rect x="3" y="5.5" width="10" height="7.5" rx="2" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <path d="M8 3v2.5" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
-            <circle cx="8" cy="2.5" r="1" fill="var(--fg-muted)" />
-            <circle cx="6" cy="9" r="0.9" fill="var(--fg-muted)" />
-            <circle cx="10" cy="9" r="0.9" fill="var(--fg-muted)" />
-          </svg>
-        </button>
-        {/* This project's Claude files (.claude) — was the per-group prefs button. */}
-        <button
-          onClick={() => project && onOpenFolderPrefs(project.path, project.name)}
-          disabled={!project?.path}
-          style={{
-            background: activeFolderPrefs && activeFolderPrefs === project?.path ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: project?.path ? 'pointer' : 'default',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: project?.path ? (activeFolderPrefs === project?.path ? 1 : 0.85) : 0.35,
-          }}
-          title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <button
-          onClick={onOpenGlobalPrefs}
-          style={{
-            background: globalPrefsActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: globalPrefsActive ? 1 : 0.85,
-          }}
-          title="Global Claude files (~/.claude)"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <ellipse cx="8" cy="8" rx="2.5" ry="6" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <path d="M2 8h12" stroke="var(--fg-muted)" strokeWidth="1.1" />
-          </svg>
-        </button>
-        {/* Settings (Operator preferences) — sits in the bottom row, just before the theme toggle. */}
-        <button
-          onClick={onOpenPrefs}
-          title="Operator preferences"
-          style={{
-            background: prefsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: prefsViewActive ? 1 : 0.85,
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--fg-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
-        {/* Theme toggle — last icon in the bottom row, after settings. */}
-        <button
-          onClick={onToggleTheme}
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '3px 5px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center', opacity: 0.85,
-          }}
-        >
-          {isDark ? (
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              {/* Filled core so the sun reads distinct from the (hollow-centred) gear beside it. */}
-              <circle cx="8" cy="8" r="2.6" fill="var(--fg-muted)" />
-              <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            </svg>
-          )}
-        </button>
       </div>
     </div>
   )

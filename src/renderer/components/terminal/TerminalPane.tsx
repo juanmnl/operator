@@ -332,19 +332,64 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     //     blank/transparent-frame bleed.
     //   • width/padding nudge — REJECTED: it changes layout, tripping xterm's
     //     ResizeObserver → a full buffer reflow (the one thing we must not do here).
-    // If live testing shows 0.02px is still collapsed by pixel-snapping, bump the
-    // value or switch to a will-change/contain cycle (layer rebuild) — both force a
-    // commit too, but are heavier per call. Heavier than refresh either way, so this
-    // runs only on settle + the periodic heal, never per-chunk.
+    // 2026-07-29, after a live sighting where the heal ran throughout and it still
+    // garbled (dev/briefs/garble-heal-gap.md; lead 1 — the 6s output gate — was traced
+    // and DIED, the gate was open the whole time). Two things were wrong here, and
+    // neither was the one the brief guessed:
+    //
+    //   • THE NUDGE WAS OFTEN NEVER PAINTED. Setting a style and reverting it in the
+    //     NEXT rAF is not a frame apart: rAF callbacks run at the START of a frame's
+    //     rendering steps, so a set/revert pair inside one rendering opportunity can
+    //     coalesce and the compositor never sees the changed value. Measured in this
+    //     WebKit (dev/briefs/garble-lead2-RESULT.md): reverting on the next rAF painted
+    //     the intermediate value in 7/25 samples; holding it across TWO rAFs, 11/25.
+    //     So the heal was skipping its own commit most cycles — it "ran" without
+    //     forcing anything. `holdFrame` below is the fix, and it is why the mechanism
+    //     is now a helper rather than two inline copies.
+    //   • BUMPING 0.02px IS POINTLESS. Measured raster deltas against an untransformed
+    //     baseline: 0.02px changed 2.93% of pixels (max channel delta 194), 0.34px and
+    //     0.5px changed 3.05% (same max). The rasterisation flip has already happened
+    //     at 0.02px and a larger value buys nothing — it only shifts text antialiasing
+    //     further. Do not "try a bigger number"; that lead is closed by measurement.
+    //
+    // The escalation the comment above anticipated is `rebuildLayer` below.
+    const holdFrame = (apply: () => void, revert: () => void) => {
+      apply()
+      // Two rAFs: the first callback runs before this frame paints, so only the second
+      // guarantees a painted frame carried the changed value.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { if (termRef.current === term) revert() })
+      })
+    }
     const hardRepaint = () => {
       if (!activeRef.current) return
       try {
         term.refresh(0, term.rows - 1)
         const el = term.element as HTMLElement | null
-        if (el) {
-          el.style.transform = 'translate3d(0, 0.02px, 0)'
-          requestAnimationFrame(() => { if (termRef.current === term) el.style.transform = '' })
-        }
+        if (el) holdFrame(
+          () => { el.style.transform = 'translate3d(0, 0.02px, 0)' },
+          () => { el.style.transform = '' },
+        )
+      } catch { /* disposed */ }
+    }
+    // The heavier escalation: promote the element to its own compositing layer and drop
+    // it again. Each transition destroys and rebuilds the layer's backing store, so a
+    // stale raster CANNOT survive it — where a transform nudge only asks the compositor
+    // to re-commit pixels it may believe are still valid. Measured pixel-identical while
+    // applied (0 of ~400k pixels changed, at dPR 1 and 2), unlike the opacity and
+    // visibility toggles that were burned in v0.8.5 — nothing bleeds through, because
+    // the element never stops being opaque or painted.
+    // Heavier per call than `hardRepaint` (it allocates a viewport-sized backing store),
+    // so it is wired ONLY to the ≤1/sec heal, never to settle and never per-chunk.
+    const rebuildLayer = () => {
+      if (!activeRef.current) return
+      try {
+        term.refresh(0, term.rows - 1)
+        const el = term.element as HTMLElement | null
+        if (el) holdFrame(
+          () => { el.style.willChange = 'transform' },
+          () => { el.style.willChange = '' },
+        )
       } catch { /* disposed */ }
     }
     const scheduleRepaint = () => {
@@ -364,8 +409,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // faster than it heals). A steady low-frequency repaint, running whenever
     // output is recent, continuously re-syncs the viewport regardless of write
     // cadence. Cheap (≤1 viewport repaint/sec) and pauses when the session is idle.
+    // The periodic heal runs the LAYER REBUILD, not the nudge: this is the once-a-second
+    // slot the brief reserved for the heavier mechanism, and it is the one that can clear
+    // a rect the compositor believes is still valid. The gate stays — a genuinely idle
+    // session must not spin — and it was traced as open during the sighting anyway.
     const healInterval = window.setInterval(() => {
-      if (Date.now() - lastDataAtRef.current < 6000) hardRepaint()
+      if (Date.now() - lastDataAtRef.current < 6000) rebuildLayer()
     }, 1000)
 
     const BG_CAP = 512_000 // ~512KB of background output retained per hidden pane

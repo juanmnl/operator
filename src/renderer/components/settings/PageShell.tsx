@@ -147,9 +147,23 @@ export function PageShell({
           offsetWidth while the content centred inside its clientWidth, so a space-taking
           scrollbar (macOS "Always", or any mouse attached) pushed the two measures 3px out
           of line on any page long enough to scroll. Same containing block = same left edge
-          at every scrollbar width. `scrollbar-gutter: stable` does NOT fix it: the gutter is
-          reserved inside the scroller only, so an outside header still centres 3px wider. */}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+          at every scrollbar width. `scrollbar-gutter: stable` does NOT fix THAT on its own: the
+          gutter is reserved inside the scroller only, so an outside header still centres 3px
+          wider.
+
+          Same containing block is only HALF the fix, though. It stops the header and the
+          content disagreeing with EACH OTHER; it does nothing about them both moving relative
+          to the WINDOW. Measured: the whole page slid 400 → 397 the moment it got long enough
+          to scroll, because a centred box re-centres inside a content box 6px narrower.
+
+          `overflow-y: scroll` (not `auto`) is what fixes that half: it keeps the scrollbar's
+          6px reserved whether or not the content overflows, so the measure box centres in the
+          same width in both states. The reserved strip costs nothing visually — the track is
+          transparent and a non-overflowing scroller draws no thumb, so a short page looks
+          exactly as it did. `scrollbar-gutter: stable` is the modern spelling of this and
+          WebKit PARSES it (CSS.supports says yes) but does not implement it — measured: a
+          probe with the gutter set reserved 0px. Do not swap this back. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'scroll', overflowX: 'auto' }}>
         {/* One sticky block for ALL the page chrome — header and tab bar pin together, so
             the tab bar can't slide under the title. Opaque background, or the content
             scrolls through it. */}

@@ -2,7 +2,9 @@
 // Extracted from the components (which previously each carried their own copy) so
 // the rounding/threshold rules have one definition and a unit test.
 
-/** "just now" / "5m ago" / "2h ago" / "3d ago" from an ISO timestamp.
+/** "just now" / "5m ago" / "2h ago" / "3d ago" / "2w ago" / "5mo ago" / "1y ago" from an
+ *  ISO timestamp. The ladder runs past days because a long-quiet project reads "127d ago"
+ *  otherwise — a number you have to do arithmetic on before it means anything.
  *  Pass `subMinuteSeconds` to render "12s ago" instead of "just now" under a minute. */
 export function relativeTime(iso: string, opts: { subMinuteSeconds?: boolean } = {}): string {
   const ms = Date.now() - new Date(iso).getTime()
@@ -12,7 +14,15 @@ export function relativeTime(iso: string, opts: { subMinuteSeconds?: boolean } =
   if (m < 60) return `${m}m ago`
   const h = Math.round(m / 60)
   if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
+  const d = Math.round(h / 24)
+  if (d < 7) return `${d}d ago`
+  const w = Math.round(d / 7)
+  if (w < 5) return `${w}w ago`
+  // Average month/year lengths: this is a glance, not a date calculation. Each rung rounds
+  // off the DAY count rather than the rung below it, so no rung can ever print a zero.
+  const mo = Math.round(d / 30.44)
+  if (mo < 12) return `${mo}mo ago`
+  return `${Math.round(d / 365.25)}y ago`
 }
 
 /** Collapse the user's home directory to `~` for display: /Users/me/dev/app → ~/dev/app.

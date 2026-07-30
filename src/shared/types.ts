@@ -144,10 +144,21 @@ export interface ProjectTask {
   text: string
   /** Assigned agent lane, or undefined = unassigned backlog. */
   roleId?: string
-  /** Lifecycle: queued (backlog) → running (handed to a lane) → done. Absent = queued. */
-  status?: 'queued' | 'running' | 'done'
-  /** The lane's terminal this task was dispatched to (for auto-complete + diff link). */
+  /** Lifecycle: queued (backlog) → running (handed to a lane) → done.
+   *  `abandoned` is the fourth: its lane is gone and it was never seen to finish, so we know
+   *  its run ended but NOT that the work completed. It exists because the alternative was
+   *  lying — reconciliation used to write `done`, which every count and chip reads as
+   *  "finished". Absent = queued. */
+  status?: 'queued' | 'running' | 'done' | 'abandoned'
+  /** The lane's terminal this task was dispatched to (for auto-complete + diff link).
+   *  NOT a liveness key: it's a per-run counter (`t0`, `t1`, …) that COLLIDES across runs —
+   *  three different sessions in the real store hold `t5` — so "is this terminal alive?" is
+   *  unanswerable from it. Use `claudeSessionId` for that. */
   terminalId?: string
+  /** The lane's Claude session id — a UUID, globally unique and stable across restarts, which
+   *  is what makes it the liveness key `terminalId` can't be. Absent on tasks stamped before
+   *  this field existed; those are adopted or abandoned once on hydrate (lib/task-lifecycle). */
+  claudeSessionId?: string
   /** Where the lane ran (worktree path or project root) — the live-diff source. */
   cwd?: string
   /** Worktree lanes: source repo root + branch/base, so the diff (and merge) survive
@@ -195,6 +206,9 @@ export interface Project {
   /** Folder basename; renamable (id/path stay fixed). */
   name: string
   createdAt: string
+  /** Last time an agent RAN or was restored here — *not* last opened. Only the launch and
+   *  restore sites bump it; browsing into a project leaves it alone. Read it as "when this
+   *  project last did work", never as "when you last looked at it". */
   lastActiveAt: string
   defaults?: { model?: string; effortLevel?: 'high' | 'normal' | 'low'; permissionMode?: string }
   /** Verification gate: shell command (e.g. "npm test") run in a lane's dir when its
@@ -210,6 +224,11 @@ export interface Project {
    *  Written by the user, edited from the gallery card's ⋯ menu, and shown there as a
    *  two-line snippet. Absent or empty = no description; the card just omits the row. */
   contextNotes?: string
+  /** When the user shelved this project. Absent = ACTIVE; present = PREVIOUS.
+   *  A decision, never a measurement. Cleared automatically the moment a session launches
+   *  here (upsertProject) — a running agent must never hide in a collapsed section.
+   *  Nothing writes it yet; see lib/project-shelf for how it's read. */
+  archivedAt?: string
   // The moodboard is BUILT — it just isn't a field here: its images live on disk under the
   // project's asset dir, reached by id via moodboardAdd/moodboardList, so nothing about it
   // needs to ride in projects.json. Remaining deferred seam: chatThreadId.
@@ -233,8 +252,40 @@ export interface DispatchRecord {
   task: string
   /** sent = typed into a live lane · launched = idle lane spawned with the task ·
    *  queued = task queued (lane idle, pre-auto-launch records or a failed launch) ·
-   *  unassigned = unknown role. */
-  outcome: 'sent' | 'launched' | 'queued' | 'unassigned'
+   *  unassigned = unknown role ·
+   *  pending-approval = a NON-coordinator lane asked for this and it has NOT been delivered;
+   *    it waits for an explicit human approval and never expires into delivery ·
+   *  rejected = a pending one was declined; terminal, and never delivered.
+   *  Historical records predate the last two and keep whatever they were — nothing
+   *  reclassifies them, because a `sent` record means it already went. */
+  outcome: 'sent' | 'launched' | 'queued' | 'unassigned' | 'pending-approval' | 'rejected'
+}
+
+/** A lane's `OPERATOR-REPLY`, as the tailer emits it live. The return path's event shape —
+ *  the mirror of a dispatch, except nothing is typed anywhere: by the time this arrives the
+ *  reply is already persisted, project-scoped, in chat.db. */
+export interface OperatorReply {
+  /** Content hash over `sessionId|to|text` — stable across transcript re-reads, so the
+   *  frontend's seen-set can drop a repeat after a relaunch. */
+  id: string
+  sessionId: string
+  terminalId: string
+  /** The project whose channel it was posted to; '' for an ad-hoc session. */
+  projectId: string
+  /** Addressee token: a lane id, or `project` for a broadcast. Resolved against the live
+   *  roster on arrival — the parser stays liberal, exactly as it is for a dispatch. */
+  to: string
+  text: string
+}
+
+/** One stored reply, as read back per project (chat.db). No `id`: the row is identified by
+ *  its (sessionId, seq) like every other message. */
+export interface ProjectReply {
+  /** The SENDER's session — resolve to a lane via its terminal's roleId. */
+  sessionId: string
+  to: string
+  text: string
+  timestamp: string
 }
 
 /** What resolveProject() returns for a source cwd. */

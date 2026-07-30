@@ -4,15 +4,17 @@ import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, roleLaunchSettings, reorderRoles, presetFor } from '../lib/roster'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { reorderByIds } from '../lib/reorder'
-import { reconcileStaleRunning } from '../lib/task-lifecycle'
+import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
+import { pruneSavedSessions } from '../lib/session-prune'
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
-import { routeDispatch, liveLaneNames } from '../lib/dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
 import { submitQueue } from '../lib/submit-queue'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
+import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
 import { getTerminal } from '../lib/terminal-registry'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -140,7 +142,6 @@ export function DashboardView() {
   // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
   const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
   // Project-switcher popover (sidebar header, ⌘⇧P).
-  const [switcherOpen, setSwitcherOpen] = useState(false)
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -382,6 +383,11 @@ export function DashboardView() {
   // Enter a project: sets the navigation scope and drops the active session so Project
   // Home can surface (see contentMode). Landing tab resets to the roster when you switch
   // to a DIFFERENT project; re-entering the one you were in keeps the tab you left on.
+  //
+  // This deliberately does NOT clear `archivedAt`. Browsing a shelved project — to read its
+  // notes, or to check what's in there before deciding — is not a decision to un-shelve it.
+  // OPEN ≠ REVIVE, LAUNCH = REVIVE (upsertProject's auto-lift); that asymmetry is the whole
+  // ergonomics of the shelf, so don't "fix" this by adding a restore here.
   const handleOpenProject = useCallback((projectId: string) => {
     setActiveProjectId((prev) => {
       if (prev !== projectId) setProjectTab('roster')
@@ -459,9 +465,16 @@ export function DashboardView() {
       const existing = prev.find((p) => p.id === r.id)
       if (existing) {
         return prev.map((p) => p.id === r.id
-          ? { ...p, path: r.path, name: p.name || r.name, lastActiveAt: now, defaults: p.defaults ?? opts?.defaults }
+          ? { ...p, path: r.path, name: p.name || r.name, lastActiveAt: now, defaults: p.defaults ?? opts?.defaults, archivedAt: undefined }
           : p)
       }
+      // AUTO-LIFT: launching, restoring, opening a folder and background cwd resolution all
+      // funnel through here, so clearing `archivedAt` in this one spread un-shelves a project
+      // on EVERY revival path. Without it a running agent can hide inside a collapsed
+      // section. It also fires at boot for a pty that survived a restart (the cwd-resolution
+      // effect below) — correct, since that agent really is live, but it looks like a mystery
+      // write if nobody wrote it down. Note that merely OPENING a project does not come
+      // through here: see handleOpenProject.
       // New project → seed the default orchestration roster (editable afterwards).
       // EMPTY roster. A new project used to arrive with six lanes nobody asked for, sitting
       // in the sidebar looking like they were waiting for something. The six live on as
@@ -470,6 +483,40 @@ export function DashboardView() {
       return [...prev, { id: r.id, path: r.path, name: r.name, createdAt: now, lastActiveAt: now, defaults: opts?.defaults, roster: [] }]
     })
   }, [])
+
+  // Latest snapshots for callbacks that must read the CURRENT state synchronously — the
+  // forget path's undo snapshot (a setState updater runs too late to build one) and the
+  // async task helpers' diff capture — without re-subscribing every render.
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
+  // Live pty set for the completion matcher below (which must not re-subscribe per render).
+  const terminalsRef = useRef(terminals)
+  terminalsRef.current = terminals
+  const savedSessionsRef = useRef(savedSessions)
+  savedSessionsRef.current = savedSessions
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
+
+  /** A terminal's Claude session id — the task lifecycle's liveness key. `terminalId` is a
+   *  per-run counter that collides across runs (three sessions in the real store hold `t5`), so
+   *  it can't answer "is this lane alive?"; this UUID can. Undefined for an untracked session,
+   *  whose tasks then fall back to the legacy terminal+role bridge in lib/task-lifecycle. */
+  const claudeIdOf = (terminalId?: string): string | undefined => {
+    if (!terminalId) return undefined
+    const s = sessionsRef.current.find((x) => x.terminalId === terminalId && x.status !== 'ended')
+    return s && !s.id.startsWith('local-') ? s.id : undefined
+  }
+  /** Tabs stamped with their session's last activity, so `pickLaneTab` can break a duplicate
+   *  tie by recency rather than by whatever order reattach produced. */
+  const withActivity = (tabs: TerminalTab[]) => tabs.map((t) => ({
+    ...t,
+    lastActivityAt: sessionsRef.current.find((s) => s.terminalId === t.id)?.lastActivityAt,
+  }))
+
+  /** The live lanes of one project, as lib/task-lifecycle wants them. */
+  const liveLanesOf = (projectId: string): LiveLane[] => terminalsRef.current
+    .filter((t) => !t.ended && t.projectId === projectId)
+    .map((t) => ({ claudeSessionId: claudeIdOf(t.id), terminalId: t.id, roleId: t.roleId, projectId: t.projectId }))
 
   // Forget a project: drops it from the store (and from the gallery). Its folder, worktrees
   // and any live sessions are untouched — this only removes Operator's record of it, so
@@ -481,7 +528,35 @@ export function DashboardView() {
   // scope writes before "Maximum update depth exceeded"). The guard in the backstop below
   // stops the loop; this stops the dangling data that armed it.
   const forgottenProjectsRef = useRef(new Set<string>())
+
+  /** Everything forgetting destroys, captured so Undo can put it back. The roster, tasks,
+   *  dispatches and notes all ride along inside `project`; the two id lists are what has to
+   *  be re-stamped, since unstamping is what makes them unfindable afterwards. */
+  type ForgottenSnapshot = { project: Project; terminalIds: string[]; savedKeys: string[] }
+
+  const restoreForgottenProject = useCallback((snap: ForgottenSnapshot) => {
+    const { project, terminalIds, savedKeys } = snap
+    // TRAP: the cwd-resolution effect below reads this set to refuse re-adoption. A restored
+    // project left in it gets its terminals silently unstamped again a tick later, so the
+    // undo only half-works — and the half that fails is the scope pointer.
+    forgottenProjectsRef.current.delete(project.id)
+    setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [...prev, project]))
+    const tids = new Set(terminalIds)
+    setTerminals((prev) => prev.map((t) => (tids.has(t.id) ? { ...t, projectId: project.id } : t)))
+    const keys = new Set(savedKeys)
+    setSavedSessions((prev) => prev.map((sv) => (keys.has(sv.key) ? { ...sv, projectId: project.id } : sv)))
+  }, [])
+
   const forgetProject = useCallback((id: string) => {
+    const project = projectsRef.current.find((p) => p.id === id)
+    if (!project) return
+    // Snapshot BEFORE anything is unstamped — after the writes below there is no way left to
+    // tell which terminals and saved sessions belonged here.
+    const snap: ForgottenSnapshot = {
+      project,
+      terminalIds: terminalsRef.current.filter((t) => t.projectId === id).map((t) => t.id),
+      savedKeys: savedSessionsRef.current.filter((sv) => sv.projectId === id).map((sv) => sv.key),
+    }
     forgottenProjectsRef.current.add(id)
     setProjects((prev) => prev.filter((p) => p.id !== id))
     setActiveProjectId((cur) => (cur === id ? null : cur))
@@ -491,7 +566,15 @@ export function DashboardView() {
     setSavedSessions((prev) => (prev.some((sv) => sv.projectId === id)
       ? prev.map((sv) => (sv.projectId === id ? { ...sv, projectId: undefined } : sv))
       : prev))
-  }, [])
+    // This delete is persisted and otherwise unrecoverable — the roster, the backlog, the
+    // dispatch log and the description all go. The menu already made you click twice; the
+    // toast is the way back for the time you meant the item above it.
+    pushToast({
+      text: `Forgot ${project.name}`,
+      detail: 'Its roster, tasks and notes are gone — the folder itself is untouched.',
+      action: { label: 'Undo', run: () => restoreForgottenProject(snap) },
+    })
+  }, [pushToast, restoreForgottenProject])
 
   // Patch a project by id (roster edits, rename, …) and persist via the effect below.
   // `patch` may be a function of the CURRENT project rather than a fixed object: a caller
@@ -500,6 +583,38 @@ export function DashboardView() {
   const updateProject = useCallback((id: string, patch: ProjectPatch) => {
     setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...(typeof patch === 'function' ? patch(p) : patch) } : p)))
   }, [])
+
+  // Shelving: `archivedAt` is a DECISION, so it is only ever written from here (and cleared
+  // by upsertProject's auto-lift). No confirm — confirming a one-click-reversible action just
+  // teaches people to click through the confirms that matter — but an undo toast, which
+  // doubles as discovery for a verb the ⋯ menu only just grew.
+  const restoreProject = useCallback((id: string) => {
+    updateProject(id, { archivedAt: undefined })
+  }, [updateProject])
+
+  // One write path for shelving, whether it's one card's ⋯ menu or a tidy pass over twelve.
+  // Everything in a batch shares ONE `archivedAt`, which is exactly the tie the Previous
+  // shelf's `lastActiveAt` tiebreak exists to break. Undo restores precisely the ids this
+  // call shelved — not "everything archived" — so it can't unshelve someone else's work.
+  const archiveProjects = useCallback((ids: string[]) => {
+    if (!ids.length) return
+    const at = new Date().toISOString()
+    const set = new Set(ids)
+    setProjects((prev) => prev.map((p) => (set.has(p.id) ? { ...p, archivedAt: at } : p)))
+    const only = ids.length === 1 ? projectsRef.current.find((p) => p.id === ids[0]) : undefined
+    pushToast({
+      text: only ? `Shelved ${only.name}` : `Shelved ${ids.length} projects`,
+      detail: only
+        ? 'It moves to Previous. Launching an agent here brings it straight back.'
+        : 'They keep their rosters, tasks and notes. Launching an agent brings one back.',
+      action: {
+        label: 'Undo',
+        run: () => setProjects((prev) => prev.map((p) => (set.has(p.id) ? { ...p, archivedAt: undefined } : p))),
+      },
+    })
+  }, [pushToast])
+
+  const archiveProject = useCallback((id: string) => archiveProjects([id]), [archiveProjects])
 
   // Open a folder as its Project workspace (Agents/Roster) — this is now how "New Session"
   // / picking a folder works: no ad-hoc single-session form, land straight on the roster so
@@ -549,12 +664,6 @@ export function DashboardView() {
   type TaskLane = { cwd?: string; sourceCwd?: string; worktreeBranch?: string; worktreeBase?: string }
   const laneOf = (tab?: { cwd: string; sourceCwd?: string; worktreeBranch?: string; worktreeBase?: string }): TaskLane | undefined =>
     tab ? { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase } : undefined
-  // Latest projects snapshot for async task helpers (diff capture) without re-subscribing.
-  const projectsRef = useRef(projects)
-  projectsRef.current = projects
-  // Live pty set for the completion matcher below (which must not re-subscribe per render).
-  const terminalsRef = useRef(terminals)
-  terminalsRef.current = terminals
   // Lifecycle transitions. Dispatching a task marks it running (with its lane) instead of
   // deleting it, so it stays visible until done. `terminalId` is optional — the lane pickup
   // path doesn't know the new terminal id yet, so it matches on roleId for auto-complete.
@@ -564,7 +673,7 @@ export function DashboardView() {
     const now = new Date().toISOString()
     setProjects((prev) => prev.map((p) => (p.id === projectId
       ? { ...p, tasks: (p.tasks ?? []).map((t) => (idset.has(t.id)
-        ? { ...t, status: 'running' as const, startedAt: t.startedAt ?? now, terminalId: terminalId ?? t.terminalId, ...(lane ?? {}) }
+        ? { ...t, status: 'running' as const, startedAt: t.startedAt ?? now, terminalId: terminalId ?? t.terminalId, claudeSessionId: claudeIdOf(terminalId) ?? t.claudeSessionId, ...(lane ?? {}) }
         : t)) }
       : p)))
   }, [])
@@ -612,7 +721,7 @@ export function DashboardView() {
     const t = text.trim()
     if (!t) return
     const now = new Date().toISOString()
-    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, createdAt: now, startedAt: now, ...(lane ?? {}) }
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, claudeSessionId: claudeIdOf(terminalId), createdAt: now, startedAt: now, ...(lane ?? {}) }
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
   }, [])
   // When a lane's session ends, its still-running tasks are treated as done (auto-complete).
@@ -620,15 +729,17 @@ export function DashboardView() {
   // worktree, so the stat survives the dir. `lane` backfills provenance the pickup path missed.
   const completeTerminalTasks = useCallback(async (terminalId: string, roleId?: string, projectId?: string, lane?: TaskLane) => {
     const now = new Date().toISOString()
-    // A task whose stamped terminal is DEAD is matchable by its lane. The old fallback
-    // required `!t.terminalId`, i.e. it only rescued tasks that had never been stamped —
-    // but stamping is exactly what markTasksRunning does, so a task could never be completed
-    // once its pty was gone (see lib/task-lifecycle).
-    const liveIds = new Set(terminalsRef.current.map((t) => t.id))
+    // Matched by SESSION id first — `terminalId` collides across runs, so matching on it alone
+    // let an exiting lane close a previous run's tasks that happened to share its counter.
+    // The role fallback stays for tasks stamped before the session id existed, and is still
+    // gated on the stamped terminal not being live in this run.
+    const claudeId = claudeIdOf(terminalId)
+    const lanes = projectId ? liveLanesOf(projectId) : []
     const isMatch = (t: ProjectTask) =>
       t.status === 'running' && (
-        t.terminalId === terminalId
-        || (!!roleId && t.roleId === roleId && (!t.terminalId || !liveIds.has(t.terminalId)))
+        (!!claudeId && t.claudeSessionId === claudeId)
+        || (!t.claudeSessionId && t.terminalId === terminalId)
+        || (!!roleId && t.roleId === roleId && !t.claudeSessionId && !liveLaneOf(t, lanes))
       )
     const matched: { projectId: string; ids: string[]; task: ProjectTask }[] = []
     for (const p of projectsRef.current) {
@@ -663,6 +774,14 @@ export function DashboardView() {
   }
 
   // Append a routed dispatch to the project's activity log (capped tail, newest last).
+  /** Update one dispatch record's outcome in place (approval / rejection). Keeps the log at one
+   *  row per dispatch, and is what makes a second approval a no-op. */
+  const setDispatchOutcome = useCallback((projectId: string, id: string, outcome: DispatchRecord['outcome'], toRoleId?: string) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, dispatches: (p.dispatches ?? []).map((d) => (d.id === id ? { ...d, outcome, toRoleId: toRoleId ?? d.toRoleId } : d)) }
+      : p)))
+  }, [])
+
   const logDispatch = useCallback((projectId: string, rec: DispatchRecord) => {
     setProjects((prev) => prev.map((p) => (p.id === projectId
       ? { ...p, dispatches: [...(p.dispatches ?? []), rec].slice(-100) }
@@ -676,31 +795,74 @@ export function DashboardView() {
   // task as its opening brief (without stealing focus). Dedupe by dispatch id plus the
   // in-flight guard below bound any re-dispatch loop.
   // Latest routing inputs held in a ref so the subscription is set up once (no missed events).
+  // The enricher, in a ref: the dispatch subscription below is mounted once and must not
+  // re-subscribe per render just to see fresh session activity.
+  const withActivityRef = useRef(withActivity)
+  withActivityRef.current = withActivity
   const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject })
   dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject }
   // handleLaunchRole is declared further down; the subscription reaches it through a ref.
   const launchRoleRef = useRef<((project: Project, role: Role, prompt?: string, launchDevServer?: boolean, opts?: { focus?: boolean }) => Promise<TerminalTab | undefined>) | null>(null)
   // One launch per (project, lane) at a time: a burst of dispatches to the same idle lane
   // must join the session being spawned, not fan out into sibling lanes.
-  const launchingLanesRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
+  // The RETURN path. Deliberately much smaller than the dispatch subscription below: a reply
+  // routes into no pty, and the tailer has already persisted it (project-scoped) before this
+  // fires — so there is nothing here to deliver and nothing to store. All this does is
+  // dedupe across transcript re-reads, resolve the two identities the backend can't
+  // (which lane SENT it, and which lane the `to` token names), and surface it.
   useEffect(() => {
-    const SEEN_KEY = 'operator.dispatch.seen'
-    const unsub = window.operator.onOrchestratorDispatch?.((d) => {
+    const SEEN_KEY = 'operator.reply.seen'
+    const unsub = window.operator.onOrchestratorReply?.((r) => {
       let seen: string[] = []
       try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') } catch { /* */ }
-      if (seen.includes(d.id)) return // already handled (dedupe across transcript re-reads)
-      try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, d.id].slice(-500))) } catch { /* */ }
+      if (seen.includes(r.id)) return // already handled (dedupe across transcript re-reads)
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
 
+      const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
+      const srcTab = tabs.find((t) => t.id === r.terminalId)
+      const project = projs.find((p) => p.id === (r.projectId || srcTab?.projectId))
+      const roster = project?.roster ?? []
+      // Who spoke: the emitting terminal's lane, exactly as dispatch attributes its sender.
+      const from = roster.find((role) => role.id === srcTab?.roleId)
+      // Who it's for: `project` is a broadcast; anything else is matched against the live
+      // roster, and an unmatched token is kept verbatim rather than dropped — the parser is
+      // liberal on purpose and a reply nobody can route is still a reply somebody wrote.
+      const to = r.to.toLowerCase() === 'project'
+        ? null
+        : roster.find((role) => role.id === r.to.toLowerCase())
+      const preview = r.text.length > 60 ? r.text.slice(0, 60) + '…' : r.text
+      toast({
+        text: `${from?.name ?? 'A lane'} replied${to ? ` to ${to.name}` : ''}`,
+        kind: 'info',
+        detail: preview,
+      })
+    })
+    return () => unsub?.()
+  }, [])
+
+  const launchingLanesRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
+
+  // DELIVERY, split out of the subscription so an APPROVAL can run the exact same path. A
+  // pending dispatch that delivered through a second, near-identical code path would be a
+  // guarantee nobody could check; this way "approved" is literally "what would have happened".
+  // Held in a ref (the file's idiom for a mount-once subscription reaching fresh state).
+  const deliverDispatchRef = useRef<(a: { id: string; roleToken: string; task: string; terminalId?: string; projectId: string; approving?: boolean }) => void>(() => {})
+  deliverDispatchRef.current = ({ id, roleToken, task, terminalId, projectId, approving }) => {
       const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast, logDispatch: log } = dispatchRef.current
-      const srcTab = tabs.find((t) => t.id === d.terminalId)
-      const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
+      const srcTab = tabs.find((t) => t.id === terminalId)
+      const project = projs.find((p) => p.id === projectId)
       if (!project) return
       const roster = project.roster ?? []
-      const route = routeDispatch(d.role, roster, tabs, project.id)
+      const d = { id, role: roleToken, task }
+      const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
       const routedRole = route.kind === 'unassigned' ? undefined : route.role
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
-      const record = (outcome: DispatchRecord['outcome']) =>
-        log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: routedRole?.id, task: d.task, outcome })
+      // On approval the record already exists — UPDATE it in place, so the log keeps one row per
+      // dispatch and re-approving a delivered one has nothing left to find (that is what makes
+      // "delivers once and only once" true rather than merely likely).
+      const record = (outcome: DispatchRecord['outcome']) => (approving
+        ? setDispatchOutcome(project.id, id, outcome, routedRole?.id)
+        : log(project.id, { id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: routedRole?.id, task: d.task, outcome }))
       // Status notes typed back into the DISPATCHER's pty so it can adapt (e.g. an unknown
       // role, or confirmation that an idle lane was launched). Naming the currently-live
       // lanes (routing logic + the ended-lane guard live in lib/dispatch) lets it reassign
@@ -769,8 +931,76 @@ export function DashboardView() {
         toast({ text: 'Queued (unassigned)', kind: 'info', detail: preview })
         feedback(`No lane named "${d.role}" exists in this project, so your task went to the unassigned backlog. Reassign it to one of the project's actual lanes, or ask the user.`)
       }
+  }
+
+  useEffect(() => {
+    const SEEN_KEY = 'operator.dispatch.seen'
+    const unsub = window.operator.onOrchestratorDispatch?.((d) => {
+      let seen: string[] = []
+      try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') } catch { /* */ }
+      if (seen.includes(d.id)) return // already handled (dedupe across transcript re-reads)
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, d.id].slice(-500))) } catch { /* */ }
+
+      const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
+      const srcTab = tabs.find((t) => t.id === d.terminalId)
+      const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
+      if (!project) return
+
+      // AUTHORITY GATE. Only the coordinator commissions work unsupervised. Any other lane's
+      // dispatch is recorded `pending-approval` and NOT delivered — lanes still talk, they just
+      // can't silently put work into another lane's pty. Nothing expires into delivery: with no
+      // approval it stays pending forever, which is the whole point of a guardrail.
+      //
+      // EVERY route is held, including `unassigned`. Filing a task into the backlog is still
+      // commissioning work — "Start all" would run it — so the hold is on the decision to add
+      // work to the project, not merely on writing into a pty.
+      if (dispatchNeedsApproval(srcTab?.roleId)) {
+        const roster = project.roster ?? []
+        // Resolved only to NAME the target for the UI; no side effect runs here.
+        const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
+        const toRole = route.kind === 'unassigned' ? undefined : route.role
+        const from = roster.find((r) => r.id === srcTab?.roleId)
+        const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
+        log(project.id, { id: d.id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId, toRoleId: toRole?.id, task: d.task, outcome: 'pending-approval' })
+        // Tell the dispatcher, so it doesn't sit waiting on work that was never sent.
+        if (srcTab) {
+          void submitQueue.submit(srcTab.id, `[Operator] Held for approval: only the coordinator dispatches work directly. Your task for "${toRole?.name ?? d.role}" is in this project's dispatch log awaiting the user's approval — it has NOT been delivered. Recommend it in your report rather than dispatching it.`)
+        }
+        toast({
+          text: `${from?.name ?? 'A lane'} wants to dispatch to ${toRole?.name ?? d.role}`,
+          detail: `Needs your approval — see Dispatches. ${preview}`,
+          kind: 'info',
+        })
+        return
+      }
+
+      deliverDispatchRef.current({ id: d.id, roleToken: d.role, task: d.task, terminalId: d.terminalId, projectId: project.id })
     })
     return () => { unsub?.() }
+  }, [])
+
+  /** Approve a held dispatch: deliver it exactly as a coordinator's would have been. A no-op
+   *  unless the record is still `pending-approval`, so a double-click (or a second approval from
+   *  another surface) cannot deliver twice. */
+  const approveDispatch = useCallback((projectId: string, id: string) => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    const rec = project?.dispatches?.find((x) => x.id === id)
+    if (!rec || rec.outcome !== 'pending-approval') return
+    // Re-routed against the CURRENT lanes, not the ones alive when it was held — the target may
+    // have started or died since, and the approval means "do this now".
+    const srcTab = terminalsRef.current.find((t) => t.roleId === rec.fromRoleId && t.projectId === projectId && !t.ended)
+    deliverDispatchRef.current({
+      id, roleToken: rec.toRoleId ?? '', task: rec.task,
+      terminalId: srcTab?.id, projectId, approving: true,
+    })
+  }, [])
+
+  /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
+  const rejectDispatch = useCallback((projectId: string, id: string) => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    const rec = project?.dispatches?.find((x) => x.id === id)
+    if (!rec || rec.outcome !== 'pending-approval') return
+    setDispatchOutcome(projectId, id, 'rejected')
   }, [])
 
   // A recent-project click: open its workspace if we already know it as a Project (so you can
@@ -974,12 +1204,45 @@ export function DashboardView() {
   useEffect(() => {
     if (!savedHydrated || !reattachDone || reconciledRef.current) return
     reconciledRef.current = true
-    const liveIds = new Set(terminals.map((t) => t.id))
+
+    // --- PRUNE THE RESTORE LIST (separate concern from the task reconcile below) -----------
+    // Duplicate lane records: the same (project, role) saved four or five times, because the
+    // launch path used to spawn a second lane for a role that already had a live one. Runs
+    // AFTER reattach so `liveClaudeIds` is real — a live lane's record is never pruned, whatever
+    // else exists for its role. Idempotent, so it early-bails on every launch after the first.
+    void (async () => {
+      const liveClaudeIds = new Set(
+        sessionsRef.current.filter((x) => x.status !== 'ended' && !x.id.startsWith('local-')).map((x) => x.id),
+      )
+      const { kept, dropped } = pruneSavedSessions(savedSessionsRef.current, liveClaudeIds)
+      if (!dropped.length) return
+      // Back up before the first destructive write. No Rust needed: folderPrefsSaveMd is a
+      // verbatim text writer that creates its parent dirs (the buffer-dump uses it the same
+      // way). Re-serialized rather than byte-copied — same data, not the same bytes.
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const path = await join(await homeDir(), '.operator', 'backups', `sessions.json.${stamp}`)
+        await window.operator.folderPrefsSaveMd(path, JSON.stringify(savedSessionsRef.current, null, 2))
+      } catch (e) {
+        // No backup, no prune. Losing restore records with no way back is not a trade worth
+        // making for tidiness.
+        console.warn('sessions.json backup failed; skipping prune', e)
+        return
+      }
+      setSavedSessions(kept)
+      pushToast({
+        text: `Pruned ${dropped.length} duplicate lane record${dropped.length === 1 ? '' : 's'}`,
+        detail: 'Older duplicates of a lane that already had a newer session. Backed up first.',
+        kind: 'info',
+      })
+    })()
     const now = new Date().toISOString()
     setProjects((prev) => {
       let changed = false
       const next = prev.map((p) => {
-        const tasks = reconcileStaleRunning(p.tasks, liveIds, now)
+        // Scoped per project: a lane only owns tasks filed against its own project, and
+        // `terminalId` is far too collidable to match across them.
+        const tasks = reconcileStaleRunning(p.tasks, liveLanesOf(p.id), now)
         if (tasks === p.tasks) return p
         changed = true
         return { ...p, tasks }
@@ -1033,6 +1296,9 @@ export function DashboardView() {
       const initial = [devInstr, config.prompt].filter(Boolean).join('\n\n')
       if (initial) launchOptions.initialPrompt = initial
       if (opts?.orchestrationNote) launchOptions.orchestrationNote = opts.orchestrationNote
+      // Rides to the tailer so any OPERATOR-REPLY this lane posts is stamped with its project
+      // (the backend can't derive our canonical-repo-root ids).
+      launchOptions.projectId = proj.id
 
       const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
       if (!result) continue
@@ -1087,6 +1353,21 @@ export function DashboardView() {
   const launchInFlightRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
   const handleLaunchRole = useCallback(async (project: Project, role: Role, prompt?: string, launchDevServer = false, opts?: { focus?: boolean }): Promise<TerminalTab | undefined> => {
     const laneKey = `${project.id}:${role.id}`
+    // REUSE A LIVE LANE. The in-flight guard below only covers the seconds a launch takes; it
+    // never stopped a SECOND lane being spawned for a role that already had a live session, and
+    // that is what actually happened — the real store held 4-5 sessions per role in one project.
+    // The damage isn't the extra pty: dispatch resolves a role to ONE terminal, so every
+    // duplicate beyond the winner is live, unreachable, and holding whatever it was last sent.
+    // Work went into them and the answers came back where nothing was looking.
+    // `pickLaneTab` is the SAME resolution dispatch uses, so a reused lane and a dispatched
+    // one can never disagree about which terminal is the lane.
+    const existing = pickLaneTab(withActivity(terminalsRef.current), project.id, role.id)
+    if (existing) {
+      const joined = prompt?.trim()
+      if (joined) void submitQueue.submit(existing.id, joined)
+      if (opts?.focus !== false) setActiveTerminalId(existing.id)
+      return existing
+    }
     const pending = launchInFlightRef.current.get(laneKey)
     if (pending) {
       const tab = await pending
@@ -1234,6 +1515,9 @@ export function DashboardView() {
     // Resolve the project (canonical repo root) — always, so an old saved session with no
     // projectId gets backfilled and the project's lastActiveAt is touched on reopen.
     const proj = await resolveProject(saved.sourceCwd ?? saved.cwd)
+
+    // Same reply-scoping stamp as the launch path.
+    launchOptions.projectId = saved.projectId ?? proj.id
 
     // Restore spawns directly into the saved cwd (the worktree path persists
     // across quits), so no new worktree is created.
@@ -1442,6 +1726,7 @@ export function DashboardView() {
     for (const p of projects) out[p.id] = projectActivity(byProject[p.id] ?? [], p.roster?.length ?? 0)
     return out
   }, [allSidebarSessions, projects])
+
 
   // Drag-to-reorder the sidebar's AD-HOC session rows: move the dragged terminal before/after
   // the drop target in the canonical `terminals` order (which drives the list + ⌘1..9).
@@ -1711,17 +1996,13 @@ export function DashboardView() {
       // Shared predicate with the terminal's key handler (lib/key-routing) so the
       // two can't disagree about which chords belong to the app vs the pty.
       if (!isAppChord(e)) return
-      // Navigation chords take the shifted variants: ⌘⇧O leaves for the gallery, ⌘⇧P opens
-      // the project switcher. Checked before the unshifted keys so ⌘⇧P can't read as ⌘P.
-      if (e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+      // ⌘⇧O and ⌘⇧P both leave for the gallery. Checked before the unshifted keys so neither
+      // can read as ⌘O / ⌘P. ⌘⇧P used to open the sidebar's project-switcher popover; that
+      // popover is gone, and the gallery is now the one place that lists every project — so
+      // the chord keeps meaning "go to projects" rather than becoming dead muscle memory.
+      if (e.shiftKey && (e.key === 'o' || e.key === 'O' || e.key === 'p' || e.key === 'P')) {
         e.preventDefault()
         handleShowGallery()
-        return
-      }
-      if (e.shiftKey && (e.key === 'p' || e.key === 'P')) {
-        e.preventDefault()
-        // Only meaningful inside a project — at the gallery the switcher has no anchor.
-        if (activeProjectId) setSwitcherOpen((v) => !v)
         return
       }
       if (e.key === 'k' || e.key === 'K') {
@@ -1828,7 +2109,13 @@ export function DashboardView() {
 
     const now = new Date()
     const sid = activeSession?.id ?? tid
-    const shortId = sid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'session'
+    const short = (s: string, fallback: string) => s.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || fallback
+    // BOTH ids in the NAME, not just the body: a garble report is matched against a pty,
+    // and terminal ids are what the backend and the heal loop talk about. Two dumps of the
+    // same session across a restart carry different terminal ids, and that difference is
+    // the first thing you want to see in a directory listing.
+    const shortId = short(sid, 'session')
+    const shortTid = short(tid, 'term')
     const ts = now.toISOString().replace(/[:.]/g, '-')
     const content =
       [`# terminal buffer dump`,
@@ -1841,7 +2128,7 @@ export function DashboardView() {
     try {
       // folderPrefsSaveMd is a generic verbatim text writer that creates parent
       // dirs — reused here so the diagnostic needs no new bridge/Rust surface.
-      const path = await join(await homeDir(), '.operator', 'terminal-dumps', `${shortId}-${ts}.txt`)
+      const path = await join(await homeDir(), '.operator', 'terminal-dumps', `${shortId}-${shortTid}-${ts}.txt`)
       await window.operator.folderPrefsSaveMd(path, content)
       pushToast({ text: 'Terminal buffer dumped', kind: 'success', detail: path })
     } catch (e) {
@@ -2002,11 +2289,23 @@ export function DashboardView() {
     // Per project: open its workspace, launch any lane, and start its queued backlog —
     // the orchestration surface, previously reachable only through the Agents board.
     projects.forEach((p) => {
+      // The palette lists BOTH shelves — it's the one surface that reaches a shelved project
+      // without expanding anything — so it has to say which shelf you're about to land on,
+      // and offer the way back. A mis-archive should be recoverable from anywhere.
+      const shelved = !!p.archivedAt
       actions.push({
         id: `project-${p.id}`, group: 'Project',
-        label: `Open ${p.name} workspace`, detail: p.path,
+        label: `Open ${p.name} workspace`, detail: shelved ? `${p.path} · previous` : p.path,
         run: () => handleOpenProject(p.id),
       })
+      if (shelved) {
+        actions.push({
+          id: `restore-project-${p.id}`, group: 'Project',
+          label: `Restore ${p.name} to active`,
+          detail: 'Brings it back out of Previous',
+          run: () => restoreProject(p.id),
+        })
+      }
       const resumable = restorableSessions.filter((s) => s.projectId === p.id).length
       if (resumable > 0) {
         actions.push({
@@ -2072,7 +2371,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -2091,11 +2390,24 @@ export function DashboardView() {
           onClose={() => setAccentPicker(null)}
         />
       )}
+      {/* The left strip: the PERSISTENT project rail, then the collapsible sidebar beside it.
+          They're grouped so the root's 8px gap falls between this pair and the content card,
+          and the two strips stay flush — peers sharing the sidebar field, parted by a
+          hairline. At the gallery the sidebar animates to 0 and the rail stays put, which is
+          the entire point of it. */}
+      <div style={{ display: 'flex', flexShrink: 0, height: '100%' }}>
+      <ProjectRail
+        projects={projects}
+        activities={projectActivities}
+        activeProjectId={contentMode === 'gallery' ? null : activeProjectId}
+        onOpenProject={handleOpenProject}
+        onShowGallery={handleShowGallery}
+        onOpenFolder={handleNewSession}
+      />
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
-          the narrow quick-access rail (64). The rail always hosts the macOS
-          traffic lights, so the content card never slides under them — EXCEPT at the
-          gallery, where the whole strip collapses to 0 and the gallery's own header
-          reserves that space instead (spec §2A). */}
+          the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so
+          the content card never slides under them — including at the gallery, where this
+          strip collapses to 0 and the gallery's own header reserves its own space (spec §2A). */}
       <div
         style={{
           width: contentMode === 'gallery' ? 0 : sidebarCollapsed ? 64 : 220,
@@ -2123,9 +2435,7 @@ export function DashboardView() {
       <Sidebar
         project={activeProject}
         sessions={scopedSessions}
-        projects={projects}
-        activities={projectActivities}
-        onOpenProject={handleOpenProject}
+        onRestoreProject={restoreProject}
         onOpenProjectHome={() => activeProjectId && handleOpenProject(activeProjectId)}
         projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
@@ -2139,7 +2449,6 @@ export function DashboardView() {
         shortcutIndices={shortcutIndices}
         stats={sidebarStats}
         isDark={currentTheme.isDark}
-        onShowGallery={handleShowGallery}
         onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
@@ -2148,9 +2457,6 @@ export function DashboardView() {
         onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
         onReorderSession={handleReorderSession}
         onReorderLane={handleReorderLane}
-        switcherOpen={switcherOpen}
-        onSwitcherOpenChange={setSwitcherOpen}
-        onNewSession={handleNewSession}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
         onOpenAgents={handleOpenAgents}
@@ -2161,6 +2467,7 @@ export function DashboardView() {
         onInstallUpdate={() => { void window.operator.installUpdate() }}
       />
       )}
+      </div>
       </div>
 
       <div data-term-focus-zone style={{
@@ -2240,6 +2547,11 @@ export function DashboardView() {
               onSendTask={(task) => sendProjectTask(proj, task)}
               onStartAll={() => startProjectTasks(proj)}
               onSetTaskStatus={(taskId, status) => setTaskStatus(proj.id, taskId, status)}
+              // A dispatch from a non-coordinator lane is HELD (`pending-approval`) and can only
+              // be delivered from here. Without these two wires the hold is a silent drop:
+              // DispatchLog would render the pending row with nothing able to act on it.
+              onApproveDispatch={approveDispatch}
+              onRejectDispatch={rejectDispatch}
               resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />
@@ -2406,6 +2718,7 @@ export function DashboardView() {
           <ProjectGallery
             projects={projects}
             sessions={allSidebarSessions}
+            activities={projectActivities}
             tab={galleryTab}
             onSelectTab={setGalleryTab}
             accentOf={accentOf}
@@ -2415,6 +2728,9 @@ export function DashboardView() {
             onRenameProject={(id, name) => updateProject(id, { name })}
             onSetProjectNotes={(id, contextNotes) => updateProject(id, { contextNotes })}
             onForgetProject={forgetProject}
+            onArchiveProject={archiveProject}
+            onArchiveProjects={archiveProjects}
+            onRestoreProject={restoreProject}
             onOpenFolderPrefs={handleOpenFolderPrefs}
             onSelectSession={handleSelectSession}
             restorableSessions={restorableSessions}
