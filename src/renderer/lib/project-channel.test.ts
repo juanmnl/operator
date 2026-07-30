@@ -216,3 +216,66 @@ describe('a HUMAN message in the feed', () => {
     expect(feed.map((e) => e.text)).toEqual(['before', 'fan', 'after'])
   })
 })
+
+describe('agent→agent delivery, folded into the reply it belongs to', () => {
+  // A reply and the attempt to hand it on are ONE event to a reader. Two rows would read as the
+  // lane having said it twice, so the delivery record is metadata for the reply's row, not an entry.
+  const reply = r({ id: 'h1', sessionId: 'sess-code', to: 'research', text: 'api contract changed' })
+  const delivery = (outcome: DispatchRecord['outcome']) =>
+    d({ id: 'dv1', at: '2026-07-30T10:00:31.000Z', fromRoleId: 'code', toRoleId: 'research', task: reply.text, outcome, replyId: 'h1' })
+
+  it('renders ONE row, not two', () => {
+    const feed = buildChannelFeed([delivery('sent')], [reply], roster, sessions)
+    expect(feed).toHaveLength(1)
+    expect(feed[0].kind).toBe('reply')
+  })
+
+  it('says it was delivered', () => {
+    const [e] = buildChannelFeed([delivery('sent')], [reply], roster, sessions)
+    expect(e.chip.label).toBe('posted · delivered')
+  })
+
+  it('names the brake that stopped it, so a halted chain never looks like being ignored', () => {
+    const label = (o: DispatchRecord['outcome']) =>
+      buildChannelFeed([delivery(o)], [reply], roster, sessions)[0].chip.label
+    expect(label('hop-limit')).toBe('posted · chain limit reached')
+    expect(label('pair-brake')).toBe('posted · pair sending too fast')
+    expect(label('paused')).toBe('posted · agent↔agent paused')
+    expect(label('queued')).toBe('posted · queued · behind current task')
+  })
+
+  it('never offers an Approve button — a brake is not a held dispatch', () => {
+    for (const o of ['hop-limit', 'pair-brake', 'paused'] as const) {
+      expect(buildChannelFeed([delivery(o)], [reply], roster, sessions)[0].chip.actionable).toBeUndefined()
+    }
+  })
+
+  it('leaves an undelivered reply reading as merely posted', () => {
+    // A broadcast, or any reply from before delivery existed. Absence of a record is not a failure.
+    expect(buildChannelFeed([], [reply], roster, sessions)[0].chip).toEqual(REPLY_CHIP)
+  })
+
+  it('takes the NEWEST record when a reply somehow has two', () => {
+    const feed = buildChannelFeed([
+      delivery('pair-brake'),
+      d({ id: 'dv2', at: '2026-07-30T10:09:00.000Z', fromRoleId: 'code', toRoleId: 'research', task: reply.text, outcome: 'sent', replyId: 'h1' }),
+    ], [reply], roster, sessions)
+    expect(feed).toHaveLength(1)
+    expect(feed[0].chip.label).toBe('posted · delivered')
+  })
+
+  it('does not fold onto a DIFFERENT reply', () => {
+    const other = r({ id: 'h2', text: 'unrelated', timestamp: '2026-07-30T10:05:00.000Z' })
+    const feed = buildChannelFeed([delivery('hop-limit')], [reply, other], roster, sessions)
+    expect(feed.map((e) => e.chip.label)).toEqual(['posted · chain limit reached', 'posted'])
+  })
+
+  it('is invisible to the fan-out collapse even if it carries a groupId', () => {
+    // Belt: a delivery record is never a channel message of its own, whatever else is set on it.
+    const feed = buildChannelFeed(
+      [{ ...delivery('sent'), groupId: 'g' }], [reply], roster, sessions,
+    )
+    expect(feed).toHaveLength(1)
+    expect(feed[0].kind).toBe('reply')
+  })
+})

@@ -305,6 +305,15 @@ export function installMockBridge() {
   // The dispatch subscription is capturable so a driver can fire directives as if the
   // transcript tailer parsed them: `window.__mockDispatch({ id, terminalId, role, task })`.
   let dispatchCb: ((d: unknown) => void) | null = null
+  // The reply half, same shape: `window.__mockReply({ id, sessionId, terminalId, projectId, to, text })`.
+  let replyCb: ((r: unknown) => void) | null = null
+  // chat.db's `replies` table, as the frontend sees it: read-only, project-scoped, and written
+  // ONLY by the tailer. `__mockReply` mirrors the real ordering — the backend persists the row and
+  // THEN emits (transcript.rs) — so a listener that re-reads the store can't race ahead of it.
+  // Keyed by project rather than carrying a projectId field, because the real rows don't have one
+  // (the store filters on a column the frontend never sees) — a fixture with an extra field is how
+  // a consumer quietly starts depending on something reality won't give it.
+  const replyRows = new Map<string, Array<Record<string, unknown>>>()
   // Declared before `bridge` so explicitly-mocked methods can record into it too.
   const calls: Array<Record<string, unknown>> = []
 
@@ -328,6 +337,7 @@ export function installMockBridge() {
       return () => {}
     },
     onOrchestratorDispatch: (cb: (d: unknown) => void) => { dispatchCb = cb; return () => { dispatchCb = null } },
+    onOrchestratorReply: (cb: (r: unknown) => void) => { replyCb = cb; return () => { replyCb = null } },
     onTerminalData: sub, onTerminalExit: sub,
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
@@ -343,6 +353,9 @@ export function installMockBridge() {
       return new URLSearchParams(location.search).get('chat') === 'long' ? longChat(MOCK_CHAT) : MOCK_CHAT
     },
     imageDataUrl: async () => '',
+    // Shape-exact with ChatStore::replies — including `id`, the content-hash PK a delivery
+    // outcome is keyed to. A fixture missing it would let the feed's fold silently no-op.
+    projectReplies: async (projectId: string) => replyRows.get(projectId) ?? [],
     terminalList: async () => (empty ? [] : MOCK_TERMINALS),
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
@@ -409,6 +422,17 @@ export function installMockBridge() {
   let spawnN = 0
   ;(window as unknown as { __calls: unknown[] }).__calls = calls
   ;(window as unknown as { __mockDispatch: unknown }).__mockDispatch = (d: unknown) => dispatchCb?.(d)
+  ;(window as unknown as { __mockReply: unknown }).__mockReply = (r: Record<string, unknown>) => {
+    // PERSIST, then emit — the order the tailer guarantees, and what the channel's re-read relies on.
+    const pid = String(r.projectId ?? '')
+    const rows = replyRows.get(pid) ?? []
+    rows.push({
+      id: r.id, sessionId: r.sessionId, to: r.to, text: r.text,
+      timestamp: (r.timestamp as string) ?? new Date().toISOString(),
+    })
+    replyRows.set(pid, rows)
+    replyCb?.(r)
+  }
   ;(window as unknown as { operator: unknown }).operator = new Proxy(bridge, {
     get: (t, p: string) => (p in t ? t[p] : (...args: unknown[]) => { calls.push({ fn: p, args }); return Promise.resolve(undefined) }),
   })

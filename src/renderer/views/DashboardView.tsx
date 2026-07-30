@@ -156,6 +156,9 @@ export function DashboardView() {
   const [channelReadAt, setChannelReadAt] = useState<Record<string, string>>(() => {
     try { return JSON.parse(localStorage.getItem('operator.channelReadAt') || '{}') } catch { return {} }
   })
+  /** Bumped when a reply arrives, to re-read the store. The setter's identity is stable, which is
+   *  what lets the mount-once reply subscription reach it without a ref. */
+  const [replyTick, setReplyTick] = useState(0)
   /** The kill switch for agent→agent delivery, and it DEFAULTS TO PAUSED.
    *
    *  Two agents that can each answer the other ping-pong indefinitely at ~1s a hop — that is the
@@ -190,6 +193,12 @@ export function DashboardView() {
   //
   // Read-only: chat.db is tailer-write / frontend-read and this adds no write path. Re-read on
   // scope change rather than polling — the tailer ticks at 1s and this is history, not a console.
+  //
+  // …and on `replyTick`, bumped by the reply subscription below. This is not a nicety: since step 3
+  // a delivery outcome is recorded against a reply and FOLDS INTO ITS ROW, so with no re-read the
+  // reply row wouldn't exist yet and the outcome — including a brake — would be invisible until you
+  // switched projects and back. The tailer persists before it emits (transcript.rs), so a read
+  // triggered by the event always sees the row.
   useEffect(() => {
     if (!activeProjectId) { setChannelReplies([]); return }
     let cancelled = false
@@ -197,7 +206,7 @@ export function DashboardView() {
       .then((rows) => { if (!cancelled) setChannelReplies(rows ?? []) })
       .catch(() => { if (!cancelled) setChannelReplies([]) })
     return () => { cancelled = true }
-  }, [channelActive, activeProjectId])
+  }, [channelActive, activeProjectId, replyTick])
 
   const markChannelRead = useCallback((projectId: string, at: string) => {
     setChannelReadAt((prev) => {
@@ -885,6 +894,10 @@ export function DashboardView() {
       try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') } catch { /* */ }
       if (seen.includes(r.id)) return // already handled (dedupe across transcript re-reads)
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
+
+      // The store already has it (persist-then-emit); pull it into the feed so the delivery
+      // outcome recorded below has a row to fold into.
+      setReplyTick((n) => n + 1)
 
       const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === r.terminalId)
@@ -2585,6 +2598,8 @@ export function DashboardView() {
         onOpenProject={handleOpenProject}
         onShowGallery={handleShowGallery}
         onOpenFolder={handleNewSession}
+        onOpenAgents={handleOpenAgents}
+        agentsActive={contentMode === 'agents'}
       />
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so
@@ -2627,7 +2642,6 @@ export function DashboardView() {
         customNames={customNames}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
-        agentsViewActive={agentsViewActive}
         prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
         fanInfo={fanInfo}
@@ -2644,7 +2658,6 @@ export function DashboardView() {
         onReorderLane={handleReorderLane}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
-        onOpenAgents={handleOpenAgents}
         onOpenPrefs={handleOpenPrefs}
         onToggleTheme={handleToggleTheme}
         version={appVersion}

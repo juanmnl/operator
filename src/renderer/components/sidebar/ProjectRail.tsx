@@ -36,7 +36,10 @@ import { useHoverCard } from '../../lib/use-hover-card'
 
 const RAIL_W = 44
 
-export function ProjectRail({ projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder }: {
+export function ProjectRail({
+  projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
+  onOpenAgents, agentsActive,
+}: {
   projects: Project[]
   activities: Record<string, ProjectActivity>
   /** Null at the gallery — nothing is ringed, everything else is unchanged. */
@@ -46,6 +49,12 @@ export function ProjectRail({ projects, activities, activeProjectId, onOpenProje
   onShowGallery: () => void
   /** Foot control: pick a folder, register it as a project, enter it. */
   onOpenFolder: () => void
+  /** Foot control: the cross-project Agents hub. It lives here rather than in the sidebar
+   *  because `AgentsHubView` iterates ALL projects — and because the sidebar animates to width 0
+   *  at the gallery, which is exactly where you most want a view across them. */
+  onOpenAgents: () => void
+  /** Agents is a VIEW, unlike the two navigation verbs, so it can be the current one. */
+  agentsActive?: boolean
 }) {
   // Same comparator as the gallery grid and the switcher popover. Never a third ordering.
   const shown = projects
@@ -84,17 +93,36 @@ export function ProjectRail({ projects, activities, activeProjectId, onOpenProje
         ))}
       </div>
 
-      {/* Seam, then PROJECT NAVIGATION — the two verbs that move you between projects rather
-          than within one. They used to live in the switcher popover's footer and, for "open
-          folder", a second time in the sidebar's icon row. Both belong here: the rail is the
-          only strip present in every state, including the gallery where the sidebar is gone. */}
+      {/* The foot: AGENTS, then the seam, then PROJECT NAVIGATION — the two verbs that move you
+          between projects rather than within one. They used to live in the switcher popover's
+          footer and, for "open folder", a second time in the sidebar's icon row. All three belong
+          here: the rail is the only strip present in every state, including the gallery where the
+          sidebar is gone.
+          Agents goes FIRST and above the seam so the navigation pair stays adjacent — it is a view
+          ACROSS projects, not a way of moving between them, and the existing hairline is what says
+          so (no second divider invented for it). */}
       <div style={{
         flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
         gap: 4, padding: '8px 0 10px',
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
-        <span style={{ width: 22, height: 1, background: 'var(--border)', marginBottom: 5 }} />
+        <RailFootButton
+          attr="data-rail-agents"
+          label="Agents"
+          hint="every agent across your projects"
+          active={agentsActive}
+          onClick={onOpenAgents}
+        >
+          {/* The same robot as the old sidebar button — it is what the user recognises. The eyes
+              and antenna dot are FILLED, so they set fill explicitly against the svg's fill:none. */}
+          <rect x="3" y="5.5" width="10" height="7.5" rx="2" />
+          <path d="M8 3v2.5" strokeLinecap="round" />
+          <circle cx="8" cy="2.5" r="1" fill="currentColor" stroke="none" />
+          <circle cx="6" cy="9" r="0.9" fill="currentColor" stroke="none" />
+          <circle cx="10" cy="9" r="0.9" fill="currentColor" stroke="none" />
+        </RailFootButton>
+        <span style={{ width: 22, height: 1, background: 'var(--border)', margin: '5px 0' }} />
         <RailFootButton
           attr="data-rail-gallery"
           label="All projects"
@@ -119,29 +147,35 @@ export function ProjectRail({ projects, activities, activeProjectId, onOpenProje
   )
 }
 
-/** A foot control. Icon-only at 44px, so the title carries the name and the chord — these are
- *  the two verbs that used to be spelled out in the switcher popover's footer. */
-function RailFootButton({ attr, label, hint, onClick, children }: {
+/** A foot control. Icon-only at 44px, so the title carries the name and the chord, and the
+ *  accessible name comes from `aria-label` — never from the glyph alone. */
+function RailFootButton({ attr, label, hint, onClick, active, children }: {
   attr: string
   label: string
   hint: string
   onClick: () => void
+  /** Renders as the current view. Background-only, per the foot's existing hover treatment —
+   *  a colour-changing border on a radiused element re-rasterizes in WKWebView. */
+  active?: boolean
   children: React.ReactNode
 }) {
+  const rest = active ? 'var(--overlay-subtle)' : 'transparent'
+  const ink = active ? 'var(--fg)' : 'var(--fg-muted)'
   return (
     <button
       {...{ [attr]: '' }}
       onClick={onClick}
       title={`${label} (${hint})`}
       aria-label={label}
+      aria-current={active || undefined}
       style={{
         width: 26, height: 26, padding: 0, display: 'grid', placeItems: 'center',
-        background: 'transparent', border: 'none', borderRadius: 7,
-        color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+        background: rest, border: 'none', borderRadius: 7,
+        color: ink, cursor: 'pointer', outline: 'none',
         transition: 'background 120ms ease, color 120ms ease',
       }}
       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = rest; e.currentTarget.style.color = ink }}
     >
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
         {children}

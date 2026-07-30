@@ -34,6 +34,9 @@ const MEASURE = 720
 // ratio, as the sidebar's project name). `progress` and `muted` are dedicated tokens that were
 // already tuned per palette, so they are left alone.
 const ACCENT_INK = 'color-mix(in srgb, var(--accent) 55%, var(--fg))'
+// Same treatment for --color-warning, and for the same measured reason: raw, at the 9px the
+// agent↔agent switch uses, it came in at 2.44 / 2.42 / 1.49 on the three light palettes.
+const WARN_INK = 'color-mix(in srgb, var(--color-warning) 55%, var(--fg))'
 const TONE: Record<ChipTone, string> = {
   accent: ACCENT_INK,
   progress: 'var(--status-compacting)',
@@ -125,7 +128,7 @@ export function ProjectChannel({
                   // changes on a click.
                   background: chatterPaused ? 'transparent' : 'var(--overlay-medium)',
                   border: '1px solid var(--border)',
-                  color: chatterPaused ? 'var(--fg-muted)' : 'var(--color-warning)',
+                  color: chatterPaused ? 'var(--fg-muted)' : WARN_INK,
                 }}
               >
                 {chatterPaused ? 'Agent↔agent paused' : 'Agent↔agent live'}

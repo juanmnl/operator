@@ -58,6 +58,10 @@ const rail = () => p.evaluate(() => {
     left: strip ? Math.round(strip.getBoundingClientRect().left) : null,
     height: strip ? Math.round(strip.getBoundingClientRect().height) : null,
     gallery: !!document.querySelector('[data-rail-gallery]'),
+    agents: (() => {
+      const b = document.querySelector('[data-rail-agents]')
+      return b ? { name: b.getAttribute('aria-label'), title: b.getAttribute('title'), current: b.getAttribute('aria-current') } : null
+    })(),
   }
 })
 
@@ -153,5 +157,33 @@ await boot()
 const s6 = await rail()
 console.log('6 virgin app — tiles:', s6.ids.length, '(expect 0) · rail still present:', s6.width === 44, '· way out still there:', s6.gallery)
 await p.screenshot({ path: '/tmp/operator-shots/project-rail-empty.png' })
+
+// ---- 7. The AGENTS hub, moved here from the sidebar footer ------------------------------
+// The point of the move: AgentsHubView is cross-project, and the sidebar animates to width 0
+// at the gallery — so the one place you most want a view across projects is the one place the
+// old button did not exist. That is the case this group verifies rather than assumes.
+await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+await boot()
+const s7 = await rail()
+console.log('7 agents control in the rail foot:', JSON.stringify(s7.agents), '(expect an aria-label, not a bare glyph)')
+console.log('7 …and it exists exactly ONCE in the app:', await p.evaluate(() =>
+  document.querySelectorAll('[data-rail-agents]').length), '(expect 1)')
+// Leave the project: the sidebar is gone, the rail (and the button) is not.
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(900)
+const agentsAtGallery = await p.evaluate(() => ({
+  page: document.querySelector('[data-page-title]')?.textContent?.trim(),
+  // The sidebar's own list is what animates away at the gallery.
+  sidebarRows: document.querySelectorAll('[data-session-row], [data-lane-row]').length,
+  agents: !!document.querySelector('[data-rail-agents]'),
+}))
+console.log('7 AT THE GALLERY — sidebar gone but the agents button is present:', JSON.stringify(agentsAtGallery), '(expect agents true, 0 sidebar rows)')
+await p.locator('[data-rail-agents]').click()
+await p.waitForTimeout(900)
+console.log('7 it opens the hub FROM THE GALLERY:', await p.evaluate(() =>
+  document.querySelector('[data-page-title]')?.textContent?.trim()), '(expect "Agents")')
+console.log('7 and reads as the current view:', await p.evaluate(() =>
+  document.querySelector('[data-rail-agents]')?.getAttribute('aria-current')), '(expect true)')
+await p.screenshot({ path: '/tmp/operator-shots/project-rail-agents.png' })
 
 await b.close()

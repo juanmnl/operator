@@ -308,8 +308,20 @@ for (const [key, label] of THEMES) {
       window.__contrast('[data-probe-channel] [data-channel-chip]', 'channel chip · delivered', true),
       window.__contrast('[data-probe-held] [data-channel-chip]', 'channel chip · held', true),
       window.__contrast('[data-channel-composer-note]', 'channel composer note', true),
+      // The agent↔agent kill switch, in BOTH states: paused is --fg-muted, live is
+      // --color-warning at 9px — a token that had never been measured at meta size.
+      window.__contrast('[data-chatter-toggle]', 'chatter switch · paused', true),
     ]
   })
+  // Flip it and measure the live label too, then flip back so the sweep leaves no state behind.
+  // A DOM .click() rather than a real one: this sweep's fixture puts an overlay over the header,
+  // and the probe only needs the STATE, not a hit-test (the channel driver covers the real click).
+  const flip = () => p.evaluate(() => document.querySelector('[data-chatter-toggle]')?.click())
+  await flip()
+  await p.waitForTimeout(250)
+  channelProbes.push(await p.evaluate(() => window.__contrast('[data-chatter-toggle]', 'chatter switch · live', true)))
+  await flip()
+  await p.waitForTimeout(250)
   await p.screenshot({ path: `${OUT}/${key}-3d-channel.png` })
   // Back to the roster for the steps below.
   await p.keyboard.press('Meta+Shift+O')

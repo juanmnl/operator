@@ -35,7 +35,6 @@ interface SidebarProps {
   customNames: Record<string, string>
   activeFolderPrefs: string | null
   globalPrefsActive: boolean
-  agentsViewActive: boolean
   prefsViewActive: boolean
   /** True while Project Home is the content area — highlights the project row. */
   projectHomeActive: boolean
@@ -72,7 +71,6 @@ interface SidebarProps {
   onReorderLane?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
   onOpenFolderPrefs: (projectPath: string, projectName: string) => void
   onOpenGlobalPrefs: () => void
-  onOpenAgents: () => void
   onOpenPrefs: () => void
   onToggleTheme: () => void
   /** App version (e.g. "0.1.4"), shown in the footer beside the stats. */
@@ -89,12 +87,12 @@ type Row =
 
 export function Sidebar({
   project, sessions, activeSessionId, customNames, activeFolderPrefs,
-  globalPrefsActive, agentsViewActive, prefsViewActive, projectHomeActive,
+  globalPrefsActive, prefsViewActive, projectHomeActive,
   effortLevels, fanInfo, shortcutIndices, stats, isDark,
   onRestoreProject, onOpenChannel, channelActive, channelUnread,
   onOpenProjectHome, onSelectSession, onRenameSession, onCloseSession,
   onLaunchRole, accentOf, onPickAccent, onReorderSession, onReorderLane,
-  onOpenFolderPrefs, onOpenGlobalPrefs, onOpenAgents, onOpenPrefs,
+  onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs,
   onToggleTheme, version, update, onInstallUpdate,
 }: SidebarProps) {
   // Row drag state — one list now, so this is all the reorder state there is.
@@ -474,26 +472,11 @@ export function Sidebar({
             square — a squashed icon box is worse than a wrapped row. */}
         {/* No "open another folder" here any more: opening a folder REGISTERS A PROJECT, which
             is project navigation, and that now lives at the rail's foot beside "All projects".
-            Two identical + buttons 44px apart is how you get one that nobody trusts. */}
-        <button
-          onClick={onOpenAgents}
-          style={{
-            background: agentsViewActive ? 'var(--overlay-subtle)' : 'none',
-            border: 'none', cursor: 'pointer',
-            padding: '3px 4px', borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center',
-            opacity: agentsViewActive ? 1 : 0.85,
-          }}
-          title="Agents — every agent across your projects"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <rect x="3" y="5.5" width="10" height="7.5" rx="2" stroke="var(--fg-muted)" strokeWidth="1.1" />
-            <path d="M8 3v2.5" stroke="var(--fg-muted)" strokeWidth="1.1" strokeLinecap="round" />
-            <circle cx="8" cy="2.5" r="1" fill="var(--fg-muted)" />
-            <circle cx="6" cy="9" r="0.9" fill="var(--fg-muted)" />
-            <circle cx="10" cy="9" r="0.9" fill="var(--fg-muted)" />
-          </svg>
-        </button>
+            Two identical + buttons 44px apart is how you get one that nobody trusts.
+            NOR the Agents hub, for a stronger version of the same reason: AgentsHubView iterates
+            every project, so it never belonged in a sidebar whose job is THIS project — and this
+            strip animates to width 0 at the gallery, which is precisely where you'd reach for a
+            cross-project view. It is at the rail's foot, which is present in every state. */}
         {/* This project's Claude files (.claude) — was the per-group prefs button. */}
         <button
           onClick={() => project && onOpenFolderPrefs(project.path, project.name)}

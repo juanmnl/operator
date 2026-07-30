@@ -40,11 +40,15 @@ await ctx.addInitScript(() => {
       v.saveProjects = () => {}
       // The reply half. s-code / s-res are the mock's own session ids, so attribution resolves
       // session → roleId → Role exactly as it must in the real app.
-      v.projectReplies = async () => ([
-        { sessionId: 's-code', to: 'operator', text: 'REPLY between first and second', timestamp: '2026-07-29T09:02:00.000Z' },
-        { sessionId: 's-res', to: 'project', text: 'REPLY broadcast to the room', timestamp: '2026-07-30T09:12:00.000Z' },
-        { sessionId: 's-vanished', to: 'operator', text: 'REPLY from a session that is gone', timestamp: '2026-07-30T09:30:00.000Z' },
-      ])
+      // Seeded history, MERGED with the bridge's own store rather than replacing it — `__mockReply`
+      // writes there, and step 3's delivery outcomes fold onto rows read back from it.
+      const seeded = [
+        { id: 'seed-1', sessionId: 's-code', to: 'operator', text: 'REPLY between first and second', timestamp: '2026-07-29T09:02:00.000Z' },
+        { id: 'seed-2', sessionId: 's-res', to: 'project', text: 'REPLY broadcast to the room', timestamp: '2026-07-30T09:12:00.000Z' },
+        { id: 'seed-3', sessionId: 's-vanished', to: 'operator', text: 'REPLY from a session that is gone', timestamp: '2026-07-30T09:30:00.000Z' },
+      ]
+      const liveReplies = v.projectReplies
+      v.projectReplies = async (pid) => [...seeded, ...((await liveReplies(pid)) ?? [])]
     },
   })
 })
@@ -187,4 +191,131 @@ console.log('12 …exactly ONE row for the fan-out:', await p.evaluate(() =>
 console.log('12 idle lanes were skipped, not started:', (await spawns()) === spawnsBefore, '(expect true)')
 
 await p.screenshot({ path: '/tmp/operator-shots/project-channel-send.png' })
+
+// ========================================================================================
+// STEP 3 — AGENT → AGENT. Every group below is a guardrail, not a feature.
+// ========================================================================================
+
+// Fire a reply the way the tailer does: persist the row, then emit. `n` keeps every id unique so
+// the seen-set and the durable replyId guard don't eat the second one.
+let replyN = 0
+const laneReply = async (fromSession, fromTerminal, to, text) => {
+  await p.evaluate(({ s, t, to, text, id }) => window.__mockReply({
+    id, sessionId: s, terminalId: t, projectId: window.__projectId, to, text,
+  }), { s: fromSession, t: fromTerminal, to, text, id: `lr-${++replyN}` })
+  await p.waitForTimeout(700)
+}
+// The scoped project's id, so a fired reply lands in the channel being watched.
+await p.evaluate(() => {
+  window.__projectId = JSON.parse(localStorage.getItem('operator.projects') ?? '[]')
+    .find((x) => x.name === 'operator')?.id
+})
+const chipFor = (needle) => p.evaluate((n) => {
+  const row = Array.from(document.querySelectorAll('[data-channel-row]'))
+    .find((r) => (r.querySelector('[data-channel-text]')?.textContent ?? '').includes(n))
+  return row?.querySelector('[data-channel-chip]')?.textContent?.trim() ?? null
+}, needle)
+const toggle = () => p.locator('[data-chatter-toggle]')
+
+// ---- 13. THE KILL SWITCH IS ON BY DEFAULT ----------------------------------------------
+console.log('13 switch label at rest:', (await toggle().textContent())?.trim(), '(expect "Agent↔agent paused")')
+console.log('13 aria-pressed:', await toggle().getAttribute('aria-pressed'), '(expect false)')
+await laneReply('s-code', 't1', 'research', 'PAUSEDMSG can you profile this')
+console.log('13 NOT typed into the addressee:', await sentFor('PAUSEDMSG'), '(expect 0)')
+console.log('13 …and the channel says why:', await chipFor('PAUSEDMSG'), '(expect "posted · agent↔agent paused")')
+
+// ---- 14. HUMAN → LANE STILL WORKS WHILE PAUSED -----------------------------------------
+// The switch halts agent→agent ONLY. If it also silenced the person, it would be a mute button.
+await p.locator('[data-channel-pill="Code"]').click()
+await p.locator('[data-channel-composer]').fill('WHILEPAUSED you there?')
+await p.keyboard.press('Meta+Enter')
+await p.waitForTimeout(800)
+console.log('14 human→lane unaffected by the kill switch:', await sentFor('WHILEPAUSED'), '(expect 1)')
+
+// ---- 15. TURN IT ON: a reply is delivered, prefixed --------------------------------------
+await toggle().click()
+await p.waitForTimeout(300)
+console.log('15 label flips:', (await toggle().textContent())?.trim(), '(expect "Agent↔agent live")')
+console.log('15 persisted:', await p.evaluate(() => localStorage.getItem('operator.chatterPaused')), '(expect "0")')
+await laneReply('s-code', 't1', 'research', 'LIVEMSG the contract changed')
+console.log('15 delivered exactly once:', await sentFor('LIVEMSG'), '(expect 1)')
+console.log('15 prefixed as relayed, not as its own thought:', await p.evaluate(() => {
+  const c = window.__calls.filter((x) => x.fn === 'terminalWrite' && String(x.data ?? '').includes('LIVEMSG'))
+  return c.length ? String(c[0].data).slice(0, 34) : null
+}), '(expect "[Operator · message from Code] ")')
+console.log('15 to the RIGHT lane:', await p.evaluate(() => {
+  const c = window.__calls.filter((x) => x.fn === 'terminalWrite' && String(x.data ?? '').includes('LIVEMSG'))
+  return c.length ? c[0].id : null
+}), '(expect t2 = Research)')
+console.log('15 chip:', await chipFor('LIVEMSG'), '(expect "posted · delivered")')
+
+// ---- 16. NEVER DELIVERS TO A LANE THAT ISN'T RUNNING ------------------------------------
+const spawnsBefore3 = await spawns()
+await laneReply('s-code', 't1', 'design', 'IDLETARGET here is the spec')
+console.log('16 nothing written:', await sentFor('IDLETARGET'), '(expect 0)')
+console.log('16 nothing spawned:', (await spawns()) === spawnsBefore3, `(spawns ${spawnsBefore3} → ${await spawns()})`)
+console.log('16 chip:', await chipFor('IDLETARGET'), '(expect "posted · queued · behind current task")')
+
+// ---- 17. THE HOP BUDGET — a ping-pong terminates ----------------------------------------
+// Two lanes each answering the other, which is what two cooperative agents DO. If this section
+// can run forever, the feature is unshippable; the loop below is bounded at 12 so a regression
+// fails the driver instead of hanging it.
+await p.locator('[data-channel-pill="Research"]').click()
+await p.locator('[data-channel-composer]').fill('RESETCHAIN starting fresh')
+await p.keyboard.press('Meta+Enter')
+await p.waitForTimeout(800)
+const hopTexts = []
+for (let i = 1; i <= 12; i++) {
+  const text = `PINGPONG${i} and another thing`
+  hopTexts.push(text)
+  const [s, t, to] = i % 2 === 1 ? ['s-code', 't1', 'research'] : ['s-res', 't2', 'code']
+  await laneReply(s, t, to, text)
+  const chip = await chipFor(text)
+  if (chip && !chip.includes('delivered')) { console.log(`17 chain STOPPED at hop ${i}: ${chip}`); break }
+}
+// Let the submit queue drain before counting: it serializes per terminal with a length-scaled
+// watchdog, so a write can still be pending when the decision has already been made.
+await p.waitForTimeout(2500)
+const hopDelivered = []
+for (const t of hopTexts) if (await sentFor(t)) hopDelivered.push(t)
+console.log('17 deliveries before the brake:', hopDelivered.length, '(expect 5 — hop 6 is the limit)')
+console.log('17 the LAST one was refused, not delivered:', await sentFor(hopTexts[hopTexts.length - 1]), '(expect 0)')
+
+// ---- 18. THE PAIR BRAKE — same ordered pair, too fast ----------------------------------
+// A distinct pair (Research → Operator), and reset first so the HOP budget can't be what stops it.
+await p.locator('[data-channel-pill="Research"]').click()
+await p.locator('[data-channel-composer]').fill('RESETPAIR go ahead')
+await p.keyboard.press('Meta+Enter')
+await p.waitForTimeout(800)
+const pairTexts = []
+for (let i = 1; i <= 6; i++) {
+  const text = `BURST${i} status?`
+  pairTexts.push(text)
+  await laneReply('s-res', 't2', 'operator', text)
+  const chip = await chipFor(text)
+  if (chip && !chip.includes('delivered')) { console.log(`18 pair SUSPENDED on message ${i}: ${chip}`); break }
+}
+await p.waitForTimeout(2500) // drain the queue (see group 17)
+let pairDelivered = 0
+for (const t of pairTexts) if (await sentFor(t)) pairDelivered++
+console.log('18 deliveries before suspension:', pairDelivered, '(expect 4 in the 60s window)')
+// …and it is PER PAIR: an unrelated pair still gets through while that one is suspended.
+await laneReply('s-op', 't0', 'code', 'OTHERPAIR unaffected')
+console.log('18 a different pair still delivers:', await sentFor('OTHERPAIR'), '(expect 1)')
+
+// ---- 19. THE LENGTH CAP — trimmed, never sent whole -------------------------------------
+await laneReply('s-op', 't0', 'code', 'LONGMSG ' + 'y'.repeat(3000))
+const longWrite = await p.evaluate(() => {
+  const c = window.__calls.filter((x) => x.fn === 'terminalWrite' && String(x.data ?? '').includes('LONGMSG'))
+  return c.length ? { len: String(c[0].data).length, tail: String(c[0].data).slice(-70) } : null
+})
+console.log('19 a 3008-char reply was TRIMMED:', JSON.stringify(longWrite), '(expect len ≤ 2032 and a "truncated" pointer)')
+
+// ---- 20. Turning it back off halts delivery again ---------------------------------------
+await toggle().click()
+await p.waitForTimeout(300)
+await laneReply('s-op', 't0', 'code', 'AFTEROFF one more')
+console.log('20 paused again:', (await toggle().textContent())?.trim(), '· delivered:', await sentFor('AFTEROFF'), '(expect 0)')
+
+await p.screenshot({ path: '/tmp/operator-shots/project-channel-agent-delivery.png' })
 await b.close()

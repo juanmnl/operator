@@ -49,14 +49,47 @@ export function resolveAgentConfig(role, globalRoleDefaults, projectDefaults): R
 drifts apart. Treat `undefined` **and** `''` as "not set" — `Project.defaults` already stores
 `model: ''` in real data, so empty string is ambiguous and must not mean "pinned to nothing".
 
-### 3. Where it's edited
+### 3. Where it's edited — the Agents view, NOT Preferences
 
-The global preferences surface (`onOpenGlobalPrefs`, built on `PageShell`). A row per role — name,
-model, effort, permission mode — reading as the defaults they are. Editing "Operator → Opus" here is
-the whole user story; make that the one obvious thing the page does.
+User's framing, which decides this: *"when I open Operator, even before choosing a project, I could
+set up the agents config, so they launch accordingly with each project — that way I can scope token
+economy through agent capability."*
+
+So it must be reachable **at the launcher, before a project is scoped**, and it is a first-class
+thing you go and do — not a setting you hunt for.
+
+**Add a third tab to `AgentsHubView`** (`:29, :69` — it already has `Fleet` | `Subagent library`;
+add `Defaults`). That view is becoming rail-reachable (`dev/briefs/agents-hub-to-rail.md`), and the
+rail persists at the gallery, so this lands exactly where the user asked: open Operator, configure
+the agents, then pick a project. One place called "Agents" that answers both *what is running* and
+*how they are configured*.
+
+Do **not** put it in `onOpenGlobalPrefs`. It is not a preference; it is the roster template.
+
+A row per role: name, **model**, **effort**, permission mode. Editing "Operator → Opus" is the whole
+user story — make that the single most obvious action on the tab.
 
 Changing a global default affects **future launches only**. It must not touch a running lane, and it
 must not rewrite stored project rosters (that's §4's explicit action, not a side effect).
+
+### 3b. Frame it as capability, not cost — and give effort equal weight
+
+The purpose is token economy, but **do not build a cost display**. No `$/Mtok`, no projected spend,
+no running total. That call is already made in this project: economy is controlled *as config*, and
+a number that is only ever an estimate invites arguing with it instead of choosing.
+
+What that means concretely:
+
+- **Effort is a spend dial equal to model** (`'high' | 'normal' | 'low'`, `types.ts:119`) and is the
+  one users forget. A row that shows only the model hides half the control. Give both the same
+  visual weight — not effort tucked behind a disclosure.
+- Order the model options by capability so the tier reads off the control itself
+  (`ROSTER_MODELS` is already `fable, opus, sonnet, haiku`). Say what each is FOR in a word, in the
+  vocabulary the presets already use — coordination / breadth / quality — not in dollars.
+- The honest one-liner for the tab is about matching capability to job, e.g. "Every project's lanes
+  launch with these. Match the model to what the lane actually does." Nothing about billing.
+- **No cost figure anywhere**, including tooltips. If a reviewer asks for one, that is a separate
+  decision with its own brief.
 
 ### 4. Reconciling the ~114 seeded values — the crux
 
