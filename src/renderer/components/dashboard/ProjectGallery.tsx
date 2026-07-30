@@ -53,6 +53,9 @@ interface ProjectGalleryProps {
   onForgetProject: (id: string) => void
   /** Shelve / un-shelve. Both are the user's decision, never derived — see lib/project-shelf. */
   onArchiveProject: (id: string) => void
+  /** END this project's live agents, then shelve it. Distinct from Archive (which leaves them
+   *  running) and from Forget (which destroys the roster, tasks and notes). */
+  onCloseProject: (id: string) => void
   /** Shelve a whole batch under one timestamp, with one undo. The tidy pass. */
   onArchiveProjects: (ids: string[]) => void
   onRestoreProject: (id: string) => void
@@ -69,7 +72,7 @@ interface ProjectGalleryProps {
 export function ProjectGallery({
   projects, sessions, activities, tab, onSelectTab, accentOf, customNames,
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
-  onArchiveProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
+  onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
 }: ProjectGalleryProps) {
   // Which card's ⋯ menu is open, and which card is being renamed or having its description
@@ -248,6 +251,8 @@ export function ProjectGallery({
                         onSetNotes={(notes) => onSetProjectNotes(project.id, notes)}
                         onForget={() => onForgetProject(project.id)}
                         onArchive={() => onArchiveProject(project.id)}
+                        onCloseProject={() => onCloseProject(project.id)}
+                        liveCount={activities[project.id]?.live ?? 0}
                         onRestore={() => onRestoreProject(project.id)}
                         onOpenFolderPrefs={() => onOpenFolderPrefs(project.path, project.name)}
                       />
@@ -312,7 +317,7 @@ export function ProjectGallery({
 function ProjectCard({
   project, live, accentOf, menuOpen, onMenu, renaming, onRenamingChange,
   editingNotes, onEditingNotesChange, onOpen, onRename, onSetNotes, onForget,
-  onArchive, onRestore, onOpenFolderPrefs,
+  onArchive, onCloseProject, liveCount, onRestore, onOpenFolderPrefs,
 }: {
   project: Project
   live: AgentSession[]
@@ -328,6 +333,9 @@ function ProjectCard({
   onSetNotes: (notes: string) => void
   onForget: () => void
   onArchive: () => void
+  onCloseProject: () => void
+  /** Live lanes right now — decides whether CLOSE is even a distinct verb here. */
+  liveCount: number
   onRestore: () => void
   onOpenFolderPrefs: () => void
 }) {
@@ -614,10 +622,26 @@ function ProjectCard({
             // A card can still be a SHELVED project — one with a live session is lifted back
             // onto the active shelf whatever its record says — so the verb reads off the
             // record, not off which list drew it.
+            // CLOSE appears whenever there is something to close — including on an ALREADY
+            // shelved project, which is precisely the state where a live lane pins it to Active
+            // and the honest Shelve toast tells you to use this. Gating it on `!archivedAt` made
+            // that advice point at a control that wasn't there. With no live lane it is omitted:
+            // it would be a second button doing exactly what Archive does, and two verbs that
+            // look different but act the same is its own kind of lie.
+            ...(liveCount > 0
+              ? [{
+                  label: `Close project · end ${liveCount} agent${liveCount === 1 ? '' : 's'}`,
+                  onClick: onCloseProject,
+                  separator: true,
+                }]
+              : []),
             project.archivedAt
-              ? { label: 'Restore to active', onClick: onRestore, separator: true }
-              : { label: 'Archive project', onClick: onArchive, separator: true },
-            { label: 'Forget project', onClick: onForget, danger: true, confirm: true },
+              ? { label: 'Restore to active', onClick: onRestore, separator: liveCount === 0 }
+              : { label: 'Archive project', onClick: onArchive, separator: liveCount === 0 },
+            // Forget stays LAST, danger-toned and confirm-gated. Close is reversible housekeeping
+            // and Forget destroys rosters, tasks and notes — two verbs of different kind must not
+            // look alike or sit adjacent without separation (feedback_two_verbs_one_glyph).
+            { label: 'Forget project', onClick: onForget, danger: true, confirm: true, separator: true },
           ]}
         />
       )}

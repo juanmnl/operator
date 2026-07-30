@@ -4,7 +4,7 @@ import { rolePresets } from './roster'
 import {
   resolveAgentConfig, configOrigins, worktreeStateOf, nextWorktreeState,
   clearSeededRoleFields, clearAllPinnedRoleFields, pinnedFieldCounts, seededFieldCounts,
-  pruneGlobals, hasGlobalFor, seedGlobalDefaults, HARD_FALLBACK,
+  pruneGlobals, hasGlobalFor, seedGlobalDefaults, migrateSeededWorktreeDefaults, HARD_FALLBACK,
   type GlobalRoleDefaults,
 } from './model-config'
 
@@ -249,13 +249,85 @@ describe('the global store itself', () => {
       expect(g.effort).toBeUndefined()
       expect(typeof g.useWorktree).toBe('boolean')
     }
-    // Lanes that WRITE get isolation; lanes that read and coordinate don't.
+    // Every lane that writes to the repo gets isolation — which now includes the coordinator
+    // (it lands merges and edits notes) and research (its deliverable is a file).
     expect(seed.code.useWorktree).toBe(true)
     expect(seed.design.useWorktree).toBe(true)
-    expect(seed.operator.useWorktree).toBe(false)
-    expect(seed.research.useWorktree).toBe(false)
+    expect(seed.operator.useWorktree).toBe(true)
+    expect(seed.research.useWorktree).toBe(true)
+    expect(seed.review.useWorktree).toBe(false)
+    expect(seed.qa.useWorktree).toBe(false)
     // And the seed survives a round-trip through the store's own pruning.
     expect(pruneGlobals(seed)).toEqual(seed)
+  })
+
+  describe('migrateSeededWorktreeDefaults', () => {
+    // The real file this shipped against: exactly the old seed, untouched by the user.
+    const legacyStore: GlobalRoleDefaults = {
+      code: { useWorktree: true },
+      design: { useWorktree: true },
+      operator: { useWorktree: false },
+      qa: { useWorktree: false },
+      research: { useWorktree: false },
+      review: { useWorktree: false },
+    }
+
+    it('flips the two roles whose seed moved, and nothing else', () => {
+      const { globals, roles } = migrateSeededWorktreeDefaults(legacyStore)
+      expect(roles.sort()).toEqual(['operator', 'research'])
+      expect(globals.operator.useWorktree).toBe(true)
+      expect(globals.research.useWorktree).toBe(true)
+      expect(globals.review.useWorktree).toBe(false) // seed never moved for this one
+      expect(globals.qa.useWorktree).toBe(false)
+      expect(globals.code.useWorktree).toBe(true)
+    })
+
+    it('lands the legacy store exactly on the current seed', () => {
+      expect(migrateSeededWorktreeDefaults(legacyStore).globals).toEqual(seedGlobalDefaults())
+    })
+
+    it('leaves an ABSENT entry absent — absent means inherit, which the user had to choose', () => {
+      const { globals, roles } = migrateSeededWorktreeDefaults({ code: { useWorktree: true } })
+      expect(roles).toEqual([])
+      expect(globals.operator).toBeUndefined()
+      expect(globals.research).toBeUndefined()
+    })
+
+    it('reports nothing when the store is already on the new value', () => {
+      const { globals, roles } = migrateSeededWorktreeDefaults(seedGlobalDefaults())
+      expect(roles).toEqual([])
+      expect(globals).toEqual(seedGlobalDefaults())
+    })
+
+    it('keeps the rest of a migrated role\'s entry', () => {
+      const { globals } = migrateSeededWorktreeDefaults({
+        operator: { model: 'opus', effort: 'low', useWorktree: false },
+      })
+      expect(globals.operator).toEqual({ model: 'opus', effort: 'low', useWorktree: true })
+    })
+
+    it('returns the input BY REFERENCE when nothing applies, so hydrate can early-bail', () => {
+      const already = seedGlobalDefaults()
+      expect(migrateSeededWorktreeDefaults(already).globals).toBe(already)
+    })
+
+    it('is idempotent — a second pass finds nothing left to flip', () => {
+      const first = migrateSeededWorktreeDefaults(legacyStore)
+      const second = migrateSeededWorktreeDefaults(first.globals)
+      expect(second.roles).toEqual([])
+      expect(second.globals).toBe(first.globals)
+    })
+
+    it('does not mutate the store it was handed', () => {
+      const before = JSON.parse(JSON.stringify(legacyStore))
+      migrateSeededWorktreeDefaults(legacyStore)
+      expect(legacyStore).toEqual(before)
+    })
+
+    it('leaves the migrated result stable through the store\'s own pruning', () => {
+      const { globals } = migrateSeededWorktreeDefaults(legacyStore)
+      expect(pruneGlobals(globals)).toEqual(globals)
+    })
   })
 
   it('survives a role-defaults.json round-trip', () => {

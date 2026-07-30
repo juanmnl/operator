@@ -10,8 +10,9 @@
 // (src/tauri-main.tsx installs the real bridge). Fixtures are deliberately shaped to
 // exercise the interesting states — several lanes in one project, a live and an
 // ENDED lane, a queued backlog, multi-port preview.
-import type { AgentSession } from '../src/shared/types'
+import type { AgentSession, Role } from '../src/shared/types'
 import { deriveProjectId } from '../src/renderer/lib/project-id'
+import { rolePresets } from '../src/renderer/lib/roster'
 
 const now = new Date().toISOString()
 const noop = () => {}
@@ -102,6 +103,83 @@ export const MOCK_PROJECTS = [
     tasks: [],
     dispatches: [],
   },
+]
+
+// ---- `?prune=1`: the one-time seeded-lane prune -----------------------------------------
+//
+// A separate project set, because the prune's whole question is "did the seeder write this, or
+// did the user?" and MOCK_PROJECTS answers it by accident — its charters are shortened for
+// readability, which reads as EDITED. A fixture that can only produce one verdict proves nothing,
+// so this one carries the real charter strings (imported, not copied — a drifting copy would
+// quietly stop matching) and spells out every case the predicate has to separate.
+const stock = (id: string, over: Partial<Role> = {}): Role =>
+  ({ ...(rolePresets().find((r) => r.id === id) as Role), ...over })
+
+const PRUNE_PROJECT_ID = 'prune-demo-1'
+const PRUNE_PROJECTS = [
+  {
+    id: PRUNE_PROJECT_ID,
+    path: '/tmp/prune-demo',
+    name: 'prune-demo',
+    createdAt: earlier,
+    lastActiveAt: earlier,
+    // KEEP: launched once (a saved session names it). KEEP: a task, at any status. KEEP: the
+    // user re-coloured it. KEEP: not a preset at all. DROP: the remaining two are untouched
+    // and unused — one holding today's charter, one holding the retired pre-rename wording.
+    roster: [
+      stock('operator', { prompt: 'Coordinate — don’t implement. Break goals into small, verifiable tasks and hand each to the best-suited lane via OPERATOR-DISPATCH. Track what you delegated; when work comes back, check it against the goal and dispatch follow-ups for gaps. Prefer several precise dispatches over one vague one, and keep a running summary of who is doing what.' }),
+      stock('research'),
+      stock('code'),
+      stock('review'),
+      stock('design', { accent: '#00ffcc' }),
+      { id: 'perf', name: 'Perf', model: 'sonnet', effort: 'high' } as Role,
+    ],
+    tasks: [{ id: 'pt-1', text: 'Read the diff', roleId: 'review', status: 'done', createdAt: earlier }],
+    dispatches: [],
+  },
+]
+// `?tz=1`: two dispatches whose UTC date and LOCAL date differ, for the timestamp fix
+// (dev/briefs/channel-timestamps-utc.md). Fixed instants, because the whole bug is invisible in
+// the afternoon: at UTC−5 both of these are the evening of the 30th locally while their UTC dates
+// read the 30th and the 31st, so a slice files them under two different days.
+const TZ_PROJECT_ID = 'tz-demo-1'
+const TZ_PROJECTS = [
+  {
+    id: TZ_PROJECT_ID,
+    path: '/tmp/tz-demo',
+    name: 'tz-demo',
+    createdAt: '2026-07-30T20:00:00.000Z',
+    lastActiveAt: '2026-07-31T01:30:00.000Z',
+    roster: rolePresets().filter((r) => r.id === 'operator' || r.id === 'code'),
+    tasks: [],
+    dispatches: [
+      // 16:00 local on the 30th — UTC date still the 30th, so the old slice agreed by luck.
+      { id: 'tz-a', at: '2026-07-30T21:00:00.000Z', fromRoleId: 'operator', toRoleId: 'code', task: 'Afternoon dispatch', outcome: 'sent' },
+      // 20:30 local, still the 30th — but 01:30 UTC on the 31st. This is the one that broke.
+      { id: 'tz-b', at: '2026-07-31T01:30:00.000Z', fromRoleId: 'operator', toRoleId: 'code', task: 'Evening dispatch', outcome: 'sent' },
+    ],
+  },
+]
+
+// `?solo=1`: a project exactly as one is BORN now — a single Operator lane (see
+// DashboardView's upsertProject, and dev/briefs/operator-is-the-floor.md). It exists so the
+// one-row AGENTS section can be looked at rather than assumed: that section is the user's whole
+// view of their team, and "one row plus + Add agent" has to read as deliberate, not as broken.
+const SOLO_PROJECTS = [
+  {
+    id: 'solo-demo-1',
+    path: '/tmp/solo-demo',
+    name: 'solo-demo',
+    createdAt: now,
+    lastActiveAt: now,
+    roster: rolePresets().filter((r) => r.id === 'operator'),
+    tasks: [],
+    dispatches: [],
+  },
+]
+
+const PRUNE_SAVED = [
+  { key: 'key-prune-1', cwd: '/tmp/prune-demo', projectName: 'prune-demo', projectId: PRUNE_PROJECT_ID, roleId: 'code', claudeSessionId: 'prune-1', lastActiveAt: earlier },
 ]
 
 const session = (o: Partial<AgentSession> & { id: string; terminalId: string }): AgentSession => ({
@@ -292,14 +370,46 @@ export function installMockBridge() {
     const p = MOCK_PROJECTS.find((x) => x.id === DORMANT_ID)
     if (p) (p as { path: string }).path = ''
   }
+  // `?prune=` swaps in PRUNE_PROJECTS, the fixture for the one-time seeded-lane migration.
+  // `?prune=1` also CLEARS the flag saying it already ran, so the migration fires; any other
+  // value keeps the flag, which is how a driver reloads the same fixture to prove the prune
+  // does not run twice. Every boot WITHOUT the param marks the flag done, and that is the
+  // point — the fixtures the rest of the harness relies on contain lanes the prune would
+  // legitimately remove, so otherwise the first driver run of the day would quietly empty a
+  // roster the next assertion expects to find.
+  const pruneParam = new URLSearchParams(location.search).get('prune')
+  const prune = pruneParam !== null
+  // `?solo=1` — a project with exactly one Operator lane, the shape a new project now has.
+  const solo = new URLSearchParams(location.search).get('solo') === '1'
+  // `?tz=1` — fixed evening dispatches for the local-time fix.
+  const tz = new URLSearchParams(location.search).get('tz') === '1'
+  // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —
+  // verbatim the six entries the real `~/.operator/role-defaults.json` held. `?worktree=1` also
+  // clears the one-shot flag so the seed migration runs; any other value keeps it, which is how a
+  // driver proves the migration does not fire twice. Boots without the param leave the store
+  // EMPTY, which is the pre-existing behaviour every other driver was written against.
+  const worktreeParam = new URLSearchParams(location.search).get('worktree')
+  // `?empty=1` wins: a virgin install has no store, which is the case §6 of the driver checks.
+  let roleDefaults: Record<string, unknown> = worktreeParam === null || empty ? {} : {
+    code: { useWorktree: true },
+    design: { useWorktree: true },
+    operator: { useWorktree: false },
+    qa: { useWorktree: false },
+    research: { useWorktree: false },
+    review: { useWorktree: false },
+  }
   // Seed the stores the renderer reads at boot so it lands on a populated UI.
   try {
     if (empty) localStorage.clear()
     else {
-      localStorage.setItem('operator.projects', JSON.stringify(MOCK_PROJECTS))
-      localStorage.setItem('operator.savedSessions', JSON.stringify([...MOCK_SAVED, ...MOCK_DORMANT]))
+      localStorage.setItem('operator.projects', JSON.stringify(tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS))
+      localStorage.setItem('operator.savedSessions', JSON.stringify(solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT]))
       localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
     }
+    if (pruneParam === '1') localStorage.removeItem('operator.seededLanePrunedAt')
+    else if (!prune) localStorage.setItem('operator.seededLanePrunedAt', now)
+    if (worktreeParam === '1') localStorage.removeItem('operator.worktreeSeedMigratedAt')
+    else localStorage.setItem('operator.worktreeSeedMigratedAt', now)
   } catch { /* ignore */ }
 
   // The dispatch subscription is capturable so a driver can fire directives as if the
@@ -324,7 +434,7 @@ export function installMockBridge() {
     // The chat liveness signals are a pure read of these fields, so this is the only lever a
     // harness needs to drive running / compacting / waiting / idle / ended.
     onSessionUpdate: (cb: (s: AgentSession[]) => void) => {
-      setTimeout(() => cb(empty ? [] : MOCK_SESSIONS), 0)
+      setTimeout(() => cb(empty || solo || tz ? [] : MOCK_SESSIONS), 0)
       ;(window as unknown as { __mockPhase: unknown }).__mockPhase = (id: string, patch: Partial<AgentSession>) => {
         cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, ...patch } : x)))
       }
@@ -332,6 +442,14 @@ export function installMockBridge() {
       const extra: unknown[] = []
       ;(window as unknown as { __mockAppend: unknown }).__mockAppend = (id: string, text: string) => {
         extra.push({ kind: 'text', text, timestamp: new Date().toISOString() })
+        cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, messages: [...extra] } as AgentSession : x)))
+      }
+      // The USER half — what `transcript.rs` `apply_user` pushes when a real prompt commits, and
+      // the only evidence the delivery loop accepts that a dispatch became a turn. Without it the
+      // harness could watch a message go out but never watch it ARRIVE, which is the half that
+      // was broken. Timestamped now, so it lands inside the submission's window.
+      ;(window as unknown as { __mockUserTurn: unknown }).__mockUserTurn = (id: string, text: string) => {
+        extra.push({ kind: 'user', text, timestamp: new Date().toISOString() })
         cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, messages: [...extra] } as AgentSession : x)))
       }
       return () => {}
@@ -342,7 +460,7 @@ export function installMockBridge() {
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     // --- reads ------------------------------------------------------------------
-    getSessions: async () => (empty ? [] : MOCK_SESSIONS),
+    getSessions: async () => (empty || solo || tz ? [] : MOCK_SESSIONS),
     // A real-shaped transcript so the chat view can be READ, not just compiled: alternating
     // turns, a long answer, code, a list, and signature-only (empty) `thinking` entries —
     // which is what Claude Code actually emits. See MOCK_CHAT's note: this fixture once
@@ -356,13 +474,25 @@ export function installMockBridge() {
     // Shape-exact with ChatStore::replies — including `id`, the content-hash PK a delivery
     // outcome is keyed to. A fixture missing it would let the feed's fold silently no-op.
     projectReplies: async (projectId: string) => replyRows.get(projectId) ?? [],
-    terminalList: async () => (empty ? [] : MOCK_TERMINALS),
+    terminalList: async () => (empty || solo || tz ? [] : MOCK_TERMINALS),
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => (empty ? [] : [...MOCK_SAVED, ...MOCK_DORMANT]),
-    loadProjects: async () => (empty ? [] : MOCK_PROJECTS),
+    loadSessions: async () => (empty || solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT]),
+    loadProjects: async () => (empty ? [] : tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS),
+    // The prune refuses to write without a backup, so the harness has to answer this or the
+    // migration silently declines to run — the exact failure it is meant to demonstrate.
+    backupProjects: async (stamp: string) => `projects.${stamp}.json`,
+    // `~/.operator/role-defaults.json`, which the mock did not model at all — so the whole global
+    // layer (and the seed that writes it) was unreachable from the harness, and `?worktree=`'s
+    // migration could not be driven. Backed by a live object so a driver can read back what the
+    // app persisted, exactly as `loadProjects`/`saveProjects` behave.
+    loadRoleDefaults: async () => roleDefaults,
+    saveRoleDefaults: (next: unknown) => {
+      roleDefaults = next as Record<string, unknown>
+      ;(window as unknown as { __roleDefaults?: unknown }).__roleDefaults = roleDefaults
+    },
     // Two subagents so the library renders its list AND its editor pane (the Field labels
     // there are a second de-facto field-label style — an empty list hides them entirely).
     agentsList: async () => MOCK_AGENTS,
@@ -378,16 +508,45 @@ export function installMockBridge() {
         return { fetchedAt: new Date().toISOString(), note: "Couldn't find usage lines in the CLI's reply: You are using the Anthropic API with pay-as-you-go billing." }
       }
       const high = mode === 'high'
+      // `?usage=expired` — THE REPORTED BUG (dev/briefs/plan-usage-stale.md): a reading whose own
+      // reset clause has already passed. Built relative to now so it is always in the past, and
+      // phrased the way the CLI phrases it. `?usage=aging` is merely past the TTL, which must
+      // still SHOW its numbers — the two states have to be distinguishable on screen.
+      const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+      // The reset clause has to be a real FUTURE time, phrased exactly as the CLI phrases it
+      // ("Jul 30 at 8:30pm (America/Guayaquil)"). Hardcoding one was fine until the meter learned
+      // to read it: a fixed date goes into the past overnight and every fixture then renders as a
+      // closed window — a fixture more stale than reality, which validates nothing.
+      const resetsIn = (hours: number) => {
+        const d = new Date(Date.now() + hours * 3_600_000)
+        const mon = d.toLocaleString('en-US', { month: 'short' })
+        const hr = d.getHours() % 12 || 12
+        const ampm = d.getHours() < 12 ? 'am' : 'pm'
+        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+        return `${mon} ${d.getDate()} at ${hr}:${String(d.getMinutes()).padStart(2, '0')}${ampm} (${zone})`
+      }
+      if (mode === 'expired') {
+        return {
+          sessionPct: 12,
+          // Read 90 minutes ago, and the window it named closed an hour ago.
+          sessionResets: 'in 30 minutes',
+          weekPct: 40,
+          weekResets: resetsIn(96),
+          modelLabel: 'Fable', modelPct: 0, modelResets: resetsIn(96),
+          plan: 'You are currently using your subscription to power your Claude Code usage',
+          fetchedAt: ago(90 * 60_000),
+        }
+      }
       return {
         sessionPct: high ? 93 : 66,
-        sessionResets: 'Jul 30 at 2am (America/Guayaquil)',
+        sessionResets: resetsIn(4),
         weekPct: high ? 78 : 39,
-        weekResets: 'Aug 4 at 1am (America/Guayaquil)',
+        weekResets: resetsIn(96),
         modelLabel: 'Fable',
         modelPct: 0,
-        modelResets: 'Aug 4 at 1am (America/Guayaquil)',
+        modelResets: resetsIn(96),
         plan: 'You are currently using your subscription to power your Claude Code usage',
-        fetchedAt: new Date().toISOString(),
+        fetchedAt: mode === 'aging' ? ago(12 * 60_000) : new Date().toISOString(),
       }
     },
     getVersion: async () => '0.8.8-mock',

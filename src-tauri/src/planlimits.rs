@@ -186,9 +186,83 @@ fn now_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.000Z")
 }
 
+/// Milliseconds since the epoch. `now_iso` formats the same clock for the wire; this is the same
+/// reading in the form arithmetic can use.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// When the window a reset clause names ends, in epoch ms — **relative phrasings only**.
+///
+/// The split is deliberate, and it is a capability boundary rather than a preference. The clause
+/// the CLI actually emits today is `Jul 30 at 8:30pm (America/Guayaquil)`: a wall-clock time in a
+/// named IANA zone. Converting that needs a timezone database, and this crate is std-only on
+/// purpose — `now_iso` hand-rolls civil-from-days precisely because there is no date crate — so
+/// doing it here would mean guessing an offset, which is the "print the wrong hour" mistake
+/// `resets_in` above exists to avoid, moved one layer down where nobody would see it.
+///
+/// The renderer has `Intl`, which has the whole database, and it is the only place the number is
+/// ever DISPLAYED; it does the zoned check and forces a refresh (see lib/plan-limits `windowEnded`).
+/// What this covers is the relative form — exact with no zone knowledge at all — so the cache
+/// cannot serve a provably-closed window for those phrasings either.
+fn resets_at_ms(clause: &str, fetched_ms: u64) -> Option<u64> {
+    let t = clause.trim().to_lowercase();
+    let rest = t.strip_prefix("in ")?;
+    let mut total_ms: u64 = 0;
+    let mut saw = false;
+    let mut num: Option<u64> = None;
+    for tok in rest.split(|c: char| c.is_whitespace() || c == ',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        if let Ok(n) = tok.parse::<u64>() {
+            num = Some(n);
+            continue;
+        }
+        // A unit only counts when a number is waiting for it; anything else means a phrasing we
+        // do not understand, and half-understanding one is worse than declining it.
+        let n = match num.take() {
+            Some(n) => n,
+            None => return None,
+        };
+        if tok.starts_with("hour") || tok == "h" || tok.starts_with("hr") {
+            total_ms += n * 3_600_000;
+            saw = true;
+        } else if tok.starts_with("min") || tok == "m" {
+            total_ms += n * 60_000;
+            saw = true;
+        } else {
+            return None;
+        }
+    }
+    // A trailing bare number ("in 3") names no unit; decline it.
+    if !saw || num.is_some() {
+        return None;
+    }
+    Some(fetched_ms + total_ms)
+}
+
+/// Has the session window this reading describes already ended? `false` whenever we cannot tell —
+/// never assume closed, since that would throw away a perfectly good reading.
+fn window_ended(value: &PlanLimits, fetched_ms: u64, now: u64) -> bool {
+    value
+        .session_resets
+        .as_deref()
+        .and_then(|c| resets_at_ms(c, fetched_ms))
+        .map(|at| now >= at)
+        .unwrap_or(false)
+}
+
 struct Cache {
     value: PlanLimits,
     at: Instant,
+    /// When the cached value was read, as epoch ms — `at` is an `Instant`, which cannot be
+    /// compared against a wall-clock reset time.
+    fetched_ms: u64,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -256,7 +330,10 @@ pub fn fetch(force: Option<bool>) -> PlanLimits {
     if !force {
         if let Ok(guard) = CACHE.lock() {
             if let Some(c) = guard.as_ref() {
-                if c.at.elapsed() < TTL {
+                // Fresh by the clock AND still describing a window that exists. A cache entry past
+                // its own reset boundary is not stale, it is false, and serving it for the rest of
+                // the TTL is how a percentage from a closed window stays on screen.
+                if c.at.elapsed() < TTL && !window_ended(&c.value, c.fetched_ms, now_ms()) {
                     return c.value.clone();
                 }
             }
@@ -268,7 +345,7 @@ pub fn fetch(force: Option<bool>) -> PlanLimits {
     if !force {
         if let Ok(guard) = CACHE.lock() {
             if let Some(c) = guard.as_ref() {
-                if c.at.elapsed() < TTL {
+                if c.at.elapsed() < TTL && !window_ended(&c.value, c.fetched_ms, now_ms()) {
                     return c.value.clone();
                 }
             }
@@ -287,6 +364,7 @@ pub fn fetch(force: Option<bool>) -> PlanLimits {
         *guard = Some(Cache {
             value: value.clone(),
             at: Instant::now(),
+            fetched_ms: now_ms(),
         });
     }
     value
@@ -426,7 +504,7 @@ Current Week (All Models) — 71% used, resets Sunday",
         // must do ONE spawn. Seed the cache and assert `fetch` never reaches the subprocess —
         // `run_usage` would take ~1.5s and return a different `fetched_at` if it did.
         let seeded = PlanLimits { session_pct: Some(42), fetched_at: "seeded".into(), ..Default::default() };
-        *CACHE.lock().unwrap() = Some(Cache { value: seeded.clone(), at: Instant::now() });
+        *CACHE.lock().unwrap() = Some(Cache { value: seeded.clone(), at: Instant::now(), fetched_ms: now_ms() });
         for _ in 0..5 {
             let got = fetch(Some(false));
             assert_eq!(got, seeded, "a cache hit must not spawn anything");
@@ -440,6 +518,7 @@ Current Week (All Models) — 71% used, resets Sunday",
         *CACHE.lock().unwrap() = Some(Cache {
             value: stale.clone(),
             at: Instant::now().checked_sub(TTL + Duration::from_secs(1)).unwrap(),
+            fetched_ms: now_ms(),
         });
         // Not asserting on the fetched value (it would really spawn `claude`); only that the
         // staleness check itself says no.
@@ -456,5 +535,91 @@ Current Week (All Models) — 71% used, resets Sunday",
         assert!(s.ends_with('Z'), "{s}");
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
+    }
+}
+
+#[cfg(test)]
+mod reset_window_tests {
+    use super::*;
+
+    const HOUR: u64 = 3_600_000;
+
+    #[test]
+    fn parses_the_relative_phrasings() {
+        let t0 = 1_000_000_000_000;
+        assert_eq!(resets_at_ms("in 3 hours", t0), Some(t0 + 3 * HOUR));
+        assert_eq!(resets_at_ms("in 1 hour", t0), Some(t0 + HOUR));
+        assert_eq!(resets_at_ms("in 45 minutes", t0), Some(t0 + 45 * 60_000));
+        assert_eq!(resets_at_ms("in 45 min", t0), Some(t0 + 45 * 60_000));
+        // The shape Claude's own UI uses: "Resets in 4 hr 55 min".
+        assert_eq!(resets_at_ms("in 4 hr 55 min", t0), Some(t0 + 4 * HOUR + 55 * 60_000));
+        assert_eq!(resets_at_ms("  IN 2 HOURS  ", t0), Some(t0 + 2 * HOUR));
+    }
+
+    #[test]
+    fn declines_every_phrasing_it_cannot_pin_exactly() {
+        // All of these are real fixtures from the parser tests above. Declining is the whole
+        // point: an unparseable clause falls back to the plain TTL rather than guessing, and a
+        // guess here would blank a number the user can see is fine.
+        let t0 = 1_000_000_000_000;
+        for clause in [
+            "Jul 30 at 2am (America/Guayaquil)", // zoned wall clock — the renderer's job
+            "Jul 30 at 8:30pm (America/Guayaquil)",
+            "Jul 30 at 2am",
+            "tomorrow",
+            "Sunday",
+            "Aug 4",
+            "later",
+            "in 3",        // a number with no unit
+            "in a while",  // a unit with no number
+            "",
+        ] {
+            assert_eq!(resets_at_ms(clause, t0), None, "should decline {clause:?}");
+        }
+    }
+
+    #[test]
+    fn a_window_is_ended_only_once_its_reset_has_passed() {
+        let t0 = 1_000_000_000_000;
+        let v = PlanLimits {
+            session_pct: Some(12),
+            session_resets: Some("in 2 hours".into()),
+            ..Default::default()
+        };
+        assert!(!window_ended(&v, t0, t0));                    // just read
+        assert!(!window_ended(&v, t0, t0 + HOUR));             // mid-window
+        assert!(window_ended(&v, t0, t0 + 2 * HOUR));          // exactly at the boundary
+        assert!(window_ended(&v, t0, t0 + 3 * HOUR));          // past it
+    }
+
+    #[test]
+    fn an_unreadable_clause_never_reads_as_ended() {
+        // Never assume closed: that would throw away a perfectly good reading on every account
+        // whose phrasing we don't parse — which today is the common one.
+        let t0 = 1_000_000_000_000;
+        for clause in [Some("Jul 30 at 2am (America/Guayaquil)".to_string()), Some("later".into()), None] {
+            let v = PlanLimits { session_resets: clause.clone(), ..Default::default() };
+            assert!(!window_ended(&v, t0, t0 + 999 * HOUR), "clause {clause:?}");
+        }
+    }
+
+    #[test]
+    fn the_cache_refuses_a_value_whose_window_has_closed() {
+        // The brief's requirement: past its own reset boundary is a MISS, independently of the
+        // 5-minute TTL. Asserted on the predicate rather than by calling `fetch` — a miss really
+        // would spawn `claude -p "/usage"`.
+        let fetched = now_ms();
+        let closed = PlanLimits {
+            session_pct: Some(12),
+            session_resets: Some("in 1 min".into()),
+            ..Default::default()
+        };
+        let open = PlanLimits {
+            session_resets: Some("in 5 hours".into()),
+            ..Default::default()
+        };
+        let now = fetched + 2 * 60_000; // two minutes later — well inside the TTL
+        assert!(window_ended(&closed, fetched, now), "a closed window must not be served");
+        assert!(!window_ended(&open, fetched, now), "an open one still is");
     }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Project } from '../../../shared/types'
+import { localTime } from '../../lib/local-time'
 
 // The project's dispatch activity log — every routed `OPERATOR-DISPATCH` directive
 // (who asked whom to do what, and how it landed). Collapsed by default under the task
@@ -51,7 +52,8 @@ export function DispatchLog({ project, onApprove, onReject }: {
           {recent.map((d) => {
             const from = roleOf(d.fromRoleId)
             const to = roleOf(d.toRoleId)
-            const time = d.at.slice(11, 16) // HH:MM — the date is rarely the point here
+            // HH:MM LOCAL — the date is rarely the point here. A slice would show UTC.
+            const time = localTime(d.at)
             const isPending = d.outcome === 'pending-approval'
             return (
               <div key={d.id} data-dispatch-row={d.id} style={{

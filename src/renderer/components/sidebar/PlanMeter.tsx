@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  hasData, limitRows, glanceLine, updatedAgo, ringDash, toneFor, TONE_FILL, readable,
+  hasCurrentData, freshnessOf, windowEnded, needsRevalidate, limitRows, glanceLine, updatedAgo,
+  ringDash, toneFor, TONE_FILL, readable,
   type PlanLimits,
 } from '../../lib/plan-limits'
 
@@ -18,11 +19,17 @@ import {
 const R = 8.2          // ring radius inside a 22px box
 const STROKE = 2.2
 
-export function PlanMeter({ limits, loading, onRefresh }: {
+export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
   limits: PlanLimits | null
   loading?: boolean
+  /** The hook's clock. Passed in rather than read here so the age on screen advances with the
+   *  same tick that decides whether to re-ask — one clock, or the two disagree. */
+  now: number
   /** Explicit refresh — skips the backend's 5-minute TTL. */
   onRefresh: () => void
+  /** Re-ask only if the reading has aged out. Fired on open: the popover is the moment someone
+   *  actually reads these numbers, so it is the moment they had better be current. */
+  onRevalidate: () => void
 }) {
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -44,11 +51,32 @@ export function PlanMeter({ limits, loading, onRefresh }: {
     return () => { document.removeEventListener('keydown', onKey, true); document.removeEventListener('mousedown', onDown) }
   }, [open])
 
-  const session = readable(limits?.sessionPct)
+  // STALE IS NOT CURRENT: past `STALE_MS` with no successful read the meter stops asserting a
+  // percentage and degrades to the same "we don't know" it draws for an account with no limits.
+  // Everything below reads `known`, so the ring, the arc, the hover line, the rows and the
+  // screen-reader label all fall together — a ring still drawing 58% under a popover that says
+  // the reading is old is the same lie told twice.
+  const known = hasCurrentData(limits, now)
+  const fresh = freshnessOf(limits, now)
+  const stale = fresh === 'expired'
+  const ended = windowEnded(limits, now)
+  const session = known ? readable(limits?.sessionPct) : null
   const tone = toneFor(session)
   const { dash, gap, circumference } = ringDash(session, R)
-  const glance = glanceLine(limits)
-  const known = hasData(limits)
+  const glance = known ? glanceLine(limits) : null
+  const rows = known ? limitRows(limits) : []
+  const age = updatedAgo(limits?.fetchedAt, now)
+  // Three sentences for three genuinely different situations. The ENDED one is the reason this
+  // work exists: a percentage next to a reset time that has already passed, both from the same
+  // cached reading, is not "possibly out of date" — it is provably describing a window that no
+  // longer exists, and saying so is the only honest thing left.
+  const emptyLine = loading
+    ? 'Reading your plan usage…'
+    : ended
+      ? `That window closed — the reading was taken ${age} and its own reset time has since passed. Re-reading…`
+      : stale
+        ? `That reading is ${age} — too old to trust. Refresh to ask again.`
+        : limits?.note ?? "No reading yet. Operator asks the Claude CLI for this — it needs a signed-in subscription."
 
   return (
     <>
@@ -56,10 +84,16 @@ export function PlanMeter({ limits, loading, onRefresh }: {
         ref={btnRef}
         data-rail-usage
         data-usage-pct={session ?? ''}
+        data-usage-stale={stale ? 'true' : undefined}
+        data-usage-freshness={fresh}
         aria-label={glance ? `Plan usage — ${glance}` : 'Plan usage'}
         aria-expanded={open}
-        title={glance ?? (loading ? 'Reading your plan usage…' : 'Plan usage — no reading yet')}
-        onClick={() => setOpen((o) => !o)}
+        title={glance ?? (loading
+          ? 'Reading your plan usage…'
+          : stale ? `Plan usage — last read ${age}, too old to show` : 'Plan usage — no reading yet')}
+        // Opening is a read, so it is also the cheapest possible moment to re-ask. `onRevalidate`
+        // no-ops when the reading is already current, so this costs nothing on a warm meter.
+        onClick={() => setOpen((o) => { if (!o) onRevalidate(); return !o })}
         style={{
           width: 26, height: 26, padding: 0, display: 'grid', placeItems: 'center',
           background: open ? 'var(--overlay-subtle)' : 'transparent',
@@ -117,7 +151,19 @@ export function PlanMeter({ limits, loading, onRefresh }: {
             </p>
           )}
 
-          {limitRows(limits).map((row) => (
+          {/* Past the TTL but the window has not provably closed: the numbers still stand, so
+              they stay — but the warning moves out of the footer whisper and above them, since it
+              is the only thing telling you they are behind. */}
+          {fresh === 'aging' && known && (
+            <p data-usage-aging style={{
+              margin: '0 0 9px', fontFamily: 'var(--font-mono)', fontSize: 10,
+              color: 'var(--status-compacting)',
+            }}>
+              {`${age} — re-reading…`}
+            </p>
+          )}
+
+          {rows.map((row) => (
             <div key={row.key} data-usage-row={row.key} style={{ marginBottom: 11 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
                 <span style={{ fontSize: 11.5, color: 'var(--fg)' }}>{row.label}</span>
@@ -148,10 +194,9 @@ export function PlanMeter({ limits, loading, onRefresh }: {
           ))}
 
           {!known && (
-            <p data-usage-empty style={{ margin: '2px 0 10px', fontSize: 11, lineHeight: 1.55, color: 'var(--fg-muted)' }}>
-              {loading
-                ? 'Reading your plan usage…'
-                : limits?.note ?? "No reading yet. Operator asks the Claude CLI for this — it needs a signed-in subscription."}
+            <p data-usage-empty data-usage-empty-kind={stale ? 'stale' : loading ? 'loading' : 'absent'}
+              style={{ margin: '2px 0 10px', fontSize: 11, lineHeight: 1.55, color: 'var(--fg-muted)' }}>
+              {emptyLine}
             </p>
           )}
           {/* A note alongside real numbers still shows: a partial parse is worth knowing about. */}
@@ -162,8 +207,11 @@ export function PlanMeter({ limits, loading, onRefresh }: {
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+            {/* Reads `now` from the hook, so this counts up on its own — computed from
+                `Date.now()` at render it froze at whatever it said when React last drew, which is
+                precisely the freshness claim this whole change exists to stop making. */}
             <span data-usage-updated style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)' }}>
-              {loading ? 'Refreshing…' : updatedAgo(limits?.fetchedAt, Date.now()) ? `Updated ${updatedAgo(limits?.fetchedAt, Date.now())}` : 'Not read yet'}
+              {loading ? 'Refreshing…' : age ? `Updated ${age}` : 'Not read yet'}
             </span>
             <button
               data-usage-refresh
@@ -184,13 +232,41 @@ export function PlanMeter({ limits, loading, onRefresh }: {
   )
 }
 
-/** Load plan limits once and expose a manual refresh. The backend owns the cache and the
- *  one-process-at-a-time guard, so this is deliberately thin — and it never runs on a timer:
- *  polling a subprocess per render is exactly what the TTL exists to prevent. */
-export function usePlanLimits(): { limits: PlanLimits | null; loading: boolean; refresh: () => void } {
+/** How often the hook re-examines its own reading. This tick spawns NOTHING — it moves `now`, so
+ *  "Updated 4m ago" counts up instead of freezing at whatever it said when React last rendered,
+ *  and so `needsRevalidate` gets asked at all. A fetch happens only when that predicate says so. */
+const TICK_MS = 30_000
+
+/** Load plan limits, keep them honest, and expose a manual refresh.
+ *
+ *  It used to read ONCE at mount and never again, which is how a session percentage from a window
+ *  that closed hours ago stayed on the ring all day. The backend still owns the cache and the
+ *  one-process-at-a-time guard, so the fix is about WHEN to ask, not about asking harder:
+ *
+ *   - at the moments attention lands — the window regaining focus or visibility, and the popover
+ *     being opened (`revalidate`, called from the meter). These are free when the reading is
+ *     already current, because they go through `needsRevalidate` first;
+ *   - on a slow tick, but ONLY while the document is visible. This is the case the attention
+ *     hooks miss: an app left open and focused all day, where nothing ever re-enters. A meter
+ *     nobody can see must not spawn a subprocess, so a hidden window ticks not at all.
+ *
+ *  Which is why this is still not "polling a subprocess per render": the interval moves a clock,
+ *  and `FRESH_MS` — the backend's own TTL — decides whether that clock is worth acting on. */
+export function usePlanLimits(): {
+  limits: PlanLimits | null
+  loading: boolean
+  now: number
+  refresh: () => void
+  revalidate: () => void
+} {
   const [limits, setLimits] = useState<PlanLimits | null>(null)
   const [loading, setLoading] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
   const inFlight = useRef(false)
+  // The revalidate path has to read the CURRENT reading without re-subscribing its listeners on
+  // every fetch — the same reason the launch path reads role defaults through a ref.
+  const limitsRef = useRef<PlanLimits | null>(null)
+  limitsRef.current = limits
 
   const read = useCallback((force: boolean) => {
     if (inFlight.current) return // the backend guards this too; this stops the UI flickering
@@ -204,6 +280,19 @@ export function usePlanLimits(): { limits: PlanLimits | null; loading: boolean; 
       .finally(() => { inFlight.current = false; setLoading(false) })
   }, [])
 
+  /** Ask again only if the reading has aged out. Safe to call on every focus and every popover
+   *  open — that is the point of it existing separately from `refresh`, which is the user saying
+   *  "no, actually go now" and skips both this check and the backend's TTL. */
+  const revalidate = useCallback(() => {
+    const at = Date.now()
+    setNow(at)
+    // A window whose own reset time has passed is not merely due a re-check: the cached value is
+    // provably describing a window that no longer exists, and the backend would happily serve it
+    // again for the rest of its 5-minute TTL. That is the one case worth forcing.
+    if (windowEnded(limitsRef.current, at)) read(true)
+    else if (needsRevalidate(limitsRef.current, at)) read(false)
+  }, [read])
+
   // Deferred past first paint: app start must never wait on a subprocess. The meter renders
   // empty and fills in.
   useEffect(() => {
@@ -211,5 +300,36 @@ export function usePlanLimits(): { limits: PlanLimits | null; loading: boolean; 
     return () => clearTimeout(t)
   }, [read])
 
-  return { limits, loading, refresh: useCallback(() => read(true), [read]) }
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined
+    const stop = () => { if (timer) { clearInterval(timer); timer = undefined } }
+    const start = () => {
+      stop()
+      // Never leave an interval armed on a hidden window: a backgrounded app should cost nothing,
+      // and the visibility handler below re-arms it (and revalidates) the moment it comes back.
+      if (document.visibilityState === 'hidden') return
+      timer = setInterval(() => {
+        const at = Date.now()
+        setNow(at)
+        if (windowEnded(limitsRef.current, at)) read(true)
+        else if (needsRevalidate(limitsRef.current, at)) read(false)
+      }, TICK_MS)
+    }
+    const onVisible = () => {
+      start()
+      if (document.visibilityState === 'visible') revalidate()
+    }
+    start()
+    document.addEventListener('visibilitychange', onVisible)
+    // Focus as well as visibility: a window can be fully visible and simply not the front app,
+    // which is most of what "came back after a while" actually looks like on a desktop.
+    window.addEventListener('focus', revalidate)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', revalidate)
+    }
+  }, [read, revalidate])
+
+  return { limits, loading, now, refresh: useCallback(() => read(true), [read]), revalidate }
 }

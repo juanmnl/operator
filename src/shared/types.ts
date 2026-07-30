@@ -282,11 +282,18 @@ export interface DispatchRecord {
    *  hop-limit = the chain hit its budget with no human in it · pair-brake = that ordered pair
    *  was sending too fast and is suspended · paused = the human's kill switch was on.
    *  All three mean NOTHING was typed anywhere, and none of them retries on its own.
-   *  Historical records predate everything after `unassigned` and keep whatever they were —
-   *  nothing reclassifies them, because a `sent` record means it already went. */
+   *  Historical records predate everything after `unassigned` and keep whatever they were.
+   *  ONE reclassification exists, and only this one: `sent` → `undelivered`, written by the
+   *  delivery loop when the bytes went out but no turn ever followed. `sent` used to mean "it
+   *  already went" and was treated as final for that reason — which is exactly how a dispatch
+   *  that never arrived kept reading as a success. */
   outcome:
     | 'sent' | 'launched' | 'queued' | 'unassigned' | 'pending-approval' | 'rejected'
     | 'hop-limit' | 'pair-brake' | 'paused'
+    // Written LATE, by the delivery loop, over an earlier `sent`: the bytes went to the pty but
+    // no turn ever appeared in the target's transcript, so the task is sitting in its composer.
+    // The one outcome that is a MEASUREMENT rather than a decision — see lib/delivery-confirm.
+    | 'undelivered'
 }
 
 /** A lane's `OPERATOR-REPLY`, as the tailer emits it live. The return path's event shape —

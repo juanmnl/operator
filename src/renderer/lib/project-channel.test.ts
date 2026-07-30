@@ -140,6 +140,11 @@ describe('unreadEntries', () => {
 
 describe('groupByDay', () => {
   it('buckets consecutive days without reordering', () => {
+    // The zone is now PINNED. This test used to pass a UTC-dated fixture and read the UTC bucket
+    // back, which is the shape that passes against the bug the local-day fix exists for: with the
+    // machine at UTC−5 these three instants are all the same local afternoon. Pinning UTC keeps
+    // what the test was actually for — consecutive days separate, order preserved — and stops it
+    // depending on wherever the runner happens to be.
     const feed = buildChannelFeed(
       [
         d({ id: 'a', at: '2026-07-29T23:00:00.000Z' }),
@@ -147,7 +152,7 @@ describe('groupByDay', () => {
         d({ id: 'c', at: '2026-07-30T02:00:00.000Z' }),
       ], [], roster, sessions,
     )
-    const days = groupByDay(feed)
+    const days = groupByDay(feed, 'UTC')
     expect(days.map((g) => [g.day, g.entries.length])).toEqual([['2026-07-29', 1], ['2026-07-30', 2]])
   })
 })
@@ -277,5 +282,42 @@ describe('agent→agent delivery, folded into the reply it belongs to', () => {
     )
     expect(feed).toHaveLength(1)
     expect(feed[0].kind).toBe('reply')
+  })
+})
+
+describe('groupByDay buckets on the LOCAL day', () => {
+  const GYE = 'America/Guayaquil' // UTC−5
+  const entry = (id: string, at: string) => ({
+    id, at, kind: 'dispatch' as const, authorLabel: 'Operator', accent: null,
+    targetLabel: null, text: id, chip: { label: 'delivered', tone: 'accent' as const },
+  })
+
+  it('files an evening message under TODAY, not tomorrow', () => {
+    // The bug that hides until 19:00: at UTC−5 these are 16:00 and 20:30 on the SAME local day,
+    // but their UTC dates are the 30th and the 31st. The slice split them across a separator.
+    const days = groupByDay([
+      entry('afternoon', '2026-07-30T21:00:00.000Z'),
+      entry('evening', '2026-07-31T01:30:00.000Z'),
+    ], GYE)
+    expect(days.length).toBe(1)
+    expect(days[0].day).toBe('2026-07-30')
+    expect(days[0].entries.map((e) => e.id)).toEqual(['afternoon', 'evening'])
+  })
+
+  it('still separates a genuine local-midnight crossing', () => {
+    const days = groupByDay([
+      entry('before', '2026-07-31T04:59:00.000Z'), // 23:59 local
+      entry('after', '2026-07-31T05:01:00.000Z'),  // 00:01 local, next day
+    ], GYE)
+    expect(days.map((d) => d.day)).toEqual(['2026-07-30', '2026-07-31'])
+  })
+
+  it('preserves order and does not merge non-adjacent days', () => {
+    const days = groupByDay([
+      entry('a', '2026-07-30T21:00:00.000Z'),
+      entry('b', '2026-07-31T21:00:00.000Z'),
+      entry('c', '2026-07-30T22:00:00.000Z'), // out of order on purpose
+    ], GYE)
+    expect(days.map((d) => d.day)).toEqual(['2026-07-30', '2026-07-31', '2026-07-30'])
   })
 })

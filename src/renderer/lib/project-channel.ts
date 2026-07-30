@@ -1,3 +1,4 @@
+import { localDay } from './local-time'
 import type { DispatchRecord, ProjectReply, Role } from '../../shared/types'
 import { summariseGroup } from './channel-send'
 
@@ -65,6 +66,11 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): ChannelChip 
       return { label: 'held · pair sending too fast', tone: 'warn' }
     case 'paused':
       return { label: 'held · agent↔agent paused', tone: 'muted' }
+    // Not "held": this one was SENT and then observed not to arrive, which is a different and
+    // worse thing than never leaving. It says so, because the recovery is manual either way and
+    // a user who reads "delivered" while the lane sits idle has no way to find out otherwise.
+    case 'undelivered':
+      return { label: 'sent · never started', tone: 'warn' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }
@@ -195,11 +201,18 @@ export function unreadEntries(entries: ChannelEntry[], lastReadAt: string | null
   return entries.filter((e) => e.at > lastReadAt)
 }
 
-/** Group into day buckets for the separators, preserving order. */
-export function groupByDay(entries: ChannelEntry[]): { day: string; entries: ChannelEntry[] }[] {
+/** Group into day buckets for the separators, preserving order.
+ *
+ *  Buckets on the LOCAL date, not the stored UTC one. `at.slice(0, 10)` took the UTC calendar day,
+ *  which west of Greenwich is tomorrow's from early evening — at UTC−5, everything from 19:00
+ *  local onward filed under the next day and the separator read a day ahead. It looked correct all
+ *  afternoon and broke at dinner, which is why it survived.
+ *
+ *  `timeZone` is for tests only: a test written in the runner's own zone passes against the bug. */
+export function groupByDay(entries: ChannelEntry[], timeZone?: string): { day: string; entries: ChannelEntry[] }[] {
   const out: { day: string; entries: ChannelEntry[] }[] = []
   for (const e of entries) {
-    const day = e.at.slice(0, 10)
+    const day = localDay(e.at, timeZone)
     const last = out[out.length - 1]
     if (last && last.day === day) last.entries.push(e)
     else out.push({ day, entries: [e] })
