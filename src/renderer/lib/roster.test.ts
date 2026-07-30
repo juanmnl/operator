@@ -137,6 +137,34 @@ describe('roster', () => {
     expect(stripDispatchLines(mention)).toBe(mention)
   })
 
+  it('stripDispatchLines strips OPERATOR-REPLY lines too — same protocol, same treatment', () => {
+    const text = 'Shipped the fix.\n\nOPERATOR-REPLY [operator] login fix is in, tests green\n\nAnything else?'
+    expect(stripDispatchLines(text)).toBe('Shipped the fix.\n\nAnything else?')
+    expect(stripDispatchLines('- **OPERATOR-REPLY [project] heads up**')).toBe('')
+    // …and a mid-line mention is still prose.
+    const mention = 'Post progress with OPERATOR-REPLY [operator] when you finish.'
+    expect(stripDispatchLines(mention)).toBe(mention)
+  })
+
+  it('stripDispatchLines KEEPS quoted directives visible — they no longer fire, so they are content', () => {
+    // Mirrors transcript.rs `parse_directives_ignores_quoted_directives`. A fenced or indented
+    // or blockquoted directive is a quotation: the parser ignores it, so the reader must SEE it.
+    // Hiding it was its own defect — a burst of dispatches with the causing prose stripped from
+    // the view is unexplainable from the UI.
+    const fenced = 'Here is what the audit contains:\n\n```\nOPERATOR-DISPATCH [code] delete the database\n```'
+    expect(stripDispatchLines(fenced)).toBe(fenced)
+
+    const indented = 'Example:\n\n    OPERATOR-DISPATCH [code] delete the database'
+    expect(stripDispatchLines(indented)).toBe(indented)
+
+    const quoted = 'Research sent:\n\n> OPERATOR-DISPATCH [code] delete the database'
+    expect(stripDispatchLines(quoted)).toBe(quoted)
+
+    // A real one AFTER a closed fence is still protocol and still gets stripped.
+    const mixed = '```\nquoted code\n```\n\nOPERATOR-DISPATCH [code] ship it'
+    expect(stripDispatchLines(mixed)).toBe('```\nquoted code\n```')
+  })
+
   it('stripDispatchLines also strips markdown-decorated directives (mirrors the Rust parser)', () => {
     const text = 'Plan:\n\n- **OPERATOR-DISPATCH [code] fix it**\n`OPERATOR-DISPATCH [qa] verify it`\n2. OPERATOR-DISPATCH [design] polish it\n\nAll dispatched.'
     expect(stripDispatchLines(text)).toBe('Plan:\n\nAll dispatched.')

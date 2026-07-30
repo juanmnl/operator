@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply } from '../shared/types'
 
 declare global {
   interface Window {
@@ -11,9 +11,13 @@ declare global {
       onSessionUpdate: (callback: (sessions: AgentSession[]) => void) => () => void
       /** Orchestrator dispatch directives parsed from an agent's output. */
       onOrchestratorDispatch: (callback: (d: { id: string; sessionId: string; terminalId: string; role: string; task: string }) => void) => () => void
+      /** A lane posted `OPERATOR-REPLY [to] text`. Already persisted by the tailer when this fires. */
+      onOrchestratorReply?: (callback: (r: OperatorReply) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
       /** Full durable chat history (reading-panel answers) for a session, from SQLite. */
       chatHistory: (sessionId: string) => Promise<NarrationEntry[]>
+      /** Every reply posted to a project, oldest first. Read-only — see the bridge. */
+      projectReplies?: (projectId: string) => Promise<ProjectReply[]>
       imageDataUrl: (path: string) => Promise<string>
       rendererHeartbeat: () => void
       terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>

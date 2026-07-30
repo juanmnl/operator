@@ -17,7 +17,7 @@ import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
 import { getTuiMode } from './renderer/lib/terminal-options'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
-import type { GridUpdate, NarrationEntry } from './shared/types'
+import type { GridUpdate, NarrationEntry, ProjectReply } from './shared/types'
 
 type Unsub = () => void
 
@@ -86,6 +86,10 @@ export function installBridge(): void {
         tuiMode: getTuiMode(),
         colorScheme,
         orchestrationNote: (launchOptions?.orchestrationNote as string) ?? null,
+        // Stamped onto any reply this session posts, so it lands in the right project's
+        // channel. The tailer can't derive it — project ids are our canonical-repo-root
+        // scheme (lib/resolve-project) — so it rides along at spawn.
+        projectId: (launchOptions?.projectId as string) ?? null,
       })
       return { terminalId: id, cwd: target }
     },
@@ -157,10 +161,21 @@ export function installBridge(): void {
       const p = listen('operator:dispatch', (e) => cb(e.payload as { id: string; sessionId: string; terminalId: string; role: string; task: string }))
       return () => { void p.then((f) => f()) }
     },
+    // The return path: a lane emitted `OPERATOR-REPLY [to] text`. Unlike a dispatch this
+    // routes into no pty — the tailer has already persisted it (project-scoped) by the time
+    // this fires, so the event is a live notification, not the delivery mechanism.
+    onOrchestratorReply: (cb: (r: { id: string; sessionId: string; terminalId: string; projectId: string; to: string; text: string }) => void): Unsub => {
+      const p = listen('operator:reply', (e) => cb(e.payload as { id: string; sessionId: string; terminalId: string; projectId: string; to: string; text: string }))
+      return () => { void p.then((f) => f()) }
+    },
     getSessions: () => invoke('get_sessions'),
     // Full durable chat history for a session (reading-panel answers) from the SQLite
     // store — the whole conversation, not just the bounded tail in session:update.
     chatHistory: (sessionId: string) => invoke<NarrationEntry[]>('chat_history', { id: sessionId }),
+    // Every OPERATOR-REPLY posted to a project, oldest first. Read-only by design: replies are
+    // written by the tailer alone (a lane posts one by emitting the sentinel into its own
+    // transcript), so there is no write counterpart here.
+    projectReplies: (projectId: string) => invoke<ProjectReply[]>('project_replies', { projectId }),
     // Load a cached dropped-image (from NarrationEntry.images) as a data: URL for <img>.
     imageDataUrl: (path: string) => invoke<string>('image_data_url', { path }),
     // Liveness ping for the backend stall watchdog: while the main thread runs, this

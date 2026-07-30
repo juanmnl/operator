@@ -94,6 +94,17 @@ const OPERATOR_CHARTER =
   'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
   'right one isn’t available, do it yourself rather than forcing a bad fit.'
 
+/** Appended to every NON-coordinator charter. The belt to the router's braces: the enforcement
+ *  that matters is `dispatchNeedsApproval` (lib/dispatch), because charter text is advisory and
+ *  models route around it — Research's charter already said "never change code" and it obeyed
+ *  that literally, then wrote an implementation brief and dispatched Code to build it. Saying the
+ *  boundary out loud is still worth it: a lane that knows the rule recommends instead of
+ *  commissioning, and never waits on a dispatch that was never going to auto-deliver. */
+const NO_COMMISSIONING = ' You do not commission work. If you conclude something should be built, ' +
+  'recommend it in your report and name who should do it — the coordinator decides. Do not ' +
+  'dispatch implementation tasks; a dispatch from a non-coordinator lane is held for the user to ' +
+  'approve, so it will not run on its own.'
+
 export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
   operator: OPERATOR_CHARTER,
   orchestrator: OPERATOR_CHARTER, // legacy id → same charter (pre-rename rosters)
@@ -101,27 +112,27 @@ export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
     'Investigate and report — never change code. Read the relevant code end-to-end before answering; ' +
     'check docs or the web when it helps. Return compact findings: what exists today (with file:line ' +
     'pointers), constraints, options with trade-offs, and one clear recommendation. Distinguish what ' +
-    'you verified from what you assume.',
+    'you verified from what you assume.' + NO_COMMISSIONING,
   code:
     'Implement the task, nothing more. Read the surrounding code first and match its idiom — naming, ' +
     'comment density, error handling; no drive-by refactors. Run the project’s typecheck and tests ' +
     'before calling anything done, and report exactly what changed and why, plus anything you ' +
-    'deliberately left out.',
+    'deliberately left out.' + NO_COMMISSIONING,
   review:
     'Review adversarially — find real defects, don’t fix them unless asked. Read the full diff plus ' +
     'enough surrounding code to judge it: edge cases, races, security, regressions, misleading names. ' +
     'Rank findings by severity with file:line and a concrete failure scenario for each. If an area is ' +
-    'clean, say what you checked so silence isn’t ambiguous.',
+    'clean, say what you checked so silence isn’t ambiguous.' + NO_COMMISSIONING,
   design:
     'Own UI/UX quality. Reuse the project’s design system — its variables, spacing, and components — ' +
     'and never hardcode values that tokens already define. Propose the plan (what/where/why) before big ' +
     'visual changes; implement small polish directly. Verify both light and dark themes plus empty, ' +
-    'loading, and overflow states.',
+    'loading, and overflow states.' + NO_COMMISSIONING,
   qa:
     'Verify behavior, don’t assume it. Reproduce issues first and write down exact steps, then add ' +
     'automated tests that fail before the fix and pass after. Probe what the happy path misses: empty ' +
     'input, rapid repeats, cancellation, restart. Finish with a pass/fail rundown of everything you ' +
-    'exercised and precise repros for anything broken.',
+    'exercised and precise repros for anything broken.' + NO_COMMISSIONING,
 }
 
 // Sensible starting roster seeded on project creation — the user's own framing:
@@ -214,16 +225,36 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
   )
 }
 
-/** Remove `OPERATOR-DISPATCH …` directive lines from assistant prose — they're protocol,
- *  not conversation (the dispatch log shows them); leaves surrounding text intact.
- *  Tolerates markdown decoration around the directive (bullets, numbering, bold/backticks)
- *  to mirror the Rust parser (transcript.rs parse_dispatches) — keep the two in sync. */
-const DISPATCH_LINE = /^\s*(?:(?:[-*•>]|\d+[.)])\s+|[`*_]+)*OPERATOR-DISPATCH\s*\[/
+/** Remove `OPERATOR-DISPATCH …` / `OPERATOR-REPLY …` directive lines from assistant prose —
+ *  they're protocol, not conversation (the dispatch log and the project channel show them);
+ *  leaves surrounding text intact. Tolerates markdown decoration around the directive
+ *  (bullets, numbering, bold/backticks) to mirror the Rust parser (transcript.rs
+ *  `parse_directives`, which both sentinels share) — keep the two in sync.
+ *
+ *  STRIP EXACTLY WHAT FIRES, NOTHING MORE. The Rust parser now ignores directives inside a
+ *  fenced block, indented 4+ spaces, or blockquoted — they're QUOTED, not authored, and firing
+ *  them let text a lane merely read commission real work. This must match: a quoted directive
+ *  is ordinary content the reader should SEE. Hiding it was its own bug — a burst of dispatches
+ *  with the prose that caused them stripped out of the view is unexplainable from the UI. */
+const DIRECTIVE_LINE = /^\s*(?:(?:[-*•]|\d+[.)])\s+|[`*_]+)*OPERATOR-(?:DISPATCH|REPLY)\s*\[/
+const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/
 export function stripDispatchLines(text: string): string {
-  if (!text.includes('OPERATOR-DISPATCH')) return text // fast path for ~every message
+  // Fast path for ~every message.
+  if (!text.includes('OPERATOR-DISPATCH') && !text.includes('OPERATOR-REPLY')) return text
+  let fence: string | null = null
   return text
     .split('\n')
-    .filter((l) => !DISPATCH_LINE.test(l))
+    .filter((l) => {
+      const f = FENCE_LINE.exec(l)
+      if (f) {
+        const marker = f[0].trim()[0]
+        fence = fence === null ? marker : fence === marker ? null : fence
+        return true // the fence line itself is content
+      }
+      if (fence !== null) return true // inside a fence — quoted, keep it visible
+      if (l.startsWith('    ') || l.startsWith('\t')) return true // indented code
+      return !DIRECTIVE_LINE.test(l)
+    })
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
