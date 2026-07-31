@@ -1783,13 +1783,40 @@ fn shell_quote(s: &str) -> String {
 // not the bundle's static .icns — so the frontend re-applies the saved choice on
 // every launch. No-op off macOS.
 
+/// Which dock variant to actually apply, given what was asked for and whether this is a dev build.
+///
+/// A DEV BUILD IS ALWAYS DARK, whatever the renderer asks. Two or more instances run at once here
+/// and they share `~/.operator`, so telling a dev window from the installed release at a glance is
+/// the difference between a screenshot meaning something and meaning nothing.
+///
+/// It has to be forced in Rust rather than in `App.tsx` for two reasons. The renderer's own
+/// `setDockIcon` call would otherwise override it a moment later; and the renderer reads the
+/// preference from `localStorage`, which is exactly what cannot work here — see the note on
+/// per-origin storage in the RESULT. This is the single choke point both the startup hook and the
+/// command go through, so nothing can route around it.
+///
+/// The `dev` flag is a parameter rather than a `cfg!` read inside, so BOTH branches are testable:
+/// `cargo test` only ever runs in debug, and a release path that cannot be exercised is a release
+/// path nobody has checked.
+fn dock_variant<'a>(requested: &'a str, dev: bool) -> &'a str {
+    if dev { "dark" } else { requested }
+}
+
+/// True when this binary was built for development. `cfg!(debug_assertions)` rather than
+/// `tauri::is_dev()`: it is resolved at COMPILE time, so the release binary does not merely skip
+/// the override — it does not contain it. `main.rs` already keys its windows_subsystem attribute
+/// off the same flag, so this is the crate's existing idiom rather than a second notion of "dev".
+const fn is_dev_build() -> bool {
+    cfg!(debug_assertions)
+}
+
 #[cfg(target_os = "macos")]
 fn apply_dock_icon(variant: &str) {
     use objc2::{AllocAnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    let bytes: &[u8] = match variant {
+    let bytes: &[u8] = match dock_variant(variant, is_dev_build()) {
         "dark" => include_bytes!("../icons/dock-dark.png").as_slice(),
         _ => include_bytes!("../icons/dock-light.png").as_slice(),
     };
@@ -2014,6 +2041,14 @@ pub fn run() {
         // Last renderer heartbeat time; the stall watchdog reads it (see below).
         .manage(Arc::new(Mutex::new(Instant::now())))
         .setup(|app| {
+            // A dev build claims its dark icon BEFORE the renderer paints, so it never flashes the
+            // release icon on the way up. Release is deliberately untouched here: the renderer
+            // applies the stored preference exactly as it always has, and adding a startup write
+            // would be a second opinion about what a release icon should be.
+            #[cfg(target_os = "macos")]
+            if is_dev_build() {
+                let _ = app.handle().run_on_main_thread(|| apply_dock_icon("dark"));
+            }
             std::thread::spawn(prune_pasted_images);
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
@@ -2374,5 +2409,37 @@ mod tests {
     fn listening_ports_ignores_unparseable_names() {
         let lsof = "p123\nn*:*\nnsomething-odd\nn127.0.0.1:4321\n";
         assert_eq!(listening_ports_from(lsof), vec![4321]);
+    }
+}
+
+#[cfg(test)]
+mod dock_icon_tests {
+    use super::*;
+
+    #[test]
+    fn a_dev_build_is_always_dark() {
+        // Whatever the renderer asks for — including an explicit "light" from the Prefs control,
+        // and including a value we don't recognise.
+        for requested in ["light", "dark", "", "chartreuse"] {
+            assert_eq!(dock_variant(requested, true), "dark", "requested {requested:?}");
+        }
+    }
+
+    #[test]
+    fn a_release_build_is_unchanged() {
+        // The proof that this override is dev-only: with `dev = false` the request passes through
+        // untouched, so the Prefs preference keeps working exactly as it did.
+        assert_eq!(dock_variant("light", false), "light");
+        assert_eq!(dock_variant("dark", false), "dark");
+        // …including the fall-through that `apply_dock_icon`'s match treats as light.
+        assert_eq!(dock_variant("", false), "");
+        assert_eq!(dock_variant("chartreuse", false), "chartreuse");
+    }
+
+    #[test]
+    fn the_dev_flag_follows_the_build_profile() {
+        // `cargo test` compiles in debug, so this asserts the flag is wired to the profile at all
+        // rather than hardcoded — the release value is covered by the pass-through test above.
+        assert!(is_dev_build(), "a test binary is a debug build");
     }
 }
