@@ -59,6 +59,12 @@ export const missionControlVars = {
   '--mcp-http': '#58b2ff',
   '--mcp-cloud': '#c98bff',
   '--fg-on-accent': '#04130d',
+  /* Panel elevation — the landing kit's `.panel` depth, ported. A drop shadow plus a
+     defined edge is what makes a content card read as an object ON the field rather than
+     as the field; ours were flat and borderless by comparison. Per-theme because a shadow
+     that reads on near-black is a smudge on white. */
+  '--shadow-panel': '0 12px 34px rgba(0,0,0,0.24)',
+  '--panel-edge': 'color-mix(in srgb, var(--border) 70%, transparent)',
   '--overlay-subtle': 'rgba(255,255,255,0.06)',
   '--overlay-medium': 'rgba(255,255,255,0.12)',
 } as const

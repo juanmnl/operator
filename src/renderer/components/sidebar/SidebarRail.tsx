@@ -274,13 +274,15 @@ function RailRow({ session, active, label, initial, accent, idx, task, onSelectS
                   with the lane's accent so the rail also says WHICH agent. */}
               <span style={{ position: 'relative', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <StatusWave status={getDotStatus(session)} seed={session.id} size={30} accent={accent} />
-                <span style={{
+                <span className="ink-centred" style={{
                   position: 'absolute', inset: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 700, lineHeight: 1,
                   fontFamily: "var(--font-body)",
                   color: accent ? laneTextColor(accent) : 'var(--fg)',
-                  letterSpacing: initial.length > 1 ? -0.5 : 0,
+                  // Tightened for two letters, none for one — handed to `.ink-centred` as
+                  // --track so the trailing-space cancellation tracks whichever applies.
+                  ['--track' as string]: initial.length > 1 ? '-0.5px' : '0px',
                   // Slight halo so the glyph reads cleanly over the dot grid.
                   textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
                   pointerEvents: 'none',

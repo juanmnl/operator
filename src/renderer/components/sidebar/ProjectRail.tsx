@@ -239,12 +239,18 @@ export function ProjectRail({
           onClick={onOpenAgents}
         >
           {/* The same robot as the old sidebar button — it is what the user recognises. The eyes
-              and antenna dot are FILLED, so they set fill explicitly against the svg's fill:none. */}
-          <rect x="3" y="5.5" width="10" height="7.5" rx="2" />
-          <path d="M8 3v2.5" strokeLinecap="round" />
-          <circle cx="8" cy="2.5" r="1" fill="currentColor" stroke="none" />
-          <circle cx="6" cy="9" r="0.9" fill="currentColor" stroke="none" />
-          <circle cx="10" cy="9" r="0.9" fill="currentColor" stroke="none" />
+              and antenna dot are FILLED, so they set fill explicitly against the svg's fill:none.
+              DRAWN TO 12×12 OF PAINTED INK, like the grid and the plus. It used to span 3–13 in
+              the viewBox and painted 10×11 — the smallest thing in the foot, in a box identical
+              to its neighbours', which is why three passes over this strip never caught it. The
+              proportions are unchanged (body 12.5×9, rx 27% of height, as before); only the
+              scale is. Antenna dot top 0.9 and body edge 14.6 are the painted extremes, so the
+              glyph fills the same 1.15–14.85 band the grid does. */}
+          <rect x="1.75" y="5" width="12.5" height="9" rx="2.4" />
+          <path d="M8 2.9v2.1" strokeLinecap="round" />
+          <circle cx="8" cy="1.9" r="1" fill="currentColor" stroke="none" />
+          <circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
+          <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
         </RailFootButton>
         {/* USAGE sits beside Agents, above the seam: both are cross-project VIEWS, where the two
             below are navigation verbs. It needs no session and no project — `claude -p "/usage"`
@@ -262,7 +268,7 @@ export function ProjectRail({
             whole job is to separate two groups was the most crowded thing in the strip, and the
             foot read as five items in a row rather than 2 + 2. At 11 it gets 22–23px and the
             grouping comes back. */}
-        <span style={{ width: 22, height: 1, background: SEAM, margin: '11px 0' }} />
+        <span data-rail-seam style={{ width: 22, height: 1, background: SEAM, margin: '11px 0' }} />
         <RailFootButton
           attr="data-rail-gallery"
           label="All projects"
@@ -407,7 +413,12 @@ function ProjectTile({ project, activity, current, onOpen, draggable, dragging, 
         onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
         onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
       >
-        <span data-rail-initials>{projectInitials(project.name)}</span>
+        {/* `.ink-centred` (styles.css) — centres the INK rather than the line box. It cancels the
+            trailing letter-space that was landing the acronym 0.25–0.50px left of the axis (never
+            right: a directional error is a systematic one), and lifts the caps off the low seat
+            `place-items: center` gives them. Shared with the channel avatar, the sidebar lane
+            initial and the preview pin, so a fifth disc gets this for free. */}
+        <span data-rail-initials className="ink-centred">{projectInitials(project.name)}</span>
         {/* State gets its own channel, overlapping the tile's corner. Nothing at all when
             idle — a permanent grey dot on every tile would be one more thing to look past.
             THE INVARIANT: a tile's PAINTED CENTRE is independent of its ring and pip state. The

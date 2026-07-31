@@ -123,10 +123,105 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   background: var(--fg-muted, #555);
 }
 
+/* ── Letters in a disc: centre the INK, not the line box ───────────────────────────────────
+   `place-items: center` centres the line box, and the line box is not the ink. Two offsets fall
+   out of that, both sub-pixel per element and both plainly visible on a 26px disc:
+
+     VERTICAL    with `line-height: 1` the baseline sits ~0.8em down, so capitals occupy roughly
+                 0.1em–0.8em and sit ABOVE the box centre — the "letters sit high" complaint.
+     HORIZONTAL  `letter-spacing` adds its space after the LAST glyph too, so the box is wider on
+                 the right than the ink is and centring it lands the ink left.
+
+   ONE class rather than a nudge per disc: there are four of these today and a fifth will be
+   added by someone who never reads this file, and they should get it right for free. Set
+   `--track` where the tracking differs; the cancellation follows it automatically so the two
+   cannot drift apart, which is the failure mode of writing them as separate declarations.
+
+   THERE IS DELIBERATELY NO VERTICAL NUDGE HERE, and that is a measured result rather than an
+   omission. I built one — derived from the typeface's own metrics, ~+0.0095em — and then
+   measured what it did with `dev/drive-optical-centering.mjs`, which reads PAINTED ink:
+
+              1x        2x (the real display)      4x
+     no nudge  +1.00px   +0.25px                    +0.25px
+     nudged    —         +0.75px                    +0.75px      ← worse
+
+   Glyph baselines are snapped to the DEVICE pixel grid at raster time. At 2x the grid is 0.5px,
+   the correction is 0.09px, and all a sub-pixel transform can do is push the glyph across a
+   snap boundary — so it cannot land closer than doing nothing, and here it landed 0.5px further
+   away. A correction smaller than the quantum it is fighting is not a correction.
+
+   What actually fixed the vertical complaint was LOADING ARCHIVO. Measured at 2x, ink sat
+   0.75px low in system-ui and 0.25px low in Archivo — the letters looked low because the app
+   declared a typeface it never loaded, not because `place-items` was the wrong tool. */
+.ink-centred {
+  letter-spacing: var(--track, 0.02em);
+  margin-right: calc(-1 * var(--track, 0.02em));
+}
+
 /* Hide xterm scrollbar — terminal scrolls via keyboard/trackpad */
 .xterm-viewport::-webkit-scrollbar {
   width: 0;
   display: none;
+}
+
+/* ── The UI typefaces ──────────────────────────────────────────────────────────────────────
+   `--font-body` has named 'Archivo' and `--font-mono` 'JetBrains Mono' since the tokens were
+   written, and NEITHER WAS EVER LOADED — the only @font-face rules in this file were the four
+   terminal symbol fonts below. Every surface has been silently falling back to system-ui and
+   SF Mono, so the app has never once rendered in the type it declares. The landing gets these
+   from Google Fonts over the network; a desktop app has to carry them.
+
+   Both are VARIABLE fonts, so one file per family covers 400/500/600/700 — hence the
+   `font-weight: 100 900` range rather than four static faces. latin + latin-ext, ~108 KB for
+   all four files; latin-ext is worth its 44 KB because project and folder names are whatever
+   the user's filesystem says, not ASCII.
+
+   THE TERMINAL IS NOT AFFECTED, and not by luck: it names its own stack in
+   `lib/terminal-options.ts` (TERMINAL_FONT_FAMILY) and never reads --font-mono, so JetBrains
+   Mono cannot reach a terminal cell and its metrics cannot move. That separation already
+   existed; this comment is here so it doesn't get "simplified" later.
+
+   font-display: swap — these are local files that resolve in a frame, and `block` would risk
+   an invisible-text flash on a cold start. Both OFL 1.1; licences ship alongside the woff2. */
+@font-face {
+  font-family: 'Archivo';
+  src: url('./fonts/archivo-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  src: url('./fonts/archivo-latin-ext.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./fonts/jetbrains-mono-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
 /* Bundled monochrome symbol fallback. Claude Code's TUI markers ⏺ U+23FA,

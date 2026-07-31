@@ -451,7 +451,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                 position: 'absolute', top: -9, left: -9, width: 18, height: 18, borderRadius: '50%',
                 background: 'var(--accent)', color: 'var(--fg-on-accent, #06210c)', display: 'grid', placeItems: 'center',
                 fontSize: 10, fontWeight: 700, fontFamily: 'var(--font-mono)', boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
-              }}>{i + 1}</span>
+              }}><span className="ink-centred" style={{ ['--track' as string]: '0px' }}>{i + 1}</span></span>
             </div>
           ))}
 

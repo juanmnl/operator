@@ -28,7 +28,14 @@ import {
 // 13%), so it stays the loudest thing in the strip no matter how small it gets. Thickness is what
 // reads as weight here. 12px across with a 1.5 band is 12.5% — slightly finer than the original
 // ratio, which is what makes it recede to telemetry beside the ~11px verbs.
-const R = 6
+//
+// R IS 5.25 BECAUSE THE PAINTED DIAMETER IS 2R + STROKE, NOT 2R. The comment above wanted 12px
+// across and set R = 6, which paints 13.5 — the stroke straddles the path, so half of it lies
+// outside the radius. That made the meter the largest glyph in the foot (14px measured, against
+// 12 for the grid and the plus) while every number in the code said it was the same size, which
+// is the exact failure mode this file's own header describes and then repeated. Measured with
+// `dev/drive-rail-invariant.mjs`, which diffs screenshots rather than reading boxes.
+const R = 5.25
 const STROKE = 1.5
 
 export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {

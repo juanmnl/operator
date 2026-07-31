@@ -62,6 +62,11 @@ export const mrPinkLightVars = {
   '--mcp-http': '#2563eb',
   '--mcp-cloud': '#a21caf',
   '--fg-on-accent': '#F8F6F8',
+  /* Panel elevation — see the dark themes. Light palettes take a SHORTER, softer shadow:
+     the landing's 0.24 black at 34px blur reads as dirt on a white field, where the same
+     depth cue only needs a hint. */
+  '--shadow-panel': '0 6px 18px rgba(0,0,0,0.10)',
+  '--panel-edge': 'color-mix(in srgb, var(--border) 85%, transparent)',
   '--overlay-subtle': 'rgba(0,0,0,0.05)',
   '--overlay-medium': 'rgba(0,0,0,0.10)',
 } as const
