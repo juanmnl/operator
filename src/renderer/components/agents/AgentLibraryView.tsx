@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { AgentDefinition, AgentScope } from '../../../shared/types'
 import { pageTitle, pageSubtitle, fieldLabel, MEASURE_FORM, MEASURE_GRID } from '../settings/PageShell'
+import { SplitPane } from '../SplitPane'
 
 // Model choices surfaced as a dropdown — the headline of the whole view.
 // Empty value = omit the field (inherit the parent session's model).
@@ -160,13 +161,12 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
         </div>
       )}
 
-      {/* Full width, NOT capped at 1100: the two columns below are the scrollers, and a
-          capped ancestor parks their scrollbars at its edge instead of the window's. The
-          measure moves inside — the list column is a fixed 240, and the editor caps its own
-          form width — so the split-pane still reads deliberate at any window size. */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, width: '100%', boxSizing: 'border-box' }}>
-        {/* List column */}
-        <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto', padding: '12px 10px' }}>
+      {/* The house list-and-detail split, extracted to `SplitPane` — the same two independent
+          scrollers this view has always had, now shared. Full width, NOT capped at 1100: a capped
+          ancestor parks both scrollbars at its edge instead of the window's. */}
+      <SplitPane
+        index={(
+          <>
           <ListGroup
             title="User"
             sub="~/.claude/agents"
@@ -191,17 +191,9 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
               <button onClick={() => setProjectPath(null)} style={linkBtn}>Clear project</button>
             )}
           </div>
-        </div>
-
-        {/* Editor column */}
-        <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
-          {!selected ? (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-              <p style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', lineHeight: 1.7 }}>
-                Select an agent to edit, or create one.<br />Each agent can run on its own model.
-              </p>
-            </div>
-          ) : (
+          </>
+        )}
+        detail={selected ? (
             <Editor
               agent={selected}
               isNew={!originalPath}
@@ -214,9 +206,13 @@ export function AgentLibraryView({ embedded = false }: { embedded?: boolean } = 
               onDelete={handleDelete}
               onCancel={() => { setSelected(null); setError(null) }}
             />
-          )}
-        </div>
-      </div>
+        ) : undefined}
+        empty={(
+          <p style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', lineHeight: 1.7 }}>
+            Select an agent to edit, or create one.<br />Each agent can run on its own model.
+          </p>
+        )}
+      />
     </div>
   )
 }

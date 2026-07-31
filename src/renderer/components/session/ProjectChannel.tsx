@@ -236,7 +236,7 @@ export function channelHeader({ project, chatterPaused, onToggleChatter }: {
 
 export function ProjectChannel({
   project, replies, sessions, onApproveDispatch, onRejectDispatch, onMarkRead, onSend,
-  chatterPaused, onToggleChatter,
+  chatterPaused, onToggleChatter, selectedId, onSelectEntry,
 }: {
   project: Project
   /** Read from chat.db via projectReplies(); [] until a lane emits its first OPERATOR-REPLY. */
@@ -256,6 +256,10 @@ export function ProjectChannel({
   chatterPaused?: boolean
   /** Flip it. Absent = the control is not rendered at all. */
   onToggleChatter?: () => void
+  /** The digest rows are the INDEX of a list-and-detail pair: picking one fills the right panel's
+   *  Message tab. Absent = the feed is not driving a panel and rows are not selectable. */
+  selectedId?: string
+  onSelectEntry?: (entry: ChannelEntry) => void
 }) {
   const feed = useMemo(
     () => buildChannelFeed(project.dispatches, replies, project.roster, sessions),
@@ -489,6 +493,8 @@ export function ProjectChannel({
                   // the first row of a day always prints its author.
                   continuation={isContinuation(group.entries[i - 1], e)}
                   narrow={narrow}
+                  selected={selectedId === e.id}
+                  onSelect={onSelectEntry}
                   onApprove={onApproveDispatch}
                   onReject={onRejectDispatch}
                 />
@@ -626,7 +632,7 @@ function ChannelBody({ text }: { text: string }) {
   )
 }
 
-function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onReject }: {
+function ChannelRow({ entry, projectId, continuation, narrow, selected, onSelect, onApprove, onReject }: {
   entry: ChannelEntry
   projectId: string
   /** Same author as the row above, close in time: the identity is already on screen, so this row
@@ -636,6 +642,8 @@ function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onRejec
    *  stays even here: it is the identity channel this whole layout is built around, and dropping
    *  it would cost more than the 36px it occupies. */
   narrow?: boolean
+  selected?: boolean
+  onSelect?: (entry: ChannelEntry) => void
   onApprove?: (projectId: string, id: string) => void
   onReject?: (projectId: string, id: string) => void
 }) {
@@ -652,6 +660,13 @@ function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onRejec
       data-channel-continuation={continuation ? '' : undefined}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      onClick={(e) => {
+        // The row is the index entry, but it also CONTAINS controls — Show more, copy, Approve,
+        // Decline. Selecting on any click would fire when someone folds a body open. Ignore clicks
+        // that land on an interactive descendant.
+        if ((e.target as HTMLElement).closest('button, a')) return
+        onSelect?.(entry)
+      }}
       style={{
         // FULL-BLEED: the row's background and hit area run edge to edge, and its own horizontal
         // padding is what insets the content. That split is the design — the row is full width,
@@ -663,7 +678,8 @@ function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onRejec
         padding: continuation
           ? `${STEP}px ${INSET}px`
           : `${STEP * 3}px ${INSET}px ${STEP}px`,
-        background: hover ? 'var(--overlay-subtle)' : 'transparent',
+        background: selected ? 'var(--overlay-medium)' : hover ? 'var(--overlay-subtle)' : 'transparent',
+        cursor: onSelect ? 'pointer' : 'default',
         // No transition on the background: at this row height a fade reads as lag, and the feed
         // is live enough already.
       }}

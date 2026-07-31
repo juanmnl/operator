@@ -26,6 +26,7 @@ import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { ProjectChannel, channelHeader } from '../components/session/ProjectChannel'
+import { ChannelPanel } from '../components/session/ChannelPanel'
 import { AppShell } from '../components/AppShell'
 import { buildChannelFeed, unreadEntries } from '../lib/project-channel'
 import { planChannelSend, validateChannelMessage, type ChannelLane, type ChannelTarget } from '../lib/channel-send'
@@ -2323,6 +2324,17 @@ export function DashboardView() {
   // Deliberately NOT the array's own order: that happens to be stable today, but nothing declares
   // it, and the sidebar's own reorder is already a shipped example of a position that looks saved
   // and isn't.
+  // Which digest row is open in the channel panel's Message tab. Kept here rather than in
+  // ProjectChannel because the panel is a sibling in the shell's slot, not a child of the feed.
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
+  // Resolved from the same feed the rows come from, so a selection that scrolls out of the store
+  // (or whose project changed) simply stops resolving and the panel falls back to Project.
+  const selectedChannelEntry = useMemo(() => {
+    if (!selectedChannelId || !activeProject) return undefined
+    return buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster, channelSessions)
+      .find((e) => e.id === selectedChannelId)
+  }, [selectedChannelId, activeProject, channelReplies, channelSessions])
+
   const handleReorderProject = useCallback((draggedId: string, targetId: string, edge: 'before' | 'after') => {
     setProjects((prev) => reorderRail(prev, draggedId, targetId, edge))
   }, [])
@@ -3171,9 +3183,18 @@ export function DashboardView() {
             header={channelHeader({ project: activeProject, chatterPaused, onToggleChatter: toggleChatterPaused })}
             onToggleSidebar={toggleSidebar}
             sidebarCollapsed={sidebarCollapsed}
-            /* No right panel yet — see dev/briefs/channel-right-panel.md, which fills this slot
-               with project-wide context. No status bar: the channel has no equivalent of the
-               session's Terminal/Review verbs, and an empty-but-present bar is worse than none. */
+            /* The slot phase 1 built, now filled: the channel's panel is about the PROJECT, where a
+               session's is about that session. Same slot, same geometry, different contents — which
+               is why the shell lets a mode supply the panel rather than owning one.
+               No status bar: the channel has no equivalent of the session's Terminal/Review verbs,
+               and an empty-but-present bar is worse than none. */
+            rightPanel={(
+              <ChannelPanel
+                project={activeProject}
+                selected={selectedChannelEntry}
+                onClearSelection={() => setSelectedChannelId(null)}
+              />
+            )}
           >
             <ProjectChannel
               project={activeProject}
@@ -3185,6 +3206,8 @@ export function DashboardView() {
               onSend={sendChannelMessage}
               chatterPaused={chatterPaused}
               onToggleChatter={toggleChatterPaused}
+              selectedId={selectedChannelId ?? undefined}
+              onSelectEntry={(e) => setSelectedChannelId(e.id)}
             />
           </AppShell>
         )}
