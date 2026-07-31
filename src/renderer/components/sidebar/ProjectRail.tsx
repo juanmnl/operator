@@ -37,6 +37,21 @@ import { PlanMeter, usePlanLimits } from './PlanMeter'
 
 const RAIL_W = 44
 
+/** The seam ink, for BOTH of the rail's dividers — the full-height one against the sidebar and
+ *  the short horizontal one in the foot.
+ *
+ *  `--border` is doing double duty in this app as a structural edge and as a decorative separator,
+ *  and at full strength on a near-black field it reads as a drawn line rather than a change of
+ *  surface. Mixed toward transparent rather than replaced by a hex, so the token stays the source.
+ *
+ *  60%, and it does NOT go lower, for a measured reason: the rail and the sidebar are the SAME
+ *  colour (`--bg-sidebar` both sides — ratio 1.000 across all six palettes). There is no surface
+ *  change backing this line up, so it is the only thing separating the two strips. On Mr Pink dark
+ *  `--border` is already the weakest of the six at 1.17:1 against the field; 60% leaves it at 1.09
+ *  and 30% would take it to 1.04, which is a separator you cannot see. Subtler has a floor when
+ *  it is load-bearing. */
+const SEAM = 'color-mix(in srgb, var(--border) 60%, transparent)'
+
 export function ProjectRail({
   projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
   onOpenAgents, agentsActive, onReorder,
@@ -93,7 +108,17 @@ export function ProjectRail({
     <div style={{
       width: RAIL_W, flexShrink: 0, height: '100%',
       display: 'flex', flexDirection: 'column', alignItems: 'center',
-      background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border)',
+      background: 'var(--bg-sidebar)',
+      // THE SEAM IS A SHADOW, NOT A BORDER — and that is a layout fix, not a cosmetic one.
+      // As `borderRight: 1px` under `box-sizing: border-box` the line lived INSIDE the 44, so the
+      // content field was 43 and `alignItems: center` centred everything on 21.5 while the strip's
+      // true centre is 22. Every child sat half a pixel left of its own strip: the tiles, the foot
+      // buttons, the usage ring, the foot's own seam. A previous pass of mine found the 43 and
+      // wrote it down as a fact to design around; it was the bug.
+      // `inset` so the line still paints within the rail's own 44px footprint rather than bleeding
+      // over the sidebar's first column. The element is not radiused, so there is no WKWebView
+      // colour-changing-border hazard here — and it is a shadow now in any case.
+      boxShadow: `inset -1px 0 0 ${SEAM}`,
       boxSizing: 'border-box', userSelect: 'none',
     }}>
       {/* The rail is now the leftmost strip, so IT hosts the macOS traffic lights: the same
@@ -237,7 +262,7 @@ export function ProjectRail({
             whole job is to separate two groups was the most crowded thing in the strip, and the
             foot read as five items in a row rather than 2 + 2. At 11 it gets 22–23px and the
             grouping comes back. */}
-        <span style={{ width: 22, height: 1, background: 'var(--border)', margin: '11px 0' }} />
+        <span style={{ width: 22, height: 1, background: SEAM, margin: '11px 0' }} />
         <RailFootButton
           attr="data-rail-gallery"
           label="All projects"
