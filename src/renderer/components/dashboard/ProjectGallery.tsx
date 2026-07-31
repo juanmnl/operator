@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentSession, Project } from '../../../shared/types'
+import { CardMenu } from '../CardMenu'
 import { DragRegion } from '../DragRegion'
 import { LogoMark } from '../LogoMark'
 import { StatusWave } from '../sidebar/StatusWave'
@@ -459,7 +460,12 @@ function ProjectCard({
             {activityLabel.text}
           </span>
         )}
+        {/* `data-popmenu-trigger`: the menu now dismisses on outside POINTER-down (the shared
+            contract), so without it the toggle would close on the way down and reopen on the
+            click — a ⋯ that never closes. */}
         <button
+          data-popmenu-trigger
+          aria-expanded={menuOpen}
           onClick={(e) => { e.stopPropagation(); onMenu(!menuOpen) }}
           title="Project actions"
           aria-label={`${project.name} actions`}
@@ -969,6 +975,8 @@ function PreviousRow({ project, menuOpen, onMenu, onOpen, onRestore, onForget, o
         Restore
       </button>
       <button
+        data-popmenu-trigger
+        aria-expanded={menuOpen}
         onClick={(e) => { e.stopPropagation(); onMenu(!menuOpen) }}
         title="Project actions"
         aria-label={`${project.name} actions`}
@@ -1019,87 +1027,6 @@ function NothingActive({ onOpenFolder }: { onOpenFolder: () => void }) {
       >
         Open a folder
       </button>
-    </div>
-  )
-}
-
-/** How long an armed `confirm` item stays armed. Same 2500ms as the sidebar's close button
- *  (SessionItem), so the one destructive gesture in the app behaves the same everywhere. */
-const CONFIRM_MS = 2500
-
-interface CardMenuItem {
-  label: string
-  onClick: () => void
-  disabled?: boolean
-  danger?: boolean
-  /** Hairline above this item — separates the shelf/delete verbs from the edit ones. */
-  separator?: boolean
-  /** Requires a second click: the first arms it and relabels, the second fires. For an
-   *  action that persists and can't be taken back by re-opening a folder. */
-  confirm?: boolean
-}
-
-/** Small popover inside a card. Closes on any outside press or Esc; each item closes it
- *  after running, so the card's own click handler never also fires (stopPropagation). */
-function CardMenu({ items, onClose }: {
-  items: CardMenuItem[]
-  onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  // Which item is armed, by label. Disarms itself after CONFIRM_MS so a menu left open
-  // doesn't stay one stray click away from a delete.
-  const [armed, setArmed] = useState<string | null>(null)
-  const armTimer = useRef(0)
-  useEffect(() => () => clearTimeout(armTimer.current), [])
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose() }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
-  }, [onClose])
-  return (
-    <div
-      ref={ref}
-      onClick={(e) => e.stopPropagation()}
-      style={{
-        position: 'absolute', top: 30, right: 10, zIndex: 30, minWidth: 150,
-        borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
-        background: 'var(--bg-surface)', boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-        overflow: 'hidden', padding: '3px 0',
-      }}
-    >
-      {items.map((it) => (
-        <div key={it.label}>
-          {it.separator && <div style={{ height: 1, margin: '3px 0', background: 'var(--border)' }} />}
-          <button
-            disabled={it.disabled}
-            onClick={(e) => {
-              e.stopPropagation()
-              if (it.confirm && armed !== it.label) {
-                setArmed(it.label)
-                clearTimeout(armTimer.current)
-                armTimer.current = window.setTimeout(() => setArmed(null), CONFIRM_MS)
-                return
-              }
-              clearTimeout(armTimer.current)
-              it.onClick()
-              onClose()
-            }}
-            style={{
-              display: 'block', width: '100%', textAlign: 'left', padding: '6px 11px',
-              background: 'transparent', border: 'none', outline: 'none',
-              cursor: it.disabled ? 'default' : 'pointer', opacity: it.disabled ? 0.4 : 1,
-              fontFamily: 'var(--font-body)', fontSize: 11.5,
-              color: it.danger ? 'var(--color-error, #f85149)' : 'var(--fg)',
-            }}
-            onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-          >
-            {armed === it.label ? `${it.label} — click again` : it.label}
-          </button>
-        </div>
-      ))}
     </div>
   )
 }

@@ -76,7 +76,7 @@ const CONTENT_INSET_R = 8
 
 export function ProjectRail({
   projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
-  onOpenAgents, agentsActive, onReorder,
+  onOpenAgents, agentsActive, onReorder, onTileMenu, menuProjectId,
 }: {
   projects: Project[]
   activities: Record<string, ProjectActivity>
@@ -95,6 +95,14 @@ export function ProjectRail({
   agentsActive?: boolean
   /** Drag one tile before/after another. Absent = tiles are not draggable at all. */
   onReorder?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** Right-click a tile. The rail REPORTS the anchor and nothing else: this column is a
+   *  clipping scroller 44px wide at the window's edge, so a menu parented to a tile would be
+   *  cut off at 44. The view renders it, exactly as it renders AccentPicker for the same
+   *  reason. Absent = tiles have no menu. */
+  onTileMenu?: (projectId: string, anchor: { top: number; left: number }) => void
+  /** Whose menu is open, so that tile can hold its hover tint while it is — the card's
+   *  `hover || menuOpen` treatment, background-only. */
+  menuProjectId?: string | null
 }) {
   const planLimits = usePlanLimits()
   const [drag, setDrag] = useState<string | null>(null)
@@ -233,6 +241,8 @@ export function ProjectRail({
                 activity={activities[p.id] ?? { live: 0, waiting: 0, lanes: p.roster?.length ?? 0, status: 'idle' }}
                 current={p.id === activeProjectId}
                 onOpen={() => onOpenProject(p.id)}
+                onMenu={onTileMenu && ((anchor) => onTileMenu(p.id, anchor))}
+                menuOpen={menuProjectId === p.id}
                 draggable={canReorder}
                 dragging={drag === p.id}
                 onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
@@ -380,11 +390,15 @@ function RailFootButton({ attr, label, hint, onClick, active, strokeWidth = 1.2,
 /** One project tile. Its own component so it can own the hover-card hook — the SHARED one
  *  (lib/use-hover-card), which is already hardened for both the row-moves-under-the-cursor
  *  and the cursor-leaves-the-window failures. A new card must not reintroduce either. */
-function ProjectTile({ project, activity, current, onOpen, draggable, dragging, onDragStart, onDragEnd }: {
+function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, draggable, dragging, onDragStart, onDragEnd }: {
   project: Project
   activity: ProjectActivity
   current: boolean
   onOpen: () => void
+  /** Reports where the menu should open. Right-click only — LEFT-click enters the project,
+   *  and the two verbs share neither a gesture nor a glyph. Nothing in this menu navigates. */
+  onMenu?: (anchor: { top: number; left: number }) => void
+  menuOpen?: boolean
   draggable?: boolean
   dragging?: boolean
   onDragStart?: () => void
@@ -415,6 +429,22 @@ function ProjectTile({ project, activity, current, onOpen, draggable, dragging, 
         }}
         onDragEnd={onDragEnd}
         onClick={onOpen}
+        onContextMenu={onMenu && ((e) => {
+          // Or WKWebView draws its own menu on top of ours.
+          e.preventDefault()
+          e.stopPropagation()
+          // THE HOVER CARD WOULD STICK. It is `position: fixed` at the tile's right edge —
+          // exactly where the menu opens — and the cursor never leaves the tile, so no
+          // mouseleave arrives to clear it. The shared hook hardens against a row moving and
+          // against the cursor leaving the WINDOW; a menu opening over the anchor is neither,
+          // which is what `dismiss` is exposed for.
+          setHover(false)
+          hoverCard.dismiss()
+          // Anchored to the tile, not to the pointer: the same top and the same 8px offset the
+          // hover card uses, so the menu lands where the card the user was just reading was.
+          const r = e.currentTarget.getBoundingClientRect()
+          onMenu({ top: r.top, left: r.right + 8 })
+        })}
         aria-label={`${project.name}${label ? ` — ${label.text}` : ''}`}
         aria-current={current || undefined}
         title={`${project.name}${label ? ` — ${label.text}` : ''}`}
@@ -426,7 +456,7 @@ function ProjectTile({ project, activity, current, onOpen, draggable, dragging, 
           // Transparent badge, per house style: a tint and a hairline of the identity colour,
           // never a solid accent fill. The border is per-project and therefore STATIC — it
           // never changes colour, so it doesn't trip the WKWebView radiused-border rule.
-          background: `color-mix(in srgb, ${accent} ${hover ? 26 : 16}%, transparent)`,
+          background: `color-mix(in srgb, ${accent} ${hover || menuOpen ? 26 : 16}%, transparent)`,
           border: `1px solid color-mix(in srgb, ${accent} 38%, transparent)`,
           // laneTextColor folds in each theme's --lane-ink-blend: raw accents collapse to
           // ~1.4:1 as text on the three light palettes.

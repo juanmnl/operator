@@ -186,4 +186,85 @@ console.log('7 and reads as the current view:', await p.evaluate(() =>
   document.querySelector('[data-rail-agents]')?.getAttribute('aria-current')), '(expect true)')
 await p.screenshot({ path: '/tmp/operator-shots/project-rail-agents.png' })
 
+// ---- 8. RIGHT-CLICK a tile — the menu the rail never had --------------------------------
+// dev/briefs/rail-tile-context-menu.md. The rail was the only project surface with no context
+// menu at all, which the user read as the feature missing from the app.
+//
+// Everything here is about the traps the brief lists, not about the items existing: the hover
+// card floating over the menu, the shared dismissal contract, and the destructive verb keeping
+// its guard. The menu is rendered by DashboardView, OUTSIDE the rail's 44px clipping scroller,
+// so it can also be checked that it isn't cut off at the rail's right edge.
+await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+await boot()
+
+const menu = () => p.evaluate(() => {
+  const m = document.querySelector('[data-card-menu]')
+  if (!m) return null
+  const r = m.getBoundingClientRect()
+  return {
+    title: m.querySelector('[data-card-menu-title]')?.textContent?.trim() ?? null,
+    items: Array.from(m.querySelectorAll('[data-card-menu-item]')).map((b) => b.textContent.trim()),
+    left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right),
+  }
+})
+// The hover card is the one fixed z-60 panel in the app (§4 above finds it the same way).
+const hoverCard = () => p.evaluate(() => {
+  const c = Array.from(document.querySelectorAll('div')).find((d) => d.style.position === 'fixed' && d.style.zIndex === '60')
+  return c ? c.textContent.trim() : null
+})
+
+// Trap 3: LEFT-click on a tile enters the project, so right-click must not do anything a
+// mis-aimed left-click could be confused with. Which tile is current, before and after.
+const ringed = () => p.evaluate(() => document.querySelector('[data-rail-tile][aria-current]')?.getAttribute('data-rail-tile') ?? null)
+const currentBefore = await ringed()
+
+const tile = p.locator('[data-rail-tile]').first()
+// HOVER FIRST, deliberately: this is trap 1. The card is anchored at the tile's right edge —
+// exactly where the menu opens — and right-clicking never moves the cursor off the tile, so no
+// mouseleave arrives to clear it.
+await tile.hover()
+await p.waitForTimeout(400)
+console.log('8 card up before the right-click:', JSON.stringify(await hoverCard()), '(expect a project name)')
+await tile.click({ button: 'right' })
+await p.waitForTimeout(300)
+const m8 = await menu()
+console.log('8 right-click opens a menu:', JSON.stringify(m8), '(expect items, titled with the project)')
+console.log('8 the HOVER CARD is gone while it is open:', await hoverCard(), '(expect null)')
+console.log('8 it escapes the 44px rail (not clipped):', m8 && m8.right > 44, `(menu spans ${m8?.left}..${m8?.right})`)
+console.log('8 it does NOT reproduce the card\'s editors:', !m8.items.some((i) => /Rename|description/i.test(i)), '(expect true — no editing in a 44px strip)')
+console.log('8 …and does NOT carry Forget:', !m8.items.some((i) => /Forget/i.test(i)), '(expect true — the rail is a switcher, not project admin)')
+console.log('8 right-click did NOT also navigate (trap 3):', (await ringed()) === currentBefore,
+  `(current project still ${currentBefore})`)
+await p.screenshot({ path: '/tmp/operator-shots/project-rail-menu.png' })
+
+// ESCAPE — the shared contract (lib/use-dismiss), not a third hand-rolled pair.
+await p.keyboard.press('Escape')
+await p.waitForTimeout(250)
+console.log('8 Escape closes it:', (await menu()) === null, '(expect true)')
+
+// OUTSIDE CLICK. Pointer-DOWN in the contract, so pressing anywhere else dismisses.
+await tile.click({ button: 'right' })
+await p.waitForTimeout(250)
+console.log('8 reopened:', (await menu()) !== null)
+await p.mouse.click(900, 500)
+await p.waitForTimeout(250)
+console.log('8 an outside click closes it:', (await menu()) === null, '(expect true)')
+
+// THE DESTRUCTIVE VERB still arms before it fires. Every tile on the rail is there because
+// something is live in it, so Close is present and ends real ptys.
+await tile.click({ button: 'right' })
+await p.waitForTimeout(250)
+const closeLabel = (await menu()).items.find((i) => i.startsWith('Close project'))
+console.log('8 destructive item:', JSON.stringify(closeLabel), '(expect "Close project · end N agents")')
+const railBefore = (await rail()).ids
+await p.locator('[data-card-menu-item^="Close project"]').click()
+await p.waitForTimeout(400)
+const armed = await menu()
+console.log('8 first click ARMS it, does not fire:', JSON.stringify(armed?.items?.find((i) => i.startsWith('Close project'))),
+  '(expect "… — click again")')
+console.log('8 …and nothing was closed yet:', JSON.stringify((await rail()).ids) === JSON.stringify(railBefore), '(expect true)')
+await p.keyboard.press('Escape')
+await p.waitForTimeout(200)
+console.log('8 an armed item disarms with the menu:', (await menu()) === null, '(expect true)')
+
 await b.close()
