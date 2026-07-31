@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDismiss } from '../../lib/use-dismiss'
 import {
   hasCurrentData, freshnessOf, windowEnded, needsRevalidate, limitRows, glanceLine, updatedAgo,
-  ringDash, toneFor, TONE_FILL, readable,
+  ringDash, toneFor, TONE_FILL, bindingLimit,
   type PlanLimits,
 } from '../../lib/plan-limits'
 
@@ -70,9 +70,16 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
   const fresh = freshnessOf(limits, now)
   const stale = fresh === 'expired'
   const ended = windowEnded(limits, now)
-  const session = known ? readable(limits?.sessionPct) : null
-  const tone = toneFor(session)
-  const { dash, gap, circumference } = ringDash(session, R)
+  // The arc draws the BINDING limit — the row furthest along — not the session. One arc gets one
+  // job, and the job is "how close am I to being stopped": a 24% session ring above a 65% week is
+  // the glance contradicting the popover it stands in for, which is the same failure the staleness
+  // work above exists to prevent — one surface asserting what another denies. Its label rides along
+  // so the accessible name can say WHICH limit is drawn; a bare percentage is ambiguous now that it
+  // isn't always the session. Gated on `known` with everything else: a stale reading has no binding
+  // limit to report either.
+  const binding = known ? bindingLimit(limits) : null
+  const tone = toneFor(binding?.pct)
+  const { dash, gap, circumference } = ringDash(binding?.pct ?? null, R)
   const glance = known ? glanceLine(limits) : null
   const rows = known ? limitRows(limits) : []
   const age = updatedAgo(limits?.fetchedAt, now)
@@ -94,10 +101,13 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
         ref={btnRef}
         data-rail-usage
         data-popmenu-trigger
-        data-usage-pct={session ?? ''}
+        data-usage-pct={binding?.pct ?? ''}
+        data-usage-binding={binding?.key ?? ''}
         data-usage-stale={stale ? 'true' : undefined}
         data-usage-freshness={fresh}
-        aria-label={glance ? `Plan usage — ${glance}` : 'Plan usage'}
+        aria-label={glance
+          ? `Plan usage — ${glance}${binding ? `; closest to its limit: ${binding.label} at ${binding.pct}%` : ''}`
+          : 'Plan usage'}
         aria-expanded={open}
         title={glance ?? (loading
           ? 'Reading your plan usage…'

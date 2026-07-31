@@ -46,9 +46,13 @@ export function readable(pct: number | null | undefined): number | null {
 }
 
 /** Does this reply carry anything worth drawing? Used to decide between a filled ring and an
- *  empty track — never to decide between a ring and 0%. */
+ *  empty track — never to decide between a ring and 0%. Every limit counts, including the
+ *  per-model one: an account that only reports that row still has a reading, and drawing the
+ *  bare track next to a populated popover would be the meter contradicting itself. */
 export function hasData(l: PlanLimits | null | undefined): boolean {
-  return readable(l?.sessionPct) !== null || readable(l?.weekPct) !== null
+  return readable(l?.sessionPct) !== null
+    || readable(l?.weekPct) !== null
+    || readable(l?.modelPct) !== null
 }
 
 // --- Freshness: STALE IS NOT CURRENT ------------------------------------------------------
@@ -245,6 +249,24 @@ export function limitRows(l: PlanLimits | null | undefined): Array<{
     rows.push({ key: 'model', label: `Current week (${l.modelLabel ?? 'per model'})`, pct: model, resets: l.modelResets })
   }
   return rows
+}
+
+/** The limit the ring should draw: the HIGHEST of the rows, not the session.
+ *
+ *  The rail has room for exactly one arc, and the honest thing for one arc to say is "how close
+ *  are you to being stopped". That is whichever limit is furthest along — you hit the weekly cap
+ *  at 100% of the week no matter how fresh the session is. Drawing session alone reported a
+ *  quarter full while the week sat at 65%, which is not a partial truth but the wrong one: the
+ *  glance disagreed with the popover it summarises.
+ *
+ *  Ties keep `limitRows` order (session, week, per-model) — the narrower window resets sooner, so
+ *  it is the more actionable of two equal numbers. `null` when nothing is readable. */
+export function bindingLimit(l: PlanLimits | null | undefined): { key: string; label: string; pct: number } | null {
+  let top: { key: string; label: string; pct: number } | null = null
+  for (const row of limitRows(l)) {
+    if (!top || row.pct > top.pct) top = { key: row.key, label: row.label, pct: row.pct }
+  }
+  return top
 }
 
 /** The hover line — a glance that never needs a click. `null` when there's nothing to say. */

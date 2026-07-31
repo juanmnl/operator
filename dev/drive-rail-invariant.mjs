@@ -17,9 +17,10 @@
 // caps, glyph side bearings and antialiasing tails — every channel that made a box lie.
 //
 // FOUR ASSERTIONS
-//   H. every element that is SUPPOSED to be on the axis has its painted centre x at the rail's
-//      outer centre (22 of 44). Reported as a signed delta, never a pass/fail: the size of the
-//      error is the diagnosis.
+//   H. every element that is SUPPOSED to be on the axis has its painted centre x at the centre of
+//      the VISIBLE column — 17.5 in rail-local coordinates, NOT the rail's own midpoint of 22.
+//      See CENTRE for why the difference is the whole defect. Reported as a signed delta, never
+//      a pass/fail: the size of the error is the diagnosis.
 //   O. the two elements that are deliberately OFF the axis — the corner pip and the rail's own
 //      right-edge seam — are held to their own invariant instead. An assertion that flags
 //      intentional design as a defect is an assertion nobody will keep running.
@@ -46,7 +47,20 @@ const NAMES = ['fastrack', 'uwazi-app', 'web27', 'el-mirador']
 // whatever the DOM happens to report — a driver that derives its expectation from the thing it
 // is testing agrees with any bug that is internally consistent.
 const RAIL_W = 44
-const CENTRE = RAIL_W / 2
+// THE AXIS IS NOT THE RAIL'S MIDPOINT, and that was a fifth way to measure the wrong thing. The
+// four passes this driver was built to end each measured a handle instead of the ink; this one
+// measured the ink correctly but against the rail's own BOX. The rail has no left edge to be
+// centred in: the window root pads 8px and paints it in `--bg-sidebar`, the rail's own
+// background, so the strip dissolves into the window on that side. The only edge is the seam —
+// and a gap ends where that line starts, not where it ends.
+//
+// The column a person actually sees therefore runs from the window edge (rail-local −8) to the
+// seam's inner edge (rail-local 43): 51px, centred at 17.5. Against the old 22 every element read
+// 3.5px right of centre, which is exactly what the user reported and what four passes could not
+// see, because all four agreed on the reference.
+const WINDOW_PAD = 8   // DashboardView's root padding, painted in the rail's own background
+const SEAM_W = 1       // the rail's right border — the boundary, not part of the gap
+const CENTRE = (RAIL_W - SEAM_W - WINDOW_PAD) / 2
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
 // The foot is two groups of two around a seam, and the seam's whole job is to out-space what it
@@ -240,9 +254,9 @@ async function measure(p, label) {
 }
 
 function report(m) {
-  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → outer centre ${CENTRE}\n${'='.repeat(98)}`)
+  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → column centre ${CENTRE}\n${'='.repeat(98)}`)
   console.log('H · PAINTED CENTRE — every element that belongs on the axis')
-  console.log(pad('ELEMENT', 24) + pad('STATE', 15) + '  INK L    INK R   WIDTH   CENTRE   Δ22    INK T     INK B')
+  console.log(pad('ELEMENT', 24) + pad('STATE', 15) + '  INK L    INK R   WIDTH   CENTRE   Δaxis    INK T     INK B')
   console.log('-'.repeat(98))
   let worst = 0
   for (const r of m.rows) {
@@ -374,7 +388,7 @@ for (const [theme, short] of THEMES) {
 }
 
 console.log('\n' + '='.repeat(60))
-console.log(pad('PALETTE', 12) + pad('WORST |Δ22|', 14) + pad('GLYPH SPREAD', 15) + 'RHYTHM')
+console.log(pad('PALETTE', 12) + pad('WORST |Δaxis|', 14) + pad('GLYPH SPREAD', 15) + 'RHYTHM')
 for (const s of summary) console.log(pad(s.short, 12) + pad(s.worst.toFixed(2) + 'px', 14) + pad(s.size.toFixed(2) + 'px', 15) + (s.rhythm ? 'ok' : 'OFF'))
 const bad = summary.filter((s) => s.worst > TOL || !s.rhythm || s.size > 1)
 console.log(bad.length ? `\nNOT CLEAN on ${bad.length}/${summary.length} palettes` : '\nCLEAN on every palette measured')

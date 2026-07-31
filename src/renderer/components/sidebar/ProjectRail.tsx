@@ -52,6 +52,28 @@ const RAIL_W = 44
  *  it is load-bearing. */
 const SEAM = 'color-mix(in srgb, var(--border) 60%, transparent)'
 
+// The rail is 44px, but it is NOT the column your eye sees. The window root pads 8px and paints
+// it `--bg-sidebar` — the rail's own background — so there is no edge at the rail's left: it
+// dissolves into the window. On the right there IS one, the hairline against the sidebar. The
+// optical column is therefore the 52px from the window edge to that hairline, and centring a
+// tile in the rail's 43px content box lands it 15.5px from the window edge but only 8.5px from
+// the hairline. It looks shoved right, and it is.
+//
+// The column runs from the window edge (rail-local −8) to the SEAM's inner edge (rail-local 43):
+// 51px, centred on local 17.5, where the rail's own box is centred on 22. The content columns
+// therefore inset 8 on the right — field 44 − 1 (seam) − 8 = 35 — which lands painted ink at
+// 11.5px from the window edge and 11.5px from the seam, for tiles and foot glyphs alike.
+//
+// Measure to the seam's INNER edge, not the rail's outer one. A first pass here used 7, from
+// measuring to local 44 and treating the hairline as part of the gap. It is not: it is the
+// boundary the gap ends at, and counting it left every element 1px right of centre — the same
+// class of error as the original, one order smaller. dev/drive-rail-invariant.mjs measures this.
+//
+// Do not "fix" any of it by widening RAIL_W — that moves the seam and the asymmetry comes back.
+// The DragRegion deliberately keeps full width: it draws nothing, and the traffic lights want
+// the whole strip.
+const CONTENT_INSET_R = 8
+
 export function ProjectRail({
   projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
   onOpenAgents, agentsActive, onReorder,
@@ -129,6 +151,7 @@ export function ProjectRail({
         className="scroll-hidden"
         style={{
           flex: 1, minHeight: 0, width: '100%', overflowY: 'auto', overflowX: 'hidden',
+          boxSizing: 'border-box',
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           // 8 here + the 2px transparent borders each tile wrapper always carries = 12px between
           // tile BOXES, and now also 12px between painted edges for every pair except one: the
@@ -137,10 +160,16 @@ export function ProjectRail({
           // when the pip overhung too — see the pip's own note; it no longer does.) The borders
           // are constant so the drop line can never shift the stack while you drag over it.
           gap: 8,
-          // 6 here + the wrapper's constant 2px border = 8px of air around every tile BOX, which
-          // matches what the rail gives it sideways: the strip is 44 wide with a 1px right border,
-          // so the field is 43 and the box sits at (43 − 28) / 2 = 7.5. The sides are fixed by the
-          // rail's width, so this padding is the only free variable and its job is to equal them.
+          // 6 here + the wrapper's constant 2px border = 8px of air above the first tile BOX.
+          //
+          // THE SIDES ARE NO LONGER "FIXED BY THE RAIL'S WIDTH", which is what this comment used
+          // to say while deriving (43 − 28) / 2 = 7.5 and treating that as given. It was given
+          // only because the rail's own box was taken for the column — and the rail's left edge
+          // is not an edge: the window root pads 8px and paints it in `--bg-sidebar`, the rail's
+          // own background, so the strip dissolves into the window on that side. The only edge is
+          // the SEAM on the right. See CONTENT_INSET_R: the field is inset 7px on the right, which
+          // is what puts the tile at 12px from the window edge and 12px from the seam — equal
+          // against the two boundaries a person can actually see, rather than against a box.
           //
           // A PREVIOUS VERSION OF THIS COMMENT WAS WRONG, and wrong in a way worth recording: it
           // said both ornaments "overhang the box by the same 2px … so a ringed or pipped tile
@@ -154,7 +183,7 @@ export function ProjectRail({
           // The pip is now seated to paint inside the box (see its note), so the ring is the only
           // ornament drawn outside and it is symmetric. Painted extent is therefore box, or box+2
           // on all four sides — either way centred — which is what makes the invariant below hold.
-          padding: '6px 0',
+          padding: `6px ${CONTENT_INSET_R}px 6px 0`,
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}
@@ -223,11 +252,13 @@ export function ProjectRail({
           ACROSS projects, not a way of moving between them, and the existing hairline is what says
           so (no second divider invented for it). */}
       <div style={{
-        flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
-        // Symmetric. The 10 at the bottom is load-bearing — it is what puts this strip's last
-        // icon on the same baseline as the sidebar footer's — so the 8 at the top came up to
-        // meet it rather than the other way round.
-        gap: 4, padding: '10px 0',
+        flexShrink: 0, width: '100%', boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        // Vertically symmetric. The 10 at the bottom is load-bearing — it is what puts this strip's
+        // last icon on the same baseline as the sidebar footer's — so the 10 at the top came up to
+        // meet it rather than the other way round. The right inset is CONTENT_INSET_R, same as the
+        // tile column above: both are centring against the window edge and the seam, not the box.
+        gap: 4, padding: `10px ${CONTENT_INSET_R}px 10px 0`,
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>
