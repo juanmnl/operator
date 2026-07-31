@@ -111,12 +111,19 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
   return (
     <div style={{ position: 'relative' }}>
       {/* Draggable title bar area */}
-      <DragRegion style={{
+      <DragRegion data-toolbar-header="session" style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        height: 36,
-        padding: '0 12px',
+        // 44/16, the canonical TOOLBAR header — the same box `ProjectView` and the channel use.
+        // It was 36/12, and it was the odd one out rather than they: switching between a session
+        // and the channel moved the header 8px vertically and 4px horizontally under a user who
+        // had only changed what was inside it.
+        // 16 also happens to be the channel's `INSET`, the left edge its feed rows and composer
+        // share — so matching the family costs the channel nothing and the header keeps lining up
+        // with the messages beneath it.
+        height: 44,
+        padding: '0 16px',
         boxSizing: 'border-box',
         flexShrink: 0,
         borderBottom: '1px solid var(--border)',
