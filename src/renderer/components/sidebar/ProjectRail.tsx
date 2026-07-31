@@ -106,26 +106,29 @@ export function ProjectRail({
           flex: 1, minHeight: 0, width: '100%', overflowY: 'auto', overflowX: 'hidden',
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           // 8 here + the 2px transparent borders each tile wrapper always carries = 12px between
-          // tile BOXES — but the box was never the number that mattered. Two things are drawn
-          // outside it: the corner pip hangs ~3px below its tile, and the current-tile ring
-          // (`boxShadow 0 0 0 2px`) sits 2px beyond it on every side. At the old flat `gap: 7`
-          // that left 4–5px of real clearance, and the worst pair in the column — a pipped tile
-          // directly above the ringed one, where BOTH overhangs eat the same gap — was tighter
-          // still. Sized against the drawn extent instead, the worst pair now clears 8px and an
-          // ordinary pair 12px. The borders are constant so the drop line can never shift the
-          // stack while you drag over it.
+          // tile BOXES, and now also 12px between painted edges for every pair except one: the
+          // current tile's ring is the ONLY thing still drawn outside its box, so a pair adjacent
+          // to it clears 10px and every other pair 12px. (This used to read 8px at the tightest,
+          // when the pip overhung too — see the pip's own note; it no longer does.) The borders
+          // are constant so the drop line can never shift the stack while you drag over it.
           gap: 8,
           // 6 here + the wrapper's constant 2px border = 8px of air around every tile BOX, which
-          // is exactly what the 44px rail already gives it sideways: (44 − 28) / 2 = 8. That
-          // equality is the whole fix, and it is the one number to keep in step — the sides are
-          // fixed by the rail's width, so the padding is the only free variable.
+          // matches what the rail gives it sideways: the strip is 44 wide with a 1px right border,
+          // so the field is 43 and the box sits at (43 − 28) / 2 = 7.5. The sides are fixed by the
+          // rail's width, so this padding is the only free variable and its job is to equal them.
           //
-          // Both ornaments overhang the box by the same 2px (the ring is `0 0 0 2px`; the pip is
-          // offset -3 but its StatusWave svg carries a pixel of its own padding, so it PAINTS 2
-          // past the edge — measured, not read off the offset). So a ringed or pipped tile clears
-          // 6 on every side and a plain one clears 8, uniformly. It used to be 4 here, giving the
-          // box 6 vertically against 8 sideways: a current tile then read 4 top / 6 sides, and
-          // with one tile — the common case after the prune — that 2px was the entire impression.
+          // A PREVIOUS VERSION OF THIS COMMENT WAS WRONG, and wrong in a way worth recording: it
+          // said both ornaments "overhang the box by the same 2px … so a ringed or pipped tile
+          // clears 6 on every side". The magnitude was right; "on every side" was not. A ring is
+          // `0 0 0 2px` and overhangs all four sides symmetrically. The pip was `right/bottom: -3`
+          // and overhung TWO. Equal clearances per tile therefore did not make the column agree —
+          // a pipped-but-unringed tile's painted mass sat ~0.9px right of a ringed one's, and two
+          // passes of per-tile arithmetic could not have found it, because the defect only exists
+          // BETWEEN tiles.
+          //
+          // The pip is now seated to paint inside the box (see its note), so the ring is the only
+          // ornament drawn outside and it is symmetric. Painted extent is therefore box, or box+2
+          // on all four sides — either way centred — which is what makes the invariant below hold.
           padding: '6px 0',
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
@@ -375,10 +378,22 @@ function ProjectTile({ project, activity, current, onOpen, draggable, dragging, 
       >
         <span data-rail-initials>{projectInitials(project.name)}</span>
         {/* State gets its own channel, overlapping the tile's corner. Nothing at all when
-            idle — a permanent grey dot on every tile would be one more thing to look past. */}
+            idle — a permanent grey dot on every tile would be one more thing to look past.
+            THE INVARIANT: a tile's PAINTED CENTRE is independent of its ring and pip state. The
+            rail is a vertical strip, and a strip whose items don't share a centre line reads as
+            broken however correct each item's own numbers are.
+            That is why this is `-1` and not `-3`. At -3 the dots painted ~1.9px past the box on
+            the right and bottom and nothing on the left or top, so a pipped tile's painted mass
+            was pushed off-axis while a ringed one — whose overhang is symmetric — stayed centred.
+            At -1 the dots land flush with the box edge (measured -0.07px, i.e. a hair inside), so
+            the pip never widens the painted bounds and cannot move the centre.
+            It still OVERLAPS the corner, which is what makes it read as attached to this tile
+            rather than floating beside it — it simply overlaps inward now instead of outward.
+            Do not restore the -3 to "make it pop": that is the bug, and `dev/drive-rail-tiles.mjs`
+            asserts the centre is identical across all four ring/pip combinations. */}
         {activity.status !== 'idle' && (
           <span data-rail-pip style={{
-            position: 'absolute', right: -3, bottom: -3, display: 'flex', lineHeight: 0,
+            position: 'absolute', right: -1, bottom: -1, display: 'flex', lineHeight: 0,
             pointerEvents: 'none',
           }}>
             <StatusWave status={activity.status} seed={project.id} size={9} accent={accent} />
