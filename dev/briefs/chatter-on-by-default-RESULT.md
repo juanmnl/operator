@@ -1,10 +1,9 @@
 # Agent↔agent ships ON, and the brakes proved in the app — RESULT
 
-**Status: done. `tsc` clean · `npm run build` clean · 521 tests (508 → 521). Committed on
-`operator/c48bd8` as `c0c392c`.**
+**Status: done. `tsc` clean · `npm run build` clean · 531 tests (508 → 531).**
 
-Two findings the unit tests could not have produced. Both are in the code now; both are the
-reason the brief said "the logic is proven, the integration is not."
+Two findings the driver produced that the unit tests could not, both now **fixed**: the hop limit
+leaked, and a braked message rendered identically to a delivered one.
 
 ---
 
@@ -42,31 +41,50 @@ Each brake gets a **fresh app**. My first pass shared state across sections and 
 brake twice — the "human reset" failure was really a pair suspension left over from the hop-limit
 chain. Worth recording, because it is the same class of mistake as a too-generous fixture.
 
-### 1 · Hop limit — fires at 6, but it is **not a hard stop**
+### 1 · Hop limit — it leaked, and is now **fixed**
 
+**Found:**
 ```
-code>research:sent     research>code:sent     code>research:sent
-research>code:sent     code>research:sent     research>code:HOP-LIMIT   ← hop 6
-code>research:sent  ←  still delivering
-research>code:HOP-LIMIT
-code>research:PAIR-BRAKE   ← what actually ended it
+… code>research:sent   research>code:HOP-LIMIT   ← hop 6
+   code>research:sent  ←  STILL DELIVERING
+   research>code:HOP-LIMIT
+   code>research:PAIR-BRAKE   ← the pair brake is what actually ended it
 ```
 
-The 6th message is blocked, **recorded, and visible in the channel** as `posted · chain limit
-reached` — not silently dropped. That half works.
+The 6th message was blocked, recorded and visible — that half always worked. But the chain did not
+stop: `inheritedHop` is advanced only by a *successful* delivery, so a blocked A→B left B's count
+untouched and B→A still computed a hop under the limit. The chain alternated blocked/delivered at
+half rate, indefinitely. Measured: **1 of the 3 messages after the first block still delivered.**
 
-**But the chain does not stop.** A blocked delivery never advances the *recipient's* inherited hop
-(nothing was delivered into them), so the other lane's budget is untouched and its next message
-goes. The chain alternates blocked/delivered at half rate rather than ending — measured: **1 of the
-3 messages after the first block still delivered**. In this run the **pair brake** is what actually
-stopped it, not the hop limit.
+The pure tests could never have caught it — `agent-delivery.test.ts` asserts that an over-budget
+message is blocked, never that the *chain ends*.
 
-That is consistent with the design (`inheritedHop` is documented as a conservative heuristic), and
-it is not a hole in the pure function — `agent-delivery.test.ts` never asserts "the chain ends",
-only that an over-budget delivery is blocked. I have **not changed the behaviour**: it needs a
-decision about what a chain-limit should mean (block that lane's *sends* too? decay the budget?),
-and inventing one unasked in the brake layer is not mine to make. **Flagging it as the headline
-finding.**
+**Fixed** (your call: block that lane's sends too). `DeliveryState` gains `exhausted`, and a
+hop-limit block marks **both ends** — the sender is already over budget by its own count, and the
+addressee is the one that leaked, because nothing was delivered into it so its count never moved.
+An exhausted lane cannot send *at all*, including to an uninvolved third lane: it is the chain
+that is spent, not the pair, or a stopped lane simply turns to whoever else is listening.
+
+Two things clear the mark, both meaning the chain legitimately restarted: a **human message**
+(`resetChainFor`), or a **delivery into the lane that itself passed the budget check** — which
+cannot revive a dead chain, since an exhausted sender never reaches the delivery branch. Without
+that second rule a human unblocking one lane would leave its partner mute and the reply would die
+on the first hop back.
+
+**After, same driver, same fixture:**
+```
+… code>research:sent   research>code:HOP-LIMIT   ← hop 6
+   code>research:HOP-LIMIT
+   research>code:HOP-LIMIT
+   code>research:HOP-LIMIT
+1 → still delivering after the limit: 0 of 3
+1 → THE CHAIN STOPS DEAD: true
+```
+
+Pinned by 10 new tests, including one that reproduces the exact leak shape and would fail against
+the old behaviour, one that a third uninvolved lane is also blocked, one that the human reset frees
+only the lane it addresses, one that the resumed reply survives the hop back, and one that a
+pre-`exhausted` state object degrades rather than throwing.
 
 ### 2 · Human reset — works
 
@@ -121,7 +139,7 @@ code.**
 **The caveat that matters:** 1.69s is a *trivial* turn ("reply with exactly OK"). A substantive
 agent reply — reading files, thinking, calling tools — is tens of seconds to minutes, so in real
 working conversation the pair brake will rarely trip and **the hop limit is the operative guard**.
-Which makes finding §1 more important, not less: the guard that will actually fire in practice is
+That is what made §1 worth fixing rather than noting: the guard that actually fires in practice was
 the leaky one.
 
 *(Methodology note: my first harness reported ~180s per hop. That was the harness, not the model —

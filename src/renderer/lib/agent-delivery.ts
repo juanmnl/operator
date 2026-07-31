@@ -55,9 +55,21 @@ export interface DeliveryState {
   pairHistory: Record<string, number[]>
   /** "from>to" → epoch ms until which that pair is suspended. */
   suspendedUntil: Record<string, number>
+  /** Lanes whose chain has hit `HOP_LIMIT`. A lane in here cannot SEND either, not just receive.
+   *
+   *  Added because the hop budget leaked, which only showed up when the brakes were driven in the
+   *  real app. `inheritedHop` is only ever advanced by a SUCCESSFUL delivery, so when A→B was
+   *  blocked at the limit, B's count stayed where it was and B→A still computed a hop under the
+   *  limit. The chain did not stop — it alternated blocked/delivered at half rate, forever, and in
+   *  the measured run it was the pair brake that eventually ended it rather than the hop limit.
+   *
+   *  Cleared by exactly two things, both of which mean the chain legitimately restarted:
+   *  a human message (`resetChainFor`), or a delivery INTO the lane that itself passed the budget
+   *  check — which cannot resurrect a dead chain, because passing the check is the whole point. */
+  exhausted: Record<string, true>
 }
 
-export const emptyDeliveryState = (): DeliveryState => ({ inheritedHop: {}, pairHistory: {}, suspendedUntil: {} })
+export const emptyDeliveryState = (): DeliveryState => ({ inheritedHop: {}, pairHistory: {}, suspendedUntil: {}, exhausted: {} })
 
 const pairKey = (from: string, to: string) => `${from}>${to}`
 
@@ -106,7 +118,9 @@ export function deliveryPrefix(fromLabel: string): string {
  *  reach for when something is already wrong), then liveness (nothing to deliver to), then the
  *  chain budget, then the pair brake. A blocked message still updates nothing except what the
  *  block itself implies — notably a blocked delivery does NOT count toward the pair window, so a
- *  suspended pair cannot keep extending its own suspension. */
+ *  suspended pair cannot keep extending its own suspension. The one thing a block DOES write is
+ *  chain exhaustion (see `exhausted`), which is precisely "what the block implies": if this
+ *  message was over budget, the conversation it belongs to is over, in both directions. */
 export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDecision; state: DeliveryState } {
   const { from, to, text, targetLive, paused, now, state } = input
   const hop = (state.inheritedHop[from] ?? 0) + 1
@@ -123,8 +137,23 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
     // is an unbounded spawn.
     return block('queued', `"${to}" isn't running, and a message never starts a lane. It stays in the channel.`)
   }
-  if (hop >= HOP_LIMIT) {
-    return block('hop-limit', `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; the message is in the channel for you.`)
+  // The chain budget. `exhausted` is checked alongside the count rather than after it, because a
+  // lane that was marked when its partner hit the limit has a STALE count of its own — that gap is
+  // exactly the leak, and reading the count alone is what let a message through it.
+  if (state.exhausted?.[from] || hop >= HOP_LIMIT) {
+    const already = !!state.exhausted?.[from]
+    return {
+      decision: {
+        kind: 'block', reason: 'hop-limit', hop,
+        note: already
+          ? `"${from}" is in a chain that already reached ${HOP_LIMIT} hops. Message you, or it stays in the channel.`
+          : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; the message is in the channel for you.`,
+      },
+      // BOTH ends. The sender is already over budget by its own count; the addressee is the one
+      // that leaked, because nothing was delivered into it so its count never moved. Marking only
+      // the sender would leave the chain running at half rate.
+      state: { ...state, exhausted: { ...state.exhausted, [from]: true, [to]: true } },
+    }
   }
 
   // Prune the window before judging it, so an old burst can't hold a pair down forever.
@@ -155,15 +184,31 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
       inheritedHop: { ...state.inheritedHop, [to]: hop },
       pairHistory: { ...state.pairHistory, [key]: [...recent, now] },
       suspendedUntil: state.suspendedUntil,
+      // …and this delivery PASSED the budget, so whatever exhaustion the addressee carried is
+      // spent: the chain restarted legitimately. It cannot revive a dead one — reaching here at
+      // all means the check above let it through.
+      exhausted: clearExhausted(state.exhausted, to),
     },
   }
 }
 
+/** Drop a lane's exhaustion mark, returning the same object when there is nothing to drop. */
+function clearExhausted(exhausted: DeliveryState['exhausted'], lane: string): DeliveryState['exhausted'] {
+  if (!exhausted?.[lane]) return exhausted ?? {}
+  const next = { ...exhausted }
+  delete next[lane]
+  return next
+}
+
 /** A human message resets the addressee's chain depth: the human is the thing that makes a
- *  conversation legitimate again, and it's what lets the budget recover without a timer. */
+ *  conversation legitimate again, and it's what lets the budget recover without a timer.
+ *
+ *  It clears the exhaustion mark for the same reason and by the same authority — otherwise a lane
+ *  stopped by the budget could never speak again, since the mark has no timer of its own. */
 export function resetChainFor(state: DeliveryState, to: string): DeliveryState {
-  if (!(to in state.inheritedHop)) return state
+  const exhausted = clearExhausted(state.exhausted, to)
+  if (!(to in state.inheritedHop) && exhausted === state.exhausted) return state
   const inheritedHop = { ...state.inheritedHop }
   delete inheritedHop[to]
-  return { ...state, inheritedHop }
+  return { ...state, inheritedHop, exhausted }
 }

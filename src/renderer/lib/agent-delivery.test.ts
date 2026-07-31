@@ -233,3 +233,105 @@ describe('chatterPausedFrom — flipping the default without touching a decision
     for (const v of ['', 'true', 'paused', 'yes', '2']) expect(chatterPausedFrom(v), v).toBe(false)
   })
 })
+
+// --- the hop-limit LEAK, closed --------------------------------------------------------
+// Found by driving the brakes in the real app, not here: the pure tests only ever asserted that
+// an over-budget message is blocked, never that the CHAIN ends. It didn't. `inheritedHop` is
+// advanced only by a successful delivery, so a blocked A→B left B's count untouched and B→A
+// still computed a hop under the limit — the chain alternated blocked/delivered at half rate
+// instead of stopping.
+describe('a chain that hits the limit STOPS, in both directions', () => {
+  /** Run an alternating two-lane chain and report each outcome in order. */
+  const runChain = (n: number) => {
+    let state = emptyDeliveryState()
+    const out: string[] = []
+    for (let i = 0; i < n; i++) {
+      const [from, to] = i % 2 === 0 ? ['code', 'research'] : ['research', 'code']
+      const r = evaluateDelivery({ from, to, text: 'x', targetLive: true, paused: false, now: T0 + i * 10_000, state })
+      state = r.state
+      out.push(r.decision.kind === 'deliver' ? 'sent' : r.decision.reason)
+    }
+    return { out, state }
+  }
+
+  it('REPRODUCES the leak shape it must not have: nothing delivers after the first block', () => {
+    const { out } = runChain(10)
+    const firstBlock = out.indexOf('hop-limit')
+    expect(firstBlock).toBeGreaterThan(0)
+    // The bug was `['...','hop-limit','sent','hop-limit','sent']`. Nothing may pass after it.
+    expect(out.slice(firstBlock)).not.toContain('sent')
+    expect(out.slice(firstBlock).every((o) => o === 'hop-limit')).toBe(true)
+  })
+
+  it('stops at HOP_LIMIT, not one hop later', () => {
+    const { out } = runChain(10)
+    expect(out.filter((o) => o === 'sent').length).toBe(HOP_LIMIT - 1)
+  })
+
+  it('marks BOTH ends — the addressee is the one that leaked', () => {
+    // Only the sender is over budget by its own count; the addressee's count never moved,
+    // because nothing was delivered into it. Marking one leaves the chain running at half rate.
+    const { state } = runChain(10)
+    expect(state.exhausted.code).toBe(true)
+    expect(state.exhausted.research).toBe(true)
+  })
+
+  it('blocks an exhausted lane from sending to a THIRD, uninvolved lane', () => {
+    // The chain is what is exhausted, not the pair — otherwise a stopped lane simply turns to
+    // whoever else is listening and carries on burning tokens.
+    const { state } = runChain(10)
+    const r = evaluateDelivery({ from: 'code', to: 'design', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state })
+    expect(r.decision.kind).toBe('block')
+    expect(r.decision.kind === 'block' && r.decision.reason).toBe('hop-limit')
+  })
+
+  it('says WHY in a way that names the chain, not the message', () => {
+    const { state } = runChain(10)
+    const r = evaluateDelivery({ from: 'code', to: 'design', text: 'x', targetLive: true, paused: false, now: T0, state })
+    expect(r.decision.kind === 'block' && r.decision.note).toMatch(/already reached \d+ hops/)
+  })
+
+  it('a HUMAN message frees the lane it addresses, and only that lane', () => {
+    const { state } = runChain(10)
+    const after = resetChainFor(state, 'research')
+    expect(after.exhausted.research).toBeUndefined()
+    expect(after.exhausted.code).toBe(true) // untouched — the human spoke to one lane
+    const ok = evaluateDelivery({ from: 'research', to: 'code', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state: after })
+    expect(ok.decision.kind).toBe('deliver')
+  })
+
+  it('…and that delivery frees the RECIPIENT, so the conversation genuinely resumes', () => {
+    // Receiving a message that passed the budget check restarts the chain for the recipient too.
+    // Without this, a human unblocking one lane would leave its partner mute and the reply would
+    // die on the first hop back.
+    const { state } = runChain(10)
+    const freed = resetChainFor(state, 'research')
+    const first = evaluateDelivery({ from: 'research', to: 'code', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state: freed })
+    expect(first.state.exhausted.code).toBeUndefined()
+    const back = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0 + 210_000, state: first.state })
+    expect(back.decision.kind).toBe('deliver')
+  })
+
+  it('cannot revive a dead chain: clearing on delivery only happens when the budget allowed it', () => {
+    // The freeing above is safe precisely because it is downstream of the check. An exhausted
+    // sender never reaches the delivery branch, so it can never clear anyone.
+    const { state } = runChain(10)
+    const r = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state })
+    expect(r.decision.kind).toBe('block')
+    expect(r.state.exhausted.research).toBe(true) // still marked
+  })
+
+  it('does not count a blocked message toward the pair window', () => {
+    // The pre-existing invariant, re-asserted now that a block writes state at all.
+    const { state } = runChain(10)
+    expect(state.pairHistory['code>research']?.length ?? 0).toBeLessThanOrEqual(PAIR_MAX_IN_WINDOW)
+  })
+
+  it('tolerates a state object from before `exhausted` existed', () => {
+    // The ref is not persisted, but a stale shape must degrade to the old behaviour rather than
+    // throwing on `undefined[from]`.
+    const legacy = { inheritedHop: {}, pairHistory: {}, suspendedUntil: {} } as DeliveryState
+    const r = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0, state: legacy })
+    expect(r.decision.kind).toBe('deliver')
+  })
+})

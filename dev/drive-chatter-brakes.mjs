@@ -62,12 +62,14 @@ console.log('1 outcomes in order:', JSON.stringify(chain))
 const firstBlock = chain.findIndex((o) => o.endsWith(':hop-limit'))
 console.log('1 chain stops, and at hop:', firstBlock + 1, '(HOP_LIMIT = 6)')
 console.log('1 the blocked message is RECORDED, not dropped:', chain.some((o) => o.endsWith(':hop-limit')))
-// NOT a hard stop, and this is the finding. A block does not advance the recipient's inherited
-// hop (nothing was delivered INTO them), so the OTHER lane's budget is untouched and its next
-// message still goes. The chain alternates blocked/delivered rather than ending.
+// It IS a hard stop now. It wasn't: a block never advanced the recipient's inherited hop
+// (nothing was delivered into them), so the other lane's budget was untouched and its next
+// message still went — the chain alternated blocked/delivered at half rate instead of ending.
+// Measured then: 1 of 3 still delivered. `exhausted` marks BOTH ends on a hop-limit block.
 const after = chain.slice(firstBlock + 1)
 console.log('1 after the first block:', JSON.stringify(after))
 console.log('1 → still delivering after the limit:', after.filter((o) => o.endsWith(':sent')).length, 'of', after.length)
+console.log('1 → THE CHAIN STOPS DEAD:', after.every((o) => o.endsWith(':hop-limit')))
 
 console.log('\n=== 2. HUMAN RESET ===')
 // FRESH APP. On the first pass this ran against the chain above and was blocked by the PAIR
