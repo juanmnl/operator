@@ -1,6 +1,7 @@
 import type { Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
 import type { GlobalRoleDefaults } from '../../lib/model-config'
 import { DragRegion } from '../DragRegion'
+import { SidebarToggle } from '../SidebarToggle'
 import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
 import { TaskQueue } from './TaskQueue'
@@ -15,7 +16,7 @@ type ProjectTab = 'roster' | 'moodboard'
 const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodboard' }
 
 export function ProjectView({
-  project, tab, onSelectTab, onBack,
+  project, tab, onSelectTab, onBack, onToggleSidebar, sidebarCollapsed,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch,
@@ -26,6 +27,10 @@ export function ProjectView({
   onSelectTab: (t: ProjectTab) => void
   /** Back to the gallery — the drill-in needs a visible way out even with the sidebar collapsed. */
   onBack?: () => void
+  /** Collapse/expand the sidebar — the same control the session toolbar and the channel carry.
+   *  `SessionToolbar` is not rendered in this content mode, so without it there is no toggle here. */
+  onToggleSidebar?: () => void
+  sidebarCollapsed?: boolean
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
   liveRoles?: Record<string, string>
@@ -52,6 +57,10 @@ export function ProjectView({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       <DragRegion data-toolbar-header="project" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
+        {/* Same control, same position as the other two toolbar headers. */}
+        {onToggleSidebar && (
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+        )}
         {/* Leading back-chevron: the way out of the drill-in, present even when the sidebar
             (with its logo) is collapsed. */}
         {onBack && (

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
+import { SidebarToggle } from '../SidebarToggle'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -135,25 +136,7 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             ellipsised title has run out of room it clips instead of riding over the badges. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
         {onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-            aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-            style={{
-              flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 24, height: 22, padding: 0,
-              background: 'transparent', border: 'none', borderRadius: 'var(--radius-sm)',
-              color: 'var(--fg-muted)', cursor: 'pointer',
-              // @ts-expect-error Electron-specific CSS property
-              WebkitAppRegion: 'no-drag',
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3.25" width="12" height="9.5" rx="1.6" />
-              <line x1="6.25" y1="3.25" x2="6.25" y2="12.75" />
-            </svg>
-          </button>
+          <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
         )}
         <span style={{
           minWidth: 0,
