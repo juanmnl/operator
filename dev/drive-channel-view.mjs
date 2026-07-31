@@ -235,6 +235,137 @@ await p.evaluate(() => document.querySelector('.channel-scroll').scrollTo(0, 0))
 await p.waitForTimeout(300)
 await p.screenshot({ path: `/tmp/operator-shots/channel-${MODE}-top.png` })
 
+// ---- 4e. FULL-BLEED LAYOUT, at three widths ----------------------------------------------
+// The 2000px case is the one that motivated this: a fixed centred column left ~1200px of dead
+// page beside the conversation. What has to hold at every width is that the row BLEEDS while the
+// paragraph does NOT, and that the header, the rows and the composer share one left edge.
+console.log('\n4e layout at three pane widths:')
+for (const w of [1000, 1440, 2100]) {
+  await p.setViewportSize({ width: w, height: 900 })
+  await p.waitForTimeout(500)
+  const m = await p.evaluate(() => {
+    const sc = document.querySelector('.channel-scroll')
+    const pane = sc.getBoundingClientRect()
+    const row = document.querySelector('[data-channel-row]')
+    const body = document.querySelector('[data-channel-text]')
+    const hdr = document.querySelector('[data-channel-hash]')
+    const comp = document.querySelector('[data-channel-composer]')
+    const cs = getComputedStyle(body)
+    const c = document.createElement('canvas').getContext('2d')
+    c.font = `${cs.fontSize} ${cs.fontFamily}`
+    const avg = c.measureText('abcdefghijklmnopqrstuvwxyz ,.-/').width / 31
+    const R = (e) => e.getBoundingClientRect()
+    return {
+      pane: Math.round(pane.width),
+      // clientWidth, NOT the bounding rect: the scroller is `overflow-y: scroll` so it always
+      // reserves a scrollbar gutter, and comparing a full-bleed row against the BORDER box makes
+      // a correct row look ~6px short forever.
+      content: sc.clientWidth,
+      gutter: Math.round(pane.width) - sc.clientWidth,
+      rowSpansPane: Math.round(R(row).width) === sc.clientWidth,
+      bodyW: Math.round(R(body).width),
+      chars: Math.round(R(body).width / avg),
+      leftEdges: {
+        header: hdr ? Math.round(R(hdr).left - pane.left) : null,
+        rowContent: Math.round(R(row.firstElementChild).left - pane.left),
+        composer: comp ? Math.round(R(comp).left - pane.left) : null,
+      },
+    }
+  })
+  const e = m.leftEdges
+  const shared = e.header === e.rowContent && e.rowContent === e.composer
+  console.log(`  ${String(m.pane).padStart(4)}px pane (${m.content} content, ${m.gutter}px scrollbar) · row bleeds: ${m.rowSpansPane} · body ${m.bodyW}px = ${m.chars} chars` +
+    ` · left edges h/r/c ${e.header}/${e.rowContent}/${e.composer} ${shared ? 'SHARED' : '<-- NOT SHARED'}`)
+}
+await p.setViewportSize({ width: 1400, height: 900 })
+await p.waitForTimeout(400)
+
+// ---- 4f. The hover action is reachable WITHOUT a pointer -------------------------------
+// It is the feed's first interactive furniture. A control revealed only under a cursor is
+// unreachable by keyboard, and the house rule forbids browser focus rings — so it needs both a
+// real focus state and to still be in the tab order while hidden.
+const focusable = await p.evaluate(() => {
+  const btn = document.querySelector('[data-channel-copy]')
+  if (!btn) return null
+  const before = getComputedStyle(btn)
+  // Hidden by OPACITY, deliberately: `visibility: hidden` would drop it from the tab order, which
+  // is the bug this check exists to catch.
+  const hiddenButPresent = before.opacity === '0' && btn.offsetParent !== null
+  btn.focus()
+  return new Promise((res) => setTimeout(() => {
+  const after = getComputedStyle(btn)
+  res({
+    hiddenButPresent,
+    visibleWhenFocused: after.visibility === 'visible',
+    focusRing: after.boxShadow !== 'none',
+    isActiveElement: document.activeElement === btn,
+  })
+  }, 80))
+})
+console.log('4f hover action, keyboard:', JSON.stringify(focusable))
+console.log('4f …hidden at rest yet focusable, and shows a ring when focused:',
+  !!focusable && focusable.hiddenButPresent && focusable.visibleWhenFocused && focusable.focusRing,
+  '(expect true)')
+
+// ---- 4g. Scroll must not drift on REFLOW ------------------------------------------------
+// This pane is live and resizable — the Plan/Diff panel steals width from it — and a width change
+// re-wraps every body. What the reader is looking at must not move.
+const reflowBefore = await p.evaluate(async () => {
+  const sc = document.querySelector('.channel-scroll')
+  sc.scrollTop = Math.round(sc.scrollHeight * 0.45)
+  await new Promise((r) => requestAnimationFrame(r))
+  const rows = [...document.querySelectorAll('[data-channel-row]')]
+  const anchor = rows.find((r) => r.getBoundingClientRect().top > sc.getBoundingClientRect().top)
+  return { id: anchor?.getAttribute('data-channel-row') ?? null, top: anchor ? Math.round(anchor.getBoundingClientRect().top) : null }
+})
+await p.setViewportSize({ width: 900, height: 900 })
+await p.waitForTimeout(500)
+const reflowAfter = await p.evaluate((id) => {
+  const el = document.querySelector(`[data-channel-row="${id}"]`)
+  return el ? Math.round(el.getBoundingClientRect().top) : null
+}, reflowBefore.id)
+console.log('4g on a 1400 -> 900 reflow, the row you were reading moved:',
+  reflowAfter === null ? 'n/a' : `${reflowAfter - reflowBefore.top}px`)
+
+// ---- 4h. Narrow pane — does the avatar column still earn its width? ---------------------
+await p.setViewportSize({ width: 620, height: 900 })
+// A generous settle: the clamped bodies are `-webkit-line-clamp` boxes, and WebKit reports a
+// stale intrinsic scrollWidth for them for a frame or two after a width change. 500ms measured
+// an overflow that a freshly-loaded 620px pane does not have.
+await p.waitForTimeout(1400)
+await p.evaluate(() => document.querySelector('.channel-scroll').scrollTop += 1)
+await p.waitForTimeout(300)
+console.log('4h at a 620px window:', JSON.stringify(await p.evaluate(() => {
+  const sc = document.querySelector('.channel-scroll')
+  const body = document.querySelector('[data-channel-text]')
+  const cs = getComputedStyle(body)
+  const c = document.createElement('canvas').getContext('2d')
+  c.font = `${cs.fontSize} ${cs.fontFamily}`
+  const avg = c.measureText('abcdefghijklmnopqrstuvwxyz ,.-/').width / 31
+  return {
+    content: sc.clientWidth,
+    bodyW: Math.round(body.getBoundingClientRect().width),
+    chars: Math.round(body.getBoundingClientRect().width / avg),
+    scrollW: sc.scrollWidth,
+    overflowsX: sc.scrollWidth > sc.clientWidth + 1,
+    // By CONTENT, not by box: a clipped element whose TEXT overflows never shows up in a
+    // bounding-rect check, which is why the first pass found "overflow with no offenders".
+    offenders: (() => {
+      const out = []
+      sc.querySelectorAll('*').forEach((el) => {
+        if (el.scrollWidth > el.clientWidth + 1) {
+          out.push(([...el.attributes].map((a) => a.name).find((n) => n.startsWith('data-')) || el.tagName)
+            + ` ${el.scrollWidth}>${el.clientWidth}`)
+        }
+      })
+      return out.slice(0, 6)
+    })(),
+  }
+})))
+await p.setViewportSize({ width: 1400, height: 900 })
+await p.waitForTimeout(400)
+
+
 // ---- 5. Every palette --------------------------------------------------------------------
 // The three light palettes are where a tint or a mixed ink collapses, so the new surfaces —
 // the inline code chip, the warn chips, the paused banner — are measured rather than assumed.

@@ -27,8 +27,11 @@ export type SendResult =
 // (ProjectRail's tiles); circles are the lane/session vocabulary (StatusWave orbs, SessionItem).
 // Blurring the two is how a project starts reading as an agent.
 
-/** One measure for the header and the feed, so they share a left edge at every scrollbar width. */
-const MEASURE = 720
+/** THE SHARED LEFT EDGE. Header, every feed row and the composer all start here, so the three
+ *  parts of the pane read as one column rather than three things each centred on their own.
+ *  This replaced a fixed 720px centred measure: in a 2000px window that parked the whole
+ *  conversation in the middle of the field with ~1200px of dead page beside it. */
+const INSET = 16
 
 /** …but NOT for prose. The shell wants 720 — the header, the composer and the meta line all use
  *  the width. The BODY does not: at 12px, a 652px text column runs ~105 characters, well past the
@@ -40,6 +43,39 @@ const MEASURE = 720
  *  top of the band rather than the middle is deliberate — a narrower column would push the p90
  *  dispatch into many more lines and make the 4-line clamp hide more than it reveals. */
 const PROSE = 470
+
+/** The avatar column: the circle and the gap before the text. Named because three things depend
+ *  on it — the row, the continuation gutter that keeps a run's bodies on one edge, and ROW_MAX. */
+const AVATAR = 26
+const AVATAR_GAP = 10
+
+/** How far row CONTENT runs before it stops. The row itself is full-bleed — its hover background
+ *  and hit area go edge to edge, which is the point of the change — but the things inside it are
+ *  bounded, because "full width" and "unbounded" are not the same thing.
+ *  DERIVED, not chosen: avatar column + prose + the action rail, so the content edge is the place
+ *  the content actually ends. Two things went wrong before this landed, both worth keeping:
+ *   • a round 880 left the hover action floating ~360px past the last word, orphaned mid-row —
+ *     the same "content adrift in a wide field" complaint this brief exists to fix, just moved;
+ *   • omitting the action from the sum let it EAT the prose instead (470 -> 414px, 79 -> 69
+ *     chars), because it is a flex sibling of the body column. If it is in the row, it is in the
+ *     arithmetic. */
+const ACTION_W = 54
+// TWO gaps, not one: the row is a flex container with `gap: AVATAR_GAP`, so it separates
+// avatar|body AND body|action. Adding a margin on the button as well double-counted the second
+// one and quietly cost the prose 10px (79 -> 77 chars).
+const ROW_MAX = AVATAR + AVATAR_GAP + PROSE + AVATAR_GAP + ACTION_W
+
+/** Below this the action rail stops earning its 64px and the prose takes it back. Measured, not
+ *  guessed: at a 326px pane the body was down to 33 characters a line with the rail present. */
+const NARROW_AT = 520
+
+/** The composer gets its own, wider cap. It shares the LEFT edge with everything else — that is
+ *  what the pane needs — but it is a writing surface, not a reading one: matching it to a 79-char
+ *  reading measure would make composing a paragraph needlessly cramped. Right edges may differ by
+ *  role; the left edge may not. */
+const COMPOSER_MAX = 720
+
+
 
 // Chip ink. The accent-derived tones are MIXED toward --fg, not used raw: bare `var(--accent)`
 // at this size measured 2.92:1 on Mission Control light and 2.44:1 on 1984 light — under the 3:1
@@ -145,6 +181,56 @@ export function ProjectChannel({
     return () => ro.disconnect()
   }, [])
 
+  // SCROLL ANCHORING ACROSS A REFLOW.
+  //
+  // The pane is live and resizable — the Plan/Diff panel takes width from it — and now that rows
+  // are full-bleed, a width change re-wraps every body and changes the height of the whole feed
+  // above you. Measured before this existed: narrowing 1400 -> 900 moved the row under the
+  // reader's eye by 16px.
+  //
+  // The anchor is recorded on SCROLL, not on resize, because by the time a ResizeObserver fires
+  // the new layout is already in place and the old position is gone. So: remember the topmost
+  // visible row and how far it sat below the fold; after a width change, put it back there.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<{ id: string; offset: number } | null>(null)
+  const widthRef = useRef(0)
+  const [narrow, setNarrow] = useState(false)
+
+  const rememberAnchor = useCallback(() => {
+    const sc = scrollRef.current
+    if (!sc) return
+    const top = sc.getBoundingClientRect().top
+    for (const el of sc.querySelectorAll<HTMLElement>('[data-channel-row]')) {
+      const r = el.getBoundingClientRect()
+      if (r.bottom > top) {
+        anchorRef.current = { id: el.dataset.channelRow ?? '', offset: r.top - top }
+        return
+      }
+    }
+    anchorRef.current = null
+  }, [])
+
+  useLayoutEffect(() => {
+    const sc = scrollRef.current
+    if (!sc || typeof ResizeObserver === 'undefined') return
+    widthRef.current = sc.clientWidth
+    setNarrow(sc.clientWidth < NARROW_AT)
+    const ro = new ResizeObserver(() => {
+      const w = sc.clientWidth
+      setNarrow(w < NARROW_AT)
+      if (w === widthRef.current) return // height-only change: nothing re-wrapped
+      widthRef.current = w
+      const a = anchorRef.current
+      if (!a) return
+      const el = sc.querySelector<HTMLElement>(`[data-channel-row="${CSS.escape(a.id)}"]`)
+      if (!el) return
+      const delta = (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - a.offset
+      if (delta) sc.scrollTop += delta
+    })
+    ro.observe(sc)
+    return () => ro.disconnect()
+  }, [])
+
   // Land at the bottom: a channel's newest entry is the one you came to read.
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [project.id])
@@ -155,7 +241,12 @@ export function ProjectChannel({
           — the containing-block rule from dev/briefs/fix-scrollbar-layout-shift.md. `scroll` not
           `auto` so the classic scrollbar's 6px is reserved in both states and the centred measure
           box can't re-centre 3px when the feed grows past the fold. */}
-      <div className="channel-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'scroll' }}>
+      <div
+        ref={scrollRef}
+        onScroll={rememberAnchor}
+        className="channel-scroll"
+        style={{ flex: 1, minHeight: 0, overflowY: 'scroll' }}
+      >
         {/* ONE sticky block for all the pinned chrome — the header and, when it applies, the
             paused notice. They used to be two independent stickies at `top: 0` and `top: 45`,
             which works right up until something else needs to pin BELOW them: a hardcoded offset
@@ -168,11 +259,13 @@ export function ProjectChannel({
           background: 'var(--bg-terminal)',
           borderBottom: '1px solid var(--border)',
         }}>
+          {/* Full-bleed. The kill switch rides the far right because it is PANE chrome — a
+              titlebar control — not row furniture, so it belongs to the pane's edge. */}
           <div style={{
-            maxWidth: MEASURE, margin: '0 auto', boxSizing: 'border-box',
-            display: 'flex', alignItems: 'baseline', gap: 8, height: 44, padding: '0 16px',
+            boxSizing: 'border-box',
+            display: 'flex', alignItems: 'baseline', gap: 8, height: 44, padding: `0 ${INSET}px`,
           }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
+            <span data-channel-hash style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>channel</span>
             {/* Shrinks and ellipsizes so the switch beside it can never be pushed out of the
                 header (with no wrap, an unshrinkable name would simply overflow it away). */}
@@ -227,10 +320,17 @@ export function ProjectChannel({
         {chatterPaused && heldByPause > 0 && (
           <div style={{
             background: 'var(--bg-terminal)',
-            maxWidth: MEASURE, margin: '0 auto', padding: '10px 16px', boxSizing: 'border-box',
+            maxWidth: COMPOSER_MAX + INSET * 2, padding: `10px ${INSET}px`, boxSizing: 'border-box',
           }}>
+            {/* STACKS when the pane is narrow. As a wrapping baseline row it could not fit its
+                three parts — headline, explanation, and an unshrinkable button — into a ~290px
+                pane, and pushed the scroller's content 30px past its own edge. `flexWrap` alone
+                does not save you when one child has a hard minimum. */}
             <div data-channel-paused-banner style={{
-              display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+              display: 'flex',
+              flexDirection: narrow ? 'column' : 'row',
+              alignItems: narrow ? 'flex-start' : 'baseline',
+              gap: 8, flexWrap: 'wrap',
               padding: '7px 10px', borderRadius: 'var(--radius-sm)',
               // Transparent tint + a static hairline, per house style — never a solid fill, and
               // never a colour-changing border on a radiused element.
@@ -242,7 +342,7 @@ export function ProjectChannel({
                   WARN_INK measured 4.27:1 on 1984 light, just under it. The amber tint behind it
                   and the amber chips it refers to already carry the tone; the sentence only has
                   to be read. */}
-              <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--fg)' }}>
+              <span style={{ minWidth: 0, fontSize: 11.5, fontWeight: 600, color: 'var(--fg)' }}>
                 {heldByPause} message{heldByPause === 1 ? '' : 's'} posted here reached no one.
               </span>
               <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--fg-muted)' }}>
@@ -266,9 +366,11 @@ export function ProjectChannel({
         )}
         </div>
 
-        <div style={{ maxWidth: MEASURE, margin: '0 auto', padding: '14px 16px 24px', boxSizing: 'border-box' }}>
+        {/* No horizontal padding here: the ROWS carry it, which is what lets their hover
+            background and hit area reach the pane's edges while their content stays inset. */}
+        <div style={{ padding: '14px 0 24px', boxSizing: 'border-box' }}>
           {feed.length === 0 ? (
-            <p data-channel-empty style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--fg-muted)', margin: 0 }}>
+            <p data-channel-empty style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--fg-muted)', margin: 0, padding: `0 ${INSET}px`, maxWidth: PROSE + INSET * 2 }}>
               Nothing here yet. This is where dispatches between your agents — and any
               <code style={{ margin: '0 4px', fontFamily: 'var(--font-mono)', fontSize: 11 }}>OPERATOR-REPLY</code>
               a lane posts — appear together, oldest first.
@@ -280,13 +382,16 @@ export function ProjectChannel({
                   into the middle of a long feed every timestamp read `04:05` with nothing saying
                   which day that was. It pins under whatever chrome is showing (`chromeH`), and
                   carries the field colour so rows pass under it rather than through it. */}
+              {/* LEFT-ANCHORED, not centred between two rules. A date floating at the middle of a
+                  2000px pane is the same defect as the old centred column, just one line tall —
+                  and the whole point of this layout is that everything starts at one edge. The
+                  rule now trails off to the right instead of framing it. */}
               <div style={{
                 position: 'sticky', top: chromeH, zIndex: 1,
                 background: 'var(--bg-terminal)',
                 display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 12px',
-                paddingTop: 6, paddingBottom: 6,
+                padding: `6px ${INSET}px`,
               }}>
-                <span style={{ flex: 1, height: 1, background: 'var(--border)' }} />
                 <span data-channel-day style={{
                   flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
                   textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--fg-muted)',
@@ -303,6 +408,7 @@ export function ProjectChannel({
                   // Day buckets never merge across the separator: `group.entries` is one day, so
                   // the first row of a day always prints its author.
                   continuation={isContinuation(group.entries[i - 1], e)}
+                  narrow={narrow}
                   onApprove={onApproveDispatch}
                   onReject={onRejectDispatch}
                 />
@@ -398,7 +504,11 @@ function ChannelBody({ text }: { text: string }) {
         style={{
           fontSize: 12, lineHeight: 1.55, color: 'var(--fg)',
           maxWidth: PROSE,
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 2,
+          // `anywhere`, not just `break-word`: these bodies are full of unbroken 45-character
+          // paths, and in a narrow pane one of them pushed the scroller's content 13px past its
+          // own box — invisible to a per-element overflow check, because the box was clipped and
+          // only the TEXT overflowed.
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', marginTop: 2,
           ...(expanded ? {} : {
             display: '-webkit-box',
             WebkitBoxOrient: 'vertical' as const,
@@ -430,15 +540,22 @@ function ChannelBody({ text }: { text: string }) {
   )
 }
 
-function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
+function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onReject }: {
   entry: ChannelEntry
   projectId: string
   /** Same author as the row above, close in time: the identity is already on screen, so this row
    *  drops the avatar and the name and keeps everything that varies. */
   continuation?: boolean
+  /** The pane is too narrow to spend 64px on an action rail — the prose needs it more. The AVATAR
+   *  stays even here: it is the identity channel this whole layout is built around, and dropping
+   *  it would cost more than the 36px it occupies. */
+  narrow?: boolean
   onApprove?: (projectId: string, id: string) => void
   onReject?: (projectId: string, id: string) => void
 }) {
+  const [hover, setHover] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [focused, setFocused] = useState(false)
   const accent = entry.authorRole?.accent
   // The raw DispatchRecord id, recovered from the prefixed entry id, for the approval handlers.
   const dispatchId = entry.kind === 'dispatch' ? entry.id.slice('dispatch:'.length) : null
@@ -447,13 +564,20 @@ function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
     <div
       data-channel-row={entry.id}
       data-channel-continuation={continuation ? '' : undefined}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
-        display: 'flex', gap: 10, alignItems: 'flex-start',
-        // A run reads as one block: continuation rows sit close, and the air goes between
-        // blocks instead of being spread evenly over every row.
-        padding: continuation ? '3px 0' : '10px 0 3px',
+        // FULL-BLEED: the row's background and hit area run edge to edge, and its own horizontal
+        // padding is what insets the content. That split is the design — the row is full width,
+        // the paragraph is not.
+        display: 'flex', justifyContent: 'flex-start',
+        padding: continuation ? `3px ${INSET}px` : `10px ${INSET}px 3px`,
+        background: hover ? 'var(--overlay-subtle)' : 'transparent',
+        // No transition on the background: at this row height a fade reads as lag, and the feed
+        // is live enough already.
       }}
     >
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%', maxWidth: ROW_MAX, minWidth: 0 }}>
       {/* CIRCLE — lane vocabulary. Accent tint + a STATIC hairline (a colour-changing border on a
           radiused element re-rasterizes in WKWebView), initials through laneTextColor so they
           clear 4.5:1 on the three light palettes where a raw accent collapses to ~1.4. A human or
@@ -461,16 +585,22 @@ function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
           On a continuation the gutter is HELD OPEN and left empty, so every body in a run keeps
           the same left edge — the column is what makes the run read as one speaker. */}
       {continuation ? (
-        <span aria-hidden style={{ flexShrink: 0, width: 26 }} />
+        <span aria-hidden style={{ flexShrink: 0, width: AVATAR }} />
       ) : (
         <span
           data-channel-avatar
           style={{
-            flexShrink: 0, width: 26, height: 26, borderRadius: '50%',
+            flexShrink: 0, width: AVATAR, height: AVATAR, borderRadius: '50%',
             display: 'grid', placeItems: 'center',
             background: accent ? `color-mix(in srgb, ${accent} 16%, transparent)` : 'var(--overlay-medium)',
             border: `1px solid ${accent ? `color-mix(in srgb, ${accent} 38%, transparent)` : 'var(--border)'}`,
-            color: accent ? laneTextColor(accent) : 'var(--fg-muted)',
+            // Plain --fg, not laneTextColor. Identity lives in the DISC — its accent tint and
+            // hairline — and in the author name beside it; the two letters inside do not have to
+            // carry it a third time, and making them do so cost legibility. The row now lifts to
+            // --overlay-subtle on hover, and on that lighter backdrop a raw lane ink measured
+            // 4.11 on Mr Pink dark: under the 4.5 floor, and only WHILE HOVERING, which is a
+            // state no static screenshot catches.
+            color: accent ? 'var(--fg)' : 'var(--fg-muted)',
             fontSize: 9.5, fontWeight: 600, letterSpacing: '0.02em', lineHeight: 1,
           }}
         >
@@ -493,7 +623,12 @@ function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
               (it is punctuation); the NAME steps up to body ink and size so the routing reads
               before the metadata does. */}
           {entry.targetLabel && (
-            <span style={{ fontSize: 11, color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>
+            <span style={{
+              fontSize: 11, color: 'var(--fg-muted)', whiteSpace: 'nowrap',
+              // nowrap keeps `→ Design` from breaking after the arrow, but in a narrow pane a long
+              // lane name then pushed the row's content past the scroller. Truncate instead.
+              minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+            }}>
               →{' '}
               <span data-channel-target style={{
                 fontWeight: 500, color: 'color-mix(in srgb, var(--fg) 82%, transparent)',
@@ -549,6 +684,58 @@ function ChannelRow({ entry, projectId, continuation, onApprove, onReject }: {
             >Decline</button>
           </div>
         )}
+        </div>
+
+        {/* RIGHT-EDGE FURNITURE — the affordance the centred column had nowhere to put. It sits at
+            ROW_MAX rather than the pane's edge, so it stays within reach of the message it acts on.
+            Revealed on hover, but ALSO whenever it has keyboard focus: a control that only exists
+            under a pointer is unreachable by keyboard, and `visibility` rather than unmounting is
+            what keeps it in the tab order at all.
+            The focus ring is a `box-shadow` — the house rule forbids browser focus rings, and this
+            is the feed's first interactive furniture, so it needed a real one of its own rather
+            than nothing. A shadow also dodges the WKWebView colour-changing-border trap. */}
+        {!narrow && (
+        <button
+          data-channel-copy={entry.id}
+          onClick={() => {
+            navigator.clipboard?.writeText(entry.text).then(() => {
+              setCopied(true)
+              window.setTimeout(() => setCopied(false), 1200)
+            }).catch(() => { /* clipboard blocked — say nothing rather than lie */ })
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          title="Copy this message"
+          aria-label="Copy this message"
+          style={{
+            flexShrink: 0, alignSelf: 'flex-start', marginTop: 1,
+            width: ACTION_W, boxSizing: 'border-box',
+            // OPACITY, not `visibility: hidden` — that removes the element from the tab order
+            // entirely, so the focus state below could never fire and the control was reachable
+            // by pointer only. (This is not the "recede content with opacity" the house rule
+            // forbids: that is about legibility of visible text; this is fully hidden or fully
+            // shown, never in between.) It keeps its space at rest ON PURPOSE — the usual
+            // hover-affordance rule is that a grip must not reserve space, but here reserving it
+            // is what stops the prose re-wrapping every time the pointer crosses a row.
+            opacity: hover || focused ? 1 : 0,
+            pointerEvents: hover || focused ? 'auto' : 'none',
+            transition: 'opacity 120ms ease',
+            padding: '2px 7px', borderRadius: 'var(--radius-sm)', border: 'none',
+            background: 'var(--overlay-medium)',
+            // Full --fg, not --fg-muted. This control is invisible until you hover or focus it, so
+            // there is nothing for it to recede BEHIND — and at --fg-muted on an --overlay-medium
+            // chip it measured 2.99:1 on Mr Pink light, under the 3:1 floor. The `copied`
+            // confirmation is carried by the WORD changing, not by the ink.
+            color: 'var(--fg)',
+            boxShadow: focused ? 'inset 0 0 0 1px var(--accent)' : 'none',
+            cursor: 'pointer', outline: 'none',
+            fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+          }}
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
+        )}
       </div>
     </div>
   )
@@ -593,7 +780,9 @@ function Composer({ project, onSend }: {
 
   return (
     <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--bg-terminal)' }}>
-      <div style={{ maxWidth: MEASURE, margin: '0 auto', padding: '10px 16px 12px', boxSizing: 'border-box' }}>
+      {/* Capped and left-anchored, on the same INSET as the header and the rows. A full-bleed
+          textarea at 2000px is as unreadable to write into as it is to read. */}
+      <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `10px ${INSET}px 12px`, boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, flexWrap: 'wrap' }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--fg-muted)' }}>
             to
