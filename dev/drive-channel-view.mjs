@@ -237,6 +237,37 @@ await p.evaluate(() => document.querySelector('.channel-scroll').scrollTo(0, 0))
 await p.waitForTimeout(300)
 await p.screenshot({ path: `/tmp/operator-shots/channel-${MODE}-top.png` })
 
+// ---- 4d2. VERTICAL RHYTHM + DENSITY ------------------------------------------------------
+// Air costs messages on screen, so the spacing pass has to be reported WITH its density cost.
+// Entries-per-screen is counted at the default pane height, not inferred from the padding values.
+const rhythm = await p.evaluate(() => {
+  const px = (v) => Math.round(parseFloat(v) || 0)
+  const sc = document.querySelector('.channel-scroll')
+  const feed = document.querySelector('[data-channel-row]').parentElement
+  const rowFirst = [...document.querySelectorAll('[data-channel-row]')].find((r) => !r.hasAttribute('data-channel-continuation'))
+  const rowCont = document.querySelector('[data-channel-row][data-channel-continuation]')
+  const day = document.querySelector('[data-channel-day]')?.parentElement
+  const surf = document.querySelector('[data-channel-composer-surface]')
+  const wrap = surf.parentElement
+  const ta = document.querySelector('[data-channel-composer]')
+  const actions = surf.lastElementChild
+  const cs = (e) => getComputedStyle(e)
+  // How many entries are fully on screen at rest.
+  const view = sc.getBoundingClientRect()
+  const visible = [...document.querySelectorAll('[data-channel-row]')]
+    .filter((r) => { const b = r.getBoundingClientRect(); return b.top >= view.top - 1 && b.bottom <= view.bottom + 1 }).length
+  return {
+    feedTop: px(cs(feed).paddingTop), feedBottom: px(cs(feed).paddingBottom),
+    rowTop: px(cs(rowFirst).paddingTop), rowBottom: px(cs(rowFirst).paddingBottom),
+    contTop: rowCont ? px(cs(rowCont).paddingTop) : null,
+    dayAbove: day ? px(cs(day).marginTop) : null, dayBelow: day ? px(cs(day).marginBottom) : null,
+    composerAbove: px(cs(wrap).paddingTop), composerBelow: px(cs(wrap).paddingBottom),
+    taBottom: px(cs(ta).paddingBottom), actionsBottom: px(cs(actions).paddingBottom),
+    entriesVisible: visible, paneH: Math.round(view.height),
+  }
+})
+console.log('\n4d2 vertical rhythm:', JSON.stringify(rhythm))
+
 // ---- 4e. FULL-BLEED LAYOUT, at three widths ----------------------------------------------
 // The 2000px case is the one that motivated this: a fixed centred column left ~1200px of dead
 // page beside the conversation. What has to hold at every width is that the row BLEEDS while the
@@ -250,7 +281,11 @@ for (const w of [1000, 1440, 2100]) {
     const pane = sc.getBoundingClientRect()
     const row = document.querySelector('[data-channel-row]')
     const body = document.querySelector('[data-channel-text]')
-    const hdr = document.querySelector('[data-channel-hash]')
+    // The header's FIRST child, not the `#` glyph. The shared-edge invariant is about where the
+    // header's content begins; since the sidebar toggle landed it is the leading element and the
+    // `#` sits after it, exactly as the title does in SessionToolbar.
+    const hdrBox = document.querySelector('[data-toolbar-header="channel"]')
+    const hdr = hdrBox ? hdrBox.firstElementChild : null
     // The composer's own outer edge. It used to BE the textarea; there is a container around it
     // now, and the shared-edge invariant is about where the composer starts, not where its text
     // does (which sits one border + one padding further in, as it did before).
