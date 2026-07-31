@@ -413,12 +413,12 @@ function ProjectTile({ project, activity, current, onOpen, draggable, dragging, 
         onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
         onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
       >
-        {/* `letterSpacing` adds its space AFTER the last glyph too, so the text BOX is wider on
-            the right than the ink is and centring it lands the ink left of the axis. Measured at
-            −0.25 to −0.50px on every tile and never positive — a directional error, which is what
-            says it is systematic rather than glyph side bearings. The negative margin takes the
-            trailing space back out of the centring calculation. */}
-        <span data-rail-initials style={{ marginRight: '-0.02em' }}>{projectInitials(project.name)}</span>
+        {/* `.ink-centred` (styles.css) — centres the INK rather than the line box. It cancels the
+            trailing letter-space that was landing the acronym 0.25–0.50px left of the axis (never
+            right: a directional error is a systematic one), and lifts the caps off the low seat
+            `place-items: center` gives them. Shared with the channel avatar, the sidebar lane
+            initial and the preview pin, so a fifth disc gets this for free. */}
+        <span data-rail-initials className="ink-centred">{projectInitials(project.name)}</span>
         {/* State gets its own channel, overlapping the tile's corner. Nothing at all when
             idle — a permanent grey dot on every tile would be one more thing to look past.
             THE INVARIANT: a tile's PAINTED CENTRE is independent of its ring and pip state. The

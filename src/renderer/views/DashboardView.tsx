@@ -3077,6 +3077,19 @@ export function DashboardView() {
       <div data-term-focus-zone style={{
         position: 'relative', flex: 1,
         display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden',
+        // ELEVATION — the landing kit's `.panel` depth, and the one place it belongs: this is
+        // THE content card, so every mode inherits it and no mode can drift.
+        //
+        // The card and the field it sits on are one step apart in lightness, and until now
+        // nothing else separated them — the card read as the field. A shadow plus a defined
+        // edge is the difference between a surface and an object.
+        //
+        // Both come from `box-shadow`, not `border`. This element is radiused and the panel
+        // edge is a colour, and a colour-CHANGING border on a radiused element is the
+        // WKWebView re-rasterization trap. `inset` for the edge so it paints within the
+        // card's own footprint rather than over the sidebar's last column; the drop shadow
+        // is the only thing allowed outside it.
+        boxShadow: 'var(--shadow-panel), inset 0 0 0 1px var(--panel-edge)',
       }}>
         {/* Drag region — only where nothing else is acting as one. Three modes bring their
             own: the session toolbar (`localTerminal`), the gallery's taller header (which

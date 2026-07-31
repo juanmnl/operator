@@ -718,10 +718,12 @@ function ChannelRow({ entry, projectId, continuation, narrow, selected, onSelect
             // 4.11 on Mr Pink dark: under the 4.5 floor, and only WHILE HOVERING, which is a
             // state no static screenshot catches.
             color: accent ? 'var(--fg)' : 'var(--fg-muted)',
-            fontSize: 9.5, fontWeight: 600, letterSpacing: '0.02em', lineHeight: 1,
+            // letter-spacing now comes from `.ink-centred` via --track, together with the
+            // negative margin that cancels its trailing half. Declared apart, the two drift.
+            fontSize: 9.5, fontWeight: 600, lineHeight: 1,
           }}
         >
-          {channelInitials(entry.authorLabel)}
+          <span className="ink-centred">{channelInitials(entry.authorLabel)}</span>
         </span>
       )}
 
