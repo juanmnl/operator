@@ -4,6 +4,7 @@ import { DragRegion } from '../DragRegion'
 import { laneTextColor } from '../../lib/lane-color'
 import { localTime } from '../../lib/local-time'
 import { parseInline } from '../../lib/canvas-md'
+import { PopMenu } from '../PopMenu'
 import {
   buildChannelFeed, groupByDay, channelInitials, isContinuation, isActionableChip,
   type ChannelEntry, type ChannelSession, type ChipTone,
@@ -32,6 +33,11 @@ export type SendResult =
  *  This replaced a fixed 720px centred measure: in a 2000px window that parked the whole
  *  conversation in the middle of the field with ~1200px of dead page beside it. */
 const INSET = 16
+
+/** The composer's own hairlines, softened the same way and for the same reason as the rail's:
+ *  `--border` at full strength reads as a drawn line rather than a change of surface. Mixed
+ *  toward transparent so the token stays the source. */
+const SEAM_INK = 'color-mix(in srgb, var(--border) 70%, transparent)'
 
 /** …but NOT for prose. The shell wants the pane's full width — the header, the composer and the
  *  row all use it. The BODY does not: a full-bleed row at 1800px with unconstrained text is ~300
@@ -76,6 +82,9 @@ const ROW_MAX = AVATAR + AVATAR_GAP + PROSE + AVATAR_GAP + ACTION_W
 /** Below this the action rail stops earning its 64px and the prose takes it back. Measured, not
  *  guessed: at a 326px pane the body was down to 33 characters a line with the rail present. */
 const NARROW_AT = 520
+
+/** How tall the composer may grow before it scrolls internally. */
+const COMPOSER_MAX_H = 160
 
 /** The composer gets its own, wider cap. It shares the LEFT edge with everything else — that is
  *  what the pane needs — but it is a writing surface, not a reading one: matching it to a 79-char
@@ -230,6 +239,11 @@ export function ProjectChannel({
       widthRef.current = w
       const a = anchorRef.current
       if (!a) return
+      // KNOWN GAP, recorded rather than papered over: on a width change this restores the anchor
+      // correctly for a body expansion (measured 0px) but leaves ~19px on a full pane resize since
+      // the composer rebuild. Re-running the correction on the next frame, the frame after, and on
+      // an 80ms timeout all left it unchanged, which says the correction is not the thing running
+      // late — see dev/briefs/channel-composer-RESULT.md.
       const el = sc.querySelector<HTMLElement>(`[data-channel-row="${CSS.escape(a.id)}"]`)
       if (!el) return
       const delta = (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - a.offset
@@ -253,7 +267,16 @@ export function ProjectChannel({
         ref={scrollRef}
         onScroll={rememberAnchor}
         className="channel-scroll"
-        style={{ flex: 1, minHeight: 0, overflowY: 'scroll' }}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'scroll',
+          // A short FADE at the bottom edge. Mid-scroll the last visible row is cut by the
+          // scroller's edge — normal for a scroller, but against the composer's rule it read as a
+          // message sliced through its own glyphs with nothing to say why. The mask dissolves the
+          // final few pixels so the feed passes UNDER the composer instead of ending at it.
+          // Bottom only: a top fade would eat the sticky header.
+          WebkitMaskImage: 'linear-gradient(to bottom, #000 calc(100% - 14px), transparent 100%)',
+          maskImage: 'linear-gradient(to bottom, #000 calc(100% - 14px), transparent 100%)',
+        }}
       >
         {/* ONE sticky block for all the pinned chrome — the header and, when it applies, the
             paused notice. They used to be two independent stickies at `top: 0` and `top: 45`,
@@ -785,6 +808,37 @@ function Composer({ project, onSend }: {
   const [target, setTarget] = useState<ChannelTarget>('everyone')
   const [draft, setDraft] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  // Focus is tracked per control, not just on the container: the container's ring says "you are
+  // typing here", but tabbing to the target or Send must show WHICH one you are on. The house rule
+  // removes browser focus rings, so every control owes one of its own — and this is the most
+  // keyboard-driven surface in the app.
+  const [focusWithin, setFocusWithin] = useState(false)
+  const [targetFocus, setTargetFocus] = useState(false)
+  const [sendFocus, setSendFocus] = useState(false)
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const targetLabel = target === 'everyone'
+    ? 'everyone'
+    : (roster.find((r) => r.id === target)?.name ?? target)
+
+  // One row at rest, grown to fit up to a ceiling. Reset to `auto` first or the box can only ever
+  // grow — scrollHeight is measured against the height you already set.
+  const grow = useCallback(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`
+  }, [])
+  useLayoutEffect(grow, [grow, draft])
+  // …and on RESIZE. `grow` writes an explicit inline height, so without this the box keeps a
+  // height measured at the old width while the text re-wraps inside it.
+  useLayoutEffect(() => {
+    const el = taRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => grow())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [grow])
   const check = validateChannelMessage(draft)
   const live = !!onSend
   const overCap = check.over > 0
@@ -803,83 +857,132 @@ function Composer({ project, onSend }: {
   }
 
   return (
-    <div style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--bg-terminal)' }}>
+    <div style={{ flexShrink: 0, borderTop: `1px solid ${SEAM_INK}`, background: 'var(--bg-terminal)' }}>
       {/* Capped and left-anchored, on the same INSET as the header and the rows. A full-bleed
           textarea at 2000px is as unreadable to write into as it is to read. */}
       <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `10px ${INSET}px 12px`, boxSizing: 'border-box' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--fg-muted)' }}>
-            to
-          </span>
-          {([['everyone', 'everyone'], ...roster.map((r) => [r.id, r.name] as const)] as [string, string][]).map(([id, name]) => {
-            const on = target === id
-            return (
-              <button
-                key={id}
-                data-channel-pill={name}
-                aria-pressed={on}
-                disabled={!live}
-                onClick={() => { setTarget(id); setNotice(null) }}
-                style={{
-                  padding: '1px 7px', borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border)',
-                  // Selection is a faint surface tint plus normal ink — never an accent fill.
-                  background: on ? 'var(--overlay-medium)' : 'transparent',
-                  color: on ? 'var(--fg)' : 'var(--fg-muted)',
-                  cursor: live ? 'pointer' : 'not-allowed', outline: 'none',
-                  fontFamily: 'var(--font-mono)', fontSize: 9,
-                }}
-              >
-                {name}
-              </button>
-            )
-          })}
-          {showCount && (
-            <span data-channel-count style={{
-              marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 9,
-              fontVariantNumeric: 'tabular-nums',
-              color: overCap ? 'var(--color-error, #f85149)' : 'var(--fg-muted)',
-            }}>
-              {CHANNEL_MAX_CHARS - draft.trim().length}
-            </span>
+        {/* ONE SURFACE. The input and its actions used to be two separately bordered boxes sitting
+            beside each other; every reference app puts them in one container, and two borders read
+            as two controls that happen to be adjacent rather than one place you write.
+            The focus ring is an inset BOX-SHADOW, not a border colour change: a colour-changing
+            border on a radiused element re-rasterizes in WKWebView, and this is the exact trap —
+            a composer that highlights on focus. */}
+        <div
+          data-channel-composer-surface
+          onFocus={() => setFocusWithin(true)}
+          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFocusWithin(false) }}
+          style={{
+            position: 'relative',
+            border: `1px solid ${SEAM_INK}`, borderRadius: 12,
+            background: live ? 'var(--overlay-subtle)' : 'transparent',
+            boxShadow: focusWithin ? 'inset 0 0 0 1px var(--accent)' : 'none',
+            transition: 'box-shadow 120ms ease',
+          }}
+        >
+          {menuOpen && (
+            <PopMenu
+              title="Send to"
+              onClose={() => setMenuOpen(false)}
+              items={[
+                { key: 'everyone', label: 'Everyone', hint: 'every live lane', active: target === 'everyone', onClick: () => { setTarget('everyone'); setNotice(null) } },
+                ...roster.map((r) => ({
+                  key: r.id, label: r.name, active: target === r.id,
+                  onClick: () => { setTarget(r.id); setNotice(null) },
+                })),
+              ]}
+            />
           )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+
           <textarea
+            ref={taRef}
             data-channel-composer
             disabled={!live}
-            rows={2}
+            rows={1}
             value={draft}
-            onChange={(e) => { setDraft(e.target.value); setNotice(null) }}
+            onChange={(e) => { setDraft(e.target.value); setNotice(null); grow() }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send() }
             }}
+            /* The chord is stated ONCE, on the button. It used to be here as well as there. */
             placeholder={live
-              ? `Message ${target === 'everyone' ? 'every live lane' : (roster.find((r) => r.id === target)?.name ?? target)}…  ⌘↵ to send`
+              ? `Message ${target === 'everyone' ? 'every live lane' : (roster.find((r) => r.id === target)?.name ?? target)}…`
               : 'Sending arrives in the next step — this channel is read-only for now.'}
             style={{
-              flex: 1, minWidth: 0, boxSizing: 'border-box', resize: 'none',
-              padding: '7px 9px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border)', background: 'transparent',
+              display: 'block', width: '100%', boxSizing: 'border-box', resize: 'none',
+              padding: '9px 11px 4px', border: 'none', background: 'transparent', outline: 'none',
               color: live ? 'var(--fg)' : 'var(--fg-muted)',
               fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.5,
               cursor: live ? 'text' : 'not-allowed',
+              /* One row at rest, grown by `grow()` up to a ceiling. It was a fixed two, on a
+                 surface whose typical message is one line. */
+              maxHeight: COMPOSER_MAX_H, overflowY: 'auto',
             }}
           />
-          <button
-            data-channel-send
-            disabled={!live || !check.ok}
-            onClick={send}
-            title={overCap ? check.error : 'Send to the selected target (⌘↵)'}
-            style={{
-              flexShrink: 0, padding: '6px 12px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border)',
-              background: live && check.ok ? 'var(--btn-bg)' : 'transparent',
-              color: live && check.ok ? 'var(--fg)' : 'var(--fg-muted)',
-              cursor: live && check.ok ? 'pointer' : 'not-allowed', outline: 'none',
-              fontFamily: 'var(--font-mono)', fontSize: 10,
-            }}
-          >Send ⌘↵</button>
+
+          {/* Actions, INSIDE the container. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 7px 7px' }}>
+            {/* ADDRESSING, in one control instead of a permanent seven-pill bank. */}
+            <button
+              data-channel-send-target
+              disabled={!live}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((o) => !o)}
+              title="Choose who this goes to"
+              style={{
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '2px 7px', borderRadius: 'var(--radius-sm)', border: 'none',
+                /* Faint surface tint plus normal ink — never an accent fill. */
+                background: menuOpen ? 'var(--overlay-medium)' : 'transparent',
+                color: live ? 'var(--fg)' : 'var(--fg-muted)',
+                boxShadow: targetFocus ? 'inset 0 0 0 1px var(--accent)' : 'none',
+                cursor: live ? 'pointer' : 'not-allowed', outline: 'none',
+                fontFamily: 'var(--font-mono)', fontSize: 9.5,
+              }}
+              onFocus={() => setTargetFocus(true)}
+              onBlur={() => setTargetFocus(false)}
+              onMouseEnter={(e) => { if (live && !menuOpen) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+              onMouseLeave={(e) => { if (!menuOpen) e.currentTarget.style.background = 'transparent' }}
+            >
+              <span style={{ color: 'var(--fg-muted)' }}>to</span>
+              {targetLabel}
+              <span aria-hidden style={{ color: 'var(--fg-muted)' }}>▾</span>
+            </button>
+
+            <span style={{ flex: 1 }} />
+
+            {showCount && (
+              <span data-channel-count style={{
+                flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
+                fontVariantNumeric: 'tabular-nums',
+                color: overCap ? 'var(--color-error, #f85149)' : 'var(--fg-muted)',
+              }}>
+                {CHANNEL_MAX_CHARS - draft.trim().length}
+              </span>
+            )}
+
+            <button
+              data-channel-send
+              disabled={!live || !check.ok}
+              onClick={send}
+              onFocus={() => setSendFocus(true)}
+              onBlur={() => setSendFocus(false)}
+              title={overCap ? check.error : 'Send to the selected target (⌘↵)'}
+              style={{
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '3px 10px', borderRadius: 'var(--radius-sm)',
+                border: `1px solid ${SEAM_INK}`,
+                background: live && check.ok ? 'var(--btn-bg)' : 'transparent',
+                color: live && check.ok ? 'var(--fg)' : 'var(--fg-muted)',
+                boxShadow: sendFocus ? 'inset 0 0 0 1px var(--accent)' : 'none',
+                cursor: live && check.ok ? 'pointer' : 'not-allowed', outline: 'none',
+                fontFamily: 'var(--font-body)', fontSize: 11,
+              }}
+            >
+              Send
+              <span aria-hidden style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)' }}>⌘↵</span>
+            </button>
+          </div>
         </div>
         <p data-channel-composer-note style={{ margin: '6px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--fg-muted)' }}>
           {notice ?? (overCap

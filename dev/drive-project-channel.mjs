@@ -56,6 +56,14 @@ await ctx.addInitScript(() => {
 const p = await ctx.newPage()
 p.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 250)))
 const writes = () => p.evaluate(() => window.__calls.filter((c) => c.fn === 'terminalWrite').length)
+// The send target moved from a seven-pill radio bank to one control that opens a menu — most
+// messages never change it, so it stopped costing a permanent row.
+const pickTarget = async (key) => {
+  await p.locator('[data-channel-send-target]').click()
+  await p.waitForTimeout(150)
+  await p.locator(`[data-popmenu-item="${key}"]`).click()
+  await p.waitForTimeout(150)
+}
 
 await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
 await p.waitForTimeout(3200)
@@ -102,10 +110,11 @@ const composer = await p.evaluate(() => {
     textareaDisabled: ta?.disabled ?? null,
     sendDisabled: send?.disabled ?? null,
     note: document.querySelector('[data-channel-composer-note]')?.textContent?.trim().slice(0, 60),
-    pills: Array.from(document.querySelectorAll('[data-channel-pill]')).map((e) => e.textContent.trim()),
+    // Addressing is one control that opens a menu now, not a permanent pill bank.
+    target: document.querySelector('[data-channel-send-target]')?.textContent.trim(),
   }
 })
-console.log('6 composer:', JSON.stringify(composer, null, 0), '(expect enabled, with target pills)')
+console.log('6 composer:', JSON.stringify(composer, null, 0), '(expect enabled, with a target control)')
 
 // ---- 7. Reading it clears the unread badge ----------------------------------------------
 console.log('7 unread after reading:', await p.evaluate(() =>
@@ -142,7 +151,7 @@ const rowFor = (needle) => p.evaluate((n) => {
 }, needle)
 
 // `Code` is live in the mock (t1); `Design` is idle.
-await p.locator('[data-channel-pill="Code"]').click()
+await pickTarget('code')
 await p.locator('[data-channel-composer]').fill('HUMANTOCODE take a look at this')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(900)
@@ -152,7 +161,7 @@ console.log('9 composer cleared:', await p.evaluate(() => document.querySelector
 
 // ---- 10. AN IDLE TARGET IS QUEUED, NEVER LAUNCHED --------------------------------------
 const spawnsBefore = await spawns()
-await p.locator('[data-channel-pill="Design"]').click()
+await pickTarget('design')
 await p.locator('[data-channel-composer]').fill('HUMANTOIDLE nice work earlier')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(900)
@@ -164,7 +173,7 @@ console.log('10 and it says who will get it later:', await p.evaluate(() =>
 
 // ---- 11. THE CAP: refused, never truncated ---------------------------------------------
 const w = await p.evaluate(() => window.__calls.filter((c) => c.fn === 'terminalWrite').length)
-await p.locator('[data-channel-pill="Code"]').click()
+await pickTarget('code')
 await p.locator('[data-channel-composer]').fill('CAPTEST' + 'x'.repeat(2000))
 await p.waitForTimeout(400)
 console.log('11 send is disabled over cap:', await p.evaluate(() => document.querySelector('[data-channel-send]').disabled), '(expect true)')
@@ -179,7 +188,7 @@ console.log('11 the draft was NOT truncated:', await p.evaluate(() => document.q
 
 // ---- 12. FAN-OUT collapses to one row --------------------------------------------------
 await p.locator('[data-channel-composer]').fill('')
-await p.locator('[data-channel-pill="everyone"]').click()
+await pickTarget('everyone')
 await p.locator('[data-channel-composer]').fill('HUMANTOALL standup in five')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(1100)
@@ -226,7 +235,7 @@ console.log('13 …and the channel says why:', await chipFor('PAUSEDMSG'), '(exp
 
 // ---- 14. HUMAN → LANE STILL WORKS WHILE PAUSED -----------------------------------------
 // The switch halts agent→agent ONLY. If it also silenced the person, it would be a mute button.
-await p.locator('[data-channel-pill="Code"]').click()
+await pickTarget('code')
 await p.locator('[data-channel-composer]').fill('WHILEPAUSED you there?')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(800)
@@ -260,7 +269,7 @@ console.log('16 chip:', await chipFor('IDLETARGET'), '(expect "posted · queued 
 // Two lanes each answering the other, which is what two cooperative agents DO. If this section
 // can run forever, the feature is unshippable; the loop below is bounded at 12 so a regression
 // fails the driver instead of hanging it.
-await p.locator('[data-channel-pill="Research"]').click()
+await pickTarget('research')
 await p.locator('[data-channel-composer]').fill('RESETCHAIN starting fresh')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(800)
@@ -283,7 +292,7 @@ console.log('17 the LAST one was refused, not delivered:', await sentFor(hopText
 
 // ---- 18. THE PAIR BRAKE — same ordered pair, too fast ----------------------------------
 // A distinct pair (Research → Operator), and reset first so the HOP budget can't be what stops it.
-await p.locator('[data-channel-pill="Research"]').click()
+await pickTarget('research')
 await p.locator('[data-channel-composer]').fill('RESETPAIR go ahead')
 await p.keyboard.press('Meta+Enter')
 await p.waitForTimeout(800)

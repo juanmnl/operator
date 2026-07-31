@@ -390,6 +390,10 @@ for (const [key, label] of THEMES) {
   // ---- 3. Sidebar header — IDENTITY ONLY -----------------------------------------
   // The switcher popover it used to open is gone (project navigation moved to the rail's
   // foot), so what's probed here is the header's own ink: the project name and its path.
+  // RE-INJECT: this section used to rely on §2c's injection surviving, and it stopped doing so
+  // once entering a project could land you somewhere else — a navigation drops `__contrast` and
+  // the whole sweep dies with "not a function", which reads as a product bug. Cheap to repeat.
+  await p.evaluate(PROBE)
   const headerProbes = await p.evaluate(() => [
     window.__contrast('[data-sidebar-project-name]', 'sidebar project name'),
     window.__contrast('[data-sidebar-identity]', 'sidebar version', true),
