@@ -19,8 +19,20 @@ export function PopMenu({ title, items, footer, onClose }: {
       style={{
         position: 'absolute', left: 12, right: 12, bottom: 'calc(100% - 6px)', zIndex: 20,
         marginBottom: 6, maxWidth: 260,
-        borderRadius: 10, border: '1px solid var(--border)', background: 'var(--overlay-medium)',
-        backdropFilter: 'blur(8px)', boxShadow: '0 10px 32px rgba(0,0,0,0.35)', overflow: 'hidden',
+        borderRadius: 10, border: '1px solid var(--border)',
+        // AN OPAQUE SURFACE. This was `--overlay-medium`, which is a translucent TINT token — 12%
+        // white on the dark palettes, 10% black on the light ones — meant for washing something
+        // that already has a background, like a hover state or a selected row. A floating panel
+        // has nothing behind it but the content it covers, so at 10% the feed read straight
+        // through the menu and the items were unreadable, worst on light.
+        // `--bg-surface` is the app's established floating-panel surface; the rail's hover card
+        // and the reading panels already use it, so this matches rather than invents.
+        background: 'var(--bg-surface)',
+        // The blur is GONE, not kept as taste: it was doing the job the background should have
+        // been doing, and it cannot do it — a blur displaces detail, it does not hide contrast, so
+        // dense text stayed legible straight through 8px of it. With an opaque surface it would
+        // now composite against nothing and cost a filter pass for no pixels.
+        boxShadow: '0 10px 32px rgba(0,0,0,0.35)', overflow: 'hidden',
         fontFamily: 'var(--font-body)',
       }}
     >

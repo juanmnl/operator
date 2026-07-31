@@ -292,8 +292,48 @@ for (const [key, label] of THEMES) {
   await p.locator('[data-channel-nav]').first().click()
   await p.waitForTimeout(900)
   await p.evaluate(PROBE)
+  // Panel check FIRST — it opens and closes a menu, which would drop the row hover the copy-action
+  // probe depends on. Hover afterwards.
+  await p.locator('[data-channel-send-target]').click().catch(() => {})
+  await p.waitForTimeout(250)
+
+  // ---- FLOATING PANELS MUST BE OPAQUE ------------------------------------------
+  // A different check from contrast, and one the contrast table structurally cannot make: it
+  // measures ink against the INTENDED surface token, so a panel whose background is a 10%
+  // translucent tint over a wall of text has fine nominal contrast and is unreadable in fact.
+  // That is precisely how PopMenu shipped on `--overlay-medium` (12% white / 10% black) with a
+  // blur pretending to be opacity. Alpha === 1 is cheap and would have caught it.
+  const panelProbes = await p.evaluate(() => {
+    const out = []
+    const check = (sel, label) => {
+      const el = document.querySelector(sel)
+      if (!el) return
+      const bg = getComputedStyle(el).backgroundColor
+      const m = bg.match(/[\d.]+/g) || []
+      const alpha = m.length > 3 ? Number(m[3]) : 1
+      out.push({ label, bg, alpha, opaque: alpha >= 0.999 })
+    }
+    // The PANEL, not the item: an item's own background is transparent by design, so checking it
+    // reports alpha 0 for a perfectly opaque menu.
+    const item = document.querySelector('[data-popmenu-item]')
+    if (item) {
+      const panel = item.closest('div')
+      const bg = getComputedStyle(panel).backgroundColor
+      const m = bg.match(/[\d.]+/g) || []
+      const alpha = m.length > 3 ? Number(m[3]) : 1
+      out.push({ label: 'panel · PopMenu', bg, alpha, opaque: alpha >= 0.999 })
+    }
+    check('[data-usage-popover]', 'panel · plan usage')
+    return out.map((o) => ({ ...o, label: o.label }))
+  })
+  for (const o of panelProbes) {
+    notes.push(`${key} panel opacity — ${o.label} ${o.bg} alpha ${o.alpha}${o.opaque ? '' : '  <-- TRANSLUCENT, a floating panel needs an opaque surface'}`)
+  }
+  await p.keyboard.press('Escape').catch(() => {})
+  await p.waitForTimeout(150)
   await p.locator('[data-channel-row]').first().hover().catch(() => {})
   await p.waitForTimeout(250)
+
   const channelProbes = await p.evaluate(() => {
     // Probe a row whose author RESOLVED to a lane (those carry the accent ink); an unresolved
     // author is drawn in --fg-muted and is not the interesting case.
