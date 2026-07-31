@@ -51,7 +51,7 @@ export function ProjectView({
   const tabs: ProjectTab[] = ['roster', 'moodboard']
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
-      <DragRegion style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
+      <DragRegion data-toolbar-header="project" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
         {/* Leading back-chevron: the way out of the drill-in, present even when the sidebar
             (with its logo) is collapsed. */}
         {onBack && (

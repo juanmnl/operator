@@ -292,7 +292,7 @@ export function ProjectChannel({
         }}>
           {/* Full-bleed. The kill switch rides the far right because it is PANE chrome — a
               titlebar control — not row furniture, so it belongs to the pane's edge. */}
-          <div style={{
+          <div data-toolbar-header="channel" style={{
             boxSizing: 'border-box',
             display: 'flex', alignItems: 'baseline', gap: 8, height: 44, padding: `0 ${INSET}px`,
           }}>
