@@ -4,6 +4,9 @@ import type { CSSProperties, ReactNode, MouseEvent } from 'react'
 interface DragRegionProps {
   style?: CSSProperties
   children?: ReactNode
+  /** Test hook, forwarded to the element. The shell tags its header with this so a driver can
+   *  assert every mode's frame is the same box rather than eyeballing screenshots. */
+  'data-toolbar-header'?: string
 }
 
 // macOS double-click threshold (ms). Native dblclick can't reach us because
@@ -20,7 +23,7 @@ const DOUBLE_CLICK_MS = 400
 //
 // Interactive children (buttons, links, inputs) are left alone so their clicks
 // still work; the press only starts a drag when it lands on bare titlebar.
-export function DragRegion({ style, children }: DragRegionProps) {
+export function DragRegion({ style, children, ...rest }: DragRegionProps) {
   const lastDownRef = useRef(0)
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return // left button only
@@ -40,7 +43,7 @@ export function DragRegion({ style, children }: DragRegionProps) {
   // `drag-region` paints a grab/grabbing cursor (see styles.css) so the strip
   // reads as draggable; interactive children keep their own pointer cursor.
   return (
-    <div className="drag-region" onMouseDown={onMouseDown} style={style}>
+    <div className="drag-region" onMouseDown={onMouseDown} style={style} {...rest}>
       {children}
     </div>
   )

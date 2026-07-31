@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Project, ProjectReply } from '../../../shared/types'
-import { DragRegion } from '../DragRegion'
 import { laneTextColor } from '../../lib/lane-color'
 import { localTime } from '../../lib/local-time'
 import { parseInline } from '../../lib/canvas-md'
 import { PopMenu } from '../PopMenu'
-import { SidebarToggle } from '../SidebarToggle'
 import {
   buildChannelFeed, groupByDay, channelInitials, isContinuation, isActionableChip,
   type ChannelEntry, type ChannelSession, type ChipTone,
@@ -191,9 +189,54 @@ const CLAMP_LINES = 1
  *  re-renders on every `session:update`. Cheap parser, memoised, and still capped. */
 const INLINE_CAP = 8192
 
+/** The channel's header ZONES, for the app shell to place. The channel used to render its own
+ *  44/16 toolbar; the shell owns that box now, so this supplies only the contents.
+ *  Left = where you are (`# channel <project>`). Right = view chrome (the agent↔agent kill
+ *  switch, which changes what the pane DOES rather than what you are looking at). */
+export function channelHeader({ project, chatterPaused, onToggleChatter }: {
+  project: Project
+  chatterPaused?: boolean
+  onToggleChatter?: () => void
+}) {
+  return {
+    left: (
+      <>
+        <span data-channel-hash style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>channel</span>
+        <span style={{
+          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+        }}>{project.name}</span>
+      </>
+    ),
+    right: onToggleChatter ? (
+      <button
+        onClick={onToggleChatter}
+        data-chatter-toggle
+        aria-pressed={!chatterPaused}
+        title={chatterPaused
+          ? 'Agents post to the channel but nothing reaches their sessions. Click to let them deliver.'
+          : 'Agents are delivering messages to each other. Click to halt it.'}
+        style={{
+          flexShrink: 0, cursor: 'pointer', outline: 'none',
+          fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
+          letterSpacing: '0.1em', padding: '3px 8px', borderRadius: 'var(--radius-sm)',
+          // The border stays STATIC and the state rides on the ink: a colour-CHANGING border on a
+          // border-radius element re-rasterizes in WKWebView, and this one changes on a click.
+          background: chatterPaused ? 'transparent' : 'var(--overlay-medium)',
+          border: `1px solid ${SEAM_INK}`,
+          color: chatterPaused ? 'var(--fg-muted)' : WARN_INK,
+        }}
+      >
+        {chatterPaused ? 'Agent↔agent paused' : 'Agent↔agent live'}
+      </button>
+    ) : null,
+  }
+}
+
 export function ProjectChannel({
   project, replies, sessions, onApproveDispatch, onRejectDispatch, onMarkRead, onSend,
-  chatterPaused, onToggleChatter, onToggleSidebar, sidebarCollapsed,
+  chatterPaused, onToggleChatter,
 }: {
   project: Project
   /** Read from chat.db via projectReplies(); [] until a lane emits its first OPERATOR-REPLY. */
@@ -213,10 +256,6 @@ export function ProjectChannel({
   chatterPaused?: boolean
   /** Flip it. Absent = the control is not rendered at all. */
   onToggleChatter?: () => void
-  /** Collapse/expand the sidebar. The channel is its own content mode, so `SessionToolbar` — which
-   *  used to be the only place this lived — is not rendered here. Absent = not shown. */
-  onToggleSidebar?: () => void
-  sidebarCollapsed?: boolean
 }) {
   const feed = useMemo(
     () => buildChannelFeed(project.dispatches, replies, project.roster, sessions),
@@ -336,68 +375,13 @@ export function ProjectChannel({
             paused notice. They used to be two independent stickies at `top: 0` and `top: 45`,
             which works right up until something else needs to pin BELOW them: a hardcoded offset
             can't know whether the notice is showing. Measured instead (see `chromeH`), so the day
-            divider can sit under whatever chrome is actually there. */}
+            divider can sit under whatever chrome is actually there.
+            The toolbar HEADER is no longer in here — the app shell owns it (see AppShell), so this
+            block pins only the paused notice and `chromeH` collapses to 0 when there isn't one.
+            The day divider then sticks at the scroller's own top, which is what it always meant. */}
         <div ref={chromeRef} style={{
           position: 'sticky', top: 0, zIndex: 3, background: 'var(--bg-terminal)',
         }}>
-        <DragRegion style={{
-          background: 'var(--bg-terminal)',
-          borderBottom: '1px solid var(--border)',
-        }}>
-          {/* Full-bleed. The kill switch rides the far right because it is PANE chrome — a
-              titlebar control — not row furniture, so it belongs to the pane's edge. */}
-          <div data-toolbar-header="channel" style={{
-            boxSizing: 'border-box',
-            display: 'flex', alignItems: 'baseline', gap: 8, height: 44, padding: `0 ${INSET}px`,
-          }}>
-            {/* Same control, same position as the other two toolbar headers — see the header
-                alignment pass: all three now share one 44/16 box, so this lands in the same place
-                and switching between them moves nothing. */}
-            {onToggleSidebar && (
-              <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
-            )}
-            <span data-channel-hash style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>channel</span>
-            {/* Shrinks and ellipsizes so the switch beside it can never be pushed out of the
-                header (with no wrap, an unshrinkable name would simply overflow it away). */}
-            <span style={{
-              minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
-            }}>
-              {project.name}
-            </span>
-            {/* The kill switch — and delivery now defaults to LIVE (flipped 2026-07-30). It shipped
-                paused because two agents that can each answer the other ping-pong indefinitely;
-                that risk is now carried by the brakes in lib/agent-delivery, and default-off had
-                its own cost — replies posted to the channel and reached nobody, so the feed filled
-                with POSTED rows while the addressee sat idle. Label states what IS, not what the
-                click does — a control that reads "Pause" while already paused is how you turn
-                chatter on by accident while trying to stop it. */}
-            {onToggleChatter && (
-              <button
-                onClick={onToggleChatter}
-                data-chatter-toggle
-                aria-pressed={!chatterPaused}
-                title={chatterPaused
-                  ? 'Agents post to the channel but nothing reaches their sessions. Click to let them deliver.'
-                  : 'Agents are delivering messages to each other. Click to halt it.'}
-                style={{
-                  marginLeft: 'auto', flexShrink: 0, cursor: 'pointer', outline: 'none',
-                  fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase',
-                  letterSpacing: '0.1em', padding: '3px 8px', borderRadius: 'var(--radius-sm)',
-                  // The border stays STATIC and the state rides on the ink: a colour-CHANGING
-                  // border on a border-radius element re-rasterizes in WKWebView, and this one
-                  // changes on a click.
-                  background: chatterPaused ? 'transparent' : 'var(--overlay-medium)',
-                  border: '1px solid var(--border)',
-                  color: chatterPaused ? 'var(--fg-muted)' : WARN_INK,
-                }}
-              >
-                {chatterPaused ? 'Agent↔agent paused' : 'Agent↔agent live'}
-              </button>
-            )}
-          </div>
-        </DragRegion>
 
         {/* THE PAUSE, WHERE ITS CONSEQUENCE IS. The header pill states the setting; it does not
             say that anything was lost by it, and it is the quietest thing in the header precisely

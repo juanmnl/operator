@@ -25,7 +25,8 @@ import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
-import { ProjectChannel } from '../components/session/ProjectChannel'
+import { ProjectChannel, channelHeader } from '../components/session/ProjectChannel'
+import { AppShell } from '../components/AppShell'
 import { buildChannelFeed, unreadEntries } from '../lib/project-channel'
 import { planChannelSend, validateChannelMessage, type ChannelLane, type ChannelTarget } from '../lib/channel-send'
 import type { ProjectReply } from '../../shared/types'
@@ -3071,26 +3072,35 @@ export function DashboardView() {
             own 44px strip — adding this 40px spacer on top of that double-counted to 84px.
             PageShell's pages (prefs / agents / folderPrefs) have NO strip of their own and
             still need it. */}
-        {contentMode !== 'localTerminal' && contentMode !== 'gallery' && contentMode !== 'project' && (
-          <DragRegion style={{ height: 40, flexShrink: 0 }} />
-        )}
+        {/* The PageShell modes used to get a bare 40px DragRegion here purely to clear the traffic
+            lights, and no sidebar toggle at all — six modes had no way to collapse the sidebar.
+            They sit in AppShell now, whose 44px header does both jobs: it clears the lights AND
+            carries the toggle, in the same box every other mode uses. The channel and Project Home
+            bring their own shell below, and the session keeps its own frame for now — see
+            dev/briefs/one-app-shell-RESULT.md for why it is migrated separately. */}
+        {false && <DragRegion style={{ height: 40, flexShrink: 0 }} />}
 
         {contentMode === 'folderPrefs' && activeFolderPrefs && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <FolderPreferencesView
             projectPath={activeFolderPrefs.projectPath}
             projectName={activeFolderPrefs.projectName}
           />
+          </AppShell>
         )}
 
         {contentMode === 'globalPrefs' && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <FolderPreferencesView
             projectPath=""
             projectName="Global Claude Files"
             globalOnly
           />
+          </AppShell>
         )}
 
         {contentMode === 'agents' && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <AgentsHubView
             projects={projects}
             sessions={allSidebarSessions}
@@ -3103,6 +3113,7 @@ export function DashboardView() {
             onPatchRoleDefault={patchRoleDefault}
             onResetPinnedRoleFields={resetPinnedRoleFields}
           />
+          </AppShell>
         )}
 
         {contentMode === 'project' && activeProjectId && (() => {
@@ -3156,23 +3167,32 @@ export function DashboardView() {
         })()}
 
         {contentMode === 'channel' && activeProject && (
-          <ProjectChannel
-            project={activeProject}
-            replies={channelReplies}
-            sessions={channelSessions}
-            onApproveDispatch={approveDispatch}
-            onRejectDispatch={rejectDispatch}
-            onMarkRead={markChannelRead}
-            onSend={sendChannelMessage}
-            chatterPaused={chatterPaused}
-            onToggleChatter={toggleChatterPaused}
+          <AppShell
+            header={channelHeader({ project: activeProject, chatterPaused, onToggleChatter: toggleChatterPaused })}
             onToggleSidebar={toggleSidebar}
             sidebarCollapsed={sidebarCollapsed}
-          />
+            /* No right panel yet — see dev/briefs/channel-right-panel.md, which fills this slot
+               with project-wide context. No status bar: the channel has no equivalent of the
+               session's Terminal/Review verbs, and an empty-but-present bar is worse than none. */
+          >
+            <ProjectChannel
+              project={activeProject}
+              replies={channelReplies}
+              sessions={channelSessions}
+              onApproveDispatch={approveDispatch}
+              onRejectDispatch={rejectDispatch}
+              onMarkRead={markChannelRead}
+              onSend={sendChannelMessage}
+              chatterPaused={chatterPaused}
+              onToggleChatter={toggleChatterPaused}
+            />
+          </AppShell>
         )}
 
         {contentMode === 'prefs' && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <PrefsView currentTheme={currentTheme} onSelectTheme={handleSelectTheme} onToggleTheme={handleToggleTheme} />
+          </AppShell>
         )}
 
         {contentMode === 'localTerminal' && activeSession && (() => {
