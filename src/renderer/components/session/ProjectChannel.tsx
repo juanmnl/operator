@@ -33,6 +33,17 @@ export type SendResult =
  *  parts of the pane read as one column rather than three things each centred on their own.
  *  This replaced a fixed 720px centred measure: in a 2000px window that parked the whole
  *  conversation in the middle of the field with ~1200px of dead page beside it. */
+/** THE BASE STEP. Every vertical gap in this pane is a multiple of it, so the next change has
+ *  something to be consistent with instead of six numbers tuned independently:
+ *    4  a continuation's own padding, a block's closing edge
+ *    8  inside the composer
+ *   12  a block's opening edge, the feed's top, below the day rule
+ *   16  around the composer
+ *   24  above the day rule, the feed's bottom
+ *  Picked at 4 rather than 8 because the row's internal steps (2–3px) had nowhere to round to on
+ *  an 8px grid without either doubling a continuation's height or collapsing it to zero. */
+const STEP = 4
+
 const INSET = 16
 
 /** The composer's own hairlines, softened the same way and for the same reason as the rail's:
@@ -421,7 +432,11 @@ export function ProjectChannel({
 
         {/* No horizontal padding here: the ROWS carry it, which is what lets their hover
             background and hit area reach the pane's edges while their content stays inset. */}
-        <div style={{ padding: '14px 0 24px', boxSizing: 'border-box' }}>
+        {/* Bottom is 3 steps, not 6. It used to be 24 because the composer gave itself almost
+            nothing (8/10) and the feed was compensating; now that the composer carries 16 of its
+            own above, the two stacked to 40px of dead space at the scroll end. 12 + 16 = 28 is
+            still more air than anywhere else in the feed, and it buys the density back. */}
+        <div style={{ padding: `${STEP * 3}px 0 ${STEP * 3}px`, boxSizing: 'border-box' }}>
           {feed.length === 0 ? (
             <p data-channel-empty style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--fg-muted)', margin: 0, padding: `0 ${INSET}px`, maxWidth: PROSE + INSET * 2 }}>
               Nothing here yet. This is where dispatches between your agents — and any
@@ -442,8 +457,9 @@ export function ProjectChannel({
               <div style={{
                 position: 'sticky', top: chromeH, zIndex: 1,
                 background: 'var(--bg-terminal)',
-                display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 12px',
-                padding: `6px ${INSET}px`,
+                display: 'flex', alignItems: 'center', gap: 10,
+                margin: `${STEP * 6}px 0 ${STEP * 3}px`,
+                padding: `${STEP * 2}px ${INSET}px`,
               }}>
                 <span data-channel-day style={{
                   flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
@@ -630,7 +646,12 @@ function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onRejec
         // padding is what insets the content. That split is the design — the row is full width,
         // the paragraph is not.
         display: 'flex', justifyContent: 'flex-start',
-        padding: continuation ? `3px ${INSET}px` : `10px ${INSET}px 3px`,
+        // On the 4px step: a block starts with 12 above and closes with 4, a continuation sits
+        // at 4/4. The air goes BETWEEN blocks rather than being spread evenly over every row —
+        // that is what makes a run of one author read as one thing.
+        padding: continuation
+          ? `${STEP}px ${INSET}px`
+          : `${STEP * 3}px ${INSET}px ${STEP}px`,
         background: hover ? 'var(--overlay-subtle)' : 'transparent',
         // No transition on the background: at this row height a fade reads as lag, and the feed
         // is live enough already.
@@ -882,7 +903,11 @@ function Composer({ project, onSend }: {
     <div style={{ flexShrink: 0, borderTop: `1px solid ${SEAM_INK}`, background: 'var(--bg-terminal)' }}>
       {/* Capped and left-anchored, on the same INSET as the header and the rows. A full-bleed
           textarea at 2000px is as unreadable to write into as it is to read. */}
-      <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `8px ${INSET}px 10px`, boxSizing: 'border-box' }}>
+      {/* 16 above and 16 below — four steps each, and equal on purpose. This was 8/10, for a
+          surface wedged between a scrolling wall of text and the window edge: the feed gave itself
+          more room at its own bottom (24) than the composer got on either side, which is why it
+          read as jammed in. */}
+      <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `${STEP * 4}px ${INSET}px ${STEP * 4}px`, boxSizing: 'border-box' }}>
         {/* ONE SURFACE. The input and its actions used to be two separately bordered boxes sitting
             beside each other; every reference app puts them in one container, and two borders read
             as two controls that happen to be adjacent rather than one place you write.
@@ -931,7 +956,7 @@ function Composer({ project, onSend }: {
               : 'Sending arrives in the next step — this channel is read-only for now.'}
             style={{
               display: 'block', width: '100%', boxSizing: 'border-box', resize: 'none',
-              padding: '7px 10px 2px', border: 'none', background: 'transparent', outline: 'none',
+              padding: `${STEP * 2}px ${STEP * 3}px ${STEP}px`, border: 'none', background: 'transparent', outline: 'none',
               color: live ? 'var(--fg)' : 'var(--fg-muted)',
               fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.5,
               cursor: live ? 'text' : 'not-allowed',
@@ -944,7 +969,7 @@ function Composer({ project, onSend }: {
           {/* Actions, INSIDE the container. */}
           {/* Tightened: the resting box carried noticeable dead height above and below the action
               row, which is what read as slack on a surface whose usual content is one line. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px 6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: `0 ${STEP * 2}px ${STEP * 2}px` }}>
             {/* ADDRESSING, in one control instead of a permanent seven-pill bank. */}
             <button
               data-channel-send-target
