@@ -292,6 +292,8 @@ for (const [key, label] of THEMES) {
   await p.locator('[data-channel-nav]').first().click()
   await p.waitForTimeout(900)
   await p.evaluate(PROBE)
+  await p.locator('[data-channel-row]').first().hover().catch(() => {})
+  await p.waitForTimeout(250)
   const channelProbes = await p.evaluate(() => {
     // Probe a row whose author RESOLVED to a lane (those carry the accent ink); an unresolved
     // author is drawn in --fg-muted and is not the interesting case.
@@ -308,6 +310,13 @@ for (const [key, label] of THEMES) {
       window.__contrast('[data-probe-channel] [data-channel-chip]', 'channel chip · delivered', true),
       window.__contrast('[data-probe-held] [data-channel-chip]', 'channel chip · held', true),
       window.__contrast('[data-channel-composer-note]', 'channel composer note', true),
+      // The feed's first interactive furniture. It is hidden by OPACITY at rest, and __contrast
+      // folds effective opacity into the sample — so measured cold it reads a flat 1.00:1, which
+      // is the probe seeing fg == bg, not a contrast failure. It is hovered by the driver just
+      // above, i.e. measured in the state a reader actually sees. Forcing `style.opacity` here
+      // instead does NOT work: this feed re-renders on every session:update and React puts the
+      // prop straight back.
+      window.__contrast('[data-channel-copy]', 'channel copy action', true),
       // The agent↔agent kill switch, in BOTH states: paused is --fg-muted, live is
       // --color-warning at 9px — a token that had never been measured at meta size.
       window.__contrast('[data-chatter-toggle]', 'chatter switch · paused', true),
