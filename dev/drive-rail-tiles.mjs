@@ -173,6 +173,57 @@ console.log('1b top matches the sides:', air && air.top === air.left && air.left
   `(expect true — ${air?.ornamentPx}px of ornament against 8px of box clearance on every side)`)
 
 
+// ---- 1c. THE OPTICAL AXIS ----------------------------------------------------------------
+// The invariant, and the one that two earlier passes got wrong: A TILE'S PAINTED CENTRE IS
+// INDEPENDENT OF ITS RING AND PIP STATE. Both previous fixes reasoned about clearances per tile
+// and never compared tiles to each other, so a column whose items sat on different centre lines
+// measured "correct" twice over.
+//
+// Measured on the PAINTED bounds, which is the part that kept going wrong: `getBoundingClientRect`
+// on the tile excludes its box-shadow ring, and the pip's SPAN reserves more than its dots cover,
+// so both the obvious handles lie about where the ink actually is. Ring comes from the shadow
+// spread; pip comes from its svg SHAPES.
+const paintedCentres = async () => p.evaluate(() => {
+  const rail = document.querySelector('[data-rail-gallery]').closest('div[style*="44px"]').getBoundingClientRect()
+  const ringOf = (t) => {
+    const s = getComputedStyle(t).boxShadow
+    if (s === 'none') return 0
+    const m = s.match(/(\d+(?:\.\d+)?)px\s*$/)
+    return m ? Number(m[1]) : 0
+  }
+  return [...document.querySelectorAll('[data-rail-tile]')].map((t) => {
+    const r = t.getBoundingClientRect(), ring = ringOf(t)
+    const span = t.querySelector('[data-rail-pip]')
+    let pip = null
+    if (span) {
+      const rs = [...span.querySelectorAll('circle,rect,path')].map((x) => x.getBoundingClientRect())
+      if (rs.length) pip = { left: Math.min(...rs.map((x) => x.left)), right: Math.max(...rs.map((x) => x.right)) }
+    }
+    const L = Math.min(r.left - ring, pip ? pip.left : Infinity)
+    const R = Math.max(r.right + ring, pip ? pip.right : -Infinity)
+    return {
+      state: (ring ? 'ringed' : 'plain') + (pip ? '+pipped' : ''),
+      centreX: +(((L + R) / 2) - rail.left).toFixed(2),
+      overhangR: pip ? +(pip.right - r.right).toFixed(2) : null,
+    }
+  })
+})
+// Sample both ringed states by moving which project is current — the user's screenshot is a
+// pipped tile stacked directly above a ringed+pipped one.
+const seen = new Map()
+for (const idx of [0, 1, 2]) {
+  if (idx > 0) { await p.locator('[data-rail-tile]').nth(idx).click(); await p.waitForTimeout(900) }
+  for (const m of await paintedCentres()) if (!seen.has(m.state)) seen.set(m.state, m)
+}
+const states = [...seen.values()]
+const centres = states.map((m) => m.centreX)
+console.log('\n1c painted centre x, by ornament state:')
+for (const m of states) console.log(`    ${m.state.padEnd(15)} centre ${m.centreX}   pip overhang ${m.overhangR ?? '—'}`)
+console.log('1c EVERY state shares one axis:', new Set(centres).size === 1,
+  `(expect true — states seen: ${states.length})`)
+console.log('1c …and the pip never paints past the box:',
+  states.every((m) => m.overhangR === null || m.overhangR <= 0), '(expect true)')
+
 // ---- 2. Reorder ---------------------------------------------------------------------------
 const order = () => p.evaluate(() => Array.from(document.querySelectorAll('[data-rail-tile]')).map((t) => t.getAttribute('data-rail-tile')))
 const before = await order()
