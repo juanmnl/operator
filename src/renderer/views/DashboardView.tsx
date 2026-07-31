@@ -8,6 +8,7 @@ import {
   migrateSeededWorktreeDefaults, clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
+import { landingFor } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
@@ -577,12 +578,58 @@ export function DashboardView() {
   // notes, or to check what's in there before deciding — is not a decision to un-shelve it.
   // OPEN ≠ REVIVE, LAUNCH = REVIVE (upsertProject's auto-lift); that asymmetry is the whole
   // ergonomics of the shelf, so don't "fix" this by adding a restore here.
+  /** ENTER a project — from the gallery, the rail tile, ⌘K, the Agents hub or a folder open.
+   *
+   *  It used to land on the roster board, always. That was right when a project arrived with six
+   *  seeded lanes and the board was the only thing that explained them; the roster is now one lane
+   *  by default, so the board became a single row with nothing to decide. Where it lands now is
+   *  `landingFor` (lib/project-landing): several lanes → the channel, exactly one → that agent,
+   *  none → the board, which is the only place to add one.
+   *
+   *  RE-ENTERING is re-applied, not restored. Coming back to a project you've been in before puts
+   *  you where the rule says, not where you last were — predictable beats clever, and "restore
+   *  where I was" is a whole separate feature with its own persistence. The one thing preserved is
+   *  the existing instinct on line 583: opening the project you are ALREADY in does not yank you
+   *  off what you are looking at. Only a genuine change of project re-lands.
+   *
+   *  It does not launch anything. Landing somewhere is navigation; starting an agent is a decision
+   *  that costs a process, a worktree and a dev port. */
   const handleOpenProject = useCallback((projectId: string) => {
-    setChannelActive(false) // entering a project lands on its home, not on whatever was open
+    setPrefsViewActive(false)
+    setAgentsViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
     setActiveProjectId((prev) => {
-      if (prev !== projectId) setProjectTab('roster')
+      // Already here — leave the view alone. The sidebar header and the toolbar's back chevron
+      // want the project HOME and go through handleOpenProjectHome instead, so this branch is
+      // only ever a re-select of the current project.
+      if (prev === projectId) return projectId
+      const landing = landingFor(projectsRef.current.find((p) => p.id === projectId), terminalsRef.current)
+      setProjectTab('roster')
+      setChannelActive(landing.kind === 'channel')
+      if (landing.kind === 'session') {
+        // Focus its pty. `focusTerminal` also stamps the scope, which is the same rule the
+        // backstop enforces — landing on a session must never desync `activeProjectId`.
+        setActiveTerminalId(landing.terminalId)
+        setActiveSessionId(sessionsRef.current.find((x) => x.terminalId === landing.terminalId)?.id ?? `local-${landing.terminalId}`)
+      } else {
+        setActiveSessionId(null)
+        setActiveTerminalId(null)
+      }
       return projectId
     })
+  }, [])
+
+  /** The project HOME — the roster board — regardless of where the landing rule would put you.
+   *
+   *  A separate verb on purpose. The sidebar's project header and the toolbar's `‹ name` chevron
+   *  are requests to go to the board; routing them through `handleOpenProject` would make them
+   *  no-ops now that re-selecting the current project deliberately leaves the view alone. Two
+   *  intents that were sharing one function, which is how the "don't yank me" rule and the "take
+   *  me home" button would have cancelled each other out. */
+  const handleOpenProjectHome = useCallback(() => {
+    setChannelActive(false)
+    setProjectTab('roster')
     setPrefsViewActive(false)
     setAgentsViewActive(false)
     setGlobalPrefsActive(false)
@@ -2970,7 +3017,7 @@ export function DashboardView() {
         onOpenChannel={() => { setChannelActive(true); setActiveSessionId(null); setActiveTerminalId(null) }}
         channelActive={contentMode === 'channel'}
         channelUnread={channelUnread}
-        onOpenProjectHome={() => activeProjectId && handleOpenProject(activeProjectId)}
+        onOpenProjectHome={handleOpenProjectHome}
         projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
         customNames={customNames}
@@ -3119,7 +3166,7 @@ export function DashboardView() {
               key={activeSession.workingDirectory}
               projectPath={activeSession.workingDirectory}
               projectName={activeSession.projectName}
-              onOpenProjectHome={activeProjectId ? () => handleOpenProject(activeProjectId) : undefined}
+              onOpenProjectHome={activeProjectId ? handleOpenProjectHome : undefined}
               terminalId={activeTerminalId}
               detectedDevPort={detectedDevPort}
               effortLevel={tab?.effortLevel}
