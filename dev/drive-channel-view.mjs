@@ -251,7 +251,10 @@ for (const w of [1000, 1440, 2100]) {
     const row = document.querySelector('[data-channel-row]')
     const body = document.querySelector('[data-channel-text]')
     const hdr = document.querySelector('[data-channel-hash]')
-    const comp = document.querySelector('[data-channel-composer]')
+    // The composer's own outer edge. It used to BE the textarea; there is a container around it
+    // now, and the shared-edge invariant is about where the composer starts, not where its text
+    // does (which sits one border + one padding further in, as it did before).
+    const comp = document.querySelector('[data-channel-composer-surface]')
     const cs = getComputedStyle(body)
     const c = document.createElement('canvas').getContext('2d')
     c.font = `${cs.fontSize} ${cs.fontFamily}`
@@ -318,16 +321,26 @@ const reflowBefore = await p.evaluate(async () => {
   await new Promise((r) => requestAnimationFrame(r))
   const rows = [...document.querySelectorAll('[data-channel-row]')]
   const anchor = rows.find((r) => r.getBoundingClientRect().top > sc.getBoundingClientRect().top)
-  return { id: anchor?.getAttribute('data-channel-row') ?? null, top: anchor ? Math.round(anchor.getBoundingClientRect().top) : null }
+  // Offset from the SCROLLER, not the viewport: the composer's height changes with width, which
+  // moves the scroller's own box — a viewport-relative reading blames the anchor for that.
+  return { id: anchor?.getAttribute('data-channel-row') ?? null,
+           top: anchor ? Math.round(anchor.getBoundingClientRect().top - sc.getBoundingClientRect().top) : null,
+           scrollTop: Math.round(sc.scrollTop), scH: Math.round(sc.getBoundingClientRect().height),
+           scrollH: sc.scrollHeight }
 })
 await p.setViewportSize({ width: 900, height: 900 })
 await p.waitForTimeout(500)
 const reflowAfter = await p.evaluate((id) => {
+  const sc = document.querySelector('.channel-scroll')
   const el = document.querySelector(`[data-channel-row="${id}"]`)
-  return el ? Math.round(el.getBoundingClientRect().top) : null
+  return { off: el ? Math.round(el.getBoundingClientRect().top - sc.getBoundingClientRect().top) : null,
+           scrollTop: Math.round(sc.scrollTop), scH: Math.round(sc.getBoundingClientRect().height),
+           scrollH: sc.scrollHeight }
 }, reflowBefore.id)
+console.log('4g before:', JSON.stringify(reflowBefore))
+console.log('4g after :', JSON.stringify(reflowAfter))
 console.log('4g on a 1400 -> 900 reflow, the row you were reading moved:',
-  reflowAfter === null ? 'n/a' : `${reflowAfter - reflowBefore.top}px`)
+  reflowAfter?.off == null ? 'n/a' : `${reflowAfter.off - reflowBefore.top}px`)
 
 // ---- 4h. Narrow pane — does the avatar column still earn its width? ---------------------
 await p.setViewportSize({ width: 620, height: 900 })
