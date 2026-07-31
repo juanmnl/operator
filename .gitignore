@@ -1,4 +1,8 @@
-node_modules/
+# No trailing slash, deliberately. `node_modules/` matches a DIRECTORY only, so a worktree that
+# symlinks its deps (`ln -s .../node_modules node_modules`) leaves an entry git does NOT ignore
+# and `git add -A` will happily commit it — which is how an absolute, machine-specific symlink
+# into one developer's home directory reached main and then fought the real install on checkout.
+node_modules
 out/
 dist/
 release/
