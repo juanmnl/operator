@@ -234,7 +234,7 @@ export function ProjectRail({
         <RailFootButton
           attr="data-rail-agents"
           label="Agents"
-          hint="every agent across your projects"
+          hint="what is running across your projects"
           active={agentsActive}
           onClick={onOpenAgents}
         >

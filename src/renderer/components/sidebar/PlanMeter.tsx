@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDismiss } from '../../lib/use-dismiss'
 import {
   hasCurrentData, freshnessOf, windowEnded, needsRevalidate, limitRows, glanceLine, updatedAgo,
   ringDash, toneFor, TONE_FILL, readable,
@@ -46,21 +47,12 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
   const btnRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
 
-  // Popover, not dialog: Escape closes and focus goes back to the button; an outside click closes.
-  // No focus trap, no full-screen overlay — this is a readout, not a decision.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); btnRef.current?.focus() }
-    }
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!popRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false)
-    }
-    document.addEventListener('keydown', onKey, true)
-    document.addEventListener('mousedown', onDown)
-    return () => { document.removeEventListener('keydown', onKey, true); document.removeEventListener('mousedown', onDown) }
-  }, [open])
+  // Popover, not dialog: no focus trap, no full-screen overlay — this is a readout, not a
+  // decision. The dismissal itself is the shared contract (lib/use-dismiss): this file had its own
+  // Escape + outside-mousedown pair, PopMenu was about to grow a third, and the two would have
+  // drifted. The button carries the trigger attribute so a click on it toggles rather than
+  // closing-then-reopening.
+  useDismiss(open, { panelRef: popRef, onDismiss: () => setOpen(false) })
 
   // STALE IS NOT CURRENT: past `STALE_MS` with no successful read the meter stops asserting a
   // percentage and degrades to the same "we don't know" it draws for an account with no limits.
@@ -94,6 +86,7 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
       <button
         ref={btnRef}
         data-rail-usage
+        data-popmenu-trigger
         data-usage-pct={session ?? ''}
         data-usage-stale={stale ? 'true' : undefined}
         data-usage-freshness={fresh}

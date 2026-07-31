@@ -29,6 +29,26 @@ export type SendResult =
 // (ProjectRail's tiles); circles are the lane/session vocabulary (StatusWave orbs, SessionItem).
 // Blurring the two is how a project starts reading as an agent.
 
+// WHERE CONTROLS LIVE — four zones, because until now each control was placed on its own and they
+// were all defensible individually, which is how you end up with no rule at all.
+//
+//   1. PANE CHROME — acts on the pane as a whole, or on the app's relationship to it. Lives in the
+//      toolbar header, RIGHT side. The agent↔agent kill switch is this: it changes what the pane
+//      does, not what you are looking at.
+//   2. VIEW CHROME — changes how you see, not what you see. Toolbar header, LEFT, leading. The
+//      sidebar toggle is this, and it is why it sits before the title in all three toolbars.
+//   3. PER-MESSAGE ACTIONS — belong to one row. Two kinds, and the split matters:
+//        • incidental (copy) — revealed on hover, at the row content's right edge. Hidden at rest
+//          because a permanent affordance on every row is noise.
+//        • decisions (Approve & send / Decline) — PERSISTENT, in the row body under the message.
+//          A decision you must make cannot be hidden behind a hover, and it needs the message it
+//          decides on adjacent to it.
+//   4. COMPOSER ACTIONS — inside the composer box, on its own row. The target prefix and Send.
+//      Never outside the box: the box is the surface they act on.
+//
+// The audit that produced this found today's placements already correct — the rule is written down
+// so the NEXT control has somewhere to go, not because something had to move.
+
 /** THE SHARED LEFT EDGE. Header, every feed row and the composer all start here, so the three
  *  parts of the pane read as one column rather than three things each centred on their own.
  *  This replaced a fixed 720px centred measure: in a 2000px window that parked the whole
@@ -51,24 +71,25 @@ const INSET = 16
  *  toward transparent so the token stays the source. */
 const SEAM_INK = 'color-mix(in srgb, var(--border) 70%, transparent)'
 
-/** …but NOT for prose. The shell wants the pane's full width — the header, the composer and the
- *  row all use it. The BODY does not: a full-bleed row at 1800px with unconstrained text is ~300
- *  characters a line.
+/** …but NOT for prose. The shell wants the pane's full width; the BODY does not.
  *
- *  A CEILING, not a fixed width. The body grows with the pane and stops at 900 (`max-width` plus
- *  the row's flex is the clamp — there is no lower bound to enforce beyond what the pane gives).
+ *  THIS CONSTANT HAS OSCILLATED — 470 → 900 → 470 — and the history is written here because a
+ *  number that has moved twice will move again unless the reasoning travels with it:
  *
- *  This was 470 (~79 chars) and that was too tight. The 60–80 guideline it came from is calibrated
- *  for SUSTAINED prose — long documents read for minutes, where the eye hunts for each next line's
- *  start. This feed is scanned in bursts: entries are a few lines, folded at four, and the eye
- *  returns to a known left edge constantly. Different reading task, different measure.
- *  The content argues for it too. These bodies are path-heavy —
- *  `dev/briefs/channel-timestamps-utc-RESULT.md` is 43 characters on its own — and `parseInline`
- *  renders those spans as atomic chips, so breaking one mid-token is worse than a long line. At
- *  470 they wrapped constantly.
- *  Sized by MEASURING, which this file has now caught twice: 520px "looked right" arithmetically
- *  and came out at 87 chars. */
-const PROSE = 900
+ *    470  (~79 chars)  the original reading measure, from the 60–80 guideline.
+ *    900  (~151 chars) widened after "why can't the text be wider?". The reasoning was that this
+ *                      feed is scanned in bursts rather than read as sustained prose, and that its
+ *                      path-heavy content wrapped constantly at 470. Both observations were true.
+ *    470  again.       The DIAGNOSIS was wrong. The complaint was never that the lines were too
+ *                      short — it was that the space beside them was empty, and widening the text
+ *                      was the wrong way to fill it. The reference layout resolves it: a narrow
+ *                      conversation column, and the recovered width becomes a SECOND PANE rather
+ *                      than longer lines.
+ *
+ *  So: if this is ever widened again, the question to ask first is "what should occupy the space
+ *  beside the column?" — not "how wide should the column be?". Longer lines are what you reach for
+ *  when there is nothing else to put there. */
+const PROSE = 470
 
 /** The avatar column: the circle and the gap before the text. Named because three things depend
  *  on it — the row, the continuation gutter that keeps a run's bodies on one edge, and ROW_MAX. */
@@ -148,15 +169,21 @@ const TONE: Record<ChipTone, string> = {
   muted: 'var(--fg-muted)',
 }
 
-/** How many lines of a body show before it folds.
+/** THE DIGEST. Every entry is ONE line until you open it.
  *
- *  Sized against the real store, not by eye. At the PROSE measure a line is ~80 characters, and
- *  `~/.operator/projects.json` has a median dispatch task of 520 characters and a p90 of 1165 —
- *  roughly 6.5 and 15 lines. A 6-line clamp would leave the MEDIAN entry all but unfolded and
- *  catch only the tail, which is most of the wall still standing. Four folds the median, keeps
- *  the ask ("Read dev/briefs/X.md and do it…") which is the part a skim actually reads, and puts
- *  the rest one click away. */
-const CLAMP_LINES = 4
+ *  Not a summary — a FOLD. The line shown is the message's own first line, verbatim, clipped with
+ *  an ellipsis; nothing is generated, re-written, or discarded. Expanding reveals the rest in
+ *  place, so the row is always the whole message, just folded.
+ *
+ *  This replaces a 4-line clamp, and the re-measured store is why: a dispatch's median body is
+ *  173 characters — at the 470px measure that is 2–3 lines — so a 4-line fold was doing almost
+ *  nothing to the asks while the REPLIES (500–1300 chars) were the blocks. The feed is bimodal and
+ *  every earlier pass treated it as uniform. One line treats both the same way and lets the reader
+ *  choose which to open.
+ *
+ *  Expansion is per-entry and STICKY: nothing auto-collapses when a message arrives, and opening
+ *  one does not close another. Surprise collapsing is worse than a long page. */
+const CLAMP_LINES = 1
 
 /** Past this, the body renders as plain text with no inline pass. Bodies are capped elsewhere,
  *  so this is a backstop rather than a live limit — but the reading panels' freeze
@@ -921,8 +948,16 @@ function Composer({ project, onSend }: {
           style={{
             position: 'relative',
             border: `1px solid ${SEAM_INK}`, borderRadius: 12,
-            background: live ? 'var(--overlay-subtle)' : 'transparent',
-            boxShadow: focusWithin ? 'inset 0 0 0 1px var(--accent)' : 'none',
+            // NO GREY FILL. `--overlay-subtle` over a light page is a grey box, which is the visual
+            // language of DISABLED — and this composer has a real disabled state, so the two read
+            // alike. Resting is now the border alone; disabled drops the fill it never had and
+            // recedes by ink; focused adds the ring. Three distinguishable things.
+            background: 'transparent',
+            // ACCENT_INK, not raw `var(--accent)`. This file already defines that mix precisely
+            // because raw accent is wrong on the light palettes — a focused field was reading as an
+            // error state. Still an inset box-shadow: a colour-changing border on a radiused
+            // element is the WKWebView re-rasterization trap, and this element does both.
+            boxShadow: focusWithin ? `inset 0 0 0 1px ${ACCENT_INK}` : 'none',
             transition: 'box-shadow 120ms ease',
           }}
         >
@@ -940,80 +975,62 @@ function Composer({ project, onSend }: {
             />
           )}
 
-          <textarea
-            ref={taRef}
-            data-channel-composer
-            disabled={!live}
-            rows={1}
-            value={draft}
-            onChange={(e) => { setDraft(e.target.value); setNotice(null); grow() }}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send() }
-            }}
-            /* The chord is stated ONCE, on the button. It used to be here as well as there. */
-            placeholder={live
-              ? `Message ${target === 'everyone' ? 'every live lane' : (roster.find((r) => r.id === target)?.name ?? target)}…`
-              : 'Sending arrives in the next step — this channel is read-only for now.'}
-            style={{
-              display: 'block', width: '100%', boxSizing: 'border-box', resize: 'none',
-              padding: `${STEP * 2}px ${STEP * 3}px ${STEP}px`, border: 'none', background: 'transparent', outline: 'none',
-              color: live ? 'var(--fg)' : 'var(--fg-muted)',
-              fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.5,
-              cursor: live ? 'text' : 'not-allowed',
-              /* One row at rest, grown by `grow()` up to a ceiling. It was a fixed two, on a
-                 surface whose typical message is one line. */
-              maxHeight: COMPOSER_MAX_H, overflowY: 'auto',
-            }}
-          />
-
-          {/* Actions, INSIDE the container. */}
-          {/* Tightened: the resting box carried noticeable dead height above and below the action
-              row, which is what read as slack on a surface whose usual content is one line. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: `0 ${STEP * 2}px ${STEP * 2}px` }}>
-            {/* ADDRESSING, in one control instead of a permanent seven-pill bank. */}
+          {/* ONE ROW. The target reads as a PREFIX — you are writing *to everyone* — rather than
+              as a separate labelled control below the input, which removes a control rather than
+              relabelling one. The row grows only when a draft needs a second line.
+              `alignItems: flex-end` so the prefix and the actions stay on the baseline of the LAST
+              line as the textarea grows, instead of drifting to the middle of a tall box. */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, padding: `${STEP * 2}px ${STEP * 2}px` }}>
             <button
               data-channel-send-target
+              data-popmenu-trigger
               disabled={!live}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((o) => !o)}
               title="Choose who this goes to"
               style={{
-                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
-                padding: '2px 7px', borderRadius: 'var(--radius-sm)', border: 'none',
-                /* Faint surface tint plus normal ink — never an accent fill. */
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 5px', marginBottom: 1, borderRadius: 'var(--radius-sm)', border: 'none',
                 background: menuOpen ? 'var(--overlay-medium)' : 'transparent',
-                color: live ? 'var(--fg)' : 'var(--fg-muted)',
-                boxShadow: targetFocus ? 'inset 0 0 0 1px var(--accent)' : 'none',
+                color: live ? 'var(--fg-muted)' : 'var(--fg-muted)',
+                boxShadow: targetFocus ? `inset 0 0 0 1px ${ACCENT_INK}` : 'none',
                 cursor: live ? 'pointer' : 'not-allowed', outline: 'none',
-                fontFamily: 'var(--font-mono)', fontSize: 9.5,
+                fontFamily: 'var(--font-mono)', fontSize: 9.5, whiteSpace: 'nowrap',
               }}
               onFocus={() => setTargetFocus(true)}
               onBlur={() => setTargetFocus(false)}
               onMouseEnter={(e) => { if (live && !menuOpen) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
               onMouseLeave={(e) => { if (!menuOpen) e.currentTarget.style.background = 'transparent' }}
             >
-              <span style={{ color: 'var(--fg-muted)' }}>to</span>
-              {targetLabel}
-              <span aria-hidden style={{ color: 'var(--fg-muted)' }}>▾</span>
+              to <span style={{ color: 'var(--fg)' }}>{targetLabel}</span>
+              <span aria-hidden>▾</span>
             </button>
 
-            {/* LEFT-ANCHORED, with no spacer pushing the actions apart. Send used to sit at the
-                container's far right — 835px from the target control once the container matched
-                ROW_MAX — which is the orphaned-action defect the feed already fixed twice, one
-                level in.
-                `fit-content` was the fix there, but it cannot be the fix here: a composer that
-                hugs its content would collapse to nothing when empty, and the input has to be a
-                stable target. So the cluster moves to the content instead of the content moving to
-                the cluster.
-                Bottom-LEFT is not the convention (Slack and Linear put submit bottom-right), and
-                that convention assumes a container whose right edge means something. Here it does
-                not: rows hug their own text, so a row's content ends wherever its words do — 675px
-                for the row I measured against a 1016px composer. There is no shared right edge to
-                anchor to, and every other thing in this pane is anchored left. */}
+            <textarea
+              ref={taRef}
+              data-channel-composer
+              disabled={!live}
+              rows={1}
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setNotice(null); grow() }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send() }
+              }}
+              placeholder={live ? 'Message…' : 'Sending arrives in the next step — this channel is read-only for now.'}
+              style={{
+                flex: 1, minWidth: 0, boxSizing: 'border-box', resize: 'none',
+                padding: '1px 0 1px', border: 'none', background: 'transparent', outline: 'none',
+                color: live ? 'var(--fg)' : 'var(--fg-muted)',
+                fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.5,
+                cursor: live ? 'text' : 'not-allowed',
+                maxHeight: COMPOSER_MAX_H, overflowY: 'auto',
+              }}
+            />
+
             {showCount && (
               <span data-channel-count style={{
-                flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
+                flexShrink: 0, marginBottom: 1, fontFamily: 'var(--font-mono)', fontSize: 9,
                 fontVariantNumeric: 'tabular-nums',
                 color: overCap ? 'var(--color-error, #f85149)' : 'var(--fg-muted)',
               }}>
@@ -1021,27 +1038,33 @@ function Composer({ project, onSend }: {
               </span>
             )}
 
-            <button
-              data-channel-send
-              disabled={!live || !check.ok}
-              onClick={send}
-              onFocus={() => setSendFocus(true)}
-              onBlur={() => setSendFocus(false)}
-              title={overCap ? check.error : 'Send to the selected target (⌘↵)'}
-              style={{
-                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
-                padding: '3px 10px', borderRadius: 'var(--radius-sm)',
-                border: `1px solid ${SEAM_INK}`,
-                background: live && check.ok ? 'var(--btn-bg)' : 'transparent',
-                color: live && check.ok ? 'var(--fg)' : 'var(--fg-muted)',
-                boxShadow: sendFocus ? 'inset 0 0 0 1px var(--accent)' : 'none',
-                cursor: live && check.ok ? 'pointer' : 'not-allowed', outline: 'none',
-                fontFamily: 'var(--font-body)', fontSize: 11,
-              }}
-            >
-              Send
-              <span aria-hidden style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)' }}>⌘↵</span>
-            </button>
+            {/* THE CHORD STANDS IN FOR THE BUTTON until there is something to send. An empty
+                composer needs no Send affordance — it would be permanently disabled chrome — but it
+                does need to teach the gesture. */}
+            {draft.trim() ? (
+              <button
+                data-channel-send
+                disabled={!live || !check.ok}
+                onClick={send}
+                onFocus={() => setSendFocus(true)}
+                onBlur={() => setSendFocus(false)}
+                title={overCap ? check.error : 'Send to the selected target (⌘↵)'}
+                style={{
+                  flexShrink: 0, marginBottom: 1, padding: '2px 9px',
+                  borderRadius: 'var(--radius-sm)', border: `1px solid ${SEAM_INK}`,
+                  background: live && check.ok ? 'var(--btn-bg)' : 'transparent',
+                  color: live && check.ok ? 'var(--fg)' : 'var(--fg-muted)',
+                  boxShadow: sendFocus ? `inset 0 0 0 1px ${ACCENT_INK}` : 'none',
+                  cursor: live && check.ok ? 'pointer' : 'not-allowed', outline: 'none',
+                  fontFamily: 'var(--font-body)', fontSize: 11,
+                }}
+              >Send</button>
+            ) : (
+              <span data-channel-chord aria-hidden style={{
+                flexShrink: 0, marginBottom: 3, fontFamily: 'var(--font-mono)', fontSize: 9,
+                color: 'var(--fg-muted)',
+              }}>⌘↵</span>
+            )}
           </div>
         </div>
         <p data-channel-composer-note style={{ margin: '6px 0 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--fg-muted)' }}>

@@ -60,13 +60,22 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
     let queuedLanes = 0
     for (const p of projects) {
       const active = activeByProject.get(p.id) ?? []
-      const passive = (p.roster ?? []).filter((r) => !liveKeys.has(`${p.id}:${r.id}`))
       const counts = queuedCountsByRole(p.tasks)
       for (const r of p.roster ?? []) {
         const n = counts[r.id] ?? 0
         if (n > 0) { queuedTotal += n; queuedLanes += 1 }
       }
-      if (active.length || passive.length) groups.push({ project: p, active, passive, queued: counts })
+      // ACTIVE ONLY. `passive` used to be every lane not currently live — the bench — which made
+      // this a second rendering of the roster board, 40px from the first. The team you HAVE lives
+      // there and in the sidebar; this surface is the fleet that is WORKING.
+      //
+      // With one exception, and it is the useful one: a lane that is idle but holds QUEUED tasks
+      // is something waiting to happen, and "nothing is running but four lanes are backed up" is
+      // exactly the state a fleet view exists to surface. So an idle lane appears here if and only
+      // if work is queued against it.
+      const waiting = (p.roster ?? []).filter((r) => !liveKeys.has(`${p.id}:${r.id}`) && (counts[r.id] ?? 0) > 0)
+      // A project with nothing running and nothing queued does not appear at all — no empty group.
+      if (active.length || waiting.length) groups.push({ project: p, active, passive: waiting, queued: counts })
     }
     // Live sessions whose project isn't in the roster list (scratch folders, legacy) —
     // still surface them so the hub is a TRUE global view, just with no idle lanes.
@@ -83,7 +92,7 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
   return (
     <PageShell
       title="Agents"
-      subtitle="Your teams, across every project. Who is on each one, what they are built for, and who is in play."
+      subtitle="What is running right now, across every project — plus any agent with work queued against it."
       measure="grid"
       tabs={[
         { id: 'fleet', label: 'Fleet' },
@@ -123,9 +132,18 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
           </div>
 
           {groups.length === 0 ? (
-            <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-              <p style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
-                No agents yet. Open a project and launch a lane to see it here.
+            /* The RESTING state now, not an edge case: with nothing running anywhere this view is
+               empty, and that is the normal condition of a fleet that is idle. So it says what the
+               surface is for and points at where lanes are launched — without becoming a second
+               roster board, which is the duplication this change removes. */
+            <div style={{ padding: '48px 24px', maxWidth: 460 }}>
+              <p style={{ fontSize: 13, color: 'var(--fg)', lineHeight: 1.6, margin: '0 0 8px' }}>
+                Nothing is running.
+              </p>
+              <p style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7, margin: 0 }}>
+                This is every agent at work across your projects, and anything with tasks queued
+                against it. Your teams and their idle lanes live on each project&rsquo;s roster —
+                open a project and launch one from there.
               </p>
             </div>
           ) : (
@@ -148,7 +166,9 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
                 >
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{g.project.name}</span>
                   <span style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                    {g.active.length ? `${g.active.length} in play · ` : ''}{g.active.length + g.passive.length} agent{g.active.length + g.passive.length === 1 ? '' : 's'}
+                    {g.active.length ? `${g.active.length} in play` : ''}
+                    {g.active.length && g.passive.length ? ' · ' : ''}
+                    {g.passive.length ? `${g.passive.length} waiting` : ''}
                   </span>
                 </button>
 
