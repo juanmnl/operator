@@ -86,11 +86,22 @@ const NARROW_AT = 520
 /** How tall the composer may grow before it scrolls internally. */
 const COMPOSER_MAX_H = 160
 
-/** The composer gets its own, wider cap. It shares the LEFT edge with everything else — that is
- *  what the pane needs — but it is a writing surface, not a reading one: matching it to a 79-char
- *  reading measure would make composing a paragraph needlessly cramped. Right edges may differ by
- *  role; the left edge may not. */
-const COMPOSER_MAX = 720
+/** The composer's surface is exactly a feed row's CONTENT box.
+ *
+ *  Stated as a rule: the composer relates to the FEED, not to the pane and not to a number of its
+ *  own. The shared left edge already commits the pane to reading as one column; this finishes it,
+ *  so the thing you type into is the same width as the things you read.
+ *
+ *  It was a separate 720. That is defensible in principle — writing is not reading, and a 79-char
+ *  reading measure would be a cramped place to compose — but once the rows grew to a 900px prose
+ *  ceiling, a fixed 720 under 1000px-wide messages stopped looking like a decision and started
+ *  looking like a leftover: at an 1898px pane it was 720 of 1898, narrower than every message
+ *  above it.
+ *
+ *  Rejected: filling the pane minus the inset (the composer would then be wider than any message,
+ *  and at 1800px it is a 1780px-wide textarea), and keeping a separate cap (the complaint is
+ *  precisely that a separate cap looks accidental at width). */
+const COMPOSER_MAX = ROW_MAX
 
 
 
@@ -860,7 +871,7 @@ function Composer({ project, onSend }: {
     <div style={{ flexShrink: 0, borderTop: `1px solid ${SEAM_INK}`, background: 'var(--bg-terminal)' }}>
       {/* Capped and left-anchored, on the same INSET as the header and the rows. A full-bleed
           textarea at 2000px is as unreadable to write into as it is to read. */}
-      <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `10px ${INSET}px 12px`, boxSizing: 'border-box' }}>
+      <div style={{ maxWidth: COMPOSER_MAX + INSET * 2, padding: `8px ${INSET}px 10px`, boxSizing: 'border-box' }}>
         {/* ONE SURFACE. The input and its actions used to be two separately bordered boxes sitting
             beside each other; every reference app puts them in one container, and two borders read
             as two controls that happen to be adjacent rather than one place you write.
@@ -909,7 +920,7 @@ function Composer({ project, onSend }: {
               : 'Sending arrives in the next step — this channel is read-only for now.'}
             style={{
               display: 'block', width: '100%', boxSizing: 'border-box', resize: 'none',
-              padding: '9px 11px 4px', border: 'none', background: 'transparent', outline: 'none',
+              padding: '7px 10px 2px', border: 'none', background: 'transparent', outline: 'none',
               color: live ? 'var(--fg)' : 'var(--fg-muted)',
               fontFamily: 'var(--font-body)', fontSize: 12, lineHeight: 1.5,
               cursor: live ? 'text' : 'not-allowed',
@@ -920,7 +931,9 @@ function Composer({ project, onSend }: {
           />
 
           {/* Actions, INSIDE the container. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 7px 7px' }}>
+          {/* Tightened: the resting box carried noticeable dead height above and below the action
+              row, which is what read as slack on a surface whose usual content is one line. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px 6px' }}>
             {/* ADDRESSING, in one control instead of a permanent seven-pill bank. */}
             <button
               data-channel-send-target
@@ -949,8 +962,19 @@ function Composer({ project, onSend }: {
               <span aria-hidden style={{ color: 'var(--fg-muted)' }}>▾</span>
             </button>
 
-            <span style={{ flex: 1 }} />
-
+            {/* LEFT-ANCHORED, with no spacer pushing the actions apart. Send used to sit at the
+                container's far right — 835px from the target control once the container matched
+                ROW_MAX — which is the orphaned-action defect the feed already fixed twice, one
+                level in.
+                `fit-content` was the fix there, but it cannot be the fix here: a composer that
+                hugs its content would collapse to nothing when empty, and the input has to be a
+                stable target. So the cluster moves to the content instead of the content moving to
+                the cluster.
+                Bottom-LEFT is not the convention (Slack and Linear put submit bottom-right), and
+                that convention assumes a container whose right edge means something. Here it does
+                not: rows hug their own text, so a row's content ends wherever its words do — 675px
+                for the row I measured against a 1016px composer. There is no shared right edge to
+                anchor to, and every other thing in this pane is anchored left. */}
             {showCount && (
               <span data-channel-count style={{
                 flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,

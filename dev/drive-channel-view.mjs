@@ -277,6 +277,16 @@ for (const w of [1000, 1440, 2100]) {
       },
     }
   })
+  const comp = await p.evaluate(() => {
+    const sc = document.querySelector('.channel-scroll')
+    const surf = document.querySelector('[data-channel-composer-surface]')
+    const tgt = document.querySelector('[data-channel-send-target]')
+    const snd = document.querySelector('[data-channel-send]')
+    const R = (e) => e.getBoundingClientRect()
+    return { w: Math.round(R(surf).width), h: Math.round(R(surf).height),
+             targetToSend: Math.round(R(snd).left - R(tgt).right) }
+  })
+  console.log(`       composer ${String(comp.w).padStart(4)}px wide · ${comp.h}px tall · target→Send ${comp.targetToSend}px`)
   const e = m.leftEdges
   const shared = e.header === e.rowContent && e.rowContent === e.composer
   console.log(`  ${String(m.pane).padStart(4)}px pane (${m.content} content, ${m.gutter}px scrollbar) · row bleeds: ${m.rowSpansPane} · body ${m.bodyW}px = ${m.chars} chars` +
