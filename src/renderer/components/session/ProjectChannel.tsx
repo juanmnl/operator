@@ -5,6 +5,7 @@ import { laneTextColor } from '../../lib/lane-color'
 import { localTime } from '../../lib/local-time'
 import { parseInline } from '../../lib/canvas-md'
 import { PopMenu } from '../PopMenu'
+import { SidebarToggle } from '../SidebarToggle'
 import {
   buildChannelFeed, groupByDay, channelInitials, isContinuation, isActionableChip,
   type ChannelEntry, type ChannelSession, type ChipTone,
@@ -154,7 +155,7 @@ const INLINE_CAP = 8192
 
 export function ProjectChannel({
   project, replies, sessions, onApproveDispatch, onRejectDispatch, onMarkRead, onSend,
-  chatterPaused, onToggleChatter,
+  chatterPaused, onToggleChatter, onToggleSidebar, sidebarCollapsed,
 }: {
   project: Project
   /** Read from chat.db via projectReplies(); [] until a lane emits its first OPERATOR-REPLY. */
@@ -174,6 +175,10 @@ export function ProjectChannel({
   chatterPaused?: boolean
   /** Flip it. Absent = the control is not rendered at all. */
   onToggleChatter?: () => void
+  /** Collapse/expand the sidebar. The channel is its own content mode, so `SessionToolbar` — which
+   *  used to be the only place this lived — is not rendered here. Absent = not shown. */
+  onToggleSidebar?: () => void
+  sidebarCollapsed?: boolean
 }) {
   const feed = useMemo(
     () => buildChannelFeed(project.dispatches, replies, project.roster, sessions),
@@ -307,6 +312,12 @@ export function ProjectChannel({
             boxSizing: 'border-box',
             display: 'flex', alignItems: 'baseline', gap: 8, height: 44, padding: `0 ${INSET}px`,
           }}>
+            {/* Same control, same position as the other two toolbar headers — see the header
+                alignment pass: all three now share one 44/16 box, so this lands in the same place
+                and switching between them moves nothing. */}
+            {onToggleSidebar && (
+              <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />
+            )}
             <span data-channel-hash style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--fg-muted)' }}>#</span>
             <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>channel</span>
             {/* Shrinks and ellipsizes so the switch beside it can never be pushed out of the

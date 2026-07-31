@@ -3123,6 +3123,8 @@ export function DashboardView() {
               tab={projectTab}
               onSelectTab={setProjectTab}
               onBack={handleShowGallery}
+              onToggleSidebar={toggleSidebar}
+              sidebarCollapsed={sidebarCollapsed}
               onUpdateProject={updateProject}
               onLaunchRole={(project, role, dev) => handleLaunchRole(project, role, undefined, dev)}
               liveRoles={live}
@@ -3164,6 +3166,8 @@ export function DashboardView() {
             onSend={sendChannelMessage}
             chatterPaused={chatterPaused}
             onToggleChatter={toggleChatterPaused}
+            onToggleSidebar={toggleSidebar}
+            sidebarCollapsed={sidebarCollapsed}
           />
         )}
 
