@@ -115,7 +115,18 @@ export function ProjectRail({
           // ordinary pair 12px. The borders are constant so the drop line can never shift the
           // stack while you drag over it.
           gap: 8,
-          padding: '4px 0',
+          // 6 here + the wrapper's constant 2px border = 8px of air around every tile BOX, which
+          // is exactly what the 44px rail already gives it sideways: (44 − 28) / 2 = 8. That
+          // equality is the whole fix, and it is the one number to keep in step — the sides are
+          // fixed by the rail's width, so the padding is the only free variable.
+          //
+          // Both ornaments overhang the box by the same 2px (the ring is `0 0 0 2px`; the pip is
+          // offset -3 but its StatusWave svg carries a pixel of its own padding, so it PAINTS 2
+          // past the edge — measured, not read off the offset). So a ringed or pipped tile clears
+          // 6 on every side and a plain one clears 8, uniformly. It used to be 4 here, giving the
+          // box 6 vertically against 8 sideways: a current tile then read 4 top / 6 sides, and
+          // with one tile — the common case after the prune — that 2px was the entire impression.
+          padding: '6px 0',
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}

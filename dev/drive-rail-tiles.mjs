@@ -130,6 +130,49 @@ for (const g of s1.gaps) console.log(`    ${g.pair.padEnd(34)} box ${String(g.bo
 console.log('1 scroller:', JSON.stringify(s1.scroll))
 await p.screenshot({ path: '/tmp/operator-shots/rail-tiles.png', clip: { x: 0, y: 0, width: 240, height: 900 } })
 
+// ---- 1b. The air AROUND the column, not just between tiles -------------------------------
+// The inter-tile gaps were sized against the drawn extent; the padding around the column was
+// not, and that is a separate bug one level out. Both ornaments — the current-tile ring and the
+// corner pip — paint 2px past the 28px box, so the only way these four numbers agree is if the
+// vertical padding gives the BOX the same 8px the 44px rail gives it sideways.
+const air = await p.evaluate(() => {
+  const tiles = [...document.querySelectorAll('[data-rail-tile]')]
+  if (!tiles.length) return null
+  const sc = tiles[0].closest('.scroll-hidden'), scr = sc.getBoundingClientRect()
+  const ringOf = (t) => {
+    const s = getComputedStyle(t).boxShadow
+    if (s === 'none') return 0
+    const m = s.match(/(\d+(?:\.\d+)?)px\s*$/)
+    return m ? Number(m[1]) : 0
+  }
+  const drawn = (t) => {
+    const r = t.getBoundingClientRect(), ring = ringOf(t)
+    const pip = t.querySelector('[data-rail-pip]')
+    const pr = pip ? pip.getBoundingClientRect() : null
+    return {
+      top: r.top - ring, left: Math.min(r.left - ring, pr ? pr.left : Infinity),
+      right: Math.max(r.right + ring, pr ? pr.right : -Infinity),
+      ornament: Math.max(ring, pr ? Math.round(pr.bottom - r.bottom) : 0),
+    }
+  }
+  // The FIRST tile — `top` is a property of the head of the column, so all four numbers have to
+  // come from one tile to be comparable. This runs before the reorder, while the current (ringed)
+  // project is still first: that is the case the complaint was about, and the one where an
+  // ornament eats into the clearance.
+  const f = drawn(tiles[0])
+  return {
+    padding: getComputedStyle(sc).padding,
+    ornamentPx: f.ornament,
+    top: Math.round(f.top - scr.top),
+    left: Math.round(f.left - scr.left),
+    right: Math.round(scr.right - f.right),
+  }
+})
+console.log('\n1b air around the tile column (drawn extent → rail edge):', JSON.stringify(air))
+console.log('1b top matches the sides:', air && air.top === air.left && air.left === air.right,
+  `(expect true — ${air?.ornamentPx}px of ornament against 8px of box clearance on every side)`)
+
+
 // ---- 2. Reorder ---------------------------------------------------------------------------
 const order = () => p.evaluate(() => Array.from(document.querySelectorAll('[data-rail-tile]')).map((t) => t.getAttribute('data-rail-tile')))
 const before = await order()
