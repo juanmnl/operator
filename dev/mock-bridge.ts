@@ -222,6 +222,20 @@ const MOCK_TERMINALS = MOCK_SESSIONS.map((s) => ({
   devPort: s.terminalId === 't1' ? 1421 : undefined,
 }))
 
+// The solo project's ONE lane, actually running — the only shape that lands on a session.
+const SOLO_SESSIONS: AgentSession[] = [
+  session({ id: 's-solo', terminalId: 'ts0', roleId: 'operator', model: 'fable', phase: 'waiting',
+    workingDirectory: '/tmp/solo-demo', projectName: 'solo-demo', projectId: 'solo-demo-1',
+    summary: 'Operating solo-demo' }),
+]
+const SOLO_TERMINALS = SOLO_SESSIONS.map((s) => ({ id: s.terminalId!, pid: 0, cwd: s.workingDirectory, command: 'claude', alive: true }))
+const SOLO_SAVED = SOLO_SESSIONS.map((s) => ({
+  key: `key-${s.terminalId}`, cwd: s.workingDirectory, projectName: s.projectName,
+  projectId: s.projectId, roleId: s.roleId, claudeSessionId: s.id, terminalId: s.terminalId,
+  lastActiveAt: now,
+}))
+
+
 // The re-attach path builds each TerminalTab from terminalList() joined against the
 // SAVED sessions by terminal id — projectId/roleId come from here, not from the
 // terminal. Without these the lanes lose their role, so the sidebar falls back to the
@@ -386,7 +400,10 @@ export function installMockBridge() {
   const pruneParam = new URLSearchParams(location.search).get('prune')
   const prune = pruneParam !== null
   // `?solo=1` — a project with exactly one Operator lane, the shape a new project now has.
-  const solo = new URLSearchParams(location.search).get('solo') === '1'
+  const soloParam = new URLSearchParams(location.search).get('solo')
+  const solo = soloParam !== null
+  // `?solo=live` also runs that lane, so the landing rule has a live single agent to find.
+  const soloLive = soloParam === 'live'
   // `?tz=1` — fixed evening dispatches for the local-time fix.
   const tz = new URLSearchParams(location.search).get('tz') === '1'
   // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —
@@ -409,7 +426,7 @@ export function installMockBridge() {
     if (empty) localStorage.clear()
     else {
       localStorage.setItem('operator.projects', JSON.stringify(tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS))
-      localStorage.setItem('operator.savedSessions', JSON.stringify(solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]))
+      localStorage.setItem('operator.savedSessions', JSON.stringify(solo ? (soloLive ? SOLO_SAVED : []) : tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]))
       localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
     }
     if (pruneParam === '1') localStorage.removeItem('operator.seededLanePrunedAt')
@@ -440,7 +457,7 @@ export function installMockBridge() {
     // The chat liveness signals are a pure read of these fields, so this is the only lever a
     // harness needs to drive running / compacting / waiting / idle / ended.
     onSessionUpdate: (cb: (s: AgentSession[]) => void) => {
-      setTimeout(() => cb(empty || solo || tz ? [] : MOCK_SESSIONS), 0)
+      setTimeout(() => cb(empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_SESSIONS : MOCK_SESSIONS), 0)
       ;(window as unknown as { __mockPhase: unknown }).__mockPhase = (id: string, patch: Partial<AgentSession>) => {
         cb(MOCK_SESSIONS.map((x) => (x.id === id ? { ...x, ...patch } : x)))
       }
@@ -466,7 +483,7 @@ export function installMockBridge() {
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     // --- reads ------------------------------------------------------------------
-    getSessions: async () => (empty || solo || tz ? [] : MOCK_SESSIONS),
+    getSessions: async () => (empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_SESSIONS : MOCK_SESSIONS),
     // A real-shaped transcript so the chat view can be READ, not just compiled: alternating
     // turns, a long answer, code, a list, and signature-only (empty) `thinking` entries —
     // which is what Claude Code actually emits. See MOCK_CHAT's note: this fixture once
@@ -480,12 +497,12 @@ export function installMockBridge() {
     // Shape-exact with ChatStore::replies — including `id`, the content-hash PK a delivery
     // outcome is keyed to. A fixture missing it would let the feed's fold silently no-op.
     projectReplies: async (projectId: string) => replyRows.get(projectId) ?? [],
-    terminalList: async () => (empty || solo || tz ? [] : MOCK_TERMINALS),
+    terminalList: async () => (empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_TERMINALS : MOCK_TERMINALS),
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => (empty || solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]),
+    loadSessions: async () => (empty || tz ? [] : solo ? (soloLive ? SOLO_SAVED : []) : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]),
     loadProjects: async () => (empty ? [] : tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS),
     // The prune refuses to write without a backup, so the harness has to answer this or the
     // migration silently declines to run — the exact failure it is meant to demonstrate.
