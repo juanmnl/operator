@@ -284,7 +284,8 @@ for (const w of [1000, 1440, 2100]) {
     // The header's FIRST child, not the `#` glyph. The shared-edge invariant is about where the
     // header's content begins; since the sidebar toggle landed it is the leading element and the
     // `#` sits after it, exactly as the title does in SessionToolbar.
-    const hdrBox = document.querySelector('[data-toolbar-header="channel"]')
+    // The APP SHELL owns the header now — the channel no longer renders one of its own.
+    const hdrBox = document.querySelector('[data-toolbar-header]')
     const hdr = hdrBox ? hdrBox.firstElementChild : null
     // The composer's own outer edge. It used to BE the textarea; there is a container around it
     // now, and the shared-edge invariant is about where the composer starts, not where its text
