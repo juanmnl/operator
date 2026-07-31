@@ -370,12 +370,28 @@ export function installMockBridge() {
     getUsageInsights: async () => ({ busiestHour: 0, streakDays: 0, topProject: null, hourly: [], weekday: [] }),
     // Shape-exact with `plan_limits`, values verbatim from this machine's `claude -p "/usage"`.
     // `?usage=` swaps the case: `none` = an account the CLI can't report on (which must render as
-    // ABSENT, never 0%), `high` = past both colour thresholds.
+    // ABSENT, never 0%), `high` = past both colour thresholds, `weekly` = the WEEK ahead of the
+    // session. That last one is not hypothetical — it is this machine's reading on 2026-07-31,
+    // and it is the case that exposed the ring drawing the session (24%) while the week sat at
+    // 65%. A fixture where session always leads cannot catch that.
     planLimits: async (force?: boolean) => {
       calls.push({ fn: 'planLimits', force })
       const mode = new URLSearchParams(location.search).get('usage')
       if (mode === 'none') {
         return { fetchedAt: new Date().toISOString(), note: "Couldn't find usage lines in the CLI's reply: You are using the Anthropic API with pay-as-you-go billing." }
+      }
+      if (mode === 'weekly') {
+        return {
+          sessionPct: 24,
+          sessionResets: 'Jul 31 at 8:10pm (America/Guayaquil)',
+          weekPct: 65,
+          weekResets: 'Aug 4 at 1am (America/Guayaquil)',
+          modelLabel: 'Fable',
+          modelPct: 0,
+          modelResets: 'Aug 4 at 12:59am (America/Guayaquil)',
+          plan: 'You are currently using your subscription to power your Claude Code usage',
+          fetchedAt: new Date().toISOString(),
+        }
       }
       const high = mode === 'high'
       return {

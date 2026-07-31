@@ -37,6 +37,20 @@ import { PlanMeter, usePlanLimits } from './PlanMeter'
 
 const RAIL_W = 44
 
+// The rail is 44px, but it is NOT the column your eye sees. The window root pads 8px and paints
+// it `--bg-sidebar` — the rail's own background — so there is no edge at the rail's left: it
+// dissolves into the window. On the right there IS one, the hairline against the sidebar. The
+// optical column is therefore the 52px from the window edge to that hairline, and centring a
+// tile in the rail's 43px content box lands it 15.5px from the window edge but only 8.5px from
+// the hairline. It looks shoved right, and it is.
+//
+// So the content columns inset on the RIGHT by the difference: 44 − 1 (border) − 7 = 36px of
+// content, which puts a 28px tile at 12/12 and a 26px foot button at 13/13 inside the 52px the
+// eye actually measures. Do not "fix" this by widening RAIL_W — that moves the hairline and the
+// asymmetry comes straight back. The DragRegion deliberately keeps full width: it draws nothing,
+// and the traffic lights want the whole strip.
+const CONTENT_INSET_R = 7
+
 export function ProjectRail({
   projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
   onOpenAgents, agentsActive,
@@ -78,8 +92,9 @@ export function ProjectRail({
         className="scroll-hidden"
         style={{
           flex: 1, minHeight: 0, width: '100%', overflowY: 'auto', overflowX: 'hidden',
+          boxSizing: 'border-box',
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
-          padding: '4px 0',
+          padding: `4px ${CONTENT_INSET_R}px 4px 0`,
           // @ts-expect-error Electron-specific CSS property
           WebkitAppRegion: 'no-drag',
         }}
@@ -104,8 +119,9 @@ export function ProjectRail({
           ACROSS projects, not a way of moving between them, and the existing hairline is what says
           so (no second divider invented for it). */}
       <div style={{
-        flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
-        gap: 4, padding: '8px 0 10px',
+        flexShrink: 0, width: '100%', boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        gap: 4, padding: `8px ${CONTENT_INSET_R}px 10px 0`,
         // @ts-expect-error Electron-specific CSS property
         WebkitAppRegion: 'no-drag',
       }}>

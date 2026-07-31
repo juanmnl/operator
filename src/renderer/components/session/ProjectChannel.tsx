@@ -25,8 +25,15 @@ export type SendResult =
 // (ProjectRail's tiles); circles are the lane/session vocabulary (StatusWave orbs, SessionItem).
 // Blurring the two is how a project starts reading as an agent.
 
-/** One measure for the header and the feed, so they share a left edge at every scrollbar width. */
-const MEASURE = 720
+/** One measure for the header and the feed, so they share a left edge at every scrollbar width.
+ *
+ *  FULL WIDTH, deliberately. This was a centred 720px reading column — the right call for prose,
+ *  the wrong one here: the channel is a LOG of one-line dispatches and replies, each already a
+ *  row of chips (author · verb · target · time). A 720 cap on a wide window left the rows
+ *  islanded mid-panel with the timestamps floating away from the right edge they belong on,
+ *  and it truncated the one thing worth the space — the dispatch text itself.
+ *  If prose ever lands in here, cap the PARAGRAPH, not the row. */
+const MEASURE = '100%'
 
 // Chip ink. The accent-derived tones are MIXED toward --fg, not used raw: bare `var(--accent)`
 // at this size measured 2.92:1 on Mission Control light and 2.44:1 on 1984 light — under the 3:1

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   readable, hasData, toneFor, TONE_FILL, limitRows, glanceLine, updatedAgo, ringDash,
-  WARN_AT, DANGER_AT, type PlanLimits,
+  bindingLimit, WARN_AT, DANGER_AT, type PlanLimits,
 } from './plan-limits'
 
 const full: PlanLimits = {
@@ -37,6 +37,47 @@ describe('ABSENT IS NOT ZERO — the rule the whole meter turns on', () => {
     expect(limitRows(empty)).toEqual([])
     expect(limitRows(null)).toEqual([])
     expect(glanceLine(empty)).toBeNull()
+  })
+})
+
+describe('the ring draws the BINDING limit, not the session', () => {
+  it('picks the row furthest along, whichever window it is', () => {
+    // The shipped bug, exactly: a quarter-used session above a two-thirds-used week drew 24%.
+    const shipped: PlanLimits = { fetchedAt: 'x', sessionPct: 24, weekPct: 65, modelLabel: 'Fable', modelPct: 0 }
+    expect(bindingLimit(shipped)).toEqual({ key: 'week', label: 'Current week', pct: 65 })
+    expect(ringDash(bindingLimit(shipped)!.pct, 8).dash)
+      .toBeCloseTo(ringDash(65, 8).dash, 5)
+  })
+
+  it('still picks the session when the session IS the binding one', () => {
+    expect(bindingLimit(full)?.key).toBe('session')
+  })
+
+  it('carries the tone of the limit it draws, so a hot week turns the ring', () => {
+    const hotWeek: PlanLimits = { fetchedAt: 'x', sessionPct: 10, weekPct: 93 }
+    expect(toneFor(bindingLimit(hotWeek)?.pct)).toBe('danger')
+    // The old behaviour would have read the session and stayed calm at 93% of the week.
+    expect(toneFor(hotWeek.sessionPct)).toBe('normal')
+  })
+
+  it('keeps row order on a tie — the narrower window resets sooner', () => {
+    expect(bindingLimit({ fetchedAt: 'x', sessionPct: 50, weekPct: 50 })?.key).toBe('session')
+  })
+
+  it('names the per-model row from the CLI label when that is the binding one', () => {
+    const modelHot: PlanLimits = { fetchedAt: 'x', sessionPct: 5, weekPct: 10, modelLabel: 'Fable', modelPct: 80 }
+    expect(bindingLimit(modelHot)).toEqual({ key: 'model', label: 'Current week (Fable)', pct: 80 })
+  })
+
+  it('is absent, not zero, when nothing was read', () => {
+    expect(bindingLimit(empty)).toBeNull()
+    expect(bindingLimit(null)).toBeNull()
+  })
+
+  it('counts a model-only reply as data, so the ring is never blank beside a filled popover', () => {
+    const modelOnly: PlanLimits = { fetchedAt: 'x', modelLabel: 'Fable', modelPct: 42 }
+    expect(hasData(modelOnly)).toBe(true)
+    expect(bindingLimit(modelOnly)?.pct).toBe(42)
   })
 })
 

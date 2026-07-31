@@ -31,13 +31,14 @@ await p.waitForTimeout(3200)
 
 // ---- 1. It is in the rail foot, and it read the plan --------------------------------------
 console.log('1 meter:', JSON.stringify(await meter()))
-console.log('1 the ring is swept to the SESSION figure:', await p.evaluate(() => {
+const sweep = () => p.evaluate(() => {
   const arc = document.querySelector('[data-usage-arc]')
   if (!arc) return null
   const [dash] = (arc.getAttribute('stroke-dasharray') ?? '').split(' ').map(Number)
   const c = 2 * Math.PI * Number(arc.getAttribute('r'))
   return Math.round((dash / c) * 100)
-}), '(expect 66)')
+})
+console.log('1 the ring is swept to the BINDING figure — here the session, 66 > 39:', await sweep(), '(expect 66)')
 console.log('1 …and it did NOT block first paint:', await p.evaluate(() =>
   window.__calls.filter((c) => c.fn === 'planLimits').length), '(expect 1 — one deferred read, not a poll)')
 
@@ -100,6 +101,24 @@ console.log('6 tones at 93% / 78% / 0%:', JSON.stringify(await p.evaluate(() =>
   '(expect danger / warn / normal)')
 console.log('6 and the three fills are visibly different:', JSON.stringify(await p.evaluate(() =>
   Array.from(document.querySelectorAll('[data-usage-bar]')).map((b) => getComputedStyle(b).backgroundColor))))
+
+// ---- 6b. The ring follows the WEEK when the week is the binding one -------------------------
+// The shipped bug: one arc summarising three rows drew the session and nothing else, so a 24%
+// ring sat above a 65% week. The glance must never contradict the popover it stands in for.
+await p.goto(`http://localhost:${PORT}/dev/mock.html?usage=weekly`, { waitUntil: 'load' })
+await p.waitForTimeout(3200)
+console.log('6b session 24 / week 65 → the ring draws:', await sweep(), '(expect 65, NOT 24)')
+console.log('6b …and it says which limit that is:', JSON.stringify(await meter()))
+console.log('6b the ring agrees with the popover it summarises:', await p.evaluate(async () => {
+  document.querySelector('[data-rail-usage]').click()
+  await new Promise((r) => setTimeout(r, 400))
+  const rows = Array.from(document.querySelectorAll('[data-usage-row]'))
+    .map((r) => Number(r.querySelector('[data-usage-value]').textContent.match(/\d+/)[0]))
+  const arc = document.querySelector('[data-usage-arc]')
+  const [dash] = arc.getAttribute('stroke-dasharray').split(' ').map(Number)
+  const drawn = Math.round((dash / (2 * Math.PI * Number(arc.getAttribute('r')))) * 100)
+  return { rows, drawn, isMax: drawn === Math.max(...rows) }
+}), '(expect isMax true)')
 
 // ---- 7. ABSENT IS NOT ZERO -----------------------------------------------------------------
 await p.goto(`http://localhost:${PORT}/dev/mock.html?usage=none`, { waitUntil: 'load' })

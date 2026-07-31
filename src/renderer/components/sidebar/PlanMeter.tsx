@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  hasData, limitRows, glanceLine, updatedAgo, ringDash, toneFor, TONE_FILL, readable,
+  hasData, limitRows, glanceLine, updatedAgo, ringDash, toneFor, TONE_FILL, bindingLimit,
   type PlanLimits,
 } from '../../lib/plan-limits'
 
@@ -44,9 +44,14 @@ export function PlanMeter({ limits, loading, onRefresh }: {
     return () => { document.removeEventListener('keydown', onKey, true); document.removeEventListener('mousedown', onDown) }
   }, [open])
 
-  const session = readable(limits?.sessionPct)
-  const tone = toneFor(session)
-  const { dash, gap, circumference } = ringDash(session, R)
+  // The arc draws the BINDING limit — the row furthest along — not the session. One arc gets one
+  // job, and the job is "how close am I to being stopped": a 24% session ring above a 65% week is
+  // the glance contradicting the popover it stands in for. Its label rides along so the accessible
+  // name can say WHICH limit the arc draws — a bare percentage is ambiguous now that it isn't
+  // always the session. The tooltip keeps listing every number, which is the fuller reading.
+  const binding = bindingLimit(limits)
+  const tone = toneFor(binding?.pct)
+  const { dash, gap, circumference } = ringDash(binding?.pct ?? null, R)
   const glance = glanceLine(limits)
   const known = hasData(limits)
 
@@ -55,8 +60,11 @@ export function PlanMeter({ limits, loading, onRefresh }: {
       <button
         ref={btnRef}
         data-rail-usage
-        data-usage-pct={session ?? ''}
-        aria-label={glance ? `Plan usage — ${glance}` : 'Plan usage'}
+        data-usage-pct={binding?.pct ?? ''}
+        data-usage-binding={binding?.key ?? ''}
+        aria-label={glance
+          ? `Plan usage — ${glance}${binding ? `; closest to its limit: ${binding.label} at ${binding.pct}%` : ''}`
+          : 'Plan usage'}
         aria-expanded={open}
         title={glance ?? (loading ? 'Reading your plan usage…' : 'Plan usage — no reading yet')}
         onClick={() => setOpen((o) => !o)}
