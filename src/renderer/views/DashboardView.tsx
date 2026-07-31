@@ -2213,6 +2213,19 @@ export function DashboardView() {
     () => (activeProjectId ? projects.find((p) => p.id === activeProjectId) ?? null : null),
     [activeProjectId, projects],
   )
+  /** Who can be named as the author of a reply.
+   *
+   *  Keyed by the CLAUDE session id, which is what a reply carries. Live sessions first (freshest
+   *  roleId), then the DURABLE saved-session store — that second half is the fix: the channel
+   *  renders history, and a list built from this run's ptys can only ever name lanes that happen
+   *  to be running right now. Every older reply fell through to its raw uuid. */
+  const channelSessions = useMemo(() => [
+    ...allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })),
+    ...savedSessions
+      .filter((s) => s.claudeSessionId)
+      .map((s) => ({ id: s.claudeSessionId as string, roleId: s.roleId })),
+  ], [allSidebarSessions, savedSessions])
+
   const scopedSessions = useMemo(
     () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
     [allSidebarSessions, activeProjectId],
@@ -2222,9 +2235,9 @@ export function DashboardView() {
   const channelUnread = useMemo(() => {
     if (!activeProject) return 0
     const feed = buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster,
-      allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })))
+      channelSessions)
     return unreadEntries(feed, channelReadAt[activeProject.id] ?? null).length
-  }, [activeProject, channelReplies, allSidebarSessions, channelReadAt])
+  }, [activeProject, channelReplies, channelSessions, channelReadAt])
 
   // What each project is doing — the switcher's per-row orb and state label. Rolled up by
   // lib/project-status so the popover and the gallery card read a project identically.
@@ -3085,7 +3098,7 @@ export function DashboardView() {
           <ProjectChannel
             project={activeProject}
             replies={channelReplies}
-            sessions={allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId }))}
+            sessions={channelSessions}
             onApproveDispatch={approveDispatch}
             onRejectDispatch={rejectDispatch}
             onMarkRead={markChannelRead}

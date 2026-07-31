@@ -244,6 +244,12 @@ const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
 // Saved sessions with no live terminal. The sidebar no longer lists these (it lists
 // Recent PROJECTS), but they still feed the dashboard splash, the ⌘K restore actions,
 // and the workspace's "Resume N agents" — so the dormant project owns one of them.
+// Ended lanes that still authored replies — resolvable only from the durable store.
+const MOCK_ENDED_AUTHORS = [
+  { key: 'key-design-x', cwd: '/Users/dev/operator', projectName: 'operator', projectId: PROJECT_ID, roleId: 'design', claudeSessionId: '90756a9b-c401-4a90-84ce-a531b9a2010b', lastActiveAt: earlier },
+  { key: 'key-code-x', cwd: '/Users/dev/operator', projectName: 'operator', projectId: PROJECT_ID, roleId: 'code', claudeSessionId: '6c78d88f-a4bf-4f32-b5af-c6af497fcd2a', lastActiveAt: earlier },
+]
+
 const MOCK_DORMANT = [
   { key: 'key-old-1', cwd: DORMANT_PATH, projectName: 'uwazi_app', projectId: DORMANT_ID, claudeSessionId: 'old-1', lastActiveAt: earlier },
   { key: 'key-old-2', cwd: '/tmp/el-encanto', projectName: 'el-encanto', claudeSessionId: 'old-2', lastActiveAt: earlier },
@@ -403,7 +409,7 @@ export function installMockBridge() {
     if (empty) localStorage.clear()
     else {
       localStorage.setItem('operator.projects', JSON.stringify(tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS))
-      localStorage.setItem('operator.savedSessions', JSON.stringify(solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT]))
+      localStorage.setItem('operator.savedSessions', JSON.stringify(solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]))
       localStorage.setItem('operator.customNames', JSON.stringify({ 's-op': 'Coordinator' }))
     }
     if (pruneParam === '1') localStorage.removeItem('operator.seededLanePrunedAt')
@@ -479,7 +485,7 @@ export function installMockBridge() {
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
-    loadSessions: async () => (empty || solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT]),
+    loadSessions: async () => (empty || solo || tz ? [] : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]),
     loadProjects: async () => (empty ? [] : tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS),
     // The prune refuses to write without a backup, so the harness has to answer this or the
     // migration silently declines to run — the exact failure it is meant to demonstrate.
@@ -614,6 +620,16 @@ export function installMockBridge() {
   let spawnN = 0
   ;(window as unknown as { __calls: unknown[] }).__calls = calls
   ;(window as unknown as { __mockDispatch: unknown }).__mockDispatch = (d: unknown) => dispatchCb?.(d)
+  // `?author=1` seeds two replies whose sessionId is a CLAUDE session uuid, from lanes that are
+  // NOT in the live run — the exact shape of the reported bug (verbatim ids from chat.db). The
+  // saved-session store is the only place that can name them, which is the whole point.
+  if (new URLSearchParams(location.search).get('author') === '1') {
+    const pid = MOCK_PROJECTS[0].id
+    replyRows.set(pid, [
+      { id: 'ra', sessionId: '90756a9b-c401-4a90-84ce-a531b9a2010b', to: 'project', text: 'Rail tile axis fixed.', timestamp: new Date(Date.parse(now) - 7e5).toISOString() },
+      { id: 'rb', sessionId: '6c78d88f-a4bf-4f32-b5af-c6af497fcd2a', to: 'project', text: 'Channel timestamps now render local time.', timestamp: new Date(Date.parse(now) - 6e5).toISOString() },
+    ])
+  }
   ;(window as unknown as { __mockReply: unknown }).__mockReply = (r: Record<string, unknown>) => {
     // PERSIST, then emit — the order the tailer guarantees, and what the channel's re-read relies on.
     const pid = String(r.projectId ?? '')
