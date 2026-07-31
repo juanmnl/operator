@@ -973,6 +973,7 @@ function Composer({ project, onSend }: {
             {/* ADDRESSING, in one control instead of a permanent seven-pill bank. */}
             <button
               data-channel-send-target
+              data-popmenu-trigger
               disabled={!live}
               aria-haspopup="menu"
               aria-expanded={menuOpen}

@@ -282,8 +282,8 @@ export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEff
         {/* Controls row: attach / slash / model / effort on the left, send on the right. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '2px 6px 6px' }}>
           <IconBtn title="Attach images" onClick={() => fileRef.current?.click()} disabled={!live}><PaperclipIcon /></IconBtn>
-          <IconBtn title="Commands" onClick={() => setMenu(menu === 'slash' ? null : 'slash')} active={menu === 'slash'} disabled={!live}><SlashIcon /></IconBtn>
-          <Pill label={modelLabel ?? 'Model'} muted={!modelLabel} active={menu === 'model'} onClick={() => setMenu(menu === 'model' ? null : 'model')} disabled={!live} />
+          <IconBtn title="Commands" opensMenu onClick={() => setMenu(menu === 'slash' ? null : 'slash')} active={menu === 'slash'} disabled={!live}><SlashIcon /></IconBtn>
+          <Pill label={modelLabel ?? 'Model'} muted={!modelLabel} active={menu === 'model'} opensMenu onClick={() => setMenu(menu === 'model' ? null : 'model')} disabled={!live} />
           {busy && draft.trim().length > 0 && (
             <span style={{
               marginLeft: 'auto', marginRight: 2, flexShrink: 0,
@@ -292,7 +292,7 @@ export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEff
               ↵ sends into this turn
             </span>
           )}
-          <Pill label={effortLabel ? `Effort · ${effortLabel}` : 'Effort'} muted={!effortLabel} active={menu === 'effort'} onClick={() => setMenu(menu === 'effort' ? null : 'effort')} disabled={!live} />
+          <Pill label={effortLabel ? `Effort · ${effortLabel}` : 'Effort'} muted={!effortLabel} active={menu === 'effort'} opensMenu onClick={() => setMenu(menu === 'effort' ? null : 'effort')} disabled={!live} />
           {/* §2 — THE ORB IS THE CONTROL. "The orb tells the truth about the lane; the ring
               is the verb." The core is the same StatusWave the sidebar, roster and gallery
               use, carrying the LANE ACCENT and the state from chatSignal — it never becomes a
@@ -361,9 +361,10 @@ export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEff
 
 // ---- small building blocks -----------------------------------------------------------
 
-function IconBtn({ children, title, onClick, active, disabled }: { children: ReactNode; title: string; onClick: () => void; active?: boolean; disabled?: boolean }) {
+function IconBtn({ children, title, onClick, active, disabled, opensMenu }: { children: ReactNode; title: string; onClick: () => void; active?: boolean; disabled?: boolean; opensMenu?: boolean }) {
   return (
     <button
+      {...(opensMenu ? { 'data-popmenu-trigger': '' } : null)}
       onClick={onClick} title={title} disabled={disabled}
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, padding: 0,
@@ -375,9 +376,10 @@ function IconBtn({ children, title, onClick, active, disabled }: { children: Rea
   )
 }
 
-function Pill({ label, onClick, active, muted, disabled }: { label: string; onClick: () => void; active?: boolean; muted?: boolean; disabled?: boolean }) {
+function Pill({ label, onClick, active, muted, disabled, opensMenu }: { label: string; onClick: () => void; active?: boolean; muted?: boolean; disabled?: boolean; opensMenu?: boolean }) {
   return (
     <button
+      {...(opensMenu ? { 'data-popmenu-trigger': '' } : null)}
       onClick={onClick} disabled={disabled}
       style={{
         display: 'flex', alignItems: 'center', gap: 4, height: 24, padding: '0 8px',

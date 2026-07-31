@@ -1,4 +1,6 @@
+import { useRef } from 'react'
 import type { ReactNode } from 'react'
+import { useDismiss } from '../lib/use-dismiss'
 
 // ONE popover menu, shared. It was private to ChatComposer; the channel composer needs the same
 // "pick one of these" affordance for its send target, and a second implementation of a menu is how
@@ -14,8 +16,14 @@ export function PopMenu({ title, items, footer, onClose }: {
   footer?: ReactNode
   onClose: () => void
 }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  // The full dismissal contract — outside pointer-down, Escape (with focus returned to the
+  // trigger), focus leaving, and scroll. It was doing none of them: the menu only closed when you
+  // picked something, so clicking anywhere else left it open over the feed.
+  useDismiss(true, { panelRef, onDismiss: onClose })
   return (
     <div
+      ref={panelRef}
       style={{
         position: 'absolute', left: 12, right: 12, bottom: 'calc(100% - 6px)', zIndex: 20,
         marginBottom: 6, maxWidth: 260,
@@ -41,7 +49,10 @@ export function PopMenu({ title, items, footer, onClose }: {
         <button
           key={it.key}
           data-popmenu-item={it.key}
-          onClick={() => { it.onClick(); if (!it.active && !it.keepOpen) onClose?.() }}
+          // Any choice closes, including re-picking the one already active. The `!it.active` guard
+          // that used to be here meant clicking the selected row did nothing at all — no change and
+          // no dismissal — which reads as a stuck menu rather than as a no-op.
+          onClick={() => { it.onClick(); if (!it.keepOpen) onClose?.() }}
           style={{
             display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left',
             padding: '7px 12px', border: 'none', background: 'transparent', outline: 'none', cursor: 'pointer',
