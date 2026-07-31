@@ -38,10 +38,19 @@ const ACCENT_INK = 'color-mix(in srgb, var(--accent) 55%, var(--fg))'
 // Same treatment for --color-warning, and for the same measured reason: raw, at the 9px the
 // agent↔agent switch uses, it came in at 2.44 / 2.42 / 1.49 on the three light palettes.
 const WARN_INK = 'color-mix(in srgb, var(--color-warning) 55%, var(--fg))'
+// `warn` used to resolve to ACCENT_INK — the SAME ink as `accent`. `chipForOutcome` has always
+// toned the brakes (`hop-limit`, `pair-brake`, `paused`) and `undelivered` as warn, so the pure
+// layer was right and this map flattened it: "posted · chain limit reached" rendered in exactly
+// the colour of "posted · delivered", and a message the system deliberately refused to hand on
+// read as one that arrived. Measured, not guessed — every chip in the feed came back
+// `color(srgb 0.52 0.91 0.76)`.
+//
+// `--color-warning` rather than `--status-compacting`: the latter is already `progress` here, and
+// two tones that mean different things must not share an ink for the same reason this was a bug.
 const TONE: Record<ChipTone, string> = {
   accent: ACCENT_INK,
   progress: 'var(--status-compacting)',
-  warn: ACCENT_INK,
+  warn: 'var(--color-warning)',
   muted: 'var(--fg-muted)',
 }
 
@@ -108,10 +117,13 @@ export function ProjectChannel({
             }}>
               {project.name}
             </span>
-            {/* The kill switch. Two agents that can each answer the other ping-pong indefinitely at
-                ~1s a hop, so this ships ON (paused) and the user opts in. Label states what IS,
-                not what the click does — a control that reads "Pause" while already paused is how
-                you turn chatter on by accident while trying to stop it. */}
+            {/* The kill switch — and delivery now defaults to LIVE (flipped 2026-07-30). It shipped
+                paused because two agents that can each answer the other ping-pong indefinitely;
+                that risk is now carried by the brakes in lib/agent-delivery, and default-off had
+                its own cost — replies posted to the channel and reached nobody, so the feed filled
+                with POSTED rows while the addressee sat idle. Label states what IS, not what the
+                click does — a control that reads "Pause" while already paused is how you turn
+                chatter on by accident while trying to stop it. */}
             {onToggleChatter && (
               <button
                 onClick={onToggleChatter}

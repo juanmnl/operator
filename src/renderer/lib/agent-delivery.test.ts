@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   HOP_LIMIT, PAIR_WINDOW_MS, PAIR_MAX_IN_WINDOW, PAIR_SUSPEND_MS, DELIVER_MAX_CHARS,
   emptyDeliveryState, evaluateDelivery, truncateForDelivery, deliveryPrefix, resetChainFor,
+  chatterPausedFrom,
   type DeliveryState,
 } from './agent-delivery'
 
@@ -206,5 +207,29 @@ describe('the loop test — two lanes answering each other MUST terminate', () =
       expect(delivered).toBeLessThan(HOP_LIMIT + 1) // fails loudly instead of spinning
     }
     expect(delivered).toBeLessThanOrEqual(HOP_LIMIT)
+  })
+})
+
+// --- the DEFAULT (dev/briefs/chatter-on-by-default.md) ------------------------------------
+describe('chatterPausedFrom — flipping the default without touching a decision', () => {
+  it('an untouched install is now LIVE', () => {
+    // The change. Default-off meant a reply posted to the channel and reached nobody: the feed
+    // filled with POSTED rows while the lane it was addressed to sat idle.
+    expect(chatterPausedFrom(null)).toBe(false)
+    expect(chatterPausedFrom(undefined)).toBe(false)
+  })
+
+  it("keeps someone who deliberately PAUSED it paused", () => {
+    expect(chatterPausedFrom('1')).toBe(true)
+  })
+
+  it('keeps someone who deliberately ENABLED it enabled', () => {
+    expect(chatterPausedFrom('0')).toBe(false)
+  })
+
+  it('treats a junk value as no opinion rather than as paused', () => {
+    // Only the exact string the toggle writes counts as a decision; anything else is noise from
+    // a hand-edited store and must not silently disable the feature.
+    for (const v of ['', 'true', 'paused', 'yes', '2']) expect(chatterPausedFrom(v), v).toBe(false)
   })
 })

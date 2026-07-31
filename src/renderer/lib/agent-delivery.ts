@@ -22,6 +22,23 @@ export const PAIR_SUSPEND_MS = 5 * 60_000
  *  delivery, so past this length we are guessing. Inherited rather than redeclared. */
 export const DELIVER_MAX_CHARS = CHANNEL_MAX_CHARS
 
+/** The kill switch's persisted key, and the one place its default is decided.
+ *
+ *  Extracted from `DashboardView` so all three cases can be tested, because the interesting part
+ *  is what it does with a value it did NOT write. The key is only ever written by the toggle:
+ *
+ *    absent → never touched   → LIVE   (flipped 2026-07-30; it used to mean paused)
+ *    `'1'`  → explicitly OFF  → paused
+ *    `'0'`  → explicitly ON   → live
+ *
+ *  Preserving both explicit values is the whole care here. Flipping a default is allowed to change
+ *  what "no opinion" means; it is not allowed to reach into a decision someone actually made, in
+ *  either direction — a user who deliberately pulled this switch must not find it pushed back. */
+export const CHATTER_KEY = 'operator.chatterPaused'
+export function chatterPausedFrom(stored: string | null | undefined): boolean {
+  return stored === '1'
+}
+
 /** Why a message was not delivered. Each maps to a `DispatchRecord.outcome`. */
 export type BlockReason = 'paused' | 'hop-limit' | 'pair-brake' | 'queued'
 
