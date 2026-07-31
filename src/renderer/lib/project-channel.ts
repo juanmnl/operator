@@ -116,7 +116,16 @@ export function chipForReplyDelivery(outcome: DispatchRecord['outcome'] | undefi
   return { label: `posted · ${chip.label.replace(/^held · /, '')}`, tone: chip.tone }
 }
 
-/** Enough of a session to attribute a reply. */
+/** Enough of a session to attribute a reply — and it must be keyed by the CLAUDE session id,
+ *  because that is what a reply carries (`OperatorReply.sessionId`, stamped by the tailer).
+ *
+ *  Three different identifiers live in this codebase and confusing them has cost real time: the
+ *  Claude session uuid, Operator's saved-session `key`, and the per-run terminal id (`t0`, `t1`).
+ *  A reply speaks the first one.
+ *
+ *  The list must also be DURABLE, not live. The channel renders history: a reply from a lane that
+ *  has since ended is still a reply someone should be able to attribute, and a list built from the
+ *  current run's ptys cannot contain it. Pass live sessions AND the saved-session store. */
 export interface ChannelSession { id: string; roleId?: string }
 
 /** Merge dispatches and replies into one ascending feed.
@@ -204,8 +213,13 @@ export function buildChannelFeed(
       kind: 'reply',
       at: r.timestamp,
       authorRole: from,
-      // Session gone → its id, verbatim. A blank author would read as "nobody said this".
-      authorLabel: from?.name ?? session?.roleId ?? r.sessionId,
+      // Genuinely unresolvable → say UNKNOWN, never the id. A session uuid is not an author, and
+      // it is worse than a blank one: it looks like data, so it reads as the answer rather than as
+      // the failure it is. Matches the dispatch branch's `'unknown lane'`, which is the precedent.
+      //
+      // This used to be the NORMAL case rather than the last resort, because the caller searched a
+      // list that could not contain the answer — see `ChannelSession` on what to pass.
+      authorLabel: from?.name ?? session?.roleId ?? 'unknown lane',
       // `project` is the broadcast token: addressed to the room, not to a lane.
       targetLabel: r.to.toLowerCase() === 'project' ? null : (roleById(r.to.toLowerCase())?.name ?? r.to),
       text: r.text,

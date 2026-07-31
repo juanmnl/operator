@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor, rolePresets, isCoordinator } from '../lib/roster'
-import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, type DeliveryState } from '../lib/agent-delivery'
+import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, pruneGlobals, clearSeededRoleFields, seedGlobalDefaults,
   migrateSeededWorktreeDefaults, clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
@@ -244,21 +244,29 @@ export function DashboardView() {
   const patchRoleDefault = useCallback((roleId: string, patch: GlobalRoleDefaults[string]) => {
     setRoleDefaults((prev) => pruneGlobals({ ...prev, [roleId]: { ...prev[roleId], ...patch } }))
   }, [])
-  /** The kill switch for agent→agent delivery, and it DEFAULTS TO PAUSED.
+  /** The kill switch for agent→agent delivery. It now DEFAULTS TO LIVE — flipped 2026-07-30.
    *
-   *  Two agents that can each answer the other ping-pong indefinitely at ~1s a hop — that is the
-   *  default behaviour of two cooperative agents, not an edge case — and the bill arrives whether
-   *  or not anyone is watching. So the feature ships off: replies still post to the channel and are
-   *  still readable, they are simply not typed into anyone's session until you turn this on. The
-   *  guardrails in lib/agent-delivery (hop budget, pair brake, length cap) are what make it safe to
-   *  turn on; this is what makes it safe to ship. Human→lane is a different path and unaffected. */
+   *  It shipped paused, on the reasoning that two cooperative agents which can each answer the
+   *  other ping-pong indefinitely and the bill arrives whether or not anyone is watching. That
+   *  risk is real, but it is the job of the BRAKES (lib/agent-delivery: hop budget, per-pair
+   *  cycle brake, length cap), and they exist now. Making the user opt in as well was belt AND
+   *  braces where the braces already hold — and it had a cost that only showed up in use: a
+   *  reply posted to the channel and reached nobody. The channel filled with `POSTED` rows while
+   *  the lane they were addressed to sat idle, never learning it had been answered, which reads
+   *  as the return path being broken rather than switched off.
+   *
+   *  So: absent key → LIVE. Both explicit choices are preserved — `'1'` stays paused, `'0'` stays
+   *  live — because a user who deliberately pulled this switch must not have it pulled back.
+   *
+   *  THE SWITCH STAYS. A kill switch you can hit when something misbehaves is worth having; a
+   *  default-off mode you have to discover is not. Human→lane is a different path, unaffected. */
   const [chatterPaused, setChatterPaused] = useState<boolean>(() => {
-    try { return localStorage.getItem('operator.chatterPaused') !== '0' } catch { return true }
+    try { return chatterPausedFrom(localStorage.getItem(CHATTER_KEY)) } catch { return false }
   })
   const toggleChatterPaused = useCallback(() => {
     setChatterPaused((p) => {
       const next = !p
-      try { localStorage.setItem('operator.chatterPaused', next ? '1' : '0') } catch { /* quota */ }
+      try { localStorage.setItem(CHATTER_KEY, next ? '1' : '0') } catch { /* quota */ }
       return next
     })
   }, [])
@@ -2206,6 +2214,19 @@ export function DashboardView() {
     () => (activeProjectId ? projects.find((p) => p.id === activeProjectId) ?? null : null),
     [activeProjectId, projects],
   )
+  /** Who can be named as the author of a reply.
+   *
+   *  Keyed by the CLAUDE session id, which is what a reply carries. Live sessions first (freshest
+   *  roleId), then the DURABLE saved-session store — that second half is the fix: the channel
+   *  renders history, and a list built from this run's ptys can only ever name lanes that happen
+   *  to be running right now. Every older reply fell through to its raw uuid. */
+  const channelSessions = useMemo(() => [
+    ...allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })),
+    ...savedSessions
+      .filter((s) => s.claudeSessionId)
+      .map((s) => ({ id: s.claudeSessionId as string, roleId: s.roleId })),
+  ], [allSidebarSessions, savedSessions])
+
   const scopedSessions = useMemo(
     () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
     [allSidebarSessions, activeProjectId],
@@ -2215,9 +2236,9 @@ export function DashboardView() {
   const channelUnread = useMemo(() => {
     if (!activeProject) return 0
     const feed = buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster,
-      allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })))
+      channelSessions)
     return unreadEntries(feed, channelReadAt[activeProject.id] ?? null).length
-  }, [activeProject, channelReplies, allSidebarSessions, channelReadAt])
+  }, [activeProject, channelReplies, channelSessions, channelReadAt])
 
   // What each project is doing — the switcher's per-row orb and state label. Rolled up by
   // lib/project-status so the popover and the gallery card read a project identically.
@@ -3089,7 +3110,7 @@ export function DashboardView() {
           <ProjectChannel
             project={activeProject}
             replies={channelReplies}
-            sessions={allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId }))}
+            sessions={channelSessions}
             onApproveDispatch={approveDispatch}
             onRejectDispatch={rejectDispatch}
             onMarkRead={markChannelRead}

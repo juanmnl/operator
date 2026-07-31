@@ -88,9 +88,12 @@ describe('buildChannelFeed', () => {
     expect(e.chip).toEqual(REPLY_CHIP)
   })
 
-  it('prints the raw id when a reply session no longer resolves — never blank, never guessed', () => {
+  it('says UNKNOWN when a reply session no longer resolves — never blank, never an id', () => {
+    // Was `expect(...).toBe('sess-vanished')`. That encoded the fallback this brief removed: the
+    // id is not an author, and printing one looks like data, so it reads as the answer rather
+    // than as the lookup having failed. "Never blank" still holds — see the label.
     const [e] = buildChannelFeed([], [r({ sessionId: 'sess-vanished' })], roster, sessions)
-    expect(e.authorLabel).toBe('sess-vanished')
+    expect(e.authorLabel).toBe('unknown lane')
     expect(e.authorRole).toBeUndefined()
   })
 
@@ -369,5 +372,61 @@ describe('isContinuation — collapsing a run of one author', () => {
   it('refuses to continue backwards in time', () => {
     const prev = e({ at: '2026-07-30T10:05:00.000Z' })
     expect(isContinuation(prev, e({ at: '2026-07-30T10:00:00.000Z' }))).toBe(false)
+  })
+})
+
+// --- a reply's AUTHOR (dev/briefs/channel-author-uuid.md) ---------------------------------
+// The channel's whole job is who-said-what, and every lane reply was authored by a raw session
+// uuid with generic initials and no accent. The fallback was fine; it had become the normal case,
+// because the caller searched a list that could not contain the answer.
+describe('a reply resolves to its lane, not to an id', () => {
+  const CLAUDE_ID = '6c78d88f-a4bf-4f32-b5af-c6af497fcd2a' // shape verbatim from chat.db
+
+  it('names the lane, and carries its accent, when the session is known', () => {
+    const [e] = buildChannelFeed([], [r({ sessionId: CLAUDE_ID })], roster,
+      [{ id: CLAUDE_ID, roleId: 'code' }])
+    expect(e.authorLabel).toBe('Code')
+    expect(e.authorRole?.accent).toBe('#7ee787') // the avatar tint and coloured name key off this
+  })
+
+  it('resolves from the DURABLE store, not just the live run', () => {
+    // The actual bug. The list was built from the current run's ptys, so a reply from a lane that
+    // has since ended — i.e. most of the history the channel renders — could never be attributed.
+    const ended = [{ id: 'live-other', roleId: 'research' }, { id: CLAUDE_ID, roleId: 'code' }]
+    const [e] = buildChannelFeed([], [r({ sessionId: CLAUDE_ID })], roster, ended)
+    expect(e.authorLabel).toBe('Code')
+  })
+
+  it('NEVER falls through to an id-shaped string', () => {
+    // A uuid is worse than a blank: it looks like data, so it reads as the answer rather than the
+    // failure it is. Asserted by shape, so a "prettified" 8-char hash fails this too.
+    const [e] = buildChannelFeed([], [r({ sessionId: CLAUDE_ID })], roster, [])
+    expect(e.authorLabel).toBe('unknown lane')
+    expect(e.authorLabel).not.toMatch(/[0-9a-f]{8}/i)
+    expect(e.authorLabel).not.toContain(CLAUDE_ID)
+  })
+
+  it('falls back to the roleId before giving up, when the role is gone from the roster', () => {
+    const [e] = buildChannelFeed([], [r({ sessionId: CLAUDE_ID })], roster,
+      [{ id: CLAUDE_ID, roleId: 'deleted-lane' }])
+    expect(e.authorLabel).toBe('deleted-lane') // a name, not a hash
+  })
+
+  it('matches on the CLAUDE session id — not the saved key, not the terminal id', () => {
+    // Three identifiers, confused before. A reply speaks the first one.
+    for (const wrong of [{ id: 'key-359ade91', roleId: 'code' }, { id: 't1', roleId: 'code' }]) {
+      const [e] = buildChannelFeed([], [r({ sessionId: CLAUDE_ID })], roster, [wrong])
+      expect(e.authorLabel).toBe('unknown lane')
+    }
+  })
+
+  it('groups consecutive replies from the SAME lane, now that labels resolve', () => {
+    // Behaviour change worth seeing on purpose: `isContinuation` compares authorLabel, so with
+    // uuid labels every reply was its own author and grouping silently could not work.
+    const feed = buildChannelFeed([], [
+      r({ id: 'a', sessionId: CLAUDE_ID, timestamp: '2026-07-30T10:00:00.000Z' }),
+      r({ id: 'b', sessionId: CLAUDE_ID, timestamp: '2026-07-30T10:00:30.000Z' }),
+    ], roster, [{ id: CLAUDE_ID, roleId: 'code' }])
+    expect(feed.map((e) => e.authorLabel)).toEqual(['Code', 'Code'])
   })
 })
