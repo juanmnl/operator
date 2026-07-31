@@ -33,16 +33,24 @@ export type SendResult =
  *  conversation in the middle of the field with ~1200px of dead page beside it. */
 const INSET = 16
 
-/** …but NOT for prose. The shell wants 720 — the header, the composer and the meta line all use
- *  the width. The BODY does not: at 12px, a 652px text column runs ~105 characters, well past the
- *  60–80 a reader tracks comfortably, and these are dense operational briefs rather than chat.
- *  Capping the body alone decouples the two: the row keeps its full-width meta line and the prose
- *  gets a readable measure. 470px MEASURES at ~78 characters in the body's own computed font —
- *  the top of the comfortable band. Sized by measuring, not by assuming a px-per-character: my
- *  first pass at 520 looked right arithmetically and came out at 87, still outside the band. The
- *  top of the band rather than the middle is deliberate — a narrower column would push the p90
- *  dispatch into many more lines and make the 4-line clamp hide more than it reveals. */
-const PROSE = 470
+/** …but NOT for prose. The shell wants the pane's full width — the header, the composer and the
+ *  row all use it. The BODY does not: a full-bleed row at 1800px with unconstrained text is ~300
+ *  characters a line.
+ *
+ *  A CEILING, not a fixed width. The body grows with the pane and stops at 900 (`max-width` plus
+ *  the row's flex is the clamp — there is no lower bound to enforce beyond what the pane gives).
+ *
+ *  This was 470 (~79 chars) and that was too tight. The 60–80 guideline it came from is calibrated
+ *  for SUSTAINED prose — long documents read for minutes, where the eye hunts for each next line's
+ *  start. This feed is scanned in bursts: entries are a few lines, folded at four, and the eye
+ *  returns to a known left edge constantly. Different reading task, different measure.
+ *  The content argues for it too. These bodies are path-heavy —
+ *  `dev/briefs/channel-timestamps-utc-RESULT.md` is 43 characters on its own — and `parseInline`
+ *  renders those spans as atomic chips, so breaking one mid-token is worse than a long line. At
+ *  470 they wrapped constantly.
+ *  Sized by MEASURING, which this file has now caught twice: 520px "looked right" arithmetically
+ *  and came out at 87 chars. */
+const PROSE = 900
 
 /** The avatar column: the circle and the gap before the text. Named because three things depend
  *  on it — the row, the continuation gutter that keeps a run's bodies on one edge, and ROW_MAX. */
@@ -432,7 +440,10 @@ function InlineText({ text }: { text: string }) {
             // Neutral wash, not an accent: a path is not a state. Mirrors the canvas renderer's
             // `codeBg`, via the token so it tracks all six palettes.
             background: 'var(--overlay-medium)',
-            padding: '0.5px 4px', borderRadius: 3, wordBreak: 'break-all',
+            // No `break-all`: it splits the chip mid-token on every line that runs short. The
+            // body's `break-word` still rescues a chip too long for a line of its own, which is
+            // the only case that actually needs breaking.
+            padding: '0.5px 4px', borderRadius: 3,
           }}
         >
           {s.text}
@@ -490,11 +501,14 @@ function ChannelBody({ text }: { text: string }) {
         style={{
           fontSize: 12, lineHeight: 1.55, color: 'var(--fg)',
           maxWidth: PROSE,
-          // `anywhere`, not just `break-word`: these bodies are full of unbroken 45-character
-          // paths, and in a narrow pane one of them pushed the scroller's content 13px past its
-          // own box — invisible to a per-element overflow check, because the box was clipped and
-          // only the TEXT overflowed.
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', marginTop: 2,
+          // `break-word`, NOT `anywhere`. Both let an over-long token break rather than overflow,
+          // but `anywhere` breaks EAGERLY — it will split a path to tighten the current line even
+          // when the whole token would fit on the next one. That is precisely the wrap this
+          // widening exists to stop: `parseInline` renders paths as atomic chips, so a chip cut in
+          // half mid-token costs more legibility than the long line it was avoiding.
+          // (`anywhere` was added for a narrow-pane overflow that turned out to be the paused
+          // banner, fixed at its source by stacking it — so the eager break was buying nothing.)
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', marginTop: 2,
           ...(expanded ? {} : {
             display: '-webkit-box',
             WebkitBoxOrient: 'vertical' as const,
@@ -563,7 +577,17 @@ function ChannelRow({ entry, projectId, continuation, narrow, onApprove, onRejec
         // is live enough already.
       }}
     >
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%', maxWidth: ROW_MAX, minWidth: 0 }}>
+      {/* SHRINK-TO-FIT, not `width: 100%`. The action rides this wrapper's right edge, so if the
+          wrapper always claimed the full ROW_MAX the action would sit at the ceiling regardless of
+          how much was actually said — measured at the 900px ceiling, a five-character "Done." left
+          it 877px from its own last word. `fit-content` makes the wrapper hug its widest child
+          (capped at ROW_MAX), so the action follows the text instead of the limit. */}
+      <div style={{
+        display: 'flex', gap: AVATAR_GAP, alignItems: 'flex-start',
+        width: 'fit-content',
+        maxWidth: narrow ? ROW_MAX - AVATAR_GAP - ACTION_W : ROW_MAX,
+        minWidth: 0,
+      }}>
       {/* CIRCLE — lane vocabulary. Accent tint + a STATIC hairline (a colour-changing border on a
           radiused element re-rasterizes in WKWebView), initials through laneTextColor so they
           clear 4.5:1 on the three light palettes where a raw accent collapses to ~1.4. A human or

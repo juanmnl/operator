@@ -154,8 +154,10 @@ const readable = await p.evaluate(() => {
   const avg = c.measureText('abcdefghijklmnopqrstuvwxyz ,.-/').width / 31
   return { width: Math.round(w), charsPerLine: Math.round(w / avg) }
 })
+// The target moved, deliberately: 60–80 is calibrated for SUSTAINED prose, and this feed is
+// scanned in bursts against a constant left edge. The cap is now a CEILING the body grows into.
 console.log('\n4b prose column:', readable.width, 'px ≈', readable.charsPerLine,
-  'chars/line (want 60–80; the shell measure gave ~105)')
+  `chars/line (ceiling 900px ≈ 151; grows with the pane below that)`)
 
 const target = await p.evaluate(() => {
   const t = document.querySelector('[data-channel-target]')
