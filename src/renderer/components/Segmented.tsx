@@ -45,7 +45,7 @@ export const CONTROL_OFF = 'color-mix(in srgb, var(--fg) 85%, transparent)'
 export type SegmentOrigin = 'pinned' | 'inherited'
 
 export function Segmented({
-  options, value, onChange, onClear, accent, origin = 'inherited', inheritedFrom, label, name,
+  options, value, onChange, onClear, accent, origin = 'inherited', label, name,
 }: {
   options: Array<{ id: string; label: string; hint?: string }>
   value: string
@@ -53,10 +53,9 @@ export function Segmented({
   /** Clear the pin and go back to inheriting. Absent = no route home. */
   onClear?: () => void
   accent?: string
-  /** `pinned` = set here; `inherited` = coming from a default further up the cascade. */
+  /** `pinned` = set on this lane; `inherited` = coming from the lane's preset. Since the
+   *  one-altitude collapse there is nothing else it could be, so there is no source to name. */
   origin?: SegmentOrigin
-  /** Human-readable source, for the title of an inherited value. */
-  inheritedFrom?: string
   /** Optional caption. The roster card omits it — model names identify themselves and the card is
    *  tight — but a two-option row like `worktree On/Off` is meaningless without one. */
   label?: string
@@ -111,8 +110,8 @@ export function Segmented({
               title={!active
                 ? `Switch to ${o.label}${o.hint ? ` — ${o.hint}` : ''}`
                 : pinned
-                  ? `${o.label} — pinned on this lane. Click to clear it and inherit instead.`
-                  : `${o.label} — inherited from ${inheritedFrom ?? 'the default'}. Change it there and every lane that hasn't pinned its own follows.`}
+                  ? `${o.label} — pinned on this lane. Click to clear it and use the preset instead.`
+                  : `${o.label} — from this lane's preset. Pick another to pin it here.`}
               style={{
                 fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.03em',
                 padding: '2px 7px', borderRadius: 5, cursor: 'pointer', outline: 'none', border: 'none',

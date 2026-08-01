@@ -1,5 +1,4 @@
 import type { Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
-import type { GlobalRoleDefaults } from '../../lib/model-config'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
 import { RosterPanel, type LaneSession } from './RosterPanel'
@@ -20,7 +19,7 @@ export function ProjectView({
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch,
-  resumableCount, onResumeProject, roleDefaults,
+  resumableCount, onResumeProject,
 }: {
   project: Project
   tab: ProjectTab
@@ -41,8 +40,6 @@ export function ProjectView({
   laneSessions?: Record<string, LaneSession>
   onFocusTerminal?: (terminalId: string) => void
   onCloseTerminal?: (terminalId: string) => void
-  /** GLOBAL per-role launch defaults, so each card can say which of its settings is inherited. */
-  roleDefaults?: GlobalRoleDefaults
   onAddTask: (text: string, roleId?: string) => void
   onAssignTask: (taskId: string, roleId?: string) => void
   onRemoveTask: (taskId: string) => void
@@ -135,7 +132,6 @@ export function ProjectView({
               laneSessions={laneSessions}
               onFocusTerminal={onFocusTerminal}
               onCloseTerminal={onCloseTerminal}
-              roleDefaults={roleDefaults}
             />
             <TaskQueue
               project={project}

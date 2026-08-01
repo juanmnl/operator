@@ -4,8 +4,7 @@ import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, rolePresets, roleIdFrom, isCoordin
 import { AccentPicker } from '../AccentPicker'
 import { Segmented } from '../Segmented'
 import {
-  resolveAgentConfig, configOrigins, worktreeStateOf,
-  type GlobalRoleDefaults, type ConfigOrigin,
+  resolveAgentConfig, worktreeStateOf,
 } from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
 
@@ -52,11 +51,8 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, roleDefaults }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal }: {
   project?: Project
-  /** The GLOBAL per-role defaults. A lane whose field is absent inherits from here, and the card
-   *  has to SAY so — a resolved value drawn like a pinned one makes the global look broken. */
-  roleDefaults?: GlobalRoleDefaults
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
    *  into the agent as its first message; absent/empty launches exactly as before.
@@ -400,8 +396,6 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             queued={taskCounts[role.id] ?? 0}
             selected={false}
             onPatch={(patch) => patchRole(role.id, patch)}
-            roleDefaults={roleDefaults}
-            projectDefaults={project.defaults}
             onRemove={() => removeRole(role.id)}
             onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
             onLaunch={() => { void launchRoles([role]) }}
@@ -496,8 +490,6 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   onToggleSelect={() => toggleSelect(role.id)}
                   onCollapse={() => setExpanded(null)}
                   onPatch={(patch) => patchRole(role.id, patch)}
-                  roleDefaults={roleDefaults}
-                  projectDefaults={project.defaults}
                   onRemove={() => removeRole(role.id)}
                   onLaunch={() => { void launchRoles([role]) }}
                   onView={() => {}}
@@ -545,11 +537,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent, roleDefaults, projectDefaults }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent }: {
   role: Role
-  /** The global per-role layer, so the card can distinguish inherited from pinned. */
-  roleDefaults?: GlobalRoleDefaults
-  projectDefaults?: Project['defaults']
   /** Present when this card is an EXPANDED idle row — collapses back to its LaneRow. */
   onCollapse?: () => void
   /** Drag-to-reorder, driven from the grip handle so text stays selectable. */
@@ -578,8 +567,10 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
 }) {
   // What this lane will ACTUALLY launch with, and where each field came from. The card shows the
   // resolved value — a lane reading "Fable" while it launches Opus is worse than no readout.
-  const resolved = resolveAgentConfig(role, roleDefaults, projectDefaults)
-  const origins = configOrigins(role, roleDefaults, projectDefaults)
+  const resolved = resolveAgentConfig(role)
+  // With one altitude above the lane, "where did this come from" needs no resolver: a field is
+  // pinned if this lane set it, and inherited from its preset if it didn't.
+  const pinnedField = (v: unknown) => (v !== undefined && v !== '' ? 'pinned' as const : 'inherited' as const)
   const wt = worktreeStateOf(role)
   const [editingName, setEditingName] = useState(false)
   const [editingPrompt, setEditingPrompt] = useState(false)
@@ -833,8 +824,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
             name="model"
             options={ROSTER_MODELS.map((m) => ({ id: m.id, label: m.label }))}
             value={resolved.model}
-            origin={origins.model === 'pinned' ? 'pinned' : 'inherited'}
-            inheritedFrom={ORIGIN_LABEL[origins.model]}
+            origin={pinnedField(role.model)}
             onChange={(id) => onPatch({ model: id })}
             onClear={() => onPatch({ model: undefined })}
             accent={accent}
@@ -857,7 +847,6 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
               options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
               value={resolved.useWorktree ? 'on' : 'off'}
               origin={wt === 'inherit' ? 'inherited' : 'pinned'}
-              inheritedFrom={ORIGIN_LABEL[origins.useWorktree]}
               onChange={(id) => onPatch({ useWorktree: id === 'on' })}
               onClear={() => onPatch({ useWorktree: undefined })}
               accent={accent}
@@ -872,8 +861,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
             options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))}
             value={resolved.effort}
             name="effort"
-            origin={origins.effort === 'pinned' ? 'pinned' : 'inherited'}
-            inheritedFrom={ORIGIN_LABEL[origins.effort]}
+            origin={pinnedField(role.effort)}
             onChange={(id) => onPatch({ effort: id as Role['effort'] })}
             onClear={() => onPatch({ effort: undefined })}
             accent={accent}
@@ -1219,11 +1207,3 @@ function LaneRow({
   )
 }
 
-/** Where a resolved value came from, in words the card can print. */
-const ORIGIN_LABEL: Record<ConfigOrigin, string> = {
-  pinned: 'pinned on this lane',
-  global: 'your Agents defaults',
-  project: "this project's defaults",
-  preset: 'the built-in preset',
-  fallback: 'the fallback',
-}

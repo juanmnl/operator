@@ -172,12 +172,19 @@ export function rolePresets(): Role[] {
     // Orchestrator: fast coordination. Research: strong reading, cheaper for breadth. The rest
     // pin the most capable model where quality matters most (code / review / design), Sonnet
     // for QA's higher-volume test work. All editable per project.
-    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
-    { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
-    { id: 'code', name: 'Code', model: 'opus', effort: 'high', accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
-    { id: 'review', name: 'Review', model: 'opus', effort: 'high', accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
-    { id: 'design', name: 'Design', model: 'opus', effort: 'normal', accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
-    { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', accent: '#ffd43b', prompt: DEFAULT_ROLE_PROMPTS.qa },
+    //
+    // `useWorktree` lives HERE as of the one-altitude collapse. It used to be the one field the
+    // deleted global tier seeded, which meant the preset — now the only default layer — had no
+    // opinion on it at all, and every unpinned lane would have fallen through to the hard
+    // fallback (off). These are the values that seed shipped: lanes that WRITE get isolation, so
+    // their diffs are attributable and two of them can't collide in one checkout. Review and QA
+    // read and verify, so they stay in the main checkout where the work actually is.
+    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', useWorktree: true, accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
+    { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', useWorktree: true, accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
+    { id: 'code', name: 'Code', model: 'opus', effort: 'high', useWorktree: true, accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
+    { id: 'review', name: 'Review', model: 'opus', effort: 'high', useWorktree: false, accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
+    { id: 'design', name: 'Design', model: 'opus', effort: 'normal', useWorktree: true, accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
+    { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', useWorktree: false, accent: '#ffd43b', prompt: DEFAULT_ROLE_PROMPTS.qa },
   ]
 }
 

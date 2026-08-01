@@ -48,10 +48,15 @@ describe('isStockLane', () => {
     expect(isStockLane(seeded('code', { prompt: 'do it my way' }))).toBe(false)
   })
 
-  it('treats an explicit useWorktree: false as a decision, not as absence', () => {
-    // No preset sets it, so `false` can only have come from the user turning it off.
-    expect(isStockLane(seeded('code', { useWorktree: false }))).toBe(false)
-    expect(isStockLane(seeded('code', { useWorktree: true }))).toBe(false)
+  it('treats a useWorktree that DIFFERS from the preset as a decision', () => {
+    // This used to read "any explicit value is a decision", which was right only while no preset
+    // set the field. The one-altitude collapse moved the worktree posture onto the presets, so
+    // the test is now whether the lane disagrees with its own — same shape as model and effort.
+    expect(isStockLane(seeded('code', { useWorktree: false }))).toBe(false) // code's preset is ON
+    expect(isStockLane(seeded('qa', { useWorktree: true }))).toBe(false)    // qa's preset is OFF
+    // …and matching the preset is stock, however it got written down.
+    expect(isStockLane(seeded('code', { useWorktree: true }))).toBe(true)
+    expect(isStockLane(seeded('qa', { useWorktree: false }))).toBe(true)
   })
 
   it("reads '' as unset, since real stored rosters carry empty strings", () => {

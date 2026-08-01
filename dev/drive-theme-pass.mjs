@@ -529,28 +529,9 @@ for (const [key, label] of THEMES) {
       window.__contrast('[data-probe-queued]', 'agentCard · queued badge', true),
     ]
   }))
-  // The DEFAULTS tab: a lane name in its accent (laneTextColor), and the option pickers — where
-  // the "chosen" state is accent ink at 9.5px, the size that collapses on the light palettes.
-  await p.locator('[data-page-tab="defaults"]').click()
-  await p.waitForTimeout(600)
-  await p.evaluate(PROBE)
-  settingsProbes.push(...await p.evaluate(() => {
-    // Choose one, so the accent-ink state exists to be measured rather than assumed.
-    document.querySelector('[data-default-row="operator"] [data-default-option="model:opus"]')?.click()
-    return []
-  }))
-  await p.waitForTimeout(300)
-  await p.evaluate(PROBE)
-  settingsProbes.push(...await p.evaluate(() => [
-    window.__contrast('[data-default-row="operator"] [data-default-name]', 'defaults · lane name'),
-    // This view now renders the SHARED Segmented, so it exposes the same hooks the roster does.
-    window.__contrast('[data-segment-state="pinned"]', 'defaults · chosen option', true),
-    window.__contrast('[data-segment-state="inherited"]', 'defaults · preset option', true),
-    window.__contrast('[data-segment-state="off"]', 'defaults · other option', true),
-    window.__contrast('[data-segmented="worktree"] [aria-checked="true"]', 'defaults · worktree toggle', true),
-  ]))
-  await p.screenshot({ path: `${OUT}/${key}-10-defaults.png` })
-
+  // (The DEFAULTS tab's probes lived here. That tab was deleted with the global per-role
+  //  tier it edited — model/effort/worktree are set on the lane now, and the roster card's own
+  //  Segmented probes above already cover the same pinned/inherited/off ink.)
   await p.locator('[data-page-tab="library"]').click()
   await p.waitForTimeout(700)
   // The editor pane only exists once an agent is selected — an unselected library has no

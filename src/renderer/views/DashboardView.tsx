@@ -4,8 +4,7 @@ import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor, rolePresets, isCoordinator } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, type DeliveryState } from '../lib/agent-delivery'
 import {
-  resolveAgentConfig, pruneGlobals, clearSeededRoleFields, seedGlobalDefaults,
-  migrateSeededWorktreeDefaults, clearAllPinnedRoleFields, pinnedFieldCounts, type GlobalRoleDefaults,
+  resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { landingFor } from '../lib/project-landing'
@@ -113,15 +112,16 @@ function markSeededLanePruneDone() {
   try { localStorage.setItem(PRUNE_KEY, new Date().toISOString()) } catch { /* quota */ }
 }
 
-// Same one-shot bookkeeping for the role-defaults seed migration (worktree posture). Separate key
-// from the lane prune: they answer to different stores and must be able to run independently — a
-// user who has done one has not necessarily done the other.
-const SEED_MIGRATION_KEY = 'operator.worktreeSeedMigratedAt'
-function seedMigrationDone(): boolean {
-  try { return !!localStorage.getItem(SEED_MIGRATION_KEY) } catch { return true }
+// Same one-shot bookkeeping for the ONE-ALTITUDE migration: the global per-role tier
+// (`role-defaults.json`, edited on the deleted Agents → Defaults tab) is written down onto each
+// lane as explicit pins, so removing the tier changes nobody's effective config. Separate key
+// from the lane prune: they answer to different stores and must run independently.
+const ONE_ALTITUDE_KEY = 'operator.oneAltitudeMigratedAt'
+function oneAltitudeMigrationDone(): boolean {
+  try { return !!localStorage.getItem(ONE_ALTITUDE_KEY) } catch { return true }
 }
-function markSeedMigrationDone() {
-  try { localStorage.setItem(SEED_MIGRATION_KEY, new Date().toISOString()) } catch { /* quota */ }
+function markOneAltitudeMigrationDone() {
+  try { localStorage.setItem(ONE_ALTITUDE_KEY, new Date().toISOString()) } catch { /* quota */ }
 }
 
 const LAYOUT_KEY = 'operator.sessionLayouts'
@@ -193,61 +193,6 @@ export function DashboardView() {
   /** Bumped when a reply arrives, to re-read the store. The setter's identity is stable, which is
    *  what lets the mount-once reply subscription reach it without a ref. */
   const [replyTick, setReplyTick] = useState(0)
-  /** GLOBAL per-role defaults — the user-owned layer over `rolePresets()`, from
-   *  `~/.operator/role-defaults.json`. Every project inherits it; see lib/model-config. */
-  const [roleDefaults, setRoleDefaults] = useState<GlobalRoleDefaults>({})
-  /** The launch path is reached from a mount-once dispatch subscription, so it reads the defaults
-   *  through a ref — a lane launched by a dispatch must use the CURRENT config, not the one that
-   *  existed when the subscription was set up. */
-  const roleDefaultsRef = useRef<GlobalRoleDefaults>({})
-  roleDefaultsRef.current = roleDefaults
-  /** Blocks the persist effect until the file has been read, so an empty initial state can't
-   *  overwrite real defaults — the same rule `savedHydrated` enforces for sessions/projects. */
-  const [roleDefaultsHydrated, setRoleDefaultsHydrated] = useState(false)
-  useEffect(() => {
-    const p = window.operator.loadRoleDefaults?.()
-    if (!p) { setRoleDefaultsHydrated(true); return }
-    void p.then((raw) => {
-      const stored = pruneGlobals((raw ?? {}) as GlobalRoleDefaults)
-      // First run seeds the worktree posture only — see seedGlobalDefaults for why model and
-      // effort are deliberately left to the built-in presets.
-      if (!Object.keys(stored).length) {
-        setRoleDefaults(seedGlobalDefaults())
-        // A store seeded TODAY is already on the new posture, so the migration below has nothing
-        // to do here — ever. Recording that now is what stops it re-scanning on every later launch.
-        markSeedMigrationDone()
-        setRoleDefaultsHydrated(true)
-        return
-      }
-      // …and for everyone else, ONCE: the seed only runs on an empty store, so a changed default
-      // reaches an existing install through this and nothing else (see
-      // `migrateSeededWorktreeDefaults` for how narrowly it decides).
-      if (seedMigrationDone()) { setRoleDefaults(stored); setRoleDefaultsHydrated(true); return }
-      const { globals, roles } = migrateSeededWorktreeDefaults(stored)
-      markSeedMigrationDone()
-      setRoleDefaults(globals)
-      setRoleDefaultsHydrated(true)
-      if (roles.length) {
-        // Where a lane RUNS is not something to change under someone silently — an isolated lane
-        // lands its work on a branch, which is a different answer to "where is my diff?". Undo
-        // restores the stored posture and leaves the flag set: undo means keep it.
-        const named = roles.map((id) => rolePresets().find((r) => r.id === id)?.name ?? id)
-        pushToast({
-          text: `${named.join(' and ')} now run in their own worktree`,
-          detail: 'Change it under Agents → Defaults.',
-          action: { label: 'Undo', run: () => setRoleDefaults(stored) },
-        })
-      }
-    }).catch(() => setRoleDefaultsHydrated(true))
-  }, [])
-  useEffect(() => {
-    if (!roleDefaultsHydrated) return
-    window.operator.saveRoleDefaults?.(pruneGlobals(roleDefaults))
-  }, [roleDefaults, roleDefaultsHydrated])
-  /** Edit one role's global default. `undefined` clears the field back to the built-in preset. */
-  const patchRoleDefault = useCallback((roleId: string, patch: GlobalRoleDefaults[string]) => {
-    setRoleDefaults((prev) => pruneGlobals({ ...prev, [roleId]: { ...prev[roleId], ...patch } }))
-  }, [])
   /** The kill switch for agent→agent delivery. It now DEFAULTS TO LIVE — flipped 2026-07-30.
    *
    *  It shipped paused, on the reasoning that two cooperative agents which can each answer the
@@ -1455,29 +1400,6 @@ export function DashboardView() {
     return { ok: true as const, delivered, skipped: plan.skipped.map((r) => r.name) }
   }, [logDispatch])
 
-  /** Clear EVERY per-lane model/effort pin across every project, so the global defaults win.
-   *
-   *  Distinct from the hydrate migration, which only clears fields that match their preset. This is
-   *  the harder case — a user who really did pin models per project and has changed their mind — so
-   *  it is explicit, confirmed in the UI with a named count, and backed up first. A failed backup
-   *  ABORTS: there is no undo for this other than the file it copies. */
-  const resetPinnedRoleFields = useCallback(async () => {
-    const before = projectsRef.current
-    const counts = pinnedFieldCounts(before)
-    if (!counts.fields) return
-    try {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const at = await window.operator.backupProjects?.(stamp)
-      setProjects(clearAllPinnedRoleFields(before))
-      pushToast({
-        text: `Cleared ${counts.fields} pinned setting${counts.fields === 1 ? '' : 's'} on ${counts.lanes} lane${counts.lanes === 1 ? '' : 's'}`,
-        kind: 'info',
-        detail: at ? `Every lane now inherits your Agents defaults. Backup: ${at}` : 'Every lane now inherits your Agents defaults.',
-      })
-    } catch (e) {
-      pushToast({ text: 'Nothing was changed', kind: 'error', detail: `projects.json could not be backed up, so the pins were left alone. ${String(e)}` })
-    }
-  }, [pushToast])
 
   /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
@@ -1632,6 +1554,46 @@ export function DashboardView() {
       setSavedHydrated(true)
     }).catch(() => setSavedHydrated(true))
   }, [])
+
+  /** THE ONE-ALTITUDE MIGRATION, once per install.
+   *
+   *  Model, effort and worktree used to be settable at three altitudes — the lane's pin, a global
+   *  per-role layer in `~/.operator/role-defaults.json`, and (for effort and permission mode) the
+   *  project's own defaults. The global tier and its editor are gone; a lane now shows what it
+   *  will use and lets you pin it, and that is the whole model.
+   *
+   *  Deleting a tier is only safe if nothing resolved THROUGH it changes answer, so this reads the
+   *  old file one last time and writes its verdict down as per-lane pins wherever the two cascades
+   *  would disagree (`migrateGlobalsToLanePins` resolves each lane both ways and compares, rather
+   *  than pattern-matching what it thinks the tier was doing). The file is left on disk: nothing
+   *  reads it again, and it is the record of what was there.
+   *
+   *  Gated on `savedHydrated`, which is not incidental — the projects hydrate applies
+   *  `clearSeededRoleFields` first, and that changes the answer. A lane whose seeded `model`
+   *  equals its preset resolves through the GLOBAL once that redundant pin is cleared, which is
+   *  exactly today's post-hydrate behaviour and therefore what has to be preserved. Running this
+   *  against the pre-hydrate rosters would faithfully migrate a state the user never launched in. */
+  const oneAltitudeDoneRef = useRef(oneAltitudeMigrationDone())
+  useEffect(() => {
+    if (!savedHydrated || oneAltitudeDoneRef.current) return
+    oneAltitudeDoneRef.current = true // in-memory too: the effect must not re-enter before the write lands
+    const p = window.operator.loadRoleDefaults?.()
+    if (!p) { markOneAltitudeMigrationDone(); return }
+    void p.then((raw) => {
+      const { projects: next, pins, lanes } = migrateGlobalsToLanePins(projectsRef.current, (raw ?? {}) as LegacyGlobalDefaults)
+      markOneAltitudeMigrationDone()
+      if (!pins) return // nobody had a global that outvoted a preset — nothing to write down
+      setProjects(next)
+      // No Undo, deliberately: by construction this changed no lane's effective config, so there
+      // is nothing to undo. It is worth SAYING because the settings moved house — the place to
+      // change them is now the lane itself.
+      pushToast({
+        text: `${pins} agent setting${pins === 1 ? '' : 's'} moved onto ${lanes} lane${lanes === 1 ? '' : 's'}`,
+        kind: 'info',
+        detail: 'Model, effort and worktree are set on the agent now — your Agents defaults were written onto each lane so nothing changed.',
+      })
+    }).catch(() => markOneAltitudeMigrationDone())
+  }, [savedHydrated, pushToast])
 
   // Scope is durable — relaunch lands you back inside your last project, at Project Home.
   useEffect(() => {
@@ -1938,7 +1900,7 @@ export function DashboardView() {
     // the project's saved defaults → the built-in preset. Nothing here reads `role.model` or
     // `role.useWorktree` directly any more — that is what made every seeded value look pinned and
     // left a global default with nothing to override.
-    const settings = resolveAgentConfig(role, roleDefaultsRef.current, project.defaults)
+    const settings = resolveAgentConfig(role)
     const tabs = await handleLaunchSession(
       project.path,
       {
@@ -3209,9 +3171,6 @@ export function DashboardView() {
             onFocusSession={handleSelectSession}
             onLaunchRole={(project, role) => { void handleLaunchRole(project, role, undefined, false, { focus: true }) }}
             onOpenProject={handleOpenProject}
-            roleDefaults={roleDefaults}
-            onPatchRoleDefault={patchRoleDefault}
-            onResetPinnedRoleFields={resetPinnedRoleFields}
           />
           </AppShell>
         )}
@@ -3264,7 +3223,6 @@ export function DashboardView() {
               // DispatchLog would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
-              roleDefaults={roleDefaults}
               resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />

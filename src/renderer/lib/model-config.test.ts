@@ -2,44 +2,39 @@ import { describe, it, expect } from 'vitest'
 import type { Project, Role } from '../../shared/types'
 import { rolePresets } from './roster'
 import {
-  resolveAgentConfig, configOrigins, worktreeStateOf, nextWorktreeState,
-  clearSeededRoleFields, clearAllPinnedRoleFields, pinnedFieldCounts, seededFieldCounts,
-  pruneGlobals, hasGlobalFor, seedGlobalDefaults, migrateSeededWorktreeDefaults, HARD_FALLBACK,
-  type GlobalRoleDefaults,
+  resolveAgentConfig, worktreeStateOf, clearSeededRoleFields,
+  migrateGlobalsToLanePins, HARD_FALLBACK,
+  type LegacyGlobalDefaults,
 } from './model-config'
 
 const role = (o: Partial<Role> & { id: string }): Role => ({ name: o.id, ...o })
 const project = (roster: Role[], defaults?: Project['defaults']): Project =>
   ({ id: 'p', path: '/p', name: 'p', createdAt: '', lastActiveAt: '', roster, defaults })
 
-describe('resolveAgentConfig — the cascade', () => {
-  it('falls through to the built-in preset when nothing else is set', () => {
+describe('resolveAgentConfig — two altitudes', () => {
+  it('falls through to the built-in preset when the lane pins nothing', () => {
     expect(resolveAgentConfig(role({ id: 'operator' }))).toMatchObject({ model: 'fable', effort: 'normal' })
     expect(resolveAgentConfig(role({ id: 'code' }))).toMatchObject({ model: 'opus', effort: 'high' })
   })
 
-  it('a lane PIN beats a global, which beats the preset', () => {
-    const globals: GlobalRoleDefaults = { code: { model: 'sonnet' } }
-    expect(resolveAgentConfig(role({ id: 'code' }), globals).model).toBe('sonnet')
-    expect(resolveAgentConfig(role({ id: 'code', model: 'haiku' }), globals).model).toBe('haiku')
+  it('a lane PIN beats the preset', () => {
+    expect(resolveAgentConfig(role({ id: 'code' })).model).toBe('opus')
+    expect(resolveAgentConfig(role({ id: 'code', model: 'haiku' })).model).toBe('haiku')
   })
 
   it('reaches the hard fallback only for a lane with no preset at all', () => {
     expect(resolveAgentConfig(role({ id: 'custom-lane' }))).toEqual(HARD_FALLBACK)
   })
 
-  it('is PER FIELD — pinning effort alone still inherits the global model', () => {
+  it('is PER FIELD — pinning effort alone still takes its model from the preset', () => {
     // The bug this ordering exists to prevent: resolving the whole object from the first source
     // that has anything, so one pinned field silently pins the rest.
-    const globals: GlobalRoleDefaults = { code: { model: 'sonnet', effort: 'normal' } }
-    expect(resolveAgentConfig(role({ id: 'code', effort: 'low' }), globals))
-      .toMatchObject({ model: 'sonnet', effort: 'low' })
+    expect(resolveAgentConfig(role({ id: 'code', effort: 'low' })))
+      .toMatchObject({ model: 'opus', effort: 'low' })
   })
 
   it("treats '' as NOT SET, because Project.defaults really stores model: ''", () => {
     expect(resolveAgentConfig(role({ id: 'code', model: '' })).model).toBe('opus')
-    expect(resolveAgentConfig(role({ id: 'code' }), { code: { model: '' } }).model).toBe('opus')
-    expect(resolveAgentConfig(role({ id: 'code' }), undefined, { model: '', effortLevel: undefined }).effort).toBe('high')
   })
 
   it('never returns undefined for a field the launch path requires', () => {
@@ -53,91 +48,162 @@ describe('resolveAgentConfig — the cascade', () => {
     }
   })
 
-  it("keeps the project's saved defaults in the chain (the permission-prompt regression)", () => {
-    // Was `roleLaunchSettings`: projects saved with permissionMode 'auto' regressed to prompts
-    // because a role-level undefined won.
-    expect(resolveAgentConfig(role({ id: 'code' }), undefined, { permissionMode: 'auto', effortLevel: 'normal' }))
-      .toMatchObject({ permissionMode: 'auto', effort: 'normal' })
-    // A role pin still beats it, and a lane with neither lands on the preset/hard default.
-    expect(resolveAgentConfig(role({ id: 'code', effort: 'low', permissionMode: 'bypassPermissions' }), undefined, { permissionMode: 'auto', effortLevel: 'normal' }))
+  it('a lane pin still carries permission mode (the permission-prompt regression)', () => {
+    expect(resolveAgentConfig(role({ id: 'code', effort: 'low', permissionMode: 'bypassPermissions' })))
       .toMatchObject({ permissionMode: 'bypassPermissions', effort: 'low' })
-    expect(resolveAgentConfig(role({ id: 'qa' }), undefined, undefined))
-      .toMatchObject({ permissionMode: 'default', effort: 'high' })
-  })
-
-  it('a GLOBAL effort beats the project default, which beats the preset', () => {
-    const globals: GlobalRoleDefaults = { qa: { effort: 'low' } }
-    expect(resolveAgentConfig(role({ id: 'qa' }), globals, { effortLevel: 'normal' }).effort).toBe('low')
-    expect(resolveAgentConfig(role({ id: 'qa' }), {}, { effortLevel: 'normal' }).effort).toBe('normal')
+    expect(resolveAgentConfig(role({ id: 'qa' }))).toMatchObject({ permissionMode: 'default', effort: 'high' })
   })
 })
 
 describe('useWorktree is TRI-STATE — false is a choice, not an absence', () => {
-  const globals: GlobalRoleDefaults = { code: { useWorktree: true } }
-
-  it('absent → inherits the global', () => {
-    expect(resolveAgentConfig(role({ id: 'code' }), globals).useWorktree).toBe(true)
+  it('absent → inherits the preset, which is where the posture now lives', () => {
+    expect(resolveAgentConfig(role({ id: 'code' })).useWorktree).toBe(true)
+    expect(resolveAgentConfig(role({ id: 'qa' })).useWorktree).toBe(false)
   })
 
-  it('EXPLICIT FALSE beats a global true — the bug that would break trust in the feature', () => {
+  it('EXPLICIT FALSE beats a preset true — the bug that would break trust in the feature', () => {
     // A generic truthy check here swallows every deliberate opt-out, and the user's lane keeps
     // isolating after they turned it off.
-    expect(resolveAgentConfig(role({ id: 'code', useWorktree: false }), globals).useWorktree).toBe(false)
+    expect(resolveAgentConfig(role({ id: 'code', useWorktree: false })).useWorktree).toBe(false)
   })
 
-  it('explicit true beats a global false', () => {
-    expect(resolveAgentConfig(role({ id: 'code', useWorktree: true }), { code: { useWorktree: false } }).useWorktree).toBe(true)
+  it('explicit true beats a preset false', () => {
+    expect(resolveAgentConfig(role({ id: 'qa', useWorktree: true })).useWorktree).toBe(true)
   })
 
-  it('defaults to off when neither says anything', () => {
-    expect(resolveAgentConfig(role({ id: 'code' })).useWorktree).toBe(false)
+  it('defaults to off for a lane with no preset to inherit from', () => {
+    expect(resolveAgentConfig(role({ id: 'custom' })).useWorktree).toBe(false)
   })
 
-  it('the lane control cycles inherit → on → off → inherit, so a pin has a route home', () => {
-    // The old `!role.useWorktree` had no `undefined` in its cycle: one click pinned it forever.
+  it('the lane control reads inherit / on / off, so a pin has a route home', () => {
     expect(worktreeStateOf(role({ id: 'code' }))).toBe('inherit')
-    expect(nextWorktreeState('inherit')).toBe(true)
     expect(worktreeStateOf(role({ id: 'code', useWorktree: true }))).toBe('on')
-    expect(nextWorktreeState('on')).toBe(false)
     expect(worktreeStateOf(role({ id: 'code', useWorktree: false }))).toBe('off')
-    expect(nextWorktreeState('off')).toBeUndefined()
   })
 
-  it('reports an explicit false as PINNED, not as a fall-through', () => {
-    expect(configOrigins(role({ id: 'code', useWorktree: false }), globals).useWorktree).toBe('pinned')
-    expect(configOrigins(role({ id: 'code' }), globals).useWorktree).toBe('global')
-    expect(configOrigins(role({ id: 'code' }), {}).useWorktree).toBe('fallback')
+  it('EVERY writing lane still isolates, which is what the deleted global seed used to do', () => {
+    // The posture moved from `seedGlobalDefaults()` onto the presets. If it had not, all six
+    // would have fallen to the hard fallback (off) the moment the global tier was removed.
+    const on = (id: string) => resolveAgentConfig(role({ id })).useWorktree
+    expect([on('code'), on('design'), on('operator'), on('research')]).toEqual([true, true, true, true])
+    expect([on('review'), on('qa')]).toEqual([false, false])
   })
 })
 
-describe("THE USER'S STORY: operator → opus, configured once", () => {
-  // "I want from now on, Operator to use Opus instead of Fable. I should be able to config once."
-  const globals: GlobalRoleDefaults = { operator: { model: 'opus' } }
+describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () => {
+  // THE PROPERTY THAT MATTERS: after the migration, every lane resolves to exactly what it
+  // resolved to before the global tier was deleted. Everything else here is a detail of how.
+  const legacyResolveForTest = (r: Role, g: LegacyGlobalDefaults | undefined, d: Project['defaults']) => {
+    const preset = rolePresets().find((p) => p.id === r.id)
+    const gg = g?.[r.id]
+    const set = <T>(v: T | undefined | null): v is T => v !== undefined && v !== null && v !== ''
+    const setBool = (v: boolean | undefined | null): v is boolean => v !== undefined && v !== null
+    return {
+      model: [r.model, gg?.model, preset?.model].find(set) ?? HARD_FALLBACK.model,
+      effort: [r.effort, gg?.effort, d?.effortLevel, preset?.effort].find(set) ?? HARD_FALLBACK.effort,
+      permissionMode: [r.permissionMode, gg?.permissionMode, d?.permissionMode, preset?.permissionMode].find(set) ?? HARD_FALLBACK.permissionMode,
+      useWorktree: [r.useWorktree, gg?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree,
+    }
+  }
 
-  it('every project resolves operator to opus once the global is set', () => {
-    const projects = [
-      project([role({ id: 'operator' })]),                       // already inheriting
-      project([role({ id: 'operator', model: undefined })]),     // same, explicitly
+  it('NO LANE CHANGES ITS EFFECTIVE CONFIG — across a matrix of stores and rosters', () => {
+    const stores: Array<LegacyGlobalDefaults | undefined> = [
+      undefined,
+      {},
+      { operator: { model: 'opus' } },                                     // the user's story
+      { code: { useWorktree: true }, qa: { useWorktree: false } },         // the shipped seed
+      { operator: { useWorktree: false }, research: { useWorktree: false } }, // the pre-flip seed
+      { qa: { model: 'haiku', effort: 'low', permissionMode: 'auto', useWorktree: true } },
+      { code: { model: 'opus' } },                                        // agrees with the preset
     ]
-    for (const p of projects) {
-      expect(resolveAgentConfig(p.roster![0], globals, p.defaults).model).toBe('opus')
+    const rosters: Role[][] = [
+      rolePresets().map((p) => ({ ...p })),                               // fully seeded (legacy)
+      rolePresets().map((p) => role({ id: p.id })),                       // fully inheriting
+      [role({ id: 'code', model: 'haiku' }), role({ id: 'qa', effort: 'low' }), role({ id: 'operator', useWorktree: false })],
+      [role({ id: 'custom-lane' })],                                      // no preset at all
+      [],
+    ]
+    const defaultsList: Array<Project['defaults']> = [
+      undefined, { model: '', effortLevel: 'low' }, { permissionMode: 'auto', effortLevel: 'normal' },
+    ]
+
+    for (const globals of stores) {
+      for (const roster of rosters) {
+        for (const defaults of defaultsList) {
+          const p = project(roster.map((r) => ({ ...r })), defaults)
+          const before = (p.roster ?? []).map((r) => legacyResolveForTest(r, globals, defaults))
+          const out = migrateGlobalsToLanePins([p], globals)
+          const after = (out.projects[0].roster ?? []).map((r) => resolveAgentConfig(r))
+          expect(after).toEqual(before)
+        }
+      }
     }
   })
 
-  it('INCLUDING a project whose stored role still says fable, because it matched the preset', () => {
-    // This is the crux. A seeded value is indistinguishable from a pin, so without the migration
-    // the global would be ignored forever — which is what "does nothing" looked like.
-    const seeded = project([role({ id: 'operator', model: 'fable', effort: 'normal' })])
-    expect(resolveAgentConfig(seeded.roster![0], globals).model).toBe('fable') // before
-    const cleaned = clearSeededRoleFields(seeded)
-    expect(resolveAgentConfig(cleaned.roster![0], globals).model).toBe('opus') // after
+  it('is MINIMAL — a global that agrees with the preset writes no pin at all', () => {
+    // Pinning everything would be easier and would also mean no future preset change could ever
+    // reach anyone. `code`'s preset is already opus, and its worktree posture already true.
+    const p = project([role({ id: 'code' })])
+    const out = migrateGlobalsToLanePins([p], { code: { model: 'opus', useWorktree: true } })
+    expect(out.pins).toBe(0)
+    expect(out.projects[0]).toBe(p)          // same reference → hydrate can early-bail
+    expect(out.projects[0].roster![0].model).toBeUndefined()
   })
 
-  it('but a project that deliberately pinned sonnet KEEPS sonnet', () => {
-    const pinned = project([role({ id: 'operator', model: 'sonnet' })])
-    const cleaned = clearSeededRoleFields(pinned)
-    expect(cleaned.roster![0].model).toBe('sonnet') // untouched by the migration
-    expect(resolveAgentConfig(cleaned.roster![0], globals).model).toBe('sonnet')
+  it('writes the pin when the global DISAGREES with the preset', () => {
+    const store = { operator: { model: 'opus', useWorktree: true } }
+    const out = migrateGlobalsToLanePins([project([role({ id: 'operator' })])], store)
+    expect(out).toMatchObject({ pins: 1, lanes: 1 })
+    expect(out.projects[0].roster![0].model).toBe('opus') // preset is fable
+  })
+
+  it('pins worktree OFF for a store with no entry for that lane — that WAS the old answer', () => {
+    // The old cascade had no preset layer for `useWorktree`: an absent global fell straight to
+    // the hard fallback, i.e. off. The preset now says `code` isolates, so preserving what the
+    // user actually launched with means writing the `false` down rather than quietly flipping
+    // four lanes into worktrees. This is the case that makes "resolve both ways and compare"
+    // worth more than pattern-matching the tier.
+    const out = migrateGlobalsToLanePins([project([role({ id: 'code' })])], {})
+    expect(out.projects[0].roster![0].useWorktree).toBe(false)
+  })
+
+  it("carries a project's effort default down, since that layer is gone too", () => {
+    const p = project([role({ id: 'qa' })], { effortLevel: 'low' }) // qa's preset effort is high
+    const out = migrateGlobalsToLanePins([p], undefined)
+    expect(out.projects[0].roster![0].effort).toBe('low')
+  })
+
+  it('preserves a deliberate worktree opt-out rather than re-deriving it', () => {
+    const p = project([role({ id: 'code', useWorktree: false })])
+    const out = migrateGlobalsToLanePins([p], { code: { useWorktree: true } })
+    expect(out.pins).toBe(0) // the lane already pinned false; both cascades agree
+    expect(resolveAgentConfig(out.projects[0].roster![0]).useWorktree).toBe(false)
+  })
+
+  it('is IDEMPOTENT — the second pass has nothing left to write', () => {
+    const store = { operator: { model: 'opus', useWorktree: true } }
+    const p = project([role({ id: 'operator' })])
+    const once = migrateGlobalsToLanePins([p], store)
+    const twice = migrateGlobalsToLanePins(once.projects, store)
+    expect(twice.pins).toBe(0)
+    expect(twice.projects).toBe(once.projects)
+  })
+
+  it('leaves a rosterless project, and every other field, alone', () => {
+    const bare: Project = { id: 'x', path: '/x', name: 'x', createdAt: '', lastActiveAt: '' }
+    expect(migrateGlobalsToLanePins([bare], { code: { model: 'haiku' } }).projects[0]).toBe(bare)
+    const out = migrateGlobalsToLanePins(
+      [project([role({ id: 'operator', name: 'Operator', accent: '#c98bff', prompt: 'charter' })])],
+      { operator: { model: 'opus', useWorktree: true } },
+    )
+    expect(out.projects[0].roster![0]).toMatchObject({ id: 'operator', name: 'Operator', accent: '#c98bff', prompt: 'charter' })
+  })
+
+  it('does not mutate what it was handed', () => {
+    const p = project([role({ id: 'operator' })])
+    const snapshot = JSON.parse(JSON.stringify(p))
+    migrateGlobalsToLanePins([p], { operator: { model: 'opus', useWorktree: true } })
+    expect(p).toEqual(snapshot)
   })
 })
 
@@ -154,8 +220,7 @@ describe('clearSeededRoleFields — the hydrate migration', () => {
     expect(out.roster![1].effort).toBeUndefined()
   })
 
-  it('is a NO-OP today — the cascade lands on the same value it cleared', () => {
-    // This is what makes it safe to run unattended on hydrate.
+  it('is a NO-OP for the launch — the cascade lands on the same value it cleared', () => {
     for (const preset of rolePresets()) {
       const before = resolveAgentConfig(preset)
       const after = resolveAgentConfig(clearSeededRoleFields(project([preset])).roster![0])
@@ -181,169 +246,8 @@ describe('clearSeededRoleFields — the hydrate migration', () => {
     expect(clearSeededRoleFields(p)).toBe(p)
   })
 
-  it('does not touch useWorktree — presets never set it, so there is nothing seeded to undo', () => {
+  it('does not touch useWorktree — a lane\'s opt-out is never "seeded"', () => {
     const p = project([role({ id: 'code', model: 'opus', useWorktree: false })])
     expect(clearSeededRoleFields(p).roster![0].useWorktree).toBe(false)
-  })
-
-  it('counts what it would do, for the copy that has to name a number', () => {
-    const counts = seededFieldCounts([
-      project([role({ id: 'code', model: 'opus', effort: 'high' })]),
-      project([role({ id: 'operator', model: 'opus' })]),
-    ])
-    expect(counts).toEqual({ clear: 2, pinned: 1, projects: 1 })
-  })
-})
-
-describe('clearAllPinnedRoleFields — the explicit reset', () => {
-  it('clears every pin, not only the seeded ones', () => {
-    const projects = [
-      project([role({ id: 'operator', model: 'opus' }), role({ id: 'code', model: 'fable', effort: 'low' })]),
-    ]
-    const out = clearAllPinnedRoleFields(projects)
-    for (const r of out[0].roster!) {
-      expect(r.model).toBeUndefined()
-      expect(r.effort).toBeUndefined()
-    }
-  })
-
-  it('leaves everything else on the role intact', () => {
-    const out = clearAllPinnedRoleFields([project([role({ id: 'code', name: 'Code', model: 'opus', accent: '#7ee787', prompt: 'charter', useWorktree: true })])])
-    expect(out[0].roster![0]).toMatchObject({ id: 'code', name: 'Code', accent: '#7ee787', prompt: 'charter', useWorktree: true })
-  })
-
-  it('returns the same project object when it has no pins', () => {
-    const p = project([role({ id: 'code' })])
-    expect(clearAllPinnedRoleFields([p])[0]).toBe(p)
-  })
-
-  it('counts fields, lanes and projects for the confirm copy', () => {
-    expect(pinnedFieldCounts([
-      project([role({ id: 'code', model: 'opus', effort: 'low' }), role({ id: 'qa' })]),
-      project([role({ id: 'operator', model: 'opus' })]),
-      project([role({ id: 'design' })]),
-    ])).toEqual({ fields: 3, lanes: 2, projects: 2 })
-  })
-})
-
-describe('the global store itself', () => {
-  it('prunes empty entries so a cleared role stops reading as configured', () => {
-    expect(pruneGlobals({ code: { model: '' }, qa: {}, operator: { model: 'opus' } }))
-      .toEqual({ operator: { model: 'opus' } })
-  })
-
-  it('keeps an explicit useWorktree: false — pruning it would silently drop an opt-out', () => {
-    expect(pruneGlobals({ code: { useWorktree: false } })).toEqual({ code: { useWorktree: false } })
-  })
-
-  it('hasGlobalFor sees a false worktree as configured', () => {
-    expect(hasGlobalFor({ code: { useWorktree: false } }, 'code')).toBe(true)
-    expect(hasGlobalFor({ code: {} }, 'code')).toBe(false)
-    expect(hasGlobalFor(undefined, 'code')).toBe(false)
-  })
-
-  it('seeds only the worktree posture, leaving model and effort to the presets', () => {
-    const seed = seedGlobalDefaults()
-    for (const g of Object.values(seed)) {
-      expect(g.model).toBeUndefined()
-      expect(g.effort).toBeUndefined()
-      expect(typeof g.useWorktree).toBe('boolean')
-    }
-    // Every lane that writes to the repo gets isolation — which now includes the coordinator
-    // (it lands merges and edits notes) and research (its deliverable is a file).
-    expect(seed.code.useWorktree).toBe(true)
-    expect(seed.design.useWorktree).toBe(true)
-    expect(seed.operator.useWorktree).toBe(true)
-    expect(seed.research.useWorktree).toBe(true)
-    expect(seed.review.useWorktree).toBe(false)
-    expect(seed.qa.useWorktree).toBe(false)
-    // And the seed survives a round-trip through the store's own pruning.
-    expect(pruneGlobals(seed)).toEqual(seed)
-  })
-
-  describe('migrateSeededWorktreeDefaults', () => {
-    // The real file this shipped against: exactly the old seed, untouched by the user.
-    const legacyStore: GlobalRoleDefaults = {
-      code: { useWorktree: true },
-      design: { useWorktree: true },
-      operator: { useWorktree: false },
-      qa: { useWorktree: false },
-      research: { useWorktree: false },
-      review: { useWorktree: false },
-    }
-
-    it('flips the two roles whose seed moved, and nothing else', () => {
-      const { globals, roles } = migrateSeededWorktreeDefaults(legacyStore)
-      expect(roles.sort()).toEqual(['operator', 'research'])
-      expect(globals.operator.useWorktree).toBe(true)
-      expect(globals.research.useWorktree).toBe(true)
-      expect(globals.review.useWorktree).toBe(false) // seed never moved for this one
-      expect(globals.qa.useWorktree).toBe(false)
-      expect(globals.code.useWorktree).toBe(true)
-    })
-
-    it('lands the legacy store exactly on the current seed', () => {
-      expect(migrateSeededWorktreeDefaults(legacyStore).globals).toEqual(seedGlobalDefaults())
-    })
-
-    it('leaves an ABSENT entry absent — absent means inherit, which the user had to choose', () => {
-      const { globals, roles } = migrateSeededWorktreeDefaults({ code: { useWorktree: true } })
-      expect(roles).toEqual([])
-      expect(globals.operator).toBeUndefined()
-      expect(globals.research).toBeUndefined()
-    })
-
-    it('reports nothing when the store is already on the new value', () => {
-      const { globals, roles } = migrateSeededWorktreeDefaults(seedGlobalDefaults())
-      expect(roles).toEqual([])
-      expect(globals).toEqual(seedGlobalDefaults())
-    })
-
-    it('keeps the rest of a migrated role\'s entry', () => {
-      const { globals } = migrateSeededWorktreeDefaults({
-        operator: { model: 'opus', effort: 'low', useWorktree: false },
-      })
-      expect(globals.operator).toEqual({ model: 'opus', effort: 'low', useWorktree: true })
-    })
-
-    it('returns the input BY REFERENCE when nothing applies, so hydrate can early-bail', () => {
-      const already = seedGlobalDefaults()
-      expect(migrateSeededWorktreeDefaults(already).globals).toBe(already)
-    })
-
-    it('is idempotent — a second pass finds nothing left to flip', () => {
-      const first = migrateSeededWorktreeDefaults(legacyStore)
-      const second = migrateSeededWorktreeDefaults(first.globals)
-      expect(second.roles).toEqual([])
-      expect(second.globals).toBe(first.globals)
-    })
-
-    it('does not mutate the store it was handed', () => {
-      const before = JSON.parse(JSON.stringify(legacyStore))
-      migrateSeededWorktreeDefaults(legacyStore)
-      expect(legacyStore).toEqual(before)
-    })
-
-    it('leaves the migrated result stable through the store\'s own pruning', () => {
-      const { globals } = migrateSeededWorktreeDefaults(legacyStore)
-      expect(pruneGlobals(globals)).toEqual(globals)
-    })
-  })
-
-  it('survives a role-defaults.json round-trip', () => {
-    const seed = seedGlobalDefaults()
-    expect(JSON.parse(JSON.stringify(seed))).toEqual(seed)
-  })
-})
-
-describe('configOrigins — what the roster card prints', () => {
-  it('names each layer', () => {
-    const globals: GlobalRoleDefaults = { code: { effort: 'normal' } }
-    const o = configOrigins(role({ id: 'code', model: 'haiku' }), globals, { permissionMode: 'auto' })
-    expect(o.model).toBe('pinned')
-    expect(o.effort).toBe('global')
-    expect(o.permissionMode).toBe('project')
-    expect(configOrigins(role({ id: 'code' })).model).toBe('preset')
-    expect(configOrigins(role({ id: 'unknown' })).model).toBe('fallback')
   })
 })

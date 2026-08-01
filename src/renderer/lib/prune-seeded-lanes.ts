@@ -69,7 +69,12 @@ export function isStockLane(role: Role): boolean {
   if (!unset(role.accent) && role.accent !== preset.accent) return false
   if (!unset(role.permissionMode)) return false // no preset pins one, so any value is the user's
   if (!unset(role.agentName)) return false
-  if (role.useWorktree !== undefined) return false // incl. an explicit `false` — still a decision
+  // Same shape as model/effort above, and it did NOT used to be: this was
+  // `role.useWorktree !== undefined` — any value at all meant the user had decided — which was
+  // right only while no preset set the field. The one-altitude collapse moved the worktree
+  // posture onto the presets (it was the one field the deleted global tier seeded), so an
+  // explicit value can now be the stock one, and the test is whether it DIFFERS.
+  if (role.useWorktree !== undefined && role.useWorktree !== preset.useWorktree) return false
   if (role.prompt !== undefined && !stockPrompts(role.id).includes(role.prompt)) return false
   return true
 }
