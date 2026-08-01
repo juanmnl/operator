@@ -590,3 +590,79 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
   0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--tw-fill, var(--fg-muted)); }
   50%      { opacity: var(--tw-max, 0.85); transform: scale(1); fill: var(--tw-fill-peak, var(--fg)); }
 }
+
+/* ── The task board (components/session/TaskBoard.tsx) ─────────────────────────
+   Only what inline styles can't express: hover/focus states, the title clamp, and
+   the hover-revealed delete. Everything with a colour goes through a token. */
+
+.tb-card { position: relative; }
+
+/* Title: up to three lines, then ellipsis. A board card is a glance, and a card that
+   grows to fit a 400-word task pushes the rest of its column off the screen. */
+.tb-title {
+  font-size: 12.5px; line-height: 1.4; color: var(--fg); word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
+/* A closed task recedes by INK, never by opacity on the card: group opacity compounds,
+   can't be overridden per child, and halves every child's contrast.
+   NOT --fg-muted: that token is META ink, held to 3:1, and a card title is body text you
+   actually read — measured, it landed at 3.73:1 on mr-pink-light. Receding --fg toward the
+   surface instead (the `.op-row .op-lbl` precedent) keeps the title above the body floor on
+   every palette while still sitting a step behind a live card's. */
+.tb-title-closed { color: color-mix(in srgb, var(--fg) 74%, transparent); }
+
+/* Small mono verb button. Sits at rest in muted ink and brightens on hover, so the card's
+   actions are always legible without a hover hunt and never shout over the task itself. */
+.tb-btn {
+  flex-shrink: 0; font-family: var(--font-mono); font-size: 10px; line-height: 1.4;
+  padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: transparent; color: var(--fg-muted); cursor: pointer; outline: none;
+  white-space: nowrap;
+}
+.tb-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-muted); }
+/* A designed focus indicator, not the browser's ring: inset so it can't be clipped by the
+   card's overflow, and a box-shadow rather than a border so no radiused element ever changes
+   border colour (the WKWebView re-rasterize freeze). */
+.tb-btn:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); color: var(--fg); }
+.tb-btn:disabled { color: var(--fg-muted); cursor: default; opacity: 0.45; }
+/* The primary verb. Accent ink alone collapses on the light palettes — measured 2.1:1 on
+   1984-light, where --accent is a bright #0098fd — so it goes through the SAME correction the
+   app already applies to lane accents drawn as text: mix --lane-ink-blend of --fg into it (0% on
+   dark, 70% on light). The hue survives; the ratio clears the floor. An accent-tinted border
+   carries the "this is the primary action" weight that the blend takes out of the ink, and it is
+   a STATIC colour, so no radiused element ever changes border colour (the WKWebView freeze). */
+.tb-btn-primary {
+  color: color-mix(in srgb, var(--accent), var(--fg) var(--lane-ink-blend, 0%));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.tb-btn-primary:hover:not(:disabled) { border-color: var(--accent); }
+.tb-btn-icon { padding: 2px 7px; }
+
+/* Delete. Corner-anchored so it reserves no space at rest, revealed on hover or when
+   anything in the card takes focus (so it's reachable by keyboard, not just by mouse). */
+.tb-del {
+  position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; padding: 0;
+  display: grid; place-items: center; border: none; background: transparent;
+  color: var(--fg-muted); font-size: 11px; cursor: pointer; outline: none;
+  opacity: 0; transition: opacity 120ms;
+}
+.tb-card:hover .tb-del, .tb-card:focus-within .tb-del, .tb-del:focus-visible { opacity: 1; }
+.tb-del:hover { color: var(--fg); }
+
+/* Delegation, collapsed into the parent card. A row, not a nested board. */
+.tb-child {
+  display: flex; align-items: center; gap: 5px; width: 100%; margin-top: 6px;
+  padding: 3px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: transparent; font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--fg-muted); cursor: pointer; outline: none; text-align: left;
+}
+.tb-child:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-muted); }
+.tb-child:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.tb-child:disabled { cursor: default; }
+
+/* Lane picker: a native select laid transparently over a dot + name. */
+.tb-assignee {
+  position: relative; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  padding: 2px 6px; border-radius: 7px; border: 1px solid var(--border);
+}
+.tb-assignee:hover { border-color: var(--fg-muted); }
