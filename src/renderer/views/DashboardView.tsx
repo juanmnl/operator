@@ -18,6 +18,7 @@ import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
+import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
 import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
@@ -2350,6 +2351,9 @@ export function DashboardView() {
   // stable saved key rather than the per-run session id.
   const [sessionAccents, setSessionAccents] = useState<Record<string, string>>(() => loadSessionAccents())
   const [accentPicker, setAccentPicker] = useState<{ sessionId: string; top: number; left: number } | null>(null)
+  // The rail tile's context menu. Held HERE, not in ProjectRail, for the same reason the accent
+  // picker is: the rail's tile column clips its overflow at 44px.
+  const [railMenu, setRailMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
 
   const roleOf = useCallback((session: AgentSession): Role | undefined => {
     if (!session.roleId) return undefined
@@ -2976,6 +2980,53 @@ export function DashboardView() {
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
 
+  // THE RAIL TILE'S MENU — deliberately SHORTER than the gallery card's, because the rail is a
+  // switcher and the card is the project's admin surface.
+  //
+  //   Reveal in Finder / Project Claude files   carry straight over: they act on the folder, need
+  //                                             no room, and are the two things you want about a
+  //                                             project you are working beside.
+  //   Close project · end N agents              the one verb that belongs HERE rather than there:
+  //                                             the rail is where you notice a project is still
+  //                                             live, because a tile only appears while it is.
+  //   Rename / Edit description                 NOT here. Both edit in place on the card, and a
+  //                                             44px strip has nowhere to host an editor.
+  //   Forget project                            NOT here, and this is the deliberate omission.
+  //                                             Rail membership IS liveness — a tile is on screen
+  //                                             because something is running in that project — so
+  //                                             the one surface where Forget would sit next to a
+  //                                             running agent is this one. It destroys roster,
+  //                                             tasks and notes; the gallery is ⌘⇧O away and is
+  //                                             where it already lives, separated and confirmed.
+  const railMenuProject = railMenu ? projects.find((p) => p.id === railMenu.projectId) : undefined
+  const railMenuItems = useMemo((): CardMenuItem[] => {
+    if (!railMenuProject) return []
+    const project = railMenuProject
+    const lost = !project.path
+    const live = projectActivities[project.id]?.live ?? 0
+    return [
+      { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
+      { label: 'Project Claude files', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
+      // Only when there IS something to close — with no live lane this would be Archive under
+      // another name, and the rail is not where you shelve things.
+      //
+      // CONFIRM-GATED, which is one notch STRONGER than the gallery's copy of this item (there
+      // the guard is the Undo toast alone). It ends ptys that cannot be brought back, and here
+      // it is two clicks from a mis-aimed right-click on the strip you navigate by — so it arms
+      // and relabels first, and keeps the same toast afterwards. Not danger-toned: red is the
+      // gallery's mark for Forget, and the same verb must not read as two different weights on
+      // two surfaces.
+      ...(live > 0
+        ? [{
+            label: `Close project · end ${live} agent${live === 1 ? '' : 's'}`,
+            onClick: () => { void closeProject(project.id) },
+            separator: true,
+            confirm: true,
+          }]
+        : []),
+    ]
+  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject])
+
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
@@ -2988,6 +3039,16 @@ export function DashboardView() {
           title={accentTargetRole ? `${accentTargetRole.name} lane` : (customNames[accentTarget.id] || accentTarget.projectName)}
           onPick={(accent) => { setAccentForSession(accentTarget, accent); setAccentPicker(null) }}
           onClose={() => setAccentPicker(null)}
+        />
+      )}
+      {/* Project actions (right-click a rail tile). Same reason it lives out here: the rail's
+          tile column is a 44px clipping scroller. Same menu the gallery card uses, shorter list. */}
+      {railMenu && railMenuProject && (
+        <CardMenu
+          at={{ top: railMenu.top, left: railMenu.left }}
+          title={railMenuProject.name}
+          items={railMenuItems}
+          onClose={() => setRailMenu(null)}
         />
       )}
       {/* The left strip: the PERSISTENT project rail, then the collapsible sidebar beside it.
@@ -3006,6 +3067,8 @@ export function DashboardView() {
         onOpenAgents={handleOpenAgents}
         agentsActive={contentMode === 'agents'}
         onReorder={handleReorderProject}
+        onTileMenu={(projectId, anchor) => setRailMenu({ projectId, ...anchor })}
+        menuProjectId={railMenu?.projectId ?? null}
       />
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so
