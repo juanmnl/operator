@@ -59,8 +59,19 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   roleDefaults?: GlobalRoleDefaults
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
-   *  into the agent as its first message; absent/empty launches exactly as before. */
-  onLaunchRole?: (project: Project, role: Role, opts?: { brief?: string; launchDevServer?: boolean }) => void
+   *  into the agent as its first message; absent/empty launches exactly as before.
+   *
+   *  `opts` and `launchDevServer` are REQUIRED, deliberately. The first cut had both optional,
+   *  which meant `onLaunchRole(project, role)` type-checked and silently launched with the dev
+   *  server OFF — a regression the old positional `(project, role, dev)` signature made
+   *  impossible. An object is only safer than positional arguments if it doesn't reintroduce
+   *  the omission it was meant to prevent.
+   *
+   *  It resolves to the spawned session (or `undefined` if the spawn produced nothing), because
+   *  the brief is the one piece of user-authored text in this flow and the only thing not
+   *  durable: without a result there is no way to know a launch failed, and the typed text is
+   *  cleared and gone. Structural, so this file doesn't need TerminalTab. */
+  onLaunchRole?: (project: Project, role: Role, opts: { brief?: string; launchDevServer: boolean }) => Promise<{ id: string } | undefined> | void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
   /** roleId → live session runtime. The card shows the phase in its live pill (the per-lane token
@@ -105,6 +116,10 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   // per-launch, not a project setting: it sits on the launch row, is consumed by whichever
   // Launch you press, and clears afterwards so it can't silently ride into the next one.
   const [brief, setBrief] = useState('')
+  // One transient line under the launch row: why a Return didn't launch, or that a launch
+  // came back empty. Return refusing silently is the same dead key as Return fanning out is
+  // a hazard — a guard the user can't see reads as the feature being broken.
+  const [note, setNote] = useState<string | null>(null)
   // Lanes ticked for a batch launch. Held as ids (not Role objects) so an edit to a
   // role while it's selected doesn't strand a stale copy.
   const [selected, setSelected] = useState<string[]>([])
@@ -130,13 +145,26 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
     ? roles.filter((r) => picked.includes(r.id))
     : roles.filter((r) => !isLive(r.id))
   // Every Launch on this board goes through here, so there is exactly one place that decides
-  // what a brief does. ONE brief applies to EVERY lane in a batch (see below); it is read
-  // before the clear so the forEach can't race the state update.
-  const launchRoles = (targets: Role[]) => {
+  // what a brief does. ONE brief applies to EVERY lane in a batch; it is read before the clear
+  // so the fan-out can't race the state update.
+  //
+  // The brief is cleared OPTIMISTICALLY and restored if every launch came back empty. Clearing
+  // is the safety property (a stale brief must not ride into a launch you didn't mean), so it
+  // can't wait on the network; but `handleLaunchSession` does `if (!result) continue` on a
+  // failed `terminalSpawn` — no terminal, no toast, no error — and the user's only piece of
+  // authored text would be gone with no record anywhere. Restore is conservative on both sides:
+  // only when NOTHING launched, and only if the field is still empty, so it can't clobber
+  // something typed in the meantime.
+  const launchRoles = async (targets: Role[]) => {
     if (!onLaunchRole || !targets.length) return
     const b = brief.trim() || undefined
-    targets.forEach((r) => onLaunchRole(project, r, { brief: b, launchDevServer: devServer }))
     setBrief('')
+    setNote(null)
+    const spawned = await Promise.all(targets.map((r) => onLaunchRole(project, r, { brief: b, launchDevServer: devServer })))
+    if (b && spawned.every((s) => !s)) {
+      setBrief((cur) => (cur === '' ? b : cur))
+      setNote(`Nothing launched — your brief is still here.`)
+    }
   }
   // The split that drives the whole board. Both keep roster order, so dragging a lane
   // between the two sections still writes one linear roster.
@@ -205,13 +233,43 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           <input
             data-launch-brief
             value={brief}
-            onChange={(e) => setBrief(e.target.value)}
+            onChange={(e) => { setBrief(e.target.value); setNote(null) }}
             onKeyDown={(e) => {
               if (e.key !== 'Enter') return
               e.preventDefault()
-              // Return launches what the button beside it says it will — the selection if
-              // there is one, otherwise every lane that isn't already live.
-              launchRoles(launchTargets)
+              // RETURN NEVER FANS OUT. It used to launch `launchTargets`, which with nothing
+              // selected is every non-live lane — so clicking into this field on a fresh
+              // project and pressing Return, without typing a character, spawned six worktrees
+              // and six Claude Code sessions. No confirm, no undo; unwinding it is six session
+              // closes plus six worktree removals.
+              //
+              // The guard has to be proportional to the damage, and the damage here is the
+              // largest single action on the screen. Before this field existed, launching
+              // everything required deliberately clicking a button that SAID `Launch all →`;
+              // putting the same action behind the default key of a text input — where Return
+              // conventionally submits the one thing you typed — is what broke that. So:
+              //
+              //   Return          launches the SELECTION. A ticked set is an explicit target
+              //                   the user built, and the button beside reads `Launch N →`.
+              //   Return, none    refuses, and SAYS why. Not a dead key: an invisible guard
+              //                   reads as the feature being broken.
+              //   ⌘/⇧ Return      the deliberate fan-out, the keyboard twin of `Launch all →`.
+              //
+              // Note this is about the TARGET, not the brief: an empty brief with lanes ticked
+              // still launches (that is byte-identical to pressing the button, and valid), and
+              // a typed brief with nothing ticked still refuses — because six agents on one
+              // instruction is exactly the surprise being guarded against.
+              const deliberate = e.metaKey || e.shiftKey
+              if (!picked.length && !deliberate) {
+                setNote(launchTargets.length === 0
+                  // 01-C: every lane live and nothing ticked — the batch button is hidden
+                  // (it gates on launchTargets), so Return had nothing to do and no way to
+                  // say so. Now it says so.
+                  ? 'Every lane is already live — open one to give it this brief.'
+                  : `Select the lanes to launch, or ⌘Return to launch all ${launchTargets.length}.`)
+                return
+              }
+              void launchRoles(launchTargets)
               setSelected([])
             }}
             placeholder="What do you want done?"
@@ -226,7 +284,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           />
           {roles.length > 1 && launchTargets.length > 0 && (
             <button
-              onClick={() => { launchRoles(launchTargets); setSelected([]) }}
+              onClick={() => { void launchRoles(launchTargets); setSelected([]) }}
               title={picked.length
                 ? `Spawn a session for the ${picked.length} selected lane${picked.length > 1 ? 's' : ''}`
                 : 'Spawn a session for every lane that isn’t already live'}
@@ -236,6 +294,19 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             </button>
           )}
         </div>
+      )}
+
+      {/* Why Return didn't launch, or that a launch came back empty. Held to the 4.5:1 BODY
+          bar (the 72% step-down, same as the field's placeholder) rather than --fg-muted: it
+          is the whole of the feedback for a key that just appeared to do nothing, which is the
+          worst thing to render at the meta weight the light palettes struggle with. */}
+      {note && (
+        <p data-launch-note style={{
+          fontSize: 11, lineHeight: 1.5, margin: '-4px 0 10px',
+          color: 'color-mix(in srgb, var(--fg) 72%, transparent)',
+        }}>
+          {note}
+        </p>
       )}
 
       {/* Project-level settings on ONE quiet row: whether a launch also brings up the dev
@@ -333,7 +404,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             projectDefaults={project.defaults}
             onRemove={() => removeRole(role.id)}
             onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
-            onLaunch={() => launchRoles([role])}
+            onLaunch={() => { void launchRoles([role]) }}
             onView={() => { const tid = liveRoles?.[role.id]; if (tid) onFocusTerminal?.(tid) }}
           />
           </div>
@@ -428,7 +499,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   roleDefaults={roleDefaults}
                   projectDefaults={project.defaults}
                   onRemove={() => removeRole(role.id)}
-                  onLaunch={() => launchRoles([role])}
+                  onLaunch={() => { void launchRoles([role]) }}
                   onView={() => {}}
                 />
               ) : (
@@ -442,7 +513,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   onDragStart={() => setDragId(role.id)}
                   onDragEnd={() => { setDragId(null); setDropAt(null) }}
                   onPickAccent={(anchor) => setAccentFor({ roleId: role.id, ...anchor })}
-                  onLaunch={() => launchRoles([role])}
+                  onLaunch={() => { void launchRoles([role]) }}
                 />
               )}
             </div>

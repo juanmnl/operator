@@ -3240,7 +3240,9 @@ export function DashboardView() {
               // The roster's brief IS `handleLaunchRole`'s `prompt` — the same argument the
               // dispatch auto-launch path uses, so a launch brief reaches the agent by the
               // route that already works. Empty brief → undefined → today's behaviour exactly.
-              onLaunchRole={(project, role, o) => handleLaunchRole(project, role, o?.brief, o?.launchDevServer ?? false)}
+              // No `??` default on launchDevServer: the field is required by the prop type, so
+              // there is nothing to default and no way to silently launch with it off.
+              onLaunchRole={(project, role, o) => handleLaunchRole(project, role, o.brief, o.launchDevServer)}
               liveRoles={live}
               laneSessions={laneSessions}
               onFocusTerminal={focusTerminal}

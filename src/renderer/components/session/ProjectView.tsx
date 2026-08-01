@@ -32,8 +32,10 @@ export function ProjectView({
   onToggleSidebar?: () => void
   sidebarCollapsed?: boolean
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
-  /** `brief` is the launch row's "what do you want done?" — the agent's opening message. */
-  onLaunchRole?: (project: Project, role: Role, opts?: { brief?: string; launchDevServer?: boolean }) => void
+  /** `brief` is the launch row's "what do you want done?" — the agent's opening message.
+   *  `launchDevServer` is required (an optional one silently launched with it off), and the
+   *  result is reported back so the roster can tell a failed spawn from a successful one. */
+  onLaunchRole?: (project: Project, role: Role, opts: { brief?: string; launchDevServer: boolean }) => Promise<{ id: string } | undefined> | void
   liveRoles?: Record<string, string>
   /** roleId → live session runtime (phase/usage), for the mission-control read. */
   laneSessions?: Record<string, LaneSession>
