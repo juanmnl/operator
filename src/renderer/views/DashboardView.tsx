@@ -2269,13 +2269,25 @@ export function DashboardView() {
    *  Keyed by the CLAUDE session id, which is what a reply carries. Live sessions first (freshest
    *  roleId), then the DURABLE saved-session store — that second half is the fix: the channel
    *  renders history, and a list built from this run's ptys can only ever name lanes that happen
-   *  to be running right now. Every older reply fell through to its raw uuid. */
-  const channelSessions = useMemo(() => [
-    ...allSidebarSessions.map((x) => ({ id: x.id, roleId: x.roleId })),
-    ...savedSessions
-      .filter((s) => s.claudeSessionId)
-      .map((s) => ({ id: s.claudeSessionId as string, roleId: s.roleId })),
-  ], [allSidebarSessions, savedSessions])
+   *  to be running right now. Every older reply fell through to its raw uuid.
+   *
+   *  SCOPED TO THE ACTIVE PROJECT, and it must stay that way. Role ids are not unique across
+   *  projects — every roster uses the same `code` / `qa` / `research` / `design` — so attributing
+   *  against a global list matches the FIRST session carrying that role id anywhere on the
+   *  machine, and a reply from this project's Code lane can be labelled with another project's.
+   *  It reads exactly like a dispatch having travelled between projects. `scopedSessions` below
+   *  filters the same way; these two were one line apart and disagreed. */
+  const channelSessions = useMemo(() => {
+    if (!activeProjectId) return []
+    return [
+      ...allSidebarSessions
+        .filter((x) => x.projectId === activeProjectId)
+        .map((x) => ({ id: x.id, roleId: x.roleId })),
+      ...savedSessions
+        .filter((s) => s.claudeSessionId && s.projectId === activeProjectId)
+        .map((s) => ({ id: s.claudeSessionId as string, roleId: s.roleId })),
+    ]
+  }, [allSidebarSessions, savedSessions, activeProjectId])
 
   const scopedSessions = useMemo(
     () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
