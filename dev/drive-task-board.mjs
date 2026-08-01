@@ -159,16 +159,35 @@ for (const [identity, mode] of THEMES) {
   })
   for (const r of probes) check(key, r)
 
+  // ---- 1b. DISABLED controls -------------------------------------------------------------
+  // The sweep never probed a disabled control, which is exactly why `opacity: .45` stacked on
+  // `--fg-muted` (1.69:1 on mr-pink-light) survived a full six-palette pass. A disabled control
+  // still has to be READ — you have to know what the button you can't press says — so it is held
+  // to the 3:1 meta floor like any other supporting text.
+  const disabledProbes = await p.evaluate(() => {
+    // Backlog's Send → on an unassigned task: disabled at rest, on the board's busiest column.
+    const send = [...document.querySelectorAll('[data-card-send]')].find((b) => b.disabled)
+    send?.setAttribute('data-p-send-disabled', '')
+    return [window.__contrast('[data-p-send-disabled]', 'disabled Send → (backlog card)', true)]
+  })
+  for (const r of disabledProbes) check(key, r)
+
   // ---- 2. Empty board + empty columns ----------------------------------------------------
   await p.click('[data-scenario-btn="empty"]')
   await p.waitForTimeout(200)
   await p.screenshot({ path: `${OUT}/${key}-2-empty-board.png` })
   const hasInvite = await p.locator('[data-board-empty]').count()
   if (!hasInvite) fails.push(`${key} — empty board did not render the invitation`)
-  const emptyProbe = await p.evaluate(() => [
-    window.__contrast('[data-board-empty] h2', 'empty board headline'),
-    window.__contrast('[data-board-empty] p', 'empty board subline', true),
-  ])
+  const emptyProbe = await p.evaluate(() => {
+    // THE WORST INSTANCE of the disabled defect: the empty board's Add button is the primary
+    // action on a brand-new project's home screen, and it sits disabled at rest until you type.
+    document.querySelector('[data-board-add-submit]')?.setAttribute('data-p-add-disabled', '')
+    return [
+      window.__contrast('[data-board-empty] h2', 'empty board headline'),
+      window.__contrast('[data-board-empty] p', 'empty board subline', true),
+      window.__contrast('[data-p-add-disabled]', 'disabled Add (empty board, at rest)', true),
+    ]
+  })
   for (const r of emptyProbe) check(key, r)
 
   await p.click('[data-scenario-btn="backlog-only"]')
@@ -196,16 +215,35 @@ for (const [identity, mode] of THEMES) {
   await p.goto(URL, { waitUntil: 'load' })
   await p.waitForSelector('[data-board]')
 
-  // The Waiting column must hold the held DISPATCHES and nothing else. The fixture deliberately
-  // includes a delivered record and a `replyId` reply-delivery, which in the real store is the
-  // shape of 3 of the 4 non-delivered records — if either leaks in, the column is showing chat
-  // messages as work.
+  // Waiting = work that is stopped until a human acts. The fixture also carries a delivered
+  // record, a braked REPLY delivery (the shape all three brakes actually have), and an
+  // `unassigned` record whose task is already in Backlog — none may appear here.
   const waiting = await p.$$eval('[data-waiting-card]', (els) => els.map((e) => e.getAttribute('data-waiting-card')))
-  const expected = ['cf5497448fb9d8e2', 'brk1', 'und1']
+  const expected = ['cf5497448fb9d8e2', '11e8ab119beac2a4']
   if (JSON.stringify([...waiting].sort()) !== JSON.stringify([...expected].sort())) {
-    fails.push(`waiting column = [${waiting}] — expected [${expected}] (a delivered or replyId record leaked in)`)
+    fails.push(`waiting column = [${waiting}] — expected [${expected}] (a delivered, replyId or unassigned record leaked in)`)
   }
-  notes.push(`waiting column holds ${waiting.length} held dispatches: ${waiting.join(', ')}`)
+  notes.push(`waiting column holds ${waiting.length}: ${waiting.join(', ')}`)
+
+  // The unroutable dispatch's work must be in BACKLOG, once, carrying its reason.
+  const unrouted = await p.locator('[data-card-unrouted]').count()
+  if (unrouted !== 1) fails.push(`expected exactly 1 unrouted-reason note in Backlog, got ${unrouted}`)
+
+  // A task whose lane was deleted must say so, not "Unassigned" — on BOTH surfaces that name a
+  // lane. A backlog card names it through the assignee picker (the control you'd reassign with);
+  // a running or closed card names it through the agent chip. They are different elements, and
+  // an earlier version of this check only looked at the chip and so passed the backlog case by
+  // never testing it.
+  const lostChips = await p.$$eval('[data-card-agent-lost]', (els) => els.map((e) => e.textContent.trim()))
+  const lostPicker = await p.$$eval('[data-card-assignee]', (els) => els
+    .map((e) => e.textContent.trim()).filter((t) => /gone/i.test(t)))
+  notes.push(`deleted-lane: chips ${JSON.stringify(lostChips)}, picker ${JSON.stringify(lostPicker)}`)
+  if (!lostChips.some((t) => /infra/.test(t) && /gone/i.test(t))) {
+    fails.push(`a CLOSED task on a deleted lane did not name it as gone — chips read ${JSON.stringify(lostChips)}`)
+  }
+  if (!lostPicker.some((t) => /infra/.test(t))) {
+    fails.push(`a BACKLOG task on a deleted lane did not name it as gone — picker read ${JSON.stringify(lostPicker)}`)
+  }
 
   // Approve/decline exist ONLY on the approvable one. A brake or an undelivered record cannot be
   // approved — an Approve there would promise a recovery it can't perform.
@@ -225,9 +263,39 @@ for (const [identity, mode] of THEMES) {
   // Case-insensitive: the label is uppercased in CSS, so innerText comes back "· 2 UNCONFIRMED".
   if (!/2\s+unconfirmed/i.test(unconf)) fails.push(`done header did not name the unconfirmed count (read "${unconf}")`)
 
+  // ---- Done column: capped mount + Clear -------------------------------------------------
+  await p.click('[data-scenario-btn="done-heavy"]')
+  await p.waitForTimeout(400)
+  const doneMounted = await p.locator('[data-board-column="done"] [data-task-card]').count()
+  const doneCount = Number(await p.locator('[data-board-count="done"]').innerText())
+  notes.push(`done-heavy: ${doneCount} closed tasks, ${doneMounted} cards mounted`)
+  if (doneCount < 200) fails.push(`done-heavy fixture only produced ${doneCount} closed tasks`)
+  if (doneMounted > 25) fails.push(`Done mounted ${doneMounted} cards for ${doneCount} closed tasks — the cap is not holding`)
+  if (!(await p.locator('[data-board-done-more]').count())) fails.push('no "show more" control for the un-rendered closed tasks')
+  await p.click('[data-board-done-more]')
+  await p.waitForTimeout(250)
+  const afterMore = await p.locator('[data-board-column="done"] [data-task-card]').count()
+  if (afterMore <= doneMounted) fails.push(`"show more" did not mount more cards (${doneMounted} → ${afterMore})`)
+  notes.push(`show-more: ${doneMounted} → ${afterMore} cards`)
+  // Clear is a capability TaskQueue had; it must be present and must state the count it will take.
+  if (!(await p.locator('[data-board-clear]').count())) fails.push('Done column has no Clear control')
+  await p.click('[data-board-clear]')
+  await p.waitForTimeout(150)
+  const confirmText = await p.locator('[data-board-clear-confirm]').innerText().catch(() => '')
+  notes.push(`clear confirm reads: "${confirmText.trim()}"`)
+  if (!confirmText.includes(String(doneCount))) {
+    fails.push(`clear confirm must state the full count (${doneCount}); it reads "${confirmText.trim()}"`)
+  }
+  await p.click('[data-scenario-btn="full"]')
+  await p.waitForTimeout(300)
+
   // A 3-line clamp on a paragraph-length task — the real store's queued text runs to ~700 chars.
   const clamp = await p.evaluate(() => {
-    const el = document.querySelector('[data-board-column="backlog"] [data-card-title]')
+    // The LONGEST title, not the first card — backlog sorts oldest-first, so which card leads is
+    // fixture order, and pinning the clamp to it made the check stop exercising long text the
+    // moment another task was added.
+    const el = [...document.querySelectorAll('[data-board-column="backlog"] [data-card-title]')]
+      .sort((a, b) => b.textContent.length - a.textContent.length)[0]
     if (!el) return null
     const lh = parseFloat(getComputedStyle(el).lineHeight)
     return { h: Math.round(el.getBoundingClientRect().height), lines: Math.round(el.getBoundingClientRect().height / lh), chars: el.textContent.length }

@@ -26,20 +26,37 @@ import { TaskDiffCard } from './TaskDiffCard'
  *  a lane is doing. */
 export type LaneSignal = Pick<AgentSession, 'status' | 'phase' | 'lastToolName' | 'activeSubagents'>
 
-/** The dispatch outcomes that mean NOTHING WAS DELIVERED and nothing retries on its own — i.e.
- *  the work is stopped until a human does something. That is exactly the Waiting column.
+/** ONE RULE, TWO CLAUSES: a Waiting card is a record that (a) is WORK rather than chat, and
+ *  (b) is stopped until a human acts.
  *
- *  `pending-approval` is the only one a button can resolve (it routes to the existing approval
- *  gate). The three brakes are released by time, a human message, or the kill switch — never by
- *  an Approve, so their cards carry the reason and no approve verb.
+ *  Clause (a) is `!replyId` (applied in partitionBoard). A `replyId` record is the delivery of a
+ *  lane's OPERATOR-REPLY — a message ABOUT work, never work — so nothing about how it failed can
+ *  make it belong here. That is the whole answer to "why is an `undelivered` dispatch in Waiting
+ *  but an `undelivered` reply not?", and it is the only answer: the discriminator is what the
+ *  record IS, never where its text ended up. An earlier version of this comment justified
+ *  `undelivered` by "the task is sitting in a lane's composer", which is a symptom — and, applied
+ *  honestly, would have dragged stranded replies in with it.
  *
- *  `undelivered` is included even though the channel's own `held` set excludes it: it was SENT
- *  and then observed never to start, so the task is sitting in a lane's composer right now. That
- *  is the most stranded a task can be, and with the channel going away (move 03) this board is
- *  the only surface left that could say so. */
-const WAITING_OUTCOMES = new Set<DispatchRecord['outcome']>([
-  'pending-approval', 'hop-limit', 'pair-brake', 'paused', 'undelivered',
-])
+ *  Clause (b) is this set, and it is short for a reason:
+ *  • `pending-approval` — the only one a button can resolve; it routes to the existing gate.
+ *  • `undelivered` — bytes went to the pty, no turn ever followed. Reclassified from `sent` by
+ *    `reportUndelivered`, which deliberately does not retry, so a human is the only way out.
+ *
+ *  DELIBERATELY ABSENT — the three agent↔agent brakes (`hop-limit`, `pair-brake`, `paused`).
+ *  Not a judgement call: they are written in exactly one place (DashboardView's reply-delivery
+ *  `record()`) and that literal always sets `replyId`, so clause (a) excludes every one of them
+ *  unconditionally. `shared/types.ts` states it as an invariant — "the last three are agent→agent
+ *  delivery brakes, and only ever appear with `replyId`" — not as an observation. Listing them
+ *  here made three-fifths of the column unreachable UI and made a hard invariant read as an
+ *  empirical coincidence, which invites someone to relax it later.
+ *
+ *  ALSO ABSENT — `unassigned`. A dispatch whose role token matched no lane is NOT stranded: the
+ *  same handler calls `addProjectTask` before recording the outcome, so the work is already a
+ *  real queued task sitting in Backlog. A Waiting card for it would show the same work twice, and
+ *  the record carries `toRoleId: undefined`, so the card would have no affordance at all. What is
+ *  genuinely lost when the channel goes is the REASON — that is a note on the backlog card
+ *  instead (see `unassignedByText`). */
+const WAITING_OUTCOMES = new Set<DispatchRecord['outcome']>(['pending-approval', 'undelivered'])
 
 export interface TaskBoardProps {
   /** The project's whole task list — `project.tasks ?? []`. Partitioned here, never mutated. */
@@ -74,11 +91,32 @@ export interface TaskBoardProps {
 
 export type BoardColumnKey = 'backlog' | 'running' | 'waiting' | 'done'
 
+/** Backlog tasks that exist because a dispatch named a lane this project does not have.
+ *
+ *  The handler files the task (`addProjectTask`) and records `unassigned` in the same breath, and
+ *  the two are never linked by id — the task gets a fresh one. They ARE linked by text: one call
+ *  passes `d.task` to both. So the join is on the string, which is exact for the only thing that
+ *  produces the pair, and whose worst failure is cosmetic (two identical task texts both get the
+ *  note; nothing is hidden or mis-sent).
+ *
+ *  This exists because the reason is otherwise invisible once the channel is deleted: the task
+ *  reads as a backlog item nobody assigned, when the truth is that an agent asked for a lane that
+ *  does not exist. The task is genuinely in Backlog and genuinely actionable — which is exactly
+ *  why it does NOT also get a Waiting card. */
+function unassignedByText(dispatches: DispatchRecord[] | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const d of dispatches ?? []) if (!d.replyId && d.outcome === 'unassigned') out.add(d.task)
+  return out
+}
+
 export interface BoardPartition {
   backlog: ProjectTask[]
   running: ProjectTask[]
   waiting: DispatchRecord[]
   done: ProjectTask[]
+  /** Task text → "this landed in the backlog because no lane matched the name it was sent to".
+   *  Empty unless a dispatch actually failed to route. */
+  unassignedReasons: Set<string>
   /** Of `done`, how many were closed without anyone seeing them finish (abandoned, or a `done`
    *  written by startup reconciliation). Counted separately because "68 done" when 50 of them
    *  were closed by reconciliation is the same lie in aggregate that `status: 'done'` was per
@@ -109,14 +147,12 @@ export function partitionBoard(
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     running: all.filter((t) => statusOf(t) === 'running')
       .sort((a, b) => (a.startedAt ?? a.createdAt).localeCompare(b.startedAt ?? b.createdAt)),
-    // `replyId` records are excluded, and this is not a detail: in the real store EVERY held
-    // record but one carries a replyId. Such a record is the DELIVERY of a lane's OPERATOR-REPLY,
-    // not a dispatch of work — the reply itself already lives in chat.db, and the record only
-    // says what happened when we tried to hand it over. Rendering them as work would have filled
-    // the Waiting column with three chat messages and one actual approval.
+    // Clause (a) of the Waiting rule — see WAITING_OUTCOMES. A `replyId` record is a chat
+    // delivery, not work, whatever happened to it.
     waiting: (dispatches ?? []).filter((d) => !d.replyId && WAITING_OUTCOMES.has(d.outcome))
       .sort((a, b) => b.at.localeCompare(a.at)),
     done: done.sort((a, b) => closedAt(b).localeCompare(closedAt(a))),
+    unassignedReasons: unassignedByText(dispatches),
     unconfirmed: done.filter((t) => t.status === 'abandoned' || !!t.reconciledAt).length,
   }
 }
@@ -127,6 +163,9 @@ export function partitionBoard(
 const FOUR_COL = 980
 const TWO_COL = 660
 const TICK_MS = 30_000 // how often the elapsed/relative times refresh
+/** Closed tasks mounted per page. Deep enough that a normal project's whole history is one page,
+ *  small enough that the worst real project (214 closed) costs 20 articles on first paint. */
+const DONE_PAGE = 20
 
 export function TaskBoard(props: TaskBoardProps) {
   const { tasks, roles, liveRoles, dispatches, laneSignals } = props
@@ -135,6 +174,8 @@ export function TaskBoard(props: TaskBoardProps) {
   const now = useTicking(TICK_MS)
   const [composing, setComposing] = useState(false)
   const [openDiff, setOpenDiff] = useState<Set<string>>(new Set())
+  const [doneShown, setDoneShown] = useState(DONE_PAGE)
+  const [clearing, setClearing] = useState(false)
 
   const board = useMemo(() => partitionBoard(tasks, dispatches), [tasks, dispatches])
   const roleOf = (id?: string) => roles.find((r) => r.id === id)
@@ -206,6 +247,7 @@ export function TaskBoard(props: TaskBoardProps) {
                 role={roleOf(task.roleId)}
                 roles={roles}
                 liveRoles={liveRoles}
+                unroutedReason={board.unassignedReasons.has(task.text)}
                 onAssign={props.onAssignTask}
                 onSend={props.onSendTask}
                 onRemove={props.onRemoveTask}
@@ -247,21 +289,41 @@ export function TaskBoard(props: TaskBoardProps) {
               onOpenLane={props.onOpenLane}
             />
           ))
-      case 'done':
-        return board.done.length === 0
-          ? <EmptyColumn text="Nothing finished yet." />
-          : board.done.map((task) => (
-            <DoneCard
-              key={task.id}
-              task={task}
-              role={roleOf(task.roleId)}
-              laneLive={laneLive(task)}
-              diffOpen={openDiff.has(task.id)}
-              onToggleDiff={() => toggleDiff(task.id)}
-              onRequeue={() => props.onSetTaskStatus(task.id, 'queued')}
-              onRemove={() => props.onRemoveTask(task.id)}
-            />
-          ))
+      case 'done': {
+        if (board.done.length === 0) return <EmptyColumn text="Nothing finished yet." />
+        // MOUNT ONLY A PAGE OF HISTORY. `board.done` is done ∪ abandoned and the real store holds
+        // 214 of them in one project — 214 articles on first paint, each running
+        // `taskHasDiffSource`, a timestamp format and a diff toggle, on a codebase with a
+        // documented WebContent-freeze history. TaskQueue rendered ZERO at rest (collapsed behind
+        // `showDone`); a board can't collapse its own column, so it pages instead. Newest first,
+        // so the page you get is the one you'd have scrolled to anyway.
+        const shown = board.done.slice(0, doneShown)
+        const rest = board.done.length - shown.length
+        return (
+          <>
+            {shown.map((task) => (
+              <DoneCard
+                key={task.id}
+                task={task}
+                role={roleOf(task.roleId)}
+                laneLive={laneLive(task)}
+                diffOpen={openDiff.has(task.id)}
+                onToggleDiff={() => toggleDiff(task.id)}
+                onRequeue={() => props.onSetTaskStatus(task.id, 'queued')}
+                onRemove={() => props.onRemoveTask(task.id)}
+              />
+            ))}
+            {rest > 0 && (
+              <button
+                className="tb-btn"
+                data-board-done-more
+                onClick={() => setDoneShown((n) => n + DONE_PAGE)}
+                title={`${rest} older closed task${rest > 1 ? 's' : ''} not rendered`}
+              >Show {Math.min(rest, DONE_PAGE)} more · {rest} older</button>
+            )}
+          </>
+        )
+      }
     }
   }
 
@@ -313,6 +375,31 @@ export function TaskBoard(props: TaskBoardProps) {
                     · {board.unconfirmed} unconfirmed
                   </span>
                 )}
+                {c.key === 'done' && board.done.length > 0 && props.onRemoveTask && (
+                  <span style={{ marginLeft: 'auto' }}>
+                    {/* Restored from TaskQueue. Clearing 214 closed tasks one ✕ at a time is not
+                        the same capability moved, it is a capability removed. Two-step because it
+                        is bulk and irreversible — and the confirm STATES THE COUNT, since the
+                        column only ever shows a page of it. */}
+                    {clearing ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <button
+                          className="tb-btn tb-btn-danger"
+                          data-board-clear-confirm
+                          onClick={() => { board.done.forEach((t) => props.onRemoveTask(t.id)); setClearing(false) }}
+                        >Delete {board.done.length}</button>
+                        <button className="tb-btn" onClick={() => setClearing(false)}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button
+                        className="tb-btn"
+                        data-board-clear
+                        onClick={() => setClearing(true)}
+                        title={`Delete all ${board.done.length} closed tasks`}
+                      >Clear</button>
+                    )}
+                  </span>
+                )}
                 {c.key === 'backlog' && (
                   <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
                     {dispatchable > 0 && props.onStartAll && (
@@ -357,8 +444,14 @@ const COLUMNS: { key: BoardColumnKey; title: string }[] = [
   { key: 'done', title: 'Done' },
 ]
 
+/** Safe in the prescribed placement, but nothing in the component defended it: an auto-height
+ *  parent renders an invisible board (`height: 100%` of nothing), and a shrink-to-fit parent
+ *  makes the width content-driven — which is the precondition for a ResizeObserver feedback loop,
+ *  since the observer sets a column count that changes the content that sets the width. Two
+ *  declarations make both impossible regardless of who mounts it. */
 const SHELL: React.CSSProperties = {
   display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
+  width: '100%', minWidth: 0,
   fontFamily: 'var(--font-body)',
 }
 
@@ -376,11 +469,13 @@ const LABEL: React.CSSProperties = {
 
 // ── Cards ───────────────────────────────────────────────────────────────────────────────────
 
-function BacklogCard({ task, role, roles, liveRoles, onAssign, onSend, onRemove }: {
+function BacklogCard({ task, role, roles, liveRoles, unroutedReason, onAssign, onSend, onRemove }: {
   task: ProjectTask
   role?: Role
   roles: Role[]
   liveRoles?: Record<string, string>
+  /** True when this task is in the backlog because a dispatch named a lane that doesn't exist. */
+  unroutedReason?: boolean
   onAssign: (taskId: string, roleId?: string) => void
   onSend: (task: ProjectTask) => void
   onRemove: (taskId: string) => void
@@ -389,6 +484,14 @@ function BacklogCard({ task, role, roles, liveRoles, onAssign, onSend, onRemove 
     <article className="tb-card" data-task-card={task.id} style={cardStyle()}>
       <DeleteButton title="Delete task" onClick={() => onRemove(task.id)} />
       <p className="tb-title" data-card-title>{task.text}</p>
+      {/* Why this is sitting unassigned. An agent asked for a lane this project doesn't have, so
+          the task was filed here instead — which without a word looks like a backlog item nobody
+          got round to assigning. Today the dispatch log says it; after move 03 nothing would. */}
+      {unroutedReason && !task.roleId && (
+        <p data-card-unrouted style={{ ...ACTIVITY, color: 'var(--fg-muted)' }}>
+          Filed here — an agent sent it to a lane this project doesn’t have.
+        </p>
+      )}
       <div style={META_ROW}>
         <AssigneePicker
           roles={roles}
@@ -454,7 +557,25 @@ function RunningCard({ task, role, signal, now, laneLive, diffOpen, onToggleDiff
           </button>
         )}
         <div style={META_ROW}>
-          <AgentChip role={role} live={laneLive} />
+          {/* THE ROUTE TO THE AGENT, and it has to be here rather than only on the child-threads
+              row: that row needs `activeSubagents > 0`, so the common case — a lane working
+              alone — had no way to reach the session at all. The board replaces the roster as
+              project home, and the roster's `View →` was that route. The chip itself is the
+              control: the lane's name is the most obvious thing to click to get to the lane, and
+              it needs no width the row was not already spending. */}
+          {task.roleId && laneLive && onOpenLane ? (
+            <button
+              className="tb-lane-open"
+              data-card-open-lane={task.roleId}
+              onClick={() => onOpenLane(task.roleId!)}
+              title={`Open ${role?.name ?? 'this lane'}'s session`}
+            >
+              <AgentChip role={role} live={laneLive} lostRoleId={role ? undefined : task.roleId} />
+              <span style={{ color: 'var(--fg-muted)', fontSize: 9.5 }}>→</span>
+            </button>
+          ) : (
+            <AgentChip role={role} live={laneLive} lostRoleId={role ? undefined : task.roleId} />
+          )}
           <span data-card-time style={TIME} title={`Started ${relativeTime(started)}`}>{elapsed}</span>
           <CheckChip task={task} />
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
@@ -554,12 +675,11 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane }: {
           </>
         ) : (
           <>
-            {/* Not approvable, and saying so is the point: a brake is released by time, a human
-                message, or the kill switch, and `undelivered` needs the stranded composer cleared
-                by hand. An Approve button here would promise a recovery it can't perform. */}
-            <span style={{ ...TIME, fontSize: 10 }}>
-              {record.outcome === 'undelivered' ? 'Sitting in the lane’s composer' : 'Nothing retries on its own'}
-            </span>
+            {/* `undelivered` is the only non-approvable outcome that reaches Waiting, so this is
+                a statement rather than a ternary — the other half was dead code the moment the
+                brakes left WAITING_OUTCOMES. Approve is deliberately absent: the bytes already
+                went, so there is nothing to approve, and `reportUndelivered` does not retry. */}
+            <span style={{ ...TIME, fontSize: 10 }}>Sitting in the lane’s composer</span>
             {record.toRoleId && onOpenLane && (
               <button
                 className="tb-btn"
@@ -602,7 +722,7 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
           {task.text}
         </p>
         <div style={META_ROW}>
-          <AgentChip role={role} live={false} />
+          <AgentChip role={role} live={false} lostRoleId={role ? undefined : task.roleId} />
           <span data-card-time style={TIME}>{relativeTime(closedAt)}</span>
           {unconfirmed && (
             <span data-card-unconfirmed style={{ ...LABEL, fontSize: 8.5, letterSpacing: '0.06em' }}>
@@ -625,16 +745,30 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
 
 /** The agent, reduced to a chip: the lane's colour on a dot, its name in ink that survives a
  *  light palette (`laneTextColor`). Liveness rides the dot's FILL, never its border — a
- *  colour-changing border on a radiused element re-rasterizes and freezes WKWebView. */
-function AgentChip({ role, live, fallback = 'Unassigned' }: { role?: Role; live: boolean; fallback?: string }) {
+ *  colour-changing border on a radiused element re-rasterizes and freezes WKWebView.
+ *
+ *  `lostRoleId` is the case that must never collapse into `fallback`: the task names a lane the
+ *  roster no longer has. "Unassigned" would say NEVER ASSIGNED when the truth is ASSIGNED TO A
+ *  LANE THAT IS GONE — the opposite — and it hides why nothing sends. WaitingCard already got
+ *  this right; this is the same treatment for the task cards and the picker. */
+function AgentChip({ role, live, fallback = 'Unassigned', lostRoleId }: {
+  role?: Role
+  live: boolean
+  fallback?: string
+  lostRoleId?: string
+}) {
   const accent = role?.accent || 'var(--accent)'
   const fill = !role
     ? 'color-mix(in srgb, var(--fg-muted) 45%, transparent)'
     : live ? accent : `color-mix(in srgb, ${accent} 45%, transparent)`
+  const label = role?.name ?? (lostRoleId ? `${lostRoleId} — lane gone` : fallback)
   return (
     <span
       data-card-agent={role?.id ?? ''}
-      title={role ? (live ? `${role.name} — live` : role.name) : fallback}
+      data-card-agent-lost={lostRoleId || undefined}
+      title={role
+        ? (live ? `${role.name} — live` : role.name)
+        : lostRoleId ? `This task was assigned to "${lostRoleId}", which is no longer on the roster. Reassign it to send it.` : fallback}
       style={{ display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0, flexShrink: 1 }}
     >
       <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: fill }} />
@@ -642,7 +776,7 @@ function AgentChip({ role, live, fallback = 'Unassigned' }: { role?: Role; live:
         fontFamily: 'var(--font-mono)', fontSize: 9.5, whiteSpace: 'nowrap',
         overflow: 'hidden', textOverflow: 'ellipsis',
         color: role ? laneTextColor(role.accent) : 'var(--fg-muted)',
-      }}>{role?.name ?? fallback}</span>
+      }}>{label}</span>
     </span>
   )
 }
@@ -802,14 +936,18 @@ function AssigneePicker({ roles, value, onChange, liveRoles, placeholder = 'Assi
   const fill = !role
     ? 'color-mix(in srgb, var(--fg-muted) 45%, transparent)'
     : live ? accent : `color-mix(in srgb, ${accent} 45%, transparent)`
+  // A value the roster can't resolve is a lane that was DELETED, not an empty assignment. Saying
+  // "Assign…" there claims the task was never assigned and leaves the user with no explanation
+  // for why Send does nothing.
+  const lost = !!value && !role
   return (
-    <span className="tb-assignee" data-card-assignee={value}>
+    <span className="tb-assignee" data-card-assignee={value} title={lost ? `Assigned to "${value}", which is no longer on the roster — pick a lane to send it.` : undefined}>
       <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: fill }} />
       <span style={{
         fontFamily: 'var(--font-mono)', fontSize: 9.5, maxWidth: 88,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         color: role ? laneTextColor(role.accent) : 'var(--fg-muted)',
-      }}>{role ? role.name : placeholder}</span>
+      }}>{role ? role.name : lost ? `${value} — gone` : placeholder}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -2,11 +2,21 @@ import { describe, it, expect } from 'vitest'
 import { partitionBoard } from './TaskBoard'
 import type { DispatchRecord, ProjectTask } from '../../../shared/types'
 
-// The board's whole data model is `partitionBoard`, and the two rules worth a test are the two
-// that were got wrong by looking at the types instead of at the store:
-//   • a `replyId` dispatch is a CHAT DELIVERY, not work. In the real projects.json, three of the
-//     four non-delivered records carry one — so without this filter the Waiting column would be
-//     three-quarters chat messages.
+// The board's whole data model is `partitionBoard`. Every dispatch fixture below is a shape the
+// delivery path actually writes — checked against `~/.operator/projects.json` and against the one
+// place each outcome is produced in `DashboardView`:
+//
+//   • a `replyId` record is a CHAT DELIVERY, not work. The three agent↔agent brakes
+//     (`hop-limit`/`pair-brake`/`paused`) are written in exactly one literal and it ALWAYS sets
+//     `replyId`, which `shared/types.ts` states as an invariant. A braked record without one is
+//     not a rare case, it is impossible — an earlier version of this file asserted one and so
+//     tested the filter against a record the system cannot produce.
+//   • `undelivered` on a DISPATCH is producible: `reportUndelivered` reclassifies any
+//     `sent`/`launched` record, and the store holds 82 non-reply `sent` records in one project.
+//     So its fixture is a real `sent` record with only `outcome` changed — which is exactly the
+//     mutation `setDispatchOutcome` performs.
+//   • `unassigned` never reaches Waiting: the same handler calls `addProjectTask` before
+//     recording it, so the work is already a queued task in Backlog.
 //   • `done` is done ∪ abandoned, but the two are counted apart. Folding abandoned into "done"
 //     is how ~50 reconciled tasks once got relabelled as finished.
 
@@ -40,29 +50,52 @@ describe('partitionBoard', () => {
     expect(b.unconfirmed).toBe(2)    // but only one of them was seen to finish
   })
 
-  it('puts held and stranded dispatches in Waiting and nothing else', () => {
+  it('puts work that is stopped until a human acts in Waiting, and nothing else', () => {
     const b = partitionBoard([], [
-      dispatch({ id: 'held', outcome: 'pending-approval' }),
-      dispatch({ id: 'brake', outcome: 'pair-brake' }),
-      dispatch({ id: 'hop', outcome: 'hop-limit' }),
-      dispatch({ id: 'paused', outcome: 'paused' }),
-      dispatch({ id: 'stranded', outcome: 'undelivered' }),
+      // The two that belong there.
+      dispatch({ id: 'held', outcome: 'pending-approval', fromRoleId: 'design', toRoleId: 'code' }),
+      dispatch({ id: 'stranded', outcome: 'undelivered', fromRoleId: 'operator', toRoleId: 'review' }),
+      // Delivered, or on its way — history, not a decision.
       dispatch({ id: 'sent', outcome: 'sent' }),
       dispatch({ id: 'launched', outcome: 'launched' }),
       dispatch({ id: 'queued', outcome: 'queued' }),
       dispatch({ id: 'rejected', outcome: 'rejected' }),
+      // Already a queued task in Backlog — a Waiting card would show the same work twice, and
+      // the record's `toRoleId` is undefined so the card would have no affordance either.
       dispatch({ id: 'unassigned', outcome: 'unassigned' }),
     ])
-    expect(b.waiting.map((d) => d.id).sort())
-      .toEqual(['brake', 'held', 'hop', 'paused', 'stranded'])
+    expect(b.waiting.map((d) => d.id).sort()).toEqual(['held', 'stranded'])
   })
 
-  it('excludes reply deliveries — a braked OPERATOR-REPLY is a message, not work', () => {
+  it('excludes chat deliveries, whatever happened to them', () => {
+    // Every one of these carries a replyId because that is the ONLY way the delivery path writes
+    // them — `record()` in the reply handler sets it unconditionally. `undelivered` on a reply is
+    // producible too (reportUndelivered matches reply-delivery `sent` records), and it is still
+    // chat: the discriminator is what the record IS, not where its text ended up.
     const b = partitionBoard([], [
-      dispatch({ id: 'work', outcome: 'paused' }),
-      dispatch({ id: 'chat', outcome: 'paused', replyId: 'd2a58751d134590a' }),
+      dispatch({ id: 'brake', outcome: 'pair-brake', replyId: 'r1' }),
+      dispatch({ id: 'hop', outcome: 'hop-limit', replyId: 'r2' }),
+      dispatch({ id: 'paused', outcome: 'paused', replyId: 'd2a58751d134590a' }),
+      dispatch({ id: 'reply-stranded', outcome: 'undelivered', replyId: 'r3' }),
+      dispatch({ id: 'work', outcome: 'pending-approval' }),
     ])
     expect(b.waiting.map((d) => d.id)).toEqual(['work'])
+  })
+
+  it('reports why an unroutable dispatch became an unassigned backlog task', () => {
+    // The handler files the task and records the outcome with the SAME string, and never links
+    // them by id — so the join is the text, and this is what keeps the reason visible once the
+    // channel (which shows it today) is deleted.
+    const b = partitionBoard(
+      [task({ id: 't1', text: 'Audit the release gate' })],
+      [
+        dispatch({ id: 'u1', outcome: 'unassigned', task: 'Audit the release gate' }),
+        // A reply is never a reason for a backlog task.
+        dispatch({ id: 'u2', outcome: 'unassigned', task: 'Something else', replyId: 'r1' }),
+      ],
+    )
+    expect(b.unassignedReasons.has('Audit the release gate')).toBe(true)
+    expect(b.unassignedReasons.has('Something else')).toBe(false)
   })
 
   it('orders each column by what you need to see first', () => {
@@ -88,6 +121,9 @@ describe('partitionBoard', () => {
 
   it('survives an empty project without inventing columns', () => {
     const b = partitionBoard(undefined, undefined)
-    expect(b).toEqual({ backlog: [], running: [], waiting: [], done: [], unconfirmed: 0 })
+    expect(b).toEqual({
+      backlog: [], running: [], waiting: [], done: [],
+      unassignedReasons: new Set(), unconfirmed: 0,
+    })
   })
 })

@@ -16,8 +16,11 @@ import '../src/renderer/styles.css'
 //     the card clamps at three lines. A one-line fixture would have hidden it.
 //   • roster ids/names/accents are the real six lanes.
 //   • diffStat {added:479, files:7, removed:2} is a real captured stat.
-//   • the held dispatch is the real `pending-approval` record, and the `paused` ones really do
-//     carry a `replyId` (which is why the board filters those out — see partitionBoard).
+//   • every dispatch record is a shape the delivery path writes — see the block above DISPATCHES.
+//   • `q6` is assigned to `infra`, a lane NOT on the roster, because a task outliving its lane is
+//     ordinary (RosterPanel can delete one) and the board must say "gone", not "Unassigned".
+//   • `q5` + the `un1` record are the real PAIR a failed route produces: `addProjectTask` and
+//     `record('unassigned')` are called in the same breath with the same text.
 //   • `check` is the ONE exception and is flagged as such: NO task in the real store has a
 //     check object, so that chip is an unexercised path. It is included once, deliberately
 //     marked, so the styling can be eyeballed — not to suggest the data flows today.
@@ -43,6 +46,11 @@ const TASKS: ProjectTask[] = [
   { id: 'q2', createdAt: ago(18), roleId: 'code', text: 'Delete the project channel — ~1,970 lines. Delegation becomes a row on the parent card.' },
   { id: 'q3', createdAt: ago(9), roleId: 'qa', text: 'Soak the terminal heal loop against a real garble sighting; dump the buffer per dev/garble-triage.md.' },
   { id: 'q4', createdAt: ago(4), text: 'One diff surface, rendered on the work item.' },
+  // Filed by the `un1` dispatch above — same text, no roleId, exactly as `addProjectTask` writes
+  // it when a dispatch names a lane the project doesn't have.
+  { id: 'q5', createdAt: ago(15), text: 'Check whether the release gate still blocks on the notarization step.' },
+  // Assigned to a lane that is NO LONGER on the roster — must read "gone", never "Unassigned".
+  { id: 'q6', createdAt: ago(70), roleId: 'infra', text: 'Rotate the updater signing key — blocked, see release process notes.' },
 
   // ── Running. The three lanes actually running right now, with real worktree provenance.
   {
@@ -102,33 +110,56 @@ const TASKS: ProjectTask[] = [
     createdAt: ago(1500), doneAt: ago(400), reconciledAt: ago(400),
     text: 'Audit the working tree before the v0.12.0 tag.',
   },
+  // Closed, on a lane that has since been deleted. Deleting a lane does not delete its tasks, so
+  // this is the ordinary end state of a removed lane — and it must not read "Unassigned".
+  {
+    id: 'd5', status: 'done', roleId: 'infra',
+    createdAt: ago(1800), doneAt: ago(500),
+    text: 'Pin the notarization step to a specific Xcode version.',
+  },
 ]
 
+// EVERY RECORD BELOW IS A SHAPE THE DELIVERY PATH WRITES. An earlier version of this file
+// contained a braked DISPATCH (`pair-brake` with no `replyId`) and called it "real shape, minus
+// the replyId" — naming the deviation and then building on it. That record is impossible: the
+// three brakes are written in one literal that always sets `replyId` (an invariant stated in
+// shared/types.ts), so the fixture was testing the board against something the app cannot produce.
 const DISPATCHES: DispatchRecord[] = [
-  // The real held record — a non-coordinator lane (design) commissioning work from code.
+  // Real, copied from the store: a non-coordinator lane (design) commissioning work from code,
+  // held by the authority gate. The only Waiting card the real store can render today.
   {
     id: 'cf5497448fb9d8e2', at: ago(26), fromRoleId: 'design', toRoleId: 'code',
     outcome: 'pending-approval',
     task: 'Build dev/briefs/composer-controls-impl.md — composer Send/Steer/Stop, drafts, two pills; result to dev/briefs/composer-controls-impl-RESULT.md',
   },
-  // A brake. Real shape, minus the replyId — the real ones are reply deliveries and the board
-  // filters those; this is what a braked DISPATCH of work would look like.
+  // A real `sent` record from the store with ONLY its outcome changed — which is exactly what
+  // `reportUndelivered` → `setDispatchOutcome` does when bytes reach the pty and no turn follows.
+  // No such record exists in the store yet (the reclassification has never fired), but every
+  // field here is real and the mutation is the one the code performs.
   {
-    id: 'brk1', at: ago(52), fromRoleId: 'research', toRoleId: 'qa',
-    outcome: 'pair-brake',
-    task: 'Re-run the channel driver against the shipped default and report the delta.',
-  },
-  // Sent, then observed never to start: the task is sitting in a lane's composer right now.
-  {
-    id: 'und1', at: ago(88), fromRoleId: 'operator', toRoleId: 'review',
+    id: '11e8ab119beac2a4', at: ago(88), fromRoleId: 'operator', toRoleId: 'code',
     outcome: 'undelivered',
-    task: 'Review the working tree for the v0.12.0 tag — flag anything that must not ship.',
+    task: 'Read /Users/juanmnl/.operator/briefs/2026-08-01-simplify/code-fixes-and-move-05.md and execute it fully.',
   },
-  // Delivered records: history, and the board must NOT show them.
-  { id: 'ok1', at: ago(200), fromRoleId: 'operator', toRoleId: 'code', outcome: 'sent', task: 'A delivered dispatch — must not appear on the board.' },
-  // A reply delivery that got braked. Carries a replyId, so it is a chat message and not work:
-  // the board filters it out, and this fixture exists to prove that it does.
-  { id: 'rep1', at: ago(210), fromRoleId: 'operator', toRoleId: 'design', outcome: 'paused', replyId: 'd2a58751d134590a', task: 'Heads-up for your agents-hub task: Code is pruning 49 never-launched seeded lanes.' },
+  // Delivered: history, and the board must NOT show it.
+  {
+    id: 'c03784cc314c1b59', at: ago(200), fromRoleId: 'operator', toRoleId: 'design', outcome: 'sent',
+    task: 'Read /Users/juanmnl/.operator/briefs/2026-08-01-simplify/design-board-fixes.md and execute it fully.',
+  },
+  // A real braked REPLY delivery, replyId and all — the shape all three brakes actually have.
+  // It must not reach Waiting: a brake on a chat message is not stopped work.
+  {
+    id: 'f6d81e05-728d-4b42-a435-ad718cc44db1', at: ago(210), fromRoleId: 'operator', toRoleId: 'design',
+    outcome: 'paused', replyId: 'd2a58751d134590a',
+    task: 'Heads-up for your agents-hub task: Code is pruning 49 never-launched seeded lanes from existing projects.',
+  },
+  // An unroutable dispatch. The handler ALSO filed `q5` into the backlog (below) with this exact
+  // text — that pairing is real, and it is why this belongs in Backlog with a reason rather than
+  // as a second card in Waiting.
+  {
+    id: 'un1', at: ago(15), fromRoleId: 'operator', outcome: 'unassigned',
+    task: 'Check whether the release gate still blocks on the notarization step.',
+  },
 ]
 
 const LANE_SIGNALS: Record<string, LaneSignal> = {
@@ -142,7 +173,19 @@ const LANE_SIGNALS: Record<string, LaneSignal> = {
 
 const LIVE_ROLES: Record<string, string> = { code: 't1', design: 't2', research: 't3' }
 
-type Scenario = 'full' | 'empty' | 'no-waiting' | 'backlog-only'
+// The real store's worst project holds 214 closed tasks. Synthesised in COUNT only — each one is
+// a copy of a real done record — because the number is the point: the board must not mount them.
+const BULK_DONE: ProjectTask[] = Array.from({ length: 214 }, (_, i) => ({
+  id: `bulk${i}`,
+  status: i % 3 === 0 ? ('abandoned' as const) : ('done' as const),
+  roleId: 'code',
+  createdAt: ago(2000 + i),
+  doneAt: ago(300 + i),
+  ...(i % 3 === 0 ? { reconciledAt: ago(300 + i) } : {}),
+  text: `Closed task #${i} — a real project accumulates these and never clears them.`,
+}))
+
+type Scenario = 'full' | 'empty' | 'no-waiting' | 'backlog-only' | 'done-heavy'
 
 function Harness() {
   const [identity, setIdentity] = useState('mission-control')
@@ -157,7 +200,8 @@ function Harness() {
 
   const tasks = scenario === 'empty' ? []
     : scenario === 'backlog-only' ? TASKS.filter((t) => (t.status ?? 'queued') === 'queued')
-      : TASKS
+      : scenario === 'done-heavy' ? [...TASKS, ...BULK_DONE]
+        : TASKS
   const dispatches = scenario === 'empty' || scenario === 'no-waiting' || scenario === 'backlog-only'
     ? DISPATCHES.filter((d) => d.outcome === 'sent')
     : DISPATCHES
@@ -181,7 +225,7 @@ function Harness() {
           <button key={m} data-mode-btn={m} style={chip(mode === m)} onClick={() => apply(identity, m)}>{m}</button>
         ))}
         <span style={{ width: 10 }} />
-        {(['full', 'empty', 'no-waiting', 'backlog-only'] as Scenario[]).map((s) => (
+        {(['full', 'empty', 'no-waiting', 'backlog-only', 'done-heavy'] as Scenario[]).map((s) => (
           <button key={s} data-scenario-btn={s} style={chip(scenario === s)} onClick={() => setScenario(s)}>{s}</button>
         ))}
         <span style={{ width: 10 }} />
