@@ -58,7 +58,9 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
    *  has to SAY so — a resolved value drawn like a pinned one makes the global look broken. */
   roleDefaults?: GlobalRoleDefaults
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
-  onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
+  /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
+   *  into the agent as its first message; absent/empty launches exactly as before. */
+  onLaunchRole?: (project: Project, role: Role, opts?: { brief?: string; launchDevServer?: boolean }) => void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
   /** roleId → live session runtime. The card shows the phase in its live pill (the per-lane token
@@ -99,6 +101,10 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   const roles = roster ?? []
   // Whether launching an agent also has it start the project's dev server (so Preview works).
   const [devServer, setDevServer] = useState(true)
+  // THE BRIEF — "what do you want done?", handed to the agent as its opening message. It is
+  // per-launch, not a project setting: it sits on the launch row, is consumed by whichever
+  // Launch you press, and clears afterwards so it can't silently ride into the next one.
+  const [brief, setBrief] = useState('')
   // Lanes ticked for a batch launch. Held as ids (not Role objects) so an edit to a
   // role while it's selected doesn't strand a stale copy.
   const [selected, setSelected] = useState<string[]>([])
@@ -123,6 +129,15 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   const launchTargets = picked.length
     ? roles.filter((r) => picked.includes(r.id))
     : roles.filter((r) => !isLive(r.id))
+  // Every Launch on this board goes through here, so there is exactly one place that decides
+  // what a brief does. ONE brief applies to EVERY lane in a batch (see below); it is read
+  // before the clear so the forEach can't race the state update.
+  const launchRoles = (targets: Role[]) => {
+    if (!onLaunchRole || !targets.length) return
+    const b = brief.trim() || undefined
+    targets.forEach((r) => onLaunchRole(project, r, { brief: b, launchDevServer: devServer }))
+    setBrief('')
+  }
   // The split that drives the whole board. Both keep roster order, so dragging a lane
   // between the two sections still writes one linear roster.
   const liveRolesList = roles.filter((r) => isLive(r.id))
@@ -167,25 +182,61 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
       {/* One header row instead of three stacked ones. The old copy explained the board
           ("each pins a model. Launch one to start it…") — the cards already say that, so
           it's down to a title plus a hint of how selection works. */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <p style={{ flex: 1, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5, margin: 0 }}>
           Agents in <strong style={{ color: 'var(--fg)' }}>{project.name}</strong>
           <span>
             {picked.length ? ` — ${picked.length} selected` : ' — click to select, drag to reorder'}
           </span>
         </p>
-        {roles.length > 1 && onLaunchRole && launchTargets.length > 0 && (
-          <button
-            onClick={() => { launchTargets.forEach((r) => onLaunchRole(project, r, devServer)); setSelected([]) }}
-            title={picked.length
-              ? `Spawn a session for the ${picked.length} selected lane${picked.length > 1 ? 's' : ''}`
-              : 'Spawn a session for every lane that isn’t already live'}
-            style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em', color: picked.length ? 'var(--accent)' : 'var(--fg-muted)', background: 'transparent', border: `1px solid ${picked.length ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)'}`, borderRadius: 7, padding: '3px 8px', cursor: 'pointer', outline: 'none' }}
-          >
-            {picked.length ? `Launch ${picked.length} →` : 'Launch all →'}
-          </button>
-        )}
       </div>
+
+      {/* THE BRIEF. You configure a lane, press Launch, and land in a blank terminal — the one
+          thing you came to do had no home in the launch flow. This is that home: one line,
+          carried into the agent as its opening message by whichever Launch you press (a lane's
+          own button, an expanded card's, or the batch button beside it). Empty is valid and
+          launches exactly as before.
+
+          It sits on the SAME row as the batch launch deliberately: a brief parked up with the
+          dev-server toggle and the check command would read as a third project setting, and
+          the adjacent button is also what says what Return will do. */}
+      {roles.length > 0 && onLaunchRole && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <input
+            data-launch-brief
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              // Return launches what the button beside it says it will — the selection if
+              // there is one, otherwise every lane that isn't already live.
+              launchRoles(launchTargets)
+              setSelected([])
+            }}
+            placeholder="What do you want done?"
+            aria-label="Brief for the agents you launch"
+            title="Handed to the agent as its first message when you launch. Leave it empty to launch into a blank session."
+            spellCheck={false}
+            style={{
+              flex: 1, minWidth: 0, fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--fg)',
+              background: 'var(--overlay-subtle)', border: '1px solid var(--border)', borderRadius: 7,
+              padding: '6px 10px', outline: 'none',
+            }}
+          />
+          {roles.length > 1 && launchTargets.length > 0 && (
+            <button
+              onClick={() => { launchRoles(launchTargets); setSelected([]) }}
+              title={picked.length
+                ? `Spawn a session for the ${picked.length} selected lane${picked.length > 1 ? 's' : ''}`
+                : 'Spawn a session for every lane that isn’t already live'}
+              style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em', color: picked.length ? 'var(--accent)' : 'var(--fg-muted)', background: 'transparent', border: `1px solid ${picked.length ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)'}`, borderRadius: 7, padding: '5px 8px', cursor: 'pointer', outline: 'none' }}
+            >
+              {picked.length ? `Launch ${picked.length} →` : 'Launch all →'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Project-level settings on ONE quiet row: whether a launch also brings up the dev
           server, and the verification command run when a lane's task completes. */}
@@ -282,7 +333,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             projectDefaults={project.defaults}
             onRemove={() => removeRole(role.id)}
             onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
-            onLaunch={() => onLaunchRole?.(project, role, devServer)}
+            onLaunch={() => launchRoles([role])}
             onView={() => { const tid = liveRoles?.[role.id]; if (tid) onFocusTerminal?.(tid) }}
           />
           </div>
@@ -377,7 +428,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   roleDefaults={roleDefaults}
                   projectDefaults={project.defaults}
                   onRemove={() => removeRole(role.id)}
-                  onLaunch={() => onLaunchRole?.(project, role, devServer)}
+                  onLaunch={() => launchRoles([role])}
                   onView={() => {}}
                 />
               ) : (
@@ -391,7 +442,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   onDragStart={() => setDragId(role.id)}
                   onDragEnd={() => { setDragId(null); setDropAt(null) }}
                   onPickAccent={(anchor) => setAccentFor({ roleId: role.id, ...anchor })}
-                  onLaunch={() => onLaunchRole?.(project, role, devServer)}
+                  onLaunch={() => launchRoles([role])}
                 />
               )}
             </div>

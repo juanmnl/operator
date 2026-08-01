@@ -32,7 +32,8 @@ export function ProjectView({
   onToggleSidebar?: () => void
   sidebarCollapsed?: boolean
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
-  onLaunchRole?: (project: Project, role: Role, launchDevServer?: boolean) => void
+  /** `brief` is the launch row's "what do you want done?" — the agent's opening message. */
+  onLaunchRole?: (project: Project, role: Role, opts?: { brief?: string; launchDevServer?: boolean }) => void
   liveRoles?: Record<string, string>
   /** roleId → live session runtime (phase/usage), for the mission-control read. */
   laneSessions?: Record<string, LaneSession>

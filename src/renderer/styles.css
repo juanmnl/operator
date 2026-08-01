@@ -577,6 +577,19 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 .reading-thinking[open] > summary { border-bottom: 1px solid var(--border); }
 .reading-thinking > .reading-md { padding: 10px 12px; margin-bottom: 0; }
 
+/* THE LAUNCH BRIEF's placeholder. "What do you want done?" is not decorative hint text —
+   it is the only thing that says this field exists, so it is held to the 4.5:1 BODY bar.
+   It needs a rule of its own because WebKit's default ::placeholder is the input's own
+   `color` at 50% alpha, i.e. opacity stacked on --fg: measured 2.92 / 2.84 / 3.12:1 on the
+   three light palettes — under the bar, and under even the 3:1 meta bar on two of them.
+   --fg-muted doesn't rescue it either (3.73–4.04:1 light). 72% of --fg is the same
+   "readable but secondary" step-down RosterPanel already uses for an unselected control
+   option, and it is the shallowest one that clears the bar everywhere: worst case 5.16:1
+   (Mr Pink light), 8.37:1 best (Mission Control dark). Measured, not guessed. */
+input[data-launch-brief]::placeholder {
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }

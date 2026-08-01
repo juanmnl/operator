@@ -3237,7 +3237,10 @@ export function DashboardView() {
               onToggleSidebar={toggleSidebar}
               sidebarCollapsed={sidebarCollapsed}
               onUpdateProject={updateProject}
-              onLaunchRole={(project, role, dev) => handleLaunchRole(project, role, undefined, dev)}
+              // The roster's brief IS `handleLaunchRole`'s `prompt` — the same argument the
+              // dispatch auto-launch path uses, so a launch brief reaches the agent by the
+              // route that already works. Empty brief → undefined → today's behaviour exactly.
+              onLaunchRole={(project, role, o) => handleLaunchRole(project, role, o?.brief, o?.launchDevServer ?? false)}
               liveRoles={live}
               laneSessions={laneSessions}
               onFocusTerminal={focusTerminal}
