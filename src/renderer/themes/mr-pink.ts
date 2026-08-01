@@ -63,4 +63,15 @@ export const mrPinkVars = {
   '--panel-edge': 'color-mix(in srgb, var(--border) 70%, transparent)',
   '--overlay-subtle': 'rgba(255,255,255,0.06)',
   '--overlay-medium': 'rgba(255,255,255,0.12)',
+  /* Diff ink. Per-theme since move 04 — they were ONE hardcoded pair shared by every palette,
+     which measured 1.30–1.64:1 on the three light identities and, less obviously, under 4.5:1
+     for `--del-fg` on two of the three DARK ones too (3.56:1 on mr-pink, 4.44:1 on mission
+     control; 1984 scraped 4.55:1). Solved against the worst
+     backdrop a diff ink actually sits on in this app: --bg-terminal, --bg-surface, and a card's
+     --overlay-subtle, each also carrying the row's own --add-bg/--del-bg tint.
+     The green is unchanged from the old shared value — it already cleared the floor on dark. */
+  '--add-fg': '#4ec9a0',
+  '--del-fg': '#ec9ca7',
+  '--add-bg': 'color-mix(in srgb, #4ec9a0 15%, transparent)',
+  '--del-bg': 'color-mix(in srgb, #ec9ca7 15%, transparent)',
 } as const

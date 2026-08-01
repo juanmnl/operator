@@ -5,30 +5,68 @@ import type { WorktreeDiff, FileChange } from '../../../shared/types'
 // Used by CanvasDiffPanel (live session diff) and TaskDiffCard (a task's change). The raw
 // unified diff is parsed into per-file bodies; noise headers are stripped.
 
-interface DiffFile {
+export interface DiffFile {
   path: string
-  lines: string[] // hunk + content lines (noise headers stripped)
+  lines: string[] // hunk + content lines (preamble headers stripped)
+  /** What the stripped preamble said happened, when the hunks can't say it themselves:
+   *  a rename, a mode change. Without this a chmod-only or rename-only change parses to a
+   *  file section with an empty body. */
+  note?: string
 }
 
-// Split a unified diff into per-file bodies. A file starts at `diff --git`; the
-// b/ path is the file name. Strip the low-value headers (index/+++/---/new file/…)
-// since the section header already shows the file.
+/** Preamble headers worth nothing on screen — the section header already names the file.
+ *  `rename`/`old mode`/`new mode` are handled before this and become a `note` instead. */
+const PREAMBLE_NOISE = /^(index |--- |\+\+\+ |new file|deleted file|similarity |dissimilarity )/
+
+/** Split a unified diff into per-file bodies. A file starts at `diff --git`; the **b/** path is
+ *  the file name, i.e. what the file is called NOW.
+ *
+ *  Two things here are load-bearing, and both were found by running this and DiffPanel's
+ *  now-deleted second parser over real `git diff` output rather than by reading them:
+ *
+ *  1. HEADERS ARE ONLY STRIPPED BEFORE THE FIRST HUNK. `---`/`+++` are preamble markers, but
+ *     they are also what a removed `-- dashes` and an added `++ pluses` look like once git has
+ *     prefixed them. Stripping by prefix anywhere in the file silently deleted those content
+ *     lines; the old DiffPanel parser kept them but painted them as muted headers. Neither
+ *     showed the change. Past the first `@@`, every line is content.
+ *  2. THE PATH IS PARSED WITH `.+`, NOT `\S+`. `a/(\S+) b/\S+` cannot match a path containing a
+ *     space — on a real diff of `my file.ts` it fell through to a placeholder, which in
+ *     DiffPanel meant the file could be selected but its diff never appeared, permanently. */
 export function parseDiff(diff: string): DiffFile[] {
   const out: DiffFile[] = []
   let cur: DiffFile | null = null
+  let inHunk = false
+  let notes: string[] = []
+  let renameFrom = ''
+  let oldMode = ''
+
+  const note = (s: string) => { notes.push(s); if (cur) cur.note = notes.join(' · ') }
+
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git')) {
       const m = line.match(/^diff --git a\/.+ b\/(.+)$/)
       cur = { path: m ? m[1] : line.replace('diff --git ', ''), lines: [] }
       out.push(cur)
+      inHunk = false
+      notes = []
+      renameFrom = ''
+      oldMode = ''
       continue
     }
     if (!cur) continue
-    if (
-      line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') ||
-      line.startsWith('new file') || line.startsWith('deleted file') ||
-      line.startsWith('similarity ') || line.startsWith('rename ') || line.startsWith('old mode') || line.startsWith('new mode')
-    ) continue
+    if (line.startsWith('@@')) inHunk = true
+    if (!inHunk) {
+      // Rescued from the preamble rather than dropped: these say the only thing that happened
+      // when there are no hunks at all, and they add what the hunks can't when there are.
+      if (line.startsWith('rename from ') || line.startsWith('copy from ')) {
+        renameFrom = line.slice(line.indexOf('from ') + 5); continue
+      }
+      if (line.startsWith('rename to ')) { note(`Renamed from ${renameFrom || '?'}`); continue }
+      if (line.startsWith('copy to ')) { note(`Copied from ${renameFrom || '?'}`); continue }
+      if (line.startsWith('old mode ')) { oldMode = line.slice(9).trim(); continue }
+      if (line.startsWith('new mode ')) { note(`Mode ${oldMode} → ${line.slice(9).trim()}`); continue }
+      if (PREAMBLE_NOISE.test(line)) continue
+    }
     cur.lines.push(line)
   }
   return out
@@ -80,8 +118,14 @@ export function DiffBody({ diff, compact }: { diff: WorktreeDiff; compact?: bool
       </div>
 
       <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto' }}>
+        {parsed.length === 0 && (
+          <div style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+            No changes.
+          </div>
+        )}
         {parsed.map((file) => {
           const fc = countByPath.get(file.path)
+          const status = fc?.status?.trim()
           const isCollapsed = !expanded.has(file.path)
           return (
             <section key={file.path} data-file={file.path}>
@@ -102,12 +146,24 @@ export function DiffBody({ diff, compact }: { diff: WorktreeDiff; compact?: bool
                   transform: isCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.12s',
                 }}>▾</span>
                 <FilePath path={file.path} />
+                {/* The porcelain status letter, kept when DiffPanel's separate file list was
+                    folded into this one — `??` (untracked) vs `M` is not derivable from the
+                    hunks, and dropping it would have been an information regression. */}
+                {status && <span data-file-status style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)' }}>{status}</span>}
                 {fc && fc.added > 0 && <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--add-fg)' }}>+{fc.added}</span>}
                 {fc && fc.removed > 0 && <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10.5, fontVariantNumeric: 'tabular-nums', color: 'var(--del-fg)' }}>−{fc.removed}</span>}
               </button>
               {!isCollapsed && (
                 <div style={{ fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, lineHeight: 1.55 }}>
+                  {/* A rename or a chmod has no hunks at all, so without this the section opens
+                      onto nothing and reads as a rendering failure rather than as the change. */}
+                  {file.note && (
+                    <div data-file-note style={{ padding: '4px 12px', color: 'var(--fg-muted)', fontStyle: 'italic' }}>{file.note}</div>
+                  )}
                   {file.lines.map((line, i) => <DiffLine key={i} line={line} />)}
+                  {!file.note && file.lines.length === 0 && (
+                    <div style={{ padding: '4px 12px', color: 'var(--fg-muted)' }}>No textual change.</div>
+                  )}
                 </div>
               )}
             </section>

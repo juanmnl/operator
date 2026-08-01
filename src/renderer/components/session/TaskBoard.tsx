@@ -369,17 +369,6 @@ const SHELL: React.CSSProperties = {
  *  CSS colour, not only a lane's. Use this for accent ink; dots, borders and tints stay unmixed. */
 const ACCENT_INK = laneTextColor('var(--accent)')
 
-/** The diff greens/reds, same correction. `--add-fg`/`--del-fg` are the one deliberate
- *  theme-AGNOSTIC pair in the system — a single dark-tuned green and red shared by every palette,
- *  with a standing note in styles.css to "refine per-theme when the diff view is restyled". They
- *  have not been, and measured on the board's `+479 −2` summary they are 1.48:1 (add) and 2.35:1
- *  (removed) on 1984-light: the change summary the board is specifically meant to show is the
- *  least legible thing on it wherever the palette is light. Corrected here rather than globally
- *  because the tokens are shared with DiffBody/TaskDiffCard and re-tuning them belongs to whoever
- *  owns the diff surface — see the result file. Dark palettes blend 0% and are untouched. */
-const ADD_INK = laneTextColor('var(--add-fg)')
-const DEL_INK = laneTextColor('var(--del-fg)')
-
 const LABEL: React.CSSProperties = {
   fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em',
   textTransform: 'uppercase', color: 'var(--fg-muted)',
@@ -673,8 +662,8 @@ function DiffToggle({ task, open, onToggle }: { task: ProjectTask; open: boolean
     >
       {stat ? (
         <>
-          <span style={{ color: ADD_INK }}>+{stat.added}</span>{' '}
-          <span style={{ color: DEL_INK }}>−{stat.removed}</span>
+          <span style={{ color: 'var(--add-fg)' }}>+{stat.added}</span>{' '}
+          <span style={{ color: 'var(--del-fg)' }}>−{stat.removed}</span>
           {stat.files > 0 && <span> · {stat.files} file{stat.files > 1 ? 's' : ''}</span>}
         </>
       ) : 'Diff'} {open ? '▾' : '▸'}
@@ -693,7 +682,7 @@ function CheckChip({ task }: { task: ProjectTask }) {
       title={s === 'running' ? 'Check running…' : (task.check.output || 'no output')}
       style={{
         flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5,
-        color: s === 'pass' ? ADD_INK : s === 'fail' ? DEL_INK : 'var(--fg-muted)',
+        color: s === 'pass' ? 'var(--add-fg)' : s === 'fail' ? 'var(--del-fg)' : 'var(--fg-muted)',
       }}
     >{s === 'running' ? '⋯ check' : s === 'pass' ? '✓ check' : '✗ check'}</span>
   )

@@ -1,5 +1,20 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import type { WorktreeDiff } from '../../../shared/types'
+import { DiffBody } from './DiffBody'
+
+// The Review surface: the same diff every other surface shows, plus the verbs that are
+// genuinely this panel's own — commit, merge into base, discard the branch.
+//
+// It used to carry a SECOND `parseDiff` and its own renderer (~90 lines duplicating DiffBody),
+// reached from the footer's Review button while the side panel's Diff tab and a task card's
+// inline expander both went through DiffBody. Run over real git output the two parsers
+// disagreed on four things — see parseDiff's comment in DiffBody. Two of them were bugs here:
+// a path containing a space parsed to `?`, and since the file list matched blocks by path, that
+// file could be selected but its diff NEVER appeared; and a rename resolved to the OLD path,
+// which the file list (built from git status) never holds either. Both are gone with the
+// duplicate. The left-hand file list went with it: DiffBody's collapsible per-file sections are
+// that list, and its status letter is the one thing the two-pane layout carried that the
+// sections didn't.
 
 interface DiffPanelProps {
   worktreePath: string
@@ -11,47 +26,14 @@ interface DiffPanelProps {
   onSessionEnded?: () => void
 }
 
-interface FileBlock {
-  path: string
-  header: string
-  lines: string[]
-}
-
-function parseDiff(text: string): FileBlock[] {
-  const blocks: FileBlock[] = []
-  let current: FileBlock | null = null
-  for (const line of text.split('\n')) {
-    if (line.startsWith('diff --git ')) {
-      if (current) blocks.push(current)
-      const match = line.match(/diff --git a\/(\S+) b\/\S+/)
-      current = { path: match?.[1] || '?', header: line, lines: [] }
-    } else if (current) {
-      current.lines.push(line)
-    }
-  }
-  if (current) blocks.push(current)
-  return blocks
-}
-
-function lineStyle(line: string): React.CSSProperties {
-  if (line.startsWith('+++') || line.startsWith('---')) return { color: 'var(--fg-muted)', opacity: 0.7 }
-  if (line.startsWith('@@')) return { color: 'var(--accent)', opacity: 0.8 }
-  if (line.startsWith('+')) return { color: 'var(--add-fg)', background: 'var(--add-bg)' }
-  if (line.startsWith('-')) return { color: 'var(--del-fg)', background: 'var(--del-bg)' }
-  return { color: 'var(--fg)', opacity: 0.75 }
-}
-
 export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClose, onSessionEnded }: DiffPanelProps) {
   const [data, setData] = useState<WorktreeDiff | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [busy, setBusy] = useState<null | 'commit' | 'merge' | 'discard'>(null)
   const [error, setError] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
-    const d = await window.operator.worktreeDiff(worktreePath)
-    setData(d)
-    setSelected((prev) => prev && d.files.some((f) => f.path === prev) ? prev : d.files[0]?.path ?? null)
+    setData(await window.operator.worktreeDiff(worktreePath))
   }, [worktreePath])
 
   useEffect(() => { reload() }, [reload])
@@ -109,9 +91,6 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
     onSessionEnded?.()
   }
 
-  const blocks = useMemo(() => data ? parseDiff(data.diff) : [], [data])
-  const currentBlock = selected ? blocks.find((b) => b.path === selected) : null
-
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0,
@@ -144,72 +123,11 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
         </button>
       </div>
 
-      {/* Body — file list left, diff right */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
-        <div style={{
-          width: 220, flexShrink: 0,
-          borderRight: '1px solid var(--border)', overflow: 'auto',
-          padding: '6px 0',
-        }}>
-          {(data?.files || []).map((f) => (
-            <button
-              key={f.path}
-              onClick={() => setSelected(f.path)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                width: '100%', padding: '4px 12px',
-                background: selected === f.path ? 'var(--bg-surface)' : 'transparent',
-                border: 'none', cursor: 'pointer',
-                fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-                fontSize: 11, color: 'var(--fg)', textAlign: 'left',
-              }}
-            >
-              <span style={{
-                fontSize: 9, color: 'var(--fg-muted)', width: 14, flexShrink: 0,
-                textAlign: 'center',
-              }}>
-                {f.status.trim() || '·'}
-              </span>
-              <span style={{
-                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
-              }}>
-                {f.path}
-              </span>
-              {(f.added > 0 || f.removed > 0) && (
-                <span style={{ fontSize: 9, color: 'var(--fg-muted)', flexShrink: 0 }}>
-                  {f.added > 0 && <span style={{ color: 'var(--add-fg)' }}>+{f.added}</span>}
-                  {f.added > 0 && f.removed > 0 && ' '}
-                  {f.removed > 0 && <span style={{ color: 'var(--del-fg)' }}>-{f.removed}</span>}
-                </span>
-              )}
-            </button>
-          ))}
-          {data && data.files.length === 0 && (
-            <div style={{ padding: '12px', fontSize: 11, color: 'var(--fg-muted)', }}>
-              No changes
-            </div>
-          )}
-        </div>
-        <div style={{
-          flex: 1, overflow: 'auto', minWidth: 0,
-          background: 'var(--bg-terminal)',
-          fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
-          fontSize: 11, lineHeight: 1.5,
-        }}>
-          {currentBlock ? (
-            <pre style={{ margin: 0, padding: '8px 0', whiteSpace: 'pre' }}>
-              {currentBlock.lines.map((line, i) => (
-                <div key={i} style={{ ...lineStyle(line), padding: '0 12px' }}>
-                  {line || ' '}
-                </div>
-              ))}
-            </pre>
-          ) : (
-            <div style={{ padding: 16, color: 'var(--fg-muted)', fontSize: 11, }}>
-              {data ? 'Select a file to see its diff' : 'Loading diff…'}
-            </div>
-          )}
-        </div>
+      {/* Body — the one diff renderer. */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {data
+          ? <DiffBody diff={data} />
+          : <div style={{ padding: 16, color: 'var(--fg-muted)', fontSize: 11 }}>Loading diff…</div>}
       </div>
 
       {/* Action bar */}
