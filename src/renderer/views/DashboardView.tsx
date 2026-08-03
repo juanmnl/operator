@@ -537,6 +537,22 @@ export function DashboardView() {
     setActiveTerminalId(null)
   }, [])
 
+  /** Project Home on the TEAM tab — the roster, where lanes are added and launched.
+   *
+   *  Same unfocus-the-session move as `handleOpenProjectHome`, landing on a different tab.
+   *  The collapsed rail's foot button is the caller: that rail lists this project's AGENTS,
+   *  so its one control belongs to the roster rather than duplicating the project rail's
+   *  new-session verb (which it did — same handler, same ⌘N, same `+`, two labels). */
+  const handleOpenProjectTeam = useCallback(() => {
+    setProjectTab('team')
+    setPrefsViewActive(false)
+    setAgentsViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+  }, [])
+
   // Leave every project — the logo, the switcher's "All projects" and ⌘⇧O. This is the ONE
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
   const handleShowGallery = useCallback(() => {
@@ -2985,7 +3001,16 @@ export function DashboardView() {
         projects={projects}
         activities={projectActivities}
         activeProjectId={contentMode === 'gallery' ? null : activeProjectId}
-        onOpenProject={handleOpenProject}
+        // Clicking the tile of the project you are ALREADY in takes you to its home.
+        // `handleOpenProject` deliberately no-ops on a re-select (the "don't yank me out of my
+        // session" rule), but that rule was written for the sidebar header and the toolbar
+        // chevron — which have their own way home. The rail tile had none, so from inside an
+        // agent it was a control that did nothing at all. Going home is only a "yank" if you
+        // are already home, and that case is still a no-op here.
+        onOpenProject={(id) => {
+          if (id === activeProjectId && contentMode !== 'project') handleOpenProjectHome()
+          else handleOpenProject(id)
+        }}
         onShowGallery={handleShowGallery}
         onOpenFolder={handleNewSession}
         onOpenAgents={handleOpenAgents}
@@ -3015,7 +3040,7 @@ export function DashboardView() {
           customNames={customNames}
           shortcutIndices={shortcutIndices}
           onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
+          onOpenTeam={handleOpenProjectTeam}
           onExpand={toggleSidebar}
           onShowGallery={handleShowGallery}
           accentOf={accentOf}
