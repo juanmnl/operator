@@ -70,16 +70,20 @@ await p.screenshot({ path: '/tmp/operator-shots/dispatch-undelivered.png' })
 
 // ---- 4. The channel says so, instead of showing it delivered ---------------------------
 // The log used to read `sent` forever — which is how a task could sit unsent in a composer for
-// an hour while the channel showed it delivered.
+// an hour while the UI showed it delivered.
 await p.locator('[data-rail-gallery]').click()
 await p.waitForTimeout(700)
 await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
 await p.waitForTimeout(900)
-await p.locator('[data-channel-nav]').first().click()
+// Was the channel feed's chips; that surface is deleted and the dispatch log on Team is where
+// an outcome is legible now.
+await p.locator('[data-toolbar-header="project"] button', { hasText: 'Team' }).click()
 await p.waitForTimeout(900)
-console.log('4 channel chips:', JSON.stringify(await p.evaluate(() =>
-  Array.from(document.querySelectorAll('[data-channel-chip]')).map((e) => e.textContent?.trim()))))
-await p.screenshot({ path: '/tmp/operator-shots/dispatch-loop-channel.png' })
+await p.locator('button', { hasText: /Dispatches · \d+/ }).first().click().catch(() => {})
+await p.waitForTimeout(500)
+console.log('4 dispatch-log outcomes:', JSON.stringify(await p.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-dispatch-outcome]')).map((e) => e.getAttribute('title') || e.textContent?.trim()))))
+await p.screenshot({ path: '/tmp/operator-shots/dispatch-loop-log.png' })
 
 // ---- 5. A SPLIT is not a delivery -------------------------------------------------------
 // The failure mode itself: a turn carrying only the front of the message. Confirming on that

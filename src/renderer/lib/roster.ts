@@ -92,29 +92,37 @@ const OPERATOR_CHARTER =
 
 /** The RETURN path, appended to every lane's orchestration note — coordinator included.
  *
- *  It exists in the parser (transcript.rs), the store (chat.db `replies`) and the view
- *  (ProjectChannel) and had **zero rows**, because nothing ever told a lane the sentinel was
- *  there. This is that half.
+ *  It exists in the parser (transcript.rs), the store (chat.db `replies`) and — until the channel
+ *  was deleted — a view. This is the half that tells a lane the sentinel is there at all.
  *
- *  Two things it must be honest about, or a lane will believe it is having a conversation:
- *  a reply is NOT delivered into anyone's session, and it does NOT stand in for a result file.
+ *  ADDRESSED ONLY, as of the channel's deletion. The sentinel takes a target, and `project` used
+ *  to mean "the room": a broadcast, rendered in the channel feed and delivered to nobody by
+ *  design (DashboardView returns early on `to === 'project'`). With the channel gone a broadcast
+ *  is still parsed and still written to chat.db, and displayed NOWHERE — a lane would be told to
+ *  announce itself into a void. So the protocol no longer offers it, and every reply names a
+ *  lane, which is the form that actually reaches someone.
  *
- *  The WHEN matters more than the HOW. "Post your progress" produces narration, and a channel
- *  full of narration is one nobody reads — so the trigger is scoped to the three moments that
- *  carry information the room doesn't already have, with the anti-cases named explicitly
- *  because models default to announcing themselves. */
+ *  Two things it must be honest about, or a lane will believe it is having a conversation: a
+ *  reply may be held (the brakes are real and it will not be told), and it does NOT stand in for
+ *  a result file.
+ *
+ *  The WHEN matters more than the HOW. "Post your progress" produces narration, and narration
+ *  addressed to a specific lane is worse than narration to a room — it interrupts someone. So the
+ *  trigger is scoped to the three moments that carry information the recipient doesn't have, with
+ *  the anti-cases named explicitly because models default to announcing themselves. */
 const REPLY_PROTOCOL =
-  `To post to the project channel, output a line EXACTLY in this form, alone on its own line:\n` +
-  `OPERATOR-REPLY [<lane-id or "project">] <one line>\n` +
-  `It appears in the project's channel, where the user and every lane can read it. It is NOT ` +
-  `delivered into anyone's session — nobody is interrupted, and nobody is guaranteed to read it ` +
-  `at any given moment. It does NOT replace a result file: if your brief names an output path, ` +
-  `write that file. The channel is the headline; the file is the work.\n` +
-  `Post only when the room needs to know something: a task you were given is FINISHED (one line ` +
-  `— what landed, and where the detail is), you are BLOCKED on something that belongs to another ` +
-  `lane, or you found something that CHANGES another lane's work. Do not narrate: no "starting ` +
-  `now", no step-by-step, no thinking aloud, no restating the task. One line, and only when it ` +
-  `earns one.`
+  `To send a line to another lane, output it EXACTLY in this form, alone on its own line:\n` +
+  `OPERATOR-REPLY [<lane-id>] <one line>\n` +
+  `Address a SPECIFIC lane by its id. It is typed into that lane's session, so it interrupts a ` +
+  `working agent — which is why it is worth doing only when the message changes what that lane ` +
+  `should do next. Delivery is not guaranteed: it is dropped if the lane isn't running, and ` +
+  `rate-limited if the two of you are going back and forth, with no notice to you either way. It ` +
+  `does NOT replace a result file: if your brief names an output path, write that file. The reply ` +
+  `is the headline; the file is the work.\n` +
+  `Send only when that lane needs to know something: a task it is waiting on is FINISHED (one ` +
+  `line — what landed, and where the detail is), you are BLOCKED on something that belongs to ` +
+  `it, or you found something that CHANGES its work. Do not narrate: no "starting now", no ` +
+  `step-by-step, no thinking aloud, no restating the task. One line, and only when it earns one.`
 
 /** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
  *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was
@@ -272,7 +280,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
 }
 
 /** Remove `OPERATOR-DISPATCH …` / `OPERATOR-REPLY …` directive lines from assistant prose —
- *  they're protocol, not conversation (the dispatch log and the project channel show them);
+ *  they're protocol, not conversation (the Team screen's dispatch log shows them);
  *  leaves surrounding text intact. Tolerates markdown decoration around the directive
  *  (bullets, numbering, bold/backticks) to mirror the Rust parser (transcript.rs
  *  `parse_directives`, which both sentinels share) — keep the two in sync.

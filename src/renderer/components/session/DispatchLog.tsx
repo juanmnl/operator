@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react'
 import type { Project } from '../../../shared/types'
 import { localTime } from '../../lib/local-time'
+import { chipForOutcome } from '../../lib/dispatch-outcome'
 
-// The project's dispatch activity log — every routed `OPERATOR-DISPATCH` directive
-// (who asked whom to do what, and how it landed). Collapsed by default under the task
-// queue; the durable record behind the transient dispatch toasts.
+// The project's dispatch activity log — every routed `OPERATOR-DISPATCH` directive AND every
+// agent→agent reply delivery (who asked whom to do what, and how it landed). Collapsed by
+// default on the Team screen; the durable record behind the transient dispatch toasts.
+//
+// It is now the ONLY surface for the agent↔agent brake outcomes. The channel used to fold them
+// into the reply's own row; the board deliberately excludes them, because a record with a
+// `replyId` is chat about work rather than work (see TaskBoard's WAITING_OUTCOMES). So this is
+// where a `hop-limit` or a `pair-brake` is visible at all — which is why it stopped carrying its
+// own six-entry label map (missing all four brake outcomes, so it printed raw enum strings for
+// exactly those records) and reads the shared vocabulary instead.
 
-const OUTCOME_LABEL: Record<string, string> = {
-  sent: 'sent',         // typed into the live lane
-  launched: 'launched', // lane was idle → spawned with the task
-  queued: 'queued',     // task queued (legacy records / failed launch)
-  unassigned: 'no lane', // role didn't resolve → unassigned backlog
-  'pending-approval': 'needs approval', // a non-coordinator lane asked; NOT delivered
-  rejected: 'rejected', // declined; never delivered
-}
+/** See RosterPanel's WARN_INK: `--color-warning` raw is a dark-field signal colour and fails the
+ *  contrast floor as small text on the light palettes. Half way to `--fg` keeps the hue — which is
+ *  what makes a held row distinguishable from a delivered one — and clears the bar. */
+const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
 
 export function DispatchLog({ project, onApprove, onReject }: {
   project: Project
@@ -55,6 +59,7 @@ export function DispatchLog({ project, onApprove, onReject }: {
             // HH:MM LOCAL — the date is rarely the point here. A slice would show UTC.
             const time = localTime(d.at)
             const isPending = d.outcome === 'pending-approval'
+            const chip = chipForOutcome(d.outcome)
             return (
               <div key={d.id} data-dispatch-row={d.id} style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 2px', fontSize: 11,
@@ -68,8 +73,13 @@ export function DispatchLog({ project, onApprove, onReject }: {
                 <span style={{ flexShrink: 0, color: 'var(--fg-muted)', fontSize: 10 }}>→</span>
                 <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: to?.accent || 'var(--fg-muted)' }}>{to?.name ?? '?'}</span>
                 <span style={{ flex: 1, minWidth: 0, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.task}>{d.task}</span>
-                <span data-dispatch-outcome style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: d.outcome === 'sent' || d.outcome === 'launched' ? 'var(--accent)' : 'var(--fg-muted)' }}>
-                  {OUTCOME_LABEL[d.outcome] ?? d.outcome}
+                <span data-dispatch-outcome title={chip.label} style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', // `--color-warning`, NOT `--status-waiting`: the latter is #2fe39a on Mission Control — the
+                  // same green as --accent — so a HELD row rendered identically to a delivered one. The
+                  // rehomed brakes driver caught it: "blocked NOT the same colour as delivered: false".
+                  color: chip.tone === 'accent' ? 'var(--accent)' : chip.tone === 'warn' ? WARN_INK : 'var(--fg-muted)' }}>
+                  {/* The chip's own words, minus the `held · ` prefix the row's tint already
+                      carries — this column is one short column in a dense log, not a sentence. */}
+                  {chip.label.replace(/^held · /, '')}
                 </span>
                 {/* Explicit, PER DISPATCH. No approve-all and no timeout: a timeout that approves
                     is not a guardrail, and one button that approves eleven things is how you end

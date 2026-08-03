@@ -1,5 +1,3 @@
-import { CHANNEL_MAX_CHARS } from './channel-send'
-
 // AGENT → AGENT delivery, and the brakes that must ship with it.
 //
 // The feature is one line of behaviour: a lane's OPERATOR-REPLY gets typed into the addressee's
@@ -18,9 +16,19 @@ export const PAIR_WINDOW_MS = 60_000
 export const PAIR_MAX_IN_WINDOW = 4
 /** How long a tripped pair stays suspended. Per-pair, never global. */
 export const PAIR_SUSPEND_MS = 5 * 60_000
-/** Same hard cap as a human message, for the same reason: nothing in the write path can confirm
- *  delivery, so past this length we are guessing. Inherited rather than redeclared. */
-export const DELIVER_MAX_CHARS = CHANNEL_MAX_CHARS
+/** Hard cap on one delivered message.
+ *
+ *  Not a style preference. There is **no delivery acknowledgment anywhere in the write path**:
+ *  success is inferred from timing by `nudgeDelayFor`, which its own comment calls a heuristic
+ *  stand-in for the closed-loop confirmation that doesn't exist, and which caps out at 6s. The
+ *  prefix-submits-tail-strands bug lived exactly there. Past a few KB the risk is unbounded and
+ *  unmeasurable, so we truncate with a marker rather than gambling on the whole thing landing.
+ *
+ *  It used to live in `channel-send.ts` as `CHANNEL_MAX_CHARS` and be re-exported here — the one
+ *  place a surviving module imported from the deleted channel. Moved rather than aliased: an
+ *  alias would have kept `channel-send.ts` alive as a one-constant file, which is the deletion
+ *  not happening. The value is unchanged, so nothing about delivery behaviour moved with it. */
+export const DELIVER_MAX_CHARS = 2000
 
 /** The kill switch's persisted key, and the one place its default is decided.
  *
@@ -91,12 +99,18 @@ export interface DeliveryInput {
   state: DeliveryState
 }
 
-/** Truncate for delivery, keeping the full text in the store and saying so in the wire copy.
- *  Never a silent cut: the recipient is told there is more and where it lives. */
+/** Truncate for delivery, and say so in the wire copy. Never a silent cut: the recipient is told
+ *  there is more, and given the only route to it that still exists.
+ *
+ *  That route used to be "the full message is in this project's channel". The channel is deleted,
+ *  and this string is typed into an AGENT's pty — so leaving it would have been an instruction to
+ *  go and read a screen that isn't there, which is worse than saying nothing. The sender still has
+ *  the whole message (it is in its own transcript), and asking it is something the recipient can
+ *  actually do. */
 export function truncateForDelivery(text: string): { text: string; truncated: boolean } {
   if (text.length <= DELIVER_MAX_CHARS) return { text, truncated: false }
   // Leave room for the notice so the result is still under the cap.
-  const notice = `\n…[truncated at ${DELIVER_MAX_CHARS} chars — the full message is in this project's channel]`
+  const notice = `\n…[truncated at ${DELIVER_MAX_CHARS} chars — ask the sender for the rest]`
   return { text: text.slice(0, DELIVER_MAX_CHARS - notice.length) + notice, truncated: true }
 }
 
@@ -130,12 +144,12 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
     ({ decision: { kind: 'block', reason, hop, note }, state })
 
   if (paused) {
-    return block('paused', 'Agent-to-agent delivery is paused. The message is in the channel; nothing was sent.')
+    return block('paused', 'Agent-to-agent delivery is paused. Nothing was sent; the reply is recorded on the Team screen’s dispatch log.')
   }
   if (!targetLive) {
     // Queued, never launched — the same rule human→lane follows. A text box that starts sessions
     // is an unbounded spawn.
-    return block('queued', `"${to}" isn't running, and a message never starts a lane. It stays in the channel.`)
+    return block('queued', `"${to}" isn't running, and a message never starts a lane. Nothing was sent.`)
   }
   // The chain budget. `exhausted` is checked alongside the count rather than after it, because a
   // lane that was marked when its partner hit the limit has a STALE count of its own — that gap is
@@ -146,8 +160,8 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
       decision: {
         kind: 'block', reason: 'hop-limit', hop,
         note: already
-          ? `"${from}" is in a chain that already reached ${HOP_LIMIT} hops. Message you, or it stays in the channel.`
-          : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; the message is in the channel for you.`,
+          ? `"${from}" is in a chain that already reached ${HOP_LIMIT} hops. Send it a task to let it speak again.`
+          : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; send "${to}" a task to restart the chain.`,
       },
       // BOTH ends. The sender is already over budget by its own count; the addressee is the one
       // that leaked, because nothing was delivered into it so its count never moved. Marking only

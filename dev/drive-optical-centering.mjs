@@ -26,9 +26,9 @@ const DSF = Number(process.env.DSF || 2)
 
 const b = await webkit.launch()
 const ctx = await b.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', deviceScaleFactor: DSF })
-// The channel's feed is empty in the bare mock, and an empty feed has no avatars — which is the
-// one site the complaint actually named. Same seed as drive-project-channel.mjs: two authors, so
-// both a one- and a two-letter initial appear.
+// The channel's avatars were the site the original complaint named, and they are gone with it.
+// The rail tiles and the sidebar's letter discs are the same `.ink-centred` treatment, so the
+// measurement still covers the technique — it just no longer covers that one surface.
 await ctx.addInitScript(() => {
   let real
   Object.defineProperty(window, 'operator', {
@@ -57,8 +57,6 @@ if (BEFORE) await p.addStyleTag({ content: '.ink-centred{transform:none !importa
 // whether the sub-pixel nudge earns its place at the device scale people actually use.
 if (process.env.MODE === 'noshift') await p.addStyleTag({ content: '.ink-centred{transform:none !important}' })
 await p.waitForTimeout(4500)
-// The channel is where the complaint came from, and its avatars only exist once it is open.
-await p.locator('[data-channel-nav]').first().click().catch(() => {})
 await p.waitForTimeout(1500)
 
 /** Ink bbox of `sel`, in CSS px relative to the clip, by hiding it and diffing. */
@@ -104,7 +102,6 @@ const SITES = [
   // match comes first in document order — which is the avatar itself, its own ancestor — so the
   // whole disc got hidden and the "ink" measured was the circle. Before and after read the same
   // and looked like the fix had not applied.
-  { key: 'channel avatar', disc: '[data-channel-avatar]', letters: '[data-channel-avatar] > .ink-centred' },
   { key: 'rail tile', disc: '[data-rail-tile]', letters: '[data-rail-initials]' },
 ]
 
@@ -158,9 +155,10 @@ for (const s of SITES) {
 console.log('-'.repeat(76))
 console.log(`worst |Δ| ${worst.toFixed(2)}px   (Δy positive = ink sits LOW, negative = ink sits HIGH)`)
 
-// A column of avatars at 4x — the complaint is optical and the number is the check, not the goal.
+// A column of discs at 4x — the complaint is optical and the number is the check, not the goal.
+// Was the channel's avatar column; the rail's tiles are the same treatment and still exist.
 const av = await p.evaluate(() => {
-  const els = [...document.querySelectorAll('[data-channel-avatar]')]
+  const els = [...document.querySelectorAll('[data-rail-tile]')]
   if (!els.length) return null
   const first = els[0].getBoundingClientRect(), last = els[Math.min(3, els.length - 1)].getBoundingClientRect()
   return { x: first.left - 8, y: first.top - 8, width: 40, height: last.bottom - first.top + 16 }

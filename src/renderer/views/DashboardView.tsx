@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor, rolePresets, isCoordinator } from '../lib/roster'
-import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, type DeliveryState } from '../lib/agent-delivery'
+import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
@@ -25,12 +25,7 @@ import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
-import { ProjectChannel, channelHeader } from '../components/session/ProjectChannel'
-import { ChannelPanel } from '../components/session/ChannelPanel'
 import { AppShell } from '../components/AppShell'
-import { buildChannelFeed, unreadEntries } from '../lib/project-channel'
-import { planChannelSend, validateChannelMessage, type ChannelLane, type ChannelTarget } from '../lib/channel-send'
-import type { ProjectReply } from '../../shared/types'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
 import { getTerminal } from '../lib/terminal-registry'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -180,19 +175,6 @@ export function DashboardView() {
   // Gallery sub-view: the project grid, or the cross-project ActivityDashboard behind the
   // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
   const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
-  /** The project channel (read-only agent feed) is the content area. Project-scoped, so it is a
-   *  contentMode rather than a projectTab — the sidebar row switches to it and activeProjectId
-   *  still scopes it. */
-  const [channelActive, setChannelActive] = useState(false)
-  /** OPERATOR-REPLY rows for the scoped project, read from chat.db. Empty until a lane emits one. */
-  const [channelReplies, setChannelReplies] = useState<ProjectReply[]>([])
-  /** projectId → ISO timestamp of the newest entry the user has seen. */
-  const [channelReadAt, setChannelReadAt] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem('operator.channelReadAt') || '{}') } catch { return {} }
-  })
-  /** Bumped when a reply arrives, to re-read the store. The setter's identity is stable, which is
-   *  what lets the mount-once reply subscription reach it without a ref. */
-  const [replyTick, setReplyTick] = useState(0)
   /** The kill switch for agent→agent delivery. It now DEFAULTS TO LIVE — flipped 2026-07-30.
    *
    *  It shipped paused, on the reasoning that two cooperative agents which can each answer the
@@ -228,36 +210,6 @@ export function DashboardView() {
    *  reply, not on the next remount: a kill switch you have to restart to apply is not one. */
   const chatterPausedRef = useRef(chatterPaused)
   chatterPausedRef.current = chatterPaused
-  // Load the project's replies whenever a project is SCOPED — not only when the channel opens.
-  // Gating it on `channelActive` made the sidebar's unread badge under-count: it saw dispatches
-  // but zero replies until you opened the channel, i.e. the badge disagreed with the feed it was
-  // advertising. One query per project switch is nothing.
-  //
-  // Read-only: chat.db is tailer-write / frontend-read and this adds no write path. Re-read on
-  // scope change rather than polling — the tailer ticks at 1s and this is history, not a console.
-  //
-  // …and on `replyTick`, bumped by the reply subscription below. This is not a nicety: since step 3
-  // a delivery outcome is recorded against a reply and FOLDS INTO ITS ROW, so with no re-read the
-  // reply row wouldn't exist yet and the outcome — including a brake — would be invisible until you
-  // switched projects and back. The tailer persists before it emits (transcript.rs), so a read
-  // triggered by the event always sees the row.
-  useEffect(() => {
-    if (!activeProjectId) { setChannelReplies([]); return }
-    let cancelled = false
-    void window.operator.projectReplies?.(activeProjectId)
-      .then((rows) => { if (!cancelled) setChannelReplies(rows ?? []) })
-      .catch(() => { if (!cancelled) setChannelReplies([]) })
-    return () => { cancelled = true }
-  }, [channelActive, activeProjectId, replyTick])
-
-  const markChannelRead = useCallback((projectId: string, at: string) => {
-    setChannelReadAt((prev) => {
-      if (prev[projectId] === at) return prev // same feed head — don't churn localStorage
-      const next = { ...prev, [projectId]: at }
-      try { localStorage.setItem('operator.channelReadAt', JSON.stringify(next)) } catch { /* quota */ }
-      return next
-    })
-  }, [])
   // Project-switcher popover (sidebar header, ⌘⇧P).
   const [reviewingTerminalId, setReviewingTerminalId] = useState<string | null>(null)
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
@@ -1114,10 +1066,6 @@ export function DashboardView() {
       if (seen.includes(r.id)) return // already handled (dedupe across transcript re-reads)
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
 
-      // The store already has it (persist-then-emit); pull it into the feed so the delivery
-      // outcome recorded below has a row to fold into.
-      setReplyTick((n) => n + 1)
-
       const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === r.terminalId)
       const project = projs.find((p) => p.id === (r.projectId || srcTab?.projectId))
@@ -1143,7 +1091,12 @@ export function DashboardView() {
       //
       // A broadcast (`to === 'project'`) is never delivered to anyone: it is addressed to the room,
       // and fanning it out would multiply one message by the roster on every hop — the fastest way
-      // to a runaway. It posts to the channel and stops there.
+      // to a runaway. It is persisted by the tailer and stops here.
+      //
+      // There is no longer a room to address: the channel that rendered broadcasts is deleted, so
+      // one written today is stored and displayed nowhere. `REPLY_PROTOCOL` (lib/roster) has been
+      // changed to stop lanes emitting them — this branch stays as the backstop for a lane running
+      // on an older system prompt, not as a supported path.
       if (!to || !from || !project) return
       // Durable double-delivery guard. The seen-set above is the fast one, but it lives in
       // localStorage; the record does not, so a cleared cache can't re-deliver a month of replies.
@@ -1163,8 +1116,10 @@ export function DashboardView() {
       // well would be a second copy of the rule that bounds the chain.
       deliveryStateRef.current = state
       // Record the outcome either way, keyed to the reply. This is what puts the brake on screen:
-      // the channel folds it into that reply's row, so a stopped chain reads as "posted · chain
-      // limit reached" instead of looking like the addressee ignored it.
+      // Team → Dispatches renders every one of these rows, so a stopped chain reads as an outcome
+      // against the pair instead of looking like the addressee ignored it. (The board deliberately
+      // does not: a `replyId` record is chat about work, never work — see TaskBoard's
+      // WAITING_OUTCOMES — which is exactly why the dispatch log had to survive this move.)
       const record = (outcome: DispatchRecord['outcome']) => log(project.id, {
         id: crypto.randomUUID(), at: new Date().toISOString(),
         fromRoleId: from.id, toRoleId: to.id, task: r.text, outcome, replyId: r.id,
@@ -1194,7 +1149,10 @@ export function DashboardView() {
       void submitQueue.submit(target.id, deliveryPrefix(from.name) + decision.text)
       record('sent')
       if (decision.truncated) {
-        toast({ text: `Trimmed a long message to ${to.name}`, kind: 'info', detail: 'The full text is in the channel.' })
+        // Was "The full text is in the channel." — false the moment the channel went, and this
+        // is the one toast whose whole job is telling you something was lost. The sender's own
+        // transcript is where the untruncated text actually survives.
+        toast({ text: `Trimmed a long message to ${to.name}`, kind: 'info', detail: `Only the first ${DELIVER_MAX_CHARS} characters were delivered; the full text is in ${from.name}'s transcript.` })
       }
     })
     return () => unsub?.()
@@ -1354,49 +1312,6 @@ export function DashboardView() {
       terminalId: srcTab?.id, projectId, approving: true,
     })
   }, [])
-
-  /** Send a HUMAN message from the project channel to one lane, or to everyone.
-   *
-   *  Reuses the dispatch delivery primitive (`submitQueue.submit`) — there is exactly one path
-   *  that writes to a pty and this is not a second one. What it deliberately does NOT reuse is
-   *  dispatch's idle-lane LAUNCH: see planChannelSend for why a message must never spawn a session.
-   *
-   *  Returns what happened so the composer can report it without guessing. */
-  const sendChannelMessage = useCallback((projectId: string, text: string, target: ChannelTarget) => {
-    // Second enforcement point, and the one that actually matters: the composer checks too, but a
-    // paste followed immediately by ⌘↵ must not be able to outrun it.
-    const check = validateChannelMessage(text)
-    if (!check.ok) return { ok: false as const, error: check.error }
-
-    const project = projectsRef.current.find((p) => p.id === projectId)
-    if (!project) return { ok: false as const, error: 'No project in scope.' }
-    const roster = project.roster ?? []
-    const lanes: ChannelLane[] = roster.map((role) => ({
-      role,
-      terminalId: pickLaneTab(withActivity(terminalsRef.current), projectId, role.id)?.id,
-    }))
-    const plan = planChannelSend(text, target, lanes, crypto.randomUUID())
-    if (!plan.records.length) return { ok: false as const, error: 'No lane to send to.' }
-
-    const at = new Date().toISOString()
-    for (const rec of plan.records) {
-      // Delivered ones go through the shared queue: serialized per terminal with a length-scaled
-      // watchdog, so two sends can't merge into one composer draft.
-      if (rec.outcome === 'sent' && rec.terminalId) void submitQueue.submit(rec.terminalId, rec.task)
-      // A HUMAN in the conversation is what makes the agent→agent hop budget recover, and it is
-      // the only thing that does — the alternative would be a timer, i.e. a chain that becomes
-      // legitimate again by waiting. Whoever you just addressed starts a fresh chain.
-      if (rec.toRoleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, rec.toRoleId)
-      logDispatch(projectId, {
-        id: crypto.randomUUID(), at,
-        fromHuman: true, toRoleId: rec.toRoleId, task: rec.task, outcome: rec.outcome,
-        ...(rec.groupId ? { groupId: rec.groupId } : {}),
-      })
-    }
-    const delivered = plan.records.filter((r) => r.outcome === 'sent').length
-    return { ok: true as const, delivered, skipped: plan.skipped.map((r) => r.name) }
-  }, [logDispatch])
-
 
   /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
@@ -1944,6 +1859,20 @@ export function DashboardView() {
   const dispatchToRole = useCallback((project: Project, role: Role, task: string) => {
     const t = task.trim()
     if (!t) return
+    // A HUMAN MESSAGE RESETS THE ADDRESSEE'S CHAIN. This used to live in `sendChannelMessage`,
+    // the channel composer's send — which was `resetChainFor`'s only caller, so deleting the
+    // channel would have taken the hop budget's only recovery path with it.
+    //
+    // That is not a cosmetic loss. `exhausted` has no timer of its own (see agent-delivery): a
+    // lane that hits HOP_LIMIT is barred from SENDING as well as receiving, and the mark is
+    // cleared by exactly two things — a delivery that itself passed the budget check, which a
+    // barred lane can no longer produce, and this. Without a home for it the brakes would still
+    // engage and never release: one runaway chain and that lane is mute until the app restarts.
+    //
+    // `dispatchToRole` is the right home because it is the same act by the same authority: the
+    // human addressing a lane. Its only callers are Send → on a board card and Start all, both
+    // human-initiated; agent→agent delivery goes through `deliverDispatchRef`, never here.
+    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, role.id)
     const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
     if (liveTab) {
       void submitQueue.submit(liveTab.id, t)
@@ -2223,44 +2152,10 @@ export function DashboardView() {
     () => (activeProjectId ? projects.find((p) => p.id === activeProjectId) ?? null : null),
     [activeProjectId, projects],
   )
-  /** Who can be named as the author of a reply.
-   *
-   *  Keyed by the CLAUDE session id, which is what a reply carries. Live sessions first (freshest
-   *  roleId), then the DURABLE saved-session store — that second half is the fix: the channel
-   *  renders history, and a list built from this run's ptys can only ever name lanes that happen
-   *  to be running right now. Every older reply fell through to its raw uuid.
-   *
-   *  SCOPED TO THE ACTIVE PROJECT, and it must stay that way. Role ids are not unique across
-   *  projects — every roster uses the same `code` / `qa` / `research` / `design` — so attributing
-   *  against a global list matches the FIRST session carrying that role id anywhere on the
-   *  machine, and a reply from this project's Code lane can be labelled with another project's.
-   *  It reads exactly like a dispatch having travelled between projects. `scopedSessions` below
-   *  filters the same way; these two were one line apart and disagreed. */
-  const channelSessions = useMemo(() => {
-    if (!activeProjectId) return []
-    return [
-      ...allSidebarSessions
-        .filter((x) => x.projectId === activeProjectId)
-        .map((x) => ({ id: x.id, roleId: x.roleId })),
-      ...savedSessions
-        .filter((s) => s.claudeSessionId && s.projectId === activeProjectId)
-        .map((s) => ({ id: s.claudeSessionId as string, roleId: s.roleId })),
-    ]
-  }, [allSidebarSessions, savedSessions, activeProjectId])
-
   const scopedSessions = useMemo(
     () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
     [allSidebarSessions, activeProjectId],
   )
-  /** Unread = entries newer than this project's lastReadAt. Computed from the SAME merge the view
-   *  renders, so the badge can never disagree with the feed. */
-  const channelUnread = useMemo(() => {
-    if (!activeProject) return 0
-    const feed = buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster,
-      channelSessions)
-    return unreadEntries(feed, channelReadAt[activeProject.id] ?? null).length
-  }, [activeProject, channelReplies, channelSessions, channelReadAt])
-
   // What each project is doing — the switcher's per-row orb and state label. Rolled up by
   // lib/project-status so the popover and the gallery card read a project identically.
   const projectActivities = useMemo(() => {
@@ -2296,17 +2191,6 @@ export function DashboardView() {
   // Deliberately NOT the array's own order: that happens to be stable today, but nothing declares
   // it, and the sidebar's own reorder is already a shipped example of a position that looks saved
   // and isn't.
-  // Which digest row is open in the channel panel's Message tab. Kept here rather than in
-  // ProjectChannel because the panel is a sibling in the shell's slot, not a child of the feed.
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
-  // Resolved from the same feed the rows come from, so a selection that scrolls out of the store
-  // (or whose project changed) simply stops resolving and the panel falls back to Project.
-  const selectedChannelEntry = useMemo(() => {
-    if (!selectedChannelId || !activeProject) return undefined
-    return buildChannelFeed(activeProject.dispatches, channelReplies, activeProject.roster, channelSessions)
-      .find((e) => e.id === selectedChannelId)
-  }, [selectedChannelId, activeProject, channelReplies, channelSessions])
-
   const handleReorderProject = useCallback((draggedId: string, targetId: string, edge: 'before' | 'after') => {
     setProjects((prev) => reorderRail(prev, draggedId, targetId, edge))
   }, [])
@@ -2740,7 +2624,7 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'channel' | 'project' | 'gallery' = useMemo(() => {
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
     if (globalPrefsActive) return 'globalPrefs'
@@ -2751,10 +2635,9 @@ export function DashboardView() {
     // nor the gallery, i.e. a blank screen.
     if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
     // Inside a project with no session focused → Project Home, which is the board.
-    if (channelActive && activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'channel'
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
-  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, channelActive, activeProjectId, projects])
+  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -3070,9 +2953,6 @@ export function DashboardView() {
         project={activeProject}
         sessions={scopedSessions}
         onRestoreProject={restoreProject}
-        onOpenChannel={() => { setChannelActive(true); setActiveSessionId(null); setActiveTerminalId(null) }}
-        channelActive={contentMode === 'channel'}
-        channelUnread={channelUnread}
         onOpenProjectHome={handleOpenProjectHome}
         projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
@@ -3239,40 +3119,6 @@ export function DashboardView() {
             />
           )
         })()}
-
-        {contentMode === 'channel' && activeProject && (
-          <AppShell
-            header={channelHeader({ project: activeProject, chatterPaused, onToggleChatter: toggleChatterPaused })}
-            onToggleSidebar={toggleSidebar}
-            sidebarCollapsed={sidebarCollapsed}
-            /* The slot phase 1 built, now filled: the channel's panel is about the PROJECT, where a
-               session's is about that session. Same slot, same geometry, different contents — which
-               is why the shell lets a mode supply the panel rather than owning one.
-               No status bar: the channel has no equivalent of the session's Terminal/Review verbs,
-               and an empty-but-present bar is worse than none. */
-            rightPanel={(
-              <ChannelPanel
-                project={activeProject}
-                selected={selectedChannelEntry}
-                onClearSelection={() => setSelectedChannelId(null)}
-              />
-            )}
-          >
-            <ProjectChannel
-              project={activeProject}
-              replies={channelReplies}
-              sessions={channelSessions}
-              onApproveDispatch={approveDispatch}
-              onRejectDispatch={rejectDispatch}
-              onMarkRead={markChannelRead}
-              onSend={sendChannelMessage}
-              chatterPaused={chatterPaused}
-              onToggleChatter={toggleChatterPaused}
-              selectedId={selectedChannelId ?? undefined}
-              onSelectEntry={(e) => setSelectedChannelId(e.id)}
-            />
-          </AppShell>
-        )}
 
         {contentMode === 'prefs' && (
           <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>

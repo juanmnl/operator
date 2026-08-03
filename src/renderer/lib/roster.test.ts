@@ -272,24 +272,28 @@ describe('orchestrationNote — the return path', () => {
     for (const role of [op, code]) {
       const note = orchestrationNote('proj', role, roster)
       expect(note).toContain('OPERATOR-DISPATCH [<lane-id>]')
-      expect(note).toContain('OPERATOR-REPLY [<lane-id or "project">]')
+      // No `or "project"`: broadcasts were dropped with the channel that was their only reader.
+      expect(note).toContain('OPERATOR-REPLY [<lane-id>]')
+      expect(note).not.toContain('"project"')
     }
   })
 
-  it('is honest that a reply is not delivered and does not replace the result file', () => {
-    // A lane that believes it is having a conversation will wait for an answer that never comes;
-    // one that thinks the channel IS the deliverable will skip writing the file.
+  it('is honest that delivery can fail and does not replace the result file', () => {
+    // A lane that believes it is having a guaranteed conversation will wait for an answer that
+    // never comes; one that thinks the reply IS the deliverable will skip writing the file.
+    // The reply IS delivered now (into the addressee's pty) — what it is not is guaranteed, and
+    // the brakes deliberately tell the sender nothing.
     const note = orchestrationNote('proj', code, roster)
-    expect(note).toContain('NOT delivered into anyone')
+    expect(note).toContain('Delivery is not guaranteed')
     expect(note).toContain('does NOT replace a result file')
   })
 
   it('scopes WHEN to reply, and names the anti-cases', () => {
-    // "Post your progress" floods the channel; a flooded channel is one nobody reads.
+    // "Post your progress" was noise in a room; addressed to one lane it is an interruption.
     const note = orchestrationNote('proj', code, roster)
     expect(note).toContain('FINISHED')
     expect(note).toContain('BLOCKED')
-    expect(note).toContain("CHANGES another lane's work")
+    expect(note).toContain('CHANGES its work')
     expect(note).toContain('Do not narrate')
     expect(note).toContain('starting now')
   })

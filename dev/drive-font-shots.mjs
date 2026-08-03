@@ -12,7 +12,6 @@ const PORT = process.env.MOCK_PORT || 1436
 const OUT = '/tmp/operator-shots'
 
 const SURFACES = [
-  { key: 'channel', go: async (p) => { await p.locator('[data-nav-channel]').first().click().catch(() => {}) } },
   { key: 'session', go: async () => {} },
   { key: 'agents', go: async (p) => { await p.locator('[data-rail-agents]').click().catch(() => {}) } },
   { key: 'gallery', go: async (p) => { await p.locator('[data-rail-gallery]').click().catch(() => {}) } },

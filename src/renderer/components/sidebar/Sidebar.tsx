@@ -48,13 +48,7 @@ interface SidebarProps {
   isDark: boolean
   /** Un-shelve THIS project — the `previous` chip in the header row. */
   onRestoreProject?: (projectId: string) => void
-  /** Open the project channel (the read-only agent feed). Absent = no row rendered. */
-  onOpenChannel?: () => void
-  /** True while the channel is the content area, so its row reads as selected. */
-  channelActive?: boolean
-  /** Entries newer than this project's lastReadAt. 0/undefined = no badge. */
-  channelUnread?: number
-  /** Open THIS project's home (roster) — the project row and the section's `+`. */
+  /** Open THIS project's home (the board) — the project row and the section's `+`. */
   onOpenProjectHome: () => void
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
@@ -89,7 +83,7 @@ export function Sidebar({
   project, sessions, activeSessionId, customNames, activeFolderPrefs,
   globalPrefsActive, prefsViewActive, projectHomeActive,
   effortLevels, fanInfo, shortcutIndices, stats, isDark,
-  onRestoreProject, onOpenChannel, channelActive, channelUnread,
+  onRestoreProject,
   onOpenProjectHome, onSelectSession, onRenameSession, onCloseSession,
   onLaunchRole, accentOf, onPickAccent, onReorderSession, onReorderLane,
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs,
@@ -299,44 +293,6 @@ export function Sidebar({
           </div>
         )}
       </DragRegion>
-
-      {/* # channel — the room the lanes are in. PROJECT-level, so it sits above the AGENTS
-          label rather than among the lanes: it is not another lane, and putting it in the list
-          would make it read as one. Unread counts entries newer than this project's lastReadAt. */}
-      {onOpenChannel && (
-        <button
-          data-channel-nav
-          onClick={onOpenChannel}
-          title="Everything your agents have said to each other in this project"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 7, width: '100%', textAlign: 'left',
-            padding: '5px 14px', boxSizing: 'border-box', flexShrink: 0,
-            background: channelActive ? 'var(--overlay-subtle)' : 'transparent',
-            border: 'none', outline: 'none', cursor: 'pointer', fontFamily: 'var(--font-body)',
-            // @ts-expect-error Electron-specific CSS property
-            WebkitAppRegion: 'no-drag',
-          }}
-          onMouseEnter={(e) => { if (!channelActive) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-          onMouseLeave={(e) => { if (!channelActive) e.currentTarget.style.background = 'transparent' }}
-        >
-          <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg-muted)' }}>#</span>
-          <span style={{
-            flex: 1, minWidth: 0, fontSize: 11.5,
-            color: channelActive ? 'var(--accent)' : 'color-mix(in srgb, var(--fg) 80%, transparent)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            channel
-          </span>
-          {(channelUnread ?? 0) > 0 && (
-            <span data-channel-unread style={{
-              flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9,
-              fontVariantNumeric: 'tabular-nums', color: 'var(--accent)',
-            }}>
-              {channelUnread}
-            </span>
-          )}
-        </button>
-      )}
 
       {/* AGENTS — the project's team. */}
       <div style={{

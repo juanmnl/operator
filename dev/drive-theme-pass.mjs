@@ -285,17 +285,9 @@ for (const [key, label] of THEMES) {
   // The sidebar's own crop, so lane rows are legible in the contact sheet.
   await p.screenshot({ path: `${OUT}/${key}-3b-sidebar-crop.png`, clip: { x: 0, y: 0, width: 240, height: 900 } })
 
-  // ---- 2·channel. The project channel's own ink -----------------------------------
-  // The author name and the avatar initials are drawn in the LANE ACCENT through
-  // laneTextColor — the one place in this view where the colour comes from user data rather
-  // than a token, which is exactly what collapses on a light palette without the blend.
-  await p.locator('[data-channel-nav]').first().click()
-  await p.waitForTimeout(900)
-  await p.evaluate(PROBE)
-  // Panel check FIRST — it opens and closes a menu, which would drop the row hover the copy-action
-  // probe depends on. Hover afterwards.
-  await p.locator('[data-channel-send-target]').click().catch(() => {})
-  await p.waitForTimeout(250)
+  // (The channel's own ink was probed here — lane-accent author names and avatar initials
+  //  through laneTextColor. That surface is deleted; the same laneTextColor path is still
+  //  covered by the roster and board probes below.)
 
   // ---- FLOATING PANELS MUST BE OPAQUE ------------------------------------------
   // A different check from contrast, and one the contrast table structurally cannot make: it
@@ -331,52 +323,40 @@ for (const [key, label] of THEMES) {
   }
   await p.keyboard.press('Escape').catch(() => {})
   await p.waitForTimeout(150)
-  await p.locator('[data-channel-row]').first().hover().catch(() => {})
-  await p.waitForTimeout(250)
-
-  const channelProbes = await p.evaluate(() => {
-    // Probe a row whose author RESOLVED to a lane (those carry the accent ink); an unresolved
-    // author is drawn in --fg-muted and is not the interesting case.
-    const rows = Array.from(document.querySelectorAll('[data-channel-row]')) // feed rows only now
-    const withAccent = rows.find((r) => (r.querySelector('[data-channel-author]')?.getAttribute('style') || '').includes('lane-ink-blend'))
-    if (withAccent) withAccent.setAttribute('data-probe-channel', '')
-    // The held row carries the warn tone — also accent-derived, so also worth measuring.
-    const held = rows.find((r) => r.querySelector('[data-channel-approve]'))
-    if (held) held.setAttribute('data-probe-held', '')
-    return [
-      window.__contrast('[data-probe-channel] [data-channel-author]', 'channel author name'),
-      window.__contrast('[data-probe-channel] [data-channel-avatar]', 'channel avatar initials'),
-      window.__contrast('[data-probe-channel] [data-channel-text]', 'channel message body'),
-      window.__contrast('[data-probe-channel] [data-channel-chip]', 'channel chip · delivered', true),
-      window.__contrast('[data-probe-held] [data-channel-chip]', 'channel chip · held', true),
-      window.__contrast('[data-channel-composer-note]', 'channel composer note', true),
-      // The feed's first interactive furniture. It is hidden by OPACITY at rest, and __contrast
-      // folds effective opacity into the sample — so measured cold it reads a flat 1.00:1, which
-      // is the probe seeing fg == bg, not a contrast failure. It is hovered by the driver just
-      // above, i.e. measured in the state a reader actually sees. Forcing `style.opacity` here
-      // instead does NOT work: this feed re-renders on every session:update and React puts the
-      // prop straight back.
-      window.__contrast('[data-channel-copy]', 'channel copy action', true),
-      // The agent↔agent kill switch, in BOTH states: paused is --fg-muted, live is
-      // --color-warning at 9px — a token that had never been measured at meta size.
-      window.__contrast('[data-chatter-toggle]', 'chatter switch · paused', true),
-    ]
-  })
-  // Flip it and measure the live label too, then flip back so the sweep leaves no state behind.
-  // A DOM .click() rather than a real one: this sweep's fixture puts an overlay over the header,
-  // and the probe only needs the STATE, not a hit-test (the channel driver covers the real click).
-  const flip = () => p.evaluate(() => document.querySelector('[data-chatter-toggle]')?.click())
-  await flip()
-  await p.waitForTimeout(250)
-  channelProbes.push(await p.evaluate(() => window.__contrast('[data-chatter-toggle]', 'chatter switch · live', true)))
-  await flip()
-  await p.waitForTimeout(250)
-  await p.screenshot({ path: `${OUT}/${key}-3d-channel.png` })
-  // Back to the roster for the steps below.
+  // ---- 2c. TEAM: the delivery kill switch and the dispatch log ---------------------
+  // Was the channel's own probe block (author names, avatars, feed chips). Those surfaces are
+  // deleted; what SURVIVED the deletion and still needs measuring is the chatter switch — which
+  // moved here from the channel header — and the dispatch log's outcome ink, which is now the
+  // only place a brake is legible. Both are accent-derived at meta size, the combination that
+  // collapses on the light palettes.
   await p.keyboard.press('Meta+Shift+O')
   await p.waitForTimeout(700)
   await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
+  await p.waitForTimeout(900)
+  await p.locator('[data-toolbar-header="project"] button', { hasText: 'Team' }).click().catch(() => {})
   await p.waitForTimeout(800)
+  // The dispatch log's own outcome ink is NOT probed here, and that is deliberate rather than an
+  // omission: this fixture's projects carry zero dispatch records, so `DispatchLog` renders null
+  // and the probe would report a silent dash forever. Its warn ink is the SAME expression as the
+  // paused chatter switch measured just below (`color-mix(--color-warning 50%, --fg)`), so the
+  // value is covered across all six palettes here, and the delivered-vs-held DISTINCTION is
+  // asserted against real records in dev/drive-chatter-brakes.mjs §4.
+  await p.evaluate(PROBE)
+  const channelProbes = await p.evaluate(() => [
+    // The agent↔agent kill switch, in BOTH states: live is --fg-muted, paused is the waiting
+    // status colour at 9.5px — a token that had never been measured at meta size.
+    window.__contrast('[data-chatter-toggle]', 'chatter switch · live', true),
+  ])
+  // Flip it and measure the paused label too, then flip back so the sweep leaves no state behind.
+  // A DOM .click() rather than a real one: the probe only needs the STATE, not a hit-test.
+  const flip = () => p.evaluate(() => document.querySelector('[data-chatter-toggle]')?.click())
+  await flip()
+  await p.waitForTimeout(250)
+  await p.evaluate(PROBE)
+  channelProbes.push(await p.evaluate(() => window.__contrast('[data-chatter-toggle]', 'chatter switch · paused', true)))
+  await flip()
+  await p.waitForTimeout(250)
+  await p.screenshot({ path: `${OUT}/${key}-3d-team.png` })
 
   // ---- 2b. The roster board: only live lanes are cards, idle lanes are compact rows ----
   await p.locator('button[aria-label="Open the roster"]').click()

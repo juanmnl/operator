@@ -138,9 +138,10 @@ describe('hard length cap', () => {
     if (decision.kind !== 'deliver') return
     expect(decision.truncated).toBe(true)
     expect(decision.text.length).toBeLessThanOrEqual(DELIVER_MAX_CHARS)
-    // …and says so, with a pointer to where the whole thing lives.
+    // …and says so, with a route to the rest. It used to point at the project channel; that
+    // was deleted, and the sender is the only thing left that still has the whole message.
     expect(decision.text).toContain('truncated')
-    expect(decision.text).toContain("channel")
+    expect(decision.text).toContain('ask the sender')
   })
 
   it('leaves a message at the cap untouched', () => {
@@ -213,8 +214,8 @@ describe('the loop test — two lanes answering each other MUST terminate', () =
 // --- the DEFAULT (dev/briefs/chatter-on-by-default.md) ------------------------------------
 describe('chatterPausedFrom — flipping the default without touching a decision', () => {
   it('an untouched install is now LIVE', () => {
-    // The change. Default-off meant a reply posted to the channel and reached nobody: the feed
-    // filled with POSTED rows while the lane it was addressed to sat idle.
+    // The change. Default-off meant a reply was recorded and reached nobody: the dispatch log
+    // filled with held rows while the lane it was addressed to sat idle.
     expect(chatterPausedFrom(null)).toBe(false)
     expect(chatterPausedFrom(undefined)).toBe(false)
   })

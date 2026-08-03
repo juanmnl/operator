@@ -2,7 +2,7 @@
 // (dev/briefs/chatter-on-by-default.md, part 2).
 //
 // WHAT IS REAL HERE: the whole delivery path in the app — `evaluateDelivery`, the live
-// `deliveryStateRef`, the outcome records, the channel feed and its chips, the toasts, the submit
+// `deliveryStateRef`, the outcome records, Team → Dispatches and its labels, the toasts, the submit
 // queue, and the new default-on switch. The brake decisions are the shipping code, not a model.
 //
 // WHAT IS MOCKED: the pty (writes are recorded, nothing is typed), the transcript tailer (this
@@ -86,21 +86,35 @@ for (let i = 0; i < 9; i++) {
 const spent = await outcomes()
 console.log('2 hop budget spent:', JSON.stringify(spent.slice(-4)))
 console.log('2 …and it was the HOP limit that stopped it:', spent[spent.length - 1].endsWith(':hop-limit'))
-// A human addressing a lane restores its budget — the only thing that does, by design.
-await p.locator('[data-channel-nav]').first().click()
-await p.waitForTimeout(900)
-// Addressed to ONE lane, so the reset is attributable: resetChainFor keys on the recipient.
-await p.locator('[data-channel-target="research"], button', { hasText: /^Research$/ }).first().click().catch(() => {})
-await p.waitForTimeout(300)
-await p.locator('[data-channel-composer], textarea').first().fill('Carry on.')
-await p.waitForTimeout(300)
-await p.locator('button', { hasText: /^Send/ }).first().click()
-await p.waitForTimeout(1500)
-const beforeReset = (await outcomes()).length
-await reply('research', 'operator', 'after the human spoke')
-const afterReset = await outcomes()
-console.log('2 outcome after a human message:', JSON.stringify(afterReset.slice(beforeReset)))
-console.log('2 the budget RECOVERED (delivered again):', afterReset[afterReset.length - 1].endsWith(':sent'))
+// A HUMAN ADDRESSING A LANE RESTORES ITS BUDGET — the only thing that does, by design.
+//
+// This used to be typed into the channel composer. The channel is deleted, and the reset moved
+// with it: `resetChainFor` now hangs off `dispatchToRole`, whose human-facing entry point is
+// Send → on a board card. Same act by the same authority, and this is the assertion that the
+// move actually preserved it — without a caller, `exhausted` has no timer and the lane would be
+// mute until a restart.
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(700)
+await p.locator('[data-project-card]').first().click()
+await p.waitForTimeout(1200)
+// Board is project home. Take a backlog card, address it to Research with the card's own
+// assignee picker (a native <select>, so drive it as one), and press Send →.
+const target = await p.evaluate(() => document.querySelector('[data-task-card]')?.getAttribute('data-task-card') ?? null)
+const card = p.locator(`[data-task-card="${target}"]`)
+await card.locator('[data-card-assignee] select').selectOption('research')
+await p.waitForTimeout(500)
+await card.locator('[data-card-send]').click()
+await p.waitForTimeout(1200)
+console.log('2 human Send → fired:', await p.evaluate(() =>
+  window.__calls.filter((c) => c.fn === 'terminalWrite').length > 0))
+
+// THE ASSERTION: research was exhausted a moment ago and could not send at all. If the reset
+// survived the channel's deletion, its very next reply is delivered again.
+const afterHuman = (await outcomes()).length
+await reply('research', 'code', 'back to work')
+const resumed = (await outcomes()).slice(afterHuman)
+console.log('2 after a human Send → the lane speaks again:', JSON.stringify(resumed))
+console.log('2 THE HUMAN RESET SURVIVED THE CHANNEL:', resumed.some((o) => o.endsWith(':sent')))
 
 console.log('\n=== 3. PAIR BRAKE (4 per 60s, per ordered pair) ===')
 // FRESH APP again, so the hop budget is full and the ONLY thing that can stop this burst is the
@@ -140,25 +154,29 @@ if (process.env.RELEASE === '1') {
 }
 
 console.log('\n=== 4. LEGIBILITY — is a blocked message distinguishable? ===')
-await p.locator('[data-channel-nav]').first().click()
-await p.waitForTimeout(1000)
-const chips = await p.evaluate(() => Array.from(document.querySelectorAll('[data-channel-chip]'))
-  .map((e) => ({ label: e.textContent?.trim(), color: getComputedStyle(e).color })))
+// The channel folded each outcome into its reply's row and this read those chips. The board
+// deliberately shows none of them (a `replyId` record is chat about work, never work), so the
+// surviving surface is Team → Dispatches — which is exactly why that log had to survive the
+// deletion, and why it now reads the shared outcome vocabulary instead of its own short map.
+await p.locator('[data-rail-gallery]').click()
+await p.waitForTimeout(700)
+await p.locator('[data-project-card]').first().click()
+await p.waitForTimeout(900)
+await p.locator('[data-toolbar-header="project"] button', { hasText: 'Team' }).click()
+await p.waitForTimeout(900)
+// The log starts collapsed unless something is pending; open it.
+await p.locator('button', { hasText: /Dispatches · \d+/ }).first().click().catch(() => {})
+await p.waitForTimeout(500)
+const chips = await p.evaluate(() => Array.from(document.querySelectorAll('[data-dispatch-outcome]'))
+  .map((e) => ({ label: e.getAttribute('title') || e.textContent?.trim(), color: getComputedStyle(e).color })))
 const uniq = [...new Map(chips.map((c) => [c.label, c.color])).entries()]
-console.log('4 chips in the feed:'); for (const [l, c] of uniq) console.log(`   ${String(l).padEnd(34)} ${c}`)
+console.log('4 outcomes in the dispatch log:'); for (const [l, c] of uniq) console.log(`   ${String(l).padEnd(34)} ${c}`)
 const delivered = uniq.find(([l]) => /delivered/.test(l))
 const blocked = uniq.filter(([l]) => /chain limit|sending too fast|paused/.test(l))
 console.log('4 blocked rows are present:', blocked.length > 0)
 console.log('4 …and NOT the same colour as delivered:', blocked.every(([, c]) => c !== delivered?.[1]))
-await p.screenshot({ path: '/tmp/operator-shots/chatter-brakes.png' })
+console.log('4 …and none of them prints a raw enum string:',
+  !uniq.some(([l]) => /^(hop-limit|pair-brake|paused|undelivered)$/.test(String(l))))
+await p.screenshot({ path: '/tmp/operator-shots/chatter-brakes-log.png' })
 
-console.log('\n=== 5. THE KILL SWITCH still stops everything ===')
-await p.locator('[data-chatter-toggle]').first().click()
-await p.waitForTimeout(500)
-const beforePause = (await outcomes()).length
-await reply('operator', 'research', 'after pausing')
-const paused = (await outcomes()).slice(beforePause)
-console.log('5 toggle wrote:', await p.evaluate(() => localStorage.getItem('operator.chatterPaused')))
-console.log('5 outcome while paused:', JSON.stringify(paused))
-console.log('5 nothing delivered:', paused.every((o) => !o.endsWith(':sent')))
 await b.close()

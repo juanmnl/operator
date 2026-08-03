@@ -45,6 +45,14 @@ export function formatTokens(n: number): string {
  *  "readable but secondary" ink in the app beats two neighbouring ones. At 68% this
  *  measured 4.45:1 on Mr Pink light — 0.05 under the bar. */
 
+/** Warning ink for TEXT. `--color-warning` raw is a signal colour picked to be seen on a dark
+ *  field; at 9.5px on the light palettes it measured 3.05 / 3.03 / **1.86**:1 (1984-light), i.e.
+ *  under the bar on all three and effectively invisible on one. Mixed half way to `--fg` it keeps
+ *  the hue — which is the whole point, "paused" has to read as exceptional — while clearing the
+ *  floor everywhere. Same technique, and the same reason, as Segmented's `inkTint`. The DOT keeps
+ *  the raw token: there is no text there to fail a contrast floor. */
+const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
+
 const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'high', label: 'High' },
   { id: 'normal', label: 'Normal' },
@@ -349,7 +357,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             this is the screen about the lanes.
             Paused is the exceptional state, so it is the one that gets colour — a dot and
             coloured text, never a fill (and the border never changes colour on this radiused
-            element). */}
+            element). `--color-warning`, not `--status-waiting`: the latter is the same green as
+            --accent on Mission Control, so "paused" would have read as an ordinary lit control. */}
         {onToggleChatter && (
           <>
             <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
@@ -365,12 +374,12 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                 padding: '4px 8px', borderRadius: 7, cursor: 'pointer', outline: 'none',
                 background: 'transparent', border: '1px solid var(--border)',
                 fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em',
-                color: chatterPaused ? 'var(--status-waiting, var(--accent))' : 'var(--fg-muted)',
+                color: chatterPaused ? WARN_INK : 'var(--fg-muted)',
               }}
             >
               <span style={{
                 width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-                background: chatterPaused ? 'var(--status-waiting, var(--accent))' : 'var(--fg-muted)',
+                background: chatterPaused ? 'var(--color-warning)' : 'var(--fg-muted)',
               }} />
               {chatterPaused ? 'chatter paused' : 'chatter live'}
             </button>
