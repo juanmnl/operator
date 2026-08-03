@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Operator — diff surface preview</title></head>
+  <body>
+    <!-- DEV-ONLY: renders the real <DiffBody> — the app's only diff renderer after move 04 —
+         against real `git diff` output, so --add-fg/--del-fg/--add-bg/--del-bg can be measured
+         as painted pixels in every palette on both backdrops. Never bundled into the app. -->
+    <div id="root"></div>
+    <script type="module" src="./diff-preview.tsx"></script>
+  </body>
+</html>

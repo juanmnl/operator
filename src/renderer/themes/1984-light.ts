@@ -75,4 +75,12 @@ export const nineteen84LightVars = {
   '--panel-edge': 'color-mix(in srgb, var(--border) 85%, transparent)',
   '--overlay-subtle': 'rgba(0,0,0,0.05)',
   '--overlay-medium': 'rgba(0,0,0,0.10)',
+  /* Diff ink, tuned for this light palette (see move 04). Dark greens/reds rather than the old
+     shared dark-tuned pair, which drew at 1.3–1.5:1 here — a diff whose +/- lines were the least
+     legible thing on screen. The row tint is 12% (not the dark palettes' 15%): the ink is dark,
+     so the same alpha would wash the row grey instead of tinting it. */
+  '--add-fg': '#045844',
+  '--del-fg': '#960628',
+  '--add-bg': 'color-mix(in srgb, #045844 12%, transparent)',
+  '--del-bg': 'color-mix(in srgb, #960628 12%, transparent)',
 } as const
