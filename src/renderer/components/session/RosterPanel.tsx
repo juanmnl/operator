@@ -59,7 +59,7 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter, addLaneRequest, onAddLaneRequestHandled }: {
   project?: Project
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
@@ -89,8 +89,24 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
    *  Absent = no control is drawn (nothing pretends to be switchable). */
   chatterPaused?: boolean
   onToggleChatter?: () => void
+  /** Someone asked for a lane from OUTSIDE this panel (the sidebar's `+`, which says "Add or
+   *  edit lanes on the roster"). Navigating here is not enough on its own: pressed while you
+   *  are already on this tab, every setState upstream is a no-op and a creation verb produces
+   *  nothing at all. So the request also opens the add-lane menu.
+   *  Consume-once, not a nonce: this panel unmounts whenever you leave the tab, so a request
+   *  raised from a session has to survive a fresh MOUNT — which a "did the value change?"
+   *  guard cannot see. It clears the flag upstream instead. */
+  addLaneRequest?: boolean
+  onAddLaneRequestHandled?: () => void
 }) {
   const roster = project?.roster
+  // Bumped when a request is consumed; `AddAgentControl` opens on a change it didn't start at.
+  const [addLaneNonce, setAddLaneNonce] = useState(0)
+  useEffect(() => {
+    if (!addLaneRequest) return
+    onAddLaneRequestHandled?.()
+    setAddLaneNonce((n) => n + 1)
+  }, [addLaneRequest, onAddLaneRequestHandled])
 
   // Seed a default roster the first time a rosterless project's board is opened; and for
   // rosters created before role charters existed, backfill the default prompt per known lane.
@@ -562,7 +578,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
         })}
 
         {/* The pattern the idle rows extend: same height, same quiet weight, same hover. */}
-        <AddAgentControl presets={availablePresets} onAddPreset={addPreset} onAddBlank={addRole} />
+        <AddAgentControl presets={availablePresets} onAddPreset={addPreset} onAddBlank={addRole} openNonce={addLaneNonce} />
       </div>
       )}
 
@@ -1045,13 +1061,29 @@ function PresetCard({ preset, onClick }: { preset: Role; onClick: () => void }) 
  *  sits among; clicking opens the same templates the empty state offers, so there is one way
  *  to add a lane, not two. Falls back to a plain blank-lane button when every preset is
  *  already on the board. */
-function AddAgentControl({ presets, onAddPreset, onAddBlank }: {
+function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
   presets: Role[]
   onAddPreset: (p: Role) => void
   onAddBlank: () => void
+  /** Bumped when an outside caller (the sidebar's `+`) asks for a lane. */
+  openNonce?: number
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  // Start at whatever we mounted with, so the value alone never opens the menu — only a CHANGE
+  // does. Matters for the empty roster, which renders the preset cards instead of this control:
+  // its request is consumed with nothing mounted to answer it, and this control must not pop
+  // open later when the first lane makes it appear.
+  const seenNonce = useRef(openNonce)
+  useEffect(() => {
+    if (openNonce === seenNonce.current) return
+    seenNonce.current = openNonce
+    // No presets left means there is no menu — the button itself falls back to a blank lane in
+    // that state, so the request gets the same answer rather than nothing.
+    if (!presets.length) { onAddBlank(); return }
+    setOpen(true)
+    ref.current?.scrollIntoView({ block: 'nearest' })
+  }, [openNonce, presets.length, onAddBlank])
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }

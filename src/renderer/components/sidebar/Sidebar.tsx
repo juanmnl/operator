@@ -50,9 +50,11 @@ interface SidebarProps {
   onRestoreProject?: (projectId: string) => void
   /** Open THIS project's home (the board) — the project header row. */
   onOpenProjectHome: () => void
-  /** Open THIS project's home on the TEAM tab — the roster. The section's `+` and the
-   *  empty-state control both name the roster, so they land on the roster. */
-  onOpenProjectTeam: () => void
+  /** Add a lane: land on the roster (the TEAM tab) AND open its add-lane affordance. The
+   *  section's `+` and the empty-state control both name the roster and both promise a
+   *  creation, so navigation alone isn't an answer — pressed from the team tab it would be a
+   *  no-op, which is the class of dead control this header's fix is about. */
+  onAddLane: () => void
   onSelectSession: (session: AgentSession) => void
   onRenameSession: (sessionId: string, name: string) => void
   onCloseSession: (session: AgentSession) => void
@@ -87,7 +89,7 @@ export function Sidebar({
   globalPrefsActive, prefsViewActive, projectHomeActive,
   effortLevels, fanInfo, shortcutIndices, stats, isDark,
   onRestoreProject,
-  onOpenProjectHome, onOpenProjectTeam, onSelectSession, onRenameSession, onCloseSession,
+  onOpenProjectHome, onAddLane, onSelectSession, onRenameSession, onCloseSession,
   onLaunchRole, accentOf, onPickAccent, onReorderSession, onReorderLane,
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs,
   onToggleTheme, version, update, onInstallUpdate,
@@ -107,6 +109,11 @@ export function Sidebar({
   // ever fires and a hand-written background would stay lit on a control that no longer
   // exists. Deriving it at render means the state change clears it.
   const [headerHover, setHeaderHover] = useState(false)
+  // The header is a control that is DISABLED in two states, never one that stops existing:
+  // at Project Home (going home from home isn't navigation — the same rule the rail tile
+  // applies in DashboardView's `onOpenProject`), and with no project, where it would be a
+  // control on a nonexistent object.
+  const homeInert = projectHomeActive || !project
   const beginDrag = (d: { kind: Row['kind']; id: string }) => { dragRowRef.current = d; setDragRow(d) }
   const endDrag = () => { dragRowRef.current = null; setDragRow(null); setDropAt(null) }
 
@@ -242,72 +249,133 @@ export function Sidebar({
           excuse the first one being dead.
           The top padding clears the traffic lights and stays bare titlebar, so the window is
           still draggable from up there. */}
-      <DragRegion style={{ paddingTop: 40, padding: '40px 10px 8px 12px' }}>
-        {/* NAME AND PATH ARE ONE TARGET. The path was a sibling outside the row, which would
-            have made the header half-live: the biggest, most obvious "go back to the project"
-            block on screen, with a dead strip along its bottom edge — the same class of bug
-            one line smaller. They are one identity, so they are one hit area.
-            role="button" rather than <button> because the archived `previous` chip is a real
-            button that lives INSIDE this row, and a nested <button> is invalid HTML. The role
-            earns its keep twice: DragRegion skips a window drag when the press lands on
-            `[role="button"]` (:30), so declaring the role is what stops this click being eaten
-            as a titlebar drag. `WebkitAppRegion: no-drag` does NOT do that — we drive the drag
-            from JS, and that handler never reads the app region.
-            AT HOME IT IS NOT A CONTROL AT ALL: no role, no tabIndex, no hover, no pointer —
-            going home from home isn't navigation, matching the rail tile's rule
-            (DashboardView.tsx:3011). Dropping the role also hands the strip back to the window
-            drag, which is what it was before it was ever a target. */}
-        <div
-          data-sidebar-project
-          role={projectHomeActive ? undefined : 'button'}
-          tabIndex={projectHomeActive ? undefined : 0}
-          aria-label={projectHomeActive ? undefined : `Open ${project?.name ?? 'project'} home`}
-          title={projectHomeActive ? undefined : `Open ${project?.name ?? 'the project'} — the project board`}
-          onClick={projectHomeActive ? undefined : onOpenProjectHome}
-          onKeyDown={projectHomeActive ? undefined : (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenProjectHome() }
-          }}
-          onMouseEnter={() => setHeaderHover(true)}
-          onMouseLeave={() => setHeaderHover(false)}
-          style={{
-            width: '100%', padding: '3px 4px',
-            background: !projectHomeActive && headerHover ? 'var(--overlay-subtle)' : 'transparent',
-            borderRadius: 'var(--radius-sm)',
-            cursor: projectHomeActive ? undefined : 'pointer',
-            outline: 'none',
-            transition: 'background 120ms ease',
-            // @ts-expect-error Electron-specific CSS property
-            WebkitAppRegion: 'no-drag',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', minHeight: 22 }}>
-            <span data-sidebar-project-name style={{
-              flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.2,
-              // Accent marks "Project Home is what's on screen", but bare var(--accent) at 13px
-              // measured 2.69:1 on Mission Control light and 2.22:1 on 1984 light — body text
-              // under half the 4.5 floor. It had never been probed: the old theme-pass step
-              // measured the switcher popover this header used to open, not the header itself.
-              // Mixed 45% toward --fg it keeps the hue and clears the floor everywhere
-              // (4.99–12.85 across the six palettes).
-              color: projectHomeActive ? 'color-mix(in srgb, var(--accent) 55%, var(--fg))' : 'var(--fg)',
-              letterSpacing: -0.3,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              {project?.name ?? 'No project'}
-            </span>
-            {/* You can browse into a shelved project from the gallery's Previous shelf, and
-                nothing in here used to say so. The chip is the state AND the way out of it —
-                one control, in the one place you'd look. Same treatment as the card's
-                "folder not on record" chip: transparent, hairline, tracked.
-                It sits inside the header target now, so it stops its own click: un-shelving is
-                not a request to navigate. */}
-            {project?.archivedAt && (
+      <DragRegion style={{ padding: '40px 10px 8px 12px' }}>
+        {/* Two SIBLINGS in one row: the home target (name + path) and the `previous` chip.
+            The chip started out nested inside the target, which was wrong twice over — `button`
+            is in ARIA's presentational-children set, so a control inside `role="button"` is
+            stripped from the accessibility tree and the target's `aria-label` swallows the whole
+            subtree's name. A screen-reader user in a shelved project heard one control and had
+            no way to un-shelve. Making it a sibling is the structural fix; it also means the
+            target has no interactive descendants at all, so the chip's keydown can no longer
+            reach the target's handler. */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+          {/* NAME AND PATH ARE ONE TARGET. The path used to sit outside the row, which made the
+              header half-live: the biggest, most obvious "go back to the project" block on
+              screen, with a dead strip along its bottom edge — the same class of bug one line
+              smaller. They are one identity, so they are one hit area.
+              role="button" rather than <button>: DragRegion skips a window drag when the press
+              lands on `button, a, input, textarea, select, [role="button"]`, so declaring the
+              role is what stops this click being eaten as a titlebar drag. `WebkitAppRegion:
+              no-drag` does NOT do that — we drive the drag from JS, and that handler never reads
+              the app region, which is why it isn't set here.
+              AT HOME IT IS DISABLED, NOT UNDECLARED. `role` and `tabIndex` stay put in both
+              states and `aria-disabled` carries the inertness, because `projectHomeActive` flips
+              AS A RESULT OF THE CLICK: an element that drops its role mid-gesture stops being a
+              control while the cursor and the focus are still on it, so the second press of a
+              double-click fell through to DragRegion and dragged the whole window, and Enter
+              blurred the element it had just activated. The node must not change its
+              control-ness in response to being activated.
+              Cost of that, stated: keeping the role means this 44px block is no longer a
+              window-drag handle at Project Home (it was, for as long as it was inert). The
+              40px of bare titlebar above it — where the traffic lights are — still is, as are
+              the paddings around it. Restoring the drag requires DragRegion to treat an
+              aria-disabled control as bare titlebar, which reintroduces the double-click drag
+              exactly as before. Not worth it.
+              The visual treatment is unchanged: no pointer, no hover tint at home. */}
+          <div
+            data-sidebar-project
+            className="sidebar-project-home"
+            role="button"
+            tabIndex={0}
+            aria-disabled={homeInert}
+            aria-label={homeInert ? undefined : `Open ${project?.name ?? 'project'} home`}
+            // ONE tooltip for one target. The path line used to carry its own `title`, and the
+            // innermost wins — so hovering the bottom half of a single 44px control produced a
+            // different tooltip with no hint the region was clickable. It also has to survive
+            // at home: the name ellipsizes, and the state where it is most prominent (accent)
+            // was the state where a truncated name could not be read at all.
+            title={[homeInert ? project?.name : `Open ${project?.name ?? 'the project'} — the project board`, project?.path]
+              .filter(Boolean).join('\n')}
+            onClick={homeInert ? undefined : onOpenProjectHome}
+            onKeyDown={homeInert ? undefined : (e) => {
+              // The chip is a sibling now, so nothing interactive lives under here — this guard
+              // is a backstop against that changing, not the fix for it.
+              if (e.target !== e.currentTarget) return
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenProjectHome() }
+            }}
+            // Guarded: at home the derived background is transparent regardless, so an
+            // unguarded enter re-rendered every SessionItem and StatusWave each time the cursor
+            // crossed the top of the column. `onMouseLeave` stays unconditional — it is what
+            // clears a `true` left behind by the click that navigated home.
+            onMouseEnter={homeInert ? undefined : () => setHeaderHover(true)}
+            onMouseLeave={() => setHeaderHover(false)}
+            style={{
+              flex: 1, minWidth: 0, padding: '3px 4px',
+              background: !homeInert && headerHover ? 'var(--overlay-subtle)' : 'transparent',
+              borderRadius: 'var(--radius-sm)',
+              // `default`, not inherited: `.drag-region` paints `grab`, and now that the role
+              // is permanent DragRegion always skips this block — so inheriting would promise a
+              // window drag that no longer happens here. Neither clickable nor draggable, and
+              // the cursor should say so.
+              cursor: homeInert ? 'default' : 'pointer',
+              outline: 'none',
+              transition: 'background 120ms ease',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', width: '100%', minHeight: 22 }}>
+              <span data-sidebar-project-name style={{
+                flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.2,
+                // Accent marks "Project Home is what's on screen", but bare var(--accent) at 13px
+                // measured 2.69:1 on Mission Control light and 2.22:1 on 1984 light — body text
+                // under half the 4.5 floor. It had never been probed: the old theme-pass step
+                // measured the switcher popover this header used to open, not the header itself.
+                // Mixed 45% toward --fg it keeps the hue and clears the floor everywhere
+                // (4.99–12.85 across the six palettes).
+                color: projectHomeActive ? 'color-mix(in srgb, var(--accent) 55%, var(--fg))' : 'var(--fg)',
+                letterSpacing: -0.3,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {project?.name ?? 'No project'}
+              </span>
+            </div>
+            {project?.path && (
+              <div
+                style={{
+                  // 9.5px and no opacity over --fg-muted — at 9px × 0.65 this path measured
+                  // 2.2:1 on the light palettes, i.e. decoration rather than text.
+                  fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+                  // Was indented 28px to clear the logo that used to sit beside the name; with the
+                  // logo gone it lines up under the name instead.
+                  padding: '2px 0 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+              >
+                {tildePath(project.path)}
+              </div>
+            )}
+          </div>
+          {/* You can browse into a shelved project from the gallery's Previous shelf, and
+              nothing in here used to say so. The chip is the state AND the way out of it —
+              one control, in the one place you'd look. Same treatment as the card's
+              "folder not on record" chip: transparent, hairline, tracked.
+              Aligned to the NAME's band, not to the two-line block: the 3px matches the
+              target's top padding, and the 22px box centres it on the 22px name row — align
+              ink, not boxes. */}
+          {project?.archivedAt && (
+            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', height: 22, marginTop: 3 }}>
               <button
                 data-previous-chip
-                onClick={(e) => { e.stopPropagation(); onRestoreProject?.(project.id) }}
+                className="sidebar-previous-chip"
+                // EXPLICIT, on a <button>, on purpose: WebKit leaves buttons out of sequential
+                // focus navigation unless macOS Full Keyboard Access is on, so Tab walked
+                // straight past this chip to the lane rows below (measured — the header, which
+                // carries tabindex="0" of its own, was reached; this was not). Un-shelving is
+                // the only thing in here that can't be done from anywhere else in the project,
+                // so it cannot depend on a system setting.
+                tabIndex={0}
+                onClick={() => onRestoreProject?.(project.id)}
                 title={`${project.name} is shelved — click to bring it back to Active`}
                 style={{
-                  flexShrink: 0, padding: '1px 6px',
+                  padding: '1px 6px',
                   fontFamily: 'var(--font-mono)', fontSize: 9,
                   textTransform: 'uppercase', letterSpacing: '0.1em',
                   background: 'transparent', border: '1px solid var(--border)',
@@ -319,21 +387,6 @@ export function Sidebar({
               >
                 previous
               </button>
-            )}
-          </div>
-          {project?.path && (
-            <div
-              title={project.path}
-              style={{
-                // 9.5px and no opacity over --fg-muted — at 9px × 0.65 this path measured
-                // 2.2:1 on the light palettes, i.e. decoration rather than text.
-                fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
-                // Was indented 28px to clear the logo that used to sit beside the name; with the
-                // logo gone it lines up under the name instead.
-                padding: '2px 0 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}
-            >
-              {tildePath(project.path)}
             </div>
           )}
         </div>
@@ -354,9 +407,11 @@ export function Sidebar({
         </span>
         {/* The roster is the TEAM tab. This `+` called `onOpenProjectHome`, which hard-sets
             the BOARD tab — the label named one place and the wiring went to another. The
-            label was right; the wiring is what moved. */}
+            label was right; the wiring is what moved. It is a CREATION verb, so it opens the
+            roster's add-lane menu too: routing it to the team tab alone left it doing nothing
+            at all whenever you were already there. */}
         <button
-          onClick={onOpenProjectTeam}
+          onClick={onAddLane}
           title="Add or edit lanes on the roster"
           aria-label="Open the roster"
           style={{
@@ -393,7 +448,7 @@ export function Sidebar({
               No agents yet. An agent is a lane on this project — its own model, effort and brief.
             </p>
             <button
-              onClick={onOpenProjectTeam}
+              onClick={onAddLane}
               title="Open the roster and pick an agent"
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%',

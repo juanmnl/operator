@@ -5,6 +5,21 @@
 .drag-region { cursor: grab; }
 .drag-region:active { cursor: grabbing; }
 
+/* The sidebar header's two focusables. Both opt out of the browser ring (house rule) and had
+   no substitute, so tabbing to either changed nothing on screen and Enter navigated from a
+   place the user couldn't see. Same designed indicator the board's controls already use
+   (`.tb-btn:focus-visible` and friends): INSET, so it can't be clipped by a scroller, and a
+   box-shadow rather than a border, so no radiused element ever changes border colour (the
+   WKWebView re-rasterize freeze).
+   `[aria-disabled="true"]` is excluded rather than unfocusable — the header keeps its
+   tabindex at Project Home on purpose (dropping it mid-activation blurred the element the
+   user had just pressed Enter on), so it can still take focus, and the ring would be the
+   only thing claiming it's actionable. */
+.sidebar-project-home:focus-visible:not([aria-disabled="true"]),
+.sidebar-previous-chip:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 /* Corner-radius scale — softens the layout's hard edges. Theme-independent. */
 :root {
   --radius-lg: 12px;  /* floating panels / content card */

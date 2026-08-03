@@ -155,10 +155,14 @@ const header = await p.evaluate(() => {
   const el = document.querySelector('[data-sidebar-project]')
   return {
     role: el?.getAttribute('role'),
+    disabled: el?.getAttribute('aria-disabled'),
     label: el?.getAttribute('aria-label'),
     cursor: el ? getComputedStyle(el).cursor : null,
     // The path line must be INSIDE the target, not a dead strip under it.
-    coversPath: !!el?.querySelector('[title^="/"], [title^="~"]'),
+    coversPath: !!el?.textContent?.includes('~/'),
+    // …and the chip must be OUTSIDE it: nested inside `role="button"` it was stripped from the
+    // accessibility tree (presentational children) and the label swallowed the subtree's name.
+    chipIsSibling: !el?.querySelector('[data-previous-chip]'),
     height: el ? Math.round(el.getBoundingClientRect().height) : 0,
   }
 })
@@ -188,25 +192,126 @@ console.log('12 …but its pty is still alive:', afterClick.xterm && afterClick.
   `(xterm ${afterClick.xterm}, kills ${afterClick.kills}, rows ${ptyBefore.rows}→${afterClick.rows})`)
 
 // …and clicking it AGAIN, from home, must change nothing — and must not even light up.
+// It stays a declared control (the role and tabindex must NOT move in response to being
+// activated) and carries its inertness on `aria-disabled` instead.
 const homeState = await p.evaluate(() => {
   const el = document.querySelector('[data-sidebar-project]')
-  return { role: el?.getAttribute('role') ?? null, cursor: el ? getComputedStyle(el).cursor : null }
+  return {
+    role: el?.getAttribute('role') ?? null,
+    disabled: el?.getAttribute('aria-disabled') ?? null,
+    tabindex: el?.getAttribute('tabindex') ?? null,
+    cursor: el ? getComputedStyle(el).cursor : null,
+  }
 })
 await p.locator('[data-sidebar-project]').hover()
 await p.waitForTimeout(250)
 const hoverBg = await p.evaluate(() => getComputedStyle(document.querySelector('[data-sidebar-project]')).backgroundColor)
-await p.locator('[data-sidebar-project]').click()
+// `force` because Playwright's actionability check refuses to click an `aria-disabled` element
+// — which is itself the assertion: at home this is a control that announces itself as inert.
+// Forcing the press proves nothing happens even when the user insists.
+await p.locator('[data-sidebar-project]').click({ force: true })
 await p.waitForTimeout(700)
 const idle = await p.evaluate(() => ({
   tab: document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab'),
   atHome: /AGENTS|MOODBOARD/i.test(document.body.innerText),
 }))
-console.log('12 inert at home:', homeState.role === null && homeState.cursor !== 'pointer', JSON.stringify(homeState))
+console.log('12 inert at home, but still declared:',
+  homeState.role === 'button' && homeState.disabled === 'true' && homeState.tabindex === '0' && homeState.cursor !== 'pointer',
+  JSON.stringify(homeState))
 console.log('12 not hover-lit at home:', /rgba\(0, 0, 0, 0\)|transparent/.test(hoverBg), `(bg=${hoverBg})`)
 console.log('12 clicking at home changes nothing:', idle.atHome && idle.tab === afterClick.tab, `(tab=${idle.tab})`)
 await shotHeader('/tmp/nav-9-header-at-home.png')
 
-// (The `previous` chip now lives INSIDE this target and must not navigate. It only renders
+// (The `previous` chip is a SIBLING of this target now and must not navigate. It only renders
 // for a shelved project, which needs the durable-store stand-in — so that assertion lives in
 // dev/drive-sidebar-chip.mjs step 3, which already builds that fixture.)
+
+// 13. THE KEYBOARD PATH. Both drivers over this header were mouse-only, which is precisely
+// where the review found three defects hiding: no focus indicator, focus destroyed by
+// activation, and Enter on the chip navigating instead of un-shelving.
+// ⌘J to CHAT first, and this is a finding in itself: with the Console surface up, xterm's
+// helper textarea owns every Tab (a terminal has to receive Tab, and the surface re-focuses
+// itself), so the sidebar is not keyboard-reachable at all from a focused console. Chat is
+// where a keyboard user in a live agent actually reaches this header — and there it is the
+// FIRST tab stop.
+await p.locator('[data-session-row="s-code"]').click()
+await p.waitForTimeout(1100)
+await p.locator('button[title="Chat view"]').click()   // not ⌘J: that toggles, and a toggle's
+await p.waitForTimeout(900)                            // outcome depends on the persisted layout
+// Tab in rather than calling .focus(): `:focus-visible` is not guaranteed to match programmatic
+// focus, so a scripted focus would assert a ring the keyboard user never gets.
+// Reset the focus NAVIGATION STARTING POINT to a control before the sidebar. `body.focus()`
+// does not do this — WebKit keeps walking from wherever focus last was, and if that was a
+// terminal, xterm swallows every Tab (it sends \t to the pty) and the loop never moves.
+await p.evaluate(() => document.querySelector('[data-rail-gallery]')?.focus())
+let tabs = 0
+for (; tabs < 25; tabs++) {
+  await p.keyboard.press('Tab')
+  if (await p.evaluate(() => document.activeElement?.hasAttribute('data-sidebar-project'))) break
+}
+const focused = await p.evaluate(() => {
+  const el = document.querySelector('[data-sidebar-project]')
+  return {
+    isActive: document.activeElement === el,
+    // The house substitute for the browser ring — an inset box-shadow, not an outline.
+    shadow: el ? getComputedStyle(el).boxShadow : null,
+  }
+})
+console.log('13 header reachable by Tab:', focused.isActive, `(${tabs + 1} presses)`)
+console.log('13 focus is VISIBLE:', focused.shadow !== 'none' && !!focused.shadow, `(box-shadow: ${focused.shadow})`)
+await p.screenshot({ path: '/tmp/nav-11-header-focused.png' })
+await p.keyboard.press('Enter')
+await p.waitForTimeout(900)
+const afterEnter = await p.evaluate(() => ({
+  view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  tab: document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab'),
+  // Activating must not blur the element that was activated: dropping `tabindex` in response
+  // to the click made WebKit fall back to <body>, so the next Tab restarted from the rail.
+  active: document.activeElement?.getAttribute('data-sidebar-project') !== null
+    ? 'the header'
+    : document.activeElement?.tagName.toLowerCase(),
+}))
+console.log('13 Enter navigates home:', afterEnter.view === 'project' && afterEnter.tab === 'board', JSON.stringify(afterEnter))
+console.log('13 focus survives activation (not <body>):', afterEnter.active === 'the header', `(activeElement=${afterEnter.active})`)
+
+// 14. A REAL double-click on the header — two synthetic clicks 500ms apart cannot see this.
+// The role used to be conditional on `projectHomeActive`, which flips as a RESULT of the first
+// click: the element stopped being a control mid-gesture, so press #2 fell through to
+// DragRegion and the window started following the mouse. Press #3 within the threshold zoomed
+// the window. Assert what escaped to the window manager, not what the handler did.
+await p.locator('[data-session-row="s-code"]').click()
+await p.waitForTimeout(1000)
+const winBefore = await p.evaluate(() => window.__calls.filter(c => c.fn === 'startWindowDrag' || c.fn === 'toggleWindowMaximize').length)
+await p.locator('[data-sidebar-project]').dblclick()
+await p.waitForTimeout(500)
+// force: by now the first click has landed us home, so the target is aria-disabled. The press
+// still has to reach DragRegion — that is the whole point of the step.
+await p.locator('[data-sidebar-project]').click({ force: true })   // third press, inside the 400ms window
+await p.waitForTimeout(700)
+const win = await p.evaluate(() => ({
+  drags: window.__calls.filter(c => c.fn === 'startWindowDrag').length,
+  zooms: window.__calls.filter(c => c.fn === 'toggleWindowMaximize').length,
+  view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+}))
+console.log('14 double-click does not drag the window:', win.drags === winBefore, `(startWindowDrag ×${win.drags})`)
+console.log('14 …and the third press does not zoom it:', win.zooms === 0, `(toggleWindowMaximize ×${win.zooms})`)
+console.log('14 …and it still just navigates home:', win.view === 'project')
+
+// 15. The `+` is a CREATION verb: it must produce something visible even when the navigation
+// it used to rely on is already done. Press it from the team tab, where every setState upstream
+// is a no-op.
+await p.locator('button[aria-label="Open the roster"]').click()
+await p.waitForTimeout(900)
+console.log('15 on the team tab:', await p.evaluate(() =>
+  document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab')))
+// Close the menu the arrival opened, so the second press is measured from a closed state.
+await p.keyboard.press('Escape')
+await p.waitForTimeout(300)
+const menuClosed = await p.locator('[data-preset]').count()
+await p.locator('button[aria-label="Open the roster"]').click()
+await p.waitForTimeout(700)
+const menuOpen = await p.locator('[data-preset]').count()
+console.log('15 "+" from the team tab opens the add-lane menu:', menuClosed === 0 && menuOpen > 0,
+  `(presets ${menuClosed} → ${menuOpen})`)
+await p.screenshot({ path: '/tmp/nav-12-add-lane.png' })
 await b.close()
