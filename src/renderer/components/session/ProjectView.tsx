@@ -3,23 +3,29 @@ import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
 import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
-import { TaskQueue } from './TaskQueue'
+import { TaskBoard, type LaneSignal } from './TaskBoard'
 import { DispatchLog } from './DispatchLog'
 
-// The project-level workspace, opened from a project's title in the sidebar. Home for the
-// things that belong to the PROJECT (not a single session): its Agents roster (launch new
-// agents / view live ones / delegate) and its Moodboard. Per the naming model, a Project owns
-// Agents; each Agent runs a Session (its live Claude Code conversation).
+// The project-level workspace. Home for the things that belong to the PROJECT (not a single
+// session).
+//
+// THE BOARD IS PROJECT HOME. It used to be the roster: entering a project landed you on six
+// agent cards with model/effort/worktree controls, and the actual work — the task queue — sat
+// below the fold. That inversion is what made the app read as an org chart rather than a place
+// where work happens. The primary object is the WORK now; the agent is a chip on a card.
+//
+// The roster keeps everything it had, one tab across, as Team. Six lanes, same names, same
+// charters — this is a demotion of the roster's PROMINENCE, never of its cast.
 
-type ProjectTab = 'roster' | 'moodboard'
-const LABELS: Record<ProjectTab, string> = { roster: 'Agents', moodboard: 'Moodboard' }
+type ProjectTab = 'board' | 'team' | 'moodboard'
+const LABELS: Record<ProjectTab, string> = { board: 'Board', team: 'Team', moodboard: 'Moodboard' }
 
 export function ProjectView({
   project, tab, onSelectTab, onBack, onToggleSidebar, sidebarCollapsed,
-  onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal,
+  onUpdateProject, onLaunchRole, liveRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch,
-  resumableCount, onResumeProject,
+  resumableCount, onResumeProject, chatterPaused, onToggleChatter,
 }: {
   project: Project
   tab: ProjectTab
@@ -36,8 +42,12 @@ export function ProjectView({
    *  result is reported back so the roster can tell a failed spawn from a successful one. */
   onLaunchRole?: (project: Project, role: Role, opts: { brief?: string; launchDevServer: boolean }) => Promise<{ id: string } | undefined> | void
   liveRoles?: Record<string, string>
-  /** roleId → live session runtime (phase/usage), for the mission-control read. */
+  /** roleId → live session runtime (phase/usage), for the Team card's mission-control read. */
   laneSessions?: Record<string, LaneSession>
+  /** roleId → what that lane is DOING right now, for the board's running cards. Same source
+   *  object as `laneSessions` — two narrower views of one map, so the two surfaces can't
+   *  disagree about which lane is busy. */
+  laneSignals?: Record<string, LaneSignal>
   onFocusTerminal?: (terminalId: string) => void
   onCloseTerminal?: (terminalId: string) => void
   onAddTask: (text: string, roleId?: string) => void
@@ -52,8 +62,13 @@ export function ProjectView({
   /** Saved-but-not-live agents of this project — resumable as a group. */
   resumableCount?: number
   onResumeProject?: () => void
+  /** The agent→agent delivery kill switch. It lived in the channel header, which is gone; a
+   *  switch that exists for incidents has to stay reachable during one, so it sits on Team —
+   *  next to the lanes whose chatter it stops. */
+  chatterPaused?: boolean
+  onToggleChatter?: () => void
 }) {
-  const tabs: ProjectTab[] = ['roster', 'moodboard']
+  const tabs: ProjectTab[] = ['board', 'team', 'moodboard']
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       <DragRegion data-toolbar-header="project" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
@@ -121,8 +136,34 @@ export function ProjectView({
           nothing about it is visible.
           The toolbar header above is full-width and NOT centred, so it never moved: this view
           needs the reservation, not PageShell's move-the-header-inside restructure. */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: tab === 'roster' ? 'scroll' : undefined }}>
-        {tab === 'roster' && (
+      <div style={{ flex: 1, minHeight: 0, overflowY: tab === 'team' ? 'scroll' : undefined }}>
+        {/* THE BOARD gets a BOUNDED box and the full width — no centred measure column. The
+            760px column is exactly why the roster reads as a form, and the board is a board:
+            it measures its OWN width with a ResizeObserver to choose 4 / 2×2 / stacked columns,
+            so a parent that shrinks to fit its content would feed the measurement back into
+            itself. `height: 100%` + `minHeight: 0` gives it the definite height its inner
+            `flex: 1` grid resolves against; an auto-height parent renders it invisible. */}
+        {tab === 'board' && (
+          <div style={{ height: '100%', minHeight: 0, width: '100%' }}>
+            <TaskBoard
+              tasks={project.tasks ?? []}
+              roles={project.roster ?? []}
+              liveRoles={liveRoles}
+              dispatches={project.dispatches}
+              laneSignals={laneSignals}
+              onAddTask={onAddTask}
+              onAssignTask={onAssignTask}
+              onRemoveTask={onRemoveTask}
+              onSendTask={onSendTask}
+              onStartAll={onStartAll}
+              onSetTaskStatus={onSetTaskStatus}
+              onApproveDispatch={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))}
+              onRejectDispatch={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))}
+              onOpenLane={(roleId) => { const tid = liveRoles?.[roleId]; if (tid) onFocusTerminal?.(tid) }}
+            />
+          </div>
+        )}
+        {tab === 'team' && (
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '10px 16px 28px' }}>
             <RosterPanel
               project={project}
@@ -132,18 +173,14 @@ export function ProjectView({
               laneSessions={laneSessions}
               onFocusTerminal={onFocusTerminal}
               onCloseTerminal={onCloseTerminal}
+              chatterPaused={chatterPaused}
+              onToggleChatter={onToggleChatter}
             />
-            <TaskQueue
-              project={project}
-              roles={project.roster ?? []}
-              liveRoles={liveRoles}
-              onAddTask={onAddTask}
-              onAssignTask={onAssignTask}
-              onRemoveTask={onRemoveTask}
-              onSendTask={onSendTask}
-              onStartAll={onStartAll}
-              onSetTaskStatus={onSetTaskStatus}
-            />
+            {/* The dispatch LOG, not the board's Waiting column: the board deliberately shows
+                only the records a human can act on, and this is the history — who routed what
+                to whom, and how it landed. It is also the only surviving surface for the
+                agent↔agent brake outcomes once the channel is gone (they carry a `replyId`, so
+                the board excludes every one of them by rule). */}
             <DispatchLog project={project} onApprove={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))} onReject={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))} />
           </div>
         )}

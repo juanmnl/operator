@@ -176,7 +176,7 @@ export function DashboardView() {
   })
   // Which tab of Project Home is showing. Independent of scope, so leaving and returning
   // to a project puts you back on the tab you were reading.
-  const [projectTab, setProjectTab] = useState<'roster' | 'moodboard'>('roster')
+  const [projectTab, setProjectTab] = useState<'board' | 'team' | 'moodboard'>('board')
   // Gallery sub-view: the project grid, or the cross-project ActivityDashboard behind the
   // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
   const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
@@ -532,8 +532,8 @@ export function DashboardView() {
    *  It used to land on the roster board, always. That was right when a project arrived with six
    *  seeded lanes and the board was the only thing that explained them; the roster is now one lane
    *  by default, so the board became a single row with nothing to decide. Where it lands now is
-   *  `landingFor` (lib/project-landing): several lanes → the channel, exactly one → that agent,
-   *  none → the board, which is the only place to add one.
+   *  `landingFor` (lib/project-landing): exactly one LIVE lane → straight into that agent,
+   *  everything else → the board, which is project home.
    *
    *  RE-ENTERING is re-applied, not restored. Coming back to a project you've been in before puts
    *  you where the rule says, not where you last were — predictable beats clever, and "restore
@@ -554,8 +554,7 @@ export function DashboardView() {
       // only ever a re-select of the current project.
       if (prev === projectId) return projectId
       const landing = landingFor(projectsRef.current.find((p) => p.id === projectId), terminalsRef.current)
-      setProjectTab('roster')
-      setChannelActive(landing.kind === 'channel')
+      setProjectTab('board')
       if (landing.kind === 'session') {
         // Focus its pty. `focusTerminal` also stamps the scope, which is the same rule the
         // backstop enforces — landing on a session must never desync `activeProjectId`.
@@ -577,8 +576,7 @@ export function DashboardView() {
    *  intents that were sharing one function, which is how the "don't yank me" rule and the "take
    *  me home" button would have cancelled each other out. */
   const handleOpenProjectHome = useCallback(() => {
-    setChannelActive(false)
-    setProjectTab('roster')
+    setProjectTab('board')
     setPrefsViewActive(false)
     setAgentsViewActive(false)
     setGlobalPrefsActive(false)
@@ -590,7 +588,6 @@ export function DashboardView() {
   // Leave every project — the logo, the switcher's "All projects" and ⌘⇧O. This is the ONE
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
   const handleShowGallery = useCallback(() => {
-    setChannelActive(false)
     setPrefsViewActive(false)
     setAgentsViewActive(false)
     setGlobalPrefsActive(false)
@@ -2753,10 +2750,7 @@ export function DashboardView() {
     // otherwise render neither the terminal container (needs terminals.length>0)
     // nor the gallery, i.e. a blank screen.
     if (activeTerminalId && terminals.some((t) => t.id === activeTerminalId)) return 'localTerminal'
-    // Inside a project with no session focused → Project Home. (The old `splash` mode is
-    // gone: with no scope it's the gallery, with scope it's the project.)
-    // The channel outranks Project Home but not a focused session: opening a lane from the
-    // channel should show the lane, not bounce back to the feed.
+    // Inside a project with no session focused → Project Home, which is the board.
     if (channelActive && activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'channel'
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
@@ -3180,12 +3174,25 @@ export function DashboardView() {
           if (!proj) return null
           const live: Record<string, string> = {}
           for (const t of terminals) if (t.projectId === proj.id && t.roleId) live[t.roleId] = t.id
-          // Live runtime per lane (phase + token usage) from the transcript observer,
-          // so RoleCards read as mission control rather than static config.
-          const laneSessions: Record<string, { phase: string; usage?: AgentSession['usage']; lastActivityAt?: string }> = {}
+          // Live runtime per lane, from the transcript observer. ONE map, read by two consumers
+          // with narrower views of it: RosterPanel's `LaneSession` (phase + usage, for the Team
+          // card's mission-control read) and TaskBoard's `LaneSignal` (status/phase/lastToolName/
+          // activeSubagents, for the running card's activity line and its child-threads row).
+          // A superset satisfies both structurally, so there is one loop and one source — two
+          // loops over `sessions` is how the board and the roster start disagreeing about which
+          // lane is busy.
+          const laneRuntime: Record<string, {
+            status: AgentSession['status']; phase: AgentSession['phase']
+            lastToolName: string | null; activeSubagents: number
+            usage?: AgentSession['usage']; lastActivityAt?: string
+          }> = {}
           for (const [roleId, tid] of Object.entries(live)) {
             const s = sessions.find((x) => x.terminalId === tid)
-            if (s) laneSessions[roleId] = { phase: s.phase, usage: s.usage, lastActivityAt: s.lastActivityAt }
+            if (s) laneRuntime[roleId] = {
+              status: s.status, phase: s.phase,
+              lastToolName: s.lastToolName, activeSubagents: s.activeSubagents,
+              usage: s.usage, lastActivityAt: s.lastActivityAt,
+            }
           }
           return (
             <ProjectView
@@ -3203,7 +3210,8 @@ export function DashboardView() {
               // there is nothing to default and no way to silently launch with it off.
               onLaunchRole={(project, role, o) => handleLaunchRole(project, role, o.brief, o.launchDevServer)}
               liveRoles={live}
-              laneSessions={laneSessions}
+              laneSessions={laneRuntime}
+              laneSignals={laneRuntime}
               onFocusTerminal={focusTerminal}
               // Closing a lane's session from its card goes through the SAME path as closing it
               // from the sidebar — pty kill, running tasks completed with their diff + check,
@@ -3223,6 +3231,9 @@ export function DashboardView() {
               // DispatchLog would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
+              // The delivery kill switch, rehomed from the channel header onto Team.
+              chatterPaused={chatterPaused}
+              onToggleChatter={toggleChatterPaused}
               resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />

@@ -51,7 +51,7 @@ const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
   { id: 'low', label: 'Low' },
 ]
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter }: {
   project?: Project
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
@@ -77,6 +77,10 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   onFocusTerminal?: (terminalId: string) => void
   /** Close a lane's live session (the ■ on a live card). Distinct from deleting the lane. */
   onCloseTerminal?: (terminalId: string) => void
+  /** The agent→agent delivery kill switch, rehomed here from the deleted channel header.
+   *  Absent = no control is drawn (nothing pretends to be switchable). */
+  chatterPaused?: boolean
+  onToggleChatter?: () => void
 }) {
   const roster = project?.roster
 
@@ -338,6 +342,40 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             padding: '5px 9px', outline: 'none',
           }}
         />
+        {/* THE CHATTER KILL SWITCH. It lived in the channel header and had no second home, so
+            deleting the channel would have left the state alive with no way to reach it — and
+            a switch that exists for incidents is worthless if it is only reachable when there
+            isn't one. Team is the right home: it stops the LANES talking to each other, and
+            this is the screen about the lanes.
+            Paused is the exceptional state, so it is the one that gets colour — a dot and
+            coloured text, never a fill (and the border never changes colour on this radiused
+            element). */}
+        {onToggleChatter && (
+          <>
+            <span style={{ width: 1, height: 12, background: 'var(--border)', flexShrink: 0 }} />
+            <button
+              data-chatter-toggle={chatterPaused ? 'paused' : 'live'}
+              onClick={onToggleChatter}
+              aria-pressed={!!chatterPaused}
+              title={chatterPaused
+                ? 'Agent→agent delivery is PAUSED — replies between lanes are recorded but never typed into a lane. Click to resume.'
+                : 'Agents deliver replies to each other (with the hop limit and pair brakes applied). Click to pause every lane-to-lane message.'}
+              style={{
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 8px', borderRadius: 7, cursor: 'pointer', outline: 'none',
+                background: 'transparent', border: '1px solid var(--border)',
+                fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '0.04em',
+                color: chatterPaused ? 'var(--status-waiting, var(--accent))' : 'var(--fg-muted)',
+              }}
+            >
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                background: chatterPaused ? 'var(--status-waiting, var(--accent))' : 'var(--fg-muted)',
+              }} />
+              {chatterPaused ? 'chatter paused' : 'chatter live'}
+            </button>
+          </>
+        )}
       </div>
 
       {/* A full card is how the board answers "who's working right now", so only a LIVE lane
