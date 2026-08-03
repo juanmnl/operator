@@ -40,7 +40,9 @@ const p = await ctx.newPage()
 p.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 250)))
 const boot = async () => { await p.waitForTimeout(3000) }
 const state = () => p.evaluate(() => ({
-  scoped: document.querySelector('[data-switcher-trigger] > span')?.textContent?.trim() ?? null,
+  // The switcher trigger this used to read went with the switcher; the header's name span is
+  // what carries the scope now, so the field was silently reporting null on every run.
+  scoped: document.querySelector('[data-sidebar-project-name]')?.textContent?.trim() ?? null,
   chip: !!document.querySelector('[data-previous-chip]'),
   shelved: JSON.parse(localStorage.getItem('harness.projects') || '[]').filter((x) => x.archivedAt).map((x) => x.name),
 }))
@@ -61,11 +63,27 @@ await boot()
 const s2 = await state()
 console.log('2 inside a SHELVED project the chip appears:', JSON.stringify(s2), '(expect chip true)')
 
+// The chip sits INSIDE the header, and the header is a way home now (2026-08-03) — so the
+// chip has to stop its own click. Un-shelving is not a request to navigate: restore from
+// inside an agent and you must still be in that agent. Focus one first, because at Project
+// Home the header is inert and the trap wouldn't fire.
+await p.locator('[data-session-row]').first().click()
+await p.waitForTimeout(1000)
+// The pty stays mounted behind every surface, so `.xterm` can't tell you which view is up —
+// the toolbar header can.
+const view = () => p.evaluate(() => document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'))
+const inSession = await p.evaluate(() => ({
+  view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  headerRole: document.querySelector('[data-sidebar-project]')?.getAttribute('role'),
+}))
+console.log('3 in an agent, header is live:', JSON.stringify(inSession), '(expect view=session, role button)')
+
 await p.locator('[data-previous-chip]').click()
 await p.waitForTimeout(700)
 const s3 = await state()
 console.log('3 clicking it restores — chip gone:', !s3.chip, '(expect true)')
 console.log('3 …and the record was cleared:', JSON.stringify(s3.shelved), '(expect [])')
+console.log('3 …and it did NOT navigate home:', (await view()) === 'session', `(view=${await view()}, expect session)`)
 
 // The section that used to live under the lanes is gone for good.
 console.log('4 no ALSO ACTIVE section left:', await p.locator('[data-ambient-header], [data-ambient-row]').count(), '(expect 0)')

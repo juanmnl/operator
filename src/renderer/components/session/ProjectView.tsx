@@ -98,6 +98,11 @@ export function ProjectView({
           {tabs.map((id) => (
             <button
               key={id}
+              // Test hooks: which tab you LAND on is the whole point of several navigation
+              // verbs (the sidebar's `+` says roster and must reach TEAM), and the only other
+              // signal is the accent colour — which a driver can't read as intent.
+              data-project-tab={id}
+              data-project-tab-active={tab === id ? 'true' : undefined}
               onClick={() => onSelectTab(id)}
               style={{
                 fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,

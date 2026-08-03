@@ -50,13 +50,14 @@ await p.screenshot({ path: '/tmp/nav-2-project.png' })
 console.log('3 scoped (no other project rows):', !(await p.evaluate(() =>
   Array.from(document.querySelectorAll('[data-session-row]')).some(el => el.textContent?.includes('booking')))))
 
-// 4. Project navigation lives at the RAIL's foot now — the sidebar header is identity only.
+// 4. Cross-PROJECT navigation lives at the RAIL's foot — the sidebar header is not a switcher.
+// (It IS a control now, but only for one destination: this project's home. Step 12.)
 const railFoot = await p.evaluate(() => ({
   controls: Array.from(document.querySelectorAll('[data-rail-gallery], [data-rail-open-folder]')).map(b => b.getAttribute('aria-label')),
-  headerIsInert: !document.querySelector('[data-switcher-trigger]') && document.querySelectorAll('.drag-region [role="button"]').length === 0,
+  headerIsNotASwitcher: !document.querySelector('[data-switcher-trigger]'),
 }))
 console.log('4 rail foot controls:', JSON.stringify(railFoot.controls), '(expect All projects + Open folder)')
-console.log('4 sidebar header carries no navigation:', railFoot.headerIsInert, '(expect true)')
+console.log('4 sidebar header is not a project switcher:', railFoot.headerIsNotASwitcher, '(expect true)')
 await p.screenshot({ path: '/tmp/nav-3-rail-foot.png' })
 
 // 5. "All projects" → back to the gallery, sidebar gone again.
@@ -88,10 +89,13 @@ await p.locator('[data-rail-tile]').first().click()
 await p.waitForTimeout(900)
 await p.screenshot({ path: '/tmp/nav-5-sidebar.png' })
 
-// 8. The section "+" opens Project Home, which must carry the back chevron.
+// 8. The section "+" opens Project Home, which must carry the back chevron. It says ROSTER,
+// so it must land on TEAM — it called handleOpenProjectHome, which hard-sets the board.
 await p.locator('button[aria-label="Open the roster"]').click()
 await p.waitForTimeout(800)
 console.log('8 Project Home + back chevron:', (await p.locator('button[aria-label="All projects"]').count()) > 0)
+console.log('8 "+" lands on the roster:', await p.evaluate(() =>
+  document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab')), '(expect team)')
 await p.screenshot({ path: '/tmp/nav-6-project-home.png' })
 
 // 9. Collapse to the rail — it must be scoped and badge the project.
@@ -127,4 +131,82 @@ await p.waitForTimeout(900)
 console.log('11 lands on Project Home:', await p.evaluate(() => /AGENTS|MOODBOARD/i.test(document.body.innerText)))
 console.log('11 scope undisturbed:', scopeBefore === await p.evaluate(() => localStorage.getItem('operator.activeProjectId')))
 await p.keyboard.press('Meta+b'); await p.waitForTimeout(500)
+
+// 12. THE SIDEBAR PROJECT HEADER IS THE OTHER WAY HOME (2026-08-03). "clicking on an agent
+// then on the project doesn't navigate" was reported three times; the two fixes before this
+// one landed on the RAIL, and the control actually being clicked — the biggest, closest
+// "go back to the project" target on screen — had never been wired at all.
+// The trap this step exists to catch: the header lives inside <DragRegion>, whose mousedown
+// handler starts a WINDOW DRAG unless the press lands on a button/[role="button"]. A plain
+// onClick on a div is eaten before it fires, so assert the navigation, not the handler.
+await p.locator('[data-session-row="s-code"]').click()
+await p.waitForTimeout(1200)
+// "Unfocused" is the HEADER swapping session→project, not the terminal unmounting: the
+// chosen surface overlays a still-mounted, still-sized pty on purpose (resizing it hangs it).
+// So a live .xterm after navigating is the aliveness evidence, not a failure.
+const ptyBefore = await p.evaluate(() => ({
+  header: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  xterm: !!document.querySelector('.xterm'),
+  kills: window.__calls.filter(c => c.fn === 'terminalKill').length,
+  rows: document.querySelectorAll('[data-session-row]').length,
+}))
+console.log('12 focused an agent:', JSON.stringify(ptyBefore), '(expect header=session, xterm true)')
+const header = await p.evaluate(() => {
+  const el = document.querySelector('[data-sidebar-project]')
+  return {
+    role: el?.getAttribute('role'),
+    label: el?.getAttribute('aria-label'),
+    cursor: el ? getComputedStyle(el).cursor : null,
+    // The path line must be INSIDE the target, not a dead strip under it.
+    coversPath: !!el?.querySelector('[title^="/"], [title^="~"]'),
+    height: el ? Math.round(el.getBoundingClientRect().height) : 0,
+  }
+})
+console.log('12 header is a real control in a session:', JSON.stringify(header), '(expect role=button, pointer)')
+// The affordance has to be EYEBALLED in both states, so shoot the header itself, hovered,
+// not a 1440px page where it's 220px of one corner.
+const shotHeader = async (path) => {
+  await p.locator('[data-sidebar-project]').hover()
+  await p.waitForTimeout(250)
+  const box = await p.locator('[data-sidebar-project]').boundingBox()
+  await p.screenshot({ path, clip: { x: box.x - 12, y: box.y - 10, width: box.width + 24, height: box.height + 20 } })
+}
+await shotHeader('/tmp/nav-8-header-in-agent.png')
+await p.locator('[data-sidebar-project]').click()
+await p.waitForTimeout(900)
+const afterClick = await p.evaluate(() => ({
+  tab: document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab'),
+  atHome: /AGENTS|MOODBOARD/i.test(document.body.innerText),
+  header: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  xterm: !!document.querySelector('.xterm'),
+  kills: window.__calls.filter(c => c.fn === 'terminalKill').length,
+  rows: document.querySelectorAll('[data-session-row]').length,
+}))
+console.log('12 lands on Project Home (board):', afterClick.atHome && afterClick.tab === 'board', `(tab=${afterClick.tab})`)
+console.log('12 agent unfocused:', afterClick.header === 'project', `(header ${ptyBefore.header}→${afterClick.header})`)
+console.log('12 …but its pty is still alive:', afterClick.xterm && afterClick.kills === ptyBefore.kills && afterClick.rows === ptyBefore.rows,
+  `(xterm ${afterClick.xterm}, kills ${afterClick.kills}, rows ${ptyBefore.rows}→${afterClick.rows})`)
+
+// …and clicking it AGAIN, from home, must change nothing — and must not even light up.
+const homeState = await p.evaluate(() => {
+  const el = document.querySelector('[data-sidebar-project]')
+  return { role: el?.getAttribute('role') ?? null, cursor: el ? getComputedStyle(el).cursor : null }
+})
+await p.locator('[data-sidebar-project]').hover()
+await p.waitForTimeout(250)
+const hoverBg = await p.evaluate(() => getComputedStyle(document.querySelector('[data-sidebar-project]')).backgroundColor)
+await p.locator('[data-sidebar-project]').click()
+await p.waitForTimeout(700)
+const idle = await p.evaluate(() => ({
+  tab: document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab'),
+  atHome: /AGENTS|MOODBOARD/i.test(document.body.innerText),
+}))
+console.log('12 inert at home:', homeState.role === null && homeState.cursor !== 'pointer', JSON.stringify(homeState))
+console.log('12 not hover-lit at home:', /rgba\(0, 0, 0, 0\)|transparent/.test(hoverBg), `(bg=${hoverBg})`)
+console.log('12 clicking at home changes nothing:', idle.atHome && idle.tab === afterClick.tab, `(tab=${idle.tab})`)
+await shotHeader('/tmp/nav-9-header-at-home.png')
+
+// (The `previous` chip now lives INSIDE this target and must not navigate. It only renders
+// for a shelved project, which needs the durable-store stand-in — so that assertion lives in
+// dev/drive-sidebar-chip.mjs step 3, which already builds that fixture.)
 await b.close()
