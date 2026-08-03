@@ -22,7 +22,7 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onModelChange, onEffortChange }: {
+export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange }: {
   session?: AgentSession
   /** Lane identity for the Chat tab — the same name and colour the sidebar gives it. */
   role?: Role
@@ -31,6 +31,8 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
   tabs: PanelTab[]
   mode: PanelTab
   onSelectMode: (m: PanelTab) => void
+  /** A human addressed this lane — resets its delivery hop budget. See ChatComposer. */
+  onHumanSend?: (roleId?: string) => void
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
 }) {
@@ -89,7 +91,7 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
           />
         )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
-        {mode === 'chat' && <CanvasConversation session={session} role={role} customName={customName} accent={accent} onModelChange={onModelChange} onEffortChange={onEffortChange} />}
+        {mode === 'chat' && <CanvasConversation session={session} role={role} customName={customName} accent={accent} onHumanSend={onHumanSend} onModelChange={onModelChange} onEffortChange={onEffortChange} />}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the

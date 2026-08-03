@@ -18,6 +18,10 @@ import { chipForOutcome } from '../../lib/dispatch-outcome'
  *  contrast floor as small text on the light palettes. Half way to `--fg` keeps the hue — which is
  *  what makes a held row distinguishable from a delivered one — and clears the bar. */
 const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
+/** `progress` — in flight, not finished with. Distinct from `muted` (never arriving) and from
+ *  `accent` (arrived). A --fg step-down rather than another hue: three signal colours in one
+ *  dense column is a legend, and the distinction that matters here is will-arrive vs won't. */
+const PROGRESS_INK = 'color-mix(in srgb, var(--fg) 80%, transparent)'
 
 export function DispatchLog({ project, onApprove, onReject }: {
   project: Project
@@ -76,7 +80,17 @@ export function DispatchLog({ project, onApprove, onReject }: {
                 <span data-dispatch-outcome title={chip.label} style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', // `--color-warning`, NOT `--status-waiting`: the latter is #2fe39a on Mission Control — the
                   // same green as --accent — so a HELD row rendered identically to a delivered one. The
                   // rehomed brakes driver caught it: "blocked NOT the same colour as delivered: false".
-                  color: chip.tone === 'accent' ? 'var(--accent)' : chip.tone === 'warn' ? WARN_INK : 'var(--fg-muted)' }}>
+                  // FOUR tones, four branches. `progress` used to fall through to the muted
+                  // ink, so the only outcome carrying it drew exactly like `declined` and
+                  // `no matching lane`. Same defect class as the --status-waiting one two
+                  // comments up, one tone over. `progress` has no user today (its one holder,
+                  // `queued`, turned out to mean "not delivered" and moved to `warn`) — the
+                  // branch stays so the union is rendered exhaustively and the next tone to be
+                  // added cannot silently collapse into muted the way this one did.
+                  color: chip.tone === 'accent' ? 'var(--accent)'
+                    : chip.tone === 'warn' ? WARN_INK
+                      : chip.tone === 'progress' ? PROGRESS_INK
+                        : 'var(--fg-muted)' }}>
                   {/* The chip's own words, minus the `held · ` prefix the row's tint already
                       carries — this column is one short column in a dense log, not a sentence. */}
                   {chip.label.replace(/^held · /, '')}

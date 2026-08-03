@@ -10,26 +10,39 @@ import type { DispatchRecord } from '../../shared/types'
 // for. Two half-vocabularies for one concept is how a `pair-brake` ends up rendering as
 // "pair-brake" on the only screen that will ever show it.
 
+/** `progress` currently has NO user — `queued` moved to `warn` (see below). It is kept because
+ *  `DispatchLog` renders every member of this union explicitly, and a tone with a branch and no
+ *  user is harmless where a tone with a user and no branch is not: that is the defect that put
+ *  `queued` in the same ink as `declined` for a whole release. */
 export type ChipTone = 'accent' | 'warn' | 'muted' | 'progress'
 
 export interface OutcomeChip {
   label: string
   tone: ChipTone
-  /** Only a held dispatch is actionable, and only through the EXISTING approval handlers. */
-  actionable?: boolean
 }
+// There was an `actionable?: boolean` here, set only on `pending-approval`. Nothing read it: its
+// one reader (`isActionableChip`) died with the channel, and both surviving surfaces test
+// `outcome === 'pending-approval'` directly — which is right, because whether a row gets an
+// Approve button depends on the approval GATE, not on how the row is inked.
 
-/** `outcome` → chip. One row per outcome, no invented states. `pending-approval` is the only
- *  actionable one, and it routes to the approval handlers that already exist. */
+/** `outcome` → chip. One row per outcome, no invented states. */
 export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip {
   switch (outcome) {
     case 'sent':
     case 'launched':
       return { label: 'delivered', tone: 'accent' }
     case 'queued':
-      return { label: 'queued · behind current task', tone: 'progress' }
+      // NOT "queued · behind current task", which is what this said and what nothing does.
+      // The only writer is the reply path, when `evaluateDelivery` blocks with reason `queued`:
+      // `"X" isn't running, and a message never starts a lane. Nothing was sent.` Nothing is
+      // queued, nothing is behind anything, and nothing retries — so the agent was being told
+      // (by REPLY_PROTOCOL) that its message was DROPPED while the human was shown that it was
+      // waiting its turn, for the same event. The legacy dispatch records that also carry this
+      // outcome ("lane idle, pre-auto-launch, or a failed launch") were equally undelivered, so
+      // one honest label covers both. `warn`, with the other outcomes that never arrived.
+      return { label: 'not delivered · lane wasn’t running', tone: 'warn' }
     case 'pending-approval':
-      return { label: 'held · needs your approval', tone: 'warn', actionable: true }
+      return { label: 'held · needs your approval', tone: 'warn' }
     case 'rejected':
       return { label: 'declined', tone: 'muted' }
     case 'unassigned':

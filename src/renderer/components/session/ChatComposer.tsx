@@ -54,11 +54,17 @@ const SLASH = [
 
 interface Attachment { name: string; path: string; url: string }
 
-export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEffortChange }: {
+export function ChatComposer({ session, laneAccent, onSend, onHumanSend, onModelChange, onEffortChange }: {
   session?: AgentSession
   /** The lane's colour, so the composer's orb is the SAME orb as the sidebar's (§2). */
   laneAccent?: string
   onSend?: () => void
+  /** A HUMAN just addressed this lane. Distinct from `onSend`, which is a view concern (scroll
+   *  stick): this is the delivery-brake reset — a human message is the only thing that restores a
+   *  lane's hop budget, and this composer is the app's main human→lane surface. Without it a lane
+   *  stopped by the chain limit stays unable to SEND for the rest of the process, however much
+   *  you talk to it here (`exhausted` has no timer; see lib/agent-delivery). */
+  onHumanSend?: (roleId?: string) => void
   /** Persist a `/model` switch back onto the session so the pill survives a tab switch. */
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
@@ -154,6 +160,7 @@ export function ChatComposer({ session, laneAccent, onSend, onModelChange, onEff
     // Via the submit queue: a fast double-send, or a dispatch landing on this same lane,
     // would otherwise merge into one composer draft (see lib/submit-queue).
     void submitQueue.submit(session.terminalId, parts.join(' '))
+    onHumanSend?.(session.roleId)
     attachments.forEach((a) => URL.revokeObjectURL(a.url))
     setDraft(''); setAttachments([])
     onSend?.()

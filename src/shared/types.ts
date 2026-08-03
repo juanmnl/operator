@@ -272,10 +272,11 @@ export interface DispatchRecord {
    *  either way, so in the target's own transcript a channel message and the user typing directly
    *  are the same `user` turn. NOT modelled as `fromRoleId: 'user'` — a roster could legitimately
    *  hold a lane with that id, and every existing consumer reads `fromRoleId` as a roster id. */
+  /** HISTORICAL ONLY as of the channel's deletion: its one writer was the channel composer's
+   *  fan-out send, so no new record can carry it. Kept because `TaskBoard` still READS it, and
+   *  a stored record that says a human sent this is the only provenance those rows have — the
+   *  alternative is relabelling real history "unknown lane". */
   fromHuman?: true
-  /** Shared by the N records of one fan-out send, so the channel can collapse them into a single
-   *  row and report "delivered 4/6 · 2 queued" instead of six near-identical entries. */
-  groupId?: string
   /** The resolved target lane; absent when the role didn't match (→ unassigned). */
   toRoleId?: string
   task: string

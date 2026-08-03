@@ -102,9 +102,9 @@ describe('roster', () => {
     expect(patchRoleIn(undefined, 'code', { name: 'x' })).toEqual([])
   })
 
-  /// Removing a lane also unassigns its queued tasks — otherwise they keep a roleId no
-  /// group matches and drop out of the queue UI entirely.
-  it('removeRoleFrom drops the lane and returns its tasks to the backlog', () => {
+  /// Removing a lane leaves its tasks NAMING it — see removeRoleFrom for why clearing the
+  /// reference made the board's "lane gone" treatment unreachable through the only path to it.
+  it('removeRoleFrom drops the lane and leaves its tasks naming it', () => {
     const project: Project = {
       id: 'p', name: 'Demo', path: '/tmp/demo', createdAt: 'now', lastActiveAt: 'now',
       roster: defaultRoster(),
@@ -116,8 +116,8 @@ describe('roster', () => {
     const patch = removeRoleFrom(project, 'code')
     expect(patch.roster!.some((r) => r.id === 'code')).toBe(false)
     expect(patch.roster).toHaveLength(defaultRoster().length - 1)
-    expect(patch.tasks![0].roleId).toBeUndefined() // back to the unassigned backlog
-    expect(patch.tasks![1].roleId).toBe('design') // another lane's task is untouched
+    // Tasks are not rewritten at all — the patch doesn't carry them.
+    expect(patch.tasks).toBeUndefined()
   })
 
   it('reorderRoles is a no-op for unknown ids or a self-drop', () => {
@@ -248,10 +248,17 @@ describe('removeRoleFrom — what a lane deletion actually costs', () => {
     expect(next.roster?.find((r) => r.id === 'research')).toBeUndefined()
   })
 
-  it('unassigns its tasks rather than deleting them (they land in the backlog)', () => {
+  it('leaves its tasks NAMING the deleted lane, so the board can say so', () => {
+    // The old behaviour cleared `roleId`, which made a task filed against Research read as
+    // "Unassigned" — as though nobody had ever been asked — and made `AgentChip`'s
+    // `research — lane gone` unreachable, since deleting a lane is the only way to produce a
+    // dangling roleId at all. Deleting a lane must not delete the record of who it was for.
     const next = removeRoleFrom(project(), 'research')
-    expect(next.tasks?.find((t) => t.id === 't1')?.roleId).toBeUndefined()
-    expect(next.tasks?.find((t) => t.id === 't2')?.roleId).toBe('operator') // untouched
+    expect(next.tasks).toBeUndefined() // the patch does not touch tasks
+    // …and applying the patch leaves the original task pointing at a lane no roster holds.
+    const after: Project = { ...project(), ...next }
+    expect(after.tasks?.find((t) => t.id === 't1')?.roleId).toBe('research')
+    expect(after.roster?.some((r) => r.id === 'research')).toBe(false)
   })
 
   it('a preset lane can be restored afterwards, charter included', () => {

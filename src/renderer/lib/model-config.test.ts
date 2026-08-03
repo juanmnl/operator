@@ -133,11 +133,35 @@ describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () =>
           const p = project(roster.map((r) => ({ ...r })), defaults)
           const before = (p.roster ?? []).map((r) => legacyResolveForTest(r, globals, defaults))
           const out = migrateGlobalsToLanePins([p], globals)
-          const after = (out.projects[0].roster ?? []).map((r) => resolveAgentConfig(r))
+          const after = (out.projects[0].roster ?? []).map((r) => resolveAgentConfig(r, defaults))
           expect(after).toEqual(before)
         }
       }
     }
+  })
+
+  it('writes ZERO permissionMode pins — the project is its source in BOTH cascades now', () => {
+    // F1. permissionMode's only source was `Project.defaults`, and the collapse removed it from
+    // the new cascade; the migration then papered over that by pinning it onto 37 real lanes —
+    // pins no screen can edit — while a NEW project got no such cover and silently stopped
+    // honouring the project's permission mode. Restoring the project as the source fixes both
+    // ends, and makes the migration a no-op for this field BY CONSTRUCTION rather than by a
+    // special case: both cascades read the same value, so comparing them finds nothing.
+    const p = project([role({ id: 'code' }), role({ id: 'qa' })], { permissionMode: 'auto' })
+    const out = migrateGlobalsToLanePins([p], { code: { useWorktree: true }, qa: { useWorktree: false } })
+    expect(out.pins).toBe(0)
+    expect(out.projects[0].roster!.every((r) => r.permissionMode === undefined)).toBe(true)
+    // …and the project's mode still reaches the launch.
+    expect(resolveAgentConfig(out.projects[0].roster![0], p.defaults).permissionMode).toBe('auto')
+  })
+
+  it('a NEW project honours its permission mode with no migration in sight', () => {
+    // The case the migration could never cover, because it has already run.
+    expect(resolveAgentConfig(role({ id: 'code' }), { permissionMode: 'auto' }).permissionMode).toBe('auto')
+    expect(resolveAgentConfig(role({ id: 'code' })).permissionMode).toBe('default')
+    // A lane pin still wins, and is still the only per-lane override.
+    expect(resolveAgentConfig(role({ id: 'code', permissionMode: 'bypassPermissions' }), { permissionMode: 'auto' }).permissionMode)
+      .toBe('bypassPermissions')
   })
 
   it('is MINIMAL — a global that agrees with the preset writes no pin at all', () => {

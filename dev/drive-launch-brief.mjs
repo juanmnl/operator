@@ -37,6 +37,12 @@ const spawns = () => p.evaluate(() =>
 const openRoster = async () => {
   await p.locator('button[aria-label="Open the roster"]').click()
   await p.waitForTimeout(900)
+  // "Open the roster" lands on the BOARD since it became project home; the roster is one tab
+  // across. Without this step every read below comes back empty — the same break QA found in
+  // drive-roster.mjs, and for the same reason: the move that displaced the roster landed after
+  // the move that last ran this.
+  await p.locator('[data-toolbar-header="project"] button', { hasText: /^Team$/ }).click().catch(() => {})
+  await p.waitForTimeout(700)
 }
 const gallery = async () => { await p.locator('[data-rail-gallery]').click(); await p.waitForTimeout(800) }
 const enterProject = async (name) => {

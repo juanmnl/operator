@@ -35,9 +35,27 @@ const board = () => p.evaluate(() => {
   }
 })
 
+// This driver reports its findings as printed lines, not assertions — but it must at minimum be
+// able to FAIL when the roster surface isn't on screen at all. That is the exact way it broke:
+// the board became project home, every `board()` read came back empty, and it printed a page of
+// empty arrays and exited 0 for two moves before anyone noticed. A driver whose readings are all
+// empty is not reporting "no lanes", it is reporting "I am not looking at the thing".
+let failed = 0
+const ok = (label, pass, detail) => {
+  if (!pass) failed++
+  console.log(`${pass ? 'ok  ' : 'FAIL'} ${label}${detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`)
+}
+
+// "Open the roster" opens the PROJECT, and since the board became project home that lands on
+// Board, not on the roster. Every assertion below reads roster rows and cards, so without the
+// second step this driver read an empty board for every case and then timed out on the first row
+// it tried to hover — which is what it did, unnoticed, from the moment the board was wired: the
+// move that broke it landed AFTER the move that last ran it.
 const openRoster = async () => {
   await p.locator('button[aria-label="Open the roster"]').click()
   await p.waitForTimeout(900)
+  await p.locator('[data-toolbar-header="project"] button', { hasText: /^Team$/ }).click().catch(() => {})
+  await p.waitForTimeout(700)
 }
 
 // ---- 1. A project with lanes running: cards for those, rows for the rest ---------------
@@ -45,6 +63,9 @@ await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().c
 await p.waitForTimeout(900)
 await openRoster()
 const mixed = await board()
+ok('the roster surface is actually on screen (sections, cards or rows present)',
+  mixed.labels.length > 0 || mixed.cards.length > 0 || mixed.rows.length > 0,
+  { labels: mixed.labels.length, cards: mixed.cards.length, rows: mixed.rows.length })
 console.log('1 sections:', JSON.stringify(mixed.labels))
 console.log('1 full cards (live only):', JSON.stringify(mixed.cards))
 console.log('1 compact rows (idle):', JSON.stringify(mixed.rows))
@@ -283,5 +304,8 @@ await p.waitForTimeout(1600)
 console.log('10 THE SPAWN CARRIES IT:', JSON.stringify((await spawnModelFor()).slice(before10)), '(expect ["haiku"])')
 
 await p.screenshot({ path: '/tmp/operator-shots/roster-lane-model.png' })
+ok('the lane\'s pinned model reached the spawn', (await spawnModelFor()).slice(before10)[0] === 'haiku')
 
 await b.close()
+console.log(failed ? `\n${failed} FAILED` : '\nall structural checks passed')
+process.exit(failed ? 1 : 0)

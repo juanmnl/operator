@@ -115,8 +115,9 @@ const REPLY_PROTOCOL =
   `OPERATOR-REPLY [<lane-id>] <one line>\n` +
   `Address a SPECIFIC lane by its id. It is typed into that lane's session, so it interrupts a ` +
   `working agent — which is why it is worth doing only when the message changes what that lane ` +
-  `should do next. Delivery is not guaranteed: it is dropped if the lane isn't running, and ` +
-  `rate-limited if the two of you are going back and forth, with no notice to you either way. It ` +
+  `should do next. Delivery is not guaranteed: it is dropped if the lane isn't running, and it ` +
+  `stops being delivered once a chain of replies has gone several hops with no human in it — ` +
+  `whether or not you and that lane are the pair going back and forth. You are told neither. It ` +
   `does NOT replace a result file: if your brief names an output path, write that file. The reply ` +
   `is the headline; the file is the work.\n` +
   `Send only when that lane needs to know something: a task it is waiting on is FINISHED (one ` +
@@ -333,13 +334,25 @@ export function patchRoleIn(roster: Role[] | undefined, id: string, patch: Parti
   return (roster ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r))
 }
 
-/** Remove a lane and unassign its queued tasks, against the CURRENT project — same
- *  stale-snapshot hazard as `patchRoleIn`. Returns the patch to apply. */
+/** Remove a lane, against the CURRENT project — same stale-snapshot hazard as `patchRoleIn`.
+ *  Returns the patch to apply.
+ *
+ *  ITS TASKS KEEP NAMING IT. This used to clear `roleId` to `undefined` on every task pointing at
+ *  the deleted lane, and that was a quiet lie: a task filed against Code, after Code is deleted,
+ *  read as "Unassigned" — i.e. as though nobody had ever been asked. The board has a built,
+ *  reviewed treatment for exactly this state (`AgentChip`'s `lostRoleId` → `code — lane gone`,
+ *  and the assignee picker's `gone` branch), and because deleting a lane is the ONLY action that
+ *  can produce a dangling roleId, clearing it here made that UI unreachable through the only path
+ *  a user has. Two lanes built it, one verified it, and nobody could see it.
+ *
+ *  Keeping the reference costs nothing that was working: such a task is excluded from
+ *  `dispatchable` and skipped by Start all either way. What it buys is that the board says what
+ *  actually happened and offers the picker to fix it, instead of erasing the provenance and
+ *  presenting the result as a fresh backlog item. `startProjectTasks` still hands a task back to
+ *  the unassigned backlog when its lane cannot be recreated — but it does that explicitly, with a
+ *  toast that names the lane, which is the difference. */
 export function removeRoleFrom(project: Project, id: string): Pick<Project, 'roster' | 'tasks'> {
-  return {
-    roster: (project.roster ?? []).filter((r) => r.id !== id),
-    tasks: (project.tasks ?? []).map((t) => (t.roleId === id ? { ...t, roleId: undefined } : t)),
-  }
+  return { roster: (project.roster ?? []).filter((r) => r.id !== id) }
 }
 
 /** A short, unique role id from a name (for user-added roles); falls back to a counter. */

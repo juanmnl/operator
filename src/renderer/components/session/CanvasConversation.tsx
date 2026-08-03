@@ -464,7 +464,7 @@ function shortLabel(s: string): string {
   return flat.length > NAME_MAX ? `${flat.slice(0, NAME_MAX - 1)}…` : flat
 }
 
-export function CanvasConversation({ session, role, customName, accent, onModelChange, onEffortChange }: {
+export function CanvasConversation({ session, role, customName, accent, onHumanSend, onModelChange, onEffortChange }: {
   session?: AgentSession
   /** The lane this session runs on — names the agent's turns. */
   role?: Role
@@ -473,6 +473,8 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
   /** The colour the session actually draws with (lane's, else its own override) — pass
    *  the dashboard's `accentOf` so chat agrees with the sidebar on a lane-less session. */
   accent?: string
+  /** A human addressed this lane — resets its delivery hop budget. See ChatComposer. */
+  onHumanSend?: (roleId?: string) => void
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
 }) {
@@ -1110,7 +1112,7 @@ export function CanvasConversation({ session, role, customName, accent, onModelC
               screen at once is one too many. */}
         </div>
       )}
-      <ChatComposer session={session} laneAccent={laneAccent} onSend={() => { stickRef.current = true }} onModelChange={onModelChange} onEffortChange={onEffortChange} />
+      <ChatComposer session={session} laneAccent={laneAccent} onSend={() => { stickRef.current = true }} onHumanSend={onHumanSend} onModelChange={onModelChange} onEffortChange={onEffortChange} />
     </div>
   )
 }

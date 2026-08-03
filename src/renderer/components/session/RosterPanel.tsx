@@ -445,6 +445,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             onPatch={(patch) => patchRole(role.id, patch)}
             onRemove={() => removeRole(role.id)}
             onCloseSession={() => { const tid = liveRoles?.[role.id]; if (tid) onCloseTerminal?.(tid) }}
+            projectDefaults={project.defaults}
             onLaunch={() => { void launchRoles([role]) }}
             onView={() => { const tid = liveRoles?.[role.id]; if (tid) onFocusTerminal?.(tid) }}
           />
@@ -538,7 +539,8 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
                   onCollapse={() => setExpanded(null)}
                   onPatch={(patch) => patchRole(role.id, patch)}
                   onRemove={() => removeRole(role.id)}
-                  onLaunch={() => { void launchRoles([role]) }}
+                  projectDefaults={project.defaults}
+            onLaunch={() => { void launchRoles([role]) }}
                   onView={() => {}}
                 />
               ) : (
@@ -584,13 +586,16 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent }: {
+function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent, projectDefaults }: {
   role: Role
   /** Present when this card is an EXPANDED idle row — collapses back to its LaneRow. */
   onCollapse?: () => void
   /** Drag-to-reorder, driven from the grip handle so text stays selectable. */
   onDragStart?: () => void
   onDragEnd?: () => void
+  /** The project's own defaults — the source for `permissionMode` only (see resolveAgentConfig).
+   *  The card doesn't draw it; it is here so the RESOLVED read is the same object the launch uses. */
+  projectDefaults?: Project['defaults']
   /** The coordinator lane (Operator) — the roster's hub, not a worker peer. */
   coordinator?: boolean
   live?: boolean
@@ -614,7 +619,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
 }) {
   // What this lane will ACTUALLY launch with, and where each field came from. The card shows the
   // resolved value — a lane reading "Fable" while it launches Opus is worse than no readout.
-  const resolved = resolveAgentConfig(role)
+  const resolved = resolveAgentConfig(role, projectDefaults)
   // With one altitude above the lane, "where did this come from" needs no resolver: a field is
   // pinned if this lane set it, and inherited from its preset if it didn't.
   const pinnedField = (v: unknown) => (v !== undefined && v !== '' ? 'pinned' as const : 'inherited' as const)
@@ -798,7 +803,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
               onRemove()
             }}
             title={confirmingRemove
-              ? `Click again to delete the ${role.name} lane: its model, effort, colour and charter go${queued > 0 ? `, and ${queued} queued task${queued > 1 ? 's' : ''} return to the backlog` : ''}`
+              ? `Click again to delete the ${role.name} lane: its model, effort, colour and charter go${queued > 0 ? `, and ${queued} queued task${queued > 1 ? 's' : ''} will need reassigning — they keep naming this lane` : ''}`
               : `Delete the ${role.name} lane`}
             aria-label={confirmingRemove ? `Confirm deleting ${role.name}` : `Delete ${role.name}`}
             data-role-remove={confirmingRemove ? 'confirm' : 'idle'}

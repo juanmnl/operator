@@ -56,6 +56,13 @@ await p.locator('[data-project-card]').filter({ hasText: 'uwazi_app' }).first().
 await p.waitForTimeout(900)
 await p.locator('button[aria-label="Open the roster"]').click()
 await p.waitForTimeout(900)
+// "Open the roster" lands on the BOARD since it became project home; the roster is one tab
+// across. Without this step every read below comes back empty — the same break QA found in
+// drive-roster.mjs, and for the same reason: the move that displaced the roster landed after
+// the move that last ran this.
+await p.locator('[data-toolbar-header="project"] button', { hasText: /^Team$/ }).click().catch(() => {})
+await p.waitForTimeout(700)
+
 const rows = await p.evaluate(() =>
   Array.from(document.querySelectorAll('[data-roster-row]')).map((r) => r.getAttribute('data-roster-row')))
 console.log('   idle lanes in uwazi_app:', JSON.stringify(rows))
@@ -86,6 +93,13 @@ await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().c
 await p.waitForTimeout(900)
 await p.locator('button[aria-label="Open the roster"]').click()
 await p.waitForTimeout(900)
+// "Open the roster" lands on the BOARD since it became project home; the roster is one tab
+// across. Without this step every read below comes back empty — the same break QA found in
+// drive-roster.mjs, and for the same reason: the move that displaced the roster landed after
+// the move that last ran this.
+await p.locator('[data-toolbar-header="project"] button', { hasText: /^Team$/ }).click().catch(() => {})
+await p.waitForTimeout(700)
+
 const titles = await p.evaluate(() =>
   Array.from(document.querySelectorAll('[data-segment][aria-checked="true"]')).map((e) => e.getAttribute('title')))
 ok('a selected option explains itself as pinned-here or from-the-preset', titles.length > 0, titles.slice(0, 2))

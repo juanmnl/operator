@@ -1486,25 +1486,49 @@ export function DashboardView() {
    *  exactly today's post-hydrate behaviour and therefore what has to be preserved. Running this
    *  against the pre-hydrate rosters would faithfully migrate a state the user never launched in. */
   const oneAltitudeDoneRef = useRef(oneAltitudeMigrationDone())
+  /** Set when pins are computed and not yet durable. The persist effect stamps and clears it —
+   *  see the ORDERING note below. */
+  const oneAltitudePendingRef = useRef(false)
   useEffect(() => {
     if (!savedHydrated || oneAltitudeDoneRef.current) return
     oneAltitudeDoneRef.current = true // in-memory too: the effect must not re-enter before the write lands
     const p = window.operator.loadRoleDefaults?.()
     if (!p) { markOneAltitudeMigrationDone(); return }
     void p.then((raw) => {
-      const { projects: next, pins, lanes } = migrateGlobalsToLanePins(projectsRef.current, (raw ?? {}) as LegacyGlobalDefaults)
-      markOneAltitudeMigrationDone()
-      if (!pins) return // nobody had a global that outvoted a preset — nothing to write down
-      setProjects(next)
+      const globals = (raw ?? {}) as LegacyGlobalDefaults
+      // Counts for the TOAST only, and deliberately advisory: the authoritative migration is the
+      // functional update below, which runs against whatever `prev` actually is.
+      const preview = migrateGlobalsToLanePins(projectsRef.current, globals)
+      // Nothing to write down → nothing can be lost, so the stamp is safe here and only here.
+      if (!preview.pins) { markOneAltitudeMigrationDone(); return }
+      oneAltitudePendingRef.current = true
+      // FUNCTIONAL, not `setProjects(next)`. `projectsRef.current` is assigned in the render body,
+      // so it lags any update scheduled in the current commit but not yet rendered — and the
+      // stale-task reconciliation fires on the same `savedHydrated` flag. If `loadRoleDefaults()`
+      // resolved first, a plain value would overwrite that reconciliation wholesale, taking any
+      // `logDispatch` record written in the window with it. Reading `prev` cannot go stale.
+      // Re-running the migration on `prev` is free: it is pure, idempotent, and returns its input
+      // by reference when there is nothing to do.
+      setProjects((prev) => migrateGlobalsToLanePins(prev, globals).projects)
       // No Undo, deliberately: by construction this changed no lane's effective config, so there
       // is nothing to undo. It is worth SAYING because the settings moved house — the place to
       // change them is now the lane itself.
       pushToast({
-        text: `${pins} agent setting${pins === 1 ? '' : 's'} moved onto ${lanes} lane${lanes === 1 ? '' : 's'}`,
+        text: `${preview.pins} agent setting${preview.pins === 1 ? '' : 's'} moved onto ${preview.lanes} lane${preview.lanes === 1 ? '' : 's'}`,
         kind: 'info',
-        detail: 'Model, effort and worktree are set on the agent now — your Agents defaults were written onto each lane so nothing changed.',
+        // Names exactly the fields this can write. It briefly named a fourth, `permissionMode`,
+        // which was 37 of the real store's 56 pins — that field now reads the project in both
+        // cascades (see resolveAgentConfig), so the migration writes none of it and the toast is
+        // true again. Permission mode is deliberately NOT "set on the agent": it stayed on the
+        // project, which is the only thing that ever set it.
+        detail: 'Model, effort and worktree are set on the agent now — your Agents defaults were written onto each lane, so nothing changed.',
       })
-    }).catch(() => markOneAltitudeMigrationDone())
+      // The stamp is NOT written here. See the persist effect.
+    }).catch(() => {
+      // Deliberately UNSTAMPED. A read that failed migrated nothing, so the next launch must try
+      // again — stamping here would mean the file is never read and every lane silently falls to
+      // preset/fallback, which is the exact flip this migration exists to prevent.
+    })
   }, [savedHydrated, pushToast])
 
   // Scope is durable — relaunch lands you back inside your last project, at Project Home.
@@ -1812,7 +1836,7 @@ export function DashboardView() {
     // the project's saved defaults → the built-in preset. Nothing here reads `role.model` or
     // `role.useWorktree` directly any more — that is what made every seeded value look pinned and
     // left a global default with nothing to override.
-    const settings = resolveAgentConfig(role)
+    const settings = resolveAgentConfig(role, project.defaults)
     const tabs = await handleLaunchSession(
       project.path,
       {
@@ -1839,6 +1863,19 @@ export function DashboardView() {
     }
   }, [handleLaunchSession, markTasksRunning])
   launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
+
+  /** A HUMAN just addressed a lane from the chat composer. The delivery brakes' hop budget is
+   *  restored by a human message and by nothing else — `exhausted` has no timer, and a lane that
+   *  hit the chain limit is barred from SENDING as well as receiving, so without this a lane you
+   *  are actively talking to stays silently unable to answer anyone until the app restarts.
+   *
+   *  `dispatchToRole` was the only caller, and it is reached only from the board's Send → and
+   *  Start all. That is the right home for the reset; it was never a sufficient SET of callers —
+   *  the chat composer is where a human actually talks to a lane. */
+  const handleHumanSend = useCallback((roleId?: string) => {
+    if (!roleId) return
+    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, roleId)
+  }, [])
 
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
@@ -1894,6 +1931,10 @@ export function DashboardView() {
       dispatchToRole(project, role, task.text)
       markTasksRunning(project.id, [task.id], liveTab.id, laneOf(liveTab)) // now running on this lane
     } else {
+      // A human sending work to an IDLE lane is the same act as sending it to a live one; only
+      // the plumbing differs. This branch bypassed `dispatchToRole`, so it bypassed the reset —
+      // and a lane you have to launch is exactly the one most likely to be sitting exhausted.
+      deliveryStateRef.current = resetChainFor(deliveryStateRef.current, role.id)
       void handleLaunchRole(project, role) // launch picks up its queue (incl. this task → running)
     }
   }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
@@ -2357,6 +2398,21 @@ export function DashboardView() {
     projectsSerRef.current = ser
     try { localStorage.setItem('operator.projects', JSON.stringify(projects)) } catch { /* quota */ }
     window.operator.saveProjects?.(projects)
+    // ORDERING: the one-altitude migration stamps HERE, never at the point it computed its pins.
+    // Stamping first left a window — this effect is separate, and `saveProjects` is an async IPC
+    // — in which a crash, a quit or a failed write leaves the stamp set and the pins unwritten.
+    // `role-defaults.json` is then never read again and every lane silently falls to
+    // preset/fallback, which is precisely the flip the migration exists to prevent (37 of the
+    // real store's 56 pins are `permissionMode`). localStorage.setItem above is synchronous and
+    // durable, so by this line the pins genuinely survive a hard kill.
+    //
+    // If the functional update found nothing to write, `ser` is unchanged, this effect returned
+    // early, and no stamp lands — so the migration simply runs again next launch, finds nothing,
+    // and stamps through its own zero-pin path. Self-correcting rather than silently done.
+    if (oneAltitudePendingRef.current) {
+      oneAltitudePendingRef.current = false
+      markOneAltitudeMigrationDone()
+    }
   }, [projects, savedHydrated])
 
   // (No roster "top-up" migration here: a trimmed roster must never regrow. The one-time
@@ -3249,6 +3305,7 @@ export function DashboardView() {
                     role={roleOf(activeSession)}
                     customName={customNames[activeSession.id]}
                     accent={accentOf(activeSession)}
+                    onHumanSend={handleHumanSend}
                     onModelChange={(m) => patchActiveTerminal({ model: m })}
                     onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
                   />
@@ -3387,6 +3444,7 @@ export function DashboardView() {
             tabs={panelTabs}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
+            onHumanSend={handleHumanSend}
             onModelChange={(m) => patchActiveTerminal({ model: m })}
             onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
           />

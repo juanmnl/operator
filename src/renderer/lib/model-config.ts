@@ -8,6 +8,11 @@ import { rolePresets } from './roster'
 //   the PRESET   what this kind of lane is for — `rolePresets()`, tuned per role and shipped.
 //   the PIN      what THIS lane does instead. Absent = inherit.
 //
+// …with ONE documented exception, `permissionMode`, which reads the PROJECT instead of a preset.
+// See `resolveAgentConfig`. It is not a fourth altitude sneaking back: permission mode has never
+// been offered in any UI at any level, so it was never part of the paperwork the collapse existed
+// to remove — it was removed as collateral, and that turned out to break new projects.
+//
 // It used to be three. Above the preset sat a user-owned global layer (`role-defaults.json`,
 // edited on Agents → Defaults) and, for effort and permission mode, the project's own
 // `defaults` as well — reconciled per field, with an "inherited from…" label under every
@@ -52,12 +57,31 @@ const setBool = (v: boolean | undefined | null): v is boolean => v !== undefined
  *  Per FIELD, first defined wins: the lane's own pin → its preset → `HARD_FALLBACK`. Per field,
  *  not per source: a lane that pins only `effort` must still take its model from the preset.
  *  Resolving the whole object from the first source that has anything is the bug this ordering
- *  is written to avoid, and it survives the collapse from three altitudes to two. */
-export function resolveAgentConfig(role: Role): ResolvedAgentConfig {
+ *  is written to avoid, and it survives the collapse from three altitudes to two.
+ *
+ *  `permissionMode` IS THE EXCEPTION, and takes `projectDefaults` instead of a preset layer:
+ *  `pin → the project's default → HARD_FALLBACK ('default')`.
+ *
+ *  Why it is not on the presets, which would have been the tidier-looking answer: permission mode
+ *  is a trust decision about a repository and a moment, not a property of what kind of work a lane
+ *  does. Shipping `code: { permissionMode: 'auto' }` would auto-approve tool use for everyone who
+ *  adds a Code lane — a security posture nobody asked for, applied by a default. No preset can
+ *  honestly hold a value here.
+ *
+ *  Why it is not simply dropped: it had exactly one source, `Project.defaults.permissionMode`, and
+ *  the collapse removed it. Existing rosters were covered by the migration (37 of the real store's
+ *  56 pins were this field) but a NEW project had no such cover — its lanes silently stopped
+ *  honouring the project's permission mode and would stall on prompts they used to pass. And those
+ *  37 pins would have been un-editable: no screen writes `Role.permissionMode`.
+ *
+ *  Restoring the project as the source fixes both ends at once. It also makes the migration write
+ *  ZERO permissionMode pins by construction — both cascades now read the same value, so
+ *  "resolve both ways and compare" finds nothing to write. No special case was needed for that. */
+export function resolveAgentConfig(role: Role, projectDefaults?: Project['defaults']): ResolvedAgentConfig {
   const preset = rolePresets().find((p) => p.id === role.id)
   const model = [role.model, preset?.model].find(set) ?? HARD_FALLBACK.model
   const effort = [role.effort, preset?.effort].find(set) ?? HARD_FALLBACK.effort
-  const permissionMode = [role.permissionMode, preset?.permissionMode].find(set) ?? HARD_FALLBACK.permissionMode
+  const permissionMode = [role.permissionMode, projectDefaults?.permissionMode].find(set) ?? HARD_FALLBACK.permissionMode
   // Tri-state, and deliberately NOT `.find(set)`: `false` is a pin, not an absence.
   const useWorktree = [role.useWorktree, preset?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree
   return { model, effort, permissionMode, useWorktree }
@@ -126,7 +150,7 @@ export function migrateGlobalsToLanePins(
     let changed = false
     const roster = p.roster.map((r) => {
       const before = legacyResolve(r, globals, p.defaults)
-      const after = resolveAgentConfig(r)
+      const after = resolveAgentConfig(r, p.defaults)
       const out: Role = { ...r }
       let hit = false
       if (before.model !== after.model) { out.model = before.model; hit = true }

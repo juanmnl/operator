@@ -161,7 +161,7 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
                     const role = s.roleId ? g.project.roster?.find((r) => r.id === s.roleId) : undefined
                     const label = sessionLabel({ session: s, role, customName: customNames[s.id] })
                     const status = sessionWaveStatus(s)
-                    const cfg = role ? resolveAgentConfig(role) : undefined
+                    const cfg = role ? resolveAgentConfig(role, g.project.defaults) : undefined
                     return (
                       <AgentCard
                         key={s.id}
@@ -184,7 +184,7 @@ export function AgentsHubView({ projects, sessions, accentOf, customNames, onFoc
                     )
                   })}
                   {g.passive.map((r) => {
-                    const cfg = resolveAgentConfig(r)
+                    const cfg = resolveAgentConfig(r, g.project.defaults)
                     return (
                       <AgentCard
                         key={r.id}
