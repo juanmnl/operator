@@ -1891,8 +1891,18 @@ export function DashboardView() {
   focusTerminalRef.current = focusTerminal
 
   // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
-  // (bracketed paste + CR) and focus it; otherwise launch the lane with the task. The
-  // autonomous "orchestrator delegates on its own" remains the deferred structured-UI path.
+  // (bracketed paste + CR); otherwise launch the lane with the task. The autonomous
+  // "orchestrator delegates on its own" remains the deferred structured-UI path.
+  //
+  // IT DOES NOT NAVIGATE, and that is the point. Two motions used to share this implementation
+  // and they mean opposite things: clicking a lane's chip is "take me to that lane" (navigation
+  // IS the verb), while `Send →` on a card is "put this work into that lane" — you want to stay
+  // and watch it move Backlog → Running. Focusing the pty here made the board read as a form you
+  // filled in on the way to the real place, which is the posture the whole board was built to
+  // remove. Both of this function's callers are board verbs (`Send →`, `Start all`) and neither
+  // wants to move you; `Start all` wanted it least of all, since it would have yanked you into
+  // whichever lane happened to be last in the loop. The chip keeps its navigation through a
+  // different path entirely (`onOpenLane` → `focusTerminal`).
   const dispatchToRole = useCallback((project: Project, role: Role, task: string) => {
     const t = task.trim()
     if (!t) return
@@ -1913,11 +1923,11 @@ export function DashboardView() {
     const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
     if (liveTab) {
       void submitQueue.submit(liveTab.id, t)
-      setActiveTerminalId(liveTab.id)
-      setActiveSessionId(`local-${liveTab.id}`)
-      setActiveProjectId(project.id)
     } else {
-      void handleLaunchRole(project, role, t)
+      // `focus: false` for the same reason: sending to an idle lane should not land you somewhere
+      // different from sending to a live one. Where you end up must depend on the verb, never on
+      // whether the lane happened to be running.
+      void handleLaunchRole(project, role, t, false, { focus: false })
     }
   }, [terminals, handleLaunchRole])
 
@@ -1935,9 +1945,16 @@ export function DashboardView() {
       // the plumbing differs. This branch bypassed `dispatchToRole`, so it bypassed the reset —
       // and a lane you have to launch is exactly the one most likely to be sitting exhausted.
       deliveryStateRef.current = resetChainFor(deliveryStateRef.current, role.id)
-      void handleLaunchRole(project, role) // launch picks up its queue (incl. this task → running)
+      // `focus: false` for the same reason as the live branch: where you end up must depend on
+      // the verb, never on whether the lane happened to be running.
+      void handleLaunchRole(project, role, undefined, false, { focus: false }) // picks up its queue
     }
-  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning])
+    // Says WHERE it went, and covers the case the card's own move can't: at narrow widths the
+    // board stacks and the Running column is below the fold, so the card can move correctly and
+    // still be off screen. Not clickable-to-follow on purpose — a running card already carries
+    // the chip that goes there, and one verb per control.
+    pushToast({ text: `Sent to ${role.name}`, kind: 'info', detail: task.text.slice(0, 60) })
+  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, pushToast])
 
   // "Start all": dispatch every ASSIGNED, still-QUEUED task, grouped per lane — live lanes get
   // the combined message (→ running), idle lanes launch and pick up their queue.
@@ -1972,7 +1989,7 @@ export function DashboardView() {
         dispatchToRole(project, role, `Please work through these tasks:\n${text}`)
         markTasksRunning(project.id, tasks.map((t) => t.id), liveTab.id, laneOf(liveTab))
       } else {
-        void handleLaunchRole(project, role) // picks up its queue
+        void handleLaunchRole(project, role, undefined, false, { focus: false }) // picks up its queue
       }
     }
   }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, updateProject, assignProjectTask, pushToast])

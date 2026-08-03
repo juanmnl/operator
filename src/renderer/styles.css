@@ -730,3 +730,19 @@ input[data-launch-brief]::placeholder {
   padding: 2px 6px; border-radius: 7px; border: 1px solid var(--border);
 }
 .tb-assignee:hover { border-color: var(--fg-muted); }
+
+/* A card that has just arrived in Running. Overlay rather than a background swap, because the
+   running card computes its own accent-tinted background inline and an inline style wins; and
+   because the card is radiused and bordered, so the one thing that must NOT animate here is a
+   border colour (the WKWebView re-rasterize freeze). Background only, one shot, no movement —
+   motion still means BUSY everywhere else in this app, and an arrival is not a state. */
+@keyframes tb-landed { from { opacity: 1; } to { opacity: 0; } }
+.tb-card.is-landed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  animation: tb-landed 1400ms ease-out forwards;
+}
