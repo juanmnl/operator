@@ -91,7 +91,7 @@ await p.screenshot({ path: '/tmp/nav-5-sidebar.png' })
 
 // 8. The section "+" opens Project Home, which must carry the back chevron. It says ROSTER,
 // so it must land on TEAM — it called handleOpenProjectHome, which hard-sets the board.
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(800)
 console.log('8 Project Home + back chevron:', (await p.locator('button[aria-label="All projects"]').count()) > 0)
 console.log('8 "+" lands on the roster:', await p.evaluate(() =>
@@ -274,6 +274,34 @@ const afterEnter = await p.evaluate(() => ({
 console.log('13 Enter navigates home:', afterEnter.view === 'project' && afterEnter.tab === 'board', JSON.stringify(afterEnter))
 console.log('13 focus survives activation (not <body>):', afterEnter.active === 'the header', `(activeElement=${afterEnter.active})`)
 
+// 13b. THE SAME TAB STOP AT PROJECT HOME. Every state assertion above runs in a session, which
+// is how an invisible tab stop got through: `tabIndex` is unconditional now (dropping it
+// mid-activation blurred the element the user had just pressed Enter on), so at home the header
+// IS in the tab order — and it was drawing no indicator there. A focus ring claims focus, not
+// actionability; the inertness is carried by aria-disabled + cursor + no hover.
+await p.evaluate(() => document.querySelector('[data-rail-gallery]')?.focus())
+let homeTabs = 0
+for (; homeTabs < 25; homeTabs++) {
+  await p.keyboard.press('Tab')
+  if (await p.evaluate(() => document.activeElement?.hasAttribute('data-sidebar-project'))) break
+}
+const atHome = await p.evaluate(() => {
+  const el = document.querySelector('[data-sidebar-project]')
+  return {
+    disabled: el?.getAttribute('aria-disabled'),
+    focused: document.activeElement === el,
+    shadow: el ? getComputedStyle(el).boxShadow : null,
+    view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  }
+})
+console.log('13b at Project Home the header is still a tab stop:', atHome.focused && atHome.disabled === 'true', JSON.stringify({ ...atHome, shadow: undefined }))
+console.log('13b …and its focus is VISIBLE there too:', atHome.shadow !== 'none' && !!atHome.shadow, `(box-shadow: ${atHome.shadow})`)
+await p.keyboard.press('Enter')
+await p.waitForTimeout(600)
+console.log('13b …but Enter still does nothing:', await p.evaluate(() =>
+  document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header')) === 'project')
+await p.screenshot({ path: '/tmp/nav-13-header-focused-at-home.png' })
+
 // 14. A REAL double-click on the header — two synthetic clicks 500ms apart cannot see this.
 // The role used to be conditional on `projectHomeActive`, which flips as a RESULT of the first
 // click: the element stopped being a control mid-gesture, so press #2 fell through to
@@ -281,7 +309,14 @@ console.log('13 focus survives activation (not <body>):', afterEnter.active === 
 // the window. Assert what escaped to the window manager, not what the handler did.
 await p.locator('[data-session-row="s-code"]').click()
 await p.waitForTimeout(1000)
-const winBefore = await p.evaluate(() => window.__calls.filter(c => c.fn === 'startWindowDrag' || c.fn === 'toggleWindowMaximize').length)
+// Baseline EACH counter separately. One shared baseline counting drags-or-zooms, compared
+// against drags alone, can print true while a regression drag is live — it only needs an
+// earlier step in this 200-line driver to have produced one zoom. The step guarding the
+// highest-severity finding here must not depend on the order of the steps above it.
+const winBefore = await p.evaluate(() => ({
+  drags: window.__calls.filter(c => c.fn === 'startWindowDrag').length,
+  zooms: window.__calls.filter(c => c.fn === 'toggleWindowMaximize').length,
+}))
 await p.locator('[data-sidebar-project]').dblclick()
 await p.waitForTimeout(500)
 // force: by now the first click has landed us home, so the target is aria-disabled. The press
@@ -293,14 +328,14 @@ const win = await p.evaluate(() => ({
   zooms: window.__calls.filter(c => c.fn === 'toggleWindowMaximize').length,
   view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
 }))
-console.log('14 double-click does not drag the window:', win.drags === winBefore, `(startWindowDrag ×${win.drags})`)
-console.log('14 …and the third press does not zoom it:', win.zooms === 0, `(toggleWindowMaximize ×${win.zooms})`)
+console.log('14 double-click does not drag the window:', win.drags === winBefore.drags, `(startWindowDrag ${winBefore.drags} → ${win.drags})`)
+console.log('14 …and the third press does not zoom it:', win.zooms === winBefore.zooms, `(toggleWindowMaximize ${winBefore.zooms} → ${win.zooms})`)
 console.log('14 …and it still just navigates home:', win.view === 'project')
 
 // 15. The `+` is a CREATION verb: it must produce something visible even when the navigation
 // it used to rely on is already done. Press it from the team tab, where every setState upstream
 // is a no-op.
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(900)
 console.log('15 on the team tab:', await p.evaluate(() =>
   document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab')))
@@ -308,7 +343,7 @@ console.log('15 on the team tab:', await p.evaluate(() =>
 await p.keyboard.press('Escape')
 await p.waitForTimeout(300)
 const menuClosed = await p.locator('[data-preset]').count()
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(700)
 const menuOpen = await p.locator('[data-preset]').count()
 console.log('15 "+" from the team tab opens the add-lane menu:', menuClosed === 0 && menuOpen > 0,

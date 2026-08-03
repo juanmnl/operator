@@ -54,7 +54,7 @@ await p.locator('[data-rail-gallery]').click()
 await p.waitForTimeout(800)
 await p.locator('[data-project-card]').filter({ hasText: 'uwazi_app' }).first().click()
 await p.waitForTimeout(900)
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(900)
 // "Open the roster" lands on the BOARD since it became project home; the roster is one tab
 // across. Without this step every read below comes back empty — the same break QA found in
@@ -91,7 +91,7 @@ await p.locator('[data-rail-gallery]').click()
 await p.waitForTimeout(800)
 await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
 await p.waitForTimeout(900)
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(900)
 // "Open the roster" lands on the BOARD since it became project home; the roster is one tab
 // across. Without this step every read below comes back empty — the same break QA found in

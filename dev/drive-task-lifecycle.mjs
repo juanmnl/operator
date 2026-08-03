@@ -20,7 +20,7 @@ await p.keyboard.press('Meta+Shift+O')
 await p.waitForTimeout(600)
 await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().click()
 await p.waitForTimeout(900)
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(1200)
 
 // --- 1. The chip counts ONLY queued -----------------------------------------------------

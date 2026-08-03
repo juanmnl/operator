@@ -359,7 +359,7 @@ for (const [key, label] of THEMES) {
   await p.screenshot({ path: `${OUT}/${key}-3d-team.png` })
 
   // ---- 2b. The roster board: only live lanes are cards, idle lanes are compact rows ----
-  await p.locator('button[aria-label="Open the roster"]').click()
+  await p.locator('button[aria-label="Add an agent on the roster"]').click()
   await p.waitForTimeout(800)
   await p.evaluate(PROBE)
   const rosterProbes = await p.evaluate(() => {
@@ -404,7 +404,7 @@ for (const [key, label] of THEMES) {
   for (const r of chatProbes) rows.push({ theme: key, ...r })
   await p.screenshot({ path: `${OUT}/${key}-2c-chat-signals.png` })
   // Back to the roster view the later steps expect.
-  await p.locator('button[aria-label="Open the roster"]').click().catch(() => {})
+  await p.locator('button[aria-label="Add an agent on the roster"]').click().catch(() => {})
   await p.waitForTimeout(700)
 
   // ---- 3. Sidebar header — IDENTITY ONLY -----------------------------------------

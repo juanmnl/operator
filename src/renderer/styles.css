@@ -11,13 +11,47 @@
    (`.tb-btn:focus-visible` and friends): INSET, so it can't be clipped by a scroller, and a
    box-shadow rather than a border, so no radiused element ever changes border colour (the
    WKWebView re-rasterize freeze).
-   `[aria-disabled="true"]` is excluded rather than unfocusable — the header keeps its
-   tabindex at Project Home on purpose (dropping it mid-activation blurred the element the
-   user had just pressed Enter on), so it can still take focus, and the ring would be the
-   only thing claiming it's actionable. */
-.sidebar-project-home:focus-visible:not([aria-disabled="true"]),
+   The ring is drawn at Project Home TOO, where the header is `aria-disabled`. It was excluded
+   there at first, which was the worst of both: the header keeps its tabindex in that state on
+   purpose (dropping it mid-activation blurred the element the user had just pressed Enter on),
+   so it is a tab stop — and a tab stop with no indicator is a keystroke spent on a place the
+   user cannot see. A focus ring claims FOCUS, not actionability; that distinction is the whole
+   reason `aria-disabled` (focusable, announced disabled) exists apart from `disabled` (removed
+   from the tree). Non-actionability is carried by `aria-disabled` + `cursor: default` + no
+   hover tint, all of which are already true. */
+.sidebar-project-home:focus-visible,
 .sidebar-previous-chip:focus-visible {
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Hover in CSS rather than React state, so it cannot go stale and cannot be missed. The
+   selector stops matching the instant the header goes inert (which happens as a RESULT of
+   clicking it, with the cursor still parked on top and no mouseleave coming) and starts
+   matching the instant it goes live again under a resting cursor. Two JS versions of this
+   each got one of those halves wrong. */
+.sidebar-project-home {
+  background: transparent;
+  transition: background 120ms ease;
+}
+.sidebar-project-home:not([aria-disabled="true"]):hover {
+  background: var(--overlay-subtle);
+}
+
+/* "The verb lives HERE" — the answer a request from outside the roster gets when there is
+   nothing left for it to open (every preset already on the board, or an empty roster whose
+   preset cards are themselves the chooser). It replaced a fallback that silently appended a
+   `New role` lane and persisted it, which put two outcomes on one glyph with the mutating one
+   unguarded.
+   A ring, not a fill: no solid accent, and an inset box-shadow rather than a border colour, so
+   nothing radiused re-rasterizes mid-animation. One shot, then gone — motion means BUSY
+   everywhere else in this app, and this is a pointer, not a state. */
+@keyframes roster-add-flash {
+  from { box-shadow: inset 0 0 0 1px var(--accent); }
+  to   { box-shadow: inset 0 0 0 1px transparent; }
+}
+.roster-add-flash {
+  border-radius: var(--radius-md);
+  animation: roster-add-flash 1200ms ease-out forwards;
 }
 
 /* Corner-radius scale — softens the layout's hard edges. Theme-independent. */

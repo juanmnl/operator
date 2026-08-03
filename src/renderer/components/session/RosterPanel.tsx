@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Project, ProjectPatch, Role, TokenUsage } from '../../../shared/types'
 import { ROSTER_MODELS, DEFAULT_ROLE_PROMPTS, rolePresets, roleIdFrom, isCoordinator, reorderRoles, patchRoleIn, removeRoleFrom } from '../../lib/roster'
 import { AccentPicker } from '../AccentPicker'
@@ -7,6 +7,11 @@ import {
   resolveAgentConfig, worktreeStateOf,
 } from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
+
+/** How long the add-lane control is highlighted when a request from OUTSIDE this panel can't
+ *  be answered by opening something — long enough to catch the eye, short enough not to read
+ *  as a state. */
+const FLASH_MS = 1200
 
 /** Live runtime for a lane's session (from the transcript observer). */
 export interface LaneSession {
@@ -107,6 +112,20 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
     onAddLaneRequestHandled?.()
     setAddLaneNonce((n) => n + 1)
   }, [addLaneRequest, onAddLaneRequestHandled])
+  // An EMPTY roster renders the preset cards instead of `AddAgentControl`, so the request was
+  // consumed with nothing mounted to answer it — the sidebar's "+ Add an agent" was inert on a
+  // brand-new project already sitting on Team, which is the one roster state the add-lane fix
+  // couldn't reach. The cards ARE the chooser here, so the answer is the same signal the
+  // populated branch gets: scroll them into view and flash them once.
+  const emptyRef = useRef<HTMLDivElement>(null)
+  const [emptyFlash, setEmptyFlash] = useState(false)
+  useEffect(() => {
+    if (!addLaneNonce || !emptyRef.current) return
+    emptyRef.current.scrollIntoView({ block: 'nearest' })
+    setEmptyFlash(true)
+    const t = setTimeout(() => setEmptyFlash(false), FLASH_MS)
+    return () => clearTimeout(t)
+  }, [addLaneNonce])
 
   // Seed a default roster the first time a rosterless project's board is opened; and for
   // rosters created before role charters existed, backfill the default prompt per known lane.
@@ -475,7 +494,13 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           lane is and make the first one one click away. Not a shrug: the presets ARE the
           content here, laid out as the primary action rather than hidden behind a menu. */}
       {roles.length === 0 && (
-        <div data-roster-empty style={{ padding: '10px 0 4px' }}>
+        <div
+          ref={emptyRef}
+          data-roster-empty
+          data-add-lane-flash={emptyFlash ? 'true' : undefined}
+          className={emptyFlash ? 'roster-add-flash' : undefined}
+          style={{ padding: '10px 0 4px' }}
+        >
           <p style={{ fontSize: 12.5, color: 'var(--fg)', margin: '0 0 4px', fontWeight: 500 }}>
             No agents yet.
           </p>
@@ -1070,20 +1095,44 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   // Start at whatever we mounted with, so the value alone never opens the menu — only a CHANGE
   // does. Matters for the empty roster, which renders the preset cards instead of this control:
   // its request is consumed with nothing mounted to answer it, and this control must not pop
   // open later when the first lane makes it appear.
   const seenNonce = useRef(openNonce)
+  const [flash, setFlash] = useState(false)
   useEffect(() => {
     if (openNonce === seenNonce.current) return
     seenNonce.current = openNonce
-    // No presets left means there is no menu — the button itself falls back to a blank lane in
-    // that state, so the request gets the same answer rather than nothing.
-    if (!presets.length) { onAddBlank(); return }
-    setOpen(true)
     ref.current?.scrollIntoView({ block: 'nearest' })
-  }, [openNonce, presets.length, onAddBlank])
+    // WITH EVERY PRESET ALREADY ON THE ROSTER THERE IS NO MENU — and this used to fall back to
+    // `onAddBlank()`, which appends a `New role` lane and persists it through `onUpdateProject`.
+    // So one glyph had two outcomes decided by hidden state: open a chooser (mutates nothing),
+    // or write to projects.json (mutates immediately, no confirmation, from two screens away).
+    // A request from OUTSIDE this panel never writes durable data. It shows you where the verb
+    // lives — scroll it in, flash it once — and you choose. The button's own click keeps the
+    // blank-lane fallback: pressing it means you are already looking at the surface that owns
+    // lanes, which is the whole difference.
+    if (!presets.length) {
+      setFlash(true)
+      return
+    }
+    setOpen(true)
+  }, [openNonce, presets.length])
+  // Flashing is time-boxed here rather than in the effect above so the timer is cleared on
+  // unmount and a second request restarts it cleanly.
+  useEffect(() => {
+    if (!flash) return
+    const t = setTimeout(() => setFlash(false), FLASH_MS)
+    return () => clearTimeout(t)
+  }, [flash, openNonce])
+  // Scroll the MENU, not the control that is about to open it: the call above runs in the same
+  // tick as `setOpen(true)`, before the menu exists. A layout effect after open targets the
+  // real thing, and it opens upward — so the control alone being in view isn't enough.
+  useLayoutEffect(() => {
+    if (open) menuRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [open])
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
@@ -1097,6 +1146,8 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         data-add-agent
+        data-add-lane-flash={flash ? 'true' : undefined}
+        className={flash ? 'roster-add-flash' : undefined}
         onClick={() => (presets.length ? setOpen((v) => !v) : onAddBlank())}
         title="Add an agent lane"
         style={{
@@ -1112,7 +1163,7 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
         + Add agent
       </button>
       {open && (
-        <div style={{
+        <div ref={menuRef} style={{
           position: 'absolute', bottom: ROW_H + 4, left: 0, zIndex: 40, minWidth: 240, maxHeight: 300, overflowY: 'auto',
           borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--bg-surface)',
           boxShadow: '0 10px 32px rgba(0,0,0,0.35)', padding: '3px 0',

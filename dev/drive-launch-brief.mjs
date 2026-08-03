@@ -35,7 +35,7 @@ await p.waitForTimeout(2600)
 const spawns = () => p.evaluate(() =>
   window.__calls.filter((c) => c.fn === 'terminalSpawn').map((c) => (c.opts ?? {}).initialPrompt ?? null))
 const openRoster = async () => {
-  await p.locator('button[aria-label="Open the roster"]').click()
+  await p.locator('button[aria-label="Add an agent on the roster"]').click()
   await p.waitForTimeout(900)
   // "Open the roster" lands on the BOARD since it became project home; the roster is one tab
   // across. Without this step every read below comes back empty — the same break QA found in

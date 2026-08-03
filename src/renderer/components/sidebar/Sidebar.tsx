@@ -104,11 +104,6 @@ export function Sidebar({
   // row snaps back with no reorder). State still drives the visuals; the ref drives the
   // decision.
   const dragRowRef = useRef<{ kind: Row['kind']; id: string } | null>(null)
-  // Header hover in STATE, not an inline style written on mouseenter. Clicking the header
-  // navigates, which makes it inert — but the cursor is still sitting on it, so no mouseleave
-  // ever fires and a hand-written background would stay lit on a control that no longer
-  // exists. Deriving it at render means the state change clears it.
-  const [headerHover, setHeaderHover] = useState(false)
   // The header is a control that is DISABLED in two states, never one that stops existing:
   // at Project Home (going home from home isn't navigation — the same rule the rail tile
   // applies in DashboardView's `onOpenProject`), and with no project, where it would be a
@@ -294,8 +289,10 @@ export function Sidebar({
             // different tooltip with no hint the region was clickable. It also has to survive
             // at home: the name ellipsizes, and the state where it is most prominent (accent)
             // was the state where a truncated name could not be read at all.
+            // …and undefined rather than '' when there's nothing to say: an empty `title` is a
+            // declared-empty tooltip, not an absent one.
             title={[homeInert ? project?.name : `Open ${project?.name ?? 'the project'} — the project board`, project?.path]
-              .filter(Boolean).join('\n')}
+              .filter(Boolean).join('\n') || undefined}
             onClick={homeInert ? undefined : onOpenProjectHome}
             onKeyDown={homeInert ? undefined : (e) => {
               // The chip is a sibling now, so nothing interactive lives under here — this guard
@@ -303,15 +300,16 @@ export function Sidebar({
               if (e.target !== e.currentTarget) return
               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenProjectHome() }
             }}
-            // Guarded: at home the derived background is transparent regardless, so an
-            // unguarded enter re-rendered every SessionItem and StatusWave each time the cursor
-            // crossed the top of the column. `onMouseLeave` stays unconditional — it is what
-            // clears a `true` left behind by the click that navigated home.
-            onMouseEnter={homeInert ? undefined : () => setHeaderHover(true)}
-            onMouseLeave={() => setHeaderHover(false)}
+            // Hover is CSS (`.sidebar-project-home:not([aria-disabled="true"]):hover`), not
+            // state. Two earlier versions of this got it wrong in opposite directions: an inline
+            // style written on mouseenter stayed lit after the click made the control inert (no
+            // mouseleave fires — the cursor never moved), and guarding the enter handler meant a
+            // cursor already resting here got no tint when the header went live UNDER it (⌘1
+            // into a lane). The selector has neither failure: it stops matching the instant
+            // `aria-disabled` flips, and it starts matching the instant it flips back, with no
+            // JS and no re-render of the whole sidebar.
             style={{
               flex: 1, minWidth: 0, padding: '3px 4px',
-              background: !homeInert && headerHover ? 'var(--overlay-subtle)' : 'transparent',
               borderRadius: 'var(--radius-sm)',
               // `default`, not inherited: `.drag-region` paints `grab`, and now that the role
               // is permanent DragRegion always skips this block — so inheriting would promise a
@@ -319,7 +317,6 @@ export function Sidebar({
               // the cursor should say so.
               cursor: homeInert ? 'default' : 'pointer',
               outline: 'none',
-              transition: 'background 120ms ease',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', width: '100%', minHeight: 22 }}>
@@ -413,7 +410,10 @@ export function Sidebar({
         <button
           onClick={onAddLane}
           title="Add or edit lanes on the roster"
-          aria-label="Open the roster"
+          // The label names the CREATION, because that is what the glyph does now — it opens
+          // the roster's add-lane menu, not just the roster. `title` named both halves and
+          // `aria-label` named only the navigation one, and assistive tech reads the label.
+          aria-label="Add an agent on the roster"
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 16, height: 16, padding: 0, lineHeight: 1,
