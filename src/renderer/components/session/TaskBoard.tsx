@@ -166,18 +166,28 @@ const TICK_MS = 30_000 // how often the elapsed/relative times refresh
 /** Closed tasks mounted per page. Deep enough that a normal project's whole history is one page,
  *  small enough that the worst real project (214 closed) costs 20 articles on first paint. */
 const DONE_PAGE = 20
+/** How long a card that has just arrived in Running stays marked. Long enough to catch out of
+ *  the corner of your eye after clicking `Send →` in the next column, short enough that it is
+ *  gone before it reads as a state the card is IN. */
+const LANDED_MS = 1400
 
 export function TaskBoard(props: TaskBoardProps) {
   const { tasks, roles, liveRoles, dispatches, laneSignals } = props
   const shellRef = useRef<HTMLDivElement>(null)
   const cols = useResponsiveColumns(shellRef)
-  const now = useTicking(TICK_MS)
   const [composing, setComposing] = useState(false)
   const [openDiff, setOpenDiff] = useState<Set<string>>(new Set())
   const [doneShown, setDoneShown] = useState(DONE_PAGE)
   const [clearing, setClearing] = useState(false)
 
   const board = useMemo(() => partitionBoard(tasks, dispatches), [tasks, dispatches])
+  const landed = useJustLanded(board.running)
+  // The clock is reset by the running set changing, not only by its own interval. A card that
+  // lands between ticks is stamped `startedAt: now`, which is NEWER than the cached clock, so its
+  // elapsed came out negative and `fmtDuration` printed an em dash — for up to 30 seconds, on the
+  // card you were watching land. Invisible until `Send →` stopped navigating away; the first
+  // thing the fix made visible was this.
+  const now = useTicking(TICK_MS, board.running.length)
   const roleOf = (id?: string) => roles.find((r) => r.id === id)
   const laneLive = (t: ProjectTask) => !!(t.roleId && liveRoles?.[t.roleId])
   const toggleDiff = (id: string) =>
@@ -265,6 +275,7 @@ export function TaskBoard(props: TaskBoardProps) {
             <RunningCard
               key={task.id}
               task={task}
+              landed={landed.has(task.id)}
               role={roleOf(task.roleId)}
               signal={task.roleId ? laneSignals?.[task.roleId] : undefined}
               now={now}
@@ -513,9 +524,11 @@ function BacklogCard({ task, role, roles, liveRoles, unroutedReason, onAssign, o
   )
 }
 
-function RunningCard({ task, role, signal, now, laneLive, diffOpen, onToggleDiff, onDone, onOpenLane }: {
+function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onToggleDiff, onDone, onOpenLane }: {
   task: ProjectTask
   role?: Role
+  /** Just arrived from Backlog — mark it briefly so the move is catchable. */
+  landed?: boolean
   signal?: LaneSignal
   now: number
   laneLive: boolean
@@ -531,8 +544,9 @@ function RunningCard({ task, role, signal, now, laneLive, diffOpen, onToggleDiff
   return (
     <div>
       <article
-        className="tb-card"
+        className={landed ? 'tb-card is-landed' : 'tb-card'}
         data-task-card={task.id}
+        data-task-landed={landed || undefined}
         style={cardStyle({
           background: `color-mix(in srgb, ${accent} 5%, var(--overlay-subtle))`,
           borderColor: `color-mix(in srgb, ${accent} 30%, var(--border))`,
@@ -1014,13 +1028,58 @@ function useResponsiveColumns(ref: React.RefObject<HTMLDivElement | null>): numb
   return cols
 }
 
+/** Task ids that have just MOVED INTO Running, so the card can be marked for a moment.
+ *
+ *  `Send →` used to navigate you into the lane's terminal, so the one piece of feedback the board
+ *  already had — the card moving Backlog → Running — was something you were never present to see.
+ *  Now that the verb leaves you on the board, the move is the feedback; this only makes it
+ *  catchable when your eyes are on the column you clicked in, one over.
+ *
+ *  The first render is deliberately skipped: on mount every running task is "new" to this hook
+ *  and none of it just happened, so flashing them would make an ordinary page load look like six
+ *  things had landed at once. */
+function useJustLanded(running: ProjectTask[]): Set<string> {
+  const seen = useRef<Set<string> | null>(null)
+  const timers = useRef<number[]>([])
+  const [landed, setLanded] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    const ids = new Set(running.map((t) => t.id))
+    const prev = seen.current
+    seen.current = ids
+    if (!prev) return
+    const fresh = [...ids].filter((id) => !prev.has(id))
+    if (!fresh.length) return
+    setLanded((s) => new Set([...s, ...fresh]))
+    // One timer per batch, tracked rather than cancelled on the next change: a second card
+    // landing must not cancel the first one's clear, which is how a mark gets stuck on forever.
+    const t = window.setTimeout(() => {
+      setLanded((s) => {
+        const n = new Set(s)
+        for (const id of fresh) n.delete(id)
+        return n
+      })
+    }, LANDED_MS)
+    timers.current.push(t)
+  }, [running])
+
+  useEffect(() => () => { for (const t of timers.current) clearTimeout(t) }, [])
+  return landed
+}
+
 /** A slow clock, so "12m" on a running card doesn't sit frozen at whatever it said when the
- *  board mounted. Thirty seconds: the finest granularity anything here prints is a minute. */
-function useTicking(intervalMs: number): number {
+ *  board mounted. Thirty seconds: the finest granularity anything here prints is a minute.
+ *
+ *  `resetKey` re-reads the clock immediately when it changes, and restarts the interval from
+ *  there. A coarse cached clock is fine for ageing a card that was already on screen and wrong
+ *  for one that has just appeared — which is now the common case, since a task lands in Running
+ *  while you are looking at it. */
+function useTicking(intervalMs: number, resetKey?: unknown): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
+    setNow(Date.now())
     const t = setInterval(() => setNow(Date.now()), intervalMs)
     return () => clearInterval(t)
-  }, [intervalMs])
+  }, [intervalMs, resetKey])
   return now
 }
