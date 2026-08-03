@@ -962,11 +962,19 @@ function AssigneePicker({ roles, value, onChange, liveRoles, placeholder = 'Assi
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         color: role ? laneTextColor(role.accent) : 'var(--fg-muted)',
       }}>{role ? role.name : lost ? `${value} — gone` : placeholder}</span>
+      {/* The select is invisible (the chip beside it is the visible control), but macOS draws the
+          native popup at the SELECT's own font — and a `<select>` does not inherit type, so with
+          nothing set here it fell back to the UA default and opened a menu far larger than any
+          text on the board. Setting the font on the hidden element is what sizes the popup; the
+          menu's own colours stay the system's, which is not ours to theme. */}
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
         aria-label="Assign an agent"
-        style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }}
+        style={{
+          position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%',
+          fontFamily: 'var(--font-mono)', fontSize: 11,
+        }}
       >
         <option value="">Unassigned</option>
         {roles.map((r) => (

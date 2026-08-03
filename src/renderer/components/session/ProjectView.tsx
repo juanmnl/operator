@@ -159,7 +159,17 @@ export function ProjectView({
               onSetTaskStatus={onSetTaskStatus}
               onApproveDispatch={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))}
               onRejectDispatch={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))}
-              onOpenLane={(roleId) => { const tid = liveRoles?.[roleId]; if (tid) onFocusTerminal?.(tid) }}
+              onOpenLane={(roleId) => {
+                // A lane that ISN'T running has no terminal to focus, and this guard used to end
+                // there — so on the one card that most needs it (a task sitting unread in a lane
+                // that never started) the button silently did nothing. That is the state the card
+                // is ABOUT: `never started` is printed two lines above it. Fall through to the
+                // roster, where a lane that isn't running is launched, so the control always
+                // moves you somewhere instead of dying on the exact case it exists for.
+                const tid = liveRoles?.[roleId]
+                if (tid) onFocusTerminal?.(tid)
+                else onSelectTab('team')
+              }}
             />
           </div>
         )}

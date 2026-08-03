@@ -75,7 +75,14 @@ export const MOCK_PROJECTS = [
       // least be visible and assignable in the queue (brief defect 3).
       { id: 'task-6', text: 'Decide the pricing page copy', status: 'queued', createdAt: earlier },
     ],
-    dispatches: [],
+    // A dispatch that reached a lane's composer and was never read, addressed to a lane that is
+    // NOT running. Both halves matter: `undelivered` is what puts the card in Waiting with its
+    // "Open lane →" button, and `design` being idle is what made that button dead — it resolves
+    // to no terminal, and the handler used to stop there. Without this fixture the harness only
+    // ever saw the live case, which is the case that already worked.
+    dispatches: [
+      { id: 'd-stranded', at: earlier, fromRoleId: 'operator', toRoleId: 'design', task: 'Take the moodboard pass on the empty states', outcome: 'undelivered' },
+    ],
   },
   {
     id: DORMANT_ID,
