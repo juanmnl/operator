@@ -73,9 +73,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   const [preset, setPreset] = useState<Preset>('fit')
   const [scanning, setScanning] = useState(false)
   const [found, setFound] = useState<number[]>([])
-  // Ports THIS session is listening on, from the backend's process-tree walk. Unlike
-  // `found` (a blind localhost probe, user-initiated), these are attributable — so we
-  // can act on them automatically without risking showing a sibling lane's app.
+  // Ports THIS session is serving on — the backend's reserved+sniffed candidate set,
+  // filtered to what answers. Unlike `found` (a blind localhost probe, user-initiated),
+  // these are attributable — so we can act on them automatically without risking
+  // showing a sibling lane's app.
   const [servers, setServers] = useState<number[]>([])
   const frameWrapRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
@@ -108,9 +109,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     setScanning(false)
   }
 
-  // Poll which ports this session is serving on. Cheap (one lsof over the session's
-  // own pids) and it has to repeat, because a dev server can come up, die, or be
-  // joined by a second one (an API alongside the web server) at any point in a turn.
+  // Poll which ports this session is serving on. Cheap (a loopback connect per candidate
+  // port — no process inspection, see session_ports) and it has to repeat, because a dev
+  // server can come up, die, or be joined by a second one (an API alongside the web
+  // server) at any point in a turn.
   useEffect(() => {
     // Reset per-session discovery on switch. Without this, `servers` keeps the PREVIOUS
     // session's ports until B's first poll resolves — and since `autoUrl` falls back to
@@ -136,7 +138,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   const autoUrl = useMemo(() => pickPreviewUrl(servers, url), [servers, url])
 
   // Resolve a live port, but ONLY one we can attribute to THIS session: a manual
-  // override, or a port the session's own process tree is serving on (`autoUrl`). We
+  // override, or a port from the session's own candidate set (`autoUrl`). We
   // deliberately DON'T blind-probe the common dev ports here — another session's (or
   // a system) server answering on :5173 would be shown as this session's app, which
   // is wrong. Discovery is an explicit action (Scan) in the empty state instead.

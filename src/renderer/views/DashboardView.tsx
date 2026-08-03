@@ -128,11 +128,11 @@ function loadLayouts(): Record<string, SessionLayout> {
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
-  // The port the ACTIVE session is really serving on, from the backend's process-tree
-  // walk (session_ports). The project usually ignores the OPERATOR_DEV_PORT we hand it
-  // and binds its own default, so this — not the reserved port — is what the toolbar's
-  // open-in-browser chip should point at. Only the active session is polled; Preview
-  // does its own richer discovery (it needs the full port list for the picker).
+  // The port the ACTIVE session is really serving on (session_ports): its reserved +
+  // sniffed ports, filtered to the ones answering. The project usually ignores the
+  // OPERATOR_DEV_PORT we hand it and binds its own default, so this — not the reserved
+  // port — is what the toolbar's open-in-browser chip should point at. Only the active
+  // session is polled; Preview does its own richer discovery (it needs the full list).
   const [detectedDevPort, setDetectedDevPort] = useState<number | undefined>(undefined)
   // Reserved OPERATOR_DEV_PORT per terminal — the Preview falls back to this when
   // no dev-server banner was detected (a best-effort guess; may not be serving).
@@ -3291,6 +3291,12 @@ export function DashboardView() {
                   // unchanged, so the activation fit is a no-op — no resize-hang risk).
                   active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
                   suspendFit={resizingPanel || windowResizing || sidebarAnimating}
+                  // Hand every sniffed dev-server port to the backend, for EVERY pane
+                  // (not just the active one) — a background lane's server is still its
+                  // server, and the banner scrolls past exactly once. This is the only
+                  // attribution source that survives a session Operator didn't hand a
+                  // port to, now that nothing inspects the process tree.
+                  onDevServerDetected={(port) => window.operator.noteSessionPort?.(t.id, port)}
                 />
                 {t.ended && (
                   <EndedOverlay

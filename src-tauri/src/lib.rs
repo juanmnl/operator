@@ -43,8 +43,9 @@ struct Pty {
     /// pty is opened and sized first, then Claude launches at the final grid width so
     /// classic-mode scrollback never mis-wraps. Set once the child spawns.
     killer: Option<Box<dyn ChildKiller + Send + Sync>>,
-    /// The pty child's pid (the login shell). Root of the process tree we walk to
-    /// find which listening ports belong to THIS session — see `session_ports`.
+    /// The pty child's pid (the login shell). Reported to the UI and used to reason
+    /// about the session's process tree; port attribution no longer reads it (see
+    /// `session_ports` — inspecting other processes is what fired the TCC prompt).
     /// None until the deferred child execs, same as `killer`.
     pid: Option<u32>,
     /// The child itself, kept so the reader thread can ask whether a failed read
@@ -301,6 +302,14 @@ pub struct PtyManager {
     /// Ptys opened but not yet launched — awaiting `terminal_start` (or the fallback
     /// timer) so Claude execs at the pane's final fitted width. See PendingStart.
     pending: Mutex<HashMap<String, PendingStart>>,
+    /// Ports sniffed from each session's OWN pty output (a `http://localhost:PORT`
+    /// banner), reported by the renderer via `note_session_port`.
+    ///
+    /// This is the attribution source that replaced the per-pid `lsof` walk: the URL
+    /// was printed by a process in THIS session's pty, so the port is this session's
+    /// by construction — no other process is inspected, so no TCC prompt. A set, not
+    /// a single value, because one session can serve a web app and an API at once.
+    sniffed: Mutex<HashMap<String, std::collections::BTreeSet<u16>>>,
 }
 
 /// A localhost port counts as free only if it can be bound on BOTH IPv4 (127.0.0.1) and
@@ -351,84 +360,33 @@ fn canonical_cwd(cwd: &str) -> String {
     }
 }
 
-/// Parse `ps -Ao pid=,ppid=` into a parent → children map, then collect every
-/// descendant of `root` (inclusive). A session's dev server is a grandchild at best
-/// — zsh → claude → npm → vite — so a direct-children check would miss it.
+/// How long a liveness probe waits for a loopback connect. Generous for localhost
+/// (where a live server accepts in well under a millisecond) but bounded, so a port
+/// being firewall-DROPPED rather than refused can't stall the poll.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(120);
+
+/// Is something accepting TCP connections on this loopback port right now?
 ///
-/// Split out from `descendants` so the tree walk is testable without spawning `ps`.
-fn descendants_from(ps_output: &str, root: u32) -> Vec<u32> {
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for line in ps_output.lines() {
-        let mut it = line.split_whitespace();
-        if let (Some(Ok(pid)), Some(Ok(ppid))) = (
-            it.next().map(str::parse::<u32>),
-            it.next().map(str::parse::<u32>),
-        ) {
-            children.entry(ppid).or_default().push(pid);
-        }
-    }
-    // Breadth-first from the root. `seen` guards against a cycle in a malformed
-    // table — a pid loop would otherwise hang the walk forever.
-    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let mut queue = vec![root];
-    while let Some(pid) = queue.pop() {
-        if !seen.insert(pid) {
-            continue;
-        }
-        out.push(pid);
-        if let Some(kids) = children.get(&pid) {
-            queue.extend(kids);
-        }
-    }
-    out
-}
-
-/// Every pid in this process's tree, root included.
-fn descendants(root: u32) -> Vec<u32> {
-    let out = std::process::Command::new("ps")
-        .args(["-Ao", "pid=,ppid="])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    descendants_from(&out, root)
-}
-
-/// Pull the listening TCP ports out of `lsof -F n` output (one `n<name>` field per
-/// socket, e.g. `n*:5173`, `n127.0.0.1:3000`, `n[::1]:8080`). Deduped + sorted, so a
-/// server listening on both loopback families reports one port, not two.
+/// The TCC-free replacement for the old `lsof -p <pids>` walk. Connecting to a socket
+/// says nothing about which process owns it — that's why attribution has to come from
+/// the CALLER's candidate set (see `session_ports`), never from this probe.
 ///
-/// Split out from `listening_ports` so the parsing is testable without spawning `lsof`.
-fn listening_ports_from(lsof_output: &str) -> Vec<u16> {
-    let mut ports: Vec<u16> = lsof_output
-        .lines()
-        .filter_map(|l| l.strip_prefix('n'))
-        // The port is whatever follows the LAST colon — `[::1]:5173` has several.
-        .filter_map(|name| name.rsplit_once(':'))
-        .filter_map(|(_, port)| port.parse::<u16>().ok())
-        .collect();
-    ports.sort_unstable();
-    ports.dedup();
-    ports
+/// Both loopback families are tried because they genuinely disagree: a Vite server here
+/// bound IPv6-only, so `127.0.0.1` returns connection-refused for a port that is live on
+/// `[::1]`. Checking v4 alone reports a running server as dead.
+fn port_alive(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+    let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&v4, PROBE_TIMEOUT).is_ok()
+        || TcpStream::connect_timeout(&v6, PROBE_TIMEOUT).is_ok()
 }
 
-/// TCP ports these pids are LISTENING on. Empty when nothing is serving (or when
-/// `lsof` is unavailable) — a best-effort signal, never an error path.
-fn listening_ports(pids: &[u32]) -> Vec<u16> {
-    if pids.is_empty() {
-        return Vec::new();
-    }
-    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-    let out = std::process::Command::new("lsof")
-        // -a ANDs the filters: these pids AND tcp AND listening. -nP skips DNS +
-        // service-name lookups (both slow); -F n emits just the socket names.
-        .args(["-nP", "-a", "-p", &list, "-iTCP", "-sTCP:LISTEN", "-F", "n"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    listening_ports_from(&out)
+/// Of `candidates`, the ports actually being served. Deduped + sorted; a port appearing
+/// on both loopback families still reports once (the candidate set is a set of numbers,
+/// not of sockets). Best-effort: an empty vec means "nothing serving yet", never an error.
+fn live_ports(candidates: &std::collections::BTreeSet<u16>) -> Vec<u16> {
+    candidates.iter().copied().filter(|p| port_alive(*p)).collect()
 }
 
 /// Max bytes of pty output retained per terminal for re-attach replay.
@@ -488,9 +446,36 @@ impl PtyManager {
         None
     }
 
-    /// Hand the port back when its session ends, so it can be reused.
+    /// Hand the port back when its session ends, so it can be reused. The sniffed set
+    /// goes with it: those ports were attributed to this session's processes, and once
+    /// they're gone a port that gets recycled to a different project would otherwise
+    /// keep answering under the dead session's id.
     pub fn release_port(&self, id: &str) {
         lock(&self.ports).remove(id);
+        lock(&self.sniffed).remove(id);
+    }
+
+    /// Record a port sniffed from this session's own pty output (see `sniffed`).
+    /// Ignores port 0, which is never a real server and is what a malformed banner
+    /// parses to.
+    pub fn note_sniffed_port(&self, id: &str, port: u16) {
+        if port == 0 {
+            return;
+        }
+        lock(&self.sniffed).entry(id.to_string()).or_default().insert(port);
+    }
+
+    /// Every port this session could plausibly be serving: the one we reserved for it
+    /// plus everything sniffed from its banner. Candidates only — liveness is a
+    /// separate question (`live_ports`), and the reserved port in particular is often
+    /// ignored by the project, so it is frequently a candidate that never answers.
+    pub fn candidate_ports(&self, id: &str) -> std::collections::BTreeSet<u16> {
+        let mut out: std::collections::BTreeSet<u16> =
+            lock(&self.sniffed).get(id).cloned().unwrap_or_default();
+        if let Some((_, port)) = lock(&self.ports).get(id) {
+            out.insert(*port);
+        }
+        out
     }
 
     /// Snapshot of every live session's dev port (terminal id → port). Sessions
@@ -1044,20 +1029,37 @@ fn get_dev_ports(mgr: State<Arc<PtyManager>>) -> HashMap<String, u16> {
     mgr.dev_ports()
 }
 
-/// Every TCP port this session is actually LISTENING on, discovered by walking its
-/// pty's process tree (zsh → claude → npm → vite → …) rather than probing localhost.
+/// Every TCP port this session is actually serving on: its candidate set (reserved
+/// port + banners sniffed from its own output), filtered to the ones answering a
+/// loopback connect.
 ///
-/// Attribution is the whole point. Probing common dev ports from the renderer can't
-/// tell whose server answered — a sibling lane (or an unrelated app) on :5173 would be
-/// shown as this session's app. Walking the tree only ever reports servers this
-/// session's own processes opened.
+/// Attribution is the whole point, and it comes from the CANDIDATE SET, not the probe.
+/// Blind-probing common dev ports can't tell whose server answered — a sibling lane (or
+/// an unrelated app) on :5173 would be shown as this session's app. Every candidate here
+/// is this session's by construction: we either handed it the port, or its own pty
+/// printed the URL.
 ///
-/// Best-effort: an empty vec means "nothing serving yet", never an error. A session
-/// whose child hasn't exec'd (deferred launch) has no pid, so it reports nothing.
+/// This used to walk the pty's process tree with `lsof -p <pids>`. That fires macOS's
+/// "would like to access data from other apps" TCC prompt once per inspected process, so
+/// polling it every few seconds meant a modal every few seconds. Inspecting another
+/// process's file descriptors is now forbidden here by ANY mechanism (`lsof`, `libproc`,
+/// `proc_pidfdinfo` — all behind the same gate); a connect to our own loopback is not
+/// process inspection and needs no privilege.
+///
+/// Best-effort: an empty vec means "nothing serving yet", never an error.
 #[tauri::command]
 fn session_ports(id: String, mgr: State<Arc<PtyManager>>) -> Vec<u16> {
-    let Some(pid) = lock(&mgr.ptys).get(&id).and_then(|p| p.pid) else { return Vec::new() };
-    listening_ports(&descendants(pid))
+    live_ports(&mgr.candidate_ports(&id))
+}
+
+/// Report a dev-server port sniffed from this session's own terminal output.
+///
+/// The renderer owns this detection because it already parses the pty stream for the
+/// terminal view (`detectDevServerPort`); this hands the finding to the backend so
+/// `session_ports` can attribute it without inspecting any process.
+#[tauri::command]
+fn note_session_port(id: String, port: u16, mgr: State<Arc<PtyManager>>) {
+    mgr.note_sniffed_port(&id, port);
 }
 
 // --- Sessions command -------------------------------------------------------
@@ -2073,6 +2075,7 @@ pub fn run() {
             terminal_history,
             get_dev_ports,
             session_ports,
+            note_session_port,
             get_sessions,
             inspect_repo,
             worktree_create,
@@ -2369,46 +2372,70 @@ mod tests {
         assert!(via_symlink.starts_with("/private/tmp/"), "got {via_symlink}");
     }
 
-    /// The dev server is a grandchild (zsh → claude → npm → vite), so the walk has
-    /// to go all the way down — not just the root's direct children.
+    /// Attribution now comes from the candidate SET, so this is the test that matters:
+    /// a session reports the port we reserved for it plus whatever its own output
+    /// announced, and nothing else. A sibling lane's 5173 is not in the set, so it can
+    /// never be attributed here no matter who is listening on it.
     #[test]
-    fn descendants_walks_the_whole_tree() {
-        // 1 ─ 100(zsh) ─ 200(claude) ─ 300(npm) ─ 400(vite)
-        //                            └ 301(tsc)
-        let ps = "100 1\n200 100\n300 200\n301 200\n400 300\n999 1\n";
-        let mut got = descendants_from(ps, 100);
-        got.sort_unstable();
-        assert_eq!(got, vec![100, 200, 300, 301, 400]);
+    fn candidates_are_the_reserved_port_plus_the_sniffed_ones() {
+        let mgr = PtyManager::default();
+        let dir = std::env::temp_dir().join("operator-candidate-test");
+        let (reserved, _) = mgr.alloc_port("t1", dir.to_str().unwrap()).unwrap();
+        mgr.note_sniffed_port("t1", 5173);
+        mgr.note_sniffed_port("t1", 8787);
+        // Another lane's banner must not leak into t1's set.
+        mgr.note_sniffed_port("t2", 4321);
+
+        let got = mgr.candidate_ports("t1");
+        assert!(got.contains(&reserved) && got.contains(&5173) && got.contains(&8787));
+        assert!(!got.contains(&4321), "another session's port leaked in: {got:?}");
     }
 
-    /// An unrelated tree must never be attributed to this session — that's the whole
-    /// reason we walk pids instead of probing localhost.
+    /// One session can serve a web app and an API at once, and a banner can repeat on
+    /// every reload — so the set dedupes and keeps both.
     #[test]
-    fn descendants_excludes_unrelated_processes() {
-        let ps = "100 1\n200 100\n500 1\n600 500\n";
-        let got = descendants_from(ps, 100);
-        assert!(!got.contains(&500) && !got.contains(&600));
+    fn sniffed_ports_accumulate_and_dedupe() {
+        let mgr = PtyManager::default();
+        mgr.note_sniffed_port("t1", 5173);
+        mgr.note_sniffed_port("t1", 5173);
+        mgr.note_sniffed_port("t1", 3000);
+        mgr.note_sniffed_port("t1", 0); // a malformed banner parses to 0; never a server
+        assert_eq!(mgr.candidate_ports("t1").into_iter().collect::<Vec<_>>(), vec![3000, 5173]);
     }
 
-    /// A malformed ps table with a pid cycle must not hang the walk.
+    /// A recycled port must not keep answering under the dead session's id.
     #[test]
-    fn descendants_survives_a_cycle() {
-        let ps = "100 200\n200 100\n";
-        let got = descendants_from(ps, 100);
-        assert_eq!(got.len(), 2);
+    fn releasing_a_session_drops_its_sniffed_ports() {
+        let mgr = PtyManager::default();
+        mgr.note_sniffed_port("t1", 5173);
+        mgr.release_port("t1");
+        assert!(mgr.candidate_ports("t1").is_empty());
     }
 
-    /// lsof reports one socket per address family; the picker should offer ONE port.
+    /// The liveness probe is the only thing left that touches the network, and it must
+    /// answer honestly in both directions without inspecting any process.
     #[test]
-    fn listening_ports_dedupes_across_address_families() {
-        let lsof = "p123\nn*:5173\nn127.0.0.1:5173\nn[::1]:5173\nn127.0.0.1:3000\n";
-        assert_eq!(listening_ports_from(lsof), vec![3000, 5173]);
+    fn port_alive_sees_a_real_listener_and_not_a_closed_port() {
+        use std::net::{Ipv4Addr, TcpListener};
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(port_alive(port), "a bound listener should read as alive");
+        drop(l);
+        assert!(!port_alive(port), "a closed port should read as dead");
     }
 
+    /// Candidates that nobody is serving are dropped — the reserved port is handed out
+    /// whether or not the project ever binds it, so this is the common case.
     #[test]
-    fn listening_ports_ignores_unparseable_names() {
-        let lsof = "p123\nn*:*\nnsomething-odd\nn127.0.0.1:4321\n";
-        assert_eq!(listening_ports_from(lsof), vec![4321]);
+    fn live_ports_keeps_only_what_answers() {
+        use std::net::{Ipv4Addr, TcpListener};
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let live = l.local_addr().unwrap().port();
+        let dead = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map(|d| { let p = d.local_addr().unwrap().port(); drop(d); p })
+            .unwrap();
+        let candidates: std::collections::BTreeSet<u16> = [live, dead].into_iter().collect();
+        assert_eq!(live_ports(&candidates), vec![live]);
     }
 }
 

@@ -115,9 +115,15 @@ export function installBridge(): void {
     },
     // The dev-server port registry: terminal id → port Operator reserved for it.
     getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
-    // Ports this session is actually listening on, found by walking its pty's process
-    // tree — so a sibling lane's server can never be mistaken for this one's.
+    // Ports this session is actually serving on: the port we reserved for it plus the
+    // ones sniffed from its own output, filtered to those answering a loopback connect.
+    // Attribution comes from that candidate set, so a sibling lane's server can never be
+    // mistaken for this one's — and nothing inspects another process (see note below).
     sessionPorts: (id: string) => invoke<number[]>('session_ports', { id }),
+    // Hand the backend a dev-server port sniffed from this session's terminal output.
+    // This is what replaced the per-pid `lsof` walk, which fired a macOS TCC prompt
+    // ("would like to access data from other apps") once per inspected process.
+    noteSessionPort: (id: string, port: number) => { void invoke('note_session_port', { id, port }) },
     // Base64 of a terminal's retained output tail — replayed when a pane re-attaches
     // to a pty that survived a renderer reload, so it shows scrollback, not a blank.
     terminalHistory: (id: string) => invoke<string>('terminal_history', { id }),
