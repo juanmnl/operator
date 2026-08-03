@@ -26,6 +26,7 @@ export function ProjectView({
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch,
   resumableCount, onResumeProject, chatterPaused, onToggleChatter,
+  addLaneRequest, onAddLaneRequestHandled,
 }: {
   project: Project
   tab: ProjectTab
@@ -67,6 +68,10 @@ export function ProjectView({
    *  next to the lanes whose chatter it stops. */
   chatterPaused?: boolean
   onToggleChatter?: () => void
+  /** A lane was asked for from outside — the sidebar's `+`. Forwarded to the roster, which is
+   *  the surface that owns adding one; see `RosterPanel`'s prop doc for why it's consume-once. */
+  addLaneRequest?: boolean
+  onAddLaneRequestHandled?: () => void
 }) {
   const tabs: ProjectTab[] = ['board', 'team', 'moodboard']
   return (
@@ -98,6 +103,11 @@ export function ProjectView({
           {tabs.map((id) => (
             <button
               key={id}
+              // Test hooks: which tab you LAND on is the whole point of several navigation
+              // verbs (the sidebar's `+` says roster and must reach TEAM), and the only other
+              // signal is the accent colour — which a driver can't read as intent.
+              data-project-tab={id}
+              data-project-tab-active={tab === id ? 'true' : undefined}
               onClick={() => onSelectTab(id)}
               style={{
                 fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
@@ -185,6 +195,8 @@ export function ProjectView({
               onCloseTerminal={onCloseTerminal}
               chatterPaused={chatterPaused}
               onToggleChatter={onToggleChatter}
+              addLaneRequest={addLaneRequest}
+              onAddLaneRequestHandled={onAddLaneRequestHandled}
             />
             {/* The dispatch LOG, not the board's Waiting column: the board deliberately shows
                 only the records a human can act on, and this is the history — who routed what

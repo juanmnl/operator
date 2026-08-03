@@ -659,7 +659,13 @@ export function installMockBridge() {
     },
     runCheck: async () => ({ ok: true, output: 'mock: checks green' }),
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,
-    showMainWindow: noop, startWindowDrag: noop, toggleWindowMaximize: noop, quitApp: noop,
+    showMainWindow: noop, quitApp: noop,
+    // Recorded for the same reason `terminalKill` is (see below): these two are how a press on
+    // a DragRegion escapes into the window manager, so "did this control's click get eaten as
+    // a titlebar drag?" is a question only the harness can answer — and while they were plain
+    // noops the answer was invisible.
+    startWindowDrag: () => { calls.push({ fn: 'startWindowDrag' }) },
+    toggleWindowMaximize: () => { calls.push({ fn: 'toggleWindowMaximize' }) },
     growWindowWidth: noop, openExternal: noop, revealPath: async () => {}, setDockIcon: noop, terminalStart: noop,
     terminalResize: noop,
     // Recorded, not just no-op'd: __calls only captures methods that AREN'T explicitly mocked

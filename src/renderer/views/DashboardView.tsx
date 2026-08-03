@@ -540,9 +540,21 @@ export function DashboardView() {
   /** Project Home on the TEAM tab — the roster, where lanes are added and launched.
    *
    *  Same unfocus-the-session move as `handleOpenProjectHome`, landing on a different tab.
-   *  The collapsed rail's foot button is the caller: that rail lists this project's AGENTS,
+   *  The collapsed rail's foot button is one caller: that rail lists this project's AGENTS,
    *  so its one control belongs to the roster rather than duplicating the project rail's
-   *  new-session verb (which it did — same handler, same ⌘N, same `+`, two labels). */
+   *  new-session verb (which it did — same handler, same ⌘N, same `+`, two labels). The
+   *  expanded sidebar's `+` and its empty-state control are the others: both say "roster",
+   *  and both used to call `handleOpenProjectHome` and land on the board instead. */
+  /** The sidebar's `+` says "Add or edit lanes on the roster" — a CREATION verb, and one that
+   *  has to produce something visible every time it's pressed. `handleOpenProjectTeam` alone
+   *  doesn't: press it while you are already on the team tab and all six setStates below are
+   *  no-ops, so the `+` advertises itself and does nothing — the exact defect this pair of
+   *  commits exists to remove. So it navigates AND asks the roster to open its add-lane menu
+   *  (`RosterPanel` owns the one implementation; there is no second one here).
+   *  The flag is consume-once: the roster clears it via `onAddLaneRequestHandled` as soon as it
+   *  acts, so arriving on the team tab by any other route never opens the menu. */
+  const [addLaneRequest, setAddLaneRequest] = useState(false)
+
   const handleOpenProjectTeam = useCallback(() => {
     setProjectTab('team')
     setPrefsViewActive(false)
@@ -552,6 +564,17 @@ export function DashboardView() {
     setActiveSessionId(null)
     setActiveTerminalId(null)
   }, [])
+
+  /** …and the same landing WITH the add-lane menu opened. The sidebar's `+` and its
+   *  empty-state control are the callers; the rail's foot button is not — that one says
+   *  "open the roster", which is navigation, and it already has a visible result. */
+  const handleAddLane = useCallback(() => {
+    handleOpenProjectTeam()
+    setAddLaneRequest(true)
+  }, [handleOpenProjectTeam])
+  // Stable identity: the roster calls this from an effect, so a new function each render would
+  // re-run it.
+  const clearAddLaneRequest = useCallback(() => setAddLaneRequest(false), [])
 
   // Leave every project — the logo, the switcher's "All projects" and ⌘⇧O. This is the ONE
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
@@ -3052,6 +3075,7 @@ export function DashboardView() {
         sessions={scopedSessions}
         onRestoreProject={restoreProject}
         onOpenProjectHome={handleOpenProjectHome}
+        onAddLane={handleAddLane}
         projectHomeActive={contentMode === 'project'}
         activeSessionId={activeSessionId}
         customNames={customNames}
@@ -3212,6 +3236,8 @@ export function DashboardView() {
               // The delivery kill switch, rehomed from the channel header onto Team.
               chatterPaused={chatterPaused}
               onToggleChatter={toggleChatterPaused}
+              addLaneRequest={addLaneRequest}
+              onAddLaneRequestHandled={clearAddLaneRequest}
               resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />

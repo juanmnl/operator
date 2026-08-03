@@ -27,7 +27,15 @@ export function DragRegion({ style, children, ...rest }: DragRegionProps) {
   const lastDownRef = useRef(0)
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return // left button only
-    if ((e.target as HTMLElement).closest('button, a, input, textarea, select, [role="button"]')) return
+    if ((e.target as HTMLElement).closest('button, a, input, textarea, select, [role="button"]')) {
+      // Break the double-click chain on the way past. `lastDownRef` was only ever advanced by
+      // bare-titlebar presses, so a control press left the previous timestamp standing and the
+      // NEXT titlebar press within 400ms measured itself against a press the user aimed
+      // somewhere else — press titlebar, press a control, press titlebar again and the window
+      // zoomed. A press on a control is not half of a titlebar double-click.
+      lastDownRef.current = 0
+      return
+    }
     // A second press on the bare titlebar within the threshold is a double-click:
     // zoom the window (fill the screen ⇆ restore) like a native title bar, and
     // skip the drag so it doesn't fight the toggle.
