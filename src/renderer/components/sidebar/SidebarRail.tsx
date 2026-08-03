@@ -18,7 +18,11 @@ interface SidebarRailProps {
   customNames: Record<string, string>
   shortcutIndices: Record<string, number>
   onSelectSession: (session: AgentSession) => void
-  onNewSession: () => void
+  /** Open this project's roster (Project Home → Team), where lanes are added and launched.
+   *  This foot control used to be a second "new session" `+`: same handler and same ⌘N as the
+   *  project rail's own `+` a few pixels away, differing only in its label. A rail that lists
+   *  AGENTS should lead to the agents, so it does. */
+  onOpenTeam: () => void
   /** Expand the sidebar back to full width. No longer a toggle button of its own (the
    *  toolbar owns that) — this is what the project badge does, since switching project
    *  means reaching the switcher, which lives in the expanded sidebar. */
@@ -68,7 +72,7 @@ function shortNameOf(name: string): string {
 // persistent one (it works in both states, so a second copy here was the same
 // control twice). Expanding from the rail is still one click — the project badge
 // below does it, since the switcher it leads to lives in the expanded sidebar.
-export function SidebarRail({ project, sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onNewSession, onExpand, onShowGallery, accentOf, onPickAccent }: SidebarRailProps) {
+export function SidebarRail({ project, sessions, projects, activeSessionId, customNames, shortcutIndices, onSelectSession, onOpenTeam, onExpand, onShowGallery, accentOf, onPickAccent }: SidebarRailProps) {
   // No project clustering any more: the rail is scoped to ONE project, so the tags and
   // seams that separated clusters have nothing left to separate. The project itself is
   // named once, by the badge at the top.
@@ -166,7 +170,7 @@ export function SidebarRail({ project, sessions, projects, activeSessionId, cust
         })}
       </div>
 
-      {/* Bottom: new session.
+      {/* Bottom: this project's roster.
           6 at the BOTTOM, 8 elsewhere, and the 2px is the whole point: this 34px button and the
           ProjectRail's foot are the entire bottom-left corner in the collapsed state, and at a
           flat 8 its centre sat on 867 against the rail's 869. Measured, not eyeballed — two
@@ -178,9 +182,10 @@ export function SidebarRail({ project, sessions, projects, activeSessionId, cust
         WebkitAppRegion: 'no-drag',
       }}>
         <button
-          onClick={onNewSession}
-          title="New session (⌘N)"
-          aria-label="New session"
+          data-rail-team
+          onClick={onOpenTeam}
+          title="Team — this project's agents"
+          aria-label="Team"
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 34, height: 34, padding: 0,
@@ -192,9 +197,16 @@ export function SidebarRail({ project, sessions, projects, activeSessionId, cust
           onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.1)' }}
           onMouseLeave={(e) => { e.currentTarget.style.filter = 'none' }}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-            <line x1="8" y1="3.5" x2="8" y2="12.5" />
-            <line x1="3.5" y1="8" x2="12.5" y2="8" />
+          {/* A ROSTER, not a plus: two lanes, each an orb and its name — the shape RosterPanel
+              actually draws, so the button previews where it goes. Deliberately unlike the two
+              glyphs it sits near: the project rail's grid (all projects) is four equal squares,
+              its robot (the cross-project Agents hub) is a face. Orbs are filled rather than
+              stroked so the row reads as agent-then-label at 16px instead of as a bullet list. */}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+            <circle cx="4.1" cy="5" r="1.5" fill="currentColor" stroke="none" />
+            <line x1="7.8" y1="5" x2="13" y2="5" />
+            <circle cx="4.1" cy="11" r="1.5" fill="currentColor" stroke="none" />
+            <line x1="7.8" y1="11" x2="13" y2="11" />
           </svg>
         </button>
       </div>
@@ -223,6 +235,7 @@ function RailRow({ session, active, label, initial, accent, idx, task, onSelectS
             <Fragment key={session.id}>
             <button
               ref={hover.ref as React.RefObject<HTMLButtonElement>}
+              data-rail-session={session.id}
               onClick={() => onSelectSession(session)}
               onContextMenu={(e) => {
                 if (!onPickAccent) return

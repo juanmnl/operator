@@ -75,7 +75,14 @@ export const MOCK_PROJECTS = [
       // least be visible and assignable in the queue (brief defect 3).
       { id: 'task-6', text: 'Decide the pricing page copy', status: 'queued', createdAt: earlier },
     ],
-    dispatches: [],
+    // A dispatch that reached a lane's composer and was never read, addressed to a lane that is
+    // NOT running. Both halves matter: `undelivered` is what puts the card in Waiting with its
+    // "Open lane →" button, and `design` being idle is what made that button dead — it resolves
+    // to no terminal, and the handler used to stop there. Without this fixture the harness only
+    // ever saw the live case, which is the case that already worked.
+    dispatches: [
+      { id: 'd-stranded', at: earlier, fromRoleId: 'operator', toRoleId: 'design', task: 'Take the moodboard pass on the empty states', outcome: 'undelivered' },
+    ],
   },
   {
     id: DORMANT_ID,
@@ -447,6 +454,11 @@ export function installMockBridge() {
   // (the store filters on a column the frontend never sees) — a fixture with an extra field is how
   // a consumer quietly starts depending on something reality won't give it.
   const replyRows = new Map<string, Array<Record<string, unknown>>>()
+  // Every (terminalId, port) the app sniffed out of a pty banner — exposed as
+  // `window.__notedPorts` so a driver can prove the sniff reached the backend.
+  const notedPorts: Array<[string, number]> = []
+  // Live onTerminalData subscribers, so the harness can push pty output for real.
+  const termDataCbs = new Set<(id: string, data: string) => void>()
   // Declared before `bridge` so explicitly-mocked methods can record into it too.
   const calls: Array<Record<string, unknown>> = []
 
@@ -479,7 +491,15 @@ export function installMockBridge() {
     },
     onOrchestratorDispatch: (cb: (d: unknown) => void) => { dispatchCb = cb; return () => { dispatchCb = null } },
     onOrchestratorReply: (cb: (r: unknown) => void) => { replyCb = cb; return () => { replyCb = null } },
-    onTerminalData: sub, onTerminalExit: sub,
+    // A REAL subscription, not `sub`. The pty stream is where dev-server banners arrive,
+    // and sniffing them is now the only way a port Operator didn't reserve gets attributed
+    // to a session — so a harness that can't deliver terminal data can't exercise it.
+    // Drive it with `window.__mockTerminalData(id, text)`.
+    onTerminalData: (cb: (id: string, data: string) => void) => {
+      termDataCbs.add(cb)
+      return () => { termDataCbs.delete(cb) }
+    },
+    onTerminalExit: sub,
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     // --- reads ------------------------------------------------------------------
@@ -502,6 +522,11 @@ export function installMockBridge() {
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
     sessionPorts: async (id: string) => (id === 't1' ? [1421, 5173] : []),
+    // The real app calls this for every dev-server banner it sniffs out of a pty, which is
+    // now the ONLY way a port that Operator didn't reserve gets attributed. Recorded rather
+    // than dropped so a driver can assert the sniff→backend hop actually fires; a fixture
+    // that merely tolerated the call would let that wiring rot back to a no-op unnoticed.
+    noteSessionPort: (id: string, port: number) => { notedPorts.push([id, port]) },
     loadSessions: async () => (empty || tz ? [] : solo ? (soloLive ? SOLO_SAVED : []) : prune ? PRUNE_SAVED : [...MOCK_SAVED, ...MOCK_DORMANT, ...MOCK_ENDED_AUTHORS]),
     loadProjects: async () => (empty ? [] : tz ? TZ_PROJECTS : solo ? SOLO_PROJECTS : prune ? PRUNE_PROJECTS : MOCK_PROJECTS),
     // The prune refuses to write without a backup, so the harness has to answer this or the
@@ -652,6 +677,10 @@ export function installMockBridge() {
   // bridge method can't crash the harness before it's been taught about it.
   let spawnN = 0
   ;(window as unknown as { __calls: unknown[] }).__calls = calls
+  ;(window as unknown as { __notedPorts: unknown }).__notedPorts = notedPorts
+  ;(window as unknown as { __mockTerminalData: unknown }).__mockTerminalData = (id: string, data: string) => {
+    termDataCbs.forEach((cb) => cb(id, data))
+  }
   ;(window as unknown as { __mockDispatch: unknown }).__mockDispatch = (d: unknown) => dispatchCb?.(d)
   // `?author=1` seeds two replies whose sessionId is a CLAUDE session uuid, from lanes that are
   // NOT in the live run — the exact shape of the reported bug (verbatim ids from chat.db). The

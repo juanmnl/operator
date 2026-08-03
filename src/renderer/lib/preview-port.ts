@@ -2,9 +2,10 @@
 // choice of WHICH server to show is unit-testable. The panel keeps the polling/effects.
 //
 // Background: a session can serve on several ports (a web server plus an API). The backend
-// attributes them by walking the session's own process tree, so every port here belongs to
-// THIS session — but we still have to pick one to display when the user hasn't pinned a
-// choice, and that pick has to be stable.
+// attributes them from the session's own candidate set — the port Operator reserved for it
+// plus the ones its own output announced — so every port here belongs to THIS session. But
+// we still have to pick one to display when the user hasn't pinned a choice, and that pick
+// has to be stable.
 
 /** The port in an http(s) URL, or null when it has none / the URL is unparseable. */
 export function portOf(url: string | null): number | null {

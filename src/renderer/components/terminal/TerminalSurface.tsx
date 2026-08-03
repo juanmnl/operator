@@ -12,13 +12,17 @@ import { TerminalPane } from './TerminalPane'
 // slower on heavy scroll. The overprint that the DOM renderer can show under Claude's
 // cursor-up rewrites is handled by TerminalPane's repaint/heal loop. Flip `webgl` back on only
 // if a future WebKit genuinely fixes the atlas.
-export function TerminalSurface({ terminalId, theme, active, suspendFit }: {
+export function TerminalSurface({ terminalId, theme, active, suspendFit, onDevServerDetected }: {
   terminalId: string
   theme: ITheme
   active: boolean
   // Held true while a panel divider is being dragged — the terminal pauses its
   // per-resize fit (no reflow mid-drag) and fits once on release.
   suspendFit?: boolean
+  // A dev-server URL printed in this session's output. TerminalPane sniffs it while
+  // it's already walking the stream; forwarding it is what makes port attribution
+  // possible without inspecting the session's processes (see session_ports).
+  onDevServerDetected?: (port: number) => void
 }) {
   return (
     <TerminalPane
@@ -26,6 +30,7 @@ export function TerminalSurface({ terminalId, theme, active, suspendFit }: {
       theme={theme}
       active={active}
       suspendFit={suspendFit}
+      onDevServerDetected={onDevServerDetected}
       replayHistory
     />
   )
