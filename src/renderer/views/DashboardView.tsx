@@ -3326,6 +3326,15 @@ export function DashboardView() {
         onReorder={handleReorderProject}
         onTileMenu={(projectId, anchor) => setRailMenu({ projectId, ...anchor })}
         menuProjectId={railMenu?.projectId ?? null}
+        // THE ACCORDION'S SECOND LIST. The rail was projects only, with the collapsed sidebar
+        // rendering this project's agents in a SECOND strip beside it — 108px of chrome teaching
+        // two grammars at once. The agents live in the rail now, in a band under their own
+        // project's tile, so containment is drawn rather than implied.
+        sessions={scopedSessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        accentOf={accentOf}
+        onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
       />
       {/* Collapsible wrapper: animates width between the full sidebar (220) and
           the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so

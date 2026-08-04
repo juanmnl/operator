@@ -60,7 +60,11 @@ const RAIL_W = 44
 // see, because all four agreed on the reference.
 const WINDOW_PAD = 8   // DashboardView's root padding, painted in the rail's own background
 const SEAM_W = 1       // the rail's right border — the boundary, not part of the gap
-const CENTRE = (RAIL_W - SEAM_W - WINDOW_PAD) / 2
+/** The optical axis, DERIVED FROM THE RAIL WE ACTUALLY MEASURED — not from a width copied into
+ *  this file. `RAIL_W = 44` was hardcoded here, so when the rail legitimately grew to 52 to carry
+ *  the agent band, every tile was reported 4.5px off an axis that had itself gone stale. A harness
+ *  that fails on a correct change teaches you to ignore it, which is worse than not having it. */
+const centreOf = (railWidth) => (railWidth - SEAM_W - WINDOW_PAD) / 2
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
 // The foot is two groups of two around a seam, and the seam's whole job is to out-space what it
@@ -130,7 +134,11 @@ async function boot(theme) {
 
 /** The rail's own rect, found the way the other rail drivers find it. */
 const railRect = (p) => p.evaluate(() => {
-  const el = document.querySelector('[data-rail-gallery]')?.closest('div[style*="44px"]')
+  // `[data-rail]` on the rail root, NOT `closest('div[style*="44px"]')`. That selector was keyed
+  // to the rail's literal width and stopped matching the moment the rail legitimately became
+  // 52px to carry the agent band — a harness that silently loses its subject on a real change is
+  // worse than one that fails loudly.
+  const el = document.querySelector('[data-rail]')
   if (!el) return null
   const r = el.getBoundingClientRect()
   return { left: r.left, top: r.top, width: r.width, height: r.height }
@@ -254,7 +262,7 @@ async function measure(p, label) {
 }
 
 function report(m) {
-  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → column centre ${CENTRE}\n${'='.repeat(98)}`)
+  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → column centre ${centreOf(m.rr.width)}\n${'='.repeat(98)}`)
   console.log('H · PAINTED CENTRE — every element that belongs on the axis')
   console.log(pad('ELEMENT', 24) + pad('STATE', 15) + '  INK L    INK R   WIDTH   CENTRE   Δaxis    INK T     INK B')
   console.log('-'.repeat(98))
@@ -263,7 +271,7 @@ function report(m) {
     if (r.offAxis) continue
     if (!r.box) { console.log(pad(r.key, 24) + pad(r.state, 15) + '   (paints nothing)'); continue }
     const c = (r.box.left + r.box.right) / 2
-    const d = c - CENTRE
+    const d = c - centreOf(m.rr.width)
     if (Math.abs(d) > Math.abs(worst)) worst = d
     console.log(
       pad(r.key, 24) + pad(r.state, 15) +
@@ -323,7 +331,13 @@ function report(m) {
   const isRingPair = (x) => [...ringed].some((n) => x.from.endsWith(n) || x.to.endsWith(n))
   const allTileGaps = gaps.filter((x) => x.from.startsWith('tile') && x.to.startsWith('tile'))
   const tileGaps = allTileGaps.filter((x) => !isRingPair(x)).map((x) => x.gap)
-  const ringGaps = allTileGaps.filter(isRingPair).map((x) => x.gap)
+  // The ringed tile is, by definition, the OPEN one — so the gap below it spans its agent band
+  // and is not a gap between neighbours at all. Same exclusion as the pitch check below, and for
+  // the same reason: measure the rhythm of what is actually adjacent. A ring pair that does NOT
+  // span a band is still held to the 2px-tighter rule, which is the invariant this protects.
+  const ringGapsAll = allTileGaps.filter(isRingPair).map((x) => x.gap)
+  const plainMax = tileGaps.length ? Math.max(...tileGaps) : 0
+  const ringGaps = ringGapsAll.filter((x) => x <= plainMax * 2)
   const pairA = g('foot robot', 'foot usage')
   const seamAbove = g('foot usage', 'foot seam')
   const seamBelow = g('foot seam', 'foot grid')
@@ -332,12 +346,27 @@ function report(m) {
   // PITCH, alongside the gap. A ring is 2px of ink OUTSIDE the tile, so it necessarily narrows
   // the visible gap either side of the current tile — but it must not move the tile. Pitch is
   // what separates "the marker is bigger" (fine) from "the stack is irregular" (not).
+  // PITCH IS MEASURED BETWEEN COLLAPSED NEIGHBOURS ONLY.
+  //
+  // The rail is an accordion now: the selected project's tile is followed by its agents in a
+  // band, so the pair that SPANS that band is legitimately taller than the rest and always will
+  // be. Including it made "tile pitch constant" report 10 / 60 and fail on a correct layout —
+  // and a check that fails on correct work is one people learn to skip.
+  //
+  // The invariant it was written to protect is untouched: the tiles that ARE adjacent must keep
+  // an identical rhythm, and every tile must stay on the axis (measured separately above). What
+  // is dropped is exactly one pair per open band, and only while a band is open.
   const tileRows = m.rows.filter((r) => r.tile && r.box)
-  const pitches = []
+  const bandSpan = 1.6 // × the median pitch: a pair this much larger is a band, not a defect
+  const raw = []
   for (let i = 1; i < tileRows.length; i++) {
     const a = tileRows[i - 1].box, c = tileRows[i].box
-    pitches.push(((c.top + c.bottom) / 2) - ((a.top + a.bottom) / 2))
+    raw.push(((c.top + c.bottom) / 2) - ((a.top + a.bottom) / 2))
   }
+  const median = raw.length ? [...raw].sort((x, y) => x - y)[Math.floor(raw.length / 2)] : 0
+  const pitches = raw.filter((x) => x <= median * bandSpan)
+  const spanned = raw.length - pitches.length
+  if (spanned) console.log(`\n  (${spanned} pair${spanned === 1 ? '' : 's'} spans an open band — excluded from pitch, see the note)`)
   console.log(`\n  tile pitch (painted centre → centre): ${pitches.map((x) => x.toFixed(1)).join(' / ')}   spread ${spread(pitches).toFixed(2)}`)
   console.log('\n  CLAIM                                        MEASURED                     Δ')
   const claim = (name, val, expect, note) => {

@@ -1,12 +1,13 @@
-import { Fragment, useRef, useState } from 'react'
-import type { Project } from '../../../shared/types'
-import { StatusWave } from './StatusWave'
+import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import type { AgentSession, Project } from '../../../shared/types'
+import { StatusWave, type WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
-import { byRailOrder } from '../../lib/project-shelf'
+import { byRailOrder, isActiveProject } from '../../lib/project-shelf'
 import { projectAccent, projectInitials } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard } from '../../lib/use-hover-card'
+import { sessionLabel } from '../../lib/session-label'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 
 // The persistent project rail — 44px, full height, outboard of the sidebar. It is the ONE
@@ -35,7 +36,10 @@ import { PlanMeter, usePlanLimits } from './PlanMeter'
 // duplication this split exists to avoid. An archived project still appears if something is
 // live in it: a running agent must never be hidden.
 
-const RAIL_W = 44
+// 52, up from 44. The rail now carries BOTH lists — projects, and the selected project's agents
+// in a band beneath its tile — so it needs room for a 30px orb inside a 40px hit target without
+// the orb touching the seam. The two-strip arrangement it replaces was 44 + 64 = 108px.
+const RAIL_W = 52
 
 /** The seam ink, for BOTH of the rail's dividers — the full-height one against the sidebar and
  *  the short horizontal one in the foot.
@@ -77,6 +81,7 @@ const CONTENT_INSET_R = 8
 export function ProjectRail({
   projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
   onOpenAgents, agentsActive, onReorder, onTileMenu, menuProjectId,
+  sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
 }: {
   projects: Project[]
   activities: Record<string, ProjectActivity>
@@ -103,6 +108,16 @@ export function ProjectRail({
   /** Whose menu is open, so that tile can hold its hover tint while it is — the card's
    *  `hover || menuOpen` treatment, background-only. */
   menuProjectId?: string | null
+  /** THE ACCORDION'S SECOND LIST: live sessions of the CURRENT project only, already scoped
+   *  upstream. They render as circles in a band under that project's tile — the containment the
+   *  old two-strip arrangement only implied. */
+  sessions?: AgentSession[]
+  activeSessionId?: string | null
+  onSelectSession?: (session: AgentSession) => void
+  /** A session's effective ink — its lane's colour, or a per-session override. */
+  accentOf?: (session: AgentSession) => string | undefined
+  /** Right-click an orb → the colour picker, anchored by the view (this column clips). */
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
 }) {
   const planLimits = usePlanLimits()
   const [drag, setDrag] = useState<string | null>(null)
@@ -127,15 +142,56 @@ export function ProjectRail({
   // order does happen to survive every write path today — they are all map/filter/append — but
   // that is an accident nothing declares, and one `.sort()` added anywhere upstream would undo a
   // user's arrangement with no error and no way to notice.
+  // THE ACTIVE SHELF, not just what is live. "So we can have many projects" and "that way I can
+  // see all the active projects at the same time too" — seeing the whole shelf at once is a
+  // REASON this shape was chosen, not a side effect. `isActiveProject` also keeps its second
+  // clause, which is the never-hide-a-running-agent rule already encoded: an archived project
+  // with something live in it stays in the list whatever its record says.
   const shown = projects
-    .filter((p) => (activities[p.id]?.live ?? 0) > 0 || p.id === activeProjectId)
+    .filter((p) => isActiveProject(p, activities[p.id]) || p.id === activeProjectId)
     .sort(byRailOrder)
   const canReorder = !!onReorder && shown.length > 1
 
   const endDrag = () => { dragRef.current = null; setDrag(null); setDropAt(null) }
 
+  /** How many agent orbs a band shows before folding the rest into a count. Four is what keeps
+   *  the band bounded (~215px against a ~313px column), which is why no inner scroller is needed
+   *  and why the projects around the open one stay on screen. Raising it re-opens that problem. */
+  const FOLD = 4
+  const band = activeProjectId ? sessions.filter((s) => s.status !== 'ended').slice(0, FOLD) : []
+  const folded = activeProjectId ? Math.max(0, sessions.filter((s) => s.status !== 'ended').length - FOLD) : 0
+
+  // BRING THE OPEN BAND INTO VIEW — by moving the VIEWPORT, never the list.
+  //
+  // The tile stays at its own `railOrder` index; selecting a project must not reorder anything
+  // (this file's own rule: position is the memory channel, and an activity comparator that
+  // re-sorted here once undid users' drags). But with `mantel` 18th of 20, its band starts ~692px
+  // down a ~313px column, so without help the thing you just clicked is entirely below the fold.
+  // So: scroll the least that brings the whole band into view, preferring to keep the neighbours
+  // ABOVE it — you scrolled down to get here, and those are the tiles you have most recently in
+  // mind.
+  const bandRef = useRef<HTMLDivElement | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const el = bandRef.current
+    const box = scrollerRef.current
+    if (!el || !box) return
+    // `.stream` is `position: relative`, so it IS the band's offsetParent — `offsetTop` is already
+    // relative to the scroll box. Subtracting the box's own offsetTop (an obvious-looking
+    // correction) scrolls exactly one tile short and clips the last orb, which is the row this
+    // whole manoeuvre exists to reveal.
+    const top = el.offsetTop
+    const bottom = top + el.offsetHeight
+    if (bottom > box.scrollTop + box.clientHeight) {
+      // Taller than the column: top-align, so the tile that names it is the part you keep.
+      box.scrollTop = el.offsetHeight > box.clientHeight ? top : bottom - box.clientHeight
+    } else if (top < box.scrollTop) {
+      box.scrollTop = top
+    }
+  }, [activeProjectId, band.length])
+
   return (
-    <div style={{
+    <div data-rail style={{
       width: RAIL_W, flexShrink: 0, height: '100%',
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       background: 'var(--bg-sidebar)',
@@ -156,6 +212,7 @@ export function ProjectRail({
       <DragRegion style={{ paddingTop: 40, width: '100%', flexShrink: 0 }} />
 
       <div
+        ref={scrollerRef}
         className="scroll-hidden"
         style={{
           flex: 1, minHeight: 0, width: '100%', overflowY: 'auto', overflowX: 'hidden',
@@ -206,10 +263,24 @@ export function ProjectRail({
             <div
               key={p.id}
               data-rail-slot={p.id}
+              ref={p.id === activeProjectId ? bandRef : undefined}
               style={{
-                flexShrink: 0, width: '100%', display: 'flex', justifyContent: 'center',
+                flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column',
+                alignItems: 'center',
                 borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
                 borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
+                // THE BAND. Containment is a tinted field, not an indent and not a connector: an
+                // indent would break the centre-line invariant this file is emphatic about (a
+                // strip whose items do not share a painted centre reads as broken however correct
+                // each item is), and a left connector is one step from the marker stripe the
+                // house rule forbids. The field carries belonging; the grammar stays square-on-top,
+                // circles-beneath and is never crossed.
+                ...(p.id === activeProjectId && band.length ? {
+                  background: 'color-mix(in srgb, var(--fg) 8%, transparent)',
+                  borderRadius: 'var(--radius-md)',
+                  paddingBottom: 6,
+                  gap: 4,
+                } : null),
               }}
               onDragOver={(e) => {
                 const d = dragRef.current
@@ -248,6 +319,34 @@ export function ProjectRail({
                 onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
                 onDragEnd={endDrag}
               />
+              {/* The selected project's agents, in place, under its own tile. Never a second
+                  column and never hoisted to the top: the user picks the order of this list
+                  (opening order, then drag), and selection is not an input to it. */}
+              {p.id === activeProjectId && band.map((s) => (
+                <RailOrb
+                  key={s.id}
+                  session={s}
+                  active={s.id === activeSessionId}
+                  accent={accentOf?.(s)}
+                  onSelect={() => onSelectSession?.(s)}
+                  onPickAccent={onPickAccent}
+                />
+              ))}
+              {p.id === activeProjectId && folded > 0 && (
+                /* Counted, never silently dropped. The fold is what BOUNDS the band — without it
+                   a 12-session project takes the whole column and the projects around it vanish,
+                   which is how the side-by-side arrangement failed. */
+                <button
+                  data-rail-fold={folded}
+                  onClick={() => onOpenProject(p.id)}
+                  title={`${folded} more agent${folded === 1 ? '' : 's'} — open the project`}
+                  style={{
+                    width: 40, height: 18, padding: 0, background: 'transparent', border: 'none',
+                    color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                    fontFamily: 'var(--font-mono)', fontSize: 9.5, lineHeight: 1,
+                  }}
+                >+{folded}</button>
+              )}
             </div>
           )
         })}
@@ -528,4 +627,95 @@ function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, dra
       )}
     </Fragment>
   )
+}
+
+/** One agent inside the open band. A CIRCLE — the grammar that separates a session from a
+ *  project's rounded square, and it is never crossed.
+ *
+ *  Lifted from `SidebarRail`'s row, with one deliberate change: the active marker is NOT the
+ *  3px accent pill that file drew at `left: -10`. That is a coloured left-border marker stripe,
+ *  which the house style forbids outright, and it was visible in the screenshot that started this
+ *  redesign. `--overlay-medium` on the orb box says the same thing without the rule break — and
+ *  without a colour-changing border on a radiused element, which re-rasterizes in WKWebView. */
+function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
+  session: AgentSession
+  active: boolean
+  accent?: string
+  onSelect: () => void
+  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
+}) {
+  const hoverCard = useHoverCard(`orb:${session.id}`)
+  const label = sessionLabel({ session })
+  const initial = laneInitial(label)
+  const status: WaveStatus = session.status === 'ended'
+    ? 'ended'
+    : session.phase === 'running' || session.phase === 'compacting' || session.phase === 'waiting'
+      ? session.phase
+      : 'idle'
+  return (
+    <Fragment>
+      <button
+        ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
+        data-rail-session={session.id}
+        onClick={onSelect}
+        onContextMenu={onPickAccent && ((e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          hoverCard.dismiss() // it is `position: fixed` exactly where the popover opens
+          const r = e.currentTarget.getBoundingClientRect()
+          onPickAccent(session, { top: r.bottom + 6, left: r.right + 8 })
+        })}
+        aria-label={label}
+        aria-current={active || undefined}
+        title={label}
+        style={{
+          position: 'relative', flexShrink: 0, width: 40, height: 40, padding: 0,
+          display: 'grid', placeItems: 'center',
+          borderRadius: 11,
+          border: '1px solid transparent', // constant: no colour-changing border on a radiused box
+          background: active ? 'var(--overlay-medium)' : 'transparent',
+          cursor: 'pointer', outline: 'none', transition: 'background 120ms ease',
+        }}
+        onMouseEnter={(e) => {
+          if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)'
+          hoverCard.onMouseEnter(e)
+        }}
+        onMouseLeave={(e) => {
+          if (!active) e.currentTarget.style.background = 'transparent'
+          hoverCard.onMouseLeave()
+        }}
+      >
+        <span style={{ position: 'relative', width: 30, height: 30, display: 'grid', placeItems: 'center' }}>
+          <StatusWave status={status} seed={session.id} size={30} accent={accent} />
+          <span className="ink-centred" style={{
+            position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+            fontSize: 11, fontWeight: 700, lineHeight: 1, fontFamily: 'var(--font-body)',
+            color: accent ? laneTextColor(accent) : 'var(--fg)',
+            ['--track' as string]: initial.length > 1 ? '-0.5px' : '0px',
+            textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
+          }}>{initial}</span>
+        </span>
+      </button>
+      {hoverCard.card && (
+        <div style={{
+          position: 'fixed', top: hoverCard.card.top, left: hoverCard.card.left, zIndex: 60,
+          maxWidth: 260, padding: '7px 10px', borderRadius: 'var(--radius-sm)',
+          background: 'var(--bg-surface)',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
+          pointerEvents: 'none', fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1.35,
+          color: 'var(--fg)', whiteSpace: 'nowrap',
+        }}>{label}</div>
+      )}
+    </Fragment>
+  )
+}
+
+/** 1–2 letters for an orb. `Research` and `Review` both reduce to R — colour separates them, and
+ *  at 52px there is no room for more. Stated rather than hidden: duplicates are unsolved at this
+ *  width, and the price of solving them was ~168px, i.e. the sidebar's job. */
+function laneInitial(name: string): string {
+  const words = name.replace(/[_\-/.]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return '?'
+  if (words.length === 1) return words[0].slice(0, 1).toUpperCase()
+  return (words[0][0] + words[1][0]).toUpperCase()
 }
