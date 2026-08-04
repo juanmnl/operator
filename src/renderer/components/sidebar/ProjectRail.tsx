@@ -962,9 +962,31 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
           </FootGlyph>
         </FootCell>
       </FootRow>
-      {/* The app's identity, on its own line at the bottom of the grid — left-aligned under the
-          first column rather than squeezed into leftover space. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, minWidth: 0 }}>
+      {/* The app's identity, on its own line at the bottom of the grid — CENTRED ON THE AXIS, the
+          same 30 element-local (38 from the window edge) that every orb, every collapsed name and
+          every Home mark sits on. It was the one element in the strip that did not, which is
+          exactly why it was the one thing still reading as unbalanced once Fix 1 put everything
+          else on 38: bare left-aligned text under a foot whose every other row is a tiled
+          two-column grid, i.e. an orphan rather than a caption.
+          NOT `marginLeft: auto` and not "fill the leftover space" — that is what the OLD comment
+          here was written to prevent (the foot used to shove the version into whatever gap was
+          left, and with `flexWrap` on it would drop to a line of its own the moment it did not
+          fit). That prevention still stands; what changed is the answer to "then where?", which is
+          the axis, because the axis is where the whole strip already is.
+          The box is `2 × AXIS` — the widest a box centred on the axis can be inside a 60px strip —
+          rather than the foot's full width, so its centre is the AXIS at both widths instead of the
+          midpoint of a 256px row at 264. It cancels the foot's own padding to get there, which the
+          grid rows above it keep.
+          `2 × AXIS` AND NOT `2 × (AXIS − FOOT_PAD)`, measured rather than assumed: at 52 the real
+          `v0.13.6` plus a pending update's affordance needs 59 and rendered as **`v0.1…`** — the
+          version number, which is the whole thing you read before deciding to install, destroyed by
+          8px. "A long version must truncate rather than widen the foot" is still true; an ordinary
+          one losing its digits is not that.
+          The affordance sits inside the same box, so `v0.13.6 ↓` centres as ONE unit. */}
+      <div data-rail-identity-row style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        width: 2 * AXIS, marginLeft: -FOOT_PAD, marginTop: 10, minWidth: 0,
+      }}>
         <span
           data-sidebar-identity
           title={`Operator${version ? ` v${version}` : ''}`}

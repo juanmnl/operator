@@ -142,6 +142,11 @@ async function boot(theme) {
         }))
         // A project reaches the strip only through ACTIVITY, and activity is rolled up from
         // terminals joined to saved sessions — so a synthetic live project needs both.
+        // A REALISTIC VERSION STRING. The mock ships `0.8.8-mock`, which is long enough to
+        // ellipsise inside the identity row — and a truncated string's ink is bounded by its box,
+        // so the row would be exempt from the axis check in every run and the check would assert
+        // nothing. The shipped version is `0.13.6`; measure that.
+        v.getVersion = async () => '0.13.6'
         v.loadProjects = async () => [...((await oP()) ?? []), ...extras]
         v.saveProjects = () => {}
         v.terminalList = async () => {
@@ -266,6 +271,11 @@ const f = (n, w = 6, d = 2) => (n === null || n === undefined ? '—'.padStart(w
 const pad = (s, w) => String(s).padEnd(w)
 
 /** The eight foot controls, in the order they are drawn — four pairs around three hairlines. */
+/** Does an update affordance ride beside the version right now? Printed in the scene label,
+ *  because "centred with the button" and "centred without it" are two different claims and the
+ *  one that regresses silently is the one you only see when a release is pending. */
+const updateShowing = (p) => p.evaluate(() => !!document.querySelector('[data-rail-identity-row] button'))
+
 const FOOT = [
   ['agents', '[data-rail-agents]'], ['usage', '[data-rail-usage]'],
   ['gallery', '[data-rail-gallery]'], ['open folder', '[data-rail-open-folder]'],
@@ -275,6 +285,7 @@ const FOOT = [
 
 async function measure(p, label) {
   const rr = await railRect(p)
+  label = `${label} · update ${(await updateShowing(p)) ? 'pending' : 'absent'}`
   const clip = { x: rr.left, y: rr.top, width: rr.width, height: rr.height }
   const collapsed = rr.width < (RAIL_W + RAIL_W_OPEN) / 2
 
@@ -313,6 +324,21 @@ async function measure(p, label) {
     targets.push({ key: `  └ orb ${id.slice(-6)}`, state: 'disc', sel: `[data-rail-orb="${id}"]`, orb: id, member: true })
   }
   if (homes) targets.push({ key: '  └ home', state: 'mark', sel: '[data-rail-home-mark]', member: true })
+  // THE VERSION LINE, which went unmeasured until it was the last thing in the strip still off the
+  // axis — the harness reported CLEAN through all of it. Measured as the ROW, not as the version
+  // span: when an update is pending the affordance rides beside it and the pair has to centre as
+  // one unit, which a probe on the text alone cannot see.
+  // …and exempt it if it IS cut, on the same rule as a cut name: where an ellipsis lands is not
+  // a statement about the axis. With a version that fits, this never fires — which is the point of
+  // fixturing one that does.
+  const versionCut = await p.evaluate(() => {
+    const el = document.querySelector('[data-rail-identity-row] span')
+    return !!el && el.scrollWidth > el.clientWidth
+  })
+  targets.push({
+    key: `identity row${versionCut ? ' ✂' : ''}`, state: versionCut ? 'version (cut)' : 'version',
+    sel: '[data-rail-identity-row]', offAxis: versionCut,
+  })
   for (const [name, sel] of FOOT) {
     targets.push({ key: `foot ${name}`, state: 'glyph', sel: `${sel} svg`, glyph: true, foot: true, offAxis: true })
   }
