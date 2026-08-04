@@ -5,6 +5,7 @@ import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
 import { CanvasConversation } from './CanvasConversation'
 import { submitQueue } from '../../lib/submit-queue'
+import { TOOLBAR_BAND_H } from '../../lib/chrome'
 
 // The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
 // is CONTEXTUAL to the main view (passed in as `tabs`): Plan + Diff always, plus Chat when the
@@ -60,9 +61,12 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
       {/* Mode switcher — text tabs, accent colour for the active one, no fills. */}
-      {/* Same 36px height + centered content as the main panel's SessionToolbar,
-          so the tabs sit on exactly the same line as the toolbar title/icons. */}
-      <DragRegion style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, height: 36, padding: '0 10px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
+      {/* `TOOLBAR_BAND_H`, from lib/chrome — so this rule and the main panel's land on ONE y
+          when the right panel is open. It used to be a literal 36 under a comment claiming it was
+          "the same 36px height as the main panel's SessionToolbar"; the toolbar had become 44 and
+          the comment was never updated, so the file asserted an agreement that had stopped
+          holding — which is why nobody caught two rules 8px apart by reading. */}
+      <DragRegion data-toolbar-header="panel" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, height: TOOLBAR_BAND_H, padding: '0 10px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
         {tabs.map((id) => (
           <button
             key={id}

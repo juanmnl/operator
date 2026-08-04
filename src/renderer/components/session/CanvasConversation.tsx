@@ -13,6 +13,7 @@ import { chatSignal } from '../../lib/chat-signal'
 import { StatusWave } from '../sidebar/StatusWave'
 import { stripAnsi } from '../../lib/terminal'
 import { ChatComposer } from './ChatComposer'
+import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
 // Canvas chat SPIKE — renders the conversation PAINTED on one <canvas> instead of the
 // react-markdown DOM panel. The DOM panel re-parses markdown every render (super-linear
@@ -934,7 +935,7 @@ export function CanvasConversation({ session, role, customName, accent, onHumanS
       {/* Search + saved-only filter (mirrors the DOM ConversationPanel header). */}
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-        height: 30, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+        height: PANEL_SUBHEAD_H, padding: '0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
         fontFamily: 'var(--font-body)',
       }}>
         <input

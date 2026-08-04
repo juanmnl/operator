@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { AgentSession, TodoItem } from '../../../shared/types'
+import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
 // The Plan tab. Top (read-only): the agent's latest TodoWrite snapshot as a live
 // checklist. Below it (writable): YOUR tasks — jot them down here; the "Send to agent"
@@ -29,7 +30,7 @@ export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
       {agentTodos.length > 0 && (
         <div style={{
           flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-          height: 30, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+          height: PANEL_SUBHEAD_H, padding: '0 14px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
           fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)',
         }}>
           <span style={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>plan · <b style={{ color: 'var(--accent)', fontWeight: 700 }}>{done}</b>/{agentTodos.length}</span>

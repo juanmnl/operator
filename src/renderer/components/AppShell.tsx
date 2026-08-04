@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { DragRegion } from './DragRegion'
 import { SidebarToggle } from './SidebarToggle'
+import { TOOLBAR_BAND_H } from '../lib/chrome'
 
 // THE FRAME. Every content mode sits in this; the rail and the sidebar sit outside it.
 //
@@ -62,7 +63,7 @@ export function AppShell({
           data-toolbar-header="shell"
           style={{
             flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-            height: 44, padding: '0 16px', boxSizing: 'border-box',
+            height: TOOLBAR_BAND_H, padding: '0 16px', boxSizing: 'border-box',
             borderBottom: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
           }}
         >

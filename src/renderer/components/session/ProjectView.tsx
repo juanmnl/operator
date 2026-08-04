@@ -9,6 +9,7 @@ import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
 import { TaskBoard, type LaneSignal } from './TaskBoard'
 import { DispatchLog } from './DispatchLog'
+import { TOOLBAR_BAND_H } from '../../lib/chrome'
 
 // The project-level workspace. Home for the things that belong to the PROJECT (not a single
 // session).
@@ -82,7 +83,7 @@ export function ProjectView({
   const tabs: ProjectTab[] = ['board', 'team', 'moodboard']
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, background: 'var(--bg-terminal)' }}>
-      <DragRegion data-toolbar-header="project" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: 44, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
+      <DragRegion data-toolbar-header="project" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, height: TOOLBAR_BAND_H, padding: '0 16px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)' }}>
         {/* Same control, same position as the other two toolbar headers. */}
         {onToggleSidebar && (
           <SidebarToggle collapsed={sidebarCollapsed} onToggle={onToggleSidebar} />

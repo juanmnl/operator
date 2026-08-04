@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
+import { TOOLBAR_BAND_H } from '../../lib/chrome'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -116,14 +117,16 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        // 44/16, the canonical TOOLBAR header — the same box `ProjectView` and the channel use.
+        // `TOOLBAR_BAND_H`/16, the canonical TOOLBAR header — the same box `ProjectView`,
+        // `AppShell` and the right panel's tab row use, from one constant rather than four
+        // literals that happened to agree (see lib/chrome.ts; two of them stopped agreeing).
         // It was 36/12, and it was the odd one out rather than they: switching between a session
         // and the channel moved the header 8px vertically and 4px horizontally under a user who
         // had only changed what was inside it.
         // 16 also happens to be the channel's `INSET`, the left edge its feed rows and composer
         // share — so matching the family costs the channel nothing and the header keeps lining up
         // with the messages beneath it.
-        height: 44,
+        height: TOOLBAR_BAND_H,
         padding: '0 16px',
         boxSizing: 'border-box',
         flexShrink: 0,
