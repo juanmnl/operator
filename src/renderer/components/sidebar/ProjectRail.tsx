@@ -24,12 +24,17 @@ import { PlanMeter, usePlanLimits } from './PlanMeter'
 //
 // THE MEMBERSHIP RULE, and it is the whole design:
 //
-//   A project group shows what is LIVE in it. The open project additionally shows its whole team.
+//   A project group shows what is LIVE in it. EVERY group, including the open one.
 //
-// applied identically at both widths — live agents are orbs at 60 and rows at 264; the open
-// group also gets its idle roster lanes and `+ Add an agent`, expanded only. Six grey orbs per
-// project is the shape that made the old side-by-side arrangement fail: collapsed shows work, you
-// expand to launch something that isn't working.
+// applied identically at both widths — live agents are orbs at 60 and rows at 264. The rule used
+// to have a second half ("the open group additionally shows its whole team"), and it is withdrawn:
+// five IDLE rows under one live agent is a roster, and the strip is a picture of WORK. The strip
+// therefore says the same thing at both widths and in every group, which is the shortest the rule
+// has ever been.
+//
+// An idle row was doing double duty, though — it was also how you LAUNCHED that lane — so
+// `+ Start an agent` inherits that job rather than letting it vanish with the rows: it opens the
+// roster's idle lanes and picking one launches it, exactly as clicking the row did.
 //
 // A project is in the strip if `live > 0` or it is the open one. NOT the whole active shelf —
 // that is 20 projects here, because nothing has ever been archived, and it is what put every
@@ -60,31 +65,45 @@ const RAIL_W = 60
 /** Expanded. Forced by the constant-x invariant below, not chosen: the orb column has to be
  *  2 × the axis, so the axis can stay put when the width changes. */
 const RAIL_W_OPEN = 264
-/** Must EQUAL the root pad, or the content axis and the visible strip's centre disagree. The
- *  field is therefore 52 collapsed (60 − 8) and 256 expanded. */
-const CONTENT_INSET_R = 8
-/** The optical axis: 26 element-local = 34 from the window edge = the centre of the 68px strip.
+/** ZERO. There is nothing left for the content to be inset FROM.
  *
- *  It used to be derived as `(W − seam − pad) / 2`, and that subtraction was wrong twice: the
- *  seam is an INSET BOX-SHADOW and does not reduce the content box, so the prose subtracted a
- *  pixel the layout never did (a standing 0.5px error, small enough to read as noise in a driver
- *  that reports signed deltas) — and there is no seam at all any more. The column runs to the
- *  rail's own edge. */
+ *  This was 8 while the rail had a right-hand seam: the visible column ended at that line, so the
+ *  field had to stop short of it. Deleting the seam moved the boundary and the inset was never
+ *  re-derived — which is a sequencing artifact, and the exact mistake this file's header warns
+ *  about: measuring to the element's box instead of to the column a person can see.
+ *
+ *      window edge 0 │ root pad 8 │ rail element 8→68 │ gap 8 │ card edge 76
+ *
+ *  Both fields are painted `--bg-sidebar`, the rail's own colour, and the rail draws no edge on
+ *  either side — so the column runs 0 → 76 and its centre is 38. With an 8px inset the content
+ *  centred on 34, i.e. 4px left of the middle of what you see, which is what the user reported as
+ *  "not optically centred". At 0 the element's own midpoint IS the optical centre. */
+const CONTENT_INSET_R = 0
+/** The optical axis: 30 element-local = **38 from the window edge** = the centre of the visible
+ *  column, window edge to card edge. The second number is the one that matters — a driver that
+ *  only checks the elements agree with each other at 30 would have passed the 34 too. */
 const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
 /** A member's hit box — the orb's 24px disc inside it, and `+ Add an agent` and Home on the same
  *  box, so every clickable thing in the strip is one column at one x. */
 const MEMBER_BOX = 36
 /** THE CONSTANT-X INVARIANT, and it is not negotiable: an orb sits at the same absolute x, at the
- *  same size, collapsed and expanded. `AXIS − MEMBER_BOX / 2` = 8 either way, so expanding fades
- *  a label in to the orb's right and MOVES NOTHING. A transition where the thing you are looking
+ *  same size, collapsed and expanded. `AXIS − MEMBER_BOX / 2` = 12 either way — so the 264 orb
+ *  column is 60 (2 × 30) and expanding fades a label in to the orb's right and MOVES NOTHING. A transition where the thing you are looking
  *  at slides sideways reads as a re-layout instead of a reveal. */
 const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
 const ORB = 24
-/** Foot: two glyphs and their gap are the field exactly (24 + 4 + 24 = 52). The old 26px box
- *  existed to stay in step with `Sidebar.tsx`'s footer row — and that file is deleted, so there
- *  is nothing left to match and 26 no longer fits. */
+/** Foot glyph box. 24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52,
+ *  exactly): it FIT, and the fit is what set it. The field is 60 now, so nothing forces 24 any
+ *  more — deliberately left alone in this pass rather than drifting; see the RESULT for what it
+ *  would become if re-derived. What the wider field does buy is that the pair no longer has to be
+ *  flush: `FOOT_PAD` centres it under the member column. */
 const FOOT_BOX = 24
 const FOOT_GAP = 4
+/** (60 − (24 + 4 + 24)) / 2 = 4. The foot pair straddles the axis instead of hugging the left
+ *  edge — and the SAME padding applies at 264, so the left glyph column holds its x across ⌘B
+ *  just as the orb column does. The foot keeps its own rhythm (it is not on the member column,
+ *  by design), but it must not MOVE. */
+const FOOT_PAD = (RAIL_W - (FOOT_BOX * 2 + FOOT_GAP)) / 2
 
 /** The ink for the horizontal group hairlines and the foot's three dividers — ALL that is left of
  *  the seam.
@@ -137,11 +156,13 @@ export interface ProjectRailProps {
   shortcutIndices?: Record<string, number>
   onRenameSession?: (sessionId: string, name: string) => void
   onCloseSession?: (session: AgentSession) => void
-  onLaunchRole?: (project: Project, role: Role) => void
+  /** The `+` row's menu — this project's idle lanes, plus "add one". Reported as an ANCHOR and
+   *  rendered by the view, like every other menu here: the strip is a clipping scroller at the
+   *  window's edge, so a popover parented to a row would be cut off at 60. */
+  onAgentMenu?: (projectId: string, anchor: { top: number; left: number }) => void
   onAddLane?: () => void
   /** Reorder two AD-HOC session rows. Lane rows are ordered by the roster instead. */
   onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
-  onReorderLane?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
   /** The app's own row, at the foot — present in BOTH states. ⌘B used to unmount `Sidebar.tsx`
    *  and take the theme toggle, Preferences and both `.claude` shortcuts off screen with it. */
   activeFolderPrefs?: string | null
@@ -164,7 +185,7 @@ export function ProjectRail({
   onReorder, onTileMenu, menuProjectId,
   sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
-  onRenameSession, onCloseSession, onLaunchRole, onAddLane, onReorderLane, onReorderSession,
+  onRenameSession, onCloseSession, onAgentMenu, onAddLane, onReorderSession,
   activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark,
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme,
   version, update, onInstallUpdate,
@@ -239,8 +260,8 @@ export function ProjectRail({
           // thing you just opened off the screen.
           position: 'relative',
           display: 'flex', flexDirection: 'column',
-          // The field starts at the rail's own left edge and ends CONTENT_INSET_R short of its
-          // right — which is what puts the member column on the visible strip's centre.
+          // The field IS the element: no inset on either side, so the member column sits on the
+          // element's own midpoint, which is the middle of what a person sees.
           padding: `6px ${CONTENT_INSET_R}px 6px 0`,
         }}
       >
@@ -252,7 +273,9 @@ export function ProjectRail({
           const folded = collapsed ? Math.max(0, live.length - FOLD) : 0
           const roster = p.roster ?? []
           const liveRoles = new Set(live.map((s) => s.roleId).filter(Boolean))
-          const idleLanes = expanded && open ? roster.filter((r) => !liveRoles.has(r.id)) : []
+          // Not rendered as rows any more — only counted, to decide whether the row below offers
+          // lanes to start or only offers to create one.
+          const idleLanes = open ? roster.filter((r) => !liveRoles.has(r.id)) : []
           return (
             <div
               key={p.id}
@@ -375,26 +398,25 @@ export function ProjectRail({
                 >+{folded}</button>
               )}
 
-              {/* The open group's TEAM: lanes with nothing running, expanded only. Six grey orbs
-                  per project is what a bounded strip exists to prevent, so this is the thing you
-                  expand FOR. */}
-              {idleLanes.map((r) => (
-                <LaneRow
-                  key={r.id}
-                  role={r}
-                  draggable={!!onReorderLane && roster.length > 1}
-                  onReorder={onReorderLane}
-                  onClick={() => onLaunchRole?.(p, r)}
-                />
-              ))}
-              {expanded && open && onAddLane && (
+              {expanded && open && (onAddLane || onAgentMenu) && (
                 /* INSIDE the group, so it plainly adds to THIS project — which the
-                   header-adjacent `+` never quite did. */
+                   header-adjacent `+` never quite did.
+                   TWO VERBS, NEVER SHARING A GLYPH: this opens a MENU that names both, rather
+                   than being one control that guesses. With lanes waiting it reads "Start an
+                   agent" and lists them; with none it reads "Add an agent" and goes straight to
+                   the roster, because a menu holding a single item is a dialog box for nothing.
+                   Each label is exactly true of what pressing it does. */
                 <button
                   data-rail-add-lane
-                  onClick={onAddLane}
-                  title="Add or edit lanes on the roster"
-                  aria-label="Add an agent on the roster"
+                  data-rail-idle-lanes={idleLanes.length}
+                  onClick={(e) => {
+                    if (idleLanes.length && onAgentMenu) {
+                      const r = e.currentTarget.getBoundingClientRect()
+                      onAgentMenu(p.id, { top: r.top, left: r.right + 8 })
+                    } else onAddLane?.()
+                  }}
+                  title={idleLanes.length ? 'Start one of this project’s agents, or add a new one' : 'Add or edit lanes on the roster'}
+                  aria-label={idleLanes.length ? 'Start an agent' : 'Add an agent on the roster'}
                   style={{
                     flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, width: '100%',
                     height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
@@ -410,7 +432,7 @@ export function ProjectRail({
                       <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
                     </svg>
                   </span>
-                  <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>Add an agent</span>
+                  <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>{idleLanes.length ? 'Start an agent' : 'Add an agent'}</span>
                 </button>
               )}
             </div>
@@ -481,6 +503,12 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
         <button
           ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
           data-rail-project-header={project.id}
+          // `.ink-centred` (styles.css) — cancels the TRAILING letter-space, which a centred
+          // tracked string carries on its right and nowhere else. Without it the painted ink of a
+          // name sits up to 1.25px left of the axis while its line box is perfectly centred: the
+          // same handle-versus-ink error this strip's whole harness exists to catch, and the same
+          // fix the acronym tiles used before them.
+          className={collapsed ? 'ink-centred' : undefined}
           // The identity colour, exposed so a harness can assert it never moves — it reaches the
           // DOM as a color-mix expression, so reading it back off one would compare encodings
           // rather than the value.
@@ -531,6 +559,8 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
             cursor: 'pointer', outline: 'none',
             fontFamily: 'var(--font-mono)', fontWeight: 600,
             fontSize: collapsed ? 9 : 11,
+            // `--track` feeds `.ink-centred`'s negative right margin, so the two can never drift.
+            ['--track' as string]: collapsed ? '0.04em' : '0.06em',
             letterSpacing: collapsed ? '0.04em' : '0.06em',
             textTransform: 'uppercase',
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -793,76 +823,6 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
   )
 }
 
-/** A roster lane with nothing running — click to launch it. The idle orb already reads as dimmed
- *  through its static-accent treatment, so the only other receded element is the name (muted INK,
- *  never a group opacity), and the row does NOT take the uppercase/accent treatment that marks a
- *  live lane. */
-function LaneRow({ role, draggable, onReorder, onClick }: {
-  role: Role
-  draggable?: boolean
-  onReorder?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
-  onClick: () => void
-}) {
-  const [hover, setHover] = useState(false)
-  const [edge, setEdge] = useState<'before' | 'after' | null>(null)
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      data-lane-row={role.id}
-      draggable={draggable}
-      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/lane', role.id) }}
-      onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes('text/lane')) return
-        e.preventDefault()
-        const r = e.currentTarget.getBoundingClientRect()
-        setEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
-      }}
-      onDragLeave={() => setEdge(null)}
-      onDrop={(e) => {
-        e.preventDefault()
-        const dragged = e.dataTransfer.getData('text/lane')
-        const r = e.currentTarget.getBoundingClientRect()
-        if (dragged && dragged !== role.id) {
-          onReorder?.(dragged, role.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
-        }
-        setEdge(null)
-      }}
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={`Launch ${role.name}`}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-        height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
-        background: hover ? 'var(--overlay-subtle)' : 'transparent',
-        borderRadius: 8,
-        // Constant transparent rules so the drop line cannot shift the stack, and colour only
-        // ever lands on a straight edge.
-        borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
-        borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
-        cursor: 'pointer', textAlign: 'left', outline: 'none',
-        fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1,
-      }}
-    >
-      <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-        <StatusWave status="idle" seed={role.id} size={ORB} accent={role.accent} />
-      </span>
-      <span style={{
-        flex: 1, minWidth: 0, color: 'color-mix(in srgb, var(--fg) 80%, transparent)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>{role.name}</span>
-      {/* The tag carries whether this lane is running, so it has to be readable at rest. The
-          hover signal is the WORD changing, not the ink getting darker. */}
-      <span style={{
-        flexShrink: 0, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.1em',
-        color: hover ? 'var(--fg)' : 'var(--fg-muted)',
-      }}>{hover ? 'launch ▷' : 'idle'}</span>
-    </div>
-  )
-}
-
 /** THE APP'S OWN ROW — Arrangement A: four groups of two, three hairlines, the same order and the
  *  same total height at both widths. Only the CELL width changes, so every foot row lands on an
  *  identical y at 60 and at 264. That is the analogue of the member column's constant x: the
@@ -897,7 +857,7 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
     <div data-rail-foot style={{
       flexShrink: 0, width: '100%', boxSizing: 'border-box',
       display: 'flex', flexDirection: 'column',
-      padding: `10px ${CONTENT_INSET_R}px 10px 0`,
+      padding: `10px ${FOOT_PAD}px`,
     }}>
       {/* Views ACROSS projects — not ways of moving between them, which is the next pair. */}
       <FootRow>

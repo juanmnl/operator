@@ -121,7 +121,11 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // NEUTRAL inset ring (not an accent stripe — see the global no-left-marker rule), so it
         // reads as a distinct card, unmistakable next to a merely-RUNNING row (faint accent
         // wash). Running is a secondary tint; selected always wins.
-        padding: '0 8px 0 8px',
+        // 12 LEFT — `ProjectRail.MEMBER_INSET_L`, i.e. `AXIS − MEMBER_BOX / 2`. It was 8 while
+        // the axis was 26; the axis moved to 30 (the strip has no seam, so the visible column runs
+        // to the card's edge) and this had to move with it, or the orb slides 4px on every ⌘B.
+        // The invariant is one number owned by the rail — this file's job is to agree with it.
+        padding: '0 8px 0 12px',
         // NO transparent left border. It was a leftover reservation from a marker stripe this app
         // no longer draws (selected is a surface + inset ring), and 2px of it pushed this row's
         // orb to x=28 while the collapsed strip's sat at 26 — a 2px slide on every ⌘B, which is

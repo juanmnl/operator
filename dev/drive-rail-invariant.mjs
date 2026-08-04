@@ -78,7 +78,15 @@ const NAMES = [
 // thing it is testing agrees with any bug that is internally consistent.
 const RAIL_W = 60
 const RAIL_W_OPEN = 264
-const CONTENT_INSET_R = 8
+/** Zero — see ProjectRail's own note. It was 8 while the strip had a right-hand seam to stop
+ *  short of; deleting the seam moved the visible boundary and the inset was never re-derived. */
+const CONTENT_INSET_R = 0
+/** `DashboardView`'s root padding, painted in the strip's own colour. The column a person sees
+ *  runs from the WINDOW EDGE to the card's edge — 0 → 76 — so its centre is 38, and that is the
+ *  number this driver checks. Asserting only that the elements agree with each other at their
+ *  element-local axis is what let a 4px error stand: they agreed perfectly, at 34. */
+const WINDOW_PAD = 8
+const OPTICAL_CENTRE = 38
 /** The optical axis. The strip has NO right-hand seam any more, so the column runs to the rail's
  *  own edge and the axis is simply the field's midpoint: (60 − 8) / 2 = 26 element-local, 34 from
  *  the window edge, the centre of the visible 68px strip.
@@ -271,7 +279,15 @@ async function measure(p, label) {
   const collapsed = rr.width < (RAIL_W + RAIL_W_OPEN) / 2
 
   const groups = await p.evaluate(() => [...document.querySelectorAll('[data-rail-project-header]')]
-    .map((h) => ({ id: h.getAttribute('data-rail-project-header'), accent: h.getAttribute('data-rail-accent') })))
+    .map((h) => ({
+      id: h.getAttribute('data-rail-project-header'),
+      accent: h.getAttribute('data-rail-accent'),
+      // A name too long for the field is ELLIPSISED, and a truncated string's ink is bounded by
+      // the field rather than placed by centring — where its last glyph lands is where WebKit put
+      // an ellipsis, not a statement about the axis. Measured, not assumed: this is read off the
+      // DOM per name, so a name that starts fitting is asserted again automatically.
+      truncated: h.scrollWidth > h.clientWidth,
+    })))
   // `[data-rail-orb]`, which BOTH states carry — the collapsed disc and the expanded row's orb
   // are the same object at the same x, and that is the invariant. Keying this to the collapsed
   // button (`data-rail-session`) measured nothing at 264 and reported the orbs as "vanished",
@@ -284,11 +300,13 @@ async function measure(p, label) {
   for (const g of groups) {
     const name = g.id.replace(/-(id|\d+)$/, '').slice(0, 14)
     targets.push({
-      key: `header ${name}`, state: 'name ink', sel: `[data-rail-project-header="${g.id}"]`,
+      key: `header ${name}${g.truncated ? ' ✂' : ''}`, state: g.truncated ? 'name ink (cut)' : 'name ink',
+      sel: `[data-rail-project-header="${g.id}"]`,
       accent: g.accent,
       // Collapsed the name is centred in the field; expanded it is left-aligned at the margin,
-      // which is deliberate and is why it is only held to the axis at 60.
-      offAxis: !collapsed,
+      // which is deliberate and is why it is only held to the axis at 60. A truncated name is
+      // exempt at both widths — see `truncated` above.
+      offAxis: !collapsed || g.truncated,
     })
   }
   for (const id of orbs.slice(0, 3)) {
@@ -328,7 +346,7 @@ async function measure(p, label) {
 
 function report(m) {
   const axis = AXIS
-  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → axis ${axis}\n${'='.repeat(98)}`)
+  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → axis ${axis} local = ${axis + m.rr.left} from the window edge (want ${OPTICAL_CENTRE})\n${'='.repeat(98)}`)
   console.log('H · PAINTED CENTRE — every element that belongs on the member column')
   console.log(pad('ELEMENT', 24) + pad('STATE', 15) + '  INK L    INK R   WIDTH   CENTRE   Δaxis    INK T     INK B')
   console.log('-'.repeat(98))
@@ -347,6 +365,15 @@ function report(m) {
   }
   console.log('-'.repeat(98))
   console.log(`H: worst painted-centre delta ${worst >= 0 ? '+' : ''}${worst.toFixed(2)}px  (tolerance ±${TOL})`)
+  // THE SAME NUMBER IN WINDOW COORDINATES, and it is the one that matters. The elements agreed
+  // with each other at 34 for a whole release; what they did not agree with was the middle of the
+  // column a person can see (window edge → card edge = 0 → 76). A self-consistent axis is not the
+  // claim — 38 is.
+  const onAxis = m.rows.filter((r) => !r.offAxis && r.box)
+  const fromWindow = onAxis.map((r) => m.rr.left + (r.box.left + r.box.right) / 2)
+  const worstWindow = fromWindow.reduce((w, c) => (Math.abs(c - OPTICAL_CENTRE) > Math.abs(w - OPTICAL_CENTRE) ? c : w), OPTICAL_CENTRE)
+  console.log(`   painted centre from the WINDOW EDGE: ${fromWindow.map((x) => x.toFixed(2)).join(' / ') || '—'}   want ${OPTICAL_CENTRE}` +
+    (Math.abs(worstWindow - OPTICAL_CENTRE) > TOL ? '  ◀ OFF' : '  ok'))
 
   // ---- S. the foot's eight glyphs, by painted ink size ---------------------------------------
   console.log('\nS · FOOT GLYPH INK — eight identical 24×24 boxes, which is why this goes unseen')
@@ -401,7 +428,7 @@ function report(m) {
   console.log(`  foot controls present: ${m.foot.present.length}/8` + (okFoot ? '  ok' : '  ◀ OFF'))
 
   return {
-    worst, sizeSpread, okRhythm, okFoot,
+    worst, sizeSpread, okRhythm, okFoot, worstWindow,
     rows: m.foot.rows.map((r) => r.top),
     orbs: Object.fromEntries(m.rows.filter((r) => r.orb && r.box).map((r) => [r.orb, r.box])),
     accents: Object.fromEntries(m.groups.map((g) => [g.id, g.accent])),
@@ -482,6 +509,11 @@ for (const [theme, short] of THEMES) {
   await p.screenshot({ path: `/tmp/operator-shots/rail-d1-${short.replace('·', '-')}-expanded.png`, clip: { x: m2.rr.left, y: 0, width: 290, height: 900 } })
 
   if (Math.abs(r1.worst) > TOL) fails.push(`collapsed axis off by ${r1.worst.toFixed(2)}px`)
+  for (const [scene, r] of [['collapsed', r1], ['expanded', r2]]) {
+    if (Math.abs(r.worstWindow - OPTICAL_CENTRE) > TOL) {
+      fails.push(`${scene} member column paints at ${r.worstWindow.toFixed(2)} from the window edge, not the optical centre ${OPTICAL_CENTRE}`)
+    }
+  }
   if (r1.sizeSpread > 1) fails.push(`foot glyph ink spread ${r1.sizeSpread.toFixed(2)}px`)
   if (!r1.okRhythm) fails.push('collapsed rhythm off')
   if (!r2.okRhythm) fails.push('expanded rhythm off')
