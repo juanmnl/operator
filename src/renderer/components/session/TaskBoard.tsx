@@ -8,6 +8,7 @@ import { fmtDuration, relativeTime } from '../../lib/format'
 import { laneTextColor } from '../../lib/lane-color'
 import { StatusWave } from '../sidebar/StatusWave'
 import { TaskDiffCard } from './TaskDiffCard'
+import { isStaleTask, taskAgeDays } from '../../lib/task-staleness'
 
 // THE BOARD. Project home as a board of WORK — Backlog · Running · Waiting · Done — where the
 // card is the task and the agent is a chip on it. The inversion of the roster, which put the
@@ -50,13 +51,20 @@ export type LaneSignal = Pick<AgentSession, 'status' | 'phase' | 'lastToolName' 
  *  here made three-fifths of the column unreachable UI and made a hard invariant read as an
  *  empirical coincidence, which invites someone to relax it later.
  *
- *  ALSO ABSENT — `unassigned`. A dispatch whose role token matched no lane is NOT stranded: the
- *  same handler calls `addProjectTask` before recording the outcome, so the work is already a
- *  real queued task sitting in Backlog. A Waiting card for it would show the same work twice, and
- *  the record carries `toRoleId: undefined`, so the card would have no affordance at all. What is
- *  genuinely lost when the channel goes is the REASON — that is a note on the backlog card
- *  instead (see `unassignedByText`). */
-const WAITING_OUTCOMES = new Set<DispatchRecord['outcome']>(['pending-approval', 'undelivered'])
+ *  • `unassigned` — the role token matched no lane, so nothing was delivered anywhere.
+ *
+ *  THAT LAST ONE REVERSES WHAT THIS COMMENT USED TO SAY. The old argument was that an
+ *  `unassigned` dispatch is not stranded, because the same handler called `addProjectTask` first
+ *  and the work was therefore already a real queued task in Backlog — so a Waiting card would
+ *  show it twice. **The handler no longer creates that task**, and the premise went with it. It
+ *  was also the wrong trade: a `ProjectTask` is durable and indistinguishable from something a
+ *  human queued, so eight lane STATUS REPORTS filed this way in July were later assigned and
+ *  dispatched as if they were work. A delivery failure belongs in the column for things stopped
+ *  until a human acts, not in the queue of things to do.
+ *  The card's missing affordance — the old note that `toRoleId: undefined` left nothing to press
+ *  — is answered rather than inherited: an unassigned card carries a lane picker (route it now)
+ *  and a dismiss. */
+const WAITING_OUTCOMES = new Set<DispatchRecord['outcome']>(['pending-approval', 'undelivered', 'unassigned'])
 
 export interface TaskBoardProps {
   /** The project's whole task list — `project.tasks ?? []`. Partitioned here, never mutated. */
@@ -87,6 +95,9 @@ export interface TaskBoardProps {
   /** Bring a lane's session forward. The board never opens a second view of a lane; it points at
    *  the one that exists. */
   onOpenLane?: (roleId: string) => void
+  /** Route a dispatch that named no lane to a real one. Absent = the picker is inert (read-only
+   *  board), never missing — a card with no affordance is what this column just stopped being. */
+  onAssignDispatch?: (id: string, roleId: string) => void
 }
 
 export type BoardColumnKey = 'backlog' | 'running' | 'waiting' | 'done'
@@ -99,10 +110,11 @@ export type BoardColumnKey = 'backlog' | 'running' | 'waiting' | 'done'
  *  produces the pair, and whose worst failure is cosmetic (two identical task texts both get the
  *  note; nothing is hidden or mis-sent).
  *
- *  This exists because the reason is otherwise invisible once the channel is deleted: the task
- *  reads as a backlog item nobody assigned, when the truth is that an agent asked for a lane that
- *  does not exist. The task is genuinely in Backlog and genuinely actionable — which is exactly
- *  why it does NOT also get a Waiting card. */
+ *  HISTORICAL NOW. New dispatches no longer create the task at all (see WAITING_OUTCOMES), so
+ *  this join only ever matches rows minted before that change — and those are the user's to
+ *  clear, not ours to migrate. It stays for exactly that: an old row still explains itself.
+ *  Its second job is the dedupe in `partitionBoard`: a legacy pair already has a backlog row, so
+ *  it must NOT also raise a Waiting card, or the change would show that work twice. */
 function unassignedByText(dispatches: DispatchRecord[] | undefined): Set<string> {
   const out = new Set<string>()
   for (const d of dispatches ?? []) if (!d.replyId && d.outcome === 'unassigned') out.add(d.task)
@@ -149,7 +161,11 @@ export function partitionBoard(
       .sort((a, b) => (a.startedAt ?? a.createdAt).localeCompare(b.startedAt ?? b.createdAt)),
     // Clause (a) of the Waiting rule — see WAITING_OUTCOMES. A `replyId` record is a chat
     // delivery, not work, whatever happened to it.
+    // …minus any `unassigned` record that ALREADY has a backlog task carrying its text. That
+    // pair can only exist for rows minted before the handler stopped creating them; showing both
+    // would be the duplication the old rule rightly warned about.
     waiting: (dispatches ?? []).filter((d) => !d.replyId && WAITING_OUTCOMES.has(d.outcome))
+      .filter((d) => d.outcome !== 'unassigned' || !all.some((t) => t.text === d.task))
       .sort((a, b) => b.at.localeCompare(a.at)),
     done: done.sort((a, b) => closedAt(b).localeCompare(closedAt(a))),
     unassignedReasons: unassignedByText(dispatches),
@@ -258,6 +274,7 @@ export function TaskBoard(props: TaskBoardProps) {
                 roles={roles}
                 liveRoles={liveRoles}
                 unroutedReason={board.unassignedReasons.has(task.text)}
+                now={now}
                 onAssign={props.onAssignTask}
                 onSend={props.onSendTask}
                 onRemove={props.onRemoveTask}
@@ -298,6 +315,8 @@ export function TaskBoard(props: TaskBoardProps) {
               onApprove={props.onApproveDispatch}
               onReject={props.onRejectDispatch}
               onOpenLane={props.onOpenLane}
+              roles={roles}
+              onAssign={props.onAssignDispatch}
             />
           ))
       case 'done': {
@@ -480,10 +499,12 @@ const LABEL: React.CSSProperties = {
 
 // ── Cards ───────────────────────────────────────────────────────────────────────────────────
 
-function BacklogCard({ task, role, roles, liveRoles, unroutedReason, onAssign, onSend, onRemove }: {
+function BacklogCard({ task, role, roles, liveRoles, unroutedReason, now, onAssign, onSend, onRemove }: {
   task: ProjectTask
   role?: Role
   roles: Role[]
+  /** The board's ticking clock — shared so every card ages on the same beat. */
+  now: number
   liveRoles?: Record<string, string>
   /** True when this task is in the backlog because a dispatch named a lane that doesn't exist. */
   unroutedReason?: boolean
@@ -510,7 +531,19 @@ function BacklogCard({ task, role, roles, liveRoles, unroutedReason, onAssign, o
           liveRoles={liveRoles}
           onChange={(id) => onAssign(task.id, id || undefined)}
         />
-        <span data-card-time style={TIME}>{relativeTime(task.createdAt)}</span>
+        {/* A twelve-day-old task should LOOK twelve days old before you press anything. The
+            relative time beside it already says "12 days ago", but a timestamp reads as
+            provenance; this reads as a state, which is what it now is — `Send →` will hold it
+            back and ask. Coloured text and no fill, like every other state marker here. */}
+        {isStaleTask(task, now) ? (
+          <span
+            data-card-stale={taskAgeDays(task, now)}
+            title={`Queued ${taskAgeDays(task, now)} days ago — sending will ask first`}
+            style={{ ...TIME, color: laneTextColor('var(--color-warning)') }}
+          >{taskAgeDays(task, now)}d old</span>
+        ) : (
+          <span data-card-time style={TIME}>{relativeTime(task.createdAt)}</span>
+        )}
         <button
           className="tb-btn"
           data-card-send
@@ -636,16 +669,23 @@ function LaneLine({ signal, accent }: { signal?: LaneSignal; accent: string }) {
  *  The card leads with WHO ASKED WHOM, because that is the decision — approving is not "run this
  *  task", it is "let Research put this into Code". The state line is `chipForOutcome`, so every
  *  word here is one the dispatch log already writes; no state is invented for the board. */
-function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane }: {
+function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles, onAssign }: {
   record: DispatchRecord
   from?: Role
   to?: Role
   onApprove?: (id: string) => void
   onReject?: (id: string) => void
   onOpenLane?: (roleId: string) => void
+  /** Lanes this project actually has — the recovery path for a dispatch that named none. */
+  roles?: Role[]
+  onAssign?: (id: string, roleId: string) => void
 }) {
   const chip = chipForOutcome(record.outcome)
   const approvable = record.outcome === 'pending-approval'
+  // A dispatch that matched no lane. It creates no backlog row any more, so this card is the
+  // only representation of that work — and a card with nothing to press would be exactly the
+  // dead control this app has fixed three times. Route it, or close it.
+  const unrouted = record.outcome === 'unassigned'
   return (
     <article
       className="tb-card"
@@ -667,7 +707,37 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane }: {
           one line on the board whose entire job is to be read was the least readable thing on it. */}
       <p data-waiting-reason style={{ ...ACTIVITY, color: laneTextColor('var(--color-warning)') }}>{chip.label}</p>
       <div style={{ ...META_ROW, marginTop: 8 }}>
-        {approvable ? (
+        {unrouted ? (
+          <>
+            {/* The rescue the backlog row used to provide: assign to a real lane and send. It
+                re-enters the same delivery path an approval uses, so an idle lane launches and
+                an unknown template is created exactly as for any other dispatch. */}
+            <label className="tb-assignee" style={{ cursor: 'pointer' }}>
+              <span style={{ ...TIME, fontSize: 10 }}>Route to</span>
+              <select
+                data-route-dispatch={record.id}
+                defaultValue=""
+                onChange={(e) => { if (e.target.value) onAssign?.(record.id, e.target.value) }}
+                disabled={!onAssign || !(roles ?? []).length}
+                style={{
+                  font: 'inherit', fontSize: 10.5, color: 'var(--fg)', background: 'transparent',
+                  border: 'none', outline: 'none', cursor: 'pointer', maxWidth: 120,
+                }}
+              >
+                <option value="" disabled>a lane…</option>
+                {(roles ?? []).map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+              </select>
+            </label>
+            <button
+              className="tb-btn"
+              data-dismiss={record.id}
+              style={{ marginLeft: 'auto' }}
+              onClick={() => onReject?.(record.id)}
+              disabled={!onReject}
+              title="Dismiss — this dispatch is never delivered"
+            >Dismiss</button>
+          </>
+        ) : approvable ? (
           <>
             {/* Explicit and PER CARD. No approve-all and no timeout: a timeout that approves is
                 not a guardrail, and one button that approves eleven things is how you commission

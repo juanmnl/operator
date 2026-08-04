@@ -24,7 +24,7 @@ export function ProjectView({
   project, tab, onSelectTab, onBack, onToggleSidebar, sidebarCollapsed,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
-  onApproveDispatch, onRejectDispatch,
+  onApproveDispatch, onRejectDispatch, onAssignDispatch,
   resumableCount, onResumeProject, chatterPaused, onToggleChatter,
   addLaneRequest, onAddLaneRequestHandled,
 }: {
@@ -60,6 +60,8 @@ export function ProjectView({
   /** Approve / decline a dispatch a NON-coordinator lane asked for. Absent = read-only log. */
   onApproveDispatch?: (projectId: string, id: string) => void
   onRejectDispatch?: (projectId: string, id: string) => void
+  /** Route an unassigned dispatch to a real lane — the Waiting card's recovery path. */
+  onAssignDispatch?: (projectId: string, id: string, roleId: string) => void
   /** Saved-but-not-live agents of this project — resumable as a group. */
   resumableCount?: number
   onResumeProject?: () => void
@@ -168,6 +170,7 @@ export function ProjectView({
               onStartAll={onStartAll}
               onSetTaskStatus={onSetTaskStatus}
               onApproveDispatch={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))}
+              onAssignDispatch={onAssignDispatch && ((id, roleId) => onAssignDispatch(project.id, id, roleId))}
               onRejectDispatch={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))}
               onOpenLane={(roleId) => {
                 // A lane that ISN'T running has no terminal to focus, and this guard used to end

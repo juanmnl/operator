@@ -15,8 +15,12 @@ import type { DispatchRecord, ProjectTask } from '../../../shared/types'
 //     `sent`/`launched` record, and the store holds 82 non-reply `sent` records in one project.
 //     So its fixture is a real `sent` record with only `outcome` changed — which is exactly the
 //     mutation `setDispatchOutcome` performs.
-//   • `unassigned` never reaches Waiting: the same handler calls `addProjectTask` before
-//     recording it, so the work is already a queued task in Backlog.
+//   • `unassigned` DOES reach Waiting now. It used to be excluded because the same handler called
+//     `addProjectTask` first, so the work was already a queued task in Backlog — but that call is
+//     gone: a dispatch naming a lane that doesn't exist is a delivery failure, not work, and
+//     minting a durable task for it is how eight July status reports were later dispatched as if
+//     they were. The one exception is a LEGACY pair (a row minted before the change), which keeps
+//     its backlog card and must not also raise a Waiting one.
 //   • `done` is done ∪ abandoned, but the two are counted apart. Folding abandoned into "done"
 //     is how ~50 reconciled tasks once got relabelled as finished.
 
@@ -60,11 +64,13 @@ describe('partitionBoard', () => {
       dispatch({ id: 'launched', outcome: 'launched' }),
       dispatch({ id: 'queued', outcome: 'queued' }),
       dispatch({ id: 'rejected', outcome: 'rejected' }),
-      // Already a queued task in Backlog — a Waiting card would show the same work twice, and
-      // the record's `toRoleId` is undefined so the card would have no affordance either.
+      // WAS excluded, on the argument that the work was already a queued task in Backlog. The
+      // handler no longer files that task, so the premise is gone and the record is now the only
+      // representation of the work — it belongs in the column for things stopped until a human
+      // acts. (Its card carries a lane picker, which answers the old "no affordance" objection.)
       dispatch({ id: 'unassigned', outcome: 'unassigned' }),
     ])
-    expect(b.waiting.map((d) => d.id).sort()).toEqual(['held', 'stranded'])
+    expect(b.waiting.map((d) => d.id).sort()).toEqual(['held', 'stranded', 'unassigned'])
   })
 
   it('excludes chat deliveries, whatever happened to them', () => {
@@ -125,5 +131,37 @@ describe('partitionBoard', () => {
       backlog: [], running: [], waiting: [], done: [],
       unassignedReasons: new Set(), unconfirmed: 0,
     })
+  })
+})
+
+
+// ── a dispatch that named no lane (dispatch-hygiene) ───────────────────────────────────────
+describe('partitionBoard · unassigned dispatches', () => {
+  it('raises a WAITING card and no backlog task', () => {
+    const b = partitionBoard([], [dispatch({ id: 'd1', outcome: 'unassigned', task: 'code done: …' })])
+    expect(b.waiting.map((d) => d.id)).toEqual(['d1'])
+    expect(b.backlog).toEqual([])
+  })
+
+  it('does NOT double up on a legacy pair that already has its backlog row', () => {
+    // Rows minted before the handler stopped creating them are the user's to clear, not ours to
+    // migrate — so they keep the backlog card (with its reason) and raise no second card.
+    const b = partitionBoard(
+      [task({ id: 't1', text: 'code done: …' })],
+      [dispatch({ id: 'd1', outcome: 'unassigned', task: 'code done: …' })],
+    )
+    expect(b.waiting).toEqual([])
+    expect(b.backlog.map((t) => t.id)).toEqual(['t1'])
+    expect(b.unassignedReasons.has('code done: …')).toBe(true)
+  })
+
+  it('still excludes a REPLY, whatever its outcome — clause (a) is unchanged', () => {
+    const b = partitionBoard([], [dispatch({ id: 'r1', outcome: 'unassigned', replyId: 'x' })])
+    expect(b.waiting).toEqual([])
+  })
+
+  it('a dismissed one leaves Waiting entirely', () => {
+    const b = partitionBoard([], [dispatch({ id: 'd1', outcome: 'rejected', task: 'x' })])
+    expect(b.waiting).toEqual([])
   })
 })
