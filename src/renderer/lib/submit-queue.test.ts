@@ -699,3 +699,89 @@ describe('observable vs. unwatched terminals', () => {
     expect(t2).toBeLessThan(nudgeDelayFor('B') + CONFIRM_POLL_MS * 2)
   })
 })
+
+// --- a human typing in the lane (rescue-cr-submits-user-typing) --------------------------
+// The rescue CR is a keystroke into the SAME TUI composer the user types into, and it cannot
+// tell a stranded dispatch from a person mid-sentence. On an observed terminal it is up to
+// RESCUE_AFTER_MS away, so every dispatch used to open a 30-second window in which anything
+// typed could be submitted half-written. Reported as "it sends my message with it, half baked".
+describe('a keystroke disarms the rescue', () => {
+  /** Like `queueWithHook` above, but with an undelivered sink — the report is half the fix. */
+  const queueWithTyping = (during?: (q: SubmitQueue) => void) => {
+    let t = 0
+    const writes: { at: number; id: string; data: string }[] = []
+    const undelivered: { id: string; text: string }[] = []
+    let fired = false
+    let q: SubmitQueue
+    q = createSubmitQueue({
+      write: (id, data) => writes.push({ at: t, id, data }),
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms
+        if (during && !fired) { fired = true; during(q) }
+      },
+      onUndelivered: (id, text) => undelivered.push({ id, text }),
+    })
+    return { q, writes, undelivered }
+  }
+
+  it('does NOT fire the CR when the user typed during the wait', async () => {
+    for (const text of ['x'.repeat(80), 'x'.repeat(4000)]) {
+      const { q, writes } = queueWithTyping((qq) => qq.cancelNudge('t1', 'typing'))
+      q.observable('t1')
+      await q.submit('t1', text)
+      await q.idle()
+      expect(writes.filter((w) => w.id === 't1').map((w) => w.data), `${text.length} chars`)
+        .toEqual([submitSequence(text)])
+    }
+  })
+
+  it('REPORTS the disarmed dispatch instead of dropping it silently', async () => {
+    const { q, undelivered } = queueWithTyping((qq) => qq.cancelNudge('t1', 'typing'))
+    q.observable('t1')
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    // Suppressing the CR may leave the dispatch as a draft forever. Silence would read as
+    // delivered — the one thing the closed loop exists to stop.
+    expect(undelivered).toEqual([{ id: 't1', text: 'do the thing' }])
+  })
+
+  it('stays SILENT when the disarm was a deliberate interrupt', async () => {
+    const { q, undelivered } = queueWithTyping((qq) => qq.cancelNudge('t1'))
+    q.observable('t1')
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    expect(undelivered).toEqual([])
+  })
+
+  it('does not report a typing-disarmed message that committed anyway', async () => {
+    // The paste can land on its own a moment after the keystroke. The entry stays in
+    // `awaiting` precisely so the transcript watcher can still confirm it — a false
+    // "undelivered" on a message the agent actually received is its own bug.
+    const { q, undelivered } = queueWithTyping((qq) => { qq.cancelNudge('t1', 'typing'); qq.confirm('t1') })
+    q.observable('t1')
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    expect(undelivered).toEqual([])
+  })
+
+  it('is PER TERMINAL — typing in lane A must not disarm lane B', async () => {
+    const { q, writes } = queueWithTyping((qq) => qq.cancelNudge('t1', 'typing'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'B')])
+    await q.idle()
+    expect(writes.filter((w) => w.id === 't1').map((w) => w.data)).toEqual([submitSequence('A')])
+    expect(writes.filter((w) => w.id === 't2').map((w) => w.data)).toEqual([submitSequence('B'), '\r'])
+  })
+
+  it('leaves nothing armed to disarm once the turn is confirmed', async () => {
+    // `pending` is what the keystroke handler checks before doing any work, so it is also the
+    // guarantee that typing into a settled lane costs one Map lookup and nothing else.
+    const clock = fakeClock()
+    const q = createSubmitQueue({ write: () => {}, ...clock })
+    q.observable('t1')
+    const sent = q.submit('t1', 'A')
+    q.confirm('t1')
+    await sent
+    expect(q.pending('t1')).toBeUndefined()
+  })
+})

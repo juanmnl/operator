@@ -135,8 +135,20 @@ export interface SubmitQueue {
    *  window used to be a fixed 800ms; length scaling widened it to as much as 6s, so the
    *  race went from narrow to routine on exactly the long prompts dispatch sends.
    *
+   *  A HUMAN TYPING INTO THE LANE has to call it too, and that is the worse failure of the
+   *  two: their half-written line is sitting in the same TUI composer the rescue CR submits,
+   *  and the CR cannot tell a stranded dispatch from a person mid-sentence. It submits what
+   *  is there — the agent then acts on a truncated instruction, which is worse than losing
+   *  the text. The window is the full `RESCUE_AFTER_MS` on any observed terminal, so every
+   *  dispatch used to open 30 seconds in which anything typed could be sent.
+   *
+   *  `reason` decides whether the disarmed submission is REPORTED. Stopping is deliberate, so
+   *  there is nothing to report; typing is not a decision about the dispatch at all, and
+   *  suppressing its CR may leave it stranded as a draft forever — that has to surface
+   *  through `onUndelivered` rather than vanish.
+   *
    *  Per terminal, like the queues themselves: stopping lane A must not disarm lane B. */
-  cancelNudge(id: string): void
+  cancelNudge(id: string, reason?: 'interrupt' | 'typing'): void
   /** CLOSE THE LOOP: the transcript has recorded a real user turn on this terminal, so whatever
    *  we last wrote there actually committed.
    *
@@ -180,6 +192,9 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   // Bumped by cancelNudge. A nudge captures the value before its wait and only fires if it
   // still matches — so a cancel during the wait disarms it without needing a timer handle.
   const nudgeGen = new Map<string, number>()
+  // Why the last cancel happened. Read only on the cancelled branch, to decide between
+  // "deliberate, say nothing" and "a human walked in, so this dispatch is now in limbo".
+  const cancelReason = new Map<string, 'interrupt' | 'typing'>()
   // Bumped by confirm(), read the same way: a submission captures it before writing and
   // compares afterwards, so "was this confirmed?" is a counter comparison rather than a
   // subscription the queue would have to own and tear down.
@@ -230,30 +245,54 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           while (!confirmed() && !cancelled() && now() < deadline) {
             await sleep(Math.min(CONFIRM_POLL_MS, deadline - now()))
           }
-          // Disarmed mid-wait (the user hit stop) — the CR must NOT go out.
-          if (cancelled()) { awaiting.delete(id); lastAt.set(id, now()); return }
+          // DETACHED, deliberately. Waiting for the verdict inside the chain would make every
+          // submission hold its terminal for the whole confirmation window, so a burst of
+          // dispatches to one lane — the exact thing the coordinator's charter encourages —
+          // would crawl out four seconds apart. The chain ends at the write, as it always did;
+          // only the reporting outlives it.
+          //
+          // `ignoreCancel` is for the typing case: the cancel is what STARTED this watch, so
+          // the usual "a cancel means the user settled it deliberately" reading is wrong here.
+          // Only a real turn clears it.
+          const watchDelivery = (ignoreCancel = false) => {
+            const watch = (async () => {
+              await sleep(CONFIRM_WINDOW_MS)
+              const lost = (ignoreCancel || !cancelled()) && !confirmed()
+              // Only clear if this submission is still the one being awaited: a newer send on
+              // the same terminal owns the slot now, and dropping its entry would blind the
+              // watcher.
+              if (awaiting.get(id)?.at === writtenAt) awaiting.delete(id)
+              if (lost) deps.onUndelivered?.(id, text)
+            })().catch(() => { /* reporting must never break the queue */ })
+            watches.add(watch)
+            void watch.finally(() => watches.delete(watch))
+          }
+
+          // CONFIRMED FIRST. Both can be true — a turn started and then the user typed — and
+          // delivered beats disarmed: the message is on the record, so there is nothing to
+          // rescue and nothing to report.
           if (confirmed()) { awaiting.delete(id); lastAt.set(id, now()); return }
+          // Disarmed mid-wait — the CR must NOT go out.
+          if (cancelled()) {
+            lastAt.set(id, now())
+            // Stop is deliberate: the user settled this submission themselves.
+            if (cancelReason.get(id) !== 'typing' || !deps.onUndelivered) { awaiting.delete(id); return }
+            // Typing is not. We suppressed the only thing that would have submitted a stranded
+            // draft, so this dispatch may now sit in that composer forever — and silence would
+            // make it look delivered. Give it the same window (no CR) and then say so if no
+            // turn ever appears. The entry stays in `awaiting` on purpose: the transcript
+            // watcher can still confirm it, which is what keeps the report honest when the
+            // paste committed on its own a moment after the keystroke.
+            watchDelivery(true)
+            return
+          }
           deps.write(id, '\r')
           lastAt.set(id, now())
           // Still open-loop past this point unless someone is watching, so give the rescue its
           // own window and then say so. No second CR: if a bare CR did not commit it, another
           // one will not either, and each extra keystroke is another chance to split something.
           if (!deps.onUndelivered) { awaiting.delete(id); return }
-          // DETACHED, deliberately. Waiting for the verdict inside the chain would make every
-          // submission hold its terminal for the whole confirmation window, so a burst of
-          // dispatches to one lane — the exact thing the coordinator's charter encourages —
-          // would crawl out four seconds apart. The chain ends at the CR, as it always did;
-          // only the reporting outlives it.
-          const watch = (async () => {
-            await sleep(CONFIRM_WINDOW_MS)
-            const lost = !cancelled() && !confirmed()
-            // Only clear if this submission is still the one being awaited: a newer send on the
-            // same terminal owns the slot now, and dropping its entry would blind the watcher.
-            if (awaiting.get(id)?.at === writtenAt) awaiting.delete(id)
-            if (lost) deps.onUndelivered?.(id, text)
-          })().catch(() => { /* reporting must never break the queue */ })
-          watches.add(watch)
-          void watch.finally(() => watches.delete(watch))
+          watchDelivery()
         })
         // A failed write must not break ordering for everything queued behind it.
         .catch(() => { awaiting.delete(id) /* dropped submission */ })
@@ -263,10 +302,13 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
     idle() {
       return Promise.all([...watches]).then(() => { /* verdicts only, not the writes */ })
     },
-    cancelNudge(id) {
+    cancelNudge(id, reason = 'interrupt') {
       nudgeGen.set(id, (nudgeGen.get(id) ?? 0) + 1)
+      cancelReason.set(id, reason)
       // Stop is deliberate, so nothing about this submission is a failure worth reporting.
-      awaiting.delete(id)
+      // Typing keeps the entry: the submission is now in limbo rather than settled, and the
+      // transcript watcher needs it to be able to confirm a paste that lands anyway.
+      if (reason !== 'typing') awaiting.delete(id)
     },
     confirm(id) {
       confirmGen.set(id, (confirmGen.get(id) ?? 0) + 1)

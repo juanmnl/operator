@@ -5,6 +5,7 @@ import type { ITheme } from '@xterm/xterm'
 import type { GridRun, GridUpdate } from '../../../shared/types'
 import { TERMINAL_FONT_FAMILY } from '../../lib/terminal-options'
 import { findUrlAtColumn } from '../../lib/terminal'
+import { submitQueue } from '../../lib/submit-queue'
 
 // Grid terminal pane — our own terminal (the non-native path). The pty bytes are
 // parsed into a grid by alacritty in Rust (src-tauri/src/gridterm.rs); this pane
@@ -316,6 +317,14 @@ export function GridTerminalPane({ terminalId, theme, active }: { terminalId: st
     })
     term.open(inputEl)
     termRef.current = term
+    // Same disarm as TerminalPane — see the long note there. This encoder is not mounted
+    // anywhere today (no call site outside this file), but it is the other place keystrokes
+    // reach a pty, and an input path that can submit someone's half-typed line must not come
+    // back to life without the guard.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && submitQueue.pending(terminalId)) submitQueue.cancelNudge(terminalId, 'typing')
+      return true
+    })
     term.onData((d) => {
       window.operator.terminalWrite(terminalId, d)
       // Typing while scrolled back jumps to the live bottom (standard terminal feel).
