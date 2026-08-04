@@ -428,6 +428,13 @@ export function installMockBridge() {
   }
   // `?tz=1` — fixed evening dispatches for the local-time fix.
   const tz = new URLSearchParams(location.search).get('tz') === '1'
+  // `?deadLane=t2` — that terminal's CHILD has exited while its pty entry lingers, which is what
+  // the real backend reports after a lane's `claude` dies. The renderer cannot learn this from
+  // `terminal:exit` (it is killed and respawned by WebKit under memory pressure and misses the
+  // event), so it must reconcile against `terminalList().alive`. Without a way to say "alive:
+  // false" here, the reconcile has no fixture and its CALLER goes untested — which is exactly
+  // how the last delivery bug survived a full suite of passing unit tests.
+  const deadLane = new URLSearchParams(location.search).get('deadLane')
   // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —
   // verbatim the six entries the real `~/.operator/role-defaults.json` held. `?worktree=1` also
   // clears the one-shot flag so the seed migration runs; any other value keeps it, which is how a
@@ -532,7 +539,12 @@ export function installMockBridge() {
     // Shape-exact with ChatStore::replies — including `id`, the content-hash PK a delivery
     // outcome is keyed to. A fixture missing it would let the feed's fold silently no-op.
     projectReplies: async (projectId: string) => replyRows.get(projectId) ?? [],
-    terminalList: async () => (empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_TERMINALS : MOCK_TERMINALS),
+    terminalList: async () => {
+      const list = empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_TERMINALS : MOCK_TERMINALS
+      // Report the dead child the way the backend does: the row stays (the pty entry lingers),
+      // only `alive` flips. Dropping the row entirely would exercise a different branch.
+      return deadLane ? list.map((t) => (t.id === deadLane ? { ...t, alive: false } : t)) : list
+    },
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
     // Two servers on the Code lane so the multi-server picker is exercised.
