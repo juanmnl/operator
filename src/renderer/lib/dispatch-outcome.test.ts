@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { DispatchRecord } from '../../shared/types'
-import { chipForOutcome, type ChipTone } from './dispatch-outcome'
+import { canDismissDispatch, chipForOutcome, type ChipTone } from './dispatch-outcome'
 
 // Ported from `project-channel.test.ts`, which was deleted whole with the channel. The claim at
 // the time — "every describe tests a function that no longer exists" — was wrong about this one
@@ -47,6 +47,24 @@ describe('chipForOutcome — derived, never invented', () => {
       'sent', 'launched', 'queued', 'rejected', 'unassigned', 'hop-limit', 'pair-brake', 'paused', 'undelivered',
     ]
     for (const o of every) expect(chipForOutcome(o).label, o).not.toMatch(/your approval/)
+  })
+
+  it('lets a human clear every outcome the board can strand — including `undelivered`', () => {
+    // The bug this covers: `undelivered` was missing from the guard, so the one outcome that is
+    // already terminal and already known not to retry was the one nobody could clear. Seven of
+    // them piled up in Waiting over three days and had to be edited out of projects.json by hand.
+    expect(canDismissDispatch('undelivered')).toBe(true)
+    expect(canDismissDispatch('pending-approval')).toBe(true)
+    expect(canDismissDispatch('unassigned')).toBe(true)
+  })
+
+  it('refuses to re-close what is already closed or already delivered', () => {
+    // Dismissing is terminal, so it must be a no-op on a record that has arrived (rewriting a
+    // delivered dispatch to `declined` would be a lie about what happened) or one already
+    // declined. The `replyId` brakes never reach a board card at all.
+    for (const o of ['sent', 'launched', 'rejected', 'queued', 'hop-limit', 'pair-brake', 'paused'] as const) {
+      expect(canDismissDispatch(o), o).toBe(false)
+    }
   })
 
   it('shows an unknown future outcome verbatim rather than mislabelling it', () => {

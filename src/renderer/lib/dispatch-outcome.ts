@@ -25,6 +25,21 @@ export interface OutcomeChip {
 // `outcome === 'pending-approval'` directly — which is right, because whether a row gets an
 // Approve button depends on the approval GATE, not on how the row is inked.
 
+/** Can a human clear this record off the board by hand?
+ *
+ *  The guard lives here rather than inline in `rejectDispatch` for one reason: the dev board
+ *  harness has to exercise the SAME predicate the app runs, or the driver would only be proving
+ *  that a copy of the rule renders correctly.
+ *
+ *  `undelivered` is in the set because it is TERMINAL and nothing retries it — `reportUndelivered`
+ *  reclassifies a `sent` record and stops. Without it, seven of them piled up in Waiting since
+ *  08-01 with no control that could clear one, and the only fix was hand-editing projects.json.
+ *  Dismissing means `rejected`, never deletion: a dispatch that went out and stranded is evidence
+ *  about a delivery bug, and `DispatchLog` still shows it as `declined`. */
+export function canDismissDispatch(outcome: DispatchRecord['outcome']): boolean {
+  return outcome === 'pending-approval' || outcome === 'unassigned' || outcome === 'undelivered'
+}
+
 /** `outcome` → chip. One row per outcome, no invented states. */
 export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip {
   switch (outcome) {

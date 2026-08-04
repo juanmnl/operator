@@ -718,6 +718,12 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles,
           ink — raw `--color-warning` is #FF8D01 on 1984-light and measured 1.6:1 there, i.e. the
           one line on the board whose entire job is to be read was the least readable thing on it. */}
       <p data-waiting-reason style={{ ...ACTIVITY, color: laneTextColor('var(--color-warning)') }}>{chip.label}</p>
+      {/* Where the bytes ended up — its own line, not a cell in the button row. Sharing that row
+          with `Open lane →` and `Dismiss` truncated it to "Sitting in the lane's comp…" at the
+          four-column width, which is where the board is read from. */}
+      {record.outcome === 'undelivered' && (
+        <p data-undelivered-where style={{ ...ACTIVITY, color: 'var(--fg-muted)' }}>Sitting in the lane’s composer</p>
+      )}
       <div style={{ ...META_ROW, marginTop: 8 }}>
         {unrouted ? (
           <>
@@ -774,16 +780,32 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles,
             {/* `undelivered` is the only non-approvable outcome that reaches Waiting, so this is
                 a statement rather than a ternary — the other half was dead code the moment the
                 brakes left WAITING_OUTCOMES. Approve is deliberately absent: the bytes already
-                went, so there is nothing to approve, and `reportUndelivered` does not retry. */}
-            <span style={{ ...TIME, fontSize: 10 }}>Sitting in the lane’s composer</span>
+                went, so there is nothing to approve, and `reportUndelivered` does not retry.
+                Dismiss is NOT a retry: it is the acknowledgement that this one is dead. Without
+                it this branch was the only card on the board with no way out at all, and seven of
+                them piled up in Waiting over three days with hand-editing projects.json as the
+                only cure. The word, not a `✕` — a `✕` on a live card has meant "delete the lane"
+                in this app, and cost real data.
+                Open lane first, Dismiss last: the same order as the two branches above, where the
+                thing that MOVES the work forward leads and the thing that closes it sits at the
+                far right. They sit at the LEFT edge, where `Approve →`/`Decline` sit one card up
+                in the same column — `Open lane →` kept `marginLeft: auto` only because it used to
+                be alone in the row opposite a sentence, and holding onto that would have given
+                the Waiting column two footer edges. */}
             {record.toRoleId && onOpenLane && (
               <button
                 className="tb-btn"
                 data-open-lane={record.toRoleId}
-                style={{ marginLeft: 'auto' }}
                 onClick={() => onOpenLane(record.toRoleId!)}
               >Open lane →</button>
             )}
+            <button
+              className="tb-btn"
+              data-dismiss={record.id}
+              onClick={() => onReject?.(record.id)}
+              disabled={!onReject}
+              title="Dismiss — it stays in the dispatch log as declined"
+            >Dismiss</button>
           </>
         )}
       </div>

@@ -19,6 +19,7 @@ import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
+import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
@@ -1417,13 +1418,16 @@ export function DashboardView() {
 
   /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again.
    *
-   *  Also the DISMISS verb for an `unassigned` failure. Those no longer mint a backlog task, so
-   *  the Waiting card is the only representation of that work and it needs a way to be closed —
-   *  removing a row must never strand the need behind it. Same outcome, same finality. */
+   *  Also the DISMISS verb for an `unassigned` failure and for an `undelivered` one. Neither mints
+   *  a backlog task, so the Waiting card is the only representation of that work and it needs a
+   *  way to be closed — removing a row must never strand the need behind it. Same outcome, same
+   *  finality. Which outcomes qualify is `canDismissDispatch`; this used to be an inline pair of
+   *  `!==` comparisons that `undelivered` was simply missing from, so the button the board would
+   *  have rendered for it would have done nothing, silently. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
     const project = projectsRef.current.find((p) => p.id === projectId)
     const rec = project?.dispatches?.find((x) => x.id === id)
-    if (!rec || (rec.outcome !== 'pending-approval' && rec.outcome !== 'unassigned')) return
+    if (!rec || !canDismissDispatch(rec.outcome)) return
     setDispatchOutcome(projectId, id, 'rejected')
   }, [])
 
