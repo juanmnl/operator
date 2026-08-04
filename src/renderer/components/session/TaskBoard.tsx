@@ -387,7 +387,12 @@ export function TaskBoard(props: TaskBoardProps) {
               data-board-column={c.key}
               style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(stacked ? null : { minHeight: 0 }) }}
             >
-              <header style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 8px', flexShrink: 0 }}>
+              {/* A FIXED BAND, not a box sized by whatever control it happens to carry. At
+                  `alignItems: center` with no height, Backlog's 20px `+` made its header ~9px
+                  taller than Running's bare label and centring split the difference — so the four
+                  column names sat on two different baselines, and would drift again the next time
+                  a column gained a button. */}
+              <header style={{ display: 'flex', alignItems: 'center', gap: 6, height: 24, boxSizing: 'border-box', padding: '0 2px', marginBottom: 8, flexShrink: 0 }}>
                 <Pip
                   tone={
                     c.key === 'running' ? (n > 0 ? 'running' : 'idle')
@@ -395,11 +400,25 @@ export function TaskBoard(props: TaskBoardProps) {
                         : c.key === 'done' ? 'done' : 'idle'
                   }
                 />
-                <span style={LABEL}>{c.title}</span>
+                <span data-board-label={c.key} style={LABEL}>{c.title}</span>
                 <span
                   data-board-count={c.key}
                   style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, fontVariantNumeric: 'tabular-nums', color: n > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
                 >{n}</span>
+                {/* INSIDE THE COLUMN'S OWN NAME. At `marginLeft: auto` this sat on Backlog's
+                    right edge, 6px from a 12px grid gap — very nearly equidistant from two
+                    columns, and it read as belonging to neither because geometrically it belonged
+                    to neither. The bulk verbs below keep the far edge: they operate on the whole
+                    column, which is what the far edge means here. */}
+                {c.key === 'backlog' && (
+                  <button
+                    data-board-add
+                    className="tb-btn tb-btn-icon"
+                    onClick={() => setComposing((v) => !v)}
+                    title="Add a task"
+                    aria-expanded={composing}
+                  >+</button>
+                )}
                 {c.key === 'done' && board.unconfirmed > 0 && (
                   // Named, not folded into the count: an abandoned task is not a finished one.
                   <span data-board-unconfirmed style={{ ...LABEL, letterSpacing: '0.06em' }}>
@@ -431,24 +450,14 @@ export function TaskBoard(props: TaskBoardProps) {
                     )}
                   </span>
                 )}
-                {c.key === 'backlog' && (
-                  <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    {dispatchable > 0 && props.onStartAll && (
-                      <button
-                        data-board-start-all
-                        className="tb-btn"
-                        onClick={props.onStartAll}
-                        title={`Dispatch ${dispatchable} assigned task${dispatchable > 1 ? 's' : ''} to their agents`}
-                      >Start all →</button>
-                    )}
-                    <button
-                      data-board-add
-                      className="tb-btn tb-btn-icon"
-                      onClick={() => setComposing((v) => !v)}
-                      title="Add a task"
-                      aria-expanded={composing}
-                    >+</button>
-                  </span>
+                {c.key === 'backlog' && dispatchable > 0 && props.onStartAll && (
+                  <button
+                    data-board-start-all
+                    className="tb-btn"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={props.onStartAll}
+                    title={`Dispatch ${dispatchable} assigned task${dispatchable > 1 ? 's' : ''} to their agents`}
+                  >Start all →</button>
                 )}
               </header>
               <div
@@ -970,15 +979,44 @@ function Pip({ tone }: { tone: 'idle' | 'running' | 'waiting' | 'done' }) {
   return <span style={{ width: 6, height: 6, borderRadius: '50%', background: bg, flexShrink: 0 }} />
 }
 
+/** The tallest an empty box can be: BACKLOG's, the only one with an action in it.
+ *
+ *      1 border + 18 padding + 16.5 text (11px × 1.5) + 8 row margin + 20 `.tb-btn`
+ *      (10px × 1.4 + 2×2 padding + 2×1 border) + 18 padding + 1 border  =  82.5
+ *
+ *  Every box claims it, so the four line up while only one of them has something to say at the
+ *  bottom. That dead space in the other three is the accepted cost of keeping `+ Add a task`
+ *  where it is — not a defect to design away.
+ *
+ *  The number is arithmetic over things that can change, so `drive-task-board` asserts the
+ *  MEASURED height equals it, not merely that the four agree — and that is not hypothetical: this
+ *  constant was written 80.5 first, having dropped the box's own two 1px dashed edges (the box is
+ *  `border-box`, so `minHeight` includes them but the sum above has to as well). The four boxes
+ *  agreed with each other at 80.5 while Backlog's real content needed 82.5; only the absolute
+ *  check could see it. The same trap is live for `.tb-btn` ever changing size. */
+const EMPTY_MIN_H = 82.5
+
+/** An empty column. One dashed box, one line, and — in Backlog — the control that files the
+ *  first task. Backlog's box is 28px taller by content, so the other three are padded to match
+ *  rather than shrinking it: the asymmetry (this column can be acted on, Running cannot) is real,
+ *  and it is not worth removing a control to make a rectangle tidy. */
 function EmptyColumn({ text, action }: { text: string; action?: { label: string; run: () => void } }) {
   return (
     <div data-column-empty style={{
       border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
       padding: '18px 12px', textAlign: 'center',
+      minHeight: EMPTY_MIN_H, boxSizing: 'border-box',
     }}>
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5 }}>{text}</p>
+      {/* A FLEX ROW, not a bare inline-block. As `text-align: center` on an inline button the row
+          is a LINE BOX, so it carried the parent font's descent under the button — 22.73px of
+          row for a 20px control, which is how the arithmetic above and the measured box came to
+          disagree by 2.23px. A flex line has no strut, so the button's own height is the row's,
+          and `EMPTY_MIN_H` is derivable rather than measured. */}
       {action && (
-        <button className="tb-btn" onClick={action.run} style={{ marginTop: 8 }}>{action.label}</button>
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 8 }}>
+          <button className="tb-btn" onClick={action.run}>{action.label}</button>
+        </div>
       )}
     </div>
   )
