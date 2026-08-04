@@ -11,7 +11,7 @@ import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
-import { reconcileStaleRunning, liveLaneOf, type LiveLane } from '../lib/task-lifecycle'
+import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { sessionLabel } from '../lib/session-label'
@@ -2633,6 +2633,35 @@ export function DashboardView() {
   }, [runUpdateCheck])
 
   // "Ready for review" detection — watch worktree sessions transitioning to idle
+  // A LANE THAT FINISHES A TURN CLOSES ITS RUNNING TASKS.
+  //
+  // Until now the only automatic close was `exitCompleteRef` — the lane's SESSION ENDING. Lanes
+  // are long-lived and take task after task, so nothing ever closed while a lane stayed alive.
+  // Measured across the real store: 72 tasks `running`, zero done, every one stamped with a LIVE
+  // terminal id. Not the old stale-id leak; a lifecycle with no exit. See `finishedTurn` for why
+  // the busy→not-busy edge is the right signal and what it cannot know.
+  //
+  // Its own phase ref, deliberately not shared with the review-toast effect below: that one is
+  // gated on `worktreeBranch` and skips lanes without a worktree, and a task must close whether
+  // or not its lane happens to have one. Two readers of the same edge, two records.
+  const lastTaskPhaseRef = useRef<Record<string, string>>({})
+  useEffect(() => {
+    for (const tab of terminals) {
+      const session = sessions.find((s) => s.terminalId === tab.id)
+      if (!session) continue
+      const prev = lastTaskPhaseRef.current[tab.id]
+      lastTaskPhaseRef.current[tab.id] = session.phase
+      if (!finishedTurn(prev, session.phase)) continue
+      // Only if this lane actually holds running work — `completeTerminalTasks` captures a diff
+      // and runs the project's check command, which must not fire on every idle arrival.
+      const hasRunning = projectsRef.current.some((p) => (p.tasks ?? []).some((t) => (
+        t.status === 'running' && (t.terminalId === tab.id || (!!tab.roleId && t.roleId === tab.roleId))
+      )))
+      if (!hasRunning) continue
+      void completeTerminalTasks(tab.id, tab.roleId, tab.projectId, laneOf(tab))
+    }
+  }, [terminals, sessions, completeTerminalTasks])
+
   // with uncommitted changes. Show one in-app toast per (terminalId, idle-arrival).
   const lastPhaseRef = useRef<Record<string, string>>({})
   const notifiedRef = useRef<Set<string>>(new Set())

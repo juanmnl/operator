@@ -125,3 +125,33 @@ export function reconcileStaleRunning(
   })
   return changed ? next : tasks
 }
+
+/** Phases in which a lane is DOING something. The app's one motion rule uses the same pair:
+ *  only running and compacting animate. */
+const BUSY = new Set(['running', 'compacting'])
+
+/** Did this lane just finish a turn?
+ *
+ *  THE BUG THIS EXISTS FOR: a running task was only ever closed when its lane's SESSION ENDED
+ *  (`exitCompleteRef` → `completeTerminalTasks`). Lanes are long-lived and take task after task,
+ *  so nothing closed while a lane stayed alive. Measured 2026-08-04 across the real store: 72
+ *  tasks `running`, ZERO done, every one stamped with a LIVE terminal id — not the old stale-id
+ *  leak, simply a lifecycle with no exit. The board reads as a wall of running work because it
+ *  is one, and the Done column stays empty forever.
+ *
+ *  The signal already existed and was used for something else: the "ready for review" toast
+ *  watches exactly this `running → waiting` edge. An agent leaving the busy phases is the only
+ *  observable "it stopped working" this app has.
+ *
+ *  WHAT IT CANNOT KNOW: whether the work was actually finished, or whether the agent stopped to
+ *  ask a question mid-task. Both look identical from outside. Closing is still right — Running
+ *  must mean "an agent is working on this right now", and after the turn ends that is false
+ *  whatever the reason. A task closed early is visible in Done and can be requeued; a task that
+ *  never leaves Running is invisible work that no count can be trusted about, which is the
+ *  failure we actually have.
+ *
+ *  Deliberately NOT an edge into `ended`: a lane whose session ends is already handled by the
+ *  exit path, and firing both would run the diff capture and checks twice for one lane. */
+export function finishedTurn(prev: string | undefined, next: string): boolean {
+  return !!prev && BUSY.has(prev) && !BUSY.has(next) && next !== 'ended'
+}

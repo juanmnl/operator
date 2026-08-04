@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { ProjectTask } from '../../shared/types'
 import {
   statusOf, isQueued, isClosed, queuedCountsByRole,
-  liveLaneOf, isStaleRunning, reconcileStaleRunning, type LiveLane,
+  liveLaneOf, isStaleRunning, reconcileStaleRunning, finishedTurn, type LiveLane,
 } from './task-lifecycle'
 
 const task = (o: Partial<ProjectTask> = {}): ProjectTask =>
@@ -154,5 +154,34 @@ describe('reconcileStaleRunning', () => {
   it('does not resurrect an already-abandoned task', () => {
     const tasks = [task({ status: 'abandoned', reconciledAt: '2026-07-01T00:00:00.000Z' })]
     expect(reconcileStaleRunning(tasks, lanes, NOW)).toBe(tasks)
+  })
+})
+
+describe('finishedTurn', () => {
+  it('fires when the agent stops working', () => {
+    expect(finishedTurn('running', 'waiting')).toBe(true)
+    expect(finishedTurn('running', 'idle')).toBe(true)
+    expect(finishedTurn('compacting', 'waiting')).toBe(true)
+  })
+
+  it('does not fire while the agent is still busy', () => {
+    expect(finishedTurn('running', 'running')).toBe(false)
+    expect(finishedTurn('running', 'compacting')).toBe(false)
+    expect(finishedTurn('compacting', 'running')).toBe(false)
+  })
+
+  it('does not fire on the way INTO work', () => {
+    expect(finishedTurn('waiting', 'running')).toBe(false)
+    expect(finishedTurn('idle', 'running')).toBe(false)
+  })
+
+  it('leaves session-end to the exit path, so the diff capture cannot run twice', () => {
+    expect(finishedTurn('running', 'ended')).toBe(false)
+  })
+
+  it('does not fire on the first observation, when there is no previous phase', () => {
+    // Otherwise every lane present at boot would close its tasks the moment it is first seen.
+    expect(finishedTurn(undefined, 'waiting')).toBe(false)
+    expect(finishedTurn(undefined, 'idle')).toBe(false)
   })
 })
