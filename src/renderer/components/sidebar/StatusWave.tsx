@@ -118,6 +118,11 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
 /** WHICH LANE, in the disc that already says how it is doing. Static — the dots twinkle beneath it
  *  and only `running` animates, so the letter never becomes a second motion channel.
  *
+ *  Drawn by the COLLAPSED strip only (see ProjectRail): at 264 the row spells the lane's name out
+ *  beside the disc, and a letter there repeats what the row already says. The disc is identical in
+ *  both states — same size, same x, same box — so this is ink appearing inside a fixed object, not
+ *  a mark that moves anything.
+ *
  *  THE HALO IS LOAD-BEARING. It looks like a flourish and it is the only reason this treatment is
  *  legible: `--fg` against the dots alone measures **1.39–1.47:1** on the three dark palettes,
  *  which is a failure — against its own halo it holds **11.84–17.58:1** on all six. Delete the
