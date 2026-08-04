@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage } from '../../lib/annotations'
 import { pickPreviewUrl, portOf } from '../../lib/preview-port'
+import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -299,7 +300,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-        height: 30, padding: '0 8px 0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+        height: PANEL_SUBHEAD_H, padding: '0 8px 0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
       }}>
         {editing ? (
           <input
