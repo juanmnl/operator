@@ -411,6 +411,21 @@ export function installMockBridge() {
   const solo = soloParam !== null
   // `?solo=live` also runs that lane, so the landing rule has a live single agent to find.
   const soloLive = soloParam === 'live'
+  // `?stale=1` — one queued task twelve days old, on a LIVE lane.
+  //
+  // The age is the whole fixture: the incident behind the staleness gate was eight rows dispatched
+  // twelve days after they were written, and the horizon is seven, so a fixture at the default
+  // `now` can only ever prove the gate is open. It rides on `code` because that lane is live —
+  // an idle lane launches instead of pasting, and "no submission" would then be true for the
+  // wrong reason.
+  const stale = new URLSearchParams(location.search).get('stale') === '1'
+  if (stale) {
+    const twelveDaysAgo = new Date(Date.parse(now) - 12 * 86_400_000).toISOString()
+    MOCK_PROJECTS[0].tasks = [
+      { id: 'stale-1', text: 'code done: the July report', roleId: 'code', status: 'queued', createdAt: twelveDaysAgo },
+      { id: 'fresh-1', text: 'Something asked for today', roleId: 'code', status: 'queued', createdAt: now },
+    ] as typeof MOCK_PROJECTS[0]['tasks']
+  }
   // `?tz=1` — fixed evening dispatches for the local-time fix.
   const tz = new URLSearchParams(location.search).get('tz') === '1'
   // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —

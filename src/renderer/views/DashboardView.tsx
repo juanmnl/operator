@@ -7,7 +7,7 @@ import {
   resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
-import { landingFor } from '../lib/project-landing'
+import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
@@ -50,6 +50,7 @@ import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
 import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
+import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 
 interface TerminalTab {
   id: string
@@ -484,15 +485,22 @@ export function DashboardView() {
    *
    *  It used to land on the roster board, always. That was right when a project arrived with six
    *  seeded lanes and the board was the only thing that explained them; the roster is now one lane
-   *  by default, so the board became a single row with nothing to decide. Where it lands now is
-   *  `landingFor` (lib/project-landing): exactly one LIVE lane → straight into that agent,
-   *  everything else → the board, which is project home.
+   *  by default, so the board became a single row with nothing to decide.
    *
-   *  RE-ENTERING is re-applied, not restored. Coming back to a project you've been in before puts
-   *  you where the rule says, not where you last were — predictable beats clever, and "restore
-   *  where I was" is a whole separate feature with its own persistence. The one thing preserved is
-   *  the existing instinct on line 583: opening the project you are ALREADY in does not yank you
-   *  off what you are looking at. Only a genuine change of project re-lands.
+   *  RE-ENTERING RESTORES THE LAST AGENT — "when switching projects, show me the last selected
+   *  agent, not the project itself". This REVERSES what this comment used to say (re-apply the
+   *  rule, never restore, predictable beats clever): the memory is now the rule and `landingFor`
+   *  is the fallback. Both live in lib/project-landing — `landingWithLastAgent` in front,
+   *  `landingFor` unchanged behind it — so the pure rule stays pure and separately testable.
+   *  The memory only wins when the remembered lane is LIVE; a lane that ended, was deleted, or
+   *  simply isn't running after a restart falls through to the board. There is no session object
+   *  for a lane with no pty, so landing on one would mean landing on nothing.
+   *
+   *  Two things it does NOT change. `handleOpenProjectHome`/`handleOpenProjectTeam` are explicit
+   *  destinations — the back chevron and the sidebar project header must keep reaching the board,
+   *  or the dead-control bug those two just had comes straight back. And opening the project you
+   *  are ALREADY in still does not yank you off what you are looking at; only a genuine change of
+   *  project re-lands.
    *
    *  It does not launch anything. Landing somewhere is navigation; starting an agent is a decision
    *  that costs a process, a worktree and a dev port. */
@@ -506,7 +514,11 @@ export function DashboardView() {
       // want the project HOME and go through handleOpenProjectHome instead, so this branch is
       // only ever a re-select of the current project.
       if (prev === projectId) return projectId
-      const landing = landingFor(projectsRef.current.find((p) => p.id === projectId), terminalsRef.current)
+      const landing = landingWithLastAgent(
+        projectsRef.current.find((p) => p.id === projectId),
+        terminalsRef.current,
+        lastAgentRef.current[projectId],
+      )
       setProjectTab('board')
       if (landing.kind === 'session') {
         // Focus its pty. `focusTerminal` also stamps the scope, which is the same rule the
@@ -1284,10 +1296,21 @@ export function DashboardView() {
           ? `This project had no "${role.name}" lane, so Operator CREATED one from its template and is launching it now with your task as its opening brief.`
           : `The "${role.name}" lane wasn't running — Operator is LAUNCHING it now with your task as its opening brief.`)
       } else {
-        addTask(project.id, d.task) // unknown role → unassigned backlog
+        // A DISPATCH TO A LANE THAT DOES NOT EXIST IS A DELIVERY FAILURE, NOT WORK.
+        //
+        // This used to call `addTask` as well, which minted a durable `ProjectTask`
+        // indistinguishable from something a human queued — and once such a row exists it can be
+        // assigned and started. That is not hypothetical: eight rows from 2026-07-21/22 were lane
+        // STATUS REPORTS ("code done: …") filed this way, and months later they were assigned to
+        // the coordinator and dispatched back into its session as if they were work. Six of the
+        // eight described work that was already finished.
+        //
+        // So nothing is created. The failed dispatch surfaces where dispatches needing a human
+        // already live — the board's Waiting column — carrying its own reason, which the backlog
+        // row could only borrow by a text join that dies as records age out.
         record('unassigned')
-        toast({ text: 'Queued (unassigned)', kind: 'info', detail: preview })
-        feedback(`No lane named "${d.role}" exists in this project, so your task went to the unassigned backlog. Reassign it to one of the project's actual lanes, or ask the user.`)
+        toast({ text: `No "${d.role}" lane — waiting for you`, kind: 'info', detail: preview })
+        feedback(`No lane named "${d.role}" exists in this project, so your task was NOT queued — it is on the board's Waiting column for the user to route or dismiss. Name one of the project's actual lanes, or ask the user.`)
       }
   }
 
@@ -1353,12 +1376,34 @@ export function DashboardView() {
     })
   }, [])
 
-  /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again. */
+  /** Decline it. Terminal: `rejected` never delivers, and nothing reads it as pending again.
+   *
+   *  Also the DISMISS verb for an `unassigned` failure. Those no longer mint a backlog task, so
+   *  the Waiting card is the only representation of that work and it needs a way to be closed —
+   *  removing a row must never strand the need behind it. Same outcome, same finality. */
   const rejectDispatch = useCallback((projectId: string, id: string) => {
     const project = projectsRef.current.find((p) => p.id === projectId)
     const rec = project?.dispatches?.find((x) => x.id === id)
-    if (!rec || rec.outcome !== 'pending-approval') return
+    if (!rec || (rec.outcome !== 'pending-approval' && rec.outcome !== 'unassigned')) return
     setDispatchOutcome(projectId, id, 'rejected')
+  }, [])
+
+  /** THE RECOVERY PATH for a dispatch that named no lane: route it to a real one now.
+   *
+   *  The backlog row it used to create was a rescue path — you could assign and send it — so
+   *  removing the row had to keep that. It re-enters the SAME delivery machinery an approval
+   *  uses (`deliverDispatch` with a valid role token), so live lanes, idle lanes and
+   *  create-from-template all behave exactly as they do for any other dispatch; there is no
+   *  second send path to drift. */
+  const assignDispatch = useCallback((projectId: string, id: string, roleId: string) => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    const rec = project?.dispatches?.find((x) => x.id === id)
+    if (!rec || rec.outcome !== 'unassigned') return
+    const srcTab = terminalsRef.current.find((t) => t.roleId === rec.fromRoleId && t.projectId === projectId && !t.ended)
+    deliverDispatchRef.current({
+      id, roleToken: roleId, task: rec.task,
+      terminalId: srcTab?.id, projectId, approving: true,
+    })
   }, [])
 
   // A recent-project click: open its workspace if we already know it as a Project (so you can
@@ -1973,9 +2018,23 @@ export function DashboardView() {
 
   // Send one queued task: to a live lane's pty, or (if the lane isn't up) launch it — which
   // picks up the whole queue for that lane, this task included.
-  const sendProjectTask = useCallback((project: Project, task: ProjectTask) => {
+  const sendProjectTask = useCallback((project: Project, task: ProjectTask, opts?: { force?: boolean }) => {
     const role = project.roster?.find((r) => r.id === task.roleId)
     if (!role) return
+    // AGE IS A GATE, NOT A FILTER. A queued task older than the horizon does not go out on a
+    // single press — eight rows from July were sent twelve days later and six of them described
+    // work that was already finished. The guard sits AHEAD of `markTasksRunning`: marking a task
+    // running and then not delivering it is the ~200-stuck-in-running failure this project has
+    // already had once.
+    if (!opts?.force && isStaleTask(task, Date.now())) {
+      pushToast({
+        text: `Held — ${taskAgeDays(task, Date.now())} days old`,
+        kind: 'info',
+        detail: task.text.slice(0, 60),
+        action: { label: 'Send anyway', run: () => sendProjectTaskRef.current(project, task, { force: true }) },
+      })
+      return
+    }
     const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === role.id)
     if (liveTab) {
       dispatchToRole(project, role, task.text)
@@ -1998,12 +2057,24 @@ export function DashboardView() {
 
   // "Start all": dispatch every ASSIGNED, still-QUEUED task, grouped per lane — live lanes get
   // the combined message (→ running), idle lanes launch and pick up their queue.
-  const startProjectTasks = useCallback((project: Project) => {
+  const startProjectTasks = useCallback((project: Project, opts?: { force?: boolean }) => {
+    const queued = (project.tasks ?? []).filter((t) => t.roleId && (t.status ?? 'queued') === 'queued')
+    // Same gate as the per-task send, applied before anything is grouped or marked. NO SILENT
+    // CAPS: whatever is held back is named, with a way to send it anyway — a skip the user
+    // cannot see is how a "Start all" quietly becomes "start some".
+    const { fresh, stale } = opts?.force ? { fresh: queued, stale: [] as ProjectTask[] } : splitStale(queued, Date.now())
+    if (stale.length) {
+      pushToast({
+        text: `${stale.length} stale task${stale.length > 1 ? 's' : ''} held back`,
+        kind: 'info',
+        detail: describeSkipped(stale, Date.now()),
+        action: { label: 'Send them too', run: () => startProjectTasksRef.current(project, { force: true }) },
+      })
+    }
     const byRole = new Map<string, ProjectTask[]>()
-    for (const t of project.tasks ?? []) {
-      if (!t.roleId || (t.status ?? 'queued') !== 'queued') continue
-      const arr = byRole.get(t.roleId) ?? []
-      arr.push(t); byRole.set(t.roleId, arr)
+    for (const t of fresh) {
+      const arr = byRole.get(t.roleId!) ?? []
+      arr.push(t); byRole.set(t.roleId!, arr)
     }
     for (const [roleId, tasks] of byRole) {
       let role = project.roster?.find((r) => r.id === roleId)
@@ -2033,6 +2104,14 @@ export function DashboardView() {
       }
     }
   }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, updateProject, assignProjectTask, pushToast])
+
+  // The toast actions above re-enter these, and a `useCallback` cannot reference itself in its
+  // own initialiser. A ref is the smallest honest way to give "Send anyway" the same code path
+  // as the press that was held — an override that took a second path could drift from it.
+  const sendProjectTaskRef = useRef(sendProjectTask)
+  sendProjectTaskRef.current = sendProjectTask
+  const startProjectTasksRef = useRef(startProjectTasks)
+  startProjectTasksRef.current = startProjectTasks
 
   // Re-open a previously saved session. `resume` continues the prior Claude
   // conversation (--resume); otherwise it starts the agent clean in the same
@@ -2755,6 +2834,11 @@ export function DashboardView() {
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean
   // exit loses it to exactly the stop this feature exists to survive.
+  // projectId → durable key of the agent last selected there. Kept in a ref because
+  // `handleOpenProject` is a stable callback that reads refs by design, and this is exactly the
+  // kind of value that must be current at the moment of the click rather than at the moment the
+  // callback was built. Persisted inside the workspace snapshot — one record, see its type.
+  const lastAgentRef = useRef<Record<string, string>>({})
   // Lanes that were live before the restart and have not been resumed yet — see the persist
   // effect for why an empty terminal list must not overwrite them.
   const pendingLaneKeysRef = useRef<string[]>([])
@@ -2771,6 +2855,11 @@ export function DashboardView() {
   useEffect(() => {
     if (!savedHydrated || !restoreSettled) return // pre-restore state is a seed, not a place
     const focused = allSidebarSessions.find((s) => s.id === activeSessionId)
+    // RECORDED ON SELECTION, not on quit — same reasoning as the snapshot itself: it has to
+    // survive a crash. A selection only counts when we can name both halves durably.
+    if (focused?.savedKey && focused.projectId) {
+      lastAgentRef.current = { ...lastAgentRef.current, [focused.projectId]: focused.savedKey }
+    }
     const snapshot: Workspace = {
       v: WORKSPACE_VERSION,
       projectId: activeProjectId,
@@ -2793,6 +2882,7 @@ export function DashboardView() {
       // not mean "you had none", it means "not resumed yet", and the pending set stands until
       // something real replaces it.
       liveKeys: terminals.length ? terminals.map((t) => t.key) : pendingLaneKeysRef.current,
+      lastAgentByProject: lastAgentRef.current,
       at: new Date().toISOString(),
     }
     try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
@@ -2828,6 +2918,10 @@ export function DashboardView() {
     })
     // Carried so the offer survives a second restart (see the persist effect).
     pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
+    // The per-project last agent outlives the restart too. It only ever WINS when the lane is
+    // live, so seeding it from a run where nothing is running is harmless — it starts mattering
+    // again the moment something is resumed.
+    lastAgentRef.current = workspace.lastAgentByProject ?? {}
     setActiveProjectId(plan.projectId)
     setProjectTab(plan.projectTab)
     setPrefsViewActive(plan.mode === 'prefs')
@@ -3355,6 +3449,7 @@ export function DashboardView() {
               // DispatchLog would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
+              onAssignDispatch={assignDispatch}
               // The delivery kill switch, rehomed from the channel header onto Team.
               chatterPaused={chatterPaused}
               onToggleChatter={toggleChatterPaused}

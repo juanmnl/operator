@@ -40,6 +40,13 @@ export interface Workspace {
    *  per-run and meaningless after a restart, which `SavedSession.terminalId`'s own doc-comment
    *  already says about itself. */
   focusedKey?: string
+  /** projectId → the durable key of the agent last selected IN THAT PROJECT.
+   *
+   *  ONE record, deliberately: "which session had focus" (restart) and "the last agent for this
+   *  project" (switching) are the same fact read at two moments, and building them twice would
+   *  give two stores that can disagree. Per project, never a single global last-agent — switching
+   *  to B must not land you on A's lane. */
+  lastAgentByProject?: Record<string, string>
   /** Durable keys of the sessions that were LIVE at the time. The resume offer has to be "the
    *  six you had", and `savedSessions` alone cannot say that: it holds every session never
    *  explicitly closed, including ones from runs before this one. */

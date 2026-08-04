@@ -133,6 +133,67 @@ await boot()
 ok('first run lands at the gallery with nothing spawned',
   (await p.getByText(/^Projects ·/).count()) > 0 && (await spawns()) === 0)
 
+// ── 7. SWITCHING PROJECTS LANDS ON THAT PROJECT'S LAST AGENT ───────────────────────────
+// "when switching projects, show me the last selected agent, not the project itself." This
+// reverses the older "re-apply the rule, never restore" decision, so the check is that A→B→A
+// returns to A's lane — and, just as importantly, that the two explicit destinations still work.
+// A FRESH context: the steps above installed init scripts that empty `terminalList` and stage a
+// deleted folder, and those cannot be removed from a page once added. This step needs a normal
+// app with live lanes, so it gets its own page rather than a page pretending to be one.
+const ctx2 = await b.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
+const q = await ctx2.newPage()
+q.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 250)))
+const qWorkspace = () => q.evaluate((k) => JSON.parse(localStorage.getItem(k) || 'null'), WORKSPACE_KEY)
+const qView = () => q.evaluate(() => document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'))
+const qTab = () => q.evaluate(() => document.querySelector('[data-project-tab-active]')?.getAttribute('data-project-tab'))
+await q.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+await q.waitForTimeout(3200)
+// Pick a lane in project A that `landingFor` would NOT choose on its own: operator's roster has
+// four lanes, so its rule says board.
+await q.locator('[data-session-row="s-res"]').click()
+await q.waitForTimeout(1200)
+const rememberedA = (await qWorkspace())?.lastAgentByProject
+console.log('7 remembered per project:', JSON.stringify(rememberedA))
+ok('the last selected agent is recorded PER PROJECT', !!rememberedA && Object.keys(rememberedA).length >= 1, rememberedA)
+
+// → B, then back to A via the rail.
+await q.locator('[data-rail-tile]').nth(1).click()
+await q.waitForTimeout(1100)
+await q.locator('[data-rail-tile]').first().click()
+await q.waitForTimeout(1100)
+const backOnA = await q.evaluate(() => ({
+  view: document.querySelector('[data-toolbar-header]')?.getAttribute('data-toolbar-header'),
+  active: document.querySelector('[data-session-row="s-res"]')?.getAttribute('data-session-row'),
+}))
+const activeRow = await q.evaluate(() => {
+  const rows = [...document.querySelectorAll('[data-session-row]')]
+  // The focused row is the one whose name is accent-coloured / boxed — read the app's own state
+  // instead: the toolbar names the session that is up.
+  return document.querySelector('[data-toolbar-header="session"]') ? rows.length : -1
+})
+console.log('7 back on A:', JSON.stringify(backOnA), 'rows:', activeRow)
+ok('switching back lands on the agent, not the project', backOnA.view === 'session', backOnA)
+
+// The two explicit destinations must still reach the board from there. Guarded: if the step
+// above regressed and we are on the board rather than in a lane, the session-only chevron does
+// not exist — that must read as a FAIL on this line, not as a 30s timeout crash that hides
+// every check after it.
+const clickOr = async (sel, label) => {
+  try { await q.locator(sel).first().click({ timeout: 4000 }); return true }
+  catch { ok(label, false, `control not present — ${sel}`); return false }
+}
+if (await clickOr('[data-back-to-project]', 'the back chevron is present in the restored lane')) {
+await q.waitForTimeout(900)
+ok('the back chevron still reaches the board',
+  (await qView()) === 'project' && (await qTab()) === 'board', { view: await qView(), tab: await qTab() })
+}
+await q.locator('[data-session-row="s-res"]').click()
+await q.waitForTimeout(1000)
+await q.locator('[data-sidebar-project]').click()
+await q.waitForTimeout(900)
+ok('and so does the sidebar project header',
+  (await qView()) === 'project' && (await qTab()) === 'board', { view: await qView(), tab: await qTab() })
+
 await b.close()
 console.log(failed ? `\n${failed} FAILED` : '\nall checks passed')
 process.exit(failed ? 1 : 0)
