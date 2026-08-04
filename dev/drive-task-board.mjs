@@ -200,11 +200,21 @@ for (const [identity, mode] of THEMES) {
   await p.waitForTimeout(200)
   await p.screenshot({ path: `${OUT}/${key}-3b-backlog-empty.png` })
   const backlogBoxes = await p.evaluate(() => [...document.querySelectorAll('[data-column-empty]')]
-    .map((e) => ({
-      col: e.closest('[data-board-column]')?.getAttribute('data-board-column'),
-      h: Math.round(e.getBoundingClientRect().height * 100) / 100,
-      btn: e.querySelector('button')?.textContent.trim() ?? null,
-    })))
+    .map((e) => {
+      const r = e.getBoundingClientRect()
+      // The INK's own middle against the BOX's middle. Measured over the union of the children,
+      // so it holds for the lone sentence and for Backlog's text-plus-button pair alike — and it
+      // is the whole point of the change: a box whose content drifts back to the ceiling would
+      // otherwise still pass every height check in here.
+      const kids = [...e.children].map((k) => k.getBoundingClientRect())
+      const top = Math.min(...kids.map((k) => k.top)), bottom = Math.max(...kids.map((k) => k.bottom))
+      return {
+        col: e.closest('[data-board-column]')?.getAttribute('data-board-column'),
+        h: Math.round(r.height * 100) / 100,
+        btn: e.querySelector('button')?.textContent.trim() ?? null,
+        offCentre: Math.round((((top + bottom) / 2) - ((r.top + r.bottom) / 2)) * 100) / 100,
+      }
+    }))
   const hs = backlogBoxes.map((b) => b.h)
   notes.push(`${key} — backlog-empty boxes ${JSON.stringify(backlogBoxes)}`)
   if (!backlogBoxes.some((b) => b.col === 'backlog')) fails.push(`${key} — running-only did not empty the backlog column`)
@@ -220,6 +230,9 @@ for (const [identity, mode] of THEMES) {
   }
   if (hs.length && Math.abs(Math.max(...hs) - EMPTY_MIN_H) > 0.5) {
     fails.push(`${key} — empty boxes are ${Math.max(...hs)}px, not the declared ${EMPTY_MIN_H} (EMPTY_MIN_H no longer matches Backlog's content)`)
+  }
+  for (const b of backlogBoxes) {
+    if (Math.abs(b.offCentre) > 0.5) fails.push(`${key} — ${b.col}'s empty content sits ${b.offCentre}px off the box's middle`)
   }
 
   await p.click('[data-scenario-btn="backlog-only"]')
