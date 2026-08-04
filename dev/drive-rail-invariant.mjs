@@ -522,6 +522,49 @@ for (const [theme, short] of THEMES) {
   if (rowDelta > TOL) fails.push(`foot rows move ${rowDelta.toFixed(2)}px between widths`)
   if (r1.rows.length !== 4) fails.push(`${r1.rows.length} foot rows, expected 4`)
 
+  // ---- T. THE WHOLE CELL IS THE TARGET --------------------------------------------------------
+  // The user's complaint, expressed as a test: "still can't click on the text for agents, usage,
+  // etc, just the icon". `elementFromPoint` at the LABEL's centre must return the same control as
+  // at the GLYPH's — measured from the user's side rather than by reading the tree, because a
+  // label that merely LOOKS inside the button is exactly what shipped.
+  console.log('\nT · HIT AREA — the cell, not the glyph')
+  for (const [label, sel] of [['expanded', null], ['collapsed', 'Meta+b']]) {
+    if (sel) { await p.keyboard.press(sel); await p.waitForTimeout(900) }
+    const hits = await p.evaluate((names) => names.map(([name, q]) => {
+      const btn = document.querySelector(q)
+      if (!btn) return { name, missing: true }
+      const b = btn.getBoundingClientRect()
+      const glyph = btn.querySelector('svg')?.getBoundingClientRect()
+      // The LABEL specifically, by its own hook — not "the widest span", which collapsed would
+      // have matched against the glyph box and reported a pass for a label that isn't there.
+      const word = btn.querySelector('[data-foot-label]')?.getBoundingClientRect() ?? null
+      const at = (r) => (r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null)
+      const owner = (el) => (el ? el.closest('button') : null)
+      return {
+        name,
+        // The far edge of the cell, too: the space AROUND the word is part of the advertised
+        // target and was dead as well.
+        glyph: owner(at(glyph)) === btn,
+        word: word ? owner(at(word)) === btn : null,
+        edge: owner(document.elementFromPoint(b.right - 3, b.top + b.height / 2)) === btn,
+        // One focus stop per cell. A button inside a button passes every click test above and is
+        // still wrong for the keyboard.
+        inner: btn.querySelectorAll('button, a, input, [tabindex]').length,
+      }
+    }), FOOT.map(([n, q]) => [n, q]))
+    for (const h of hits) {
+      if (h.missing) { fails.push(`${label}: ${h.name} is not in the foot`); continue }
+      if (!h.glyph) fails.push(`${label}: a click on ${h.name}'s GLYPH does not reach its control`)
+      if (h.word === false) fails.push(`${label}: a click on ${h.name}'s LABEL does not reach its control`)
+      if (!h.edge) fails.push(`${label}: the space beside ${h.name}'s label is dead`)
+      if (h.inner) fails.push(`${label}: ${h.name} holds ${h.inner} nested focusable control(s)`)
+    }
+    console.log(`  ${pad(label, 10)} glyph ${hits.filter((h) => h.glyph).length}/8 · label ${hits.filter((h) => h.word).length}/8 · cell edge ${hits.filter((h) => h.edge).length}/8 · nested controls ${hits.reduce((n, h) => n + (h.inner ?? 0), 0)}`)
+  }
+  // …and back to expanded, where scene 2 left the strip.
+  await p.keyboard.press('Meta+b')
+  await p.waitForTimeout(900)
+
   // ---- B. ⌘B removes nothing ------------------------------------------------------------------
   if (!r1.okFoot) fails.push(`collapsed foot has ${m1.foot.present.length}/8 controls — ⌘B is still deleting app chrome`)
   if (!r2.okFoot) fails.push(`expanded foot has ${m2.foot.present.length}/8 controls`)

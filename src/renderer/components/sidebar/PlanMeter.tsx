@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDismiss } from '../../lib/use-dismiss'
+import { FOOT_BOX, footCellStyle, footLabelStyle } from './foot-cell'
 import {
   hasCurrentData, freshnessOf, windowEnded, needsRevalidate, limitRows, glanceLine, updatedAgo,
   ringDash, toneFor, TONE_FILL, bindingLimit,
@@ -38,13 +39,15 @@ import {
 const R = 5.25
 const STROKE = 1.5
 
-export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, box = 26 }: {
+export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, collapsed, label }: {
   limits: PlanLimits | null
   loading?: boolean
-  /** The glyph box, so this can sit in the rail's foot at the size its neighbours are. The foot
-   *  went 26 → 24 when `Sidebar.tsx`'s footer (the row the 26 existed to match) was deleted; the
-   *  ring scales with it rather than being redrawn. */
-  box?: number
+  /** THE FOOT CELL'S OWN SHAPE. This control brings its own button, so it takes the shared cell
+   *  treatment (`foot-cell.ts`) rather than being wrapped in one: a button inside a button passes
+   *  a click test and is still wrong for the keyboard. Expanded, the whole cell — ring AND word —
+   *  is the target; collapsed the cell is just the ring's box, as before. */
+  collapsed?: boolean
+  label?: string
   /** The hook's clock. Passed in rather than read here so the age on screen advances with the
    *  same tick that decides whether to re-ask — one clock, or the two disagree. */
   now: number
@@ -119,15 +122,11 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, box =
         // Opening is a read, so it is also the cheapest possible moment to re-ask. `onRevalidate`
         // no-ops when the reading is already current, so this costs nothing on a warm meter.
         onClick={() => setOpen((o) => { if (!o) onRevalidate(); return !o })}
-        style={{
-          width: box, height: box, padding: 0, display: 'grid', placeItems: 'center',
-          background: open ? 'var(--overlay-subtle)' : 'transparent',
-          border: 'none', borderRadius: 7, cursor: 'pointer', outline: 'none',
-          color: 'var(--fg-muted)', transition: 'background 120ms ease',
-        }}
+        style={footCellStyle({ collapsed: collapsed !== false, active: open })}
         onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
         onMouseLeave={(e) => { e.currentTarget.style.background = open ? 'var(--overlay-subtle)' : 'transparent' }}
       >
+        <span style={{ width: FOOT_BOX, height: FOOT_BOX, flexShrink: 0, display: 'grid', placeItems: 'center' }}>
         {/* The ring. Rotated so the arc starts at 12 o'clock and sweeps clockwise. */}
         {/* 22, NOT `box − 4`. The ring's painted diameter is `2R + STROKE` = 12 units of a 22-unit
             viewBox, so it only measures 12px on screen while the svg renders at 22 — scaling the
@@ -151,6 +150,8 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, box =
           )}
           <title>{glance ?? 'Plan usage'}</title>
         </svg>
+        </span>
+        {!collapsed && label && <span data-foot-label style={footLabelStyle()}>{label}</span>}
         <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
           {circumference.toFixed(0)}
         </span>

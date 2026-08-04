@@ -13,6 +13,7 @@ import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
+import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
 //
@@ -93,13 +94,11 @@ const MEMBER_BOX = 36
  *  at slides sideways reads as a re-layout instead of a reveal. */
 const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
 const ORB = 24
-/** Foot glyph box. 24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52,
- *  exactly): it FIT, and the fit is what set it. The field is 60 now, so nothing forces 24 any
- *  more — deliberately left alone in this pass rather than drifting; see the RESULT for what it
- *  would become if re-derived. What the wider field does buy is that the pair no longer has to be
+/** Foot geometry — shared with `PlanMeter`, which brings its own button (see `foot-cell.ts`).
+ *  24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52, exactly): it FIT,
+ *  and the fit is what set it. The field is 60 now, so nothing forces 24 any more — deliberately
+ *  left alone rather than drifting. What the wider field buys is that the pair no longer has to be
  *  flush: `FOOT_PAD` centres it under the member column. */
-const FOOT_BOX = 24
-const FOOT_GAP = 4
 /** (60 − (24 + 4 + 24)) / 2 = 4. The foot pair straddles the axis instead of hugging the left
  *  edge — and the SAME padding applies at 264, so the left glyph column holds its x across ⌘B
  *  just as the orb column does. The foot keeps its own rhythm (it is not on the member column,
@@ -279,10 +278,20 @@ export function ProjectRail({
           // orb. The set is everything that can appear as a disc in this group: the roster, plus
           // any ad-hoc session that has no lane of its own. Those are exactly the names a person
           // can see side by side, which is the collision the rule protects against.
-          const initials = resolveLaneInitials([
+          //
+          // COLLAPSED ONLY. The letter's job is to identify a lane where nothing else can — at 264
+          // the name is spelled out on the row beside the disc, so the letter would be saying a
+          // second time what the row already says. Not faded or shrunk at 264: simply absent.
+          //
+          // "A mark that appears on ⌘B is a moving target" is the standing objection and it is a
+          // fair one, but it does not reach this: nothing moves or resizes. The orb keeps its size,
+          // its x and its box in both states — only ink INSIDE it appears, which is a different
+          // thing from a row appearing and re-flowing the stack, which is what that rule is about.
+          // The constant-x invariant is asserted unchanged.
+          const initials = collapsed ? resolveLaneInitials([
             ...roster.map((r) => ({ id: r.id, name: r.name })),
             ...live.filter((s) => !s.roleId).map((s) => ({ id: s.id, name: sessionLabel({ session: s, customName: customNames[s.id] }) })),
-          ])
+          ]) : {}
           const initialFor = (s: AgentSession) => initials[s.roleId ?? s.id]
           // Not rendered as rows any more — only counted, to decide whether the row below offers
           // lanes to start or only offers to create one.
@@ -383,7 +392,6 @@ export function ProjectRail({
                     role={roster.find((r) => r.id === s.roleId)}
                     active={s.id === activeSessionId}
                     accent={accentOf?.(s)}
-                    initial={initialFor(s)}
                     customName={customNames[s.id]}
                     effortLevel={s.terminalId ? effortLevels[s.terminalId] : null}
                     fan={s.terminalId ? fanInfo[s.terminalId] : undefined}
@@ -768,13 +776,12 @@ function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
 
 /** One live agent, EXPANDED — `SessionItem`, which was already the right object for this row and
  *  is the one thing the old sidebar had that survives whole. */
-function MemberRow({ session, project, role, active, accent, initial, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
+function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
   session: AgentSession
   project: Project
   role?: Role
   active: boolean
   accent?: string
-  initial?: string
   customName?: string
   effortLevel?: string | null
   fan?: { index: number; total: number }
@@ -797,7 +804,6 @@ function MemberRow({ session, project, role, active, accent, initial, customName
       // name is the session's, the colour is the lane's.
       labelIsRole={!!role}
       roleColor={accent ?? role?.accent}
-      initial={initial}
       fanInfo={fan}
       currentTask={currentTaskOf(session, project)}
       closable
@@ -879,95 +885,88 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
     }}>
       {/* Views ACROSS projects — not ways of moving between them, which is the next pair. */}
       <FootRow>
-        <FootCell collapsed={collapsed} label="Agents">
-          <FootGlyph
-            attr="data-rail-agents"
-            label="Agents"
-            hint="what is running across your projects"
-            active={agentsActive}
-            onClick={onOpenAgents}
-          >
+        <FootItem
+          collapsed={collapsed}
+          attr="data-rail-agents"
+          label="Agents"
+          title="Agents"
+          hint="what is running across your projects"
+          active={agentsActive}
+          onClick={onOpenAgents}
+        >
             {/* Drawn to 12×12 of painted ink, like the grid and the plus — the eyes and antenna
                 dot are FILLED, so they set fill explicitly against the svg's fill:none. */}
             <rect x="1.75" y="5" width="12.5" height="9" rx="2.4" />
             <path d="M8 2.9v2.1" strokeLinecap="round" />
             <circle cx="8" cy="1.9" r="1" fill="currentColor" stroke="none" />
             <circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
-            <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
-          </FootGlyph>
-        </FootCell>
-        <FootCell collapsed={collapsed} label="Plan usage">
-          {/* Needs no session and no project — `claude -p "/usage"` spawns its own short-lived
-              process — so it is live at the gallery and on first launch, which is exactly when
-              you are deciding what to start. */}
-          <PlanMeter
-            box={FOOT_BOX}
-            limits={planLimits.limits}
-            loading={planLimits.loading}
-            now={planLimits.now}
-            onRefresh={planLimits.refresh}
-            onRevalidate={planLimits.revalidate}
-          />
-        </FootCell>
+          <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
+        </FootItem>
+        {/* Needs no session and no project — `claude -p "/usage"` spawns its own short-lived
+            process — so it is live at the gallery and on first launch, which is exactly when you
+            are deciding what to start.
+            It renders its OWN button, so it takes the cell treatment rather than being wrapped in
+            one: a button inside a button passes a click test and is still wrong for the keyboard. */}
+        <PlanMeter
+          collapsed={collapsed}
+          label="Plan usage"
+          limits={planLimits.limits}
+          loading={planLimits.loading}
+          now={planLimits.now}
+          onRefresh={planLimits.refresh}
+          onRevalidate={planLimits.revalidate}
+        />
       </FootRow>
       {hairline}
       {/* Navigation BETWEEN projects. */}
       <FootRow>
-        <FootCell collapsed={collapsed} label="All projects">
-          <FootGlyph attr="data-rail-gallery" label="All projects" hint="⌘⇧O" onClick={onShowGallery} strokeWidth={1.05}>
-            <rect x="2" y="2" width="5" height="5" rx="1.2" />
-            <rect x="9" y="2" width="5" height="5" rx="1.2" />
-            <rect x="2" y="9" width="5" height="5" rx="1.2" />
-            <rect x="9" y="9" width="5" height="5" rx="1.2" />
-          </FootGlyph>
-        </FootCell>
-        <FootCell collapsed={collapsed} label="Open folder">
-          <FootGlyph attr="data-rail-open-folder" label="Open folder" hint="⌘N" onClick={onOpenFolder} strokeWidth={1.45}>
+        <FootItem collapsed={collapsed} attr="data-rail-gallery" label="All projects" title="All projects" hint="⌘⇧O" onClick={onShowGallery} strokeWidth={1.05}>
+          <rect x="2" y="2" width="5" height="5" rx="1.2" />
+          <rect x="9" y="2" width="5" height="5" rx="1.2" />
+          <rect x="2" y="9" width="5" height="5" rx="1.2" />
+          <rect x="9" y="9" width="5" height="5" rx="1.2" />
+        </FootItem>
+        <FootItem collapsed={collapsed} attr="data-rail-open-folder" label="Open folder" title="Open folder" hint="⌘N" onClick={onOpenFolder} strokeWidth={1.45}>
             {/* Spans 2–14 of the viewBox, not 3.5–12.5: the two navigation verbs are a matched
                 pair, and every box being the same size said nothing about their drawn extents
                 differing by 27%. Only the painted extent did. */}
-            <path d="M8 2v12M2 8h12" strokeLinecap="round" />
-          </FootGlyph>
-        </FootCell>
+          <path d="M8 2v12M2 8h12" strokeLinecap="round" />
+        </FootItem>
       </FootRow>
       {hairline}
       {/* The two Claude-file shortcuts. A folder and a globe cannot say "project" and "global" on
           their own, which is the argument for labelling all eight rather than some. */}
       <FootRow>
-        <FootCell collapsed={collapsed} label=".claude" mono>
-          <FootGlyph
-            attr="data-rail-folder-prefs"
-            label={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
-            hint="this project"
-            disabled={!project?.path}
-            active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
-            onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
-          >
-            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
-          </FootGlyph>
-        </FootCell>
-        <FootCell collapsed={collapsed} label="~/.claude" mono>
-          <FootGlyph attr="data-rail-global-prefs" label="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
-            <circle cx="8" cy="8" r="6" />
-            <ellipse cx="8" cy="8" rx="2.5" ry="6" />
-            <path d="M2 8h12" />
-          </FootGlyph>
-        </FootCell>
+        <FootItem
+          collapsed={collapsed}
+          attr="data-rail-folder-prefs"
+          label=".claude"
+          mono
+          title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
+          hint="this project"
+          disabled={!project?.path}
+          active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
+          onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
+        >
+          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
+        </FootItem>
+        <FootItem collapsed={collapsed} attr="data-rail-global-prefs" label="~/.claude" mono title="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
+          <circle cx="8" cy="8" r="6" />
+          <ellipse cx="8" cy="8" rx="2.5" ry="6" />
+          <path d="M2 8h12" />
+        </FootItem>
       </FootRow>
       {hairline}
       <FootRow>
-        <FootCell collapsed={collapsed} label="Preferences">
-          <FootGlyph attr="data-rail-prefs" label="Operator preferences" hint="settings" active={prefsViewActive} onClick={() => onOpenPrefs?.()} viewBox="0 0 24 24" strokeWidth={1.8} inkSize={12}>
+        <FootItem collapsed={collapsed} attr="data-rail-prefs" label="Preferences" title="Operator preferences" hint="settings" active={prefsViewActive} onClick={() => onOpenPrefs?.()} viewBox="0 0 24 24" strokeWidth={1.8} inkSize={12}>
             <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </FootGlyph>
-        </FootCell>
-        <FootCell collapsed={collapsed} label={isDark ? 'Light mode' : 'Dark mode'}>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </FootItem>
           {/* 15 for the MOON, 14 for the sun. A crescent's silhouette is smaller than its own
               box — it painted 11px against every other glyph's 12, i.e. the theme toggle read a
               size smaller than its neighbours on exactly the three light palettes, where it is
               the one that shows. Measured, not guessed: assertion S sweeps all six. */}
-          <FootGlyph attr="data-rail-theme" label={isDark ? 'Switch to light mode' : 'Switch to dark mode'} hint="theme" inkSize={isDark ? 14 : 15} onClick={() => onToggleTheme?.()}>
+        <FootItem collapsed={collapsed} attr="data-rail-theme" label={isDark ? 'Light mode' : 'Dark mode'} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'} hint="theme" inkSize={isDark ? 14 : 15} onClick={() => onToggleTheme?.()}>
             {isDark ? (
               <>
                 {/* Filled core so the sun reads distinct from the hollow-centred gear beside it. */}
@@ -975,10 +974,9 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
                 <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" strokeLinecap="round" />
               </>
             ) : (
-              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
-            )}
-          </FootGlyph>
-        </FootCell>
+            <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
+          )}
+        </FootItem>
       </FootRow>
       {/* The app's identity, on its own line at the bottom of the grid — CENTRED ON THE AXIS, the
           same 30 element-local (38 from the window edge) that every orb, every collapsed name and
@@ -1049,86 +1047,65 @@ function FootRow({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** One foot cell: the glyph, and — expanded — the word for it. The glyph box is identical at both
- *  widths and LEADS the cell, so the left column of glyphs holds its x as well as its y. */
-function FootCell({ collapsed, label, mono, children }: {
-  collapsed: boolean
+/** ONE FOOT CONTROL — and the CELL IS THE BUTTON, glyph and label inside it.
+ *
+ *  It used to be a `<div>` holding a 24px glyph button plus a separate `<span>` for the word, so
+ *  `Agents`, `Plan usage`, `.claude`, `~/.claude`, `Preferences` and the theme toggle were dead
+ *  text with dead space around them: only the glyph opened anything. A labelled row whose label
+ *  does nothing is a WORSE target than a bare glyph, because it advertises a hit area that is not
+ *  there. If a future item grows a label, it goes inside the button.
+ *
+ *  One component for both widths rather than two paths — collapsed, the cell simply IS the glyph
+ *  box, which is why the narrow state cannot silently regress. `dev/drive-rail-invariant.mjs`
+ *  asserts it from the user's side: the element that receives a click at the LABEL's centre must be
+ *  the same control that receives one at the glyph's.
+ *
+ *  Hover and current are background-only on a radiused box — never a colour-changing border, which
+ *  re-rasterizes in WKWebView. */
+function FootItem({ attr, label, title, hint, mono, onClick, active, disabled, collapsed, viewBox = '0 0 16 16', strokeWidth = 1.2, inkSize = 14, children }: {
+  attr: string
+  /** The word in the cell. Short — it is the widest thing in the foot. */
   label: string
+  /** The tooltip's name, which can be longer and more precise than the label (`.claude` is the
+   *  label; "operator Claude files (.claude)" is what it means). Also the accessible name. */
+  title: string
+  hint: string
   /** Paths are named in mono — precise, short, and what the user recognises. */
   mono?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
-      // Collapsed, the pair IS the field (24 + 4 + 24 = 52) and straddles the axis; expanded, the
-      // two cells split it.
-      ...(collapsed ? { width: FOOT_BOX, flexShrink: 0 } : { flex: 1 }),
-    }}>
-      {children}
-      {!collapsed && (
-        <span style={{
-          minWidth: 0, transition: REVEAL,
-          fontFamily: mono ? 'var(--font-mono)' : 'var(--font-body)',
-          fontSize: mono ? 10 : 11, color: 'var(--fg-muted)',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{label}</span>
-      )}
-    </div>
-  )
-}
-
-/** A foot control's glyph box. 24px, radius 7, 14px ink, `--fg-muted` at rest, background + ink
- *  lifting together on hover.
- *
- *  No `opacity` anywhere: `--fg-muted` IS the recede, and multiplying it lands at 1.8–2.9:1 on the
- *  three light palettes. Disabled recedes by mixing toward the strip's own background — a real
- *  colour that stays measurable — and by going inert to the pointer. */
-function FootGlyph({ attr, label, hint, onClick, active, disabled, viewBox = '0 0 16 16', strokeWidth = 1.2, inkSize = 14, children }: {
-  attr: string
-  label: string
-  hint: string
   onClick: () => void
   active?: boolean
   disabled?: boolean
+  collapsed: boolean
   viewBox?: string
   /** OPTICAL correction, not a free knob: the grid draws four closed rects against the plus's two
-   *  strokes — a 3:1 mass difference at the same weight, which is why the two navigation verbs
-   *  did not read as a pair even once their extents matched. */
+   *  strokes — a 3:1 mass difference at the same weight, which is why the two navigation verbs did
+   *  not read as a pair even once their extents matched. */
   strokeWidth?: number
   /** The RENDERED svg size, which is not the same thing as the painted extent. Every 16-viewBox
-   *  glyph here is drawn 2–14, so at 14px it paints 12 — but the gear fills its 24-viewBox edge to
-   *  edge, so the same 14 paints 14. Two pixels larger than everything beside it, in an identical
-   *  box, which is precisely the class of difference assertion S exists to catch and which went
-   *  unseen while S measured only four of the eight. */
+   *  glyph here is drawn 2–14, so at 14px it paints 12 — the gear fills its 24-viewBox edge to
+   *  edge and the moon's crescent is smaller than its box, so both depart to land on 12. */
   inkSize?: number
   children: React.ReactNode
 }) {
   const rest = active ? 'var(--overlay-subtle)' : 'transparent'
-  const ink = disabled
-    ? 'color-mix(in srgb, var(--fg-muted) 65%, var(--bg-sidebar))'
-    : active ? 'var(--fg)' : 'var(--fg-muted)'
   return (
     <button
       {...{ [attr]: '' }}
       onClick={onClick}
       disabled={disabled}
-      title={`${label} (${hint})`}
-      aria-label={label}
+      title={`${title} (${hint})`}
+      aria-label={title}
       aria-current={active || undefined}
-      style={{
-        width: FOOT_BOX, height: FOOT_BOX, padding: 0, flexShrink: 0,
-        display: 'grid', placeItems: 'center',
-        background: rest, border: 'none', borderRadius: 7,
-        color: ink, cursor: disabled ? 'default' : 'pointer', outline: 'none',
-        transition: 'background 120ms ease, color 120ms ease',
-      }}
-      onMouseEnter={(e) => { if (disabled) return; e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
-      onMouseLeave={(e) => { if (disabled) return; e.currentTarget.style.background = rest; e.currentTarget.style.color = ink }}
+      style={footCellStyle({ collapsed, active, disabled })}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+      onMouseLeave={(e) => { if (!disabled) e.currentTarget.style.background = rest }}
     >
-      <svg width={inkSize} height={inkSize} viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-        {children}
-      </svg>
+      <span style={{ width: FOOT_BOX, height: FOOT_BOX, flexShrink: 0, display: 'grid', placeItems: 'center' }}>
+        <svg width={inkSize} height={inkSize} viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+          {children}
+        </svg>
+      </span>
+      {!collapsed && <span data-foot-label style={{ ...footLabelStyle(mono), transition: REVEAL }}>{label}</span>}
     </button>
   )
 }

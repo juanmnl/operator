@@ -2,10 +2,15 @@
 //
 // Two jobs, because the feature has two halves that fail differently:
 //
-//   1. THE RULE. `Research` and `Review` adjacent, in all four states, at both widths, beside the
-//      awkward names (leading punctuation, a digit, CJK, two identical lanes). The rule is unit
-//      tested in `lib/lane-initial.test.ts`; what this adds is that the resolved letters actually
-//      reach the DOM, in a real roster, through the real component.
+//   1. THE RULE. `Research` and `Review` adjacent, in all four states, beside the awkward names
+//      (leading punctuation, a digit, CJK, two identical lanes). The rule is unit tested in
+//      `lib/lane-initial.test.ts`; what this adds is that the resolved letters actually reach the
+//      DOM, in a real roster, through the real component — and that at 264 there is NO letter at
+//      all, which is the amendment: the row spells the name out there.
+//
+//      IN BATCHES OF FOUR, because the collapsed strip folds at four orbs and carries the rest in
+//      `+N`. A single eleven-lane roster would draw seven of its lanes nowhere, so each batch is
+//      small enough that every lane in it is on screen.
 //   2. THE TREATMENT. `--fg` on a halo, measured across all six palettes against the worst-case
 //      ground — a running dot at its 0.95 peak over every default lane accent.
 //
@@ -29,28 +34,50 @@ const THEMES = [
   ['1984-dark', '1984·D'], ['1984-light', '1984·L'],
 ]
 
-// The roster the fixture draws. `Research` and `Review` are ADJACENT on purpose — a collision you
-// have to scroll between is not the case that breaks trust.
-const ROSTER = [
-  { id: 'operator', name: 'Operator', accent: '#c98bff' },
-  { id: 'research', name: 'Research', accent: '#5ac8fa' },
-  { id: 'review', name: 'Review', accent: '#ff9f45' },
-  { id: 'design', name: 'Design', accent: '#ff7ac6' },
-  { id: 'code', name: 'Code', accent: '#7ee787' },
-  { id: 'qa', name: 'QA', accent: '#ffd43b' },
-  { id: 'scratch', name: '_scratch', accent: '#a78bfa' },
-  { id: 'twofa', name: '2fa-check', accent: '#38bdf8' },
-  { id: 'cjk', name: '研究', accent: '#fb7185' },
-  { id: 'dupe1', name: 'Deploy', accent: '#4ade80' },
-  { id: 'dupe2', name: 'Deploy', accent: '#c98bff' },
-]
-// Every one of them LIVE, because only a live lane draws an orb — and in the four states, so the
-// letter can be checked against the twinkle it sits on.
+// Every lane LIVE, because only a live lane draws an orb — and in the four states, so the letter
+// can be checked against the twinkle it sits on. `Research` and `Review` are ADJACENT on purpose:
+// a collision you have to scroll between is not the case that breaks trust.
 const PHASES = ['running', 'compacting', 'waiting', 'idle']
-const EXPECTED = {
-  operator: 'O', research: 'RS', review: 'RV', design: 'DS', code: 'C', qa: 'Q',
-  scratch: 'S', twofa: '2', cjk: '研', dupe1: 'D1', dupe2: 'D2',
-}
+const BATCHES = [
+  {
+    key: 'collision',
+    roster: [
+      { id: 'operator', name: 'Operator', accent: '#c98bff' },
+      { id: 'research', name: 'Research', accent: '#5ac8fa' },
+      { id: 'review', name: 'Review', accent: '#ff9f45' },
+      { id: 'design', name: 'Design', accent: '#ff7ac6' },
+    ],
+    // `Design` stays `D` — untouched by a collision it is not part of, which is the half of the
+    // rule that is easiest to break.
+    expect: { operator: 'O', research: 'RS', review: 'RV', design: 'D' },
+  },
+  {
+    key: 'awkward',
+    roster: [
+      { id: 'scratch', name: '_scratch', accent: '#a78bfa' },
+      { id: 'twofa', name: '2fa-check', accent: '#38bdf8' },
+      { id: 'cjk', name: '研究', accent: '#fb7185' },
+      { id: 'code', name: 'Code', accent: '#7ee787' },
+    ],
+    expect: { scratch: 'S', twofa: '2', cjk: '研', code: 'C' },
+  },
+  {
+    key: 'identical',
+    roster: [
+      { id: 'dupe1', name: 'Deploy', accent: '#4ade80' },
+      { id: 'dupe2', name: 'Deploy', accent: '#c98bff' },
+      { id: 'qa', name: 'QA', accent: '#ffd43b' },
+    ],
+    expect: { dupe1: 'D1', dupe2: 'D2', qa: 'Q' },
+  },
+]
+/** The batch every palette is measured with — the collision, which is the case the rule exists for. */
+const MAIN = BATCHES[0]
+
+/** THE SIX DEFAULT LANE ACCENTS (lib/roster.ts's `defaultRoster`), which is the ground Design
+ *  measured against — not the fixture's own four, or the contrast columns would move whenever the
+ *  fixture did and stop being comparable to the proposal's numbers. */
+const DEFAULT_ACCENTS = ['#c98bff', '#5ac8fa', '#7ee787', '#ff9f45', '#ff7ac6', '#ffd43b']
 
 const fails = []
 const notes = []
@@ -106,7 +133,7 @@ const ratio = (a, b) => {
   return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100
 }
 
-async function boot(theme) {
+async function boot(theme, roster) {
   const browser = await webkit.launch()
   const ctx = await browser.newContext({
     viewport: { width: 1280, height: 900 },
@@ -152,7 +179,7 @@ async function boot(theme) {
         v.onSessionUpdate = (cb) => { setTimeout(() => cb(sessions), 0); return () => {} }
       },
     })
-  }, [ROSTER, PHASES, theme])
+  }, [roster, PHASES, theme])
   const p = await ctx.newPage()
   p.on('pageerror', (e) => fails.push(`${theme} PAGEERROR ${String(e).slice(0, 160)}`))
   await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
@@ -162,48 +189,32 @@ async function boot(theme) {
 }
 
 const rows = []
-for (const [theme, short] of THEMES) {
-  const { browser, p } = await boot(theme)
 
-  // ---- 1. the rule reaches the DOM --------------------------------------------------------
-  // MEASURED AT 264 FIRST, because the collapsed strip folds at four orbs (`+N` carries the
-  // rest) — reading the roster off it would only ever see the first four and report the other
-  // seven as missing.
-  await p.keyboard.press('Meta+b')
-  await p.waitForTimeout(900)
-  const drawn = await p.evaluate(() => Object.fromEntries(
-    [...document.querySelectorAll('[data-rail-orb]')].map((o) => [
-      o.getAttribute('data-rail-orb'), o.querySelector('[data-orb-initial]')?.getAttribute('data-orb-initial') ?? null,
-    ]),
-  ))
+/** The letters the strip drew, keyed by session id. */
+const drawnBy = (p) => p.evaluate(() => Object.fromEntries(
+  [...document.querySelectorAll('[data-rail-orb]')].map((o) => [
+    o.getAttribute('data-rail-orb'),
+    o.querySelector('[data-orb-initial]')?.getAttribute('data-orb-initial') ?? null,
+  ]),
+))
+
+for (const [theme, short] of THEMES) {
+  const { browser, p } = await boot(theme, MAIN.roster)
+
+  // ---- 1. the rule reaches the DOM, COLLAPSED ------------------------------------------------
+  const drawn = await drawnBy(p)
   if (short === 'mc·D') {
-    for (const [id, want] of Object.entries(EXPECTED)) {
+    for (const [id, want] of Object.entries(MAIN.expect)) {
       const got = drawn[`s-${id}`]
-      if (got !== want) fails.push(`${id}: drew "${got}", expected "${want}"`)
+      if (got !== want) fails.push(`${MAIN.key}/${id}: drew "${got}", expected "${want}"`)
     }
-    notes.push(`initials at 264: ${Object.entries(drawn).map(([k, v]) => `${k.replace('s-', '')}=${v}`).join(' ')}`)
+    notes.push(`${MAIN.key} @60: ${Object.entries(drawn).map(([k, v]) => `${k.replace('s-', '')}=${v}`).join(' ')}`)
     const seen = Object.values(drawn)
     if (new Set(seen).size !== seen.length) fails.push(`two orbs drew the SAME letter: ${seen.join(' / ')}`)
   }
-  await p.screenshot({ path: `${OUT}/orb-rule-${short.replace('·', '-')}-expanded.png`, clip: { x: 0, y: 40, width: 300, height: 560 } })
+  await p.screenshot({ path: `${OUT}/orb-rule-${short.replace('·', '-')}-collapsed.png`, clip: { x: 0, y: 40, width: 120, height: 320 } })
 
-  // ---- 2. the letter is IDENTICAL at 60 -----------------------------------------------------
-  // Whatever the collapsed strip does show must be the same letter it showed at 264: the orb is
-  // one object and it does not change meaning with the width.
-  await p.keyboard.press('Meta+b')
-  await p.waitForTimeout(900)
-  const narrow = await p.evaluate(() => Object.fromEntries(
-    [...document.querySelectorAll('[data-rail-orb]')].map((o) => [
-      o.getAttribute('data-rail-orb'), o.querySelector('[data-orb-initial]')?.getAttribute('data-orb-initial') ?? null,
-    ]),
-  ))
-  for (const [id, letter] of Object.entries(narrow)) {
-    if (drawn[id] !== letter) fails.push(`${short} ${id}: "${letter}" at 60 but "${drawn[id]}" at 264 — the orb changed meaning with the width`)
-  }
-  if (short === 'mc·D') notes.push(`collapsed shows ${Object.keys(narrow).length} of ${Object.keys(drawn).length} (the rest fold into +N), all identical to their 264 letter`)
-  await p.screenshot({ path: `${OUT}/orb-rule-${short.replace('·', '-')}-collapsed.png`, clip: { x: 0, y: 40, width: 120, height: 560 } })
-
-  // ---- 2b. THE LETTER IS ON THE AXIS --------------------------------------------------------
+  // ---- 1b. THE LETTER IS ON THE AXIS --------------------------------------------------------
   // A centred TWO-character mono string carries its trailing letter-space on the right and nowhere
   // else, which pushes the ink ~0.3px off the column the whole strip is aligned to. The component
   // cancels it with a negative right margin; this measures the cancel rather than trusting it, and
@@ -213,11 +224,9 @@ for (const [theme, short] of THEMES) {
       const r = document.querySelector('[data-rail]').getBoundingClientRect()
       return { x: r.left, y: r.top, width: r.width, height: r.height }
     })
-    const orbs = await p.evaluate(() => [...document.querySelectorAll('[data-rail-orb]')]
-      .map((o) => o.getAttribute('data-rail-orb')))
-    for (const id of orbs) {
+    for (const id of Object.keys(drawn)) {
       const sel = `[data-rail-orb="${id}"] [data-orb-initial]`
-      const letter = await p.evaluate((q) => document.querySelector(q)?.getAttribute('data-orb-initial') ?? null, sel)
+      const letter = drawn[id]
       const box = await ink(p, rr, sel)
       if (!box) { fails.push(`${id}: the glyph "${letter}" painted nothing`); continue }
       const centre = (box.left + box.right) / 2
@@ -226,6 +235,19 @@ for (const [theme, short] of THEMES) {
       if (Math.abs(delta) > 0.75) fails.push(`the glyph "${letter}" paints ${delta.toFixed(2)}px off the axis`)
     }
   }
+
+  // ---- 2. AT 264 THERE IS NO LETTER ----------------------------------------------------------
+  // The amendment, asserted from the other side: the row spells the lane's name out there, so the
+  // letter would be repeating it. Absent — not faded, not shrunk.
+  await p.keyboard.press('Meta+b')
+  await p.waitForTimeout(900)
+  const wide = await drawnBy(p)
+  const stray = Object.entries(wide).filter(([, v]) => v !== null)
+  if (stray.length) fails.push(`${short}: ${stray.length} orb(s) still carry a letter at 264 — ${stray.map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  if (Object.keys(wide).length !== Object.keys(drawn).length) {
+    fails.push(`${short}: ${Object.keys(drawn).length} orbs at 60 but ${Object.keys(wide).length} at 264`)
+  }
+  await p.screenshot({ path: `${OUT}/orb-rule-${short.replace('·', '-')}-expanded.png`, clip: { x: 0, y: 40, width: 300, height: 320 } })
 
   // ---- 3. THE TREATMENT, measured -----------------------------------------------------------
   // Three grounds: the halo the glyph actually sits on, the dot it would sit on without one, and
@@ -247,7 +269,7 @@ for (const [theme, short] of THEMES) {
     const out = accents.map((a) => ({ a, dot: peak(a) }))
     probe.remove()
     return { fg, halo, dots: out }
-  }, ROSTER.map((r) => r.accent))
+  }, DEFAULT_ACCENTS)
 
   const vsHalo = ratio(m.fg, m.halo)
   const vsDots = m.dots.map((d) => ratio(m.fg, d.dot))
@@ -257,9 +279,24 @@ for (const [theme, short] of THEMES) {
     dotMin: Math.min(...vsDots), dotMax: Math.max(...vsDots),
     koMin: Math.min(...knockout), koMax: Math.max(...knockout),
   })
-  // The shipped claim, and the only one that gates: the glyph against its own halo.
   if (vsHalo < 4.5) fails.push(`${short}: glyph on its halo measures ${vsHalo}:1 — below the 4.5 floor`)
 
+  await browser.close()
+}
+
+// ---- 4. the other two batches, drawn and asserted on one palette ------------------------------
+// The awkward names and the identical pair. One palette is enough: the RULE is palette-independent
+// and its contrast is covered by the sweep above; what these add is that each of these names is
+// actually on screen somewhere rather than folded into `+N`.
+for (const batch of BATCHES.slice(1)) {
+  const { browser, p } = await boot('mission-control-dark', batch.roster)
+  const drawn = await drawnBy(p)
+  for (const [id, want] of Object.entries(batch.expect)) {
+    const got = drawn[`s-${id}`]
+    if (got !== want) fails.push(`${batch.key}/${id}: drew "${got}", expected "${want}"`)
+  }
+  notes.push(`${batch.key} @60: ${Object.entries(drawn).map(([k, v]) => `${k.replace('s-', '')}=${v}`).join(' ')}`)
+  await p.screenshot({ path: `${OUT}/orb-rule-${batch.key}-collapsed.png`, clip: { x: 0, y: 40, width: 120, height: 320 } })
   await browser.close()
 }
 
