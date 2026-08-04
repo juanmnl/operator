@@ -190,11 +190,54 @@ for (const [identity, mode] of THEMES) {
   })
   for (const r of emptyProbe) check(key, r)
 
+  // Backlog empty BESIDE a populated column — the only shape in which its own empty box, the one
+  // that used to be 28px taller than everyone else's, is visible next to the others.
+  await p.click('[data-scenario-btn="running-only"]')
+  await p.waitForTimeout(200)
+  await p.screenshot({ path: `${OUT}/${key}-3b-backlog-empty.png` })
+  const backlogBoxes = await p.evaluate(() => [...document.querySelectorAll('[data-column-empty]')]
+    .map((e) => ({ col: e.closest('[data-board-column]')?.getAttribute('data-board-column'), h: Math.round(e.getBoundingClientRect().height * 100) / 100 })))
+  const hs = backlogBoxes.map((b) => b.h)
+  if (!backlogBoxes.some((b) => b.col === 'backlog')) fails.push(`${key} — running-only did not empty the backlog column`)
+  if (hs.length && Math.max(...hs) - Math.min(...hs) > 0.5) {
+    fails.push(`${key} — empty boxes differ in height with backlog among them: ${JSON.stringify(backlogBoxes)}`)
+  }
+  if (await p.locator('[data-column-empty] button').count()) {
+    fails.push(`${key} — an empty column still carries its own button; that is the 28px that made Backlog taller`)
+  }
+
   await p.click('[data-scenario-btn="backlog-only"]')
   await p.waitForTimeout(200)
   await p.screenshot({ path: `${OUT}/${key}-3-empty-columns.png` })
   const emptyCols = await p.locator('[data-column-empty]').count()
   if (emptyCols !== 3) fails.push(`${key} — expected 3 empty columns (running/waiting/done), got ${emptyCols}`)
+  // THE THREE THINGS THE COLUMN HEADS CLAIM, measured rather than eyeballed. Each was a real
+  // defect: four labels on two baselines (a header sized by whichever control it carried), and
+  // an empty box 28px taller in Backlog than in its neighbours (an in-box button only it had).
+  const heads = await p.evaluate(() => {
+    const round = (n) => Math.round(n * 100) / 100
+    const cols = [...document.querySelectorAll('[data-board-column]')]
+    return {
+      labels: cols.map((c) => round(c.querySelector('[data-board-label]')?.getBoundingClientRect().top ?? -1)),
+      headers: cols.map((c) => round(c.querySelector('header')?.getBoundingClientRect().height ?? -1)),
+      boxes: [...document.querySelectorAll('[data-column-empty]')].map((e) => round(e.getBoundingClientRect().height)),
+      // C2: the `+` sits inside BACKLOG's own name cluster, left of the midpoint of its header —
+      // not parked on the far edge where it read as belonging to neither column.
+      addAt: (() => {
+        const btn = document.querySelector('[data-board-add]')
+        const head = btn?.closest('header')
+        if (!btn || !head) return null
+        const b = btn.getBoundingClientRect(), h = head.getBoundingClientRect()
+        return round((b.left - h.left) / h.width)
+      })(),
+    }
+  })
+  const spread = (xs) => Math.max(...xs) - Math.min(...xs)
+  notes.push(`${key} — label tops ${JSON.stringify(heads.labels)}, header heights ${JSON.stringify(heads.headers)}, empty boxes ${JSON.stringify(heads.boxes)}, + at ${heads.addAt}`)
+  if (spread(heads.labels) > 0.5) fails.push(`${key} — the four column labels are not on one baseline: ${JSON.stringify(heads.labels)}`)
+  if (spread(heads.headers) > 0.5) fails.push(`${key} — column headers are different heights: ${JSON.stringify(heads.headers)}`)
+  if (spread(heads.boxes) > 0.5) fails.push(`${key} — empty columns are different heights: ${JSON.stringify(heads.boxes)}`)
+  if (heads.addAt === null || heads.addAt > 0.5) fails.push(`${key} — Backlog's + is at ${heads.addAt} of the header width; it belongs in the label cluster`)
   const emptyColProbe = await p.evaluate(() => {
     document.querySelector('[data-column-empty] p')?.setAttribute('data-p-empty-col', '')
     return [window.__contrast('[data-p-empty-col]', 'empty column text', true)]

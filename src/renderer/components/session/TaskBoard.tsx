@@ -281,14 +281,12 @@ export function TaskBoard(props: TaskBoardProps) {
                 onRemove={props.onRemoveTask}
               />
             ))}
-            {board.backlog.length === 0 && !composing && (
-              <EmptyColumn text="Nothing queued." action={{ label: '+ Add a task', run: () => setComposing(true) }} />
-            )}
+            {board.backlog.length === 0 && !composing && <EmptyColumn text="Nothing queued." />}
           </>
         )
       case 'running':
         return board.running.length === 0
-          ? <EmptyColumn text="No agent is working right now." />
+          ? <EmptyColumn text="No agent is working." />
           : board.running.map((task) => (
             <RunningCard
               key={task.id}
@@ -387,7 +385,12 @@ export function TaskBoard(props: TaskBoardProps) {
               data-board-column={c.key}
               style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(stacked ? null : { minHeight: 0 }) }}
             >
-              <header style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 8px', flexShrink: 0 }}>
+              {/* A FIXED BAND, not a box sized by whatever control it happens to carry. At
+                  `alignItems: center` with no height, Backlog's 20px `+` made its header ~9px
+                  taller than Running's bare label and centring split the difference — so the four
+                  column names sat on two different baselines, and would drift again the next time
+                  a column gained a button. */}
+              <header style={{ display: 'flex', alignItems: 'center', gap: 6, height: 24, boxSizing: 'border-box', padding: '0 2px', marginBottom: 8, flexShrink: 0 }}>
                 <Pip
                   tone={
                     c.key === 'running' ? (n > 0 ? 'running' : 'idle')
@@ -395,11 +398,25 @@ export function TaskBoard(props: TaskBoardProps) {
                         : c.key === 'done' ? 'done' : 'idle'
                   }
                 />
-                <span style={LABEL}>{c.title}</span>
+                <span data-board-label={c.key} style={LABEL}>{c.title}</span>
                 <span
                   data-board-count={c.key}
                   style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, fontVariantNumeric: 'tabular-nums', color: n > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
                 >{n}</span>
+                {/* INSIDE THE COLUMN'S OWN NAME. At `marginLeft: auto` this sat on Backlog's
+                    right edge, 6px from a 12px grid gap — very nearly equidistant from two
+                    columns, and it read as belonging to neither because geometrically it belonged
+                    to neither. The bulk verbs below keep the far edge: they operate on the whole
+                    column, which is what the far edge means here. */}
+                {c.key === 'backlog' && (
+                  <button
+                    data-board-add
+                    className="tb-btn tb-btn-icon"
+                    onClick={() => setComposing((v) => !v)}
+                    title="Add a task"
+                    aria-expanded={composing}
+                  >+</button>
+                )}
                 {c.key === 'done' && board.unconfirmed > 0 && (
                   // Named, not folded into the count: an abandoned task is not a finished one.
                   <span data-board-unconfirmed style={{ ...LABEL, letterSpacing: '0.06em' }}>
@@ -431,24 +448,14 @@ export function TaskBoard(props: TaskBoardProps) {
                     )}
                   </span>
                 )}
-                {c.key === 'backlog' && (
-                  <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    {dispatchable > 0 && props.onStartAll && (
-                      <button
-                        data-board-start-all
-                        className="tb-btn"
-                        onClick={props.onStartAll}
-                        title={`Dispatch ${dispatchable} assigned task${dispatchable > 1 ? 's' : ''} to their agents`}
-                      >Start all →</button>
-                    )}
-                    <button
-                      data-board-add
-                      className="tb-btn tb-btn-icon"
-                      onClick={() => setComposing((v) => !v)}
-                      title="Add a task"
-                      aria-expanded={composing}
-                    >+</button>
-                  </span>
+                {c.key === 'backlog' && dispatchable > 0 && props.onStartAll && (
+                  <button
+                    data-board-start-all
+                    className="tb-btn"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={props.onStartAll}
+                    title={`Dispatch ${dispatchable} assigned task${dispatchable > 1 ? 's' : ''} to their agents`}
+                  >Start all →</button>
                 )}
               </header>
               <div
@@ -970,16 +977,22 @@ function Pip({ tone }: { tone: 'idle' | 'running' | 'waiting' | 'done' }) {
   return <span style={{ width: 6, height: 6, borderRadius: '50%', background: bg, flexShrink: 0 }} />
 }
 
-function EmptyColumn({ text, action }: { text: string; action?: { label: string; run: () => void } }) {
+/** An empty column. The dashed box stays; what changed is that the four of them are now the
+ *  SAME box.
+ *
+ *  They were 80.5px in Backlog against 52.5px everywhere else, and the whole difference was one
+ *  control: an `+ Add a task` button at `marginTop: 8` that only this column had. Three empty
+ *  states of one height beside a fourth of another reads as a layout fault, not as a column that
+ *  can be acted on — the asymmetry is real, but it belongs in the header beside the column's own
+ *  name, which is where the `+` now lives (30px away, and unambiguously Backlog's). One verb,
+ *  one control, and four identical boxes by construction rather than by tuning. */
+function EmptyColumn({ text }: { text: string }) {
   return (
     <div data-column-empty style={{
       border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
       padding: '18px 12px', textAlign: 'center',
     }}>
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5 }}>{text}</p>
-      {action && (
-        <button className="tb-btn" onClick={action.run} style={{ marginTop: 8 }}>{action.label}</button>
-      )}
     </div>
   )
 }

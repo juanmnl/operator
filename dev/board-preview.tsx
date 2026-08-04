@@ -187,7 +187,11 @@ const BULK_DONE: ProjectTask[] = Array.from({ length: 214 }, (_, i) => ({
   text: `Closed task #${i} — a real project accumulates these and never clears them.`,
 }))
 
-type Scenario = 'full' | 'empty' | 'no-waiting' | 'backlog-only' | 'done-heavy'
+// `running-only` exists for ONE assertion: it is the only shape that puts BACKLOG's empty state
+// on screen beside its neighbours'. That box carried an `+ Add a task` button no other column had
+// and was 28px taller for it — a difference invisible in every other scenario, because a board
+// with an empty backlog and a populated anything-else is not otherwise fixtured.
+type Scenario = 'full' | 'empty' | 'no-waiting' | 'backlog-only' | 'running-only' | 'done-heavy'
 
 function Harness() {
   const [identity, setIdentity] = useState('mission-control')
@@ -210,9 +214,10 @@ function Harness() {
 
   const tasks = scenario === 'empty' ? []
     : scenario === 'backlog-only' ? TASKS.filter((t) => (t.status ?? 'queued') === 'queued')
-      : scenario === 'done-heavy' ? [...TASKS, ...BULK_DONE]
-        : TASKS
-  const dispatches = scenario === 'empty' || scenario === 'no-waiting' || scenario === 'backlog-only'
+      : scenario === 'running-only' ? TASKS.filter((t) => t.status === 'running')
+        : scenario === 'done-heavy' ? [...TASKS, ...BULK_DONE]
+          : TASKS
+  const dispatches = scenario === 'empty' || scenario === 'no-waiting' || scenario === 'backlog-only' || scenario === 'running-only'
     ? records.filter((d) => d.outcome === 'sent')
     : records
   // Enough of a Project for `DispatchLog`, which reads only these three fields. It is mounted
@@ -243,7 +248,7 @@ function Harness() {
           <button key={m} data-mode-btn={m} style={chip(mode === m)} onClick={() => apply(identity, m)}>{m}</button>
         ))}
         <span style={{ width: 10 }} />
-        {(['full', 'empty', 'no-waiting', 'backlog-only', 'done-heavy'] as Scenario[]).map((s) => (
+        {(['full', 'empty', 'no-waiting', 'backlog-only', 'running-only', 'done-heavy'] as Scenario[]).map((s) => (
           <button key={s} data-scenario-btn={s} style={chip(scenario === s)} onClick={() => setScenario(s)}>{s}</button>
         ))}
         <span style={{ width: 10 }} />
