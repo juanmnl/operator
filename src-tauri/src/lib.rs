@@ -1012,13 +1012,36 @@ struct TerminalInfo {
     id: String,
     cwd: String,
     dev_port: Option<u16>,
+    /// Is this pty's child actually running? The frontend used to hardcode `true` for this,
+    /// which made the list a register of ptys that EXIST rather than ptys that WORK. A renderer
+    /// that missed a `terminal:exit` — WebKit kills and respawns it under memory pressure, and
+    /// events fired while it was dead are gone — then believed a dead lane was live. Dispatch
+    /// routing keys off exactly that, so tasks were typed into a corpse, tracked as running, and
+    /// never delivered. Reporting the truth here is what lets the renderer heal.
+    alive: bool,
 }
 
 #[tauri::command]
 fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
     let ports = mgr.dev_ports();
-    lock(&mgr.ptys).iter()
-        .map(|(id, p)| TerminalInfo { id: id.clone(), cwd: p.cwd.clone(), dev_port: ports.get(id).copied() })
+    // Snapshot under the lock, then ask about the children with the lock RELEASED: `child_state`
+    // takes `ptys` itself, and `try_wait` is a syscall — asking inside the iterator would
+    // deadlock on the first entry.
+    let snapshot: Vec<(String, String)> = lock(&mgr.ptys)
+        .iter()
+        .map(|(id, p)| (id.clone(), p.cwd.clone()))
+        .collect();
+    snapshot
+        .into_iter()
+        .map(|(id, cwd)| {
+            // `Unknown` counts as ALIVE on purpose: it means there is no child yet (a deferred
+            // launch that has not exec'd) or that `try_wait` failed. Declaring those dead would
+            // kill a session that is merely starting — the same class of error as the reader
+            // thread treating a transient read failure as process death.
+            let alive = !matches!(child_state(mgr.inner(), &id), ChildState::Exited);
+            let dev_port = ports.get(&id).copied();
+            TerminalInfo { id, cwd, dev_port, alive }
+        })
         .collect()
 }
 
