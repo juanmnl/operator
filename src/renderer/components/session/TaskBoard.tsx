@@ -6,6 +6,7 @@ import { chipForOutcome } from '../../lib/dispatch-outcome'
 import { toolVerb } from '../../lib/chat-signal'
 import { fmtDuration, relativeTime } from '../../lib/format'
 import { laneTextColor } from '../../lib/lane-color'
+import { headlineOf } from '../../lib/task-headline'
 import { StatusWave } from '../sidebar/StatusWave'
 import { TaskDiffCard } from './TaskDiffCard'
 import { isStaleTask, taskAgeDays } from '../../lib/task-staleness'
@@ -515,7 +516,7 @@ function BacklogCard({ task, role, roles, liveRoles, unroutedReason, now, onAssi
   return (
     <article className="tb-card" data-task-card={task.id} style={cardStyle()}>
       <DeleteButton title="Delete task" onClick={() => onRemove(task.id)} />
-      <p className="tb-title" data-card-title>{task.text}</p>
+      <p className="tb-title" data-card-title title={task.text}>{headlineOf(task.text).title}</p>
       {/* Why this is sitting unassigned. An agent asked for a lane this project doesn't have, so
           the task was filed here instead — which without a word looks like a backlog item nobody
           got round to assigning. Today the dispatch log says it; after move 03 nothing would. */}
@@ -585,7 +586,7 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
           borderColor: `color-mix(in srgb, ${accent} 30%, var(--border))`,
         })}
       >
-        <p className="tb-title" data-card-title>{task.text}</p>
+        <p className="tb-title" data-card-title title={task.text}>{headlineOf(task.text).title}</p>
         <LaneLine signal={signal} accent={accent} />
         {/* Delegation reads as a COLLAPSED ROW INSIDE the parent, never a nested board — the
             children belong to the lane's own session, and that is where the row takes you.
@@ -701,7 +702,7 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles,
         <AgentChip role={to} live={false} fallback={record.toRoleId ?? 'no matching lane'} />
         <span style={{ ...TIME, marginLeft: 'auto' }}>{relativeTime(record.at)}</span>
       </div>
-      <p className="tb-title" data-card-title>{record.task}</p>
+      <p className="tb-title" data-card-title title={record.task}>{headlineOf(record.task).title}</p>
       {/* The held reason, in the warning hue put through the same palette correction as accent
           ink — raw `--color-warning` is #FF8D01 on 1984-light and measured 1.6:1 there, i.e. the
           one line on the board whose entire job is to be read was the least readable thing on it. */}
@@ -797,13 +798,13 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
     <div>
       <article className="tb-card" data-task-card={task.id} style={cardStyle()}>
         <DeleteButton title="Delete task" onClick={onRemove} />
-        <p className="tb-title tb-title-closed" data-card-title>
+        <p className="tb-title tb-title-closed" data-card-title title={task.text}>
           <span
             data-card-tick
             style={{ color: unconfirmed ? 'var(--fg-muted)' : ACCENT_INK }}
             title={unconfirmed ? 'Closed automatically: the session running it ended before it reported back' : 'Finished'}
           >{unconfirmed ? '⋯' : '✓'}</span>{' '}
-          {task.text}
+          {headlineOf(task.text).title}
         </p>
         <div style={META_ROW}>
           <AgentChip role={role} live={false} lostRoleId={role ? undefined : task.roleId} />
