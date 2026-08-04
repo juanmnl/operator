@@ -3,7 +3,7 @@ import type { AgentSession, Project } from '../../../shared/types'
 import { StatusWave, type WaveStatus } from './StatusWave'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
-import { byRailOrder, isActiveProject } from '../../lib/project-shelf'
+import { byRailOrder } from '../../lib/project-shelf'
 import { projectAccent, projectInitials } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard } from '../../lib/use-hover-card'
@@ -142,13 +142,16 @@ export function ProjectRail({
   // order does happen to survive every write path today — they are all map/filter/append — but
   // that is an accident nothing declares, and one `.sort()` added anywhere upstream would undo a
   // user's arrangement with no error and no way to notice.
-  // THE ACTIVE SHELF, not just what is live. "So we can have many projects" and "that way I can
-  // see all the active projects at the same time too" — seeing the whole shelf at once is a
-  // REASON this shape was chosen, not a side effect. `isActiveProject` also keeps its second
-  // clause, which is the never-hide-a-running-agent rule already encoded: an archived project
-  // with something live in it stays in the list whatever its record says.
+  // WHAT YOU HAVE OPEN — not the whole shelf.
+  //
+  // The active shelf is all 20 projects here, because nothing has ever been archived, so listing
+  // it put every project you have ever touched in a strip meant for the ones you are working in.
+  // "Just the projects I want open." A project earns its place by having something LIVE in it,
+  // plus the one you are currently in so the rail is never empty while you are inside a project.
+  // That is also the never-hide-a-running-agent rule stated from the other side: anything running
+  // is on screen by construction.
   const shown = projects
-    .filter((p) => isActiveProject(p, activities[p.id]) || p.id === activeProjectId)
+    .filter((p) => (activities[p.id]?.live ?? 0) > 0 || p.id === activeProjectId)
     .sort(byRailOrder)
   const canReorder = !!onReorder && shown.length > 1
 
@@ -306,6 +309,38 @@ export function ProjectRail({
                 endDrag()
               }}
             >
+              {p.id === activeProjectId && band.length > 0 ? (
+                /* THE OPEN PROJECT IS A NAME, not an acronym in a square. Its agents are right
+                   beneath it, so the header's job is to say WHOSE they are — and a name does that
+                   where two letters cannot: `fastrack` / `Fastrack-landing` / `FastTrack` all
+                   reduce to the same tile, and colour collides too (one hash serves four
+                   projects). Only the open one gets this; at 52px there is room for exactly one
+                   name, which is the trade the narrow rail buys. */
+                <button
+                  data-rail-open-name={p.id}
+                  onClick={() => onOpenProject(p.id)}
+                  onContextMenu={onTileMenu && ((e) => {
+                    e.preventDefault(); e.stopPropagation()
+                    const r = e.currentTarget.getBoundingClientRect()
+                    onTileMenu(p.id, { top: r.top, left: r.right + 8 })
+                  })}
+                  draggable={canReorder}
+                  onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
+                  onDragEnd={endDrag}
+                  title={p.name}
+                  aria-label={p.name}
+                  aria-current
+                  style={{
+                    width: 44, padding: '2px 0', background: 'transparent', border: 'none',
+                    color: laneTextColor(projectAccent(p.id)),
+                    cursor: 'pointer', outline: 'none',
+                    fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
+                    letterSpacing: '0.08em', lineHeight: 1.2, textTransform: 'uppercase',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    opacity: drag === p.id ? 0.4 : 1,
+                  }}
+                >{shortNameOf(p.name)}</button>
+              ) : (
               <ProjectTile
                 project={p}
                 activity={activities[p.id] ?? { live: 0, waiting: 0, lanes: p.roster?.length ?? 0, status: 'idle' }}
@@ -318,6 +353,7 @@ export function ProjectRail({
                 onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
                 onDragEnd={endDrag}
               />
+              )}
               {/* The selected project's agents, in place, under its own tile. Never a second
                   column and never hoisted to the top: the user picks the order of this list
                   (opening order, then drag), and selection is not an input to it. */}
@@ -726,4 +762,17 @@ function laneInitial(name: string): string {
   if (!words.length) return '?'
   if (words.length === 1) return words[0].slice(0, 1).toUpperCase()
   return (words[0][0] + words[1][0]).toUpperCase()
+}
+
+
+/** A project's name, short enough for a 52px rail.
+ *
+ *  Initials for a multi-word or hyphenated name (`Operator-landing` → `OL`), otherwise the first
+ *  six letters (`operator` → `OPERAT`). Six rather than four because this is the ONE place a
+ *  project is named rather than abbreviated, and `fastrack` / `FastTrack` / `Fastrack-landing`
+ *  is exactly the collision the acronym could not carry. */
+function shortNameOf(name: string): string {
+  const words = name.replace(/[_\-/.]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (words.length > 1) return words.map((w) => w[0]).join('').slice(0, 4).toUpperCase()
+  return (words[0] ?? name).slice(0, 6).toUpperCase()
 }
