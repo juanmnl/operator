@@ -344,6 +344,10 @@ async function measure(p, label) {
     key: `identity row${versionCut ? ' ✂' : ''}`, state: versionCut ? 'version (cut)' : 'version',
     sel: '[data-rail-identity-row]', offAxis: versionCut,
   })
+  // The `+` of "Start an agent" — expanded only, so the collapsed pass measures nothing and that
+  // is correct. Off the axis by design: it is left-aligned in its column so that shrinking it
+  // could not move the left ink edge FIX-5 put there.
+  targets.push({ key: '  └ + add lane', state: 'glyph', sel: '[data-rail-add-lane] svg', plus: true, offAxis: true })
   for (const [name, sel] of FOOT) {
     targets.push({ key: `foot ${name}`, state: 'glyph', sel: `${sel} svg`, glyph: true, foot: true, offAxis: true })
   }
@@ -354,6 +358,22 @@ async function measure(p, label) {
   }
   // The foot's ROWS and its hairlines, measured as boxes rather than by ink: a row is a
   // container, and Y is a claim about where the row sits, not about what it paints.
+  // The two vertical gaps rule 3 is about, as BOXES: the ink gap between two tinted rows is the
+  // tint's own edge, which is the thing a person sees butting or breathing.
+  const gaps = await p.evaluate(() => {
+    const r2 = (n) => Math.round(n * 100) / 100
+    const rows = [...document.querySelectorAll('[data-rail-orb]')]
+      .map((o) => o.closest('[role="button"], button')?.getBoundingClientRect()).filter(Boolean)
+    const member = rows.length > 1 ? r2(rows[1].top - rows[0].bottom) : null
+    const groups = [...document.querySelectorAll('[data-rail-group]')].map((g) => {
+      const cs = getComputedStyle(g)
+      return { top: parseFloat(cs.marginTop) || 0, pad: parseFloat(cs.paddingTop) || 0 }
+    })
+    // The visible separation between two groups: the second's margin plus its padding, with the
+    // hairline drawn between them.
+    const group = groups.length > 1 ? r2(groups[1].top + groups[1].pad) : null
+    return { member, group }
+  })
   const foot = await p.evaluate(() => {
     const rail = document.querySelector('[data-rail]').getBoundingClientRect()
     const r2 = (n) => Math.round(n * 100) / 100
@@ -372,7 +392,7 @@ async function measure(p, label) {
       ].filter((a) => document.querySelector(`[${a}]`)),
     }
   })
-  return { label, rr, rows, foot, collapsed, groups, orbs, homes }
+  return { label, rr, rows, foot, gaps, collapsed, groups, orbs, homes }
 }
 
 function report(m) {
@@ -420,6 +440,20 @@ function report(m) {
   // would distort the drawings to satisfy a number. What must not vary is how BIG each glyph
   // reads in an identical box, which is what caught the gear painting 14 against everyone else's
   // 12 the first time all eight were measured together.
+  // THE `+` OF "START AN AGENT", measured the same way but held to a DIFFERENT claim: it is not
+  // one of the foot's eight, it is the member column's junior mark, and its rule is "at or just
+  // under the orb's painted extent". Sizing it by ink is the fix — it used to paint 24×24, exactly
+  // the disc's extent, which is why it read heavier than the thing it sits beneath (a cross
+  // reaches the corners of its box; 92px² of ink across the same span as the disc's 405px²).
+  const plus = m.rows.find((r) => r.plus)?.box
+  const orb = m.rows.find((r) => r.orb)?.box
+  if (plus && orb) {
+    const pe = Math.max(plus.right - plus.left, plus.bottom - plus.top)
+    const oe = Math.max(orb.right - orb.left, orb.bottom - orb.top)
+    console.log(`  ${pad('+ (member)', 14)}${f(plus.right - plus.left, 6, 2)} × ${f(plus.bottom - plus.top, 5, 2)}` +
+      f(plus.px, 9, 1) + `   against the orb's ${oe.toFixed(2)}` + (pe <= oe + 0.01 ? '  ok' : '  ◀ OFF'))
+    if (pe > oe + 0.01) m.plusTooBig = `the + paints ${pe.toFixed(2)}, the orb ${oe.toFixed(2)} — it must be at or under`
+  }
   const ws = glyphs.map((r) => r.box.right - r.box.left), hs = glyphs.map((r) => r.box.bottom - r.box.top)
   const extents = glyphs.map((r) => Math.max(r.box.right - r.box.left, r.box.bottom - r.box.top))
   const sizeSpread = glyphs.length ? Math.max(...extents) - Math.min(...extents) : 99
@@ -439,6 +473,11 @@ function report(m) {
   }
   const spread = (xs) => (xs.length ? Math.max(...xs) - Math.min(...xs) : 0)
   console.log(`  member pitch: ${memberPitch.map((x) => x.toFixed(1)).join(' / ') || '(one member)'}   spread ${spread(memberPitch).toFixed(2)}`)
+  // A DIVIDER MUST OUT-SPACE WHAT IT DIVIDES. Members are 6px apart expanded so each tinted row
+  // reads as its own object; the group boundary is 6 + hairline + 6. If the member gap ever grows
+  // past the group's, the grouping inverts — rows read as belonging to the group below them.
+  console.log(`  member gap ${f(m.gaps.member, 5, 1)} · group separation ${f(m.gaps.group, 5, 1)}` +
+    (m.gaps.member < m.gaps.group ? '  ok' : '  ◀ OFF — the gap between members must stay under the one between groups'))
   const pitches = []
   for (let i = 1; i < m.foot.rows.length; i++) pitches.push(m.foot.rows[i].top - m.foot.rows[i - 1].top)
   console.log(`  foot row tops:   ${m.foot.rows.map((r) => r.top.toFixed(1)).join(' / ')}`)
@@ -454,12 +493,13 @@ function report(m) {
       (a.below !== null && Math.abs(a.above - a.below) > TOL ? '  ◀ OFF' : '  ok'))
   }
   const okRhythm = spread(memberPitch) <= TOL && spread(pitches) <= TOL
+    && (m.gaps.member === null || m.gaps.group === null || m.gaps.member < m.gaps.group)
     && seamAir.every((a) => a.below === null || Math.abs(a.above - a.below) <= TOL)
   const okFoot = m.foot.present.length === 8
   console.log(`  foot controls present: ${m.foot.present.length}/8` + (okFoot ? '  ok' : '  ◀ OFF'))
 
   return {
-    worst, sizeSpread, okRhythm, okFoot, worstWindow,
+    worst, sizeSpread, okRhythm, okFoot, worstWindow, plusTooBig: m.plusTooBig,
     rows: m.foot.rows.map((r) => r.top),
     orbs: Object.fromEntries(m.rows.filter((r) => r.orb && r.box).map((r) => [r.orb, r.box])),
     accents: Object.fromEntries(m.groups.map((g) => [g.id, g.accent])),
@@ -619,6 +659,7 @@ for (const [theme, short] of THEMES) {
 
   await p.screenshot({ path: `/tmp/operator-shots/rail-d1-${short.replace('·', '-')}-expanded.png`, clip: { x: m2.rr.left, y: 0, width: 290, height: 900 } })
 
+  for (const r of [r1, r2]) if (r.plusTooBig) fails.push(r.plusTooBig)
   if (Math.abs(r1.worst) > TOL) fails.push(`collapsed axis off by ${r1.worst.toFixed(2)}px`)
   // COLLAPSED ONLY, and that is the point of the change: expanded, the member column starts at the
   // row's left edge with everything else (assertion L). What must not drift is the COLLAPSED
