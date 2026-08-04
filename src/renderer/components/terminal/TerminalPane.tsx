@@ -7,7 +7,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
-import { buildTerminalOptions, getMacOptionIsMeta } from '../../lib/terminal-options'
+import { buildTerminalOptions, getMacOptionIsMeta, scrollbackFor } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
@@ -623,6 +623,14 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // Re-read the ⌥-as-Meta setting on activation so a change in Preferences takes
     // effect when you switch back to a terminal (no terminal recreate needed).
     term.options.macOptionIsMeta = getMacOptionIsMeta()
+
+    // A hidden pane keeps a smaller buffer. Every session's terminal stays mounted (that rule
+    // is what stops the pane blanking and the resize-hang), so a project with eight lanes was
+    // holding eight × 10k lines of cells in one renderer — measured at 737MB resting, and
+    // opening the heaviest project pushed WebKit into killing and respawning the renderer
+    // mid-navigation. Lowering the option TRIMS the buffer immediately, which is the whole
+    // point; see INACTIVE_SCROLLBACK for what that costs and why it is the right trade.
+    term.options.scrollback = scrollbackFor(active)
 
     if (active) {
       // Flush output buffered while this pane was hidden (it didn't render in the

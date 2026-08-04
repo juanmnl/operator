@@ -61,6 +61,45 @@ export function setTuiMode(mode: TuiMode): void {
   }
 }
 
+/** Scrollback for the pane you are looking at. Unchanged — the visible terminal keeps the full
+ *  history it has always had. */
+export const ACTIVE_SCROLLBACK = 10_000
+
+/** Scrollback for a pane that is mounted but NOT on screen.
+ *
+ *  EVERY session's terminal stays mounted, always — the chosen surface (Chat/Preview) overlays a
+ *  still-mounted, still-sized pty because unmounting blanks the final output and resizing hangs
+ *  the terminal. That rule is right and is not what changes here.
+ *
+ *  What it costs: `DashboardView` renders every tab, so a project with eight lanes holds eight
+ *  live xterm instances, and at 10k lines each that is 80,000 lines of buffered cells in one
+ *  renderer. Measured on the real app: WebContent resting at 737MB with 23.6% CPU, and opening
+ *  the heaviest project pushed it past what WebKit would give it — the renderer was killed and
+ *  respawned mid-navigation, which reads to the user as "the app restarts, blinks, and goes back
+ *  to another project" (the respawn re-hydrates scope from localStorage, so you land somewhere
+ *  else). Eight mounted terminals is not exotic here; it is a normal working day.
+ *
+ *  2,000 lines is ~20 screens of history on a background lane — generous enough that switching
+ *  back rarely finds the top, small enough that eight of them cost a fifth of what they did.
+ *
+ *  THE COST, STATED PLAINLY: lowering `scrollback` DISCARDS lines beyond the new limit, and
+ *  raising it again does not bring them back. Switching away from a lane trims its history to
+ *  2,000 lines. That is a real loss and it is the price of the pane still being there at all —
+ *  the alternative on the table was unmounting inactive panes entirely, which loses the whole
+ *  buffer and risks the resize-hang the never-unmount rule exists to prevent.
+ *
+ *  If that trade needs undoing later, the honest fix is replay-on-activate: the backend already
+ *  retains each pty's output (`terminalHistory`, the same source the post-reload re-attach
+ *  replays from), so a reactivated pane could restore what it dropped. Not built here because it
+ *  changes what a pane shows on every switch, and this bug needed a fix that does not. */
+export const INACTIVE_SCROLLBACK = 2_000
+
+/** How much scrollback a pane should hold right now. Pure so the policy is one testable thing
+ *  rather than a number written at two call sites that can drift apart. */
+export function scrollbackFor(active: boolean): number {
+  return active ? ACTIVE_SCROLLBACK : INACTIVE_SCROLLBACK
+}
+
 export function buildTerminalOptions(
   theme: ITheme,
   opts: { macOptionIsMeta?: boolean } = {},
@@ -80,7 +119,7 @@ export function buildTerminalOptions(
     cursorStyle: 'bar',
     allowProposedApi: true,
     macOptionIsMeta: opts.macOptionIsMeta ?? getMacOptionIsMeta(),
-    scrollback: 10000,
+    scrollback: ACTIVE_SCROLLBACK,
     // Lift dim secondary text to AA on light backgrounds only; on dark the DOM
     // renderer shows true alpha and any lift just whitens it.
     minimumContrastRatio: isLightBackground(theme.background) ? 4.5 : 1,
