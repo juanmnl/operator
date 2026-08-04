@@ -33,9 +33,10 @@
 //   H. every element in the MEMBER COLUMN has its painted centre x on the optical axis — 26 in
 //      rail-local coordinates, the centre of the visible 68px strip. Reported as a signed delta,
 //      never a pass/fail: the size of the error is the diagnosis.
-//   X. THE CONSTANT-X INVARIANT — an orb's painted centre and size are IDENTICAL collapsed and
-//      expanded. This is the one D1 calls non-negotiable: expanding reveals labels and moves
-//      nothing.
+//   X. THE ORB DOES NOT RESIZE between states, and the COLLAPSED axis stays at 30 element-local /
+//      38 from the window edge. This assertion used to also require the orb's painted centre to be
+//      IDENTICAL at both widths — see the note at the check itself for why that half is retired.
+//   L. ONE LEFT EDGE, expanded: the header's text, the orb and the `+` all start at the same x.
 //   Y. the four foot ROWS land on identical y at both widths (Arrangement A's whole claim — the
 //      bottom of the strip is as fixed as the member column).
 //   B. ⌘B removes NONE of the eight foot controls. That is the live defect D1 fixes: collapsing
@@ -320,10 +321,14 @@ async function measure(p, label) {
       offAxis: !collapsed || g.truncated,
     })
   }
+  // MEMBER-COLUMN ITEMS ARE HELD TO THE AXIS WHEN COLLAPSED ONLY. Expanded they start at the
+  // row's own left edge with the header and the `+` — see assertion L, and the retirement note at
+  // assertion X. Measured in both scenes either way: the numbers are the diagnosis, and the orb's
+  // SIZE is still gated at both widths.
   for (const id of orbs.slice(0, 3)) {
-    targets.push({ key: `  └ orb ${id.slice(-6)}`, state: 'disc', sel: `[data-rail-orb="${id}"]`, orb: id, member: true })
+    targets.push({ key: `  └ orb ${id.slice(-6)}`, state: 'disc', sel: `[data-rail-orb="${id}"]`, orb: id, member: true, offAxis: !collapsed })
   }
-  if (homes) targets.push({ key: '  └ home', state: 'mark', sel: '[data-rail-home-mark]', member: true })
+  if (homes) targets.push({ key: '  └ home', state: 'mark', sel: '[data-rail-home-mark]', member: true, offAxis: !collapsed })
   // THE VERSION LINE, which went unmeasured until it was the last thing in the strip still off the
   // axis — the harness reported CLEAN through all of it. Measured as the ROW, not as the version
   // span: when an update is pending the affordance rides beside it and the pair has to centre as
@@ -496,8 +501,22 @@ for (const [theme, short] of THEMES) {
   const r2 = report(m2)
   if (Math.abs(m2.rr.width - RAIL_W_OPEN) > 0.5) fails.push(`expanded width ${m2.rr.width}, expected ${RAIL_W_OPEN}`)
 
-  // ---- X. THE CONSTANT-X INVARIANT ----------------------------------------------------------
-  console.log('\nX · CONSTANT-X — an orb must not move or resize when the strip expands')
+  // ---- X. THE ORB DOES NOT RESIZE, AND THE COLLAPSED AXIS HOLDS -----------------------------
+  //
+  // THE Δx HALF OF THIS ASSERTION IS RETIRED — deliberately, by the user, on 2026-08-04
+  // ("agent orb should be more to the left, balanced"). It required an orb's painted centre to be
+  // identical collapsed and expanded, and it is what forced the 264 width: holding the orb column
+  // at 2 × the axis cost ~30px of the name column. The expanded orb now starts at the row's own
+  // left edge with everything else (assertion L below), so it slides ~10px on ⌘B and that is the
+  // accepted trade.
+  //
+  // DO NOT PUT IT BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
+  // moves looks exactly like a regression to anyone reading this file cold — it isn't; it is the
+  // decision. What is still true, and still gated:
+  //   • the orb must not RESIZE between states (a disc that grows on ⌘B is a defect, not a choice)
+  //   • the COLLAPSED axis stays at 30 element-local / 38 from the window edge, which is the
+  //     optical-centre fix from D1-FIX-1 and lives one neighbourhood away from this change.
+  console.log('\nX · the orb must not RESIZE when the strip expands (Δx retired — see the note)')
   let worstX = 0
   for (const [id, a] of Object.entries(r1.orbs)) {
     const b = r2.orbs[id]
@@ -505,10 +524,33 @@ for (const [theme, short] of THEMES) {
     const dx = ((b.left + b.right) / 2) - ((a.left + a.right) / 2)
     const dw = (b.right - b.left) - (a.right - a.left)
     if (Math.abs(dx) > Math.abs(worstX)) worstX = dx
-    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)}   Δsize ${f(dw)}` +
-      (Math.abs(dx) > TOL || Math.abs(dw) > TOL ? '  ◀ OFF' : '  ok'))
-    if (Math.abs(dx) > TOL) fails.push(`orb ${id} moved ${dx.toFixed(2)}px on expand`)
+    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)} (informational)   Δsize ${f(dw)}` +
+      (Math.abs(dw) > TOL ? '  ◀ OFF' : '  ok'))
     if (Math.abs(dw) > TOL) fails.push(`orb ${id} resized ${dw.toFixed(2)}px on expand`)
+  }
+
+  // ---- L. ONE LEFT EDGE ----------------------------------------------------------------------
+  // The other half of "balanced": reading down the expanded strip, the project header, the orb and
+  // the `+` used to start at three different x (8.5 / 18 / 26 measured). A strip whose items start
+  // at three different x reads as broken however correct each one is on its own.
+  console.log('\nL · ONE LEFT EDGE — expanded: header text, orb, and the + of "Start an agent"')
+  {
+    const rr = await railRect(p)
+    const clip = { x: rr.left, y: rr.top, width: rr.width, height: rr.height }
+    const edges = []
+    for (const [name, sel] of [
+      ['header text', '[data-rail-project-header]'],
+      ['orb', '[data-rail-orb]'],
+      ['+ Start an agent', '[data-rail-add-lane] svg'],
+    ]) {
+      const box = await ink(p, clip, sel)
+      if (!box) { fails.push(`L: ${name} paints nothing at 264`); continue }
+      edges.push({ name, left: box.left })
+      console.log(`  ${pad(name, 20)} ink starts at ${f(box.left)}`)
+    }
+    const spread = edges.length ? Math.max(...edges.map((e) => e.left)) - Math.min(...edges.map((e) => e.left)) : 99
+    console.log(`  spread ${spread.toFixed(2)}px across ${edges.length}` + (spread > TOL ? '  ◀ OFF' : '  ok'))
+    if (spread > TOL) fails.push(`the expanded strip starts its items at ${edges.map((e) => e.left.toFixed(1)).join(' / ')} — one left edge, not three`)
   }
 
   // ---- Y. the foot rows hold their y ---------------------------------------------------------
@@ -578,10 +620,15 @@ for (const [theme, short] of THEMES) {
   await p.screenshot({ path: `/tmp/operator-shots/rail-d1-${short.replace('·', '-')}-expanded.png`, clip: { x: m2.rr.left, y: 0, width: 290, height: 900 } })
 
   if (Math.abs(r1.worst) > TOL) fails.push(`collapsed axis off by ${r1.worst.toFixed(2)}px`)
-  for (const [scene, r] of [['collapsed', r1], ['expanded', r2]]) {
-    if (Math.abs(r.worstWindow - OPTICAL_CENTRE) > TOL) {
-      fails.push(`${scene} member column paints at ${r.worstWindow.toFixed(2)} from the window edge, not the optical centre ${OPTICAL_CENTRE}`)
-    }
+  // COLLAPSED ONLY, and that is the point of the change: expanded, the member column starts at the
+  // row's left edge with everything else (assertion L). What must not drift is the COLLAPSED
+  // optical centre — the version line is checked in both scenes because it stays on the axis at
+  // both widths, and it is included in `worstWindow` by being on-axis in both.
+  if (Math.abs(r1.worstWindow - OPTICAL_CENTRE) > TOL) {
+    fails.push(`collapsed member column paints at ${r1.worstWindow.toFixed(2)} from the window edge, not the optical centre ${OPTICAL_CENTRE}`)
+  }
+  if (Math.abs(r2.worstWindow - OPTICAL_CENTRE) > TOL) {
+    fails.push(`expanded: something still held to the axis paints at ${r2.worstWindow.toFixed(2)}, not ${OPTICAL_CENTRE} (the version line is the only one that should be)`)
   }
   if (r1.sizeSpread > 1) fails.push(`foot glyph ink spread ${r1.sizeSpread.toFixed(2)}px`)
   if (!r1.okRhythm) fails.push('collapsed rhythm off')

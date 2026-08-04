@@ -88,12 +88,25 @@ const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
 /** A member's hit box — the orb's 24px disc inside it, and `+ Add an agent` and Home on the same
  *  box, so every clickable thing in the strip is one column at one x. */
 const MEMBER_BOX = 36
-/** THE CONSTANT-X INVARIANT, and it is not negotiable: an orb sits at the same absolute x, at the
- *  same size, collapsed and expanded. `AXIS − MEMBER_BOX / 2` = 12 either way — so the 264 orb
- *  column is 60 (2 × 30) and expanding fades a label in to the orb's right and MOVES NOTHING. A transition where the thing you are looking
- *  at slides sideways reads as a re-layout instead of a reveal. */
+/** COLLAPSED, a member's box is centred on the axis: `AXIS − MEMBER_BOX / 2` = 12. That is the
+ *  optical-centre rule and it is untouched. */
 const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
 const ORB = 24
+/** EXPANDED, everything starts here instead — the header's text, the orb, the Home mark and the
+ *  `+`. ONE left edge for the whole strip.
+ *
+ *  THE CONSTANT-X INVARIANT IS RETIRED (user's call, 2026-08-04: "agent orb should be more to the
+ *  left, balanced"). It said an orb sits at the same absolute x collapsed and expanded, and it is
+ *  what forced the 264 width — holding the orb column at 2 × the axis cost ~30px of the name
+ *  column. The cost of retiring it was put to the user and accepted: the orb slides ~10px when the
+ *  strip expands, in exchange for a strip whose items no longer start at three different x. They
+ *  were, measured before this change: header ink 8.5, the disc 18, the `+` 26.
+ *
+ *  What survives from that invariant, and is still asserted: the orb does not RESIZE between
+ *  states, and the COLLAPSED axis stays at 30 element-local / 38 from the window edge — that is
+ *  the optical-centre fix from D1-FIX-1 and this must not drift it. See
+ *  `dev/drive-rail-invariant.mjs`, assertion X. */
+const ROW_INSET_L = 8
 /** Foot geometry — shared with `PlanMeter`, which brings its own button (see `foot-cell.ts`).
  *  24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52, exactly): it FIT,
  *  and the fit is what set it. The field is 60 now, so nothing forces 24 any more — deliberately
@@ -440,7 +453,7 @@ export function ProjectRail({
                   aria-label={idleLanes.length ? 'Start an agent' : 'Add an agent on the roster'}
                   style={{
                     flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                    height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+                    height: MEMBER_BOX, padding: `0 8px 0 ${ROW_INSET_L}px`, boxSizing: 'border-box',
                     background: 'transparent', border: 'none', borderRadius: 8,
                     color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
                     fontFamily: 'var(--font-body)', fontSize: 11.5, textAlign: 'left',
@@ -448,9 +461,13 @@ export function ProjectRail({
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
                 >
-                  <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                      <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  {/* Drawn to the DISC's 24px, edge to edge of its viewBox with the stroke scaled
+                      down to keep the painted line at 1.2 — so the `+`'s ink starts on the same
+                      left edge as the orb above it and the header above that, rather than 18px
+                      inside the row. Aligning the ink, not the boxes. */}
+                  <span style={{ width: ORB, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                    <svg width={ORB} height={ORB} viewBox="0 0 16 16" fill="none">
+                      <path d="M8 0.4v15.2M0.4 8h15.2" stroke="currentColor" strokeWidth="0.8" strokeLinecap="round" />
                     </svg>
                   </span>
                   <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>{idleLanes.length ? 'Start an agent' : 'Add an agent'}</span>
@@ -676,7 +693,7 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
       aria-label="Project Home"
       style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-        height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+        height: MEMBER_BOX, padding: `0 8px 0 ${collapsed ? MEMBER_INSET_L : ROW_INSET_L}px`, boxSizing: 'border-box',
         background: current ? 'var(--overlay-medium)' : hover ? 'var(--overlay-subtle)' : 'transparent',
         border: 'none', borderRadius: 8,
         color: current ? 'var(--fg)' : 'var(--fg-muted)',
@@ -687,15 +704,25 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-        {/* 17px of ink, not the foot's 14: this sits alone against a 24px dot disc, and 14 reads
-            small beside that mass. A framed column board — one outlined rect with two dividers.
-            Checked against every other glyph in the chrome; the only near-collision is the foot's
-            2×2 "all projects", and one frame against four separate squares separates cleanly. */}
-        <svg data-rail-home-mark width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" />
-          <path d="M6 2.6v10.8M10 2.6v10.8" />
-        </svg>
+      <span style={{ width: collapsed ? MEMBER_BOX : ORB, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        {/* A framed column board — one outlined rect with two dividers. Checked against every other
+            glyph in the chrome; the only near-collision is the foot's 2×2 "all projects", and one
+            frame against four separate squares separates cleanly.
+            COLLAPSED it is 17px of ink centred in the 36px box: it sits alone against a 24px dot
+            disc there, and 14 reads small beside that mass. EXPANDED it is drawn to the disc's own
+            24px — edge to edge of its viewBox, with the stroke scaled down to keep the painted line
+            at 1.2 — so its ink starts on the strip's one left edge instead of 3.5px inside it. */}
+        {collapsed ? (
+          <svg data-rail-home-mark width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" />
+            <path d="M6 2.6v10.8M10 2.6v10.8" />
+          </svg>
+        ) : (
+          <svg data-rail-home-mark width={ORB} height={ORB} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="0.8">
+            <rect x="0.4" y="3" width="15.2" height="10" rx="1.6" />
+            <path d="M5.6 3v10M10.4 3v10" />
+          </svg>
+        )}
       </span>
       {!collapsed && <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>Home</span>}
     </button>
