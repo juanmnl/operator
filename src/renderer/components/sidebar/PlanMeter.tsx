@@ -38,9 +38,13 @@ import {
 const R = 5.25
 const STROKE = 1.5
 
-export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
+export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, box = 26 }: {
   limits: PlanLimits | null
   loading?: boolean
+  /** The glyph box, so this can sit in the rail's foot at the size its neighbours are. The foot
+   *  went 26 → 24 when `Sidebar.tsx`'s footer (the row the 26 existed to match) was deleted; the
+   *  ring scales with it rather than being redrawn. */
+  box?: number
   /** The hook's clock. Passed in rather than read here so the age on screen advances with the
    *  same tick that decides whether to re-ask — one clock, or the two disagree. */
   now: number
@@ -116,7 +120,7 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
         // no-ops when the reading is already current, so this costs nothing on a warm meter.
         onClick={() => setOpen((o) => { if (!o) onRevalidate(); return !o })}
         style={{
-          width: 26, height: 26, padding: 0, display: 'grid', placeItems: 'center',
+          width: box, height: box, padding: 0, display: 'grid', placeItems: 'center',
           background: open ? 'var(--overlay-subtle)' : 'transparent',
           border: 'none', borderRadius: 7, cursor: 'pointer', outline: 'none',
           color: 'var(--fg-muted)', transition: 'background 120ms ease',
@@ -125,6 +129,10 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate }: {
         onMouseLeave={(e) => { e.currentTarget.style.background = open ? 'var(--overlay-subtle)' : 'transparent' }}
       >
         {/* The ring. Rotated so the arc starts at 12 o'clock and sweeps clockwise. */}
+        {/* 22, NOT `box − 4`. The ring's painted diameter is `2R + STROKE` = 12 units of a 22-unit
+            viewBox, so it only measures 12px on screen while the svg renders at 22 — scaling the
+            svg with the box (26 → 24) quietly took the ring to 11 and put it out of step with the
+            12px glyphs beside it. The box moved; the drawing did not. */}
         <svg width="22" height="22" viewBox="0 0 22 22" style={{ transform: 'rotate(-90deg)' }}>
           <circle cx="11" cy="11" r={R} fill="none" stroke="var(--overlay-medium)" strokeWidth={STROKE} />
           {/* Only when there is something to draw — an absent reading shows the track alone. */}

@@ -1,33 +1,49 @@
-// THE RAIL'S INVARIANT, asserted over every element — dev/briefs/rail-assert-the-invariant.md
+// THE LEFT STRIP'S INVARIANTS, asserted over every element — dev/briefs/rail-assert-the-invariant.md
 //
 // Four passes fixed this strip by eye, each measured something real, each reported success, and
 // the user still saw it wrong a fourth time. The common failure is not arithmetic — it is that
 // every one of them measured a HANDLE (a border box, a shadow spread, an svg's shape rects)
-// rather than the ink. `getBoundingClientRect` on the tile excludes its ring; on an svg it
-// excludes the stroke's outer half; on the pip's span it reports reserved space no dot covers.
-// So each pass could be correct about its own number and blind to the pixels.
+// rather than the ink. `getBoundingClientRect` on a row excludes its ring; on an svg it excludes
+// the stroke's outer half; on a spacer it reports space no pixel covers. So each pass could be
+// correct about its own number and blind to the pixels.
 //
 // This driver measures PAINTED EXTENT and nothing else, by difference:
 //
-//     screenshot the rail  →  `visibility: hidden` on ONE element  →  screenshot again
+//     screenshot the strip  →  `visibility: hidden` on ONE element  →  screenshot again
 //     the pixels that changed ARE that element's ink, whatever drew them
 //
-// `visibility: hidden` suppresses painting without reflowing, so nothing else in the strip can
-// move between the two frames. The diff catches box-shadow rings, stroke overshoot, round line
-// caps, glyph side bearings and antialiasing tails — every channel that made a box lie.
+// `visibility: hidden` suppresses painting without reflowing, so nothing else can move between
+// the two frames. The diff catches box-shadow rings, stroke overshoot, round line caps, glyph
+// side bearings and antialiasing tails — every channel that made a box lie.
 //
-// FOUR ASSERTIONS
-//   H. every element that is SUPPOSED to be on the axis has its painted centre x at the centre of
-//      the VISIBLE column — 17.5 in rail-local coordinates, NOT the rail's own midpoint of 22.
-//      See CENTRE for why the difference is the whole defect. Reported as a signed delta, never
-//      a pass/fail: the size of the error is the diagnosis.
-//   O. the two elements that are deliberately OFF the axis — the corner pip and the rail's own
-//      right-edge seam — are held to their own invariant instead. An assertion that flags
-//      intentional design as a defect is an assertion nobody will keep running.
-//   S. the four foot glyphs carry the same painted INK SIZE. They sit in identical 26×26 boxes,
-//      which is exactly why three passes never noticed they don't.
-//   V. the painted gaps down the strip follow a stated rhythm (see RHYTHM below). The foot is
-//      2 + 2 controls around a seam, so "balanced" there is a claim about four numbers, not one.
+// WHAT CHANGED WITH D1 (the joined surface), and why this file changed with it. The harness's own
+// header has recorded this failure once already — `RAIL_W = 44` hardcoded while the rail grew to
+// 52 — and its own rule is that *"a harness that fails on a correct change teaches you to ignore
+// it, which is worse than not having it."* So, in the same commit as the change:
+//   • `data-rail-tile` / `data-rail-initials` are gone. A project is a NAME now
+//     (`data-rail-project-header`), not an acronym in a square, and it still carries
+//     `data-rail-accent` so the identity colour can be asserted never to move.
+//   • the foot is EIGHT glyphs in four pairs around THREE hairlines, not four around one.
+//   • the element is 60 (the visible strip is 68 — see ProjectRail's own note), not 44.
+//   • `NAMES` carries two ADJACENT groups whose ids hash to the SAME accent. Colour now does
+//     grouping work, so "two adjacent groups the same colour must not read as one group" needs a
+//     fixture rather than a hope.
+//
+// SIX ASSERTIONS
+//   H. every element in the MEMBER COLUMN has its painted centre x on the optical axis — 26 in
+//      rail-local coordinates, the centre of the visible 68px strip. Reported as a signed delta,
+//      never a pass/fail: the size of the error is the diagnosis.
+//   X. THE CONSTANT-X INVARIANT — an orb's painted centre and size are IDENTICAL collapsed and
+//      expanded. This is the one D1 calls non-negotiable: expanding reveals labels and moves
+//      nothing.
+//   Y. the four foot ROWS land on identical y at both widths (Arrangement A's whole claim — the
+//      bottom of the strip is as fixed as the member column).
+//   B. ⌘B removes NONE of the eight foot controls. That is the live defect D1 fixes: collapsing
+//      used to unmount the sidebar and take the theme toggle, Preferences and both `.claude`
+//      shortcuts with it.
+//   S. the eight foot glyphs carry the same painted INK SIZE. They sit in identical 24×24 boxes,
+//      which is exactly why nobody noticed they didn't.
+//   V. the painted gaps follow a stated rhythm (see RHYTHM below).
 //
 // Run: `./node_modules/.bin/vite --port 1436 --strictPort` then `node dev/drive-rail-invariant.mjs`.
 //      `THEMES=all` sweeps all six palettes (ink extent is palette-dependent: a stroke's
@@ -40,45 +56,51 @@ const ALL_THEMES = [
   ['mr-pink-dark', 'pink·D'], ['mr-pink-light', 'pink·L'],
   ['1984-dark', '1984·D'], ['1984-light', '1984·L'],
 ]
-const THEMES = process.env.THEMES === 'all' ? ALL_THEMES : [ALL_THEMES[0]]
-const NAMES = ['fastrack', 'uwazi-app', 'web27', 'el-mirador']
+// `THEMES=all` sweeps all six; `THEMES=mission-control-light,1984-light` runs a named subset,
+// which is what makes a one-glyph fix cheap to re-check instead of a ten-minute full sweep.
+const THEMES = process.env.THEMES === 'all' ? ALL_THEMES
+  : process.env.THEMES ? ALL_THEMES.filter(([t]) => process.env.THEMES.split(',').includes(t))
+    : [ALL_THEMES[0]]
+// THE FIXTURE CARRIES ITS OWN IDS, because the accent is hashed from the ID, not the name — so
+// "web27 and Mise-landing collide" is only true of the ids in the real store. `Mise-landing-6` is
+// picked to hash to the same swatch as `web27-id` (FNV-1a mod 11), which makes the two ADJACENT
+// groups the same colour: the fixture for "colour must never be what separates two groups".
+// `Mise-landing` is also the longest name here, so it is the one that has to ellipsise, not clip.
+const NAMES = [
+  { name: 'fastrack', id: 'fastrack-id' },
+  { name: 'uwazi-app', id: 'uwazi-app-id' },
+  { name: 'web27', id: 'web27-id' },
+  { name: 'Mise-landing', id: 'Mise-landing-6' },
+]
 
-// The rail's own geometry, as declared. Everything is asserted against these, not against
-// whatever the DOM happens to report — a driver that derives its expectation from the thing it
-// is testing agrees with any bug that is internally consistent.
-const RAIL_W = 44
-// THE AXIS IS NOT THE RAIL'S MIDPOINT, and that was a fifth way to measure the wrong thing. The
-// four passes this driver was built to end each measured a handle instead of the ink; this one
-// measured the ink correctly but against the rail's own BOX. The rail has no left edge to be
-// centred in: the window root pads 8px and paints it in `--bg-sidebar`, the rail's own
-// background, so the strip dissolves into the window on that side. The only edge is the seam —
-// and a gap ends where that line starts, not where it ends.
-//
-// The column a person actually sees therefore runs from the window edge (rail-local −8) to the
-// seam's inner edge (rail-local 43): 51px, centred at 17.5. Against the old 22 every element read
-// 3.5px right of centre, which is exactly what the user reported and what four passes could not
-// see, because all four agreed on the reference.
-const WINDOW_PAD = 8   // DashboardView's root padding, painted in the rail's own background
-const SEAM_W = 1       // the rail's right border — the boundary, not part of the gap
-/** The optical axis, DERIVED FROM THE RAIL WE ACTUALLY MEASURED — not from a width copied into
- *  this file. `RAIL_W = 44` was hardcoded here, so when the rail legitimately grew to 52 to carry
- *  the agent band, every tile was reported 4.5px off an axis that had itself gone stale. A harness
- *  that fails on a correct change teaches you to ignore it, which is worse than not having it. */
-const centreOf = (railWidth) => (railWidth - SEAM_W - WINDOW_PAD) / 2
+// The strip's own geometry, as declared in ProjectRail.tsx. Everything is asserted against these,
+// not against whatever the DOM happens to report — a driver that derives its expectation from the
+// thing it is testing agrees with any bug that is internally consistent.
+const RAIL_W = 60
+const RAIL_W_OPEN = 264
+const CONTENT_INSET_R = 8
+/** The optical axis. The strip has NO right-hand seam any more, so the column runs to the rail's
+ *  own edge and the axis is simply the field's midpoint: (60 − 8) / 2 = 26 element-local, 34 from
+ *  the window edge, the centre of the visible 68px strip.
+ *
+ *  The old derivation subtracted a 1px seam that was an INSET BOX-SHADOW — which does not reduce
+ *  the content box — so the prose centred at 29.5 while the CSS centred at 30.0. A standing 0.5px
+ *  error, and one this driver would have reported as noise rather than as a defect. Deriving it
+ *  from the measured width keeps the number honest at either width. */
+/** THE MEMBER COLUMN'S AXIS DOES NOT MOVE WITH THE WIDTH — that is the invariant, not a
+ *  consequence of it. Deriving it from the measured width would hold the expanded strip to 128,
+ *  i.e. would demand that the orbs re-centre themselves in the wider box, which is the exact
+ *  behaviour D1 exists to forbid. One number, both scenes. */
+const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
-// The foot is two groups of two around a seam, and the seam's whole job is to out-space what it
-// divides — so the claim is not "the gaps are equal", it is:
+// The foot is four pairs around three hairlines, and a hairline's whole job is to out-space what
+// it divides — so the claim is not "the gaps are equal", it is:
 //
-//   tile → tile          equal for every pair, whatever the ring/pip state of either
-//   last tile → foot     a group boundary: larger than any gap inside the foot
-//   robot → usage        pair A
-//   usage → seam    ─┐   equal ABOVE and BELOW the seam — the seam is centred in its own air
-//   seam  → grid    ─┘   and both are larger than a pair gap
-//   grid  → plus         pair B, equal to pair A
-//
-// Pair A and pair B being equal is the "2 + 2" reading; the seam being centred is what stops the
-// foot reading as five items in a row.
+//   member → member      equal for every pair in a group, whatever its state
+//   row → hairline       equal above and below every hairline (each is centred in its own air)
+//   foot row pitch       equal for all four rows — which is what makes Y (identical y at both
+//                        widths) a property of the layout rather than a coincidence
 const TOL = 0.75 // px. Below this is antialiasing, not misalignment.
 
 const b64 = (buf) => buf.toString('base64')
@@ -93,19 +115,24 @@ async function boot(theme) {
     deviceScaleFactor: 2,
   })
   await ctx.addInitScript(([names, t]) => {
-    try { localStorage.setItem('operator.theme', t) } catch { /* quota */ }
+    try {
+      localStorage.setItem('operator.theme', t)
+      // Deterministic starting width. The strip persists its own collapsed state, so without
+      // this the first scene depends on whatever the last run left behind.
+      localStorage.setItem('operator.sidebarCollapsed', '1')
+    } catch { /* quota */ }
     let real
     Object.defineProperty(window, 'operator', {
       configurable: true, get: () => real,
       set: (v) => {
         real = v
         const oP = v.loadProjects, oS = v.loadSessions, oT = v.terminalList
-        const extras = names.map((name, i) => ({
-          id: `${name}-id`, name, path: `/Users/x/${name}`,
+        const extras = names.map(({ name, id }, i) => ({
+          id, name, path: `/Users/x/${name}`,
           createdAt: '2026-07-01T00:00:00.000Z',
           lastActiveAt: `2026-07-${String(10 + i).padStart(2, '0')}T00:00:00.000Z`,
         }))
-        // A project reaches the rail only through ACTIVITY, and activity is rolled up from
+        // A project reaches the strip only through ACTIVITY, and activity is rolled up from
         // terminals joined to saved sessions — so a synthetic live project needs both.
         v.loadProjects = async () => [...((await oP()) ?? []), ...extras]
         v.saveProjects = () => {}
@@ -126,18 +153,15 @@ async function boot(theme) {
   const p = await ctx.newPage()
   p.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 200)))
   await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
-  // Long enough for the your-turn pulse to SETTLE (PULSE_SETTLE_MS = 6s). A pip that changes
+  // Long enough for the your-turn pulse to SETTLE (PULSE_SETTLE_MS = 6s). A dot that changes
   // opacity between the two frames of a diff reads as ink appearing out of nowhere.
   await p.waitForTimeout(8000)
   return { browser, p }
 }
 
-/** The rail's own rect, found the way the other rail drivers find it. */
+/** The strip's own rect. `[data-rail]` on its root, NOT a width-keyed selector — that was keyed to
+ *  the literal 44 and stopped matching the moment the strip legitimately grew. */
 const railRect = (p) => p.evaluate(() => {
-  // `[data-rail]` on the rail root, NOT `closest('div[style*="44px"]')`. That selector was keyed
-  // to the rail's literal width and stopped matching the moment the rail legitimately became
-  // 52px to carry the agent band — a harness that silently loses its subject on a real change is
-  // worse than one that fails loudly.
   const el = document.querySelector('[data-rail]')
   if (!el) return null
   const r = el.getBoundingClientRect()
@@ -166,15 +190,14 @@ async function diffBox(p, before, after, w) {
       for (let x = 0; x < cw; x++) {
         const i = (y * cw + x) * 4
         // PNG is lossless and WebKit's raster is deterministic, so an unchanged pixel differs by
-        // exactly 0. The threshold only discards the very faintest antialiasing tail, where a
-        // 1/255 difference is not ink anybody can see.
+        // exactly 0. The threshold only discards the very faintest antialiasing tail.
         const d = Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2])
         if (d > 6) {
           n++
           if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y
           // WEIGHT and CHROMA of the ink itself, not just where it is. "Balanced" is a claim
-          // about how loud each control reads, and four glyphs can be identical in size and
-          // still not read as a set — which is a thing a geometry table cannot see.
+          // about how loud each control reads, and eight glyphs can be identical in size and
+          // still not read as a set — which a geometry table cannot see.
           sumL += Math.abs(lum(da, i) - lum(db, i))
           sumC += Math.max(da[i], da[i + 1], da[i + 2]) - Math.min(da[i], da[i + 1], da[i + 2])
         }
@@ -184,122 +207,149 @@ async function diffBox(p, before, after, w) {
     const s = cw / cssW
     return {
       left: minX / s, right: (maxX + 1) / s, top: minY / s, bottom: (maxY + 1) / s,
-      // Total ink energy, normalised to CSS px² so it is comparable across device scales.
       px: n / (s * s), weight: (sumL / n), chroma: (sumC / n),
     }
   }, [before, after, w])
 }
 
-/** Painted extent of one element: hide it, diff, put it back. `mute` lets a non-hideable painter
- *  (the rail's own inset seam shadow) be silenced the same way.
+/** Painted extent of one element: hide it, diff, put it back.
  *
  *  THE BASE IS RE-TAKEN FOR EVERY ELEMENT, immediately before hiding it, and that is not
  *  belt-and-braces. Against one base captured at the top of the scene, ANY later repaint in the
  *  strip — a settle timer firing, a focus ring, a hover tint — lands in the diff of every element
- *  measured after it and is indistinguishable from ink. It showed up as one palette reporting six
- *  different elements with byte-identical bounds of 8.00–44.00, which is the tell: real ink from
- *  six different glyphs cannot agree to the pixel. Four passes over this strip trusted numbers
- *  they could not tell had drifted; a driver that can drift silently is worth less than none. */
-async function ink(p, clip, sel, mute) {
+ *  measured after it and is indistinguishable from ink. */
+async function ink(p, clip, sel, attempt = 0) {
   const base = await p.screenshot({ clip, animations: 'disabled' })
-  const ok = await p.evaluate(([s, m]) => {
+  const rect = await p.evaluate(([s, cx, cy]) => {
     const el = document.querySelector(s)
-    if (!el) return false
-    el.dataset.inkPrev = m ? el.style.boxShadow : el.style.visibility
-    if (m) el.style.boxShadow = 'none'; else el.style.visibility = 'hidden'
-    return true
-  }, [sel, !!mute])
-  if (!ok) return null
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    el.dataset.inkPrev = el.style.visibility
+    el.style.visibility = 'hidden'
+    return { left: r.left - cx, right: r.right - cx, top: r.top - cy, bottom: r.bottom - cy }
+  }, [sel, clip.x, clip.y])
+  if (!rect) return null
   const after = await p.screenshot({ clip, animations: 'disabled' })
-  await p.evaluate(([s, m]) => {
+  await p.evaluate((s) => {
     const el = document.querySelector(s)
-    if (m) el.style.boxShadow = el.dataset.inkPrev || ''
-    else el.style.visibility = el.dataset.inkPrev || ''
+    el.style.visibility = el.dataset.inkPrev || ''
     delete el.dataset.inkPrev
-  }, [sel, !!mute])
+  }, sel)
   const box = await diffBox(p, b64(base), b64(after), clip.width)
+  // A DIFF IS ONLY THIS ELEMENT'S INK IF NOTHING ELSE REPAINTED BETWEEN THE TWO FRAMES. Anything
+  // that did — a settle timer, a status change arriving, a hover tint — lands in the diff and is
+  // indistinguishable from ink, which is how one palette once reported a foot glyph as 50 × 815
+  // (i.e. the whole strip). An element cannot paint far outside its own box, so a box that does is
+  // contamination, not a finding: re-measure rather than report it. Ornaments (a ring, a shadow)
+  // legitimately overhang, hence the slack.
+  const SLACK = 8
+  const contaminated = box && (
+    box.left < rect.left - SLACK || box.right > rect.right + SLACK ||
+    box.top < rect.top - SLACK || box.bottom > rect.bottom + SLACK
+  )
+  if (contaminated && attempt < 2) {
+    console.log(`    (re-measuring ${sel} — something else repainted between frames)`)
+    return ink(p, clip, sel, attempt + 1)
+  }
   return box
 }
 
 const f = (n, w = 6, d = 2) => (n === null || n === undefined ? '—'.padStart(w) : n.toFixed(d).padStart(w))
 const pad = (s, w) => String(s).padEnd(w)
 
+/** The eight foot controls, in the order they are drawn — four pairs around three hairlines. */
+const FOOT = [
+  ['agents', '[data-rail-agents]'], ['usage', '[data-rail-usage]'],
+  ['gallery', '[data-rail-gallery]'], ['open folder', '[data-rail-open-folder]'],
+  ['.claude', '[data-rail-folder-prefs]'], ['~/.claude', '[data-rail-global-prefs]'],
+  ['prefs', '[data-rail-prefs]'], ['theme', '[data-rail-theme]'],
+]
+
 async function measure(p, label) {
   const rr = await railRect(p)
   const clip = { x: rr.left, y: rr.top, width: rr.width, height: rr.height }
+  const collapsed = rr.width < (RAIL_W + RAIL_W_OPEN) / 2
 
-  const tiles = await p.evaluate(() => [...document.querySelectorAll('[data-rail-tile]')].map((t) => ({
-    id: t.getAttribute('data-rail-tile'),
-    ring: getComputedStyle(t).boxShadow !== 'none',
-    pip: !!t.querySelector('[data-rail-pip]'),
-  })))
+  const groups = await p.evaluate(() => [...document.querySelectorAll('[data-rail-project-header]')]
+    .map((h) => ({ id: h.getAttribute('data-rail-project-header'), accent: h.getAttribute('data-rail-accent') })))
+  // `[data-rail-orb]`, which BOTH states carry — the collapsed disc and the expanded row's orb
+  // are the same object at the same x, and that is the invariant. Keying this to the collapsed
+  // button (`data-rail-session`) measured nothing at 264 and reported the orbs as "vanished",
+  // which is a harness bug that looks exactly like the defect it is meant to catch.
+  const orbs = await p.evaluate(() => [...document.querySelectorAll('[data-rail-orb]')]
+    .map((o) => o.getAttribute('data-rail-orb')))
+  const homes = await p.evaluate(() => document.querySelectorAll('[data-rail-home]').length)
 
   const targets = []
-  for (const t of tiles) {
-    const s = `[data-rail-tile="${t.id}"]`
-    const name = t.id.replace(/-[0-9a-f]{8}$/, '').replace(/-id$/, '').slice(0, 14)
-    targets.push({ key: `tile ${name}`, state: (t.ring ? 'ringed' : 'plain') + (t.pip ? '+pipped' : ''), sel: s, stack: true, tile: name })
-    targets.push({ key: '  └ acronym', state: 'text ink', sel: `${s} [data-rail-initials]`, within: name })
-    // Deliberately off-axis: it is a CORNER pip. Held to "does not widen its tile" instead.
-    if (t.pip) targets.push({ key: '  └ pip', state: 'corner', sel: `${s} [data-rail-pip]`, offAxis: true, within: name })
+  for (const g of groups) {
+    const name = g.id.replace(/-(id|\d+)$/, '').slice(0, 14)
+    targets.push({
+      key: `header ${name}`, state: 'name ink', sel: `[data-rail-project-header="${g.id}"]`,
+      accent: g.accent,
+      // Collapsed the name is centred in the field; expanded it is left-aligned at the margin,
+      // which is deliberate and is why it is only held to the axis at 60.
+      offAxis: !collapsed,
+    })
   }
-  targets.push({ key: 'foot robot', state: 'glyph', sel: '[data-rail-agents] svg', stack: true, glyph: true })
-  targets.push({ key: 'foot usage ring', state: 'glyph', sel: '[data-rail-usage] svg', stack: true, glyph: true })
-  targets.push({ key: 'foot seam', state: 'rule', sel: '[data-rail-seam]', stack: true })
-  targets.push({ key: 'foot grid', state: 'glyph', sel: '[data-rail-gallery] svg', stack: true, glyph: true })
-  targets.push({ key: 'foot plus', state: 'glyph', sel: '[data-rail-open-folder] svg', stack: true, glyph: true })
-  // Deliberately off-axis: it is the rail's own right EDGE. Held to "paints inside the 44".
-  targets.push({ key: 'rail seam (vertical)', state: 'right edge', sel: '[data-rail-gallery]', mute: true, vertical: true, offAxis: true })
+  for (const id of orbs.slice(0, 3)) {
+    targets.push({ key: `  └ orb ${id.slice(-6)}`, state: 'disc', sel: `[data-rail-orb="${id}"]`, orb: id, member: true })
+  }
+  if (homes) targets.push({ key: '  └ home', state: 'mark', sel: '[data-rail-home-mark]', member: true })
+  for (const [name, sel] of FOOT) {
+    targets.push({ key: `foot ${name}`, state: 'glyph', sel: `${sel} svg`, glyph: true, foot: true, offAxis: true })
+  }
 
   const rows = []
   for (const t of targets) {
-    // The vertical seam is painted by the rail CONTAINER, not by the element the selector names.
-    const sel = t.vertical ? 'div[style*="44px"]:has([data-rail-gallery])' : t.sel
-    const box = await ink(p, clip, sel, t.mute)
-    rows.push({ ...t, box })
+    rows.push({ ...t, box: await ink(p, clip, t.sel) })
   }
-  return { label, rr, rows }
+  // The foot's ROWS and its hairlines, measured as boxes rather than by ink: a row is a
+  // container, and Y is a claim about where the row sits, not about what it paints.
+  const foot = await p.evaluate(() => {
+    const rail = document.querySelector('[data-rail]').getBoundingClientRect()
+    const r2 = (n) => Math.round(n * 100) / 100
+    return {
+      rows: [...document.querySelectorAll('[data-rail-foot-row]')].map((r) => {
+        const b = r.getBoundingClientRect()
+        return { top: r2(b.top - rail.top), h: r2(b.height) }
+      }),
+      seams: [...document.querySelectorAll('[data-rail-seam]')].map((s) => {
+        const b = s.getBoundingClientRect()
+        return { top: r2(b.top - rail.top) }
+      }),
+      present: [
+        'data-rail-agents', 'data-rail-usage', 'data-rail-gallery', 'data-rail-open-folder',
+        'data-rail-folder-prefs', 'data-rail-global-prefs', 'data-rail-prefs', 'data-rail-theme',
+      ].filter((a) => document.querySelector(`[${a}]`)),
+    }
+  })
+  return { label, rr, rows, foot, collapsed, groups, orbs, homes }
 }
 
 function report(m) {
-  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → column centre ${centreOf(m.rr.width)}\n${'='.repeat(98)}`)
-  console.log('H · PAINTED CENTRE — every element that belongs on the axis')
+  const axis = AXIS
+  console.log(`\n${'='.repeat(98)}\n  ${m.label}   rail x=${m.rr.left.toFixed(2)} w=${m.rr.width.toFixed(2)} h=${m.rr.height.toFixed(0)}  → axis ${axis}\n${'='.repeat(98)}`)
+  console.log('H · PAINTED CENTRE — every element that belongs on the member column')
   console.log(pad('ELEMENT', 24) + pad('STATE', 15) + '  INK L    INK R   WIDTH   CENTRE   Δaxis    INK T     INK B')
   console.log('-'.repeat(98))
   let worst = 0
   for (const r of m.rows) {
-    if (r.offAxis) continue
     if (!r.box) { console.log(pad(r.key, 24) + pad(r.state, 15) + '   (paints nothing)'); continue }
     const c = (r.box.left + r.box.right) / 2
-    const d = c - centreOf(m.rr.width)
-    if (Math.abs(d) > Math.abs(worst)) worst = d
+    const d = c - axis
+    if (!r.offAxis && Math.abs(d) > Math.abs(worst)) worst = d
     console.log(
       pad(r.key, 24) + pad(r.state, 15) +
       f(r.box.left) + f(r.box.right) + f(r.box.right - r.box.left) + f(c, 8) +
-      f(d, 7) + (Math.abs(d) > TOL ? ' ◀' : '  ') +
+      (r.offAxis ? '     —  ' : f(d, 7) + (Math.abs(d) > TOL ? ' ◀' : '  ')) +
       f(r.box.top, 8, 1) + f(r.box.bottom, 9, 1),
     )
   }
   console.log('-'.repeat(98))
   console.log(`H: worst painted-centre delta ${worst >= 0 ? '+' : ''}${worst.toFixed(2)}px  (tolerance ±${TOL})`)
 
-  // ---- O. the two elements that are off the axis ON PURPOSE ---------------------------------
-  console.log('\nO · OFF-AXIS BY DESIGN — held to their own invariant, not to the centre line')
-  const tileBox = (name) => m.rows.find((r) => r.tile === name)?.box
-  for (const r of m.rows.filter((x) => x.offAxis && x.box)) {
-    if (r.within) {
-      const t = tileBox(r.within)
-      const over = Math.max(r.box.right - t.right, r.box.bottom - t.bottom)
-      console.log(`  pip on ${pad(r.within, 14)} ink ${f(r.box.left)} ..${f(r.box.right)}   widens its tile by ${f(over, 6)}px` +
-        (over > 0.01 ? '  ◀ OFF — a pip that paints past the box moves the tile off the axis' : '  ok'))
-    } else {
-      const inside = r.box.right <= RAIL_W + 0.01
-      console.log(`  rail seam        ink ${f(r.box.left)} ..${f(r.box.right)}   inside the ${RAIL_W}px footprint: ${inside ? 'yes  ok' : 'NO  ◀ OFF'}`)
-    }
-  }
-
-  // ---- S. the foot's four glyphs, by painted ink size ---------------------------------------
-  console.log('\nS · FOOT GLYPH INK — identical 26×26 boxes, which is why this went unseen')
+  // ---- S. the foot's eight glyphs, by painted ink size ---------------------------------------
+  console.log('\nS · FOOT GLYPH INK — eight identical 24×24 boxes, which is why this goes unseen')
   console.log('  ' + pad('GLYPH', 14) + '  SIZE            AREA    WEIGHT   CHROMA')
   const glyphs = m.rows.filter((r) => r.glyph && r.box)
   for (const r of glyphs) {
@@ -307,117 +357,150 @@ function report(m) {
       `${f(r.box.right - r.box.left, 6, 2)} × ${f(r.box.bottom - r.box.top, 5, 2)}` +
       f(r.box.px, 9, 1) + f(r.box.weight, 9, 1) + f(r.box.chroma, 9, 1))
   }
+  // SIZE IS THE PAINTED EXTENT — `max(w, h)` — not width and height held separately. A folder is
+  // wider than it is tall and a robot has an antenna; forcing every silhouette into one square
+  // would distort the drawings to satisfy a number. What must not vary is how BIG each glyph
+  // reads in an identical box, which is what caught the gear painting 14 against everyone else's
+  // 12 the first time all eight were measured together.
   const ws = glyphs.map((r) => r.box.right - r.box.left), hs = glyphs.map((r) => r.box.bottom - r.box.top)
-  const sizeSpread = Math.max(Math.max(...ws) - Math.min(...ws), Math.max(...hs) - Math.min(...hs))
-  console.log(`  spread ${sizeSpread.toFixed(2)}px across four controls in a column` + (sizeSpread > 1 ? '  ◀ OFF' : '  ok'))
+  const extents = glyphs.map((r) => Math.max(r.box.right - r.box.left, r.box.bottom - r.box.top))
+  const sizeSpread = glyphs.length ? Math.max(...extents) - Math.min(...extents) : 99
+  console.log(`  extent spread ${sizeSpread.toFixed(2)}px across ${glyphs.length} controls` + (sizeSpread > 1 ? '  ◀ OFF' : '  ok') +
+    `   (w ${(Math.max(...ws) - Math.min(...ws)).toFixed(2)} · h ${(Math.max(...hs) - Math.min(...hs)).toFixed(2)})`)
 
-  // ---- V. the rhythm -----------------------------------------------------------------------
-  const stack = m.rows.filter((r) => r.stack && r.box)
-  console.log('\nVERTICAL RHYTHM — painted ink gaps down the strip')
-  console.log(pad('  FROM → TO', 46) + '   GAP')
-  const gaps = []
-  for (let i = 1; i < stack.length; i++) {
-    const g = stack[i].box.top - stack[i - 1].box.bottom
-    gaps.push({ from: stack[i - 1].key.trim(), to: stack[i].key.trim(), gap: g })
-    console.log(pad(`  ${stack[i - 1].key.trim()} → ${stack[i].key.trim()}`, 46) + f(g, 7, 2))
+  // ---- V. the rhythm -------------------------------------------------------------------------
+  console.log('\nV · RHYTHM — the member column, then the foot')
+  // PITCH, not the ink gap. The selected member paints a marker outside its disc, so it
+  // necessarily narrows the visible gap either side of itself — that is the marker being a
+  // marker. Centre-to-centre is what separates "the marker is bigger" (fine) from "the stack is
+  // irregular" (not), and it is the same distinction the old tile harness drew.
+  const members = m.rows.filter((r) => r.member && r.box)
+  const memberPitch = []
+  for (let i = 1; i < members.length; i++) {
+    memberPitch.push(((members[i].box.top + members[i].box.bottom) / 2) - ((members[i - 1].box.top + members[i - 1].box.bottom) / 2))
   }
-  const g = (from, to) => gaps.find((x) => x.from.startsWith(from) && x.to.startsWith(to))?.gap
-  // Tile gaps, PARTITIONED by whether the ring is one of the two neighbours. The ring is 2px of
-  // ink outside the box, so a pair beside the current tile necessarily clears 2 less — that is
-  // the marker being a marker, not the stack being irregular, and PITCH is the invariant that
-  // proves it (constant 40 regardless of state). Asserting one flat number here would leave a
-  // permanently-failing row, and a table with a known-failing row is a table nobody rereads.
-  const ringed = new Set(m.rows.filter((r) => r.tile && r.state.startsWith('ringed')).map((r) => r.tile))
-  const isRingPair = (x) => [...ringed].some((n) => x.from.endsWith(n) || x.to.endsWith(n))
-  const allTileGaps = gaps.filter((x) => x.from.startsWith('tile') && x.to.startsWith('tile'))
-  const tileGaps = allTileGaps.filter((x) => !isRingPair(x)).map((x) => x.gap)
-  // The ringed tile is, by definition, the OPEN one — so the gap below it spans its agent band
-  // and is not a gap between neighbours at all. Same exclusion as the pitch check below, and for
-  // the same reason: measure the rhythm of what is actually adjacent. A ring pair that does NOT
-  // span a band is still held to the 2px-tighter rule, which is the invariant this protects.
-  const ringGapsAll = allTileGaps.filter(isRingPair).map((x) => x.gap)
-  const plainMax = tileGaps.length ? Math.max(...tileGaps) : 0
-  const ringGaps = ringGapsAll.filter((x) => x <= plainMax * 2)
-  const pairA = g('foot robot', 'foot usage')
-  const seamAbove = g('foot usage', 'foot seam')
-  const seamBelow = g('foot seam', 'foot grid')
-  const pairB = g('foot grid', 'foot plus')
   const spread = (xs) => (xs.length ? Math.max(...xs) - Math.min(...xs) : 0)
-  // PITCH, alongside the gap. A ring is 2px of ink OUTSIDE the tile, so it necessarily narrows
-  // the visible gap either side of the current tile — but it must not move the tile. Pitch is
-  // what separates "the marker is bigger" (fine) from "the stack is irregular" (not).
-  // PITCH IS MEASURED BETWEEN COLLAPSED NEIGHBOURS ONLY.
-  //
-  // The rail is an accordion now: the selected project's tile is followed by its agents in a
-  // band, so the pair that SPANS that band is legitimately taller than the rest and always will
-  // be. Including it made "tile pitch constant" report 10 / 60 and fail on a correct layout —
-  // and a check that fails on correct work is one people learn to skip.
-  //
-  // The invariant it was written to protect is untouched: the tiles that ARE adjacent must keep
-  // an identical rhythm, and every tile must stay on the axis (measured separately above). What
-  // is dropped is exactly one pair per open band, and only while a band is open.
-  const tileRows = m.rows.filter((r) => r.tile && r.box)
-  const bandSpan = 1.6 // × the median pitch: a pair this much larger is a band, not a defect
-  const raw = []
-  for (let i = 1; i < tileRows.length; i++) {
-    const a = tileRows[i - 1].box, c = tileRows[i].box
-    raw.push(((c.top + c.bottom) / 2) - ((a.top + a.bottom) / 2))
+  console.log(`  member pitch: ${memberPitch.map((x) => x.toFixed(1)).join(' / ') || '(one member)'}   spread ${spread(memberPitch).toFixed(2)}`)
+  const pitches = []
+  for (let i = 1; i < m.foot.rows.length; i++) pitches.push(m.foot.rows[i].top - m.foot.rows[i - 1].top)
+  console.log(`  foot row tops:   ${m.foot.rows.map((r) => r.top.toFixed(1)).join(' / ')}`)
+  console.log(`  foot row pitch:  ${pitches.map((x) => x.toFixed(1)).join(' / ')}   spread ${spread(pitches).toFixed(2)}`)
+  // Every hairline centred in its own air: the gap above equals the gap below.
+  const seamAir = m.foot.seams.map((s, i) => {
+    const above = s.top - (m.foot.rows[i].top + m.foot.rows[i].h)
+    const below = m.foot.rows[i + 1] ? m.foot.rows[i + 1].top - (s.top + 1) : null
+    return { above, below }
+  })
+  for (const [i, a] of seamAir.entries()) {
+    console.log(`  hairline ${i + 1}: ${f(a.above, 5, 1)} above · ${f(a.below, 5, 1)} below` +
+      (a.below !== null && Math.abs(a.above - a.below) > TOL ? '  ◀ OFF' : '  ok'))
   }
-  const median = raw.length ? [...raw].sort((x, y) => x - y)[Math.floor(raw.length / 2)] : 0
-  const pitches = raw.filter((x) => x <= median * bandSpan)
-  const spanned = raw.length - pitches.length
-  if (spanned) console.log(`\n  (${spanned} pair${spanned === 1 ? '' : 's'} spans an open band — excluded from pitch, see the note)`)
-  console.log(`\n  tile pitch (painted centre → centre): ${pitches.map((x) => x.toFixed(1)).join(' / ')}   spread ${spread(pitches).toFixed(2)}`)
-  console.log('\n  CLAIM                                        MEASURED                     Δ')
-  const claim = (name, val, expect, note) => {
-    const bad = Math.abs(val - expect) > TOL
-    console.log('  ' + pad(name, 43) + pad(note, 29) + f(val - expect, 6) + (bad ? '  ◀ OFF' : '  ok'))
-    return !bad
+  const okRhythm = spread(memberPitch) <= TOL && spread(pitches) <= TOL
+    && seamAir.every((a) => a.below === null || Math.abs(a.above - a.below) <= TOL)
+  const okFoot = m.foot.present.length === 8
+  console.log(`  foot controls present: ${m.foot.present.length}/8` + (okFoot ? '  ok' : '  ◀ OFF'))
+
+  return {
+    worst, sizeSpread, okRhythm, okFoot,
+    rows: m.foot.rows.map((r) => r.top),
+    orbs: Object.fromEntries(m.rows.filter((r) => r.orb && r.box).map((r) => [r.orb, r.box])),
+    accents: Object.fromEntries(m.groups.map((g) => [g.id, g.accent])),
   }
-  const okTiles = claim('tile pitch constant', spread(pitches), 0, pitches.map((x) => x.toFixed(1)).join(' / '))
-  const okGaps = claim('plain pairs: ink gap constant', spread(tileGaps), 0, tileGaps.map((x) => x.toFixed(1)).join(' / '))
-    && claim('ring pairs: exactly 2px tighter', spread(ringGaps.map((g) => g + 2).concat(tileGaps)), 0,
-      ringGaps.map((x) => x.toFixed(1)).join(' / ') + ' (ring ink)')
-  const okPairs = claim('pair A == pair B', pairA ?? 0, pairB ?? 0, `A ${f(pairA, 5, 1)}   B ${f(pairB, 5, 1)}`)
-  const okSeam = claim('seam centred in its own air', seamAbove ?? 0, seamBelow ?? 0, `above ${f(seamAbove, 5, 1)}  below ${f(seamBelow, 5, 1)}`)
-  const okOut = (seamAbove ?? 0) > (pairA ?? 0) && (seamBelow ?? 0) > (pairB ?? 0)
-  console.log('  ' + pad('seam out-spaces the pairs it divides', 43) + pad(okOut ? 'yes' : 'NO', 29) + '      ' + (okOut ? '  ok' : '  ◀ OFF'))
-  return { worst, okTiles: okTiles && okGaps, okPairs, okSeam, okOut, sizeSpread }
 }
 
 // ---------------------------------------------------------------------------------------------
 const summary = []
 for (const [theme, short] of THEMES) {
   const { browser, p } = await boot(theme)
+  const fails = []
 
-  // Scene 1 — as it comes up: the current project is ringed AND pipped, one neighbour is pipped
-  // only, the seeded four are plain. Three of the four tile states in one frame.
-  const m1 = await measure(p, `${short} · at rest`)
+  // Scene 1 — COLLAPSED, which is the state every axis claim is about.
+  const m1 = await measure(p, `${short} · collapsed (60)`)
   const r1 = report(m1)
+  if (Math.abs(m1.rr.width - RAIL_W) > 0.5) fails.push(`collapsed width ${m1.rr.width}, expected ${RAIL_W}`)
+  // The colliding pair must be two GROUPS, not one: same accent, separate hairlines. The strip is
+  // grouped by proximity and a rule, never by tint, and this is the fixture that proves it.
+  const collide = Object.entries(r1.accents).filter(([, a]) => a === r1.accents['web27-id'])
+  if (collide.length < 2) fails.push(`the accent-collision fixture did not land — ${JSON.stringify(r1.accents)}`)
+  const groupCount = await p.locator('[data-rail-group]').count()
+  const hairlines = await p.evaluate(() => [...document.querySelectorAll('[data-rail-group]')]
+    .filter((g) => getComputedStyle(g).boxShadow !== 'none').length)
+  if (hairlines !== groupCount - 1) fails.push(`${groupCount} groups but ${hairlines} hairlines — expected one above every group but the first`)
+  // No group may render empty: a header with a hairline and nothing under it is what a group whose
+  // membership has not hydrated would look like.
+  const emptyGroups = await p.evaluate(() => [...document.querySelectorAll('[data-rail-group]')]
+    .filter((g) => !g.querySelector('[data-rail-session], [data-rail-home], [data-lane-row]')).length)
+  if (emptyGroups) fails.push(`${emptyGroups} group(s) render a header with no members`)
 
-  // Scene 2 — click a PLAIN tile so it becomes current: ringed WITHOUT a pip, the fourth state
-  // and the one no scene produces on its own.
-  await p.locator('[data-rail-tile]').nth(2).click()
-  // Park the cursor and the focus OFF the strip, then outwait the your-turn settle timer
-  // (PULSE_SETTLE_MS = 6s), which a click re-arms. Both are repaints that would otherwise land
-  // in the middle of a measurement.
+  await p.screenshot({ path: `/tmp/operator-shots/rail-d1-${short.replace('·', '-')}-collapsed.png`, clip: { x: m1.rr.left, y: 0, width: 90, height: 900 } })
+
+  // Scene 2 — EXPANDED. ⌘B, then the same measurements.
+  await p.keyboard.press('Meta+b')
   await p.mouse.move(700, 450)
   await p.evaluate(() => document.activeElement?.blur?.())
   await p.waitForTimeout(7000)
-  const m2 = await measure(p, `${short} · after selecting a plain tile (ringed, no pip)`)
+  const m2 = await measure(p, `${short} · expanded (264)`)
   const r2 = report(m2)
+  if (Math.abs(m2.rr.width - RAIL_W_OPEN) > 0.5) fails.push(`expanded width ${m2.rr.width}, expected ${RAIL_W_OPEN}`)
 
-  await p.screenshot({ path: `/tmp/operator-shots/rail-invariant-${short.replace('·', '-')}.png`, clip: { x: m2.rr.left, y: 0, width: 60, height: 900 } })
-  summary.push({
-    short, worst: Math.max(Math.abs(r1.worst), Math.abs(r2.worst)),
-    rhythm: r1.okTiles && r1.okPairs && r1.okSeam && r1.okOut,
-    size: Math.max(r1.sizeSpread, r2.sizeSpread),
-  })
+  // ---- X. THE CONSTANT-X INVARIANT ----------------------------------------------------------
+  console.log('\nX · CONSTANT-X — an orb must not move or resize when the strip expands')
+  let worstX = 0
+  for (const [id, a] of Object.entries(r1.orbs)) {
+    const b = r2.orbs[id]
+    if (!b) { fails.push(`orb ${id} vanished when expanded`); continue }
+    const dx = ((b.left + b.right) / 2) - ((a.left + a.right) / 2)
+    const dw = (b.right - b.left) - (a.right - a.left)
+    if (Math.abs(dx) > Math.abs(worstX)) worstX = dx
+    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)}   Δsize ${f(dw)}` +
+      (Math.abs(dx) > TOL || Math.abs(dw) > TOL ? '  ◀ OFF' : '  ok'))
+    if (Math.abs(dx) > TOL) fails.push(`orb ${id} moved ${dx.toFixed(2)}px on expand`)
+    if (Math.abs(dw) > TOL) fails.push(`orb ${id} resized ${dw.toFixed(2)}px on expand`)
+  }
+
+  // ---- Y. the foot rows hold their y ---------------------------------------------------------
+  console.log('\nY · FOOT ROWS — identical y at both widths (Arrangement A)')
+  console.log(`  collapsed ${r1.rows.map((x) => x.toFixed(1)).join(' / ')}`)
+  console.log(`  expanded  ${r2.rows.map((x) => x.toFixed(1)).join(' / ')}`)
+  const rowDelta = r1.rows.length === r2.rows.length
+    ? Math.max(...r1.rows.map((x, i) => Math.abs(x - r2.rows[i])))
+    : 99
+  console.log(`  worst Δy ${rowDelta.toFixed(2)}` + (rowDelta > TOL ? '  ◀ OFF' : '  ok'))
+  if (rowDelta > TOL) fails.push(`foot rows move ${rowDelta.toFixed(2)}px between widths`)
+  if (r1.rows.length !== 4) fails.push(`${r1.rows.length} foot rows, expected 4`)
+
+  // ---- B. ⌘B removes nothing ------------------------------------------------------------------
+  if (!r1.okFoot) fails.push(`collapsed foot has ${m1.foot.present.length}/8 controls — ⌘B is still deleting app chrome`)
+  if (!r2.okFoot) fails.push(`expanded foot has ${m2.foot.present.length}/8 controls`)
+
+  // The identity colour must be the same value at both widths — it reaches the DOM as three
+  // different color-mix expressions, so this compares the SOURCE rather than an encoding.
+  for (const [id, a] of Object.entries(r1.accents)) {
+    if (r2.accents[id] !== a) fails.push(`${id}'s accent changed with the width: ${a} → ${r2.accents[id]}`)
+  }
+
+  await p.screenshot({ path: `/tmp/operator-shots/rail-d1-${short.replace('·', '-')}-expanded.png`, clip: { x: m2.rr.left, y: 0, width: 290, height: 900 } })
+
+  if (Math.abs(r1.worst) > TOL) fails.push(`collapsed axis off by ${r1.worst.toFixed(2)}px`)
+  if (r1.sizeSpread > 1) fails.push(`foot glyph ink spread ${r1.sizeSpread.toFixed(2)}px`)
+  if (!r1.okRhythm) fails.push('collapsed rhythm off')
+  if (!r2.okRhythm) fails.push('expanded rhythm off')
+
+  summary.push({ short, worst: Math.abs(r1.worst), x: Math.abs(worstX), rowDelta, size: r1.sizeSpread, fails })
+  for (const f of fails) console.log(`  ✗ ${f}`)
   await browser.close()
 }
 
-console.log('\n' + '='.repeat(60))
-console.log(pad('PALETTE', 12) + pad('WORST |Δaxis|', 14) + pad('GLYPH SPREAD', 15) + 'RHYTHM')
-for (const s of summary) console.log(pad(s.short, 12) + pad(s.worst.toFixed(2) + 'px', 14) + pad(s.size.toFixed(2) + 'px', 15) + (s.rhythm ? 'ok' : 'OFF'))
-const bad = summary.filter((s) => s.worst > TOL || !s.rhythm || s.size > 1)
-console.log(bad.length ? `\nNOT CLEAN on ${bad.length}/${summary.length} palettes` : '\nCLEAN on every palette measured')
+console.log('\n' + '='.repeat(78))
+console.log(pad('PALETTE', 10) + pad('|Δaxis|', 10) + pad('|Δorb x|', 10) + pad('|Δfoot y|', 11) + pad('GLYPH SPREAD', 14) + 'FAILURES')
+for (const s of summary) {
+  console.log(pad(s.short, 10) + pad(s.worst.toFixed(2), 10) + pad(s.x.toFixed(2), 10) +
+    pad(s.rowDelta.toFixed(2), 11) + pad(s.size.toFixed(2), 14) + (s.fails.length || 'none'))
+}
+const bad = summary.filter((s) => s.fails.length)
+if (bad.length) {
+  console.log(`\nNOT CLEAN on ${bad.length}/${summary.length} palettes`)
+  for (const s of bad) for (const f of s.fails) console.log(`  ${s.short}  ✗ ${f}`)
+  process.exit(1)
+}
+console.log('\nCLEAN on every palette measured')

@@ -112,13 +112,20 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         width: '100%',
         // Fixed height (not padding-driven) so every row is identical regardless of
         // its content — tool suffix, badges, shortcut hint all sit within the same box.
-        height: 32,
+        // 36, not 32, and 8px of left inset: THE CONSTANT-X INVARIANT. This row's orb has to sit
+        // at the same absolute x and the same size as the collapsed strip's, so expanding reveals
+        // a label and moves nothing. See ProjectRail's MEMBER_BOX / MEMBER_INSET_L, which are the
+        // same two numbers from the other side.
+        height: 36,
         // The SELECTED (open) session must clearly dominate: a solid surface fill + a subtle
         // NEUTRAL inset ring (not an accent stripe — see the global no-left-marker rule), so it
         // reads as a distinct card, unmistakable next to a merely-RUNNING row (faint accent
         // wash). Running is a secondary tint; selected always wins.
-        padding: '0 12px 0 8px',
-        borderLeft: '2px solid transparent',
+        padding: '0 8px 0 8px',
+        // NO transparent left border. It was a leftover reservation from a marker stripe this app
+        // no longer draws (selected is a surface + inset ring), and 2px of it pushed this row's
+        // orb to x=28 while the collapsed strip's sat at 26 — a 2px slide on every ⌘B, which is
+        // exactly what the constant-x invariant forbids. Measured by drive-rail-invariant.
         background: active
           ? 'var(--bg-surface)'
           : isRunning ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'transparent',
@@ -140,6 +147,10 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
     >
       <span
         data-accent-orb={session.id}
+        // The SAME hook the collapsed strip's orb carries, so a driver can assert the one across
+        // both states: `dev/drive-rail-invariant.mjs` measures this element's painted centre at
+        // 60 and at 264 and fails if it moved. Two selectors would have measured two elements.
+        data-rail-orb={session.id}
         onContextMenu={onPickAccent && ((e) => {
           // Right-click the orb to recolour; left-click falls through to row select.
           e.preventDefault()
@@ -147,9 +158,11 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
           const r = e.currentTarget.getBoundingClientRect()
           onPickAccent({ top: r.bottom + 6, left: r.left })
         })}
-        style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}
+        // The 36px member box, with the 24px disc centred in it — the collapsed strip draws the
+        // identical pair, which is what holds the orb's x still across ⌘B.
+        style={{ width: 36, height: 36, display: 'grid', placeItems: 'center', flexShrink: 0 }}
       >
-        <StatusWave status={status} seed={session.id} accent={roleColor} />
+        <StatusWave status={status} seed={session.id} size={24} accent={roleColor} />
       </span>
       {/* Left group: the session name with its lane badge sitting immediately after it, so the
           lane reads as part of the session — not a tag floating in the right cluster. */}

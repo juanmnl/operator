@@ -24,7 +24,6 @@ import { endedByBackend } from '../lib/terminal-liveness'
 import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
-import { Sidebar } from '../components/sidebar/Sidebar'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { AppShell } from '../components/AppShell'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
@@ -2364,18 +2363,13 @@ export function DashboardView() {
 
   const allSidebarSessions = localSessions
 
-  // The scoped world: with navigation now project-first, the sidebar, ⌘1-9 and the rail all
-  // read from THIS list — the live sessions of the project you're in — so the numbers on the
-  // rows are the numbers the shortcuts use (spec §4 rule 4). Legacy sessions carry no
-  // projectId and so belong to no scope; they stay reachable from the gallery's activity view.
-  const activeProject = useMemo(
-    () => (activeProjectId ? projects.find((p) => p.id === activeProjectId) ?? null : null),
-    [activeProjectId, projects],
-  )
-  const scopedSessions = useMemo(
-    () => (activeProjectId ? allSidebarSessions.filter((s) => s.projectId === activeProjectId) : []),
-    [allSidebarSessions, activeProjectId],
-  )
+  // The left strip takes ALL of these and groups them by project itself. There is no
+  // `scopedSessions` any more: it existed because the rail and the sidebar were scoped
+  // differently — one to every project, one to the open one — and joining them into a single
+  // surface is exactly what made a second, narrower list of the same sessions unnecessary.
+  // ⌘1-9 still scopes to the open project (`shortcutTerminals`), which is where that rule lives.
+  // Legacy sessions carry no projectId and belong to no group; they stay reachable from the
+  // gallery's activity view.
   // What each project is doing — the switcher's per-row orb and state label. Rolled up by
   // lib/project-status so the popover and the gallery card read a project identically.
   const projectActivities = useMemo(() => {
@@ -2485,10 +2479,9 @@ export function DashboardView() {
     return map
   }, [shortcutTerminals, localSessions])
 
-  // The sidebar's count is of the project you're IN, matching the list above it.
-  const sidebarStats = useMemo(() => ({
-    activeSessions: scopedSessions.filter((s) => s.status === 'active').length,
-  }), [scopedSessions])
+  // The `N active` count is GONE with the sidebar that footed it: in the joined strip the agents
+  // ARE the count — two live rows is what "2 active" was telling you, and a line counting what is
+  // visible 40px above it is not information.
 
   // Notify main process of active session for widget visibility
   useEffect(() => {
@@ -3302,13 +3295,13 @@ export function DashboardView() {
           onClose={() => setRailMenu(null)}
         />
       )}
-      {/* The left strip: the PERSISTENT project rail, then the collapsible sidebar beside it.
-          They're grouped so the root's 8px gap falls between this pair and the content card,
-          and the two strips stay flush — peers sharing the sidebar field, parted by a
-          hairline. At the gallery the sidebar animates to 0 and the rail stays put, which is
-          the entire point of it. */}
-      <div style={{ display: 'flex', flexShrink: 0, height: '100%' }}>
+      {/* THE LEFT SURFACE — one strip at two widths. There is no pair to group any more: the
+          rail and the sidebar were two components each listing agents, which is why the same
+          list kept appearing twice 40px apart, and the sidebar is deleted. ⌘B and the gallery
+          set `collapsed`; the strip animates its own width and NOTHING unmounts, which is what
+          keeps the theme toggle, Preferences and both `.claude` shortcuts on screen at 60px. */}
       <ProjectRail
+        collapsed={contentMode === 'gallery' || sidebarCollapsed}
         projects={projects}
         activities={projectActivities}
         activeProjectId={contentMode === 'gallery' ? null : activeProjectId}
@@ -3329,61 +3322,31 @@ export function DashboardView() {
         onReorder={handleReorderProject}
         onTileMenu={(projectId, anchor) => setRailMenu({ projectId, ...anchor })}
         menuProjectId={railMenu?.projectId ?? null}
-        // THE ACCORDION'S SECOND LIST. The rail was projects only, with the collapsed sidebar
-        // rendering this project's agents in a SECOND strip beside it — 108px of chrome teaching
-        // two grammars at once. The agents live in the rail now, in a band under their own
-        // project's tile, so containment is drawn rather than implied.
-        sessions={scopedSessions}
+        // EVERY live session, not just this project's. The strip groups them itself — which is
+        // the whole point of joining the two surfaces: membership is one rule applied in one
+        // place, rather than a rail scoped one way and a panel scoped another.
+        sessions={allSidebarSessions}
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         accentOf={accentOf}
         onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
-      />
-      {/* Collapsible wrapper: animates width between the full sidebar (220) and
-          the narrow quick-access rail (64). The RAIL now hosts the macOS traffic lights, so
-          the content card never slides under them — including at the gallery, where this
-          strip collapses to 0 and the gallery's own header reserves its own space (spec §2A). */}
-      <div
-        style={{
-          width: contentMode === 'gallery' || sidebarCollapsed ? 0 : 220,
-          flexShrink: 0,
-          overflow: 'hidden',
-          transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
-        }}
-      >
-      {/* COLLAPSED IS NOW NOTHING, because the rail carries the agents.
-          `SidebarRail` used to fill this slot with a 64px strip of this project's sessions —
-          which, beside the 52px accordion that now lists those same sessions in its open band,
-          was 116px of chrome showing one list twice. Collapsing means "leave me the rail", and
-          the rail is already outboard of this element.
-          The sidebar still expands: the toolbar's SidebarToggle and ⌘B both call `toggleSidebar`,
-          so removing the badge that also did it strands nothing. */}
-      {contentMode === 'gallery' || sidebarCollapsed ? null : (
-      <Sidebar
-        project={activeProject}
-        sessions={scopedSessions}
-        onRestoreProject={restoreProject}
         onOpenProjectHome={handleOpenProjectHome}
-        onAddLane={handleAddLane}
         projectHomeActive={contentMode === 'project'}
-        activeSessionId={activeSessionId}
+        onRestoreProject={restoreProject}
         customNames={customNames}
-        activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
-        globalPrefsActive={globalPrefsActive}
-        prefsViewActive={prefsViewActive}
         effortLevels={effortLevels}
         fanInfo={fanInfo}
         shortcutIndices={shortcutIndices}
-        stats={sidebarStats}
-        isDark={currentTheme.isDark}
-        onSelectSession={handleSelectSession}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
         onLaunchRole={(project, role) => { void handleLaunchRole(project, role) }}
-        accentOf={accentOf}
-        onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
-        onReorderSession={handleReorderSession}
+        onAddLane={handleAddLane}
         onReorderLane={handleReorderLane}
+        onReorderSession={handleReorderSession}
+        activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
+        globalPrefsActive={globalPrefsActive}
+        prefsViewActive={prefsViewActive}
+        isDark={currentTheme.isDark}
         onOpenFolderPrefs={handleOpenFolderPrefs}
         onOpenGlobalPrefs={handleOpenGlobalPrefs}
         onOpenPrefs={handleOpenPrefs}
@@ -3392,9 +3355,6 @@ export function DashboardView() {
         update={availableUpdate}
         onInstallUpdate={() => { void window.operator.installUpdate() }}
       />
-      )}
-      </div>
-      </div>
 
       <div data-term-focus-zone style={{
         position: 'relative', flex: 1,
@@ -3413,6 +3373,20 @@ export function DashboardView() {
         // is the only thing allowed outside it.
         boxShadow: 'var(--shadow-panel), inset 0 0 0 1px var(--panel-edge)',
       }}>
+        {/* NO VERTICAL RULE CROSSES THE TITLEBAR. With the strip's own right-hand seam deleted,
+            this card's edge is the only vertical line left in that corner — and it ran the full
+            height, straight through the 40px drag band the traffic lights sit in.
+            A gradient masks it over the band. NOT as this element's `background-image`, which was
+            the first attempt and cannot work: an inset box-shadow paints ABOVE the background, so
+            the edge drew straight over the mask. A child does paint above it.
+            NARROW, not full-width: the card's top 40px is where the toolbar's own controls live,
+            and an opaque band across all of it would cover them. It is 4px — the vertical rule and
+            nothing else. The card keeps its top and its full height; nothing is pushed down, and
+            no radiused element changes border colour (the WKWebView re-rasterize trap). */}
+        <div aria-hidden style={{
+          position: 'absolute', top: 0, left: 0, width: 4, height: 40, zIndex: 2, pointerEvents: 'none',
+          background: 'linear-gradient(to bottom, var(--bg-terminal) 0, var(--bg-terminal) 28px, transparent 40px)',
+        }} />
         {/* Drag region — only where nothing else is acting as one. Three modes bring their
             own: the session toolbar (`localTerminal`), the gallery's taller header (which
             also clears the traffic lights, since no rail sits beside it), and ProjectView's
