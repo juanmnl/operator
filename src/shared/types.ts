@@ -639,3 +639,18 @@ export const IPC = {
   AGENT_DELETE: 'agents:delete',
   PREFS_UPDATE: 'operator:prefs-update',
 } as const
+
+/** What a project says about itself + what its folder says right now. Raw sources; the choosing
+ *  happens in `lib/project-description` (pure, tested). See the Rust `project_identity`. */
+export interface ProjectIdentity {
+  branch?: string
+  dirty: number
+  lastCommit?: string
+  lastCommitAt?: string
+  hubNote?: string
+  readme?: string
+  claudeMd?: string
+  packageJson?: string
+  /** The folder is gone — two of the real projects point at directories that no longer exist. */
+  missing: boolean
+}

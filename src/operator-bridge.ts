@@ -130,6 +130,21 @@ export function installBridge(): void {
     noteSessionPort: (id: string, port: number) => { void invoke('note_session_port', { id, port }) },
     // Base64 of a terminal's retained output tail — replayed when a pane re-attaches
     // to a pty that survived a renderer reload, so it shows scrollback, not a blank.
+    // snake_case → camelCase at the boundary, like every other command here.
+    projectIdentity: async (path: string) => {
+      const r = await invoke<Record<string, unknown>>('project_identity', { path })
+      return {
+        branch: r.branch as string | undefined,
+        dirty: (r.dirty as number) ?? 0,
+        lastCommit: r.last_commit as string | undefined,
+        lastCommitAt: r.last_commit_at as string | undefined,
+        hubNote: r.hub_note as string | undefined,
+        readme: r.readme as string | undefined,
+        claudeMd: r.claude_md as string | undefined,
+        packageJson: r.package_json as string | undefined,
+        missing: (r.missing as boolean) ?? false,
+      }
+    },
     terminalHistory: (id: string) => invoke<string>('terminal_history', { id }),
     onTerminalData: (cb: (id: string, data: string) => void): Unsub => {
       const p = listen<{ id: string; data: string }>('terminal:data', (e) => {

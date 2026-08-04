@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -96,6 +96,8 @@ declare global {
       inspectRepo: (cwd: string) => Promise<RepoInfo>
       worktreeCreate: (cwd: string) => Promise<WorktreeCreateResult | { error: string }>
       worktreeStatus: (path: string) => Promise<WorktreeStatus>
+      /** What a project IS (derived sources) + what its folder is doing. */
+      projectIdentity: (path: string) => Promise<ProjectIdentity>
       /** Does this path still exist as a directory? See `path_exists` in lib.rs for why this
        *  is not `worktreeStatus` — that conflates "deleted" with "not a git repo". */
       pathExists?: (path: string) => Promise<boolean>

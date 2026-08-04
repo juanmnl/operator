@@ -1,4 +1,8 @@
 import type { Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
+import { useEffect, useState } from 'react'
+import type { ProjectIdentity } from '../../../shared/types'
+import { describeProject } from '../../lib/project-description'
+import { laneTextColor } from '../../lib/lane-color'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
 import { RosterPanel, type LaneSession } from './RosterPanel'
@@ -140,6 +144,14 @@ export function ProjectView({
           </button>
         )}
       </DragRegion>
+
+      {/* WHAT THIS PROJECT IS — above the work, on every tab.
+          Project Home showed only the task store, so for the 13 of 20 projects Operator has
+          never run in it was four empty gutters and nothing else. An empty store is not an empty
+          project: every one of them describes itself somewhere, and its folder always says
+          something. Derived, with its source named — text a user cannot trace is text they can
+          neither trust nor correct. */}
+      <ProjectIdentityBlock project={project} />
       {/* `scroll`, not `auto`, because the roster below is a CENTRED measure box. styles.css
           gives ::-webkit-scrollbar an explicit width, which makes it a classic scrollbar that
           eats 6px of the content box — so a centred child re-centred 3px to the left the
@@ -215,6 +227,100 @@ export function ProjectView({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+
+/** The identity line: what the project IS, and what its folder is doing right now.
+ *
+ *  The description is DERIVED (see lib/project-description) and carries a provenance chip, which
+ *  is also where a correction would go — `contextNotes` is meant to become an override of this,
+ *  never a blank box demanding prose. The folder line is a plain `git` read, and it is what makes
+ *  a project with no tasks still have something true on screen. */
+function ProjectIdentityBlock({ project }: { project: Project }) {
+  const [ident, setIdent] = useState<ProjectIdentity | null>(null)
+  useEffect(() => {
+    let live = true
+    setIdent(null)
+    if (!project.path) return
+    void window.operator.projectIdentity?.(project.path)
+      .then((r) => { if (live) setIdent(r) })
+      .catch(() => { /* a folder we cannot read simply shows nothing */ })
+    return () => { live = false }
+  }, [project.path])
+
+  if (!ident) return null
+
+  // The folder is gone. Two real projects point at directories that no longer exist, and a
+  // landing derived from a folder MUST say so rather than rendering as though it were empty.
+  if (ident.missing) {
+    return (
+      <div data-project-identity="missing" style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+        <p style={{ fontSize: 12.5, color: 'var(--fg)', margin: 0 }}>
+          This project&rsquo;s folder is not on disk.
+        </p>
+        <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', margin: '3px 0 0' }}>
+          {project.path}
+        </p>
+      </div>
+    )
+  }
+
+  const desc = describeProject({
+    contextNotes: project.contextNotes,
+    hubNote: ident.hubNote,
+    readme: ident.readme,
+    claudeMd: ident.claudeMd,
+    packageJson: ident.packageJson,
+  }, project.name)
+
+  const facts = [
+    ident.branch,
+    ident.dirty > 0 ? `${ident.dirty} uncommitted` : null,
+    ident.lastCommit ? `last: ${ident.lastCommit}` : null,
+  ].filter(Boolean) as string[]
+
+  // Nothing to say at all — no description anywhere and no git. Render nothing rather than an
+  // empty frame: a hole with a border round it is worse than no hole.
+  if (!desc.text && !facts.length) return null
+
+  return (
+    <div data-project-identity style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+      {desc.text && (
+        <p data-project-desc style={{
+          margin: 0, fontSize: 12.5, lineHeight: 1.45, color: 'var(--fg)',
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        }}>
+          {desc.text}
+          {/* Provenance is the edit affordance, not a footnote: the place you check where a
+              sentence came from is exactly where you would fix it. Amber when the text came from
+              a file about a DIFFERENT project — the `-landing` repos point at their parent
+              product's note, which is real context with the wrong subject. */}
+          <span
+            data-project-desc-source={desc.from}
+            title={desc.suspect
+              ? `From this project's ${desc.from} — but it appears to describe a different project`
+              : `From this project's ${desc.from}`}
+            style={{
+              marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 9.5,
+              letterSpacing: '0.06em', whiteSpace: 'nowrap',
+              color: desc.suspect ? laneTextColor('var(--color-warning)') : 'var(--fg-muted)',
+            }}
+          >
+            {desc.from}
+          </span>
+        </p>
+      )}
+      {facts.length > 0 && (
+        <p data-project-facts style={{
+          margin: desc.text ? '4px 0 0' : 0,
+          fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {facts.join(' · ')}
+        </p>
+      )}
     </div>
   )
 }

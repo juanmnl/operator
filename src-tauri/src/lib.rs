@@ -1194,6 +1194,99 @@ fn path_exists(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
 }
 
+/// What a project SAYS ABOUT ITSELF, plus what its folder says about right now.
+///
+/// Project Home has nothing to show for a project Operator has not run in — and that is 13 of
+/// the user's 20. `contextNotes` (a written description) is specced and unbuilt, so a landing
+/// derived only from the task store is permanently blank for most projects. But an empty STORE
+/// is not an empty PROJECT: `darkmatter` has no tasks and a git history through Aug 1, a
+/// CLAUDE.md, and source files. Every one of those 20 describes itself somewhere already.
+///
+/// This reads the raw candidates and nothing more. Choosing between them — precedence, and the
+/// shape gate that rejects a checklist or an `<img>` tag pretending to be prose — is
+/// `lib/project-description.ts`, pure and unit-tested, because that is the part with judgement
+/// in it.
+#[derive(Serialize, Default)]
+struct ProjectIdentity {
+    branch: Option<String>,
+    dirty: u32,
+    last_commit: Option<String>,
+    last_commit_at: Option<String>,
+    /// Raw first-chunk of each source, in no particular order. `None` = absent, which is a fact
+    /// the caller needs (it is the difference between "no README" and "an empty one").
+    hub_note: Option<String>,
+    readme: Option<String>,
+    claude_md: Option<String>,
+    package_json: Option<String>,
+    /// The folder is gone. Two of the user's projects point at directories that no longer exist,
+    /// and a landing that derives from a folder MUST have a state for that.
+    missing: bool,
+}
+
+/// Read at most this much of any source file. A description lives in the first paragraph; the
+/// rest is weight we would carry across the IPC boundary for nothing.
+const IDENT_CHUNK: usize = 4096;
+
+fn read_head(path: &std::path::Path) -> Option<String> {
+    let s = std::fs::read_to_string(path).ok()?;
+    Some(s.chars().take(IDENT_CHUNK).collect())
+}
+
+/// The hub-note path, taken ONLY from CLAUDE.md's declared `## Obsidian project hub` section.
+///
+/// Not by grepping for the first backticked `~/….md` anywhere in the file: several of these
+/// CLAUDE.md files also reference memory notes, and the naive version confidently described one
+/// project as "Tracking remaining work so next session can pick up efficiently" — a memory-note
+/// fragment. The section header is the declaration; use it.
+fn hub_note_path(claude_md: &str) -> Option<String> {
+    let start = claude_md.find("## Obsidian project hub")?;
+    let rest = &claude_md[start..];
+    let end = rest[3..].find("\n## ").map(|i| i + 3).unwrap_or(rest.len());
+    let section = &rest[..end];
+    let open = section.find('`')?;
+    let after = &section[open + 1..];
+    let close = after.find('`')?;
+    let raw = after[..close].trim();
+    if !raw.ends_with(".md") { return None }
+    Some(if let Some(stripped) = raw.strip_prefix("~/") {
+        // `HOME` rather than the `dirs` crate — the file's own idiom, and one fewer dependency.
+        let home = std::env::var("HOME").ok()?;
+        std::path::Path::new(&home).join(stripped).to_string_lossy().to_string()
+    } else {
+        raw.to_string()
+    })
+}
+
+#[tauri::command]
+fn project_identity(path: String) -> ProjectIdentity {
+    let root = std::path::Path::new(&path);
+    if !root.is_dir() {
+        return ProjectIdentity { missing: true, ..Default::default() }
+    }
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(&path).args(args).output().ok()?;
+        if !out.status.success() { return None }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    };
+    let claude_md = read_head(&root.join("CLAUDE.md"));
+    let hub_note = claude_md.as_deref()
+        .and_then(hub_note_path)
+        .and_then(|p| read_head(std::path::Path::new(&p)));
+    ProjectIdentity {
+        branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        // `--porcelain` lines, counted. Cheap, and the same number the review toast uses.
+        dirty: git(&["status", "--porcelain"]).map(|s| s.lines().count() as u32).unwrap_or(0),
+        last_commit: git(&["log", "-1", "--format=%s"]),
+        last_commit_at: git(&["log", "-1", "--format=%cI"]),
+        hub_note,
+        readme: read_head(&root.join("README.md")),
+        claude_md,
+        package_json: read_head(&root.join("package.json")),
+        missing: false,
+    }
+}
+
 #[tauri::command]
 fn worktree_diff(path: String, base: Option<String>) -> worktree::WorktreeDiff {
     worktree::worktree_diff(&path, base.as_deref())
@@ -2115,6 +2208,7 @@ pub fn run() {
             worktree_create,
             worktree_status,
             path_exists,
+            project_identity,
             worktree_diff,
             branch_diff,
             run_check,
