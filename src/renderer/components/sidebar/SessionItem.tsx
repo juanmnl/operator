@@ -121,11 +121,12 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // NEUTRAL inset ring (not an accent stripe — see the global no-left-marker rule), so it
         // reads as a distinct card, unmistakable next to a merely-RUNNING row (faint accent
         // wash). Running is a secondary tint; selected always wins.
-        // 12 LEFT — `ProjectRail.MEMBER_INSET_L`, i.e. `AXIS − MEMBER_BOX / 2`. It was 8 while
-        // the axis was 26; the axis moved to 30 (the strip has no seam, so the visible column runs
-        // to the card's edge) and this had to move with it, or the orb slides 4px on every ⌘B.
-        // The invariant is one number owned by the rail — this file's job is to agree with it.
-        padding: '0 8px 0 12px',
+        // 8 LEFT — `ProjectRail.ROW_INSET_L`, the one left edge the expanded strip starts
+        // everything on: this row's orb, the project header's text and the `+` of "Start an
+        // agent". It was 12 (the collapsed axis, `AXIS − MEMBER_BOX / 2`) while the orb was held
+        // at constant x across ⌘B; that invariant was retired on 2026-08-04 in favour of a strip
+        // whose items do not start at three different x. See ProjectRail's ROW_INSET_L.
+        padding: '0 8px 0 8px',
         // NO transparent left border. It was a leftover reservation from a marker stripe this app
         // no longer draws (selected is a surface + inset ring), and 2px of it pushed this row's
         // orb to x=28 while the collapsed strip's sat at 26 — a 2px slide on every ⌘B, which is
@@ -162,9 +163,10 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
           const r = e.currentTarget.getBoundingClientRect()
           onPickAccent({ top: r.bottom + 6, left: r.left })
         })}
-        // The 36px member box, with the 24px disc centred in it — the collapsed strip draws the
-        // identical pair, which is what holds the orb's x still across ⌘B.
-        style={{ width: 36, height: 36, display: 'grid', placeItems: 'center', flexShrink: 0 }}
+        // The disc's OWN box, 24px — not a 36px box with the disc centred in it, which is what
+        // put the disc 6px further right than the row's left edge. The disc now starts where the
+        // row does.
+        style={{ width: 24, height: 24, display: 'grid', placeItems: 'center', flexShrink: 0 }}
       >
         {/* NO LETTER HERE. The orb carries its lane's initial in the COLLAPSED strip, where
             nothing else can say which lane it is; this row spells the name out 8px to its right,
