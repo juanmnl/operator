@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { rand, hashSeed, gridPointsInDisc } from '../../lib/random'
+import { isWideGrapheme } from '../../lib/lane-initial'
 
 export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
 
@@ -39,7 +40,7 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
 // Dots that fall inside the circle, computed once (see lib/random).
 const DOTS = gridPointsInDisc(CELLS, RADIUS)
 
-export function StatusWave({ status, size = 13, seed = 0, accent }: { status: WaveStatus; size?: number; seed?: string | number; accent?: string }) {
+export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { status: WaveStatus; size?: number; seed?: string | number; accent?: string; initial?: string }) {
   // The your-turn pulse is a transient beacon: once a session has been waiting
   // for PULSE_SETTLE_MS we let the dot settle to the static idle look so a
   // long-untouched session doesn't pulse forever. Entering 'waiting' (incl. a
@@ -91,7 +92,8 @@ export function StatusWave({ status, size = 13, seed = 0, accent }: { status: Wa
 
   return (
     <span style={{
-      flexShrink: 0, display: 'inline-flex', lineHeight: 0,
+      // `relative` so the letter can sit ON the disc. Harmless when there is no letter.
+      position: 'relative', flexShrink: 0, display: 'inline-flex', lineHeight: 0,
       ['--tw-max' as string]: cfg.maxOp,
       // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
       // (scaled-up). Only the animated (busy) states set these; `accent` (an
@@ -108,6 +110,51 @@ export function StatusWave({ status, size = 13, seed = 0, accent }: { status: Wa
           {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style} />)}
         </g>
       </svg>
+      {initial && <OrbInitial initial={initial} size={size} />}
     </span>
+  )
+}
+
+/** WHICH LANE, in the disc that already says how it is doing. Static — the dots twinkle beneath it
+ *  and only `running` animates, so the letter never becomes a second motion channel.
+ *
+ *  THE HALO IS LOAD-BEARING. It looks like a flourish and it is the only reason this treatment is
+ *  legible: `--fg` against the dots alone measures **1.39–1.47:1** on the three dark palettes,
+ *  which is a failure — against its own halo it holds **11.84–17.58:1** on all six. Delete the
+ *  text-shadow and the glyph drops below 1.5:1 on half the themes. (Measured across every default
+ *  lane accent with a running dot at its 0.95 peak; see dev/drive-orb-initial.mjs.)
+ *
+ *  Two things this must never become, both with receipts:
+ *    • `laneTextColor(accent)` — accent ink on accent dots, which is what the pre-D1 orb did, and
+ *      its own comment admitted the collision was unsolved.
+ *    • a knockout in `--bg-sidebar` — measured 1.04 / 1.20 / 1.22:1 on the three light palettes.
+ *
+ *  (`--fg-on-accent` exists in every theme and is the token meant for ink on an accent; it is the
+ *  first place to look IF the halo is ever questioned, but it is not needed while the halo clears
+ *  the floor everywhere.) */
+function OrbInitial({ initial, size }: { initial: string; size: number }) {
+  const two = Array.from(initial).length > 1
+  // A CJK / full-width grapheme is far denser than a Latin capital and paints PAST the disc at
+  // 11px — caught by drawing it, not by reasoning about it.
+  const wide = isWideGrapheme(initial)
+  return (
+    <span
+      data-orb-initial={initial}
+      aria-hidden
+      style={{
+        position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+        pointerEvents: 'none',
+        fontFamily: 'var(--font-mono)', fontWeight: 700, lineHeight: 1,
+        // Scaled off the orb's own size, so a 24px disc gets 11/9.5/9 and nothing has to be
+        // re-tuned if the orb ever changes.
+        fontSize: (wide ? 9 : two ? 9.5 : 11) * (size / 24),
+        color: 'var(--fg)',
+        textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar), 0 0 2px var(--bg-sidebar)',
+        // A centred TRACKED pair carries its trailing letter-space on the right and nowhere else,
+        // which pushes the ink off the axis the whole strip is aligned to. Same cancel as
+        // `.ink-centred`; asserted by dev/drive-rail-invariant.mjs.
+        ...(two ? { letterSpacing: '-0.02em', marginRight: '-0.02em' } : null),
+      }}
+    >{initial}</span>
   )
 }

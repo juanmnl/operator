@@ -11,6 +11,7 @@ import { useHoverCard } from '../../lib/use-hover-card'
 import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
+import { resolveLaneInitials } from '../../lib/lane-initial'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
@@ -273,6 +274,16 @@ export function ProjectRail({
           const folded = collapsed ? Math.max(0, live.length - FOLD) : 0
           const roster = p.roster ?? []
           const liveRoles = new Set(live.map((s) => s.roleId).filter(Boolean))
+          // WHICH LANE, resolved for the WHOLE group at once — an initial depends on its peers
+          // (`Research` is `RS` only because `Review` is here too), so it cannot be computed per
+          // orb. The set is everything that can appear as a disc in this group: the roster, plus
+          // any ad-hoc session that has no lane of its own. Those are exactly the names a person
+          // can see side by side, which is the collision the rule protects against.
+          const initials = resolveLaneInitials([
+            ...roster.map((r) => ({ id: r.id, name: r.name })),
+            ...live.filter((s) => !s.roleId).map((s) => ({ id: s.id, name: sessionLabel({ session: s, customName: customNames[s.id] }) })),
+          ])
+          const initialFor = (s: AgentSession) => initials[s.roleId ?? s.id]
           // Not rendered as rows any more — only counted, to decide whether the row below offers
           // lanes to start or only offers to create one.
           const idleLanes = open ? roster.filter((r) => !liveRoles.has(r.id)) : []
@@ -353,6 +364,7 @@ export function ProjectRail({
                     session={s}
                     active={s.id === activeSessionId}
                     accent={accentOf?.(s)}
+                    initial={initialFor(s)}
                     onSelect={() => onSelectSession?.(s)}
                     onPickAccent={onPickAccent}
                   />
@@ -371,6 +383,7 @@ export function ProjectRail({
                     role={roster.find((r) => r.id === s.roleId)}
                     active={s.id === activeSessionId}
                     accent={accentOf?.(s)}
+                    initial={initialFor(s)}
                     customName={customNames[s.id]}
                     effortLevel={s.terminalId ? effortLevels[s.terminalId] : null}
                     fan={s.terminalId ? fanInfo[s.terminalId] : undefined}
@@ -683,10 +696,13 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
 
 /** One live agent, COLLAPSED. A 24px disc in the 36px member box, centred on the axis — the same
  *  disc, at the same x, that the expanded row carries. */
-function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
+function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
   session: AgentSession
   active: boolean
   accent?: string
+  /** WHICH lane, in the disc. The collapsed strip has no other channel for it — and it is the
+   *  same letter the expanded row draws, because the orb does not change meaning with the width. */
+  initial?: string
   onSelect: () => void
   onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
 }) {
@@ -732,7 +748,7 @@ function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
               comparing the marker would be comparing markers rather than the orb the invariant
               is about. */}
           <span data-rail-orb={session.id} style={{ display: 'grid', placeItems: 'center' }}>
-            <StatusWave status={status} seed={session.id} size={ORB} accent={accent} />
+            <StatusWave status={status} seed={session.id} size={ORB} accent={accent} initial={initial} />
           </span>
         </span>
       </button>
@@ -752,12 +768,13 @@ function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
 
 /** One live agent, EXPANDED — `SessionItem`, which was already the right object for this row and
  *  is the one thing the old sidebar had that survives whole. */
-function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
+function MemberRow({ session, project, role, active, accent, initial, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
   session: AgentSession
   project: Project
   role?: Role
   active: boolean
   accent?: string
+  initial?: string
   customName?: string
   effortLevel?: string | null
   fan?: { index: number; total: number }
@@ -780,6 +797,7 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
       // name is the session's, the colour is the lane's.
       labelIsRole={!!role}
       roleColor={accent ?? role?.accent}
+      initial={initial}
       fanInfo={fan}
       currentTask={currentTaskOf(session, project)}
       closable
