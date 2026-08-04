@@ -14,6 +14,9 @@ interface SessionItemProps {
    *  in the role's colour + the tracked-uppercase "running / your turn" treatment. */
   labelIsRole?: boolean
   roleColor?: string
+  /** The lane's letter, drawn IN the orb — identical to the collapsed strip's, because the orb is
+   *  the same object at both widths. */
+  initial?: string
   /** Fan-out membership: this agent's position within a parallel launch. */
   fanInfo?: { index: number; total: number }
   /** What this lane is working on now (or last did) — shown on hover, same as the
@@ -29,7 +32,7 @@ interface SessionItemProps {
   onPickAccent?: (anchor: { top: number; left: number }) => void
 }
 
-export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onPickAccent }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, initial, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onPickAccent }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [confirmingClose, setConfirmingClose] = useState(false)
@@ -166,7 +169,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // identical pair, which is what holds the orb's x still across ⌘B.
         style={{ width: 36, height: 36, display: 'grid', placeItems: 'center', flexShrink: 0 }}
       >
-        <StatusWave status={status} seed={session.id} size={24} accent={roleColor} />
+        <StatusWave status={status} seed={session.id} size={24} accent={roleColor} initial={initial} />
       </span>
       {/* Left group: the session name with its lane badge sitting immediately after it, so the
           lane reads as part of the session — not a tag floating in the right cluster. */}
