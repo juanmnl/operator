@@ -253,7 +253,7 @@ export function ProjectRail({
           WebkitAppRegion: 'no-drag',
         }}
       >
-        {shown.map((p) => {
+        {shown.map((p, i) => {
           const edge = dropAt?.id === p.id ? dropAt.edge : null
           return (
             /* The drop line lives on THIS wrapper, never on the tile: the tile is radiused, and a
@@ -267,20 +267,19 @@ export function ProjectRail({
               style={{
                 flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column',
                 alignItems: 'center',
+                // The group boundary. A hairline above each header but the first says "a new
+                // project starts here" without a field around the pair — and horizontally, so it
+                // is not the coloured left-edge marker the house rule forbids. Drawn with the
+                // rail's own seam ink so it reads as the same family of line.
+                ...(i > 0 ? { marginTop: 6, paddingTop: 6, boxShadow: `inset 0 1px 0 ${SEAM}` } : null),
                 borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
                 borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
-                // THE BAND. Containment is a tinted field, not an indent and not a connector: an
-                // indent would break the centre-line invariant this file is emphatic about (a
-                // strip whose items do not share a painted centre reads as broken however correct
-                // each item is), and a left connector is one step from the marker stripe the
-                // house rule forbids. The field carries belonging; the grammar stays square-on-top,
-                // circles-beneath and is never crossed.
-                ...(p.id === activeProjectId && band.length ? {
-                  background: 'color-mix(in srgb, var(--fg) 8%, transparent)',
-                  borderRadius: 'var(--radius-md)',
-                  paddingBottom: 6,
-                  gap: 4,
-                } : null),
+                // THE RAIL IS THE AGENTS; a project is the HEADER of a group of them. So the
+                // grouping is carried by the header itself plus a hairline above it, not by a
+                // tinted field around the pair — a field would give the project the visual weight
+                // that belongs to the work inside it, which is the inversion this shape exists to
+                // undo. The grammar still holds: square header, circles beneath, never crossed.
+                ...(p.id === activeProjectId && band.length ? { paddingBottom: 6, gap: 4 } : null),
               }}
               onDragOver={(e) => {
                 const d = dragRef.current
@@ -548,7 +547,16 @@ function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, dra
         aria-current={current || undefined}
         title={`${project.name}${label ? ` — ${label.text}` : ''}`}
         style={{
-          position: 'relative', flexShrink: 0, width: 28, height: 28, padding: 0,
+          // A HEADER, NOT THE SUBJECT. The agents are the rail — they render at 40px — so a
+          // project sits at 24 (26 when its group is open). Inverted deliberately: at 28 against
+          // a 40px orb the tiles still read as the primary list, which is the shape that was
+          // rejected. Small enough to be a label for the group, large enough to keep the acronym
+          // legible, which is the channel that separates fastrack / Fastrack-landing / FastTrack.
+          position: 'relative', flexShrink: 0,
+          // Every header is the SAME size, open or not. A 2px bump on the open one measured a
+          // 48/49/48/48/48 pitch — a stack whose rhythm changes with selection, for emphasis the
+          // ring and the agents beneath already provide. Uniform size, marker carries the state.
+          width: 24, height: 24, padding: 0,
           display: 'grid', placeItems: 'center',
           // ROUNDED SQUARE — the grammar that separates a project from a session's circle.
           borderRadius: 7,
@@ -563,7 +571,7 @@ function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, dra
           // "You are here" is a RING, drawn as a box-shadow: a colour-changing BORDER on a
           // radiused element re-rasterizes in WKWebView. A box-shadow is not a border.
           boxShadow: current ? '0 0 0 2px var(--accent)' : 'none',
-          fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
+          fontFamily: 'var(--font-body)', fontSize: 9, fontWeight: 600,
           letterSpacing: '0.02em', lineHeight: 1,
           // The tile IS the handle — no grip appears on hover. At 28px in a 44px strip there is
           // nowhere to put one that wouldn't either reserve space at rest or shrink the target.
