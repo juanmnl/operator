@@ -1,214 +1,229 @@
 import { Fragment, useLayoutEffect, useRef, useState } from 'react'
-import type { AgentSession, Project } from '../../../shared/types'
+import type { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, type WaveStatus } from './StatusWave'
+import { SessionItem } from './SessionItem'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
-import { byRailOrder, isActiveProject } from '../../lib/project-shelf'
-import { projectAccent, projectInitials } from '../../lib/project-accent'
+import { byRailOrder } from '../../lib/project-shelf'
+import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard } from '../../lib/use-hover-card'
 import { sessionLabel } from '../../lib/session-label'
+import { currentTaskOf } from '../../lib/session-task'
+import { tildePath } from '../../lib/format'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 
-// The persistent project rail — 44px, full height, outboard of the sidebar. It is the ONE
-// surface that never goes away: here with the sidebar expanded, with it collapsed to the 64px
-// SidebarRail, and at the gallery where the sidebar animates to width 0. That permanence is
-// the whole point; a strip that disappears when you leave a project can't be the thing you
-// orient by.
+// THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
 //
-// SHAPE IS THE GRAMMAR. A session is a CIRCLE (the StatusWave orb, carrying a lane accent);
-// a project is a ROUNDED SQUARE. That contrast is what stops a project reading as an agent —
-// not the absence of a glyph — which is why the tiles can carry an acronym at all. Never draw
-// a project round or a session square.
+// The duplication that kept coming back (an agent listed in the rail AND in the sidebar beside
+// it, 40px apart) was never a rule two files failed to keep; it was two files each deciding, on
+// their own, to list agents. `Sidebar.tsx` and `SidebarRail.tsx` are deleted, and this renders the
+// one list at 60px or at 264px. Collapsed and expanded are mutually exclusive states of ONE
+// element, so "a project's agents appear exactly once" holds by construction rather than by
+// discipline.
 //
-// Each tile carries TWO identity channels and one state channel:
-//   colour   — hashed from the project id (lib/project-accent), never from status, so it can
-//              be learned. A rail coloured by what a project was doing would repaint itself
-//              as work happened and teach you nothing.
-//   acronym  — because colour alone cannot separate fastrack / Fastrack-landing / FastTrack.
-//   corner pip — a small StatusWave, so the app's one motion rule comes for free: only
-//              running/compacting animate. No pip at all when idle; an always-present grey
-//              dot is noise.
+// THE MEMBERSHIP RULE, and it is the whole design:
 //
-// Membership is what you have OPEN (live > 0), plus the current project so the rail is never
-// empty while you're inside one. Deliberately NOT the full active shelf — that's what the
-// sidebar's ALSO ACTIVE section is, and two renderings of the same list 40px apart is the
-// duplication this split exists to avoid. An archived project still appears if something is
-// live in it: a running agent must never be hidden.
+//   A project group shows what is LIVE in it. The open project additionally shows its whole team.
+//
+// applied identically at both widths — live agents are orbs at 60 and rows at 264; the open
+// group also gets its idle roster lanes and `+ Add an agent`, expanded only. Six grey orbs per
+// project is the shape that made the old side-by-side arrangement fail: collapsed shows work, you
+// expand to launch something that isn't working.
+//
+// A project is in the strip if `live > 0` or it is the open one. NOT the whole active shelf —
+// that is 20 projects here, because nothing has ever been archived, and it is what put every
+// project you have ever touched in a strip meant for the ones you are working in. An archived
+// project still appears if something is live in it: a running agent is never hidden.
+//
+// THE GRAMMAR IS KIND, NOT SHAPE. A header is a WORD (the project's name, in the project's
+// accent); a member is an ORB. Text against disc is a stronger separation than the old square
+// against circle — you cannot mistake a word for a dot — and it survives at both widths. The
+// acronym tiles are gone with `ProjectTile`: two letters could not separate fastrack /
+// Fastrack-landing / FastTrack, and the colour hash serves four projects at once, so the tile was
+// carrying an identity it did not have. A name does.
 
-// 52, up from 44. The rail now carries BOTH lists — projects, and the selected project's agents
-// in a band beneath its tile — so it needs room for a 30px orb inside a 40px hit target without
-// the orb touching the seam. The two-strip arrangement it replaces was 44 + 64 = 108px.
-const RAIL_W = 52
+/** The ELEMENT is 60. The STRIP YOU SEE is 68, and that is the number the traffic lights fix.
+ *
+ *  `DashboardView`'s root pads 8px and paints it `--bg-sidebar` — the same colour this paints —
+ *  so the rail's box does not start at the window edge but the visible strip does. Balance the
+ *  cluster in what a person can see, not in the element:
+ *
+ *      close 8.0–19.5 · min 28.0–39.5 · zoom 48.0–59.75   (macOS defaults, measured on screen)
+ *      cluster = 51.75 wide → visible strip = 8 + 51.75 + 8 = 67.75 → 68 → element 68 − 8 = 60
+ *
+ *  MEASURED OFF THE SIGNED BUNDLE, and that matters: `target/debug/operator` has no Info.plist,
+ *  so macOS 26 draws it LARGER traffic lights than the bundle's (which declares
+ *  LSMinimumSystemVersion 10.15). The strip looks cramped in a dev build and is correct in the
+ *  app people run. Do not retune these numbers from a `tauri dev` screenshot. */
+const RAIL_W = 60
+/** Expanded. Forced by the constant-x invariant below, not chosen: the orb column has to be
+ *  2 × the axis, so the axis can stay put when the width changes. */
+const RAIL_W_OPEN = 264
+/** Must EQUAL the root pad, or the content axis and the visible strip's centre disagree. The
+ *  field is therefore 52 collapsed (60 − 8) and 256 expanded. */
+const CONTENT_INSET_R = 8
+/** The optical axis: 26 element-local = 34 from the window edge = the centre of the 68px strip.
+ *
+ *  It used to be derived as `(W − seam − pad) / 2`, and that subtraction was wrong twice: the
+ *  seam is an INSET BOX-SHADOW and does not reduce the content box, so the prose subtracted a
+ *  pixel the layout never did (a standing 0.5px error, small enough to read as noise in a driver
+ *  that reports signed deltas) — and there is no seam at all any more. The column runs to the
+ *  rail's own edge. */
+const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
+/** A member's hit box — the orb's 24px disc inside it, and `+ Add an agent` and Home on the same
+ *  box, so every clickable thing in the strip is one column at one x. */
+const MEMBER_BOX = 36
+/** THE CONSTANT-X INVARIANT, and it is not negotiable: an orb sits at the same absolute x, at the
+ *  same size, collapsed and expanded. `AXIS − MEMBER_BOX / 2` = 8 either way, so expanding fades
+ *  a label in to the orb's right and MOVES NOTHING. A transition where the thing you are looking
+ *  at slides sideways reads as a re-layout instead of a reveal. */
+const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
+const ORB = 24
+/** Foot: two glyphs and their gap are the field exactly (24 + 4 + 24 = 52). The old 26px box
+ *  existed to stay in step with `Sidebar.tsx`'s footer row — and that file is deleted, so there
+ *  is nothing left to match and 26 no longer fits. */
+const FOOT_BOX = 24
+const FOOT_GAP = 4
 
-/** The seam ink, for BOTH of the rail's dividers — the full-height one against the sidebar and
- *  the short horizontal one in the foot.
+/** The ink for the horizontal group hairlines and the foot's three dividers — ALL that is left of
+ *  the seam.
  *
- *  `--border` is doing double duty in this app as a structural edge and as a decorative separator,
- *  and at full strength on a near-black field it reads as a drawn line rather than a change of
- *  surface. Mixed toward transparent rather than replaced by a hex, so the token stays the source.
- *
- *  60%, and it does NOT go lower, for a measured reason: the rail and the sidebar are the SAME
- *  colour (`--bg-sidebar` both sides — ratio 1.000 across all six palettes). There is no surface
- *  change backing this line up, so it is the only thing separating the two strips. On Mr Pink dark
- *  `--border` is already the weakest of the six at 1.17:1 against the field; 60% leaves it at 1.09
- *  and 30% would take it to 1.04, which is a separator you cannot see. Subtler has a floor when
- *  it is load-bearing. */
+ *  The vertical rule against the sidebar is gone with the sidebar. Its whole justification was
+ *  that "the rail and the sidebar are the SAME colour… there is no surface change backing this
+ *  line up": the right-hand neighbour is now 8px of window field and then an elevated card with
+ *  its own edge and drop shadow, which is a surface change and a strong one. `--border` mixed
+ *  toward transparent rather than replaced by a hex, so the token stays the source. */
 const SEAM = 'color-mix(in srgb, var(--border) 60%, transparent)'
 
-// The rail is 44px, but it is NOT the column your eye sees. The window root pads 8px and paints
-// it `--bg-sidebar` — the rail's own background — so there is no edge at the rail's left: it
-// dissolves into the window. On the right there IS one, the hairline against the sidebar. The
-// optical column is therefore the 52px from the window edge to that hairline, and centring a
-// tile in the rail's 43px content box lands it 15.5px from the window edge but only 8.5px from
-// the hairline. It looks shoved right, and it is.
-//
-// The column runs from the window edge (rail-local −8) to the SEAM's inner edge (rail-local 43):
-// 51px, centred on local 17.5, where the rail's own box is centred on 22. The content columns
-// therefore inset 8 on the right — field 44 − 1 (seam) − 8 = 35 — which lands painted ink at
-// 11.5px from the window edge and 11.5px from the seam, for tiles and foot glyphs alike.
-//
-// Measure to the seam's INNER edge, not the rail's outer one. A first pass here used 7, from
-// measuring to local 44 and treating the hairline as part of the gap. It is not: it is the
-// boundary the gap ends at, and counting it left every element 1px right of centre — the same
-// class of error as the original, one order smaller. dev/drive-rail-invariant.mjs measures this.
-//
-// Do not "fix" any of it by widening RAIL_W — that moves the seam and the asymmetry comes back.
-// The DragRegion deliberately keeps full width: it draws nothing, and the traffic lights want
-// the whole strip.
-const CONTENT_INSET_R = 8
+/** Cross-fade for everything that exists only at 264. Half the width transition, so a label is
+ *  gone well before the strip is narrow enough to clip it. */
+const REVEAL = 'opacity 120ms ease'
 
-export function ProjectRail({
-  projects, activities, activeProjectId, onOpenProject, onShowGallery, onOpenFolder,
-  onOpenAgents, agentsActive, onReorder, onTileMenu, menuProjectId,
-  sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
-}: {
+export interface ProjectRailProps {
+  /** ⌘B, and forced true at the gallery. The width IS the state; nothing unmounts. */
+  collapsed: boolean
   projects: Project[]
   activities: Record<string, ProjectActivity>
-  /** Null at the gallery — nothing is ringed, everything else is unchanged. */
+  /** Null at the gallery — no group is open, so no group shows its idle lanes. */
   activeProjectId: string | null
   onOpenProject: (projectId: string) => void
-  /** Foot control: leave every project. */
+  /** The open project's Home row — the board. */
+  onOpenProjectHome: () => void
+  /** True while Project Home is the content area, so Home reads as current. */
+  projectHomeActive: boolean
   onShowGallery: () => void
-  /** Foot control: pick a folder, register it as a project, enter it. */
   onOpenFolder: () => void
-  /** Foot control: the cross-project Agents hub. It lives here rather than in the sidebar
-   *  because `AgentsHubView` iterates ALL projects — and because the sidebar animates to width 0
-   *  at the gallery, which is exactly where you most want a view across them. */
   onOpenAgents: () => void
-  /** Agents is a VIEW, unlike the two navigation verbs, so it can be the current one. */
   agentsActive?: boolean
-  /** Drag one tile before/after another. Absent = tiles are not draggable at all. */
   onReorder?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
-  /** Right-click a tile. The rail REPORTS the anchor and nothing else: this column is a
-   *  clipping scroller 44px wide at the window's edge, so a menu parented to a tile would be
-   *  cut off at 44. The view renders it, exactly as it renders AccentPicker for the same
-   *  reason. Absent = tiles have no menu. */
+  /** Right-click a header. The strip REPORTS the anchor and nothing else: it is a clipping
+   *  scroller at the window's edge, so a menu parented to a row would be cut off at 60. */
   onTileMenu?: (projectId: string, anchor: { top: number; left: number }) => void
-  /** Whose menu is open, so that tile can hold its hover tint while it is — the card's
-   *  `hover || menuOpen` treatment, background-only. */
   menuProjectId?: string | null
-  /** THE ACCORDION'S SECOND LIST: live sessions of the CURRENT project only, already scoped
-   *  upstream. They render as circles in a band under that project's tile — the containment the
-   *  old two-strip arrangement only implied. */
+  /** EVERY live session, across every project — the strip groups them itself. It used to be
+   *  handed only the active project's, which is why cross-project membership had to be faked by
+   *  a second component. */
   sessions?: AgentSession[]
   activeSessionId?: string | null
   onSelectSession?: (session: AgentSession) => void
-  /** A session's effective ink — its lane's colour, or a per-session override. */
   accentOf?: (session: AgentSession) => string | undefined
-  /** Right-click an orb → the colour picker, anchored by the view (this column clips). */
   onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
-}) {
+  /** Un-shelve the open project — the `previous` chip, expanded only. */
+  onRestoreProject?: (projectId: string) => void
+  customNames?: Record<string, string>
+  effortLevels?: Record<string, string>
+  fanInfo?: Record<string, { index: number; total: number }>
+  shortcutIndices?: Record<string, number>
+  onRenameSession?: (sessionId: string, name: string) => void
+  onCloseSession?: (session: AgentSession) => void
+  onLaunchRole?: (project: Project, role: Role) => void
+  onAddLane?: () => void
+  /** Reorder two AD-HOC session rows. Lane rows are ordered by the roster instead. */
+  onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  onReorderLane?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
+  /** The app's own row, at the foot — present in BOTH states. ⌘B used to unmount `Sidebar.tsx`
+   *  and take the theme toggle, Preferences and both `.claude` shortcuts off screen with it. */
+  activeFolderPrefs?: string | null
+  globalPrefsActive?: boolean
+  prefsViewActive?: boolean
+  isDark?: boolean
+  onOpenFolderPrefs?: (projectPath: string, projectName: string) => void
+  onOpenGlobalPrefs?: () => void
+  onOpenPrefs?: () => void
+  onToggleTheme?: () => void
+  version?: string
+  update?: { version: string } | null
+  onInstallUpdate?: () => void
+}
+
+export function ProjectRail({
+  collapsed, projects, activities, activeProjectId,
+  onOpenProject, onOpenProjectHome, projectHomeActive,
+  onShowGallery, onOpenFolder, onOpenAgents, agentsActive,
+  onReorder, onTileMenu, menuProjectId,
+  sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
+  onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
+  onRenameSession, onCloseSession, onLaunchRole, onAddLane, onReorderLane, onReorderSession,
+  activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark,
+  onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme,
+  version, update, onInstallUpdate,
+}: ProjectRailProps) {
   const planLimits = usePlanLimits()
   const [drag, setDrag] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
-  // The drag id is also held in a ref: `onDragOver` fires on a DIFFERENT element than the one
-  // that started the drag, and reading React state there can lag a frame behind on a fast drag.
+  // `onDragOver` fires on a DIFFERENT element than the one that started the drag, and reading
+  // React state there can lag a frame behind on a fast drag.
   const dragRef = useRef<string | null>(null)
+  const expanded = !collapsed
 
-  // THE USER'S ORDER, not a computed one.
-  //
-  // It used to re-sort with `byActivityThenRecency`, shared with the gallery and the switcher.
-  // That cannot coexist with dragging: a comparator recomputed on every activity change undoes
-  // the drag the moment an agent starts or stops — the worst kind of "it didn't save", because it
-  // does save and is then overwritten. So the automatic sort is GONE here, outright; "sometimes it
-  // resorts" was never an option. Liveness is still on screen — that is what the corner pip is for.
-  //
-  // This is the same argument the header of this file already makes about COLOUR: a rail that
-  // repaints itself as work happens teaches you nothing, which is why the tint is hashed from the
-  // id. Position is the stronger memory channel, and it was the one still moving on its own.
-  //
-  // `railOrder` is a durable field on Project (see shared/types), NOT this array's order. Array
-  // order does happen to survive every write path today — they are all map/filter/append — but
-  // that is an accident nothing declares, and one `.sort()` added anywhere upstream would undo a
-  // user's arrangement with no error and no way to notice.
-  // THE ACTIVE SHELF, not just what is live. "So we can have many projects" and "that way I can
-  // see all the active projects at the same time too" — seeing the whole shelf at once is a
-  // REASON this shape was chosen, not a side effect. `isActiveProject` also keeps its second
-  // clause, which is the never-hide-a-running-agent rule already encoded: an archived project
-  // with something live in it stays in the list whatever its record says.
+  // THE USER'S ORDER, not a computed one. An activity comparator recomputed on every change
+  // cannot coexist with dragging — it undoes the drag the moment an agent starts or stops, which
+  // is the worst kind of "it didn't save", because it does save and is then overwritten.
   const shown = projects
-    .filter((p) => isActiveProject(p, activities[p.id]) || p.id === activeProjectId)
+    .filter((p) => (activities[p.id]?.live ?? 0) > 0 || p.id === activeProjectId)
     .sort(byRailOrder)
   const canReorder = !!onReorder && shown.length > 1
-
   const endDrag = () => { dragRef.current = null; setDrag(null); setDropAt(null) }
 
-  /** How many agent orbs a band shows before folding the rest into a count. Four is what keeps
-   *  the band bounded (~215px against a ~313px column), which is why no inner scroller is needed
-   *  and why the projects around the open one stay on screen. Raising it re-opens that problem. */
-  const FOLD = 4
-  const band = activeProjectId ? sessions.filter((s) => s.status !== 'ended').slice(0, FOLD) : []
-  const folded = activeProjectId ? Math.max(0, sessions.filter((s) => s.status !== 'ended').length - FOLD) : 0
+  const liveOf = (projectId: string) => sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
 
-  // BRING THE OPEN BAND INTO VIEW — by moving the VIEWPORT, never the list.
-  //
-  // The tile stays at its own `railOrder` index; selecting a project must not reorder anything
-  // (this file's own rule: position is the memory channel, and an activity comparator that
-  // re-sorted here once undid users' drags). But with `mantel` 18th of 20, its band starts ~692px
-  // down a ~313px column, so without help the thing you just clicked is entirely below the fold.
-  // So: scroll the least that brings the whole band into view, preferring to keep the neighbours
-  // ABOVE it — you scrolled down to get here, and those are the tiles you have most recently in
-  // mind.
-  const bandRef = useRef<HTMLDivElement | null>(null)
+  /** How many orbs a collapsed group shows before folding the rest into a count. Four is what
+   *  keeps a group bounded, which is why the projects around the open one stay on screen. */
+  const FOLD = 4
+
+  // BRING THE OPEN GROUP INTO VIEW — by moving the VIEWPORT, never the list. The group stays at
+  // its own `railOrder` index; selecting a project must not reorder anything.
+  const openRef = useRef<HTMLDivElement | null>(null)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
-    const el = bandRef.current
+    const el = openRef.current
     const box = scrollerRef.current
     if (!el || !box) return
-    // `.stream` is `position: relative`, so it IS the band's offsetParent — `offsetTop` is already
-    // relative to the scroll box. Subtracting the box's own offsetTop (an obvious-looking
-    // correction) scrolls exactly one tile short and clips the last orb, which is the row this
-    // whole manoeuvre exists to reveal.
     const top = el.offsetTop
     const bottom = top + el.offsetHeight
     if (bottom > box.scrollTop + box.clientHeight) {
-      // Taller than the column: top-align, so the tile that names it is the part you keep.
       box.scrollTop = el.offsetHeight > box.clientHeight ? top : bottom - box.clientHeight
     } else if (top < box.scrollTop) {
       box.scrollTop = top
     }
-  }, [activeProjectId, band.length])
+  }, [activeProjectId, collapsed, sessions.length])
 
   return (
-    <div data-rail style={{
-      width: RAIL_W, flexShrink: 0, height: '100%',
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
+    <div data-rail data-rail-collapsed={collapsed ? '' : undefined} style={{
+      width: collapsed ? RAIL_W : RAIL_W_OPEN,
+      flexShrink: 0, height: '100%',
+      display: 'flex', flexDirection: 'column',
       background: 'var(--bg-sidebar)',
-      // THE SEAM IS A SHADOW, NOT A BORDER — and that is a layout fix, not a cosmetic one.
-      // As `borderRight: 1px` under `box-sizing: border-box` the line lived INSIDE the 44, so the
-      // content field was 43 and `alignItems: center` centred everything on 21.5 while the strip's
-      // true centre is 22. Every child sat half a pixel left of its own strip: the tiles, the foot
-      // buttons, the usage ring, the foot's own seam. A previous pass of mine found the 43 and
-      // wrote it down as a fact to design around; it was the bug.
-      // `inset` so the line still paints within the rail's own 44px footprint rather than bleeding
-      // over the sidebar's first column. The element is not radiused, so there is no WKWebView
-      // colour-changing-border hazard here — and it is a shadow now in any case.
-      boxShadow: `inset -1px 0 0 ${SEAM}`,
-      boxSizing: 'border-box', userSelect: 'none',
+      // NO RULE ON EITHER EDGE, IN ANY STATE. The left never had one (the window pad paints this
+      // same colour, so the strip dissolves into the window); the right one is deleted with the
+      // panel it was separating. The surviving vertical line in this corner of the app is the
+      // content card's, and it begins below the drag band.
+      boxSizing: 'border-box', userSelect: 'none', overflow: 'hidden',
+      transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
     }}>
-      {/* The rail is now the leftmost strip, so IT hosts the macOS traffic lights: the same
-          40px clearance the sidebar reserves, and still draggable. */}
+      {/* The strip is the leftmost thing on screen, so IT hosts the macOS traffic lights: 40px of
+          bare titlebar, still draggable, nothing drawn in it. */}
       <DragRegion style={{ paddingTop: 40, width: '100%', flexShrink: 0 }} />
 
       <div
@@ -217,69 +232,42 @@ export function ProjectRail({
         style={{
           flex: 1, minHeight: 0, width: '100%', overflowY: 'auto', overflowX: 'hidden',
           boxSizing: 'border-box',
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          // 8 here + the 2px transparent borders each tile wrapper always carries = 12px between
-          // tile BOXES, and now also 12px between painted edges for every pair except one: the
-          // current tile's ring is the ONLY thing still drawn outside its box, so a pair adjacent
-          // to it clears 10px and every other pair 12px. (This used to read 8px at the tightest,
-          // when the pip overhung too — see the pip's own note; it no longer does.) The borders
-          // are constant so the drop line can never shift the stack while you drag over it.
-          gap: 8,
-          // 6 here + the wrapper's constant 2px border = 8px of air above the first tile BOX.
-          //
-          // THE SIDES ARE NO LONGER "FIXED BY THE RAIL'S WIDTH", which is what this comment used
-          // to say while deriving (43 − 28) / 2 = 7.5 and treating that as given. It was given
-          // only because the rail's own box was taken for the column — and the rail's left edge
-          // is not an edge: the window root pads 8px and paints it in `--bg-sidebar`, the rail's
-          // own background, so the strip dissolves into the window on that side. The only edge is
-          // the SEAM on the right. See CONTENT_INSET_R: the field is inset 7px on the right, which
-          // is what puts the tile at 12px from the window edge and 12px from the seam — equal
-          // against the two boundaries a person can actually see, rather than against a box.
-          //
-          // A PREVIOUS VERSION OF THIS COMMENT WAS WRONG, and wrong in a way worth recording: it
-          // said both ornaments "overhang the box by the same 2px … so a ringed or pipped tile
-          // clears 6 on every side". The magnitude was right; "on every side" was not. A ring is
-          // `0 0 0 2px` and overhangs all four sides symmetrically. The pip was `right/bottom: -3`
-          // and overhung TWO. Equal clearances per tile therefore did not make the column agree —
-          // a pipped-but-unringed tile's painted mass sat ~0.9px right of a ringed one's, and two
-          // passes of per-tile arithmetic could not have found it, because the defect only exists
-          // BETWEEN tiles.
-          //
-          // The pip is now seated to paint inside the box (see its note), so the ring is the only
-          // ornament drawn outside and it is symmetric. Painted extent is therefore box, or box+2
-          // on all four sides — either way centred — which is what makes the invariant below hold.
+          // POSITIONED, so it is the groups' `offsetParent` and `offsetTop` below is measured
+          // against the scroll box. Without this, `offsetTop` walks up to whatever ancestor
+          // happens to be positioned and the scroll-into-view lands somewhere else entirely —
+          // which top-aligned a tall group PAST its own header, i.e. scrolled the name of the
+          // thing you just opened off the screen.
+          position: 'relative',
+          display: 'flex', flexDirection: 'column',
+          // The field starts at the rail's own left edge and ends CONTENT_INSET_R short of its
+          // right — which is what puts the member column on the visible strip's centre.
           padding: `6px ${CONTENT_INSET_R}px 6px 0`,
-          // @ts-expect-error Electron-specific CSS property
-          WebkitAppRegion: 'no-drag',
         }}
       >
         {shown.map((p, i) => {
           const edge = dropAt?.id === p.id ? dropAt.edge : null
+          const open = p.id === activeProjectId
+          const live = liveOf(p.id)
+          const shownLive = collapsed ? live.slice(0, FOLD) : live
+          const folded = collapsed ? Math.max(0, live.length - FOLD) : 0
+          const roster = p.roster ?? []
+          const liveRoles = new Set(live.map((s) => s.roleId).filter(Boolean))
+          const idleLanes = expanded && open ? roster.filter((r) => !liveRoles.has(r.id)) : []
           return (
-            /* The drop line lives on THIS wrapper, never on the tile: the tile is radiused, and a
-               colour-changing border on a radiused element re-rasterizes in WKWebView. A straight
-               2px rule is safe, and it is always present (transparent at rest) so showing it
-               cannot move anything. */
             <div
               key={p.id}
-              data-rail-slot={p.id}
-              ref={p.id === activeProjectId ? bandRef : undefined}
+              data-rail-group={p.id}
+              ref={open ? openRef : undefined}
               style={{
                 flexShrink: 0, width: '100%', display: 'flex', flexDirection: 'column',
-                alignItems: 'center',
-                // The group boundary. A hairline above each header but the first says "a new
-                // project starts here" without a field around the pair — and horizontally, so it
-                // is not the coloured left-edge marker the house rule forbids. Drawn with the
-                // rail's own seam ink so it reads as the same family of line.
+                // GROUPING IS PROXIMITY PLUS A HAIRLINE, never a tint and never a coloured
+                // left-edge marker. It has to be colour-INDEPENDENT by construction: seven of
+                // eleven project swatches carry duplicates, so two adjacent groups can be the
+                // same colour, and the rhythm is what must keep them apart.
                 ...(i > 0 ? { marginTop: 6, paddingTop: 6, boxShadow: `inset 0 1px 0 ${SEAM}` } : null),
+                // Constant transparent borders so the drop line can never shift the stack.
                 borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
                 borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
-                // THE RAIL IS THE AGENTS; a project is the HEADER of a group of them. So the
-                // grouping is carried by the header itself plus a hairline above it, not by a
-                // tinted field around the pair — a field would give the project the visual weight
-                // that belongs to the work inside it, which is the inversion this shape exists to
-                // undo. The grammar still holds: square header, circles beneath, never crossed.
-                ...(p.id === activeProjectId && band.length ? { paddingBottom: 6, gap: 4 } : null),
               }}
               onDragOver={(e) => {
                 const d = dragRef.current
@@ -297,8 +285,8 @@ export function ProjectRail({
               onDrop={(e) => {
                 e.preventDefault()
                 const d = dragRef.current
-                // Read the edge off the EVENT, not off `dropAt`: on a fast drag the state may not
-                // have committed, and a drop with no line drawn must still land under the cursor.
+                // Read the edge off the EVENT: on a fast drag the state may not have committed,
+                // and a drop with no line drawn must still land under the cursor.
                 if (d && d !== p.id) {
                   const r = e.currentTarget.getBoundingClientRect()
                   onReorder?.(d, p.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
@@ -306,310 +294,284 @@ export function ProjectRail({
                 endDrag()
               }}
             >
-              <ProjectTile
+              <GroupHeader
                 project={p}
                 activity={activities[p.id] ?? { live: 0, waiting: 0, lanes: p.roster?.length ?? 0, status: 'idle' }}
-                current={p.id === activeProjectId}
+                open={open}
+                collapsed={collapsed}
+                dragging={drag === p.id}
+                draggable={canReorder}
+                onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
+                onDragEnd={endDrag}
                 onOpen={() => onOpenProject(p.id)}
                 onMenu={onTileMenu && ((anchor) => onTileMenu(p.id, anchor))}
                 menuOpen={menuProjectId === p.id}
-                draggable={canReorder}
-                dragging={drag === p.id}
-                onDragStart={() => { dragRef.current = p.id; setDrag(p.id) }}
-                onDragEnd={endDrag}
+                onRestore={onRestoreProject && (() => onRestoreProject(p.id))}
               />
-              {/* The selected project's agents, in place, under its own tile. Never a second
-                  column and never hoisted to the top: the user picks the order of this list
-                  (opening order, then drag), and selection is not an input to it. */}
-              {p.id === activeProjectId && band.map((s) => (
-                <RailOrb
-                  key={s.id}
-                  session={s}
-                  active={s.id === activeSessionId}
-                  accent={accentOf?.(s)}
-                  onSelect={() => onSelectSession?.(s)}
-                  onPickAccent={onPickAccent}
+
+              {/* HOME, iff nothing is live here. It is a place, not an agent — so it never
+                  animates, never takes a lane accent, and carries no count. It replaces the
+                  empty-group dash: both render on the identical predicate, so this adds one
+                  state and removes one rather than adding two.
+                  The launching agent takes the row Home was in — both are MEMBER_BOX high in the
+                  member column — so starting work does not lift the group by a row. */}
+              {live.length === 0 && (
+                <HomeRow
+                  collapsed={collapsed}
+                  current={open && projectHomeActive}
+                  onClick={() => (open ? onOpenProjectHome() : onOpenProject(p.id))}
                 />
-              ))}
-              {p.id === activeProjectId && folded > 0 && (
-                /* Counted, never silently dropped. The fold is what BOUNDS the band — without it
-                   a 12-session project takes the whole column and the projects around it vanish,
-                   which is how the side-by-side arrangement failed. */
+              )}
+
+              {collapsed
+                ? shownLive.map((s) => (
+                  <RailOrb
+                    key={s.id}
+                    session={s}
+                    active={s.id === activeSessionId}
+                    accent={accentOf?.(s)}
+                    onSelect={() => onSelectSession?.(s)}
+                    onPickAccent={onPickAccent}
+                  />
+                ))
+                : shownLive.map((s) => (
+                  <MemberRow
+                    key={s.id}
+                    session={s}
+                    // Ad-hoc launches carry no lane, so nothing else orders them — dragging is
+                    // the only handle they have. Lane rows are ordered by the ROSTER, and there
+                    // is no sensible merge of the two, so a drag only means something between
+                    // rows of the same kind.
+                    reorderable={!s.roleId && !!onReorderSession}
+                    onReorderSession={onReorderSession}
+                    project={p}
+                    role={roster.find((r) => r.id === s.roleId)}
+                    active={s.id === activeSessionId}
+                    accent={accentOf?.(s)}
+                    customName={customNames[s.id]}
+                    effortLevel={s.terminalId ? effortLevels[s.terminalId] : null}
+                    fan={s.terminalId ? fanInfo[s.terminalId] : undefined}
+                    shortcutIndex={open ? shortcutIndices[s.id] ?? null : null}
+                    onSelect={() => onSelectSession?.(s)}
+                    onRename={(name) => onRenameSession?.(s.id, name)}
+                    onClose={() => onCloseSession?.(s)}
+                    onPickAccent={onPickAccent && ((anchor) => onPickAccent(s, anchor))}
+                  />
+                ))}
+
+              {folded > 0 && (
+                /* Counted, never silently dropped. */
                 <button
                   data-rail-fold={folded}
                   onClick={() => onOpenProject(p.id)}
                   title={`${folded} more agent${folded === 1 ? '' : 's'} — open the project`}
                   style={{
-                    width: 40, height: 18, padding: 0, background: 'transparent', border: 'none',
+                    flexShrink: 0, width: '100%', height: 18, padding: 0,
+                    background: 'transparent', border: 'none',
                     color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
                     fontFamily: 'var(--font-mono)', fontSize: 9.5, lineHeight: 1,
+                    textAlign: 'center',
                   }}
                 >+{folded}</button>
+              )}
+
+              {/* The open group's TEAM: lanes with nothing running, expanded only. Six grey orbs
+                  per project is what a bounded strip exists to prevent, so this is the thing you
+                  expand FOR. */}
+              {idleLanes.map((r) => (
+                <LaneRow
+                  key={r.id}
+                  role={r}
+                  draggable={!!onReorderLane && roster.length > 1}
+                  onReorder={onReorderLane}
+                  onClick={() => onLaunchRole?.(p, r)}
+                />
+              ))}
+              {expanded && open && onAddLane && (
+                /* INSIDE the group, so it plainly adds to THIS project — which the
+                   header-adjacent `+` never quite did. */
+                <button
+                  data-rail-add-lane
+                  onClick={onAddLane}
+                  title="Add or edit lanes on the roster"
+                  aria-label="Add an agent on the roster"
+                  style={{
+                    flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+                    background: 'transparent', border: 'none', borderRadius: 8,
+                    color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                    fontFamily: 'var(--font-body)', fontSize: 11.5, textAlign: 'left',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
+                >
+                  <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                      <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                    </svg>
+                  </span>
+                  <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>Add an agent</span>
+                </button>
               )}
             </div>
           )
         })}
       </div>
 
-      {/* The foot: AGENTS, then the seam, then PROJECT NAVIGATION — the two verbs that move you
-          between projects rather than within one. They used to live in the switcher popover's
-          footer and, for "open folder", a second time in the sidebar's icon row. All three belong
-          here: the rail is the only strip present in every state, including the gallery where the
-          sidebar is gone.
-          Agents goes FIRST and above the seam so the navigation pair stays adjacent — it is a view
-          ACROSS projects, not a way of moving between them, and the existing hairline is what says
-          so (no second divider invented for it). */}
-      <div style={{
-        flexShrink: 0, width: '100%', boxSizing: 'border-box',
-        display: 'flex', flexDirection: 'column', alignItems: 'center',
-        // Vertically symmetric. The 10 at the bottom is load-bearing — it is what puts this strip's
-        // last icon on the same baseline as the sidebar footer's — so the 10 at the top came up to
-        // meet it rather than the other way round. The right inset is CONTENT_INSET_R, same as the
-        // tile column above: both are centring against the window edge and the seam, not the box.
-        gap: 4, padding: `10px ${CONTENT_INSET_R}px 10px 0`,
-        // @ts-expect-error Electron-specific CSS property
-        WebkitAppRegion: 'no-drag',
-      }}>
-        <RailFootButton
-          attr="data-rail-agents"
-          label="Agents"
-          hint="what is running across your projects"
-          active={agentsActive}
-          onClick={onOpenAgents}
-        >
-          {/* The same robot as the old sidebar button — it is what the user recognises. The eyes
-              and antenna dot are FILLED, so they set fill explicitly against the svg's fill:none.
-              DRAWN TO 12×12 OF PAINTED INK, like the grid and the plus. It used to span 3–13 in
-              the viewBox and painted 10×11 — the smallest thing in the foot, in a box identical
-              to its neighbours', which is why three passes over this strip never caught it. The
-              proportions are unchanged (body 12.5×9, rx 27% of height, as before); only the
-              scale is. Antenna dot top 0.9 and body edge 14.6 are the painted extremes, so the
-              glyph fills the same 1.15–14.85 band the grid does. */}
-          <rect x="1.75" y="5" width="12.5" height="9" rx="2.4" />
-          <path d="M8 2.9v2.1" strokeLinecap="round" />
-          <circle cx="8" cy="1.9" r="1" fill="currentColor" stroke="none" />
-          <circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
-          <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
-        </RailFootButton>
-        {/* USAGE sits beside Agents, above the seam: both are cross-project VIEWS, where the two
-            below are navigation verbs. It needs no session and no project — `claude -p "/usage"`
-            spawns its own short-lived process — so it is live at the gallery and on first launch,
-            which is exactly when you're deciding what to start. */}
-        <PlanMeter
-          limits={planLimits.limits}
-          loading={planLimits.loading}
-          now={planLimits.now}
-          onRefresh={planLimits.refresh}
-          onRevalidate={planLimits.revalidate}
-        />
-        {/* A divider has to out-space the things it divides. At `margin: 5` it sat in 16–17px of
-            painted air while the buttons either side of it had 20px — so the one element whose
-            whole job is to separate two groups was the most crowded thing in the strip, and the
-            foot read as five items in a row rather than 2 + 2. At 11 it gets 22–23px and the
-            grouping comes back. */}
-        <span data-rail-seam style={{ width: 22, height: 1, background: SEAM, margin: '11px 0' }} />
-        <RailFootButton
-          attr="data-rail-gallery"
-          label="All projects"
-          hint="⌘⇧O"
-          onClick={onShowGallery}
-          strokeWidth={1.05}
-        >
-          <rect x="2" y="2" width="5" height="5" rx="1.2" />
-          <rect x="9" y="2" width="5" height="5" rx="1.2" />
-          <rect x="2" y="9" width="5" height="5" rx="1.2" />
-          <rect x="9" y="9" width="5" height="5" rx="1.2" />
-        </RailFootButton>
-        <RailFootButton
-          attr="data-rail-open-folder"
-          label="Open folder"
-          hint="⌘N"
-          onClick={onOpenFolder}
-          strokeWidth={1.45}
-        >
-          {/* Spans 2–14 of the viewBox, not 3.5–12.5. Measured painted heights across the foot
-              were robot 10 · grid 11 · plus 8: the two NAVIGATION VERBS, which should be a
-              matched pair, differed by 27%. Every box is 26 and every svg is 14, so the box
-              said nothing about it — only the drawn extent did. */}
-          <path d="M8 2v12M2 8h12" strokeLinecap="round" />
-        </RailFootButton>
-      </div>
+      <RailFoot
+        collapsed={collapsed}
+        planLimits={planLimits}
+        agentsActive={agentsActive}
+        onOpenAgents={onOpenAgents}
+        onShowGallery={onShowGallery}
+        onOpenFolder={onOpenFolder}
+        project={projects.find((p) => p.id === activeProjectId) ?? null}
+        activeFolderPrefs={activeFolderPrefs ?? null}
+        globalPrefsActive={globalPrefsActive}
+        prefsViewActive={prefsViewActive}
+        isDark={!!isDark}
+        onOpenFolderPrefs={onOpenFolderPrefs}
+        onOpenGlobalPrefs={onOpenGlobalPrefs}
+        onOpenPrefs={onOpenPrefs}
+        onToggleTheme={onToggleTheme}
+        version={version}
+        update={update}
+        onInstallUpdate={onInstallUpdate}
+      />
     </div>
   )
 }
 
-/** A foot control. Icon-only at 44px, so the title carries the name and the chord, and the
- *  accessible name comes from `aria-label` — never from the glyph alone. */
-function RailFootButton({ attr, label, hint, onClick, active, strokeWidth = 1.2, children }: {
-  attr: string
-  label: string
-  hint: string
-  onClick: () => void
-  /** Renders as the current view. Background-only, per the foot's existing hover treatment —
-   *  a colour-changing border on a radiused element re-rasterizes in WKWebView. */
-  active?: boolean
-  /** OPTICAL correction, not a free knob. 1.2 is the shared default; a glyph departs from it
-   *  only to cancel a density difference the geometry forces. The grid draws four closed rects
-   *  (~72 units of outline) against the plus's two strokes (~24) — a 3:1 mass difference at the
-   *  same weight, which is why the two navigation verbs did not read as a pair even once their
-   *  extents matched. Nudging them toward each other (1.05 / 1.45) closes it to ~2:1, which is
-   *  as far as it goes before the plus reads as a bar and the grid as a ghost. */
-  strokeWidth?: number
-  children: React.ReactNode
-}) {
-  const rest = active ? 'var(--overlay-subtle)' : 'transparent'
-  const ink = active ? 'var(--fg)' : 'var(--fg-muted)'
-  return (
-    <button
-      {...{ [attr]: '' }}
-      onClick={onClick}
-      title={`${label} (${hint})`}
-      aria-label={label}
-      aria-current={active || undefined}
-      style={{
-        width: 26, height: 26, padding: 0, display: 'grid', placeItems: 'center',
-        background: rest, border: 'none', borderRadius: 7,
-        color: ink, cursor: 'pointer', outline: 'none',
-        transition: 'background 120ms ease, color 120ms ease',
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = rest; e.currentTarget.style.color = ink }}
-    >
-      {/* 14px ink in the 26px box — the ONE icon spec shared with the sidebar's footer row,
-          which sits 1px away across the hairline and reads as the other arm of this corner.
-          At 13 the two rows' glyphs were visibly different weights side by side. */}
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={strokeWidth}>
-        {children}
-      </svg>
-    </button>
-  )
-}
-
-/** One project tile. Its own component so it can own the hover-card hook — the SHARED one
- *  (lib/use-hover-card), which is already hardened for both the row-moves-under-the-cursor
- *  and the cursor-leaves-the-window failures. A new card must not reintroduce either. */
-function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, draggable, dragging, onDragStart, onDragEnd }: {
+/** The group's title — the project's NAME, in the project's accent, at both widths.
+ *
+ *  It is a 24px ROW, not a bare text node: a 9px line is an 11px click target, and the header
+ *  inherits the tile's jobs — click to open, right-click for the menu, drag to reorder.
+ *
+ *  OPEN IS MARKED BY INK STRENGTH, not by a marker. Open = full `laneTextColor(accent)`; not open
+ *  = the same hue mixed toward `--fg-muted`. Mixed, never `opacity` stacked on the token: the
+ *  token IS the recede, and multiplying it lands at 1.8–2.9:1 on the three light palettes.
+ *
+ *  The name is rendered WHOLE and truncated by CSS. It used to be cut to six characters in JS,
+ *  which is not a truncation but a hard clip — `OPERATOR` became `OPERAT`, indistinguishable from
+ *  a project actually called that, and the `textOverflow: ellipsis` beneath it could never fire.
+ *  At 60 every single-token name in the real store fits; only the hyphenated compounds ellipsise,
+ *  and the hover card carries them whole. */
+function GroupHeader({ project, activity, open, collapsed, draggable, dragging, onDragStart, onDragEnd, onOpen, onMenu, menuOpen, onRestore }: {
   project: Project
   activity: ProjectActivity
-  current: boolean
-  onOpen: () => void
-  /** Reports where the menu should open. Right-click only — LEFT-click enters the project,
-   *  and the two verbs share neither a gesture nor a glyph. Nothing in this menu navigates. */
-  onMenu?: (anchor: { top: number; left: number }) => void
-  menuOpen?: boolean
+  open: boolean
+  collapsed: boolean
   draggable?: boolean
   dragging?: boolean
   onDragStart?: () => void
   onDragEnd?: () => void
+  onOpen: () => void
+  onMenu?: (anchor: { top: number; left: number }) => void
+  menuOpen?: boolean
+  onRestore?: () => void
 }) {
   const [hover, setHover] = useState(false)
   const hoverCard = useHoverCard(`rail:${project.id}`)
   const label = projectActivityLabel(activity)
   const accent = projectAccent(project.id)
+  const ink = laneTextColor(accent)
   return (
     <Fragment>
-      <button
-        ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
-        data-rail-tile={project.id}
-        // The identity colour, exposed so a harness can assert it never moves — it reaches
-        // the DOM as three different color-mix expressions, so reading it back off any one
-        // of them would be comparing encodings rather than the value.
-        data-rail-accent={accent}
-        draggable={draggable}
-        onDragStart={(e) => {
-          e.dataTransfer.effectAllowed = 'move'
-          // The card is anchored to a tile that is about to move out from under the cursor —
-          // exactly the case the shared hook hardens against, but the drag never fires the
-          // mouseleave that would close it, so it is dismissed explicitly.
-          setHover(false)
-          hoverCard.onMouseLeave()
-          onDragStart?.()
-        }}
-        onDragEnd={onDragEnd}
-        onClick={onOpen}
-        onContextMenu={onMenu && ((e) => {
-          // Or WKWebView draws its own menu on top of ours.
-          e.preventDefault()
-          e.stopPropagation()
-          // THE HOVER CARD WOULD STICK. It is `position: fixed` at the tile's right edge —
-          // exactly where the menu opens — and the cursor never leaves the tile, so no
-          // mouseleave arrives to clear it. The shared hook hardens against a row moving and
-          // against the cursor leaving the WINDOW; a menu opening over the anchor is neither,
-          // which is what `dismiss` is exposed for.
-          setHover(false)
-          hoverCard.dismiss()
-          // Anchored to the tile, not to the pointer: the same top and the same 8px offset the
-          // hover card uses, so the menu lands where the card the user was just reading was.
-          const r = e.currentTarget.getBoundingClientRect()
-          onMenu({ top: r.top, left: r.right + 8 })
-        })}
-        aria-label={`${project.name}${label ? ` — ${label.text}` : ''}`}
-        aria-current={current || undefined}
-        title={`${project.name}${label ? ` — ${label.text}` : ''}`}
-        style={{
-          // A HEADER, NOT THE SUBJECT. The agents are the rail — they render at 40px — so a
-          // project sits at 24 (26 when its group is open). Inverted deliberately: at 28 against
-          // a 40px orb the tiles still read as the primary list, which is the shape that was
-          // rejected. Small enough to be a label for the group, large enough to keep the acronym
-          // legible, which is the channel that separates fastrack / Fastrack-landing / FastTrack.
-          position: 'relative', flexShrink: 0,
-          // Every header is the SAME size, open or not. A 2px bump on the open one measured a
-          // 48/49/48/48/48 pitch — a stack whose rhythm changes with selection, for emphasis the
-          // ring and the agents beneath already provide. Uniform size, marker carries the state.
-          width: 24, height: 24, padding: 0,
-          display: 'grid', placeItems: 'center',
-          // ROUNDED SQUARE — the grammar that separates a project from a session's circle.
-          borderRadius: 7,
-          // Transparent badge, per house style: a tint and a hairline of the identity colour,
-          // never a solid accent fill. The border is per-project and therefore STATIC — it
-          // never changes colour, so it doesn't trip the WKWebView radiused-border rule.
-          background: `color-mix(in srgb, ${accent} ${hover || menuOpen ? 26 : 16}%, transparent)`,
-          border: `1px solid color-mix(in srgb, ${accent} 38%, transparent)`,
-          // laneTextColor folds in each theme's --lane-ink-blend: raw accents collapse to
-          // ~1.4:1 as text on the three light palettes.
-          color: laneTextColor(accent),
-          // "You are here" is a RING, drawn as a box-shadow: a colour-changing BORDER on a
-          // radiused element re-rasterizes in WKWebView. A box-shadow is not a border.
-          boxShadow: current ? '0 0 0 2px var(--accent)' : 'none',
-          fontFamily: 'var(--font-body)', fontSize: 9, fontWeight: 600,
-          letterSpacing: '0.02em', lineHeight: 1,
-          // The tile IS the handle — no grip appears on hover. At 28px in a 44px strip there is
-          // nowhere to put one that wouldn't either reserve space at rest or shrink the target.
-          opacity: dragging ? 0.4 : 1,
-          cursor: 'pointer', outline: 'none', transition: 'background 120ms ease',
-        }}
-        onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
-        onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
-      >
-        {/* `.ink-centred` (styles.css) — centres the INK rather than the line box. It cancels the
-            trailing letter-space that was landing the acronym 0.25–0.50px left of the axis (never
-            right: a directional error is a systematic one), and lifts the caps off the low seat
-            `place-items: center` gives them. Shared with the channel avatar, the sidebar lane
-            initial and the preview pin, so a fifth disc gets this for free. */}
-        <span data-rail-initials className="ink-centred">{projectInitials(project.name)}</span>
-        {/* State gets its own channel, overlapping the tile's corner. Nothing at all when
-            idle — a permanent grey dot on every tile would be one more thing to look past.
-            THE INVARIANT: a tile's PAINTED CENTRE is independent of its ring and pip state. The
-            rail is a vertical strip, and a strip whose items don't share a centre line reads as
-            broken however correct each item's own numbers are.
-            That is why this is `-1` and not `-3`. At -3 the dots painted ~1.9px past the box on
-            the right and bottom and nothing on the left or top, so a pipped tile's painted mass
-            was pushed off-axis while a ringed one — whose overhang is symmetric — stayed centred.
-            At -1 the dots land flush with the box edge (measured -0.07px, i.e. a hair inside), so
-            the pip never widens the painted bounds and cannot move the centre.
-            It still OVERLAPS the corner, which is what makes it read as attached to this tile
-            rather than floating beside it — it simply overlaps inward now instead of outward.
-            Do not restore the -3 to "make it pop": that is the bug, and `dev/drive-rail-tiles.mjs`
-            asserts the centre is identical across all four ring/pip combinations. */}
-        {activity.status !== 'idle' && (
-          <span data-rail-pip style={{
-            position: 'absolute', right: -1, bottom: -1, display: 'flex', lineHeight: 0,
-            pointerEvents: 'none',
-          }}>
-            <StatusWave status={activity.status} seed={project.id} size={9} accent={accent} />
-          </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexShrink: 0 }}>
+        <button
+          ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
+          data-rail-project-header={project.id}
+          // The identity colour, exposed so a harness can assert it never moves — it reaches the
+          // DOM as a color-mix expression, so reading it back off one would compare encodings
+          // rather than the value.
+          data-rail-accent={accent}
+          draggable={draggable}
+          onDragStart={(e) => {
+            e.dataTransfer.effectAllowed = 'move'
+            // The card is anchored to a row about to move out from under the cursor, and a drag
+            // never fires the mouseleave that would close it.
+            setHover(false)
+            hoverCard.onMouseLeave()
+            onDragStart?.()
+          }}
+          onDragEnd={onDragEnd}
+          onClick={onOpen}
+          onContextMenu={onMenu && ((e) => {
+            // Or WKWebView draws its own menu on top of ours.
+            e.preventDefault()
+            e.stopPropagation()
+            // The hover card is `position: fixed` exactly where the menu opens, and the cursor
+            // never leaves the row, so no mouseleave arrives to clear it.
+            setHover(false)
+            hoverCard.dismiss()
+            const r = e.currentTarget.getBoundingClientRect()
+            onMenu({ top: r.top, left: r.right + 8 })
+          })}
+          aria-label={`${project.name}${label ? ` — ${label.text}` : ''}`}
+          aria-current={open || undefined}
+          title={`${project.name}${label ? ` — ${label.text}` : ''}`}
+          style={{
+            flex: 1, minWidth: 0, height: 24, boxSizing: 'border-box',
+            // ZERO HORIZONTAL PADDING WHEN COLLAPSED. 4px each side takes the usable width to 44
+            // and clips `operator` — caught by measurement, not by eye.
+            padding: collapsed ? 0 : '0 8px',
+            // A BLOCK, not a flex row. `text-overflow: ellipsis` applies to a block container's
+            // inline content — inside a flex container the name is an anonymous flex item and the
+            // ellipsis never fires, so an over-long name was clipped on BOTH sides instead
+            // ("EL-ENCANTO" losing its E and "MISE-LANDING" losing its M). That is the same class
+            // of defect as the six-character `shortNameOf` this replaces: a cut you cannot tell
+            // from the project's real name. `lineHeight` does the vertical centring a flex row
+            // would have.
+            display: 'block', textAlign: collapsed ? 'center' : 'left', lineHeight: '24px',
+            // Background-only hover on a radiused element — never a colour-changing border, which
+            // re-rasterizes in WKWebView.
+            background: hover || menuOpen ? 'var(--overlay-subtle)' : 'transparent',
+            border: 'none', borderRadius: 6,
+            color: open ? ink : `color-mix(in srgb, ${ink} 55%, var(--fg-muted))`,
+            cursor: 'pointer', outline: 'none',
+            fontFamily: 'var(--font-mono)', fontWeight: 600,
+            fontSize: collapsed ? 9 : 11,
+            letterSpacing: collapsed ? '0.04em' : '0.06em',
+            textTransform: 'uppercase',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            opacity: dragging ? 0.4 : 1,
+            transition: 'background 120ms ease',
+          }}
+          onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
+          onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
+        >{project.name}</button>
+        {/* You can browse into a shelved project from the gallery, and nothing in here used to say
+            so. The chip is the state AND the way out of it. Expanded only: at 60 there is no room
+            for a second thing on this row, and the hover card carries the state. */}
+        {!collapsed && open && project.archivedAt && onRestore && (
+          <button
+            data-previous-chip
+            className="sidebar-previous-chip"
+            // EXPLICIT tabIndex on a <button>: WebKit leaves buttons out of sequential focus
+            // navigation unless macOS Full Keyboard Access is on, and un-shelving is the one
+            // thing in here that cannot be done from anywhere else in the project.
+            tabIndex={0}
+            onClick={onRestore}
+            title={`${project.name} is shelved — click to bring it back to Active`}
+            style={{
+              flexShrink: 0, marginRight: 8, padding: '1px 6px',
+              fontFamily: 'var(--font-mono)', fontSize: 9,
+              textTransform: 'uppercase', letterSpacing: '0.1em',
+              background: 'transparent', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)', color: 'var(--fg-muted)',
+              cursor: 'pointer', outline: 'none',
+            }}
+          >previous</button>
         )}
-      </button>
+      </div>
+      {/* The path, under the OPEN group's name only, expanded only. Collapsed, the hover card
+          carries it. */}
+      {!collapsed && open && project.path && (
+        <div data-rail-path style={{
+          padding: '0 8px 2px', fontFamily: 'var(--font-mono)', fontSize: 9.5,
+          color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{tildePath(project.path)}</div>
+      )}
       {hoverCard.card && (
         <div style={{
           position: 'fixed', top: hoverCard.card.top, left: hoverCard.card.left, zIndex: 60,
@@ -623,28 +585,74 @@ function ProjectTile({ project, activity, current, onOpen, onMenu, menuOpen, dra
             {label && (
               <span style={{
                 fontSize: 9.5,
-                // Same 30%-toward-fg mix the sidebar's collapsed tail uses: bare var(--accent)
-                // at this size drops under 3:1 on two of the light palettes.
                 color: label.accent ? 'color-mix(in srgb, var(--accent) 70%, var(--fg))' : 'var(--fg-muted)',
-              }}>
-                {label.text}
-              </span>
+              }}>{label.text}</span>
             )}
           </div>
+          {project.path && (
+            <div style={{ fontSize: 9.5, color: 'var(--fg-muted)', marginTop: 2, whiteSpace: 'nowrap' }}>
+              {tildePath(project.path)}
+            </div>
+          )}
         </div>
       )}
     </Fragment>
   )
 }
 
-/** One agent inside the open band. A CIRCLE — the grammar that separates a session from a
- *  project's rounded square, and it is never crossed.
+/** THE DOOR TO THE BOARD, and a third kind of object: neither a header nor an agent.
  *
- *  Lifted from `SidebarRail`'s row, with one deliberate change: the active marker is NOT the
- *  3px accent pill that file drew at `left: -10`. That is a coloured left-border marker stripe,
- *  which the house style forbids outright, and it was visible in the screenshot that started this
- *  redesign. `--overlay-medium` on the orb box says the same thing without the rule break — and
- *  without a colour-changing border on a radiused element, which re-rasterizes in WKWebView. */
+ *  Two independent channels say so. The MARK is a stroke outline — a framed column board, which
+ *  is the board it opens — where a lane is a dot disc; and the LABEL is body sentence-case where
+ *  a live lane is tracked mono uppercase. It never animates and never takes a lane accent,
+ *  because it has no status: it is a place.
+ *
+ *  It sits in the member column, on the same axis and in the same 36px box as an orb, so the
+ *  constant-x invariant is untouched — and so the agent that replaces it when work starts lands
+ *  on exactly the row it vacated.
+ *
+ *  It carries NO COUNT, deliberately. The last count put into this strip (a roster chip that
+ *  counted every status and labelled the total `N QUEUED`) was wrong for weeks and read as
+ *  authoritative the whole time. A door is not a display. */
+function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current: boolean; onClick: () => void }) {
+  const [hover, setHover] = useState(false)
+  return (
+    <button
+      data-rail-home
+      onClick={onClick}
+      aria-current={current || undefined}
+      title="Project Home — the board"
+      aria-label="Project Home"
+      style={{
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+        height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+        background: current ? 'var(--overlay-medium)' : hover ? 'var(--overlay-subtle)' : 'transparent',
+        border: 'none', borderRadius: 8,
+        color: current ? 'var(--fg)' : 'var(--fg-muted)',
+        cursor: 'pointer', outline: 'none', textAlign: 'left',
+        fontFamily: 'var(--font-body)', fontSize: 11.5, lineHeight: 1,
+        transition: 'background 120ms ease',
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        {/* 17px of ink, not the foot's 14: this sits alone against a 24px dot disc, and 14 reads
+            small beside that mass. A framed column board — one outlined rect with two dividers.
+            Checked against every other glyph in the chrome; the only near-collision is the foot's
+            2×2 "all projects", and one frame against four separate squares separates cleanly. */}
+        <svg data-rail-home-mark width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" />
+          <path d="M6 2.6v10.8M10 2.6v10.8" />
+        </svg>
+      </span>
+      {!collapsed && <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>Home</span>}
+    </button>
+  )
+}
+
+/** One live agent, COLLAPSED. A 24px disc in the 36px member box, centred on the axis — the same
+ *  disc, at the same x, that the expanded row carries. */
 function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
   session: AgentSession
   active: boolean
@@ -654,12 +662,7 @@ function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
 }) {
   const hoverCard = useHoverCard(`orb:${session.id}`)
   const label = sessionLabel({ session })
-  const initial = laneInitial(label)
-  const status: WaveStatus = session.status === 'ended'
-    ? 'ended'
-    : session.phase === 'running' || session.phase === 'compacting' || session.phase === 'waiting'
-      ? session.phase
-      : 'idle'
+  const status = waveStatusOf(session)
   return (
     <Fragment>
       <button
@@ -677,31 +680,30 @@ function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
         aria-current={active || undefined}
         title={label}
         style={{
-          position: 'relative', flexShrink: 0, width: 40, height: 40, padding: 0,
-          display: 'grid', placeItems: 'center',
-          borderRadius: 11,
-          border: '1px solid transparent', // constant: no colour-changing border on a radiused box
-          background: active ? 'var(--overlay-medium)' : 'transparent',
-          cursor: 'pointer', outline: 'none', transition: 'background 120ms ease',
+          flexShrink: 0, display: 'flex', alignItems: 'center', width: '100%',
+          height: MEMBER_BOX, padding: `0 0 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+          background: 'transparent', border: 'none',
+          cursor: 'pointer', outline: 'none',
         }}
-        onMouseEnter={(e) => {
-          if (!active) e.currentTarget.style.background = 'var(--overlay-subtle)'
-          hoverCard.onMouseEnter(e)
-        }}
-        onMouseLeave={(e) => {
-          if (!active) e.currentTarget.style.background = 'transparent'
-          hoverCard.onMouseLeave()
-        }}
+        onMouseEnter={(e) => { hoverCard.onMouseEnter(e) }}
+        onMouseLeave={() => { hoverCard.onMouseLeave() }}
       >
-        <span style={{ position: 'relative', width: 30, height: 30, display: 'grid', placeItems: 'center' }}>
-          <StatusWave status={status} seed={session.id} size={30} accent={accent} />
-          <span className="ink-centred" style={{
-            position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
-            fontSize: 11, fontWeight: 700, lineHeight: 1, fontFamily: 'var(--font-body)',
-            color: accent ? laneTextColor(accent) : 'var(--fg)',
-            ['--track' as string]: initial.length > 1 ? '-0.5px' : '0px',
-            textShadow: '0 0 3px var(--bg-sidebar), 0 0 3px var(--bg-sidebar)',
-          }}>{initial}</span>
+        <span style={{
+          width: MEMBER_BOX, height: MEMBER_BOX,
+          display: 'grid', placeItems: 'center', borderRadius: 10,
+          // The active marker is background, never the 3px accent pill an earlier strip drew at
+          // `left: -10` — that is a coloured left-edge marker stripe, which the house style
+          // forbids outright.
+          background: active ? 'var(--overlay-medium)' : 'transparent',
+          transition: 'background 120ms ease',
+        }}>
+          {/* The hook is on the DISC, not on the tint box around it: the two states mark
+              "selected" differently (a box here, a whole-row surface there), and a driver
+              comparing the marker would be comparing markers rather than the orb the invariant
+              is about. */}
+          <span data-rail-orb={session.id} style={{ display: 'grid', placeItems: 'center' }}>
+            <StatusWave status={status} seed={session.id} size={ORB} accent={accent} />
+          </span>
         </span>
       </button>
       {hoverCard.card && (
@@ -718,12 +720,423 @@ function RailOrb({ session, active, accent, onSelect, onPickAccent }: {
   )
 }
 
-/** 1–2 letters for an orb. `Research` and `Review` both reduce to R — colour separates them, and
- *  at 52px there is no room for more. Stated rather than hidden: duplicates are unsolved at this
- *  width, and the price of solving them was ~168px, i.e. the sidebar's job. */
-function laneInitial(name: string): string {
-  const words = name.replace(/[_\-/.]+/g, ' ').trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return '?'
-  if (words.length === 1) return words[0].slice(0, 1).toUpperCase()
-  return (words[0][0] + words[1][0]).toUpperCase()
+/** One live agent, EXPANDED — `SessionItem`, which was already the right object for this row and
+ *  is the one thing the old sidebar had that survives whole. */
+function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
+  session: AgentSession
+  project: Project
+  role?: Role
+  active: boolean
+  accent?: string
+  customName?: string
+  effortLevel?: string | null
+  fan?: { index: number; total: number }
+  shortcutIndex: number | null
+  reorderable?: boolean
+  onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  onSelect: () => void
+  onRename: (name: string) => void
+  onClose: () => void
+  onPickAccent?: (anchor: { top: number; left: number }) => void
+}) {
+  const [edge, setEdge] = useState<'before' | 'after' | null>(null)
+  const row = (
+    <SessionItem
+      session={session}
+      label={sessionLabel({ session, role, customName, fallback: 'Session' })}
+      active={active}
+      effortLevel={effortLevel}
+      // A lane keeps its role treatment (colour + tracked uppercase) even after a rename — the
+      // name is the session's, the colour is the lane's.
+      labelIsRole={!!role}
+      roleColor={accent ?? role?.accent}
+      fanInfo={fan}
+      currentTask={currentTaskOf(session, project)}
+      closable
+      shortcutIndex={shortcutIndex}
+      onClick={onSelect}
+      onRename={onRename}
+      onClose={onClose}
+      onPickAccent={onPickAccent}
+    />
+  )
+  if (!reorderable) return row
+  return (
+    <div
+      data-session-row={session.id}
+      draggable
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/session', session.id) }}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('text/session')) return
+        e.preventDefault()
+        const r = e.currentTarget.getBoundingClientRect()
+        setEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+      }}
+      onDragLeave={() => setEdge(null)}
+      onDrop={(e) => {
+        e.preventDefault()
+        const dragged = e.dataTransfer.getData('text/session')
+        const r = e.currentTarget.getBoundingClientRect()
+        // Read the edge off the EVENT, not off state: a fast drag can drop before the line has
+        // committed, and a drop with no line drawn must still land under the cursor.
+        if (dragged && dragged !== session.id) {
+          onReorderSession?.(dragged, session.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+        }
+        setEdge(null)
+      }}
+      style={{
+        // Constant transparent rules, so showing the drop line cannot shift the stack.
+        borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
+        borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
+      }}
+    >{row}</div>
+  )
+}
+
+/** A roster lane with nothing running — click to launch it. The idle orb already reads as dimmed
+ *  through its static-accent treatment, so the only other receded element is the name (muted INK,
+ *  never a group opacity), and the row does NOT take the uppercase/accent treatment that marks a
+ *  live lane. */
+function LaneRow({ role, draggable, onReorder, onClick }: {
+  role: Role
+  draggable?: boolean
+  onReorder?: (draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
+  onClick: () => void
+}) {
+  const [hover, setHover] = useState(false)
+  const [edge, setEdge] = useState<'before' | 'after' | null>(null)
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-lane-row={role.id}
+      draggable={draggable}
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/lane', role.id) }}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('text/lane')) return
+        e.preventDefault()
+        const r = e.currentTarget.getBoundingClientRect()
+        setEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+      }}
+      onDragLeave={() => setEdge(null)}
+      onDrop={(e) => {
+        e.preventDefault()
+        const dragged = e.dataTransfer.getData('text/lane')
+        const r = e.currentTarget.getBoundingClientRect()
+        if (dragged && dragged !== role.id) {
+          onReorder?.(dragged, role.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+        }
+        setEdge(null)
+      }}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={`Launch ${role.name}`}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+        height: MEMBER_BOX, padding: `0 8px 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
+        background: hover ? 'var(--overlay-subtle)' : 'transparent',
+        borderRadius: 8,
+        // Constant transparent rules so the drop line cannot shift the stack, and colour only
+        // ever lands on a straight edge.
+        borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
+        borderBottom: `2px solid ${edge === 'after' ? 'var(--accent)' : 'transparent'}`,
+        cursor: 'pointer', textAlign: 'left', outline: 'none',
+        fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1,
+      }}
+    >
+      <span style={{ width: MEMBER_BOX, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        <StatusWave status="idle" seed={role.id} size={ORB} accent={role.accent} />
+      </span>
+      <span style={{
+        flex: 1, minWidth: 0, color: 'color-mix(in srgb, var(--fg) 80%, transparent)',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>{role.name}</span>
+      {/* The tag carries whether this lane is running, so it has to be readable at rest. The
+          hover signal is the WORD changing, not the ink getting darker. */}
+      <span style={{
+        flexShrink: 0, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.1em',
+        color: hover ? 'var(--fg)' : 'var(--fg-muted)',
+      }}>{hover ? 'launch ▷' : 'idle'}</span>
+    </div>
+  )
+}
+
+/** THE APP'S OWN ROW — Arrangement A: four groups of two, three hairlines, the same order and the
+ *  same total height at both widths. Only the CELL width changes, so every foot row lands on an
+ *  identical y at 60 and at 264. That is the analogue of the member column's constant x: the
+ *  bottom of the strip is as fixed as the top, so ⌘B adds words and moves nothing, anywhere.
+ *
+ *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
+ *  unmount `Sidebar.tsx`, and with it the theme toggle, Preferences and both `.claude` shortcuts
+ *  simply stopped existing. */
+function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: {
+  collapsed: boolean
+  planLimits: ReturnType<typeof usePlanLimits>
+  agentsActive?: boolean
+  onOpenAgents: () => void
+  onShowGallery: () => void
+  onOpenFolder: () => void
+  project: Project | null
+  activeFolderPrefs: string | null
+  globalPrefsActive?: boolean
+  prefsViewActive?: boolean
+  isDark: boolean
+  onOpenFolderPrefs?: (projectPath: string, projectName: string) => void
+  onOpenGlobalPrefs?: () => void
+  onOpenPrefs?: () => void
+  onToggleTheme?: () => void
+  version?: string
+  update?: { version: string } | null
+  onInstallUpdate?: () => void
+}) {
+  /** A divider has to out-space the things it divides: 9px either side against a 24px row. */
+  const hairline = <span data-rail-seam style={{ width: '100%', height: 1, background: SEAM, margin: '9px 0', flexShrink: 0 }} />
+  return (
+    <div data-rail-foot style={{
+      flexShrink: 0, width: '100%', boxSizing: 'border-box',
+      display: 'flex', flexDirection: 'column',
+      padding: `10px ${CONTENT_INSET_R}px 10px 0`,
+    }}>
+      {/* Views ACROSS projects — not ways of moving between them, which is the next pair. */}
+      <FootRow>
+        <FootCell collapsed={collapsed} label="Agents">
+          <FootGlyph
+            attr="data-rail-agents"
+            label="Agents"
+            hint="what is running across your projects"
+            active={agentsActive}
+            onClick={onOpenAgents}
+          >
+            {/* Drawn to 12×12 of painted ink, like the grid and the plus — the eyes and antenna
+                dot are FILLED, so they set fill explicitly against the svg's fill:none. */}
+            <rect x="1.75" y="5" width="12.5" height="9" rx="2.4" />
+            <path d="M8 2.9v2.1" strokeLinecap="round" />
+            <circle cx="8" cy="1.9" r="1" fill="currentColor" stroke="none" />
+            <circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
+            <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
+          </FootGlyph>
+        </FootCell>
+        <FootCell collapsed={collapsed} label="Plan usage">
+          {/* Needs no session and no project — `claude -p "/usage"` spawns its own short-lived
+              process — so it is live at the gallery and on first launch, which is exactly when
+              you are deciding what to start. */}
+          <PlanMeter
+            box={FOOT_BOX}
+            limits={planLimits.limits}
+            loading={planLimits.loading}
+            now={planLimits.now}
+            onRefresh={planLimits.refresh}
+            onRevalidate={planLimits.revalidate}
+          />
+        </FootCell>
+      </FootRow>
+      {hairline}
+      {/* Navigation BETWEEN projects. */}
+      <FootRow>
+        <FootCell collapsed={collapsed} label="All projects">
+          <FootGlyph attr="data-rail-gallery" label="All projects" hint="⌘⇧O" onClick={onShowGallery} strokeWidth={1.05}>
+            <rect x="2" y="2" width="5" height="5" rx="1.2" />
+            <rect x="9" y="2" width="5" height="5" rx="1.2" />
+            <rect x="2" y="9" width="5" height="5" rx="1.2" />
+            <rect x="9" y="9" width="5" height="5" rx="1.2" />
+          </FootGlyph>
+        </FootCell>
+        <FootCell collapsed={collapsed} label="Open folder">
+          <FootGlyph attr="data-rail-open-folder" label="Open folder" hint="⌘N" onClick={onOpenFolder} strokeWidth={1.45}>
+            {/* Spans 2–14 of the viewBox, not 3.5–12.5: the two navigation verbs are a matched
+                pair, and every box being the same size said nothing about their drawn extents
+                differing by 27%. Only the painted extent did. */}
+            <path d="M8 2v12M2 8h12" strokeLinecap="round" />
+          </FootGlyph>
+        </FootCell>
+      </FootRow>
+      {hairline}
+      {/* The two Claude-file shortcuts. A folder and a globe cannot say "project" and "global" on
+          their own, which is the argument for labelling all eight rather than some. */}
+      <FootRow>
+        <FootCell collapsed={collapsed} label=".claude" mono>
+          <FootGlyph
+            attr="data-rail-folder-prefs"
+            label={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
+            hint="this project"
+            disabled={!project?.path}
+            active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
+            onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
+          >
+            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
+          </FootGlyph>
+        </FootCell>
+        <FootCell collapsed={collapsed} label="~/.claude" mono>
+          <FootGlyph attr="data-rail-global-prefs" label="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
+            <circle cx="8" cy="8" r="6" />
+            <ellipse cx="8" cy="8" rx="2.5" ry="6" />
+            <path d="M2 8h12" />
+          </FootGlyph>
+        </FootCell>
+      </FootRow>
+      {hairline}
+      <FootRow>
+        <FootCell collapsed={collapsed} label="Preferences">
+          <FootGlyph attr="data-rail-prefs" label="Operator preferences" hint="settings" active={prefsViewActive} onClick={() => onOpenPrefs?.()} viewBox="0 0 24 24" strokeWidth={1.8} inkSize={12}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </FootGlyph>
+        </FootCell>
+        <FootCell collapsed={collapsed} label={isDark ? 'Light mode' : 'Dark mode'}>
+          {/* 15 for the MOON, 14 for the sun. A crescent's silhouette is smaller than its own
+              box — it painted 11px against every other glyph's 12, i.e. the theme toggle read a
+              size smaller than its neighbours on exactly the three light palettes, where it is
+              the one that shows. Measured, not guessed: assertion S sweeps all six. */}
+          <FootGlyph attr="data-rail-theme" label={isDark ? 'Switch to light mode' : 'Switch to dark mode'} hint="theme" inkSize={isDark ? 14 : 15} onClick={() => onToggleTheme?.()}>
+            {isDark ? (
+              <>
+                {/* Filled core so the sun reads distinct from the hollow-centred gear beside it. */}
+                <circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none" />
+                <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" strokeLinecap="round" />
+              </>
+            ) : (
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
+            )}
+          </FootGlyph>
+        </FootCell>
+      </FootRow>
+      {/* The app's identity, on its own line at the bottom of the grid — left-aligned under the
+          first column rather than squeezed into leftover space. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, minWidth: 0 }}>
+        <span
+          data-sidebar-identity
+          title={`Operator${version ? ` v${version}` : ''}`}
+          style={{
+            minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
+            fontVariantNumeric: 'tabular-nums',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >{version ? `v${version}` : 'Operator'}</span>
+        {update && (
+          <button
+            onClick={onInstallUpdate}
+            title={`Update ${update.version} available — install & restart`}
+            aria-label={`Install update ${update.version}`}
+            style={{
+              flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 14, height: 14, padding: 0,
+              background: 'transparent', color: 'var(--accent)',
+              border: '1px solid var(--accent)', borderRadius: 999,
+              cursor: 'pointer', outline: 'none',
+            }}
+          >
+            {/* Arrow centred in the viewBox + a 0.5px optical nudge (a chevron reads high). */}
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'translateY(0.5px)' }}>
+              <path d="M6 9V3M3 5.5l3-2.5 3 2.5" />
+            </svg>
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** One foot row: two cells, and the SAME HEIGHT whatever is in them — which is what puts the four
+ *  rows on identical y at both widths. */
+function FootRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div data-rail-foot-row style={{
+      display: 'flex', alignItems: 'center', gap: FOOT_GAP, width: '100%',
+      height: FOOT_BOX, flexShrink: 0,
+    }}>{children}</div>
+  )
+}
+
+/** One foot cell: the glyph, and — expanded — the word for it. The glyph box is identical at both
+ *  widths and LEADS the cell, so the left column of glyphs holds its x as well as its y. */
+function FootCell({ collapsed, label, mono, children }: {
+  collapsed: boolean
+  label: string
+  /** Paths are named in mono — precise, short, and what the user recognises. */
+  mono?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
+      // Collapsed, the pair IS the field (24 + 4 + 24 = 52) and straddles the axis; expanded, the
+      // two cells split it.
+      ...(collapsed ? { width: FOOT_BOX, flexShrink: 0 } : { flex: 1 }),
+    }}>
+      {children}
+      {!collapsed && (
+        <span style={{
+          minWidth: 0, transition: REVEAL,
+          fontFamily: mono ? 'var(--font-mono)' : 'var(--font-body)',
+          fontSize: mono ? 10 : 11, color: 'var(--fg-muted)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{label}</span>
+      )}
+    </div>
+  )
+}
+
+/** A foot control's glyph box. 24px, radius 7, 14px ink, `--fg-muted` at rest, background + ink
+ *  lifting together on hover.
+ *
+ *  No `opacity` anywhere: `--fg-muted` IS the recede, and multiplying it lands at 1.8–2.9:1 on the
+ *  three light palettes. Disabled recedes by mixing toward the strip's own background — a real
+ *  colour that stays measurable — and by going inert to the pointer. */
+function FootGlyph({ attr, label, hint, onClick, active, disabled, viewBox = '0 0 16 16', strokeWidth = 1.2, inkSize = 14, children }: {
+  attr: string
+  label: string
+  hint: string
+  onClick: () => void
+  active?: boolean
+  disabled?: boolean
+  viewBox?: string
+  /** OPTICAL correction, not a free knob: the grid draws four closed rects against the plus's two
+   *  strokes — a 3:1 mass difference at the same weight, which is why the two navigation verbs
+   *  did not read as a pair even once their extents matched. */
+  strokeWidth?: number
+  /** The RENDERED svg size, which is not the same thing as the painted extent. Every 16-viewBox
+   *  glyph here is drawn 2–14, so at 14px it paints 12 — but the gear fills its 24-viewBox edge to
+   *  edge, so the same 14 paints 14. Two pixels larger than everything beside it, in an identical
+   *  box, which is precisely the class of difference assertion S exists to catch and which went
+   *  unseen while S measured only four of the eight. */
+  inkSize?: number
+  children: React.ReactNode
+}) {
+  const rest = active ? 'var(--overlay-subtle)' : 'transparent'
+  const ink = disabled
+    ? 'color-mix(in srgb, var(--fg-muted) 65%, var(--bg-sidebar))'
+    : active ? 'var(--fg)' : 'var(--fg-muted)'
+  return (
+    <button
+      {...{ [attr]: '' }}
+      onClick={onClick}
+      disabled={disabled}
+      title={`${label} (${hint})`}
+      aria-label={label}
+      aria-current={active || undefined}
+      style={{
+        width: FOOT_BOX, height: FOOT_BOX, padding: 0, flexShrink: 0,
+        display: 'grid', placeItems: 'center',
+        background: rest, border: 'none', borderRadius: 7,
+        color: ink, cursor: disabled ? 'default' : 'pointer', outline: 'none',
+        transition: 'background 120ms ease, color 120ms ease',
+      }}
+      onMouseEnter={(e) => { if (disabled) return; e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
+      onMouseLeave={(e) => { if (disabled) return; e.currentTarget.style.background = rest; e.currentTarget.style.color = ink }}
+    >
+      <svg width={inkSize} height={inkSize} viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
+    </button>
+  )
+}
+
+/** The one status ladder, shared with the expanded row's `SessionItem`. */
+function waveStatusOf(session: AgentSession): WaveStatus {
+  if (session.status === 'ended') return 'ended'
+  return session.phase === 'running' || session.phase === 'compacting' || session.phase === 'waiting'
+    ? session.phase
+    : 'idle'
 }
