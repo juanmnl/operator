@@ -24,7 +24,11 @@ const DOUBLE_CLICK_MS = 400
 // Interactive children (buttons, links, inputs) are left alone so their clicks
 // still work; the press only starts a drag when it lands on bare titlebar.
 export function DragRegion({ style, children, ...rest }: DragRegionProps) {
-  const lastDownRef = useRef(0)
+  // -Infinity, not 0: `e.timeStamp` is ms since page load, so a literal 0 is a real timestamp —
+  // a press within DOUBLE_CLICK_MS of load measured `now - 0 < 400` and zoomed the window on a
+  // single click. Unreachable in practice, but the sentinel should be deliberate rather than a
+  // coincidence, and the reset below hands it out once per control press.
+  const lastDownRef = useRef(-Infinity)
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return // left button only
     if ((e.target as HTMLElement).closest('button, a, input, textarea, select, [role="button"]')) {
@@ -33,7 +37,7 @@ export function DragRegion({ style, children, ...rest }: DragRegionProps) {
       // NEXT titlebar press within 400ms measured itself against a press the user aimed
       // somewhere else — press titlebar, press a control, press titlebar again and the window
       // zoomed. A press on a control is not half of a titlebar double-click.
-      lastDownRef.current = 0
+      lastDownRef.current = -Infinity
       return
     }
     // A second press on the bare titlebar within the threshold is a double-click:
@@ -41,7 +45,7 @@ export function DragRegion({ style, children, ...rest }: DragRegionProps) {
     // skip the drag so it doesn't fight the toggle.
     const now = e.timeStamp
     if (now - lastDownRef.current < DOUBLE_CLICK_MS) {
-      lastDownRef.current = 0
+      lastDownRef.current = -Infinity
       window.operator.toggleWindowMaximize?.()
       return
     }

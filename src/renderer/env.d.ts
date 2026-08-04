@@ -96,6 +96,9 @@ declare global {
       inspectRepo: (cwd: string) => Promise<RepoInfo>
       worktreeCreate: (cwd: string) => Promise<WorktreeCreateResult | { error: string }>
       worktreeStatus: (path: string) => Promise<WorktreeStatus>
+      /** Does this path still exist as a directory? See `path_exists` in lib.rs for why this
+       *  is not `worktreeStatus` — that conflates "deleted" with "not a git repo". */
+      pathExists?: (path: string) => Promise<boolean>
       worktreeRemove: (path: string, sourceRoot: string) => Promise<{ ok: boolean; error?: string }>
       worktreeDiff: (path: string, base?: string) => Promise<WorktreeDiff>
       branchDiff: (sourceRoot: string, branch: string, baseBranch: string) => Promise<WorktreeDiff>

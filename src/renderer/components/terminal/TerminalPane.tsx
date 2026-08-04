@@ -12,6 +12,7 @@ import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registr
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
+import { submitQueue } from '../../lib/submit-queue'
 
 // Claude Code's composer-divider ornaments (👀/👣 and newer cycled pictographs) are
 // decorative, not corruption. Strip them on EVERY path that writes to xterm — live
@@ -192,9 +193,32 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // xterm emits no bytes for them and they bubble to that handler — Ctrl+<key>
     // are terminal control codes (^W werase, ^K kill-line) and must reach the pty,
     // so they're NOT declined. During IME composition decline nothing.
+    // A HUMAN IS TYPING IN THIS LANE → disarm its pending rescue CR.
+    //
+    // Every dispatch arms a bare CR for its terminal, to submit a draft the TUI swallowed the
+    // CR for. On an observed terminal that CR is up to RESCUE_AFTER_MS (30s) away, and the
+    // user's keystrokes go into the SAME TUI composer — so the rescue would submit whatever
+    // half-written line is sitting there. Reported as "it sends my message with it, half
+    // baked". The queue always had the disarm; nothing called it for typing.
+    //
+    // Hooked on the real KEY event, not on `term.onData` as first proposed, because onData is
+    // not user-only: xterm fires it for terminal replies too — device attributes and cursor
+    // position (`InputHandler.ts` triggerDataEvent at :1672, :2663) and, decisively, the focus
+    // in/out reports `ESC[I` / `ESC[O` that go out whenever the pane gains or loses focus with
+    // `sendFocus` on (`CoreBrowserTerminal.ts:271,295`). Disarming on those would kill the
+    // rescue on an unattended lane merely because something focused it — the feature's whole
+    // purpose, silently gone. A keydown is a person.
+    const disarmRescue = () => {
+      // `pending` is set only while a submission is actually awaiting its verdict, so the
+      // common keystroke does one Map.get and stops. cancelNudge itself is a counter bump and
+      // a delete — O(1), no allocation — but there is no reason to run it on every character.
+      if (submitQueue.pending(terminalId)) submitQueue.cancelNudge(terminalId, 'typing')
+    }
     term.attachCustomKeyEventHandler((e) => {
       if (isComposingRef.current) return true
+      // App chords are declined below and emit no bytes, so they are not typing INTO the lane.
       if (e.type === 'keydown' && e.metaKey && isAppChord(e)) return false
+      if (e.type === 'keydown') disarmRescue()
       return true
     })
 
@@ -211,6 +235,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // the path — parity with drag-drop (handleDrop). Non-image pastes fall through
     // to xterm untouched, so bracketed paste of text still works.
     const onPaste = async (e: ClipboardEvent) => {
+      // Pasting into the lane is a person too, and a paste lands in the same composer — so it
+      // disarms for BOTH branches below, not just the image one.
+      disarmRescue()
       const images = imageFilesFrom(e.clipboardData)
       if (images.length === 0) return
       e.preventDefault()

@@ -257,6 +257,7 @@ export function installBridge(): void {
       try { return await invoke('worktree_create', { cwd }) } catch (e) { return { error: String(e) } }
     },
     worktreeStatus: (path: string) => invoke('worktree_status', { path }),
+    pathExists: (path: string) => invoke<boolean>('path_exists', { path }),
     worktreeRemove: async (path: string, sourceRoot: string) => {
       try { await invoke('worktree_remove', { path, sourceRoot }); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
     },

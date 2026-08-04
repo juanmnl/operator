@@ -641,6 +641,9 @@ export function installMockBridge() {
       return { ok: true }
     },
     worktreeStatus: async () => ({ exists: false }),
+    // Every fixture path "exists" unless a driver says otherwise — `window.__missingPaths` is
+    // how the workspace-restore driver stages a deleted folder without deleting one.
+    pathExists: async (path: string) => !((window as unknown as { __missingPaths?: string[] }).__missingPaths ?? []).includes(path),
     worktreeDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),
     branchDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),
     moodboardList: async () => [],

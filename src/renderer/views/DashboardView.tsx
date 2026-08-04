@@ -49,6 +49,7 @@ import { playYourTurnChime } from '../lib/sounds'
 import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
 import { DragRegion } from '../components/DragRegion'
+import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
 
 interface TerminalTab {
   id: string
@@ -2750,6 +2751,127 @@ export function DashboardView() {
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
   }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
+
+  // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
+  // Written on CHANGE, never only at quit. An app that records your place solely on a clean
+  // exit loses it to exactly the stop this feature exists to survive.
+  // Lanes that were live before the restart and have not been resumed yet — see the persist
+  // effect for why an empty terminal list must not overwrite them.
+  const pendingLaneKeysRef = useRef<string[]>([])
+  // True once the launch restore below has finished reading the snapshot (or decided there was
+  // nothing to read). Declared here because the PERSIST effect is gated on it — see there.
+  const [restoreSettled, setRestoreSettled] = useState(false)
+
+  // ⚠ Gated on `restoreSettled`, and that gate is the whole reason this works. Both effects key
+  // off `savedHydrated`, so without it the persist ran FIRST — writing the fresh, default state
+  // (gallery, board, no live keys) over the snapshot a beat before the restore read it. The
+  // symptom was a restore that "worked" but always landed on the defaults, which reads as the
+  // feature being broken rather than as a race. Nothing may write the snapshot until the launch
+  // has finished reading it.
+  useEffect(() => {
+    if (!savedHydrated || !restoreSettled) return // pre-restore state is a seed, not a place
+    const focused = allSidebarSessions.find((s) => s.id === activeSessionId)
+    const snapshot: Workspace = {
+      v: WORKSPACE_VERSION,
+      projectId: activeProjectId,
+      // `localTerminal` is this view's name for "a lane is focused"; the workspace calls it
+      // `session`, because what it records is the LANE, not the pty that happened to serve it.
+      mode: contentMode === 'localTerminal' ? 'session'
+        : contentMode === 'folderPrefs' ? 'prefs'
+        : contentMode,
+      projectTab,
+      // The lane's DURABLE key, not its terminal id — `SavedSession.terminalId`'s own comment
+      // says it is stale after a restart, and it is.
+      focusedKey: focused?.savedKey,
+      // The resume offer has to be "the ones you had". `savedSessions` cannot answer that: it
+      // keeps every session never explicitly closed, including ones from earlier runs.
+      //
+      // ⚠ CARRIED FORWARD while nothing is live. The obvious version — always write the current
+      // terminals — erases the offer the moment it is restored: launch with the setting off, the
+      // restore reads "four lanes", nothing is spawned, and the very next snapshot records zero.
+      // Restart twice and the lanes you had are simply forgotten. So an empty terminal list does
+      // not mean "you had none", it means "not resumed yet", and the pending set stands until
+      // something real replaces it.
+      liveKeys: terminals.length ? terminals.map((t) => t.key) : pendingLaneKeysRef.current,
+      at: new Date().toISOString(),
+    }
+    try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
+  }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals])
+
+  // ── AND PUTTING YOU BACK ──────────────────────────────────────────────────────────────────
+  // ⚠ RUNS EXACTLY ONCE, AT LAUNCH. This is NOT "restore where I was" as a general rule, and the
+  // distinction is load-bearing: `handleOpenProject` deliberately re-applies `landingFor` rather
+  // than restoring a remembered view, because re-entering a project mid-session is a different
+  // event from starting the app. Both behaviours are correct and they look contradictory side by
+  // side — the `restoredRef` guard is the boundary between them. Do not remove one thinking it
+  // duplicates the other.
+  //
+  // Gated on `reattachDone` because ptys can survive a renderer reload: if the terminals came
+  // back, you were never away, and there is nothing to restore.
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (!savedHydrated || !reattachDone || restoredRef.current) return
+    restoredRef.current = true
+    // Every path below must release the persist gate, including the ones that restore nothing.
+    if (terminals.length > 0) { setRestoreSettled(true); return } // ptys survived: a reload, not a restart
+
+    const workspace = readWorkspace(localStorage.getItem(WORKSPACE_KEY))
+    if (!workspace) { setRestoreSettled(true); return }
+
+    // The filesystem check is best-effort and asynchronous, so the plan is computed and applied
+    // FIRST (a launch that waits on stat() before drawing is a slow launch for a rare case) and
+    // the folder-missing notes arrive a beat later.
+    const plan = planRestore({
+      workspace,
+      projectIds: projects.map((p) => p.id),
+      savedSessions,
+    })
+    // Carried so the offer survives a second restart (see the persist effect).
+    pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
+    setActiveProjectId(plan.projectId)
+    setProjectTab(plan.projectTab)
+    setPrefsViewActive(plan.mode === 'prefs')
+    setAgentsViewActive(plan.mode === 'agents')
+    setGlobalPrefsActive(plan.mode === 'globalPrefs')
+
+    void (async () => {
+      // Which of those lanes could not be resumed even if asked. `worktreeStatus` answers for
+      // any path, worktree or not — a missing folder and a removed worktree are the same
+      // question here: is there still somewhere to spawn into.
+      const missing = new Set<string>()
+      await Promise.all(plan.lanes.map(async (l) => {
+        try {
+          // `pathExists`, not `worktreeStatus`: the latter reports `valid: false` for any
+          // folder that isn't a git repo, which would call a perfectly good directory gone.
+          if ((await window.operator.pathExists?.(l.saved.cwd)) === false) missing.add(l.saved.cwd)
+        } catch { /* unknown → assume present; a wrong "gone" is worse than a late one */ }
+      }))
+      const settled = planRestore({
+        workspace,
+        projectIds: projects.map((p) => p.id),
+        savedSessions,
+        missingPaths: missing,
+      })
+      const line = describeRestore(settled)
+      // Every failure mode gets a VISIBLE state. A lane whose folder is gone, or which has no
+      // saved conversation and could therefore only start FRESH, is named before anything acts
+      // on it — silently starting a new agent where someone expected their conversation back is
+      // the outcome this whole feature is trying not to produce.
+      if (line) pushToast({ text: 'Picked up where you left off', kind: 'info', detail: line })
+
+      // AUTO-RESUME — off by default, and deliberately so: reopening the app should not silently
+      // spawn six processes, six worktrees and six dev ports. When it is on, it runs the SAME
+      // per-project resume the ⌘K action and Project Home use; there is no second resume path.
+      const resumable = settled.lanes.filter((l) => !l.blocked)
+      if (resumeOnLaunchEnabled() && settled.projectId && resumable.length) {
+        void handleResumeProject(settled.projectId)
+      }
+      // Released only now: the folder checks can still change what the plan says, and a
+      // snapshot written mid-check would record a half-applied restore.
+      setRestoreSettled(true)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot: reads current values by design
+  }, [savedHydrated, reattachDone])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []

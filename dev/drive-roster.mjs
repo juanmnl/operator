@@ -52,7 +52,7 @@ const ok = (label, pass, detail) => {
 // it tried to hover — which is what it did, unnoticed, from the moment the board was wired: the
 // move that broke it landed AFTER the move that last ran it.
 const openRoster = async () => {
-  await p.locator('button[aria-label="Open the roster"]').click()
+  await p.locator('button[aria-label="Add an agent on the roster"]').click()
   await p.waitForTimeout(900)
   await p.locator('[data-toolbar-header="project"] button', { hasText: /^Team$/ }).click().catch(() => {})
   await p.waitForTimeout(700)
@@ -305,6 +305,70 @@ console.log('10 THE SPAWN CARRIES IT:', JSON.stringify((await spawnModelFor()).s
 
 await p.screenshot({ path: '/tmp/operator-shots/roster-lane-model.png' })
 ok('the lane\'s pinned model reached the spawn', (await spawnModelFor()).slice(before10)[0] === 'haiku')
+
+// ---- 11. THE SIDEBAR'S `+` NEVER WRITES A LANE ----------------------------------------
+// It used to fall back to `onAddBlank()` once every preset was already on the roster: no menu,
+// no confirmation, a `New role` lane appended to projects.json from two screens away. One glyph
+// with two outcomes decided by hidden state, the mutating one unguarded. Exhaust the presets
+// through the UI, then press it and assert the roster is UNCHANGED.
+await openRoster()
+const roleIds = () => p.evaluate(() => [
+  ...Array.from(document.querySelectorAll('[data-role-card]')).map((c) => c.getAttribute('data-role-card')),
+  ...Array.from(document.querySelectorAll('[data-roster-row]')).map((r) => r.getAttribute('data-roster-row')),
+])
+for (let i = 0; i < 6; i++) {
+  await p.locator('[data-add-agent]').click()
+  await p.waitForTimeout(350)
+  const preset = p.locator('[data-preset]').first()
+  if (!(await preset.count())) break            // menu no longer offers any — presets exhausted
+  await preset.click()
+  await p.waitForTimeout(450)
+}
+await p.keyboard.press('Escape')
+await p.waitForTimeout(300)
+const exhausted = await p.locator('[data-preset]').count()
+const rosterBefore = await roleIds()
+console.log('11 presets exhausted:', exhausted === 0, `(roster: ${rosterBefore.length} lanes)`)
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
+await p.waitForTimeout(500)
+const rosterAfter = await roleIds()
+const flashed = await p.evaluate(() => document.querySelector('[data-add-lane-flash="true"]')?.getAttribute('data-add-agent') ?? null)
+ok('the sidebar + writes NO lane when there is no menu to open',
+  rosterAfter.length === rosterBefore.length, { before: rosterBefore.length, after: rosterAfter.length })
+ok('…and signals where the verb lives instead of doing nothing', flashed !== null, { flashed })
+await p.screenshot({ path: '/tmp/operator-shots/roster-add-flash.png' })
+
+// ---- 12. …AND IT IS NOT DEAD ON AN EMPTY ROSTER ---------------------------------------
+// `AddAgentControl` only exists in the `roles.length > 0` branch, so on a brand-new project the
+// request was consumed by a panel with nothing mounted to answer it. The preset CARDS are the
+// chooser in that state, so they take the signal.
+await p.evaluate(() => {
+  const cur = JSON.parse(localStorage.getItem('operator.projects') || '[]')
+  localStorage.setItem('harness.emptyRoster', JSON.stringify(cur.map((x) => ({ ...x, roster: [] }))))
+})
+await p.addInitScript(() => {
+  const stored = localStorage.getItem('harness.emptyRoster')
+  if (!stored) return
+  const patch = () => {
+    const o = window.operator
+    if (!o) return
+    const orig = o.loadProjects
+    o.loadProjects = async () => JSON.parse(stored).map((x) => ({ ...x, roster: [] }))
+    o.saveProjects = () => {}
+    void orig
+  }
+  const t = setInterval(() => { if (window.operator) { patch(); clearInterval(t) } }, 10)
+})
+await p.reload({ waitUntil: 'load' })
+await p.waitForTimeout(3000)
+await openRoster()
+const emptyBoard = await p.locator('[data-roster-empty]').count()
+console.log('12 empty roster on screen:', emptyBoard === 1)
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
+await p.waitForTimeout(500)
+const emptyFlash = await p.evaluate(() => document.querySelector('[data-roster-empty]')?.getAttribute('data-add-lane-flash') ?? null)
+ok('the sidebar + is not inert on an empty roster', emptyBoard === 1 && emptyFlash === 'true', { emptyFlash })
+await p.screenshot({ path: '/tmp/operator-shots/roster-empty-flash.png' })
 
 await b.close()
 console.log(failed ? `\n${failed} FAILED` : '\nall structural checks passed')

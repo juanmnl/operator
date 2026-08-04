@@ -72,7 +72,7 @@ console.log('1 nothing auto-approved the HELD ones:', await writesFor('HELD'), '
 // ---- 2. The held ones are visible and actionable ---------------------------------------
 await p.locator('[data-project-card], [data-rail-tile]').first().click().catch(() => {})
 await p.waitForTimeout(600)
-await p.locator('button[aria-label="Open the roster"]').click()
+await p.locator('button[aria-label="Add an agent on the roster"]').click()
 await p.waitForTimeout(900)
 console.log('2 pending count in the header:', await p.evaluate(() =>
   document.querySelector('[data-dispatch-pending-count]')?.textContent?.trim()), '(expect "· 2 needs approval")')

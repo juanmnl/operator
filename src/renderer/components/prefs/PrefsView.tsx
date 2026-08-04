@@ -4,6 +4,7 @@ import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
 import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '../../lib/terminal-options'
+import { resumeOnLaunchEnabled, RESUME_ON_LAUNCH_KEY } from '../../lib/workspace'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -156,6 +157,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const [sounds, setSounds] = useState(() => soundsEnabled())
   const [optionIsMeta, setOptionIsMeta] = useState(() => getMacOptionIsMeta())
   const [fullscreenTui, setFullscreenTui] = useState(() => getTuiMode() === 'fullscreen')
+  const [resumeOnLaunch, setResumeOnLaunch] = useState(() => resumeOnLaunchEnabled())
 
   const toggleSounds = () => {
     const next = !sounds
@@ -176,6 +178,12 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     setTuiMode(next ? 'fullscreen' : 'default') // read at spawn — applies to NEW sessions
   }
 
+
+  const toggleResumeOnLaunch = () => {
+    const next = !resumeOnLaunch
+    setResumeOnLaunch(next)
+    try { localStorage.setItem(RESUME_ON_LAUNCH_KEY, next ? '1' : '0') } catch { /* quota */ }
+  }
 
   const selectDockIcon = (v: DockVariant) => {
     setDockIcon(v)
@@ -306,6 +314,46 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <IconCard key={v} variant={v} active={dockIcon === v} onSelect={() => selectDockIcon(v)} />
             ))}
           </div>
+        </section>
+
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
+            On launch
+          </h3>
+          {/* The default is OFF and that is the decision, not an oversight: reopening the app
+              should not silently start six Claude processes, six worktrees and six dev ports.
+              Operator always restores WHERE you were; this is only about whether it also
+              restarts the agents, which costs real resources and is one press away regardless. */}
+          <p data-section-desc style={sectionDesc}>
+            Operator always reopens the project, view and tab you left. This also restarts that
+            project’s agents — six lanes means six processes, six worktrees and six dev ports, so
+            it is off by default. With it off, they wait for one press.
+          </p>
+          <button
+            onClick={toggleResumeOnLaunch}
+            data-resume-on-launch={resumeOnLaunch ? 'on' : 'off'}
+            role="switch"
+            aria-checked={resumeOnLaunch}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Resume agents on launch</span>
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: resumeOnLaunch ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: resumeOnLaunch ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: resumeOnLaunch ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
         </section>
 
         <section style={{ marginBottom: SECTION_GAP }}>

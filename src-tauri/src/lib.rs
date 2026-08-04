@@ -1160,6 +1160,17 @@ fn worktree_status(path: String) -> worktree::WorktreeStatus {
     worktree::worktree_status(&path)
 }
 
+/// Does this path still exist as a directory?
+///
+/// The narrow question the workspace restore needs, and `worktree_status` cannot answer it:
+/// that returns `valid: false` for a plain folder that simply isn't a git repo, which would
+/// report a perfectly good directory as gone. "The folder was deleted" and "this isn't a repo"
+/// are different facts and the restore acts on only one of them.
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
+}
+
 #[tauri::command]
 fn worktree_diff(path: String, base: Option<String>) -> worktree::WorktreeDiff {
     worktree::worktree_diff(&path, base.as_deref())
@@ -2080,6 +2091,7 @@ pub fn run() {
             inspect_repo,
             worktree_create,
             worktree_status,
+            path_exists,
             worktree_diff,
             branch_diff,
             run_check,
