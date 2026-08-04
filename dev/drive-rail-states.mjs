@@ -19,10 +19,10 @@ const notes = []
 
 /** One scene. `fixture` shapes what the mock bridge answers with, so each state is produced by
  *  DATA rather than by poking the DOM into a shape the app would never reach on its own. */
-async function scene(name, { projects = [], sessions = [], collapsed = true, slowSessions = false, open = null, act }) {
+async function scene(name, { projects = [], sessions = [], collapsed = true, slowSessions = false, open = null, update = null, act }) {
   const browser = await webkit.launch()
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', deviceScaleFactor: 2 })
-  await ctx.addInitScript(([ps, ss, col, slow, openId]) => {
+  await ctx.addInitScript(([ps, ss, col, slow, openId, upd]) => {
     try {
       localStorage.setItem('operator.theme', 'mission-control-dark')
       localStorage.setItem('operator.sidebarCollapsed', col ? '1' : '0')
@@ -39,6 +39,9 @@ async function scene(name, { projects = [], sessions = [], collapsed = true, slo
         real = v
         v.loadProjects = async () => ps
         v.saveProjects = () => {}
+        // The update affordance only exists while a release is pending, which is why it is the
+        // half of the version line that regresses without anyone seeing it.
+        if (upd) v.checkUpdate = async () => upd
         v.terminalList = async () => ss.map((s, i) => ({ id: `tx${i}`, pid: 0, cwd: s.cwd, command: 'claude', alive: true }))
         // HYDRATION: projects resolve, sessions arrive later. That ordering is the real one — the
         // store reads are separate awaits — and it is the window in which a group can exist with
@@ -52,7 +55,7 @@ async function scene(name, { projects = [], sessions = [], collapsed = true, slo
         }
       },
     })
-  }, [projects, sessions, collapsed, slowSessions, open])
+  }, [projects, sessions, collapsed, slowSessions, open, update])
   const p = await ctx.newPage()
   p.on('pageerror', (e) => fails.push(`${name} PAGEERROR ${String(e).slice(0, 160)}`))
   await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
@@ -233,6 +236,46 @@ await scene('live-only', {
     if (!menu.some((m) => /^Start /.test(m))) fails.push(`live-only — the + menu offers no lane to start: ${JSON.stringify(menu)}`)
     if (!menu.some((m) => /roster/i.test(m))) fails.push('live-only — the + menu lost the "add one" verb')
     return s
+  },
+})
+
+// ---- 4c. THE VERSION LINE, with and without the update affordance ---------------------------
+// It is the last thing in the strip to reach the axis, and it went unmeasured for as long as it
+// was off it. Both widths, and — the case that regresses silently — with the update button
+// riding beside it, which must centre as ONE unit rather than leaving the version centred and the
+// button hanging off it.
+await scene('version-line', {
+  projects: [proj('v1', 'versioned')],
+  sessions: [],
+  open: 'v1',
+  update: { version: '9.9.9' },
+  act: async (p) => {
+    await p.waitForTimeout(1500)
+    // The claim, at one width then the other: the row's INK — version plus affordance — centres on
+    // the optical axis, 38 from the window edge.
+    const read = () => p.evaluate(() => {
+      const row = document.querySelector('[data-rail-identity-row]')
+      const kids = [...row.children].map((k) => k.getBoundingClientRect())
+      const left = Math.min(...kids.map((k) => k.left)), right = Math.max(...kids.map((k) => k.right))
+      return {
+        width: Math.round(document.querySelector('[data-rail]').getBoundingClientRect().width),
+        button: !!row.querySelector('button'),
+        centre: Math.round(((left + right) / 2) * 100) / 100,
+        text: row.textContent.trim(),
+      }
+    })
+    const a = await read()
+    await p.keyboard.press('Meta+b')
+    await p.waitForTimeout(900)
+    const b = await read()
+    notes.push(`version-line: ${a.width}px centre ${a.centre} · ${b.width}px centre ${b.centre} · button=${a.button} · "${a.text}"`)
+    if (!a.button || !b.button) fails.push('version-line — the update affordance did not render')
+    for (const s of [a, b]) {
+      if (Math.abs(s.centre - 38) > 0.75) {
+        fails.push(`version-line — at ${s.width}px the row's ink centres at ${s.centre}, not the optical 38`)
+      }
+    }
+    return a
   },
 })
 
