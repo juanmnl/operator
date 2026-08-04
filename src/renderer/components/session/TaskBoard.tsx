@@ -577,14 +577,16 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
   const subagents = signal?.activeSubagents ?? 0
   return (
     <div>
+      {/* NO LANE TINT ON THE CARD. It was doing the same job as the lane chip 40px below it, and
+          a whole column of tinted cards is loud — with 23 running, that tint IS the wall the
+          board reads as. The chip carries the lane; the card carries the work. (It is also the
+          house rule: no accent fills for state.) `--overlay-subtle` alone keeps a running card
+          lifted off the column without claiming a second identity channel. */}
       <article
         className={landed ? 'tb-card is-landed' : 'tb-card'}
         data-task-card={task.id}
         data-task-landed={landed || undefined}
-        style={cardStyle({
-          background: `color-mix(in srgb, ${accent} 5%, var(--overlay-subtle))`,
-          borderColor: `color-mix(in srgb, ${accent} 30%, var(--border))`,
-        })}
+        style={cardStyle({ background: 'var(--overlay-subtle)' })}
       >
         <p className="tb-title" data-card-title title={task.text}>{headlineOf(task.text).title}</p>
         <LaneLine signal={signal} accent={accent} />
@@ -798,20 +800,33 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
     <div>
       <article className="tb-card" data-task-card={task.id} style={cardStyle()}>
         <DeleteButton title="Delete task" onClick={onRemove} />
-        <p className="tb-title tb-title-closed" data-card-title title={task.text}>
-          <span
-            data-card-tick
-            style={{ color: unconfirmed ? 'var(--fg-muted)' : ACCENT_INK }}
-            title={unconfirmed ? 'Closed automatically: the session running it ended before it reported back' : 'Finished'}
-          >{unconfirmed ? '⋯' : '✓'}</span>{' '}
+        {/* NO GLYPH PREFIX. Every closed card used to open with `⋯` or `✓`, so the column read
+            as a list of marks rather than of work, and on a board where everything closed
+            unwatched it was 20 identical `⋯` down the left edge. The distinction survives where
+            it belongs: the column header carries the honest split, and an unwatched card greys
+            its own headline. */}
+        <p
+          className="tb-title tb-title-closed"
+          data-card-title
+          title={task.text}
+          data-card-unseen={unconfirmed || undefined}
+          // Receded, but NOT to bare `--fg-muted`: measured 4.06 / 3.73 / 3.86:1 on the three
+          // light palettes at 12.5px, i.e. under the 4.5 floor for body text — the driver caught
+          // it. Mixed 45% toward `--fg` it still reads as demoted next to a confirmed card while
+          // staying legible, the same correction the sidebar's project name uses.
+          style={unconfirmed ? { color: 'color-mix(in srgb, var(--fg-muted) 55%, var(--fg))' } : undefined}
+        >
           {headlineOf(task.text).title}
         </p>
         <div style={META_ROW}>
           <AgentChip role={role} live={false} lostRoleId={role ? undefined : task.roleId} />
           <span data-card-time style={TIME}>{relativeTime(closedAt)}</span>
+          {/* One word, not two shapes. `abandoned` on every card in a column where every card is
+              abandoned is noise that says nothing about THIS task; `unseen` states the only fact
+              that differs from its neighbours — nobody watched it finish. */}
           {unconfirmed && (
-            <span data-card-unconfirmed style={{ ...LABEL, fontSize: 8.5, letterSpacing: '0.06em' }}>
-              {task.status === 'abandoned' ? 'abandoned' : 'unconfirmed'}
+            <span data-card-unconfirmed title="Closed automatically: nobody saw this one finish" style={{ ...LABEL, fontSize: 8.5, letterSpacing: '0.06em' }}>
+              unseen
             </span>
           )}
           <CheckChip task={task} />
