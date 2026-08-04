@@ -281,12 +281,14 @@ export function TaskBoard(props: TaskBoardProps) {
                 onRemove={props.onRemoveTask}
               />
             ))}
-            {board.backlog.length === 0 && !composing && <EmptyColumn text="Nothing queued." />}
+            {board.backlog.length === 0 && !composing && (
+              <EmptyColumn text="Nothing queued." action={{ label: '+ Add a task', run: () => setComposing(true) }} />
+            )}
           </>
         )
       case 'running':
         return board.running.length === 0
-          ? <EmptyColumn text="No agent is working." />
+          ? <EmptyColumn text="No agent is working right now." />
           : board.running.map((task) => (
             <RunningCard
               key={task.id}
@@ -977,22 +979,45 @@ function Pip({ tone }: { tone: 'idle' | 'running' | 'waiting' | 'done' }) {
   return <span style={{ width: 6, height: 6, borderRadius: '50%', background: bg, flexShrink: 0 }} />
 }
 
-/** An empty column. The dashed box stays; what changed is that the four of them are now the
- *  SAME box.
+/** The tallest an empty box can be: BACKLOG's, the only one with an action in it.
  *
- *  They were 80.5px in Backlog against 52.5px everywhere else, and the whole difference was one
- *  control: an `+ Add a task` button at `marginTop: 8` that only this column had. Three empty
- *  states of one height beside a fourth of another reads as a layout fault, not as a column that
- *  can be acted on — the asymmetry is real, but it belongs in the header beside the column's own
- *  name, which is where the `+` now lives (30px away, and unambiguously Backlog's). One verb,
- *  one control, and four identical boxes by construction rather than by tuning. */
-function EmptyColumn({ text }: { text: string }) {
+ *      1 border + 18 padding + 16.5 text (11px × 1.5) + 8 row margin + 20 `.tb-btn`
+ *      (10px × 1.4 + 2×2 padding + 2×1 border) + 18 padding + 1 border  =  82.5
+ *
+ *  Every box claims it, so the four line up while only one of them has something to say at the
+ *  bottom. That dead space in the other three is the accepted cost of keeping `+ Add a task`
+ *  where it is — not a defect to design away.
+ *
+ *  The number is arithmetic over things that can change, so `drive-task-board` asserts the
+ *  MEASURED height equals it, not merely that the four agree — and that is not hypothetical: this
+ *  constant was written 80.5 first, having dropped the box's own two 1px dashed edges (the box is
+ *  `border-box`, so `minHeight` includes them but the sum above has to as well). The four boxes
+ *  agreed with each other at 80.5 while Backlog's real content needed 82.5; only the absolute
+ *  check could see it. The same trap is live for `.tb-btn` ever changing size. */
+const EMPTY_MIN_H = 82.5
+
+/** An empty column. One dashed box, one line, and — in Backlog — the control that files the
+ *  first task. Backlog's box is 28px taller by content, so the other three are padded to match
+ *  rather than shrinking it: the asymmetry (this column can be acted on, Running cannot) is real,
+ *  and it is not worth removing a control to make a rectangle tidy. */
+function EmptyColumn({ text, action }: { text: string; action?: { label: string; run: () => void } }) {
   return (
     <div data-column-empty style={{
       border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
       padding: '18px 12px', textAlign: 'center',
+      minHeight: EMPTY_MIN_H, boxSizing: 'border-box',
     }}>
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5 }}>{text}</p>
+      {/* A FLEX ROW, not a bare inline-block. As `text-align: center` on an inline button the row
+          is a LINE BOX, so it carried the parent font's descent under the button — 22.73px of
+          row for a 20px control, which is how the arithmetic above and the measured box came to
+          disagree by 2.23px. A flex line has no strut, so the button's own height is the row's,
+          and `EMPTY_MIN_H` is derivable rather than measured. */}
+      {action && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 8 }}>
+          <button className="tb-btn" onClick={action.run}>{action.label}</button>
+        </div>
+      )}
     </div>
   )
 }

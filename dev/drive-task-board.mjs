@@ -82,6 +82,10 @@ const PROBE = `(() => {
 // you must READ, 3:1 for supporting meta (counts, timestamps, tags) you only glance at.
 const FLOOR = 4.5
 const META_FLOOR = 3.0
+/** `EMPTY_MIN_H` as declared in TaskBoard.tsx — the height of BACKLOG's empty box, which the
+ *  other three are padded to. Restated here rather than imported (this driver runs against the
+ *  built page, not the source), so a change in one place has to be a change in both. */
+const EMPTY_MIN_H = 82.5
 
 const rows = []
 const notes = []
@@ -196,14 +200,26 @@ for (const [identity, mode] of THEMES) {
   await p.waitForTimeout(200)
   await p.screenshot({ path: `${OUT}/${key}-3b-backlog-empty.png` })
   const backlogBoxes = await p.evaluate(() => [...document.querySelectorAll('[data-column-empty]')]
-    .map((e) => ({ col: e.closest('[data-board-column]')?.getAttribute('data-board-column'), h: Math.round(e.getBoundingClientRect().height * 100) / 100 })))
+    .map((e) => ({
+      col: e.closest('[data-board-column]')?.getAttribute('data-board-column'),
+      h: Math.round(e.getBoundingClientRect().height * 100) / 100,
+      btn: e.querySelector('button')?.textContent.trim() ?? null,
+    })))
   const hs = backlogBoxes.map((b) => b.h)
+  notes.push(`${key} — backlog-empty boxes ${JSON.stringify(backlogBoxes)}`)
   if (!backlogBoxes.some((b) => b.col === 'backlog')) fails.push(`${key} — running-only did not empty the backlog column`)
   if (hs.length && Math.max(...hs) - Math.min(...hs) > 0.5) {
     fails.push(`${key} — empty boxes differ in height with backlog among them: ${JSON.stringify(backlogBoxes)}`)
   }
-  if (await p.locator('[data-column-empty] button').count()) {
-    fails.push(`${key} — an empty column still carries its own button; that is the 28px that made Backlog taller`)
+  // The action stays IN the box. The three neighbours are padded to match it — which is why the
+  // absolute height matters and not only the spread: `minHeight` is arithmetic over `.tb-btn`'s
+  // own size, so if that button grows, four boxes agreeing with each other while clipping the
+  // one control among them is exactly the failure the spread check cannot see.
+  if (!backlogBoxes.some((b) => b.col === 'backlog' && b.btn === '+ Add a task')) {
+    fails.push(`${key} — Backlog's empty box lost its "+ Add a task": ${JSON.stringify(backlogBoxes)}`)
+  }
+  if (hs.length && Math.abs(Math.max(...hs) - EMPTY_MIN_H) > 0.5) {
+    fails.push(`${key} — empty boxes are ${Math.max(...hs)}px, not the declared ${EMPTY_MIN_H} (EMPTY_MIN_H no longer matches Backlog's content)`)
   }
 
   await p.click('[data-scenario-btn="backlog-only"]')
