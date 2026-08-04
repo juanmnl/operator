@@ -119,13 +119,16 @@ await scene('zero-lanes', {
       groups: document.querySelectorAll('[data-rail-group]').length,
       homes: document.querySelectorAll('[data-rail-home]').length,
       lanes: document.querySelectorAll('[data-lane-row]').length,
-      add: !!document.querySelector('[data-rail-add-lane]'),
+      add: document.querySelector('[data-rail-add-lane]')?.textContent.trim() ?? null,
       hairlines: [...document.querySelectorAll('[data-rail-group]')]
         .filter((g) => getComputedStyle(g).boxShadow !== 'none').length,
     }))
-    notes.push(`zero-lanes: ${s.groups} group, ${s.homes} home, ${s.lanes} lane rows, add=${s.add}, ${s.hairlines} hairline(s)`)
+    notes.push(`zero-lanes: ${s.groups} group, ${s.homes} home, ${s.lanes} idle rows, + row reads "${s.add}", ${s.hairlines} hairline(s)`)
+    // No roster at all → nothing to start, so the row names the only verb it has.
+    if (s.add !== 'Add an agent') fails.push(`zero-lanes — the + row reads "${s.add}", expected "Add an agent"`)
     if (s.homes !== 1) fails.push(`zero-lanes — expected exactly 1 Home row, got ${s.homes}`)
     if (!s.add) fails.push('zero-lanes — no "Add an agent" in a project with no lanes')
+    if (s.lanes) fails.push(`zero-lanes — ${s.lanes} idle lane row(s); the strip lists only what is live`)
     if (s.hairlines) fails.push(`zero-lanes — ${s.hairlines} orphan hairline(s) on a single group`)
     return s
   },
@@ -156,11 +159,13 @@ await scene('gallery-empty', {
   },
 })
 
-// ---- 4. TWENTY lanes, expanded ----------------------------------------------------------------
-// The list scrolls; the foot stays pinned and does not get pushed off the bottom.
+// ---- 4. TWENTY agents, expanded --------------------------------------------------------------
+// The list scrolls; the foot stays pinned and does not get pushed off the bottom. TWENTY LIVE
+// ONES, not twenty roster lanes: the strip lists only what is live, so a long roster is no longer
+// what makes it long.
 await scene('twenty-lanes', {
   projects: [proj('t1', 'crowded', { roster: lanes(20) })],
-  sessions: [],
+  sessions: Array.from({ length: 20 }, () => ({ cwd: '/Users/x/crowded', projectName: 'crowded', projectId: 't1' })),
   collapsed: false,
   open: 't1',
   act: async (p) => {
@@ -170,7 +175,7 @@ await scene('twenty-lanes', {
       const foot = document.querySelector('[data-rail-foot]').getBoundingClientRect()
       const scroller = document.querySelector('[data-rail] .scroll-hidden')
       return {
-        lanes: document.querySelectorAll('[data-lane-row]').length,
+        lanes: document.querySelectorAll('[data-rail-orb]').length,
         scrolls: scroller.scrollHeight > scroller.clientHeight + 1,
         footInside: foot.bottom <= rail.bottom + 0.5 && foot.top >= rail.top,
         firstHeaderVisible: (() => {
@@ -179,14 +184,54 @@ await scene('twenty-lanes', {
         })(),
       }
     })
-    notes.push(`twenty-lanes: ${s.lanes} lane rows, scrolls=${s.scrolls}, foot pinned inside=${s.footInside}, header visible=${s.firstHeaderVisible}`)
-    if (s.lanes !== 20) fails.push(`twenty-lanes — ${s.lanes} lane rows, expected 20`)
+    notes.push(`twenty-agents: ${s.lanes} rows, scrolls=${s.scrolls}, foot pinned inside=${s.footInside}, header visible=${s.firstHeaderVisible}`)
+    if (s.lanes !== 20) fails.push(`twenty-lanes — ${s.lanes} agent rows, expected 20`)
     if (!s.scrolls) fails.push('twenty-lanes — the member list did not become scrollable')
     if (!s.footInside) fails.push('twenty-lanes — the foot was pushed outside the strip')
     // A group taller than the scroll box top-aligns, which must mean its HEADER — scrolling the
     // name of the thing you just opened off the top is the failure the scroll-into-view exists to
     // prevent, not one it is allowed to cause.
     if (!s.firstHeaderVisible) fails.push('twenty-lanes — the open group scrolled past its own header')
+    return s
+  },
+})
+
+// ---- 4b. ONE live agent, five roster lanes ---------------------------------------------------
+// The withdrawn half of the membership rule, asserted: header + that agent + the `+` row, and NOT
+// the four quiet lanes. The launch those rows used to carry moves INTO the `+`, which says so.
+await scene('live-only', {
+  projects: [proj('a1', 'active', { roster: lanes(5) })],
+  sessions: [{ cwd: '/Users/x/active', projectName: 'active', projectId: 'a1' }],
+  collapsed: false,
+  open: 'a1',
+  act: async (p) => {
+    await p.waitForTimeout(1200)
+    const s = await p.evaluate(() => {
+      const add = document.querySelector('[data-rail-add-lane]')
+      return {
+        orbs: document.querySelectorAll('[data-rail-orb]').length,
+        idle: document.querySelectorAll('[data-lane-row]').length,
+        homes: document.querySelectorAll('[data-rail-home]').length,
+        add: add?.textContent.trim() ?? null,
+        idleCount: Number(add?.getAttribute('data-rail-idle-lanes') ?? -1),
+      }
+    })
+    notes.push(`live-only: ${s.orbs} agent, ${s.idle} idle rows, ${s.homes} home, + row reads "${s.add}" over ${s.idleCount} idle lane(s)`)
+    if (s.orbs !== 1) fails.push(`live-only — ${s.orbs} agent rows, expected 1`)
+    if (s.idle) fails.push(`live-only — ${s.idle} IDLE rows still render`)
+    if (s.homes) fails.push('live-only — Home is drawn beside a live agent')
+    if (s.idleCount !== 5) fails.push(`live-only — the + row sees ${s.idleCount} idle lanes, expected 5`)
+    // The row must NAME the launch, or the capability the idle rows carried is stranded behind a
+    // control that says it only creates.
+    if (s.add !== 'Start an agent') fails.push(`live-only — the + row reads "${s.add}", expected "Start an agent"`)
+    // …and pressing it must OFFER those lanes.
+    await p.click('[data-rail-add-lane]')
+    await p.waitForTimeout(300)
+    const menu = await p.evaluate(() => [...document.querySelectorAll('[data-card-menu] button, [role="menu"] button')]
+      .map((b) => b.textContent.trim()))
+    notes.push(`live-only menu: ${JSON.stringify(menu)}`)
+    if (!menu.some((m) => /^Start /.test(m))) fails.push(`live-only — the + menu offers no lane to start: ${JSON.stringify(menu)}`)
+    if (!menu.some((m) => /roster/i.test(m))) fails.push('live-only — the + menu lost the "add one" verb')
     return s
   },
 })

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, reorderRoles, presetFor, rolePresets, isCoordinator } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
@@ -2409,10 +2409,10 @@ export function DashboardView() {
     setProjects((prev) => reorderRail(prev, draggedId, targetId, edge))
   }, [])
 
-  const handleReorderLane = useCallback((draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => {
-    if (!activeProjectId) return
-    updateProject(activeProjectId, (p) => ({ roster: reorderRoles(p.roster ?? [], draggedRoleId, targetRoleId, edge) }))
-  }, [activeProjectId, updateProject])
+  // `handleReorderLane` lived here to let the sidebar's idle lane ROWS be dragged into order.
+  // Those rows are gone (the strip lists only what is live), and with them the only caller. Lane
+  // order is not stranded: RosterPanel — the Team screen — owns it, drags it by a grip, and writes
+  // the same `reorderRoles` to the same durable roster.
 
   // --- Agent colour --------------------------------------------------------------------
   // A lane's colour belongs to its Role (roster = source of truth, so every surface
@@ -2423,6 +2423,10 @@ export function DashboardView() {
   // The rail tile's context menu. Held HERE, not in ProjectRail, for the same reason the accent
   // picker is: the rail's tile column clips its overflow at 44px.
   const [railMenu, setRailMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
+  // The strip's `+ Start an agent` menu. Held here for the same reason as the two above: the
+  // strip is a clipping scroller at the window's edge, so it reports an anchor and the view
+  // renders the popover.
+  const [laneMenu, setLaneMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
 
   const roleOf = useCallback((session: AgentSession): Role | undefined => {
     if (!session.roleId) return undefined
@@ -3271,6 +3275,31 @@ export function DashboardView() {
     ]
   }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject])
 
+  /** THE LAUNCH PATH THE IDLE ROWS USED TO CARRY. The strip lists only what is LIVE now, so the
+   *  roster's quiet lanes have no row to click — and removing a control must never strand the need
+   *  behind it. Same verb, same one step, one gesture further in: pick the lane, it launches. */
+  const laneMenuProject = useMemo(
+    () => (laneMenu ? projects.find((p) => p.id === laneMenu.projectId) ?? null : null),
+    [laneMenu, projects],
+  )
+  const laneMenuItems = useMemo((): CardMenuItem[] => {
+    const project = laneMenuProject
+    if (!project) return []
+    const liveRoles = new Set(
+      allSidebarSessions.filter((s) => s.projectId === project.id && s.status !== 'ended').map((s) => s.roleId),
+    )
+    const idle = (project.roster ?? []).filter((r) => !liveRoles.has(r.id))
+    return [
+      ...idle.map((role) => ({
+        label: `Start ${role.name}`,
+        onClick: () => { void handleLaunchRole(project, role) },
+      })),
+      // The other verb, named, under a hairline — never sharing a glyph or a word with the four
+      // above it.
+      { label: 'Add an agent on the roster…', onClick: handleAddLane, separator: idle.length > 0 },
+    ]
+  }, [laneMenuProject, allSidebarSessions, handleLaunchRole, handleAddLane])
+
   return (
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
@@ -3293,6 +3322,14 @@ export function DashboardView() {
           title={railMenuProject.name}
           items={railMenuItems}
           onClose={() => setRailMenu(null)}
+        />
+      )}
+      {laneMenu && laneMenuProject && (
+        <CardMenu
+          at={{ top: laneMenu.top, left: laneMenu.left }}
+          title={`${laneMenuProject.name} — agents`}
+          items={laneMenuItems}
+          onClose={() => setLaneMenu(null)}
         />
       )}
       {/* THE LEFT SURFACE — one strip at two widths. There is no pair to group any more: the
@@ -3339,9 +3376,8 @@ export function DashboardView() {
         shortcutIndices={shortcutIndices}
         onRenameSession={handleRename}
         onCloseSession={handleCloseSession}
-        onLaunchRole={(project, role) => { void handleLaunchRole(project, role) }}
+        onAgentMenu={(projectId, anchor) => setLaneMenu({ projectId, ...anchor })}
         onAddLane={handleAddLane}
-        onReorderLane={handleReorderLane}
         onReorderSession={handleReorderSession}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
