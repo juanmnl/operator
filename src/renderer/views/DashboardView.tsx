@@ -24,7 +24,6 @@ import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { Sidebar } from '../components/sidebar/Sidebar'
-import { SidebarRail } from '../components/sidebar/SidebarRail'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { AppShell } from '../components/AppShell'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
@@ -3342,28 +3341,20 @@ export function DashboardView() {
           strip collapses to 0 and the gallery's own header reserves its own space (spec §2A). */}
       <div
         style={{
-          width: contentMode === 'gallery' ? 0 : sidebarCollapsed ? 64 : 220,
+          width: contentMode === 'gallery' || sidebarCollapsed ? 0 : 220,
           flexShrink: 0,
           overflow: 'hidden',
           transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
         }}
       >
-      {contentMode === 'gallery' ? null : sidebarCollapsed ? (
-        <SidebarRail
-          project={activeProject}
-          sessions={scopedSessions}
-          projects={projects}
-          activeSessionId={activeSessionId}
-          customNames={customNames}
-          shortcutIndices={shortcutIndices}
-          onSelectSession={handleSelectSession}
-          onOpenTeam={handleOpenProjectTeam}
-          onExpand={toggleSidebar}
-          onShowGallery={handleShowGallery}
-          accentOf={accentOf}
-          onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
-        />
-      ) : (
+      {/* COLLAPSED IS NOW NOTHING, because the rail carries the agents.
+          `SidebarRail` used to fill this slot with a 64px strip of this project's sessions —
+          which, beside the 52px accordion that now lists those same sessions in its open band,
+          was 116px of chrome showing one list twice. Collapsing means "leave me the rail", and
+          the rail is already outboard of this element.
+          The sidebar still expands: the toolbar's SidebarToggle and ⌘B both call `toggleSidebar`,
+          so removing the badge that also did it strands nothing. */}
+      {contentMode === 'gallery' || sidebarCollapsed ? null : (
       <Sidebar
         project={activeProject}
         sessions={scopedSessions}
