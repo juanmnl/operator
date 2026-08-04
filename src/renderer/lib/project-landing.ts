@@ -22,6 +22,9 @@ export interface LandingLane {
   projectId?: string
   roleId?: string
   ended?: boolean
+  /** The lane's DURABLE key (`SavedSession.key`). Present on real tabs; used to match the
+   *  remembered agent, because `id` is a per-run pty id and means nothing after a restart. */
+  key?: string
 }
 
 export type Landing =
@@ -48,4 +51,37 @@ export function landingFor(project: Project | null | undefined, lanes: readonly 
   const only = roster[0]
   const live = lanes.find((l) => l.projectId === project.id && l.roleId === only.id && !l.ended)
   return live ? { kind: 'session', terminalId: live.id } : { kind: 'board' }
+}
+
+
+// ── THE MEMORY IN FRONT OF THE RULE ────────────────────────────────────────────────────────
+//
+// "when switching projects, show me the last selected agent, not the project itself."
+//
+// This deliberately REVERSES an earlier decision — `handleOpenProject` used to re-apply the rule
+// below rather than restore where you were, on the argument that predictable beats clever. The
+// user has now asked for the clever one, per project. So `landingFor` is no longer the rule; it
+// is the FALLBACK, and it stays exactly as it was: pure, roster-keyed, and testable on its own.
+// The memory sits in front of it rather than inside it, so neither has to know about the other.
+//
+// The memory only ever wins when it resolves to a lane that is LIVE RIGHT NOW. Every other case
+// — lane deleted, session ended, worktree gone, or the app was restarted and nothing is running —
+// falls through. That is what stops it landing you on a dead pty, which is the failure the
+// restore work already had to answer once: there is no session object for a lane with no pty, so
+// "land on the last agent" would otherwise mean "land on nothing".
+
+/** Where opening `project` should land, given the agent last selected IN THAT PROJECT.
+ *
+ *  `lastKey` is a durable `SavedSession.key`, never a terminal id — a record keyed on a pty id is
+ *  worthless the moment the app restarts, which is precisely when it matters most. */
+export function landingWithLastAgent(
+  project: Project | null | undefined,
+  lanes: readonly LandingLane[],
+  lastKey: string | undefined,
+): Landing {
+  if (project && lastKey) {
+    const live = lanes.find((l) => l.key === lastKey && l.projectId === project.id && !l.ended)
+    if (live) return { kind: 'session', terminalId: live.id }
+  }
+  return landingFor(project, lanes)
 }

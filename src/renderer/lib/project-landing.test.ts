@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Project, Role } from '../../shared/types'
-import { landingFor, type LandingLane } from './project-landing'
+import { landingFor, landingWithLastAgent, type LandingLane } from './project-landing'
 
 const project = (roster: Role[], id = 'p'): Project =>
   ({ id, path: '/p', name: 'p', createdAt: '', lastActiveAt: '', roster })
@@ -58,5 +58,50 @@ describe('landingFor — where entering a project puts you', () => {
     expect(landingFor(null, [])).toEqual({ kind: 'board' })
     expect(landingFor(undefined, [])).toEqual({ kind: 'board' })
     expect(landingFor({ id: 'p', path: '/p', name: 'p', createdAt: '', lastActiveAt: '' }, [])).toEqual({ kind: 'board' })
+  })
+})
+
+// ── the memory in front of the rule ────────────────────────────────────────────────────────
+// "when switching projects, show me the last selected agent, not the project itself" — which
+// reverses the earlier "re-apply the rule, don't restore" decision, on purpose and per project.
+describe('landingWithLastAgent', () => {
+  const project = (roster: { id: string }[]) =>
+    ({ id: 'p1', path: '/p', name: 'p', createdAt: '', lastActiveAt: '', roster }) as unknown as Parameters<typeof landingWithLastAgent>[0]
+  const twoLanes = project([{ id: 'code' }, { id: 'design' }])
+
+  it('lands on the remembered agent when it is still live', () => {
+    const lanes = [
+      { id: 't1', key: 'k-code', projectId: 'p1', roleId: 'code' },
+      { id: 't2', key: 'k-design', projectId: 'p1', roleId: 'design' },
+    ]
+    // Two lanes → `landingFor` alone would say board. The memory is what overrides it.
+    expect(landingFor(twoLanes, lanes)).toEqual({ kind: 'board' })
+    expect(landingWithLastAgent(twoLanes, lanes, 'k-design')).toEqual({ kind: 'session', terminalId: 't2' })
+  })
+
+  it('falls through when the remembered session has ENDED', () => {
+    const lanes = [{ id: 't1', key: 'k-code', projectId: 'p1', roleId: 'code', ended: true }]
+    expect(landingWithLastAgent(twoLanes, lanes, 'k-code')).toEqual({ kind: 'board' })
+  })
+
+  it('falls through when the lane is gone entirely (deleted, or nothing running)', () => {
+    // The restart case: no ptys at all, so there is no session object to land on.
+    expect(landingWithLastAgent(twoLanes, [], 'k-code')).toEqual({ kind: 'board' })
+  })
+
+  it('falls through when the project was never visited', () => {
+    const lanes = [{ id: 't1', key: 'k-code', projectId: 'p1', roleId: 'code' }]
+    expect(landingWithLastAgent(twoLanes, lanes, undefined)).toEqual({ kind: 'board' })
+  })
+
+  it('never crosses projects — a key live in ANOTHER project does not count', () => {
+    const lanes = [{ id: 't9', key: 'k-code', projectId: 'p2', roleId: 'code' }]
+    expect(landingWithLastAgent(twoLanes, lanes, 'k-code')).toEqual({ kind: 'board' })
+  })
+
+  it('keeps `landingFor`s single-live-lane answer when there is no memory', () => {
+    const solo = project([{ id: 'code' }])
+    const lanes = [{ id: 't1', key: 'k-code', projectId: 'p1', roleId: 'code' }]
+    expect(landingWithLastAgent(solo, lanes, undefined)).toEqual({ kind: 'session', terminalId: 't1' })
   })
 })

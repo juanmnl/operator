@@ -7,7 +7,7 @@ import {
   resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
-import { landingFor } from '../lib/project-landing'
+import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
@@ -484,15 +484,22 @@ export function DashboardView() {
    *
    *  It used to land on the roster board, always. That was right when a project arrived with six
    *  seeded lanes and the board was the only thing that explained them; the roster is now one lane
-   *  by default, so the board became a single row with nothing to decide. Where it lands now is
-   *  `landingFor` (lib/project-landing): exactly one LIVE lane → straight into that agent,
-   *  everything else → the board, which is project home.
+   *  by default, so the board became a single row with nothing to decide.
    *
-   *  RE-ENTERING is re-applied, not restored. Coming back to a project you've been in before puts
-   *  you where the rule says, not where you last were — predictable beats clever, and "restore
-   *  where I was" is a whole separate feature with its own persistence. The one thing preserved is
-   *  the existing instinct on line 583: opening the project you are ALREADY in does not yank you
-   *  off what you are looking at. Only a genuine change of project re-lands.
+   *  RE-ENTERING RESTORES THE LAST AGENT — "when switching projects, show me the last selected
+   *  agent, not the project itself". This REVERSES what this comment used to say (re-apply the
+   *  rule, never restore, predictable beats clever): the memory is now the rule and `landingFor`
+   *  is the fallback. Both live in lib/project-landing — `landingWithLastAgent` in front,
+   *  `landingFor` unchanged behind it — so the pure rule stays pure and separately testable.
+   *  The memory only wins when the remembered lane is LIVE; a lane that ended, was deleted, or
+   *  simply isn't running after a restart falls through to the board. There is no session object
+   *  for a lane with no pty, so landing on one would mean landing on nothing.
+   *
+   *  Two things it does NOT change. `handleOpenProjectHome`/`handleOpenProjectTeam` are explicit
+   *  destinations — the back chevron and the sidebar project header must keep reaching the board,
+   *  or the dead-control bug those two just had comes straight back. And opening the project you
+   *  are ALREADY in still does not yank you off what you are looking at; only a genuine change of
+   *  project re-lands.
    *
    *  It does not launch anything. Landing somewhere is navigation; starting an agent is a decision
    *  that costs a process, a worktree and a dev port. */
@@ -506,7 +513,11 @@ export function DashboardView() {
       // want the project HOME and go through handleOpenProjectHome instead, so this branch is
       // only ever a re-select of the current project.
       if (prev === projectId) return projectId
-      const landing = landingFor(projectsRef.current.find((p) => p.id === projectId), terminalsRef.current)
+      const landing = landingWithLastAgent(
+        projectsRef.current.find((p) => p.id === projectId),
+        terminalsRef.current,
+        lastAgentRef.current[projectId],
+      )
       setProjectTab('board')
       if (landing.kind === 'session') {
         // Focus its pty. `focusTerminal` also stamps the scope, which is the same rule the
@@ -2755,6 +2766,11 @@ export function DashboardView() {
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean
   // exit loses it to exactly the stop this feature exists to survive.
+  // projectId → durable key of the agent last selected there. Kept in a ref because
+  // `handleOpenProject` is a stable callback that reads refs by design, and this is exactly the
+  // kind of value that must be current at the moment of the click rather than at the moment the
+  // callback was built. Persisted inside the workspace snapshot — one record, see its type.
+  const lastAgentRef = useRef<Record<string, string>>({})
   // Lanes that were live before the restart and have not been resumed yet — see the persist
   // effect for why an empty terminal list must not overwrite them.
   const pendingLaneKeysRef = useRef<string[]>([])
@@ -2771,6 +2787,11 @@ export function DashboardView() {
   useEffect(() => {
     if (!savedHydrated || !restoreSettled) return // pre-restore state is a seed, not a place
     const focused = allSidebarSessions.find((s) => s.id === activeSessionId)
+    // RECORDED ON SELECTION, not on quit — same reasoning as the snapshot itself: it has to
+    // survive a crash. A selection only counts when we can name both halves durably.
+    if (focused?.savedKey && focused.projectId) {
+      lastAgentRef.current = { ...lastAgentRef.current, [focused.projectId]: focused.savedKey }
+    }
     const snapshot: Workspace = {
       v: WORKSPACE_VERSION,
       projectId: activeProjectId,
@@ -2793,6 +2814,7 @@ export function DashboardView() {
       // not mean "you had none", it means "not resumed yet", and the pending set stands until
       // something real replaces it.
       liveKeys: terminals.length ? terminals.map((t) => t.key) : pendingLaneKeysRef.current,
+      lastAgentByProject: lastAgentRef.current,
       at: new Date().toISOString(),
     }
     try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
@@ -2828,6 +2850,10 @@ export function DashboardView() {
     })
     // Carried so the offer survives a second restart (see the persist effect).
     pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
+    // The per-project last agent outlives the restart too. It only ever WINS when the lane is
+    // live, so seeding it from a run where nothing is running is harmless — it starts mattering
+    // again the moment something is resumed.
+    lastAgentRef.current = workspace.lastAgentByProject ?? {}
     setActiveProjectId(plan.projectId)
     setProjectTab(plan.projectTab)
     setPrefsViewActive(plan.mode === 'prefs')
