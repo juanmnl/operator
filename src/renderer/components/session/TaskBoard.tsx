@@ -575,6 +575,9 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
   const started = task.startedAt ?? task.createdAt
   const elapsed = fmtDuration(now - new Date(started).getTime())
   const subagents = signal?.activeSubagents ?? 0
+  // The lane is parked on you rather than working. Owned here so the state slot and the activity
+  // line cannot disagree about it.
+  const awaitingYou = signal?.status !== 'ended' && signal?.phase === 'waiting'
   return (
     <div>
       {/* NO LANE TINT ON THE CARD. It was doing the same job as the lane chip 40px below it, and
@@ -626,7 +629,17 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
           ) : (
             <AgentChip role={role} live={laneLive} lostRoleId={role ? undefined : task.roleId} />
           )}
-          <span data-card-time style={TIME} title={`Started ${relativeTime(started)}`}>{elapsed}</span>
+          {/* ONE STATE FACT, NEVER TWO. A card that says it is RUNNING while also saying "Your
+              turn" contradicts itself — and on the real board every running card said both,
+              because the lane was idle awaiting input while its task still claimed to be
+              running. The slot carries whichever is true: `your turn · 4h 4m` in the lane's ink
+              when the agent is waiting on you, or the bare elapsed when it is working. */}
+          <span
+            data-card-time
+            data-card-turn={awaitingYou || undefined}
+            style={awaitingYou ? { ...TIME, color: laneTextColor(accent) } : TIME}
+            title={`Started ${relativeTime(started)}`}
+          >{awaitingYou ? `your turn · ${elapsed}` : elapsed}</span>
           <CheckChip task={task} />
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             <DiffToggle task={task} open={diffOpen} onToggle={onToggleDiff} />
@@ -649,14 +662,10 @@ function LaneLine({ signal, accent }: { signal?: LaneSignal; accent: string }) {
   if (!signal) return null
   if (signal.status === 'ended') return <p style={ACTIVITY}>Session ended</p>
   if (signal.phase === 'compacting') return <p style={ACTIVITY} data-lane-line>Compacting context</p>
-  if (signal.phase === 'waiting') {
-    // Your turn. MOTION MEANS BUSY is the app-wide rule and waiting is not busy — so this rests
-    // static and carries its meaning in the words, drawn in the lane's ink so it catches the eye
-    // without a pulse.
-    return (
-      <p data-lane-line style={{ ...ACTIVITY, color: laneTextColor(accent) }}>Your turn</p>
-    )
-  }
+  // `waiting` is deliberately NOT drawn here any more. The card's state slot says `your turn`
+  // beside the elapsed time, and printing it twice is what made a running card contradict
+  // itself. MOTION MEANS BUSY still holds either way: waiting is not busy, so nothing animates.
+  if (signal.phase === 'waiting') return null
   if (signal.phase !== 'running') return null
   return (
     <p data-lane-line style={{ ...ACTIVITY, display: 'flex', alignItems: 'center', gap: 5 }}>
