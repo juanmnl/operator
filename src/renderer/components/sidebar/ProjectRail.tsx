@@ -107,6 +107,25 @@ const ORB = 24
  *  the optical-centre fix from D1-FIX-1 and this must not drift it. See
  *  `dev/drive-rail-invariant.mjs`, assertion X. */
 const ROW_INSET_L = 8
+/** The `+`'s ink, EXPANDED. Sized against the orb's painted extent, measured rather than chosen:
+ *  the disc paints 24×24 and the plus at 24 painted 24×24 too — the same extent, which is exactly
+ *  why it read heavier. A cross reaches the corners of its box; a disc of dots does not, so equal
+ *  extents are not equal mass (405px² of ink against 92px²). At 20 it is 83% of the disc and reads
+ *  as its junior, which is what it is.
+ *
+ *  IT IS LEFT-ALIGNED IN THE COLUMN, not centred. Shrinking a centred glyph moves its left ink
+ *  edge — measured 8 → 9 → 10 → 11 as the svg went 24 → 22 → 20 → 18 — and that edge is the one
+ *  thing FIX-5 put there. So the mark column stays 24 wide (the labels after it stay on one x) and
+ *  the glyph hugs its left. */
+const ADD_GLYPH = 20
+/** Air between member rows, expanded. The tinted rows used to stack flush, so a selected row's
+ *  fill butted against its neighbours and each member stopped reading as its own object.
+ *
+ *  6 belongs to the family already here: the group boundary is 6 + hairline + 6, and the foot's
+ *  dividers are 9 + 9. It is also HALF the group separation (12 + the hairline), which is the
+ *  constraint that matters — a divider must out-space what it divides, or the grouping inverts.
+ *  `dev/drive-rail-invariant.mjs` asserts that relationship rather than trusting this comment. */
+const MEMBER_GAP = 6
 /** Foot geometry — shared with `PlanMeter`, which brings its own button (see `foot-cell.ts`).
  *  24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52, exactly): it FIT,
  *  and the fit is what set it. The field is 60 now, so nothing forces 24 any more — deliberately
@@ -371,6 +390,13 @@ export function ProjectRail({
                   state and removes one rather than adding two.
                   The launching agent takes the row Home was in — both are MEMBER_BOX high in the
                   member column — so starting work does not lift the group by a row. */}
+              <div data-member-column style={{
+                display: 'flex', flexDirection: 'column',
+                // Header → first member is 4px; members are `MEMBER_GAP` apart. Collapsed they
+                // stay flush: the orbs are a column of discs, not a stack of tinted rows, so the
+                // air that separates the rows has nothing to separate there.
+                ...(expanded ? { gap: MEMBER_GAP, marginTop: 4 } : null),
+              }}>
               {live.length === 0 && (
                 <HomeRow
                   collapsed={collapsed}
@@ -461,18 +487,19 @@ export function ProjectRail({
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)'; e.currentTarget.style.color = 'var(--fg)' }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-muted)' }}
                 >
-                  {/* Drawn to the DISC's 24px, edge to edge of its viewBox with the stroke scaled
-                      down to keep the painted line at 1.2 — so the `+`'s ink starts on the same
-                      left edge as the orb above it and the header above that, rather than 18px
-                      inside the row. Aligning the ink, not the boxes. */}
-                  <span style={{ width: ORB, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                    <svg width={ORB} height={ORB} viewBox="0 0 16 16" fill="none">
-                      <path d="M8 0.4v15.2M0.4 8h15.2" stroke="currentColor" strokeWidth="0.8" strokeLinecap="round" />
+                  {/* `ADD_GLYPH` of ink, LEFT-ALIGNED in the disc's 24px column: its left ink edge
+                      lands on the strip's one left edge, the label after it stays on the same x as
+                      every lane's, and the glyph itself is the orb's junior rather than its equal.
+                      The stroke is scaled so the painted line stays 1.2 whatever the size is. */}
+                  <span style={{ width: ORB, display: 'grid', placeItems: 'center start', flexShrink: 0 }}>
+                    <svg width={ADD_GLYPH} height={ADD_GLYPH} viewBox="0 0 16 16" fill="none">
+                      <path d="M8 0.4v15.2M0.4 8h15.2" stroke="currentColor" strokeWidth={16 * 1.2 / ADD_GLYPH} strokeLinecap="round" />
                     </svg>
                   </span>
                   <span style={{ transition: REVEAL, whiteSpace: 'nowrap' }}>{idleLanes.length ? 'Start an agent' : 'Add an agent'}</span>
                 </button>
               )}
+              </div>
             </div>
           )
         })}
