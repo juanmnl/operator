@@ -328,6 +328,66 @@ for (const [identity, mode] of THEMES) {
     }
     await p.screenshot({ path: `${OUT}/4-responsive-${label}.png` })
   }
+
+  // ---- 5. Dismissing a held card: the transition, not the prop ---------------------------
+  // Seven `undelivered` cards accumulated in a real project because this branch rendered no
+  // control at all, and the handler would have refused one anyway — so the assertion has to be
+  // that the RECORD MOVES, not that a button is on screen. The harness runs the app's own
+  // `canDismissDispatch` guard, so a regression in that predicate fails here.
+  await p.click('[data-width-btn="fill"]')
+  await p.waitForTimeout(200)
+  {
+    const UNDELIVERED = '11e8ab119beac2a4' // the `sent · never started` record
+    const PENDING = 'cf5497448fb9d8e2' // the held one — Decline must keep working
+    const card = p.locator(`[data-waiting-card="${UNDELIVERED}"]`)
+    // Approve stays absent: the bytes already went, and nothing retries them.
+    if (await card.locator('[data-approve]').count()) {
+      fails.push('the undelivered card grew an Approve — there is nothing to approve, and it does not retry')
+    }
+    const dismiss = card.locator(`[data-dismiss="${UNDELIVERED}"]`)
+    if (!(await dismiss.count())) fails.push('the undelivered card has no Dismiss — it can never be cleared')
+    // The word, never a glyph: `✕` on a live card has meant "delete the lane" in this app.
+    const label = (await dismiss.innerText().catch(() => '')).trim()
+    if (label !== 'Dismiss') fails.push(`the undelivered card's clear control reads "${label}", expected "Dismiss"`)
+    // The "where did it go" line is its own row, so it is never truncated by the buttons.
+    const where = card.locator('[data-undelivered-where]')
+    if (!(await where.count())) fails.push('the undelivered card stopped saying where the task ended up')
+    else {
+      const trunc = await where.evaluate((e) => e.scrollWidth - e.clientWidth)
+      if (trunc > 1) fails.push(`"${(await where.innerText()).trim()}" is clipped by ${trunc}px`)
+    }
+    const order = await card.locator('button').evaluateAll((els) => els.map((e) => e.textContent.trim()))
+    notes.push(`undelivered card footer buttons: ${JSON.stringify(order)}`)
+    if (order[order.length - 1] !== 'Dismiss') fails.push(`Dismiss must sit last in the footer; order was ${JSON.stringify(order)}`)
+
+    await dismiss.click()
+    await p.waitForTimeout(250)
+    // (a) it leaves the column — `rejected` is not in WAITING_OUTCOMES.
+    if (await card.count()) fails.push('a dismissed undelivered card stayed in the Waiting column')
+    // (b) …and is still readable in the log, as declined. Dismiss is not delete: the record is
+    // evidence about a delivery bug that is still open.
+    const row = p.locator(`[data-dispatch-row="${UNDELIVERED}"]`)
+    if (!(await row.count())) {
+      fails.push('the dismissed record vanished from the dispatch log — it was deleted, not declined')
+    } else {
+      const outcome = (await row.locator('[data-dispatch-outcome]').innerText()).trim()
+      notes.push(`dismissed undelivered → log reads "${outcome}"`)
+      if (!/declined/i.test(outcome)) fails.push(`dismissed record logs as "${outcome}", expected "declined"`)
+    }
+
+    // The shared guard must not have cost the path it was extracted from: Decline on the held
+    // card is the same handler, and it still has to land the same transition.
+    await p.click(`[data-decline="${PENDING}"]`)
+    await p.waitForTimeout(250)
+    if (await p.locator(`[data-waiting-card="${PENDING}"]`).count()) {
+      fails.push('a declined pending-approval card stayed in the Waiting column')
+    }
+    const pendingOutcome = await p.locator(`[data-dispatch-row="${PENDING}"] [data-dispatch-outcome]`).innerText().catch(() => '')
+    if (!/declined/i.test(pendingOutcome)) fails.push(`declined pending record logs as "${pendingOutcome}", expected "declined"`)
+    const emptyNow = await p.locator('[data-board-column="waiting"] [data-column-empty]').count()
+    notes.push(`after both dismissals, Waiting is ${emptyNow ? 'empty' : 'still holding cards'}`)
+    await p.screenshot({ path: `${OUT}/5-dismissed.png` })
+  }
   await b.close()
 }
 

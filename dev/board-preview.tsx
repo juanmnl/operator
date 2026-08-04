@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TaskBoard, LaneSignal } from '../src/renderer/components/session/TaskBoard'
-import type { DispatchRecord, ProjectTask, Role } from '../src/shared/types'
+import { DispatchLog } from '../src/renderer/components/session/DispatchLog'
+import { canDismissDispatch } from '../src/renderer/lib/dispatch-outcome'
+import type { DispatchRecord, Project, ProjectTask, Role } from '../src/shared/types'
 import { applyTheme, themes, identities, themeKey, ThemeMode } from '../src/renderer/themes'
 import '../src/renderer/styles.css'
 
@@ -192,6 +194,14 @@ function Harness() {
   const [mode, setMode] = useState<ThemeMode>('dark')
   const [scenario, setScenario] = useState<Scenario>('full')
   const [width, setWidth] = useState<number | null>(null) // null = fill
+  // The dispatch records are STATE, not a constant, because dismissing one is a state transition
+  // and a harness that logged `reject` to the console could only ever prove the button exists.
+  // The transition below is the two lines `rejectDispatch` runs — guard included, from the shared
+  // predicate — so what this exercises is the app's rule, not a copy of it.
+  const [records, setRecords] = useState<DispatchRecord[]>(DISPATCHES)
+  const reject = (id: string) => setRecords((rs) => rs.map((r) => (
+    r.id === id && canDismissDispatch(r.outcome) ? { ...r, outcome: 'rejected' as const } : r
+  )))
 
   const apply = (id: string, m: ThemeMode) => {
     setIdentity(id); setMode(m)
@@ -203,8 +213,16 @@ function Harness() {
       : scenario === 'done-heavy' ? [...TASKS, ...BULK_DONE]
         : TASKS
   const dispatches = scenario === 'empty' || scenario === 'no-waiting' || scenario === 'backlog-only'
-    ? DISPATCHES.filter((d) => d.outcome === 'sent')
-    : DISPATCHES
+    ? records.filter((d) => d.outcome === 'sent')
+    : records
+  // Enough of a Project for `DispatchLog`, which reads only these three fields. It is mounted
+  // beside the board — on the Team screen it lives elsewhere, but the pairing is the point: a
+  // dismissed record must LEAVE the column and still be READABLE, and one screenshot has to be
+  // able to show both halves of that.
+  const project: Project = {
+    id: 'operator', path: '/Users/juanmnl/Developer/operator', name: 'operator',
+    createdAt: ago(9000), lastActiveAt: ago(1), roster: ROLES, dispatches,
+  }
 
   const chip = (active: boolean): React.CSSProperties => ({
     padding: '4px 10px', fontFamily: 'var(--font-mono)', fontSize: 10.5, cursor: 'pointer',
@@ -248,9 +266,14 @@ function Harness() {
           onSetTaskStatus={(id, s) => console.log('status', id, s)}
           onStartAll={() => console.log('startAll')}
           onApproveDispatch={(id) => console.log('approve', id)}
-          onRejectDispatch={(id) => console.log('reject', id)}
+          onRejectDispatch={reject}
           onOpenLane={(r) => console.log('openLane', r)}
         />
+      </div>
+      {/* The audit trail, mounted from the same records the board reads. Dismissing is not
+          deleting: the row has to still be here afterwards, saying `declined`. */}
+      <div data-dispatch-log-host style={{ flexShrink: 0, maxHeight: 190, overflowY: 'auto', padding: '0 14px 12px', borderTop: '1px solid var(--border)' }}>
+        <DispatchLog project={project} />
       </div>
     </div>
   )
