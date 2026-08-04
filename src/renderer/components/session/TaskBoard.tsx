@@ -985,8 +985,9 @@ function Pip({ tone }: { tone: 'idle' | 'running' | 'waiting' | 'done' }) {
  *      (10px × 1.4 + 2×2 padding + 2×1 border) + 18 padding + 1 border  =  82.5
  *
  *  Every box claims it, so the four line up while only one of them has something to say at the
- *  bottom. That dead space in the other three is the accepted cost of keeping `+ Add a task`
- *  where it is — not a defect to design away.
+ *  bottom. The slack in the other three is the accepted cost of keeping `+ Add a task` where it
+ *  is — and it is split above and below their line rather than left under it, which is what
+ *  makes it read as room around the sentence instead of as a box that failed to fill.
  *
  *  The number is arithmetic over things that can change, so `drive-task-board` asserts the
  *  MEASURED height equals it, not merely that the four agree — and that is not hypothetical: this
@@ -999,13 +1000,23 @@ const EMPTY_MIN_H = 82.5
 /** An empty column. One dashed box, one line, and — in Backlog — the control that files the
  *  first task. Backlog's box is 28px taller by content, so the other three are padded to match
  *  rather than shrinking it: the asymmetry (this column can be acted on, Running cannot) is real,
- *  and it is not worth removing a control to make a rectangle tidy. */
+ *  and it is not worth removing a control to make a rectangle tidy.
+ *
+ *  CONTENT IS CENTRED IN THE BOX, one rule for all four. A single line lands on the middle; the
+ *  text-and-button pair straddles it. Top-aligned, the three lone sentences sat on the ceiling of
+ *  a box they only half filled, which reads as content that failed to load rather than as a
+ *  column that is empty.
+ *
+ *  The cost, deliberately taken: the four sentences no longer share one baseline across the row —
+ *  a centred line sits lower than a centred pair's first line. The box is the shape being read
+ *  here, not the text baseline. */
 function EmptyColumn({ text, action }: { text: string; action?: { label: string; run: () => void } }) {
   return (
     <div data-column-empty style={{
       border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
       padding: '18px 12px', textAlign: 'center',
       minHeight: EMPTY_MIN_H, boxSizing: 'border-box',
+      display: 'flex', flexDirection: 'column', justifyContent: 'center',
     }}>
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5 }}>{text}</p>
       {/* A FLEX ROW, not a bare inline-block. As `text-align: center` on an inline button the row
