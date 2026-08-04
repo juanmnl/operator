@@ -19,6 +19,7 @@ import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
+import { endedByBackend } from '../lib/terminal-liveness'
 import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -432,6 +433,45 @@ export function DashboardView() {
       setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, ended: true } : t)))
     })
 
+    // …and the same conclusion, reconciled, because the event above is not reliable.
+    //
+    // WebKit kills and respawns this renderer under memory pressure (measured: 737MB resting on a
+    // project with eight mounted terminals, its WebContent 77s old inside an 11-hour-old app).
+    // Every `terminal:exit` fired while it was dead is gone, so the respawned renderer carries
+    // tabs marked live for children that exited long ago. `routeDispatch` reads exactly that flag,
+    // so the cost is not cosmetic: a dispatch takes the SEND path into a dead pty, the write is
+    // swallowed, and the task is filed `running` against a terminal id nothing can ever match.
+    // Measured 2026-08-04: three dispatches, two filed running against a five-hour-dead pty, zero
+    // delivered, and no error raised anywhere — which is why it went unnoticed for a session.
+    //
+    // `terminal_list` now reports each child's real `try_wait` state, so this heals from the one
+    // source that cannot be stale. One direction only (see `endedByBackend`), and it skips the
+    // state update entirely when nothing changed — this polls a renderer already under memory
+    // pressure, and a `setState` per tick would be its own bug.
+    const RECONCILE_MS = 5000
+    let reconciling = false
+    const reconcile = async () => {
+      if (reconciling) return // a slow list must not stack up behind itself
+      reconciling = true
+      try {
+        const live = await window.operator.terminalList?.()
+        // The call failed: believing nothing is far safer than concluding everything is dead.
+        if (!Array.isArray(live)) return
+        setTerminals((prev) => {
+          const stale = endedByBackend(prev, live)
+          if (stale.length === 0) return prev
+          // The same bookkeeping the event path does, so a lane healed here also closes its
+          // running tasks — otherwise they sit `running` forever, which is a leak this store
+          // has already had once.
+          for (const id of stale) exitCompleteRef.current(id)
+          const dead = new Set(stale)
+          return prev.map((t) => (dead.has(t.id) ? { ...t, ended: true } : t))
+        })
+      } catch { /* transient — the next tick tries again */ } finally { reconciling = false }
+    }
+    void reconcile()
+    const reconcileTimer = setInterval(() => { void reconcile() }, RECONCILE_MS)
+
     // Files dropped on the window → paste their paths into the active terminal,
     // so you can drop an image straight into the conversation.
     const unsubDrop = window.operator.onFileDrop?.((paths) => {
@@ -441,7 +481,7 @@ export function DashboardView() {
       window.operator.terminalWrite(tid, text)
     }) ?? (() => {})
 
-    return () => { unsubSession(); unsubExit(); unsubDrop() }
+    return () => { unsubSession(); unsubExit(); unsubDrop(); clearInterval(reconcileTimer) }
   }, [])
 
   const handleOpenGlobalPrefs = useCallback(() => {

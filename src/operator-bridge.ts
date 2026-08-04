@@ -110,8 +110,12 @@ export function installBridge(): void {
     terminalResize: (id: string, cols: number, rows: number) => { void invoke('terminal_resize', { id, cols, rows }) },
     terminalKill: (id: string) => invoke('terminal_kill', { id }),
     terminalList: async () => {
-      const list = await invoke<{ id: string; cwd: string; dev_port?: number }[]>('terminal_list')
-      return list.map((t) => ({ id: t.id, pid: 0, cwd: t.cwd, command: 'claude', alive: true, devPort: t.dev_port }))
+      const list = await invoke<{ id: string; cwd: string; dev_port?: number; alive?: boolean }[]>('terminal_list')
+      // `alive` is the backend's `try_wait` on the real child. It used to be hardcoded `true`
+      // here, which made every consumer read "a pty entry exists" as "the agent is running".
+      // Defaulted to true only for a backend too old to send the field — absence of evidence
+      // must not read as death.
+      return list.map((t) => ({ id: t.id, pid: 0, cwd: t.cwd, command: 'claude', alive: t.alive ?? true, devPort: t.dev_port }))
     },
     // The dev-server port registry: terminal id → port Operator reserved for it.
     getDevPorts: () => invoke<Record<string, number>>('get_dev_ports'),
