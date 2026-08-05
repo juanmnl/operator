@@ -241,9 +241,21 @@ export function ProjectRail({
 
   const liveOf = (projectId: string) => sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
 
-  /** How many orbs a collapsed group shows before folding the rest into a count. Four is what
-   *  keeps a group bounded, which is why the projects around the open one stay on screen. */
-  const FOLD = 4
+  // NO FOLD. A group shows every agent that is live in it, at both widths.
+  //
+  // There was a `FOLD = 4` here, and it was a CONSTANT PRETENDING TO BE A MEASUREMENT: the comment
+  // justified it as keeping the neighbouring projects on screen, but nothing in it ever looked at
+  // how much room there was. Observed live: five live agents rendered `O C D Q` then `+1` with the
+  // lower half of the rail empty — an agent hidden to save space that was never short. The user's
+  // call (2026-08-04): "there's plenty of space… i rather view all the agents, and the whole rail
+  // to scroll if needed."
+  //
+  // The overflow behaviour is the SCROLLER below, which already had `overflowY: 'auto'` — so a
+  // strip that genuinely runs out of height scrolls, and no agent is unreachable. A cap that
+  // engages only on measurement was considered and rejected: at 264 a member row is a
+  // `SessionItem` with no constant height (it grows a task line), so the budget would have to be
+  // guessed, and a cap computed from RENDERED height oscillates — folding shrinks the group, which
+  // re-measures as fitting, which unfolds it.
 
   // BRING THE OPEN GROUP INTO VIEW — by moving the VIEWPORT, never the list. The group stays at
   // its own `railOrder` index; selecting a project must not reorder anything.
@@ -301,8 +313,6 @@ export function ProjectRail({
           const edge = dropAt?.id === p.id ? dropAt.edge : null
           const open = p.id === activeProjectId
           const live = liveOf(p.id)
-          const shownLive = collapsed ? live.slice(0, FOLD) : live
-          const folded = collapsed ? Math.max(0, live.length - FOLD) : 0
           const roster = p.roster ?? []
           const liveRoles = new Set(live.map((s) => s.roleId).filter(Boolean))
           // WHICH LANE, resolved for the WHOLE group at once — an initial depends on its peers
@@ -406,7 +416,7 @@ export function ProjectRail({
               )}
 
               {collapsed
-                ? shownLive.map((s) => (
+                ? live.map((s) => (
                   <RailOrb
                     key={s.id}
                     session={s}
@@ -417,7 +427,7 @@ export function ProjectRail({
                     onPickAccent={onPickAccent}
                   />
                 ))
-                : shownLive.map((s) => (
+                : live.map((s) => (
                   <MemberRow
                     key={s.id}
                     session={s}
@@ -442,21 +452,11 @@ export function ProjectRail({
                   />
                 ))}
 
-              {folded > 0 && (
-                /* Counted, never silently dropped. */
-                <button
-                  data-rail-fold={folded}
-                  onClick={() => onOpenProject(p.id)}
-                  title={`${folded} more agent${folded === 1 ? '' : 's'} — open the project`}
-                  style={{
-                    flexShrink: 0, width: '100%', height: 18, padding: 0,
-                    background: 'transparent', border: 'none',
-                    color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
-                    fontFamily: 'var(--font-mono)', fontSize: 9.5, lineHeight: 1,
-                    textAlign: 'center',
-                  }}
-                >+{folded}</button>
-              )}
+              {/* The `+N` that stood here is gone with the fold it counted. It was also the
+                  two-verbs-one-glyph trap in miniature: it LOOKED like an expander and its
+                  `onClick` was `onOpenProject`, so pressing the control that promised "show me
+                  those agents" switched the active project instead. Nothing is hidden now, so
+                  there is no count to show and no second verb to confuse it with. */}
 
               {expanded && open && (onAddLane || onAgentMenu) && (
                 /* INSIDE the group, so it plainly adds to THIS project — which the
