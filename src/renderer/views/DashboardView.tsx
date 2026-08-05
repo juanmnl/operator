@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
@@ -2422,10 +2422,25 @@ export function DashboardView() {
     setProjects((prev) => reorderRail(prev, draggedId, targetId, edge))
   }, [])
 
-  // `handleReorderLane` lived here to let the sidebar's idle lane ROWS be dragged into order.
-  // Those rows are gone (the strip lists only what is live), and with them the only caller. Lane
-  // order is not stranded: RosterPanel — the Team screen — owns it, drags it by a grip, and writes
-  // the same `reorderRoles` to the same durable roster.
+  // Dragging a LANE row reorders the ROSTER itself — the roster is what orders those rows, so
+  // anything else would be a drag with no effect. Same helper, and therefore the same result, as
+  // dragging the lane on the Team screen: one order, two surfaces. `updateProject` already
+  // persists it, so the arrangement survives a restart, which is the real acceptance test.
+  //
+  // THIS WAS DELETED BY THE v0.13.7 RAIL/SIDEBAR JOIN and the tombstone that replaced it reasoned:
+  // "those rows are gone (the strip lists only what is live), and with them the only caller."
+  // That was half true and it is why the regression shipped — the IDLE lane rows went, but a LIVE
+  // lane row is still a lane row, and since an agent is exactly a session WITH a roleId, dropping
+  // the lane half of the drag removed reordering for every agent. Only ad-hoc sessions kept it,
+  // which is why it looked half-working rather than gone.
+  //
+  // The project comes from the DRAG, not from `activeProjectId` as the pre-join version had it:
+  // the joined strip shows several projects' groups at once, so the lane you dragged is not
+  // necessarily in the project you are in, and rewriting the active project's roster from another
+  // group's drag would be a silent misroute.
+  const handleReorderLane = useCallback((projectId: string, draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => {
+    updateProject(projectId, (p) => ({ roster: reorderRoles(p.roster ?? [], draggedRoleId, targetRoleId, edge) }))
+  }, [updateProject])
 
   // --- Agent colour --------------------------------------------------------------------
   // A lane's colour belongs to its Role (roster = source of truth, so every surface
@@ -3392,6 +3407,7 @@ export function DashboardView() {
         onAgentMenu={(projectId, anchor) => setLaneMenu({ projectId, ...anchor })}
         onAddLane={handleAddLane}
         onReorderSession={handleReorderSession}
+        onReorderLane={handleReorderLane}
         activeFolderPrefs={activeFolderPrefs?.projectPath ?? null}
         globalPrefsActive={globalPrefsActive}
         prefsViewActive={prefsViewActive}

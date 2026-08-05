@@ -5,6 +5,7 @@ import { SessionItem } from './SessionItem'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
 import { byRailOrder } from '../../lib/project-shelf'
+import { orderByRoster } from '../../lib/roster'
 import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard } from '../../lib/use-hover-card'
@@ -151,6 +152,29 @@ const SEAM = 'color-mix(in srgb, var(--border) 60%, transparent)'
  *  gone well before the strip is narrow enough to clip it. */
 const REVEAL = 'opacity 120ms ease'
 
+/** THE SAME-KIND RULE, AND IT IS THE DRAG'S MIME TYPE — not a check inside a drop handler.
+ *
+ *  Two kinds of member row sit in one column and they are ordered by different things: a LANE row
+ *  by its project's roster (durable, shared with the Team screen), an AD-HOC row by the live
+ *  `terminals` order (per-run). There is no sensible merge of the two, so a cross-kind drag must
+ *  do nothing — and, per the brief, must not even LOOK droppable.
+ *
+ *  Encoding the kind in the drag TYPE gets that for free and in one place. `dragover` can read
+ *  `dataTransfer.types` but NOT `getData` (the payload is withheld until drop, deliberately), so
+ *  the type is the only thing a row can filter on while the drag is still in the air — which is
+ *  exactly when the drop line is drawn. A row that does not recognise the type never previews a
+ *  drop, so `onDrop` never fires and there is nothing to silently discard.
+ *
+ *  THE PROJECT IS IN THE TYPE for the same reason. This strip shows several projects at once and
+ *  role ids are only unique within one (`code` exists in most of them), so a lane dragged across
+ *  group boundaries would otherwise land in the wrong roster — or self-drop, since `code` onto
+ *  `code` is a valid pair in both. A per-project type makes a cross-project lane drag inert by the
+ *  same mechanism as a cross-kind one, rather than by a second rule someone has to remember.
+ *  Project ids are already `[a-z0-9-]` (`lib/project-id`), so they survive the lowercasing the
+ *  drag-and-drop API applies to type strings. */
+const laneDragType = (projectId: string) => `operator/lane-${projectId}`
+const SESSION_DRAG_TYPE = 'text/session'
+
 export interface ProjectRailProps {
   /** ⌘B, and forced true at the gallery. The width IS the state; nothing unmounts. */
   collapsed: boolean
@@ -195,6 +219,11 @@ export interface ProjectRailProps {
   onAddLane?: () => void
   /** Reorder two AD-HOC session rows. Lane rows are ordered by the roster instead. */
   onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** Reorder two LANE rows — by `roleId`, because the ROSTER is what orders them, and by
+   *  `projectId` because this strip shows several projects at once and a role id is only unique
+   *  within one of them (`code` exists in most). The pre-join sidebar could omit the project: it
+   *  was scoped to exactly one. */
+  onReorderLane?: (projectId: string, draggedRoleId: string, targetRoleId: string, edge: 'before' | 'after') => void
   /** The app's own row, at the foot — present in BOTH states. ⌘B used to unmount `Sidebar.tsx`
    *  and take the theme toggle, Preferences and both `.claude` shortcuts off screen with it. */
   activeFolderPrefs?: string | null
@@ -217,7 +246,7 @@ export function ProjectRail({
   onReorder, onTileMenu, menuProjectId,
   sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
-  onRenameSession, onCloseSession, onAgentMenu, onAddLane, onReorderSession,
+  onRenameSession, onCloseSession, onAgentMenu, onAddLane, onReorderSession, onReorderLane,
   activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark,
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme,
   version, update, onInstallUpdate,
@@ -239,7 +268,14 @@ export function ProjectRail({
   const canReorder = !!onReorder && shown.length > 1
   const endDrag = () => { dragRef.current = null; setDrag(null); setDropAt(null) }
 
-  const liveOf = (projectId: string) => sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
+  // A group's live members, with its LANES in roster order — see `orderByRoster`. Ordering here
+  // rather than at the render site is what makes both widths agree: the orbs and the rows read
+  // the same list, so a lane dragged at 264 is in the same place at 60.
+  const liveOf = (projectId: string) => {
+    const live = sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
+    const roster = projects.find((p) => p.id === projectId)?.roster ?? []
+    return orderByRoster(live, roster)
+  }
 
   // NO FOLD. A group shows every agent that is live in it, at both widths.
   //
@@ -313,6 +349,33 @@ export function ProjectRail({
           const edge = dropAt?.id === p.id ? dropAt.edge : null
           const open = p.id === activeProjectId
           const live = liveOf(p.id)
+          // Per KIND, because each kind's drag is guarded by how many rows it could drop onto —
+          // one lane beside three ad-hoc sessions still has nowhere to go.
+          const laneCount = live.reduce((n, s) => n + (s.roleId ? 1 : 0), 0)
+          const adHocCount = live.length - laneCount
+          // HOW THIS MEMBER REORDERS — decided once for the group, and read by BOTH widths.
+          //
+          // A lane row reorders the ROSTER, which is what orders it and what the Team screen
+          // writes too, so one order shows on both surfaces. An ad-hoc row carries no lane, so
+          // nothing else orders it and the drag is its only handle. The kind (and the project) is
+          // carried in the drag's TYPE — see `laneDragType` — so a cross-kind or cross-project
+          // drag is refused by the receiving row rather than accepted and silently discarded.
+          //
+          // `undefined` when it would be the only row of its kind: a drag whose only possible
+          // drop is onto itself is an affordance that cannot do anything. That guard is what the
+          // pre-join sidebar had (`laneRows.length > 1` / `adHocRows.length > 1`).
+          const dragFor = (s: AgentSession) => {
+            if (s.roleId) {
+              if (!onReorderLane || laneCount < 2) return undefined
+              return {
+                type: laneDragType(p.id),
+                id: s.roleId,
+                onReorder: (dragged: string, target: string, edge: 'before' | 'after') => onReorderLane(p.id, dragged, target, edge),
+              }
+            }
+            if (!onReorderSession || adHocCount < 2) return undefined
+            return { type: SESSION_DRAG_TYPE, id: s.id, onReorder: onReorderSession }
+          }
           const roster = p.roster ?? []
           const liveRoles = new Set(live.map((s) => s.roleId).filter(Boolean))
           // WHICH LANE, resolved for the WHOLE group at once — an initial depends on its peers
@@ -423,6 +486,9 @@ export function ProjectRail({
                     active={s.id === activeSessionId}
                     accent={accentOf?.(s)}
                     initial={initialFor(s)}
+                    // The SAME drag the expanded row gets — one surface at two widths, so a
+                    // gesture that worked at 264 and not at 60 would be two surfaces again.
+                    drag={dragFor(s)}
                     onSelect={() => onSelectSession?.(s)}
                     onPickAccent={onPickAccent}
                   />
@@ -431,12 +497,8 @@ export function ProjectRail({
                   <MemberRow
                     key={s.id}
                     session={s}
-                    // Ad-hoc launches carry no lane, so nothing else orders them — dragging is
-                    // the only handle they have. Lane rows are ordered by the ROSTER, and there
-                    // is no sensible merge of the two, so a drag only means something between
-                    // rows of the same kind.
-                    reorderable={!s.roleId && !!onReorderSession}
-                    onReorderSession={onReorderSession}
+                    // BOTH kinds drag, each among its own — see `dragFor` above.
+                    drag={dragFor(s)}
                     project={p}
                     role={roster.find((r) => r.id === s.roleId)}
                     active={s.id === activeSessionId}
@@ -758,17 +820,24 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
 
 /** One live agent, COLLAPSED. A 24px disc in the 36px member box, centred on the axis — the same
  *  disc, at the same x, that the expanded row carries. */
-function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
+function RailOrb({ session, active, accent, initial, drag, onSelect, onPickAccent }: {
   session: AgentSession
   active: boolean
   accent?: string
   /** WHICH lane, in the disc. The collapsed strip has no other channel for it — and it is the
    *  same letter the expanded row draws, because the orb does not change meaning with the width. */
   initial?: string
+  /** Same shape, same drag types and therefore the same same-kind rule as `MemberRow`. */
+  drag?: {
+    type: string
+    id: string
+    onReorder: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  }
   onSelect: () => void
   onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
 }) {
   const hoverCard = useHoverCard(`orb:${session.id}`)
+  const [edge, setEdge] = useState<'before' | 'after' | null>(null)
   const label = sessionLabel({ session })
   const status = waveStatusOf(session)
   return (
@@ -776,6 +845,36 @@ function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
       <button
         ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
         data-rail-session={session.id}
+        {...(drag && session.roleId ? { 'data-lane-orb': session.roleId } : null)}
+        // THE ORB IS THE HANDLE, at this width too — see the RESULT for why reordering was taken
+        // past the regression and given to the collapsed strip as well.
+        draggable={!!drag}
+        onDragStart={drag && ((e) => {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData(drag.type, drag.id)
+          // The card is anchored to a row about to move out from under the cursor, and a drag
+          // never fires the mouseleave that would close it — the same hardening the group header
+          // needed for exactly this reason.
+          hoverCard.onMouseLeave()
+        })}
+        onDragEnd={drag && (() => setEdge(null))}
+        onDragOver={drag && ((e) => {
+          if (!e.dataTransfer.types.includes(drag.type)) return
+          e.preventDefault()
+          const r = e.currentTarget.getBoundingClientRect()
+          setEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+        })}
+        onDragLeave={drag && (() => setEdge(null))}
+        onDrop={drag && ((e) => {
+          if (!e.dataTransfer.types.includes(drag.type)) return
+          e.preventDefault()
+          const dragged = e.dataTransfer.getData(drag.type)
+          const r = e.currentTarget.getBoundingClientRect()
+          if (dragged && dragged !== drag.id) {
+            drag.onReorder(dragged, drag.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+          }
+          setEdge(null)
+        })}
         onClick={onSelect}
         onContextMenu={onPickAccent && ((e) => {
           e.preventDefault()
@@ -792,10 +891,25 @@ function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
           height: MEMBER_BOX, padding: `0 0 0 ${MEMBER_INSET_L}px`, boxSizing: 'border-box',
           background: 'transparent', border: 'none',
           cursor: 'pointer', outline: 'none',
+          // Positioned ONLY so the drop line below can hang off it without taking any layout.
+          position: 'relative',
         }}
         onMouseEnter={(e) => { hoverCard.onMouseEnter(e) }}
         onMouseLeave={() => { hoverCard.onMouseLeave() }}
       >
+        {/* THE DROP LINE, ABSOLUTELY POSITIONED — and that is not a style preference. The expanded
+            row can afford constant transparent borders because its rows already sit `MEMBER_GAP`
+            apart; the collapsed orbs are FLUSH, so 2px of border top and bottom would take the
+            member pitch from 36 to 40 and spread the whole column. `dev/drive-rail-invariant.mjs`
+            asserts that pitch, and it would be right to fail. Out of flow, it costs nothing at
+            rest and nothing while dragging. */}
+        {edge && (
+          <span style={{
+            position: 'absolute', left: MEMBER_INSET_L, right: 4, height: 2, borderRadius: 1,
+            ...(edge === 'before' ? { top: 0 } : { bottom: 0 }),
+            background: 'var(--accent)', pointerEvents: 'none',
+          }} />
+        )}
         <span style={{
           width: MEMBER_BOX, height: MEMBER_BOX,
           display: 'grid', placeItems: 'center', borderRadius: 10,
@@ -830,7 +944,7 @@ function RailOrb({ session, active, accent, initial, onSelect, onPickAccent }: {
 
 /** One live agent, EXPANDED — `SessionItem`, which was already the right object for this row and
  *  is the one thing the old sidebar had that survives whole. */
-function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, reorderable, onReorderSession, onSelect, onRename, onClose, onPickAccent }: {
+function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, drag, onSelect, onRename, onClose, onPickAccent }: {
   session: AgentSession
   project: Project
   role?: Role
@@ -840,8 +954,15 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
   effortLevel?: string | null
   fan?: { index: number; total: number }
   shortcutIndex: number | null
-  reorderable?: boolean
-  onReorderSession?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  /** How this row reorders, or `undefined` for no handle at all. ONE shape for both kinds: the
+   *  row does not know whether it is a lane or an ad-hoc session, it knows a drag `type` (which
+   *  is what makes a drag from the other kind invisible to it), the `id` to send, and where to
+   *  send it. The kind-specific decision is made once, at the call site. */
+  drag?: {
+    type: string
+    id: string
+    onReorder: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
+  }
   onSelect: () => void
   onRename: (name: string) => void
   onClose: () => void
@@ -868,30 +989,46 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
       onPickAccent={onPickAccent}
     />
   )
-  if (!reorderable) return row
   return (
     <div
-      data-session-row={session.id}
-      draggable
-      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/session', session.id) }}
-      onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes('text/session')) return
+      // BOTH hooks, and they are the pre-join sidebar's own names: a lane is identified by its
+      // ROLE (which is what its order is), an ad-hoc session by its session id. Keeping them
+      // distinct means "what order are the lanes in" stays one selector rather than a filter.
+      //
+      // THE WRAPPER IS UNCONDITIONAL, and only `draggable` is not. These attributes are the row's
+      // IDENTITY, not its draggability — some two dozen drivers select rows by them. Hanging them
+      // off the drag condition (as the ad-hoc-only version did) meant the last row of its kind
+      // silently lost its test hook the moment the "no drag with nothing to drop onto" guard came
+      // back, which is a harness regression bought for nothing.
+      {...(session.roleId ? { 'data-lane-row': session.roleId } : { 'data-session-row': session.id })}
+      // THE ROW IS THE HANDLE. No grip: a hover-only grip has to reserve its space at rest or the
+      // row twitches when you approach it, and grips belong on cards, not on 36px rows.
+      draggable={!!drag}
+      onDragStart={drag && ((e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData(drag.type, drag.id) })}
+      onDragOver={drag && ((e) => {
+        // The KIND (and the project) filter, and the only place it can be applied: `dragover`
+        // may read `types` but not `getData`. A row that does not recognise the type returns
+        // without `preventDefault`, so it is not a drop target and draws no line — a cross-kind
+        // drag is refused rather than accepted and silently discarded.
+        if (!e.dataTransfer.types.includes(drag.type)) return
         e.preventDefault()
         const r = e.currentTarget.getBoundingClientRect()
         setEdge(e.clientY - r.top < r.height / 2 ? 'before' : 'after')
-      }}
-      onDragLeave={() => setEdge(null)}
-      onDrop={(e) => {
+      })}
+      onDragLeave={drag && (() => setEdge(null))}
+      onDragEnd={drag && (() => setEdge(null))}
+      onDrop={drag && ((e) => {
+        if (!e.dataTransfer.types.includes(drag.type)) return
         e.preventDefault()
-        const dragged = e.dataTransfer.getData('text/session')
+        const dragged = e.dataTransfer.getData(drag.type)
         const r = e.currentTarget.getBoundingClientRect()
         // Read the edge off the EVENT, not off state: a fast drag can drop before the line has
         // committed, and a drop with no line drawn must still land under the cursor.
-        if (dragged && dragged !== session.id) {
-          onReorderSession?.(dragged, session.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
+        if (dragged && dragged !== drag.id) {
+          drag.onReorder(dragged, drag.id, e.clientY - r.top < r.height / 2 ? 'before' : 'after')
         }
         setEdge(null)
-      }}
+      })}
       style={{
         // Constant transparent rules, so showing the drop line cannot shift the stack.
         borderTop: `2px solid ${edge === 'before' ? 'var(--accent)' : 'transparent'}`,
