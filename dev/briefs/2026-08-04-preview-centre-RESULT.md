@@ -51,16 +51,43 @@ quoted pixels that do not exist on the page:
   panel-sized viewport, the composed message would have named a coordinate off the end of a 375px
   page. Same for `composeMessage`'s fallback and the draft card's `123,456px` hint.
 
-### ⚠ One thing I did NOT do, and it is a judgement call worth your eye
+### Existing annotations ARE migrated (added on your call, after the first pass)
 
-**Annotations captured at a narrow preset *before* this change are not migrated.** They were stored
-as a percentage of the wrapper; they are now read as a percentage of the page, so such a pin will
-shift. I left them alone deliberately: those pins were already pointing at the wrong place (that is
-the drift being fixed), so there is no correct prior meaning to preserve — and a migration would
-have to infer the capture geometry from the stored `device` + `viewport`, with no version field on
-`Annotation` to stop a second run re-migrating and corrupting them. Adding one is a change to
-`lib/annotations` that the brief did not ask for. Annotations made in `fit` mode — where wrapper
-and stage are identical — are unaffected either way. Say the word if you want the migration.
+Notes already on disk were percentages of the panel. They are now re-based onto the page, in
+`lib/annotations.ts`:
+
+- **`Annotation.v`** — the geometry generation. Absent/1 = panel-relative, 2 = page-relative. It is
+  what makes this a one-time upgrade instead of a rebase that compounds on every load, and it is
+  the thing whose absence made me hold off in the first pass.
+- **`migrateAnnotations(list)`** — pure, and returns the **same array reference** when there is
+  nothing to do, which is how `loadAnnotations` knows whether to write back. A load that changes
+  nothing never touches localStorage.
+- **`loadAnnotations`** upgrades on read and persists once. Migrating in the panel instead would
+  leave the stored copy in the old system, so every load would rebase again from a moving baseline.
+- **`buildAnnotation`** stamps `v` on new notes. That is a no-op on today's records by coincidence
+  (the recorded viewport IS the page box, so the factor is 1) — relying on the coincidence is how a
+  future rebase eventually lands on a note it shouldn't.
+
+**The rebase is recoverable because a v1 note recorded the two numbers it needs**: `viewport` (the
+wrapper's pixel box at capture) and `device` (the preset).
+
+    pageW = min(preset, viewport.w)        the page's painted width inside that wrapper
+    xPct' = xPct × (viewport.w / pageW)    and the same factor on wPct
+
+Four properties worth stating, because each is a decision:
+
+- **Only the horizontal axis moves.** The frame was always full-height (a preset scales the
+  iframe's own height by `1/scale`, so the painted height stayed the panel's), so `yPct`/`hPct`
+  already meant "of the page" and are left exactly as they are.
+- **A preset wider than the panel is a geometry no-op** — `pageW` clamps to `viewport.w` and the
+  factor is 1. Right, because the page filled the wrapper there and never drifted. Its `viewport`
+  is still restated in page pixels so `pxOf` quotes page coordinates.
+- **`Fit` and bare notes are not moved**, only stamped — the stamp records that they were
+  examined, so they are not re-examined and re-written on every load.
+- **Pins dropped in the GUTTER are not clamped.** The old overlay covered the whole wrapper, so a
+  note could be left beside the page; rebasing puts it past 100%, which is where its author left
+  it, and the stage does not clip so it still renders there. Clamping would silently move a note
+  onto a feature it was never about.
 
 ## The gutter's tone
 
@@ -73,7 +100,10 @@ Mission Control dark and light: the page edge reads against the gutter in both.
 
 ## Verification
 
-`npm run build` — clean. `npm test` — **603 passed / 53 files**, the brief's baseline.
+`npm run build` — clean. `npm test` — **612 passed / 53 files**: the brief's 603 baseline plus the
+9 new migration cases in `src/renderer/lib/annotations.test.ts` (narrow rebase, box width, the wide
+no-op, `Fit`, a bare note, idempotence twice over, a gutter pin past 100%, and a migrated pixel
+hint reading against the page).
 
 ### New harness: `dev/drive-preview-centre.mjs`
 
@@ -103,11 +133,22 @@ ok  C6: the note records the PAGE's viewport — 375×768, device 375px
 ok  C6: after switching to 768 the pin is still 25% across the page — x 561.5 vs 562.0
 ok  C6: after resizing the window the pin is still 25% across the page — x 431.5 vs 432.0
 ok  C2 after resize: gutters still equal — 164.0 / 164.0
+ok  C7: the stored note was re-based on read — 6.91% of the panel → 25.00% of the page
+ok  C7: written back once, stamped v2, viewport restated as the page (375×768)
+ok  C7: the migrated pin renders on its page feature — x 660.3 vs 660.3
+    (un-migrated it would have drawn at 169.8)
+ok  C7: a second load does NOT rebase again — still 25.00%
 ok  C3 setup: the panel (916.0) really is narrower than the preset
 ok  C3 1280: stage == wrapper, gutter 0 — pixel-identical to before (916.0 at 76.0)
 ok  C4 1280: the scaled iframe still paints edge to edge — 916.0 at 76.0
 ok  C3 1280: no new letterbox — painted height 668.0 of 668.0
 ```
+
+**C7 is the migration end-to-end**, and it is deliberately not a unit test: it seeds a genuine v1
+record (no `v`, `viewport` = the WRAPPER's box, exactly as the old panel wrote it), **reloads the
+app** so the real `loadAnnotations` path runs, and then measures where the pin lands. 490px of drift
+removed on one note. The second reload asserts idempotence against the real store rather than
+against an array in memory.
 
 **Before (same harness, `AppPreviewPanel.tsx` stashed):**
 
@@ -146,8 +187,10 @@ the evidence that the brief's "keep the wide case pixel-identical" constraint he
 
 ## Not done
 
-- **The pre-existing-annotation migration** described above.
 - **No run against the real native inspector.** The rect is asserted; the embedded webview itself
   is a noop in the mock bridge. Worth one look in the real app at 375 to confirm the outline tracks.
+- **Notes with no `device`/`viewport` cannot be re-based** — there is nothing recorded to compute
+  the factor from. They are left where they are and stamped. In practice these are pre-`device`
+  records; anything captured since carries both.
 - **No screenshot committed** — rendered and inspected in two palettes, but the images are
   session-scratch, not repo files.

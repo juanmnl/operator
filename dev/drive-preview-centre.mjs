@@ -204,6 +204,74 @@ const geom = (p) => p.evaluate(() => {
   await browser.close()
 }
 
+// ── C7: a note written by the OLD code lands on its page feature after migration ────────────
+//
+// The unit tests in `lib/annotations.test.ts` cover the arithmetic. What they cannot cover is the
+// wiring: that `loadAnnotations` migrates on read, writes the result back once, and that the pin
+// then renders on the page rather than where the old panel-relative percentage pointed. So this
+// seeds a genuine v1 record — no `v`, `viewport` = the WRAPPER's box, as the old panel wrote it —
+// and reloads the app so the real load path runs.
+{
+  const { browser, p } = await open({ width: 1440, height: 900 })
+  await setPreset(p, '375px wide')
+  const g = await geom(p)
+  // How the OLD code would have stored a click 25% across a 375px page: the page was pinned to
+  // the wrapper's left, so the click landed at 93.75px and was divided by the WRAPPER's width.
+  const oldXPct = (0.25 * 375) / g.wrap.w * 100
+  const seeded = await p.evaluate(([xPct, w, h]) => {
+    // `storageKey` is `main-<sessionId>` and the panel prefixes it again — the session id is on
+    // the rail's own row, so the key can be derived rather than guessed.
+    const id = document.querySelector('[data-rail-session][aria-current]')?.getAttribute('data-rail-session')
+      ?? document.querySelector('[data-rail-session]')?.getAttribute('data-rail-session')
+    const key = `operator.preview.annotations.main-main-${id}`
+    localStorage.setItem(key, JSON.stringify([{
+      id: 'legacy-1', xPct, yPct: 40, note: 'from the old coordinate system',
+      route: '/', viewport: { w, h }, device: '375px', createdAt: '2026-08-01T00:00:00.000Z',
+    }]))
+    return { key, xPct }
+  }, [oldXPct, g.wrap.w, g.wrap.h])
+
+  // Reload so the panel mounts fresh and `loadAnnotations` runs for real. The pinned port is
+  // persisted, so the preview comes back up on its own.
+  await p.reload({ waitUntil: 'load' })
+  await p.waitForSelector('[data-rail]')
+  await p.waitForTimeout(1200)
+  await p.click('[data-rail-session]')
+  await p.waitForTimeout(400)
+  await p.click('[title="Preview view"]')
+  await p.waitForSelector('iframe[title="App preview"]', { timeout: 15000 })
+  await p.waitForTimeout(700)
+  await setPreset(p, '375px wide')
+  await p.click('[title="Pin/box feedback over the app"]')
+  await p.waitForTimeout(400)
+
+  const stored = await p.evaluate((key) => JSON.parse(localStorage.getItem(key))[0], seeded.key)
+  pass = check(near(stored.xPct, 25, 0.05),
+    `C7: the stored note was re-based on read — ${seeded.xPct.toFixed(2)}% of the panel → ${stored.xPct?.toFixed(2)}% of the page`) && pass
+  pass = check(stored.v === 2 && stored.viewport?.w === 375,
+    `C7: written back once, stamped v${stored.v}, viewport restated as the page (${stored.viewport?.w}×${stored.viewport?.h})`) && pass
+
+  const gm = await geom(p)
+  const pinX = await p.evaluate(() => {
+    const host = document.querySelector('[data-preview-stage]')
+      ?? document.querySelector('iframe[title="App preview"]')?.parentElement
+    const pin = host?.querySelector(':scope > div[title]')
+    return pin ? pin.getBoundingClientRect().left : null
+  })
+  const want = gm.stage.left + gm.stage.w * 0.25
+  const wouldHaveBeen = gm.wrap.left + gm.wrap.w * (seeded.xPct / 100)
+  pass = check(pinX != null && near(pinX, want, 1.5),
+    `C7: the migrated pin renders on its page feature — x ${pinX?.toFixed(1)} vs ${want.toFixed(1)} (un-migrated it would have drawn at ${wouldHaveBeen.toFixed(1)})`) && pass
+
+  // Idempotence, against the real store: a second load must not rebase it again.
+  await p.reload({ waitUntil: 'load' })
+  await p.waitForTimeout(1500)
+  const again = await p.evaluate((key) => JSON.parse(localStorage.getItem(key))[0], seeded.key)
+  pass = check(near(again.xPct, stored.xPct, 0.001),
+    `C7: a second load does NOT rebase again — still ${again.xPct?.toFixed(2)}%`) && pass
+  await browser.close()
+}
+
 // ── The narrow panel: 1280 is WIDER than it, so nothing may change ──────────────────────────
 {
   const { browser, p } = await open({ width: 1000, height: 800 })
