@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Project, Role } from '../../shared/types'
 import { rolePresets } from './roster'
 import {
-  resolveAgentConfig, worktreeStateOf, clearSeededRoleFields,
+  resolveAgentConfig, worktreeStateOf, clearSeededRoleFields, clearCoordinatorWorktree,
   migrateGlobalsToLanePins, HARD_FALLBACK,
   type LegacyGlobalDefaults,
 } from './model-config'
@@ -81,12 +81,66 @@ describe('useWorktree is TRI-STATE — false is a choice, not an absence', () =>
     expect(worktreeStateOf(role({ id: 'code', useWorktree: false }))).toBe('off')
   })
 
-  it('EVERY writing lane still isolates, which is what the deleted global seed used to do', () => {
+  it('EVERY writing WORKER lane still isolates, which is what the deleted global seed used to do', () => {
     // The posture moved from `seedGlobalDefaults()` onto the presets. If it had not, all six
     // would have fallen to the hard fallback (off) the moment the global tier was removed.
+    //
+    // `operator` USED TO BE IN THIS LIST and was deliberately taken out on 2026-08-05: the
+    // coordinator merges lane branches, reaps worktrees and launches every other lane, so doing
+    // that from a checkout of its own is how work went missing. See the coordinator cases below.
     const on = (id: string) => resolveAgentConfig(role({ id })).useWorktree
-    expect([on('code'), on('design'), on('operator'), on('research')]).toEqual([true, true, true, true])
+    expect([on('code'), on('design'), on('research')]).toEqual([true, true, true])
     expect([on('review'), on('qa')]).toEqual([false, false])
+  })
+
+  // THE COORDINATOR IS NOT A CASCADE. Every other field ranks pin over preset; this one ignores
+  // the pin outright, because a preset change alone would have fixed only the lanes that never
+  // expressed an opinion — and five real projects have `useWorktree: true` PERSISTED from when
+  // the preset said so.
+  it('a coordinator NEVER gets a worktree, whatever is pinned on it', () => {
+    expect(resolveAgentConfig(role({ id: 'operator' })).useWorktree).toBe(false)
+    expect(resolveAgentConfig(role({ id: 'operator', useWorktree: true })).useWorktree).toBe(false)
+    // The legacy id migrates to `operator`, but a roster restored from a backup can still carry
+    // it — so the rule is keyed on `isCoordinator`, which knows both.
+    expect(resolveAgentConfig(role({ id: 'orchestrator', useWorktree: true })).useWorktree).toBe(false)
+  })
+
+  it('and a WORKER lane keeps both of its answers — the override is not a blanket', () => {
+    expect(resolveAgentConfig(role({ id: 'code', useWorktree: false })).useWorktree).toBe(false)
+    expect(resolveAgentConfig(role({ id: 'review', useWorktree: true })).useWorktree).toBe(true)
+  })
+})
+
+describe('clearCoordinatorWorktree — the backfill for the 5 persisted `true`s', () => {
+  it('DELETES the pin rather than writing false — nobody chose it, a preset wrote it', () => {
+    const out = clearCoordinatorWorktree(project([role({ id: 'operator', useWorktree: true })]))
+    expect('useWorktree' in out.roster![0]).toBe(false)
+  })
+
+  it('clears a persisted `false` too — the field is not offered, so no value on it is honest', () => {
+    const out = clearCoordinatorWorktree(project([role({ id: 'operator', useWorktree: false })]))
+    expect('useWorktree' in out.roster![0]).toBe(false)
+  })
+
+  it('leaves WORKER lanes alone, both true and false', () => {
+    const out = clearCoordinatorWorktree(project([
+      role({ id: 'code', useWorktree: true }),
+      role({ id: 'review', useWorktree: false }),
+    ]))
+    expect(out.roster!.map((r) => r.useWorktree)).toEqual([true, false])
+  })
+
+  it('returns the SAME object when there is nothing to do, so hydrate can early-bail', () => {
+    const p = project([role({ id: 'operator' }), role({ id: 'code', useWorktree: true })])
+    expect(clearCoordinatorWorktree(p)).toBe(p)
+    // …and is idempotent: a second pass over a cleared roster finds nothing.
+    const once = clearCoordinatorWorktree(project([role({ id: 'operator', useWorktree: true })]))
+    expect(clearCoordinatorWorktree(once)).toBe(once)
+  })
+
+  it('leaves a rosterless project alone', () => {
+    const p = { id: 'p', path: '/p', name: 'p', createdAt: '', lastActiveAt: '' } as Project
+    expect(clearCoordinatorWorktree(p)).toBe(p)
   })
 })
 

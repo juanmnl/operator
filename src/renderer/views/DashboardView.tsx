@@ -4,7 +4,7 @@ import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
-  resolveAgentConfig, clearSeededRoleFields, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
+  resolveAgentConfig, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
@@ -1541,7 +1541,14 @@ export function DashboardView() {
         // Clearing a field that equals the preset is a NO-OP today: the cascade falls straight
         // through to the same preset value. It only becomes meaningful once a global default is set,
         // which is what makes it safe to run unattended on hydrate.
-        const reconciled = renamed.map(clearSeededRoleFields)
+        // …then the same treatment for a COORDINATOR's `useWorktree` pin, which is not a seeded
+        // value that merely looks pinned but a stored value that is now contradicted: the
+        // coordinator runs in the repo whatever it says (`resolveAgentConfig`), so leaving it
+        // would keep `projects.json` claiming otherwise. Five projects carry it. Composed as its
+        // own pass rather than folded into `clearSeededRoleFields` because the test is different —
+        // that one clears what EQUALS the preset, this clears any value at all on a role that is
+        // no longer offered the choice.
+        const reconciled = renamed.map(clearSeededRoleFields).map(clearCoordinatorWorktree)
         const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
         // …and then, ONCE per install, the seeded-lane PRUNE: projects created before seeding was
         // removed still carry six lanes nobody asked for, so drop the ones that were never used and
@@ -3210,7 +3217,9 @@ export function DashboardView() {
         actions.push({
           id: `launch-${p.id}-${role.id}`, group: 'Project',
           label: `Launch ${role.name} in ${p.name}`,
-          detail: `${modelFamilyLabel(role.model)}${role.useWorktree ? ' · worktree' : ''}`,
+          // RESOLVED, not the raw pin: a coordinator resolves to `false` however it is stored, so
+          // the palette stops advertising a worktree the launch will not create.
+          detail: `${modelFamilyLabel(role.model)}${resolveAgentConfig(role, p.defaults).useWorktree ? ' · worktree' : ''}`,
           run: () => { void handleLaunchRole(p, role) },
         })
       })
