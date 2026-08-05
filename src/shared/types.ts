@@ -413,6 +413,11 @@ export interface ManagedTerminal {
   alive: boolean
   /** Dev-server port Operator reserved for this session (OPERATOR_DEV_PORT). */
   devPort?: number
+  /** Spawned in GRID-renderer mode — this pty has an alacritty core in Rust (gridterm.rs), so
+   *  its pane is `GridTerminalPane` rather than `TerminalSurface`. Reported by the backend
+   *  because the core is created at spawn and never after: it is the one copy of this fact that
+   *  a renderer reload cannot lose. Opt-in, default off — see `getRendererMode`. */
+  grid?: boolean
 }
 
 // Folder Preferences types

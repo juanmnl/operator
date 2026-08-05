@@ -451,6 +451,10 @@ export function GridTerminalPane({ terminalId, theme, active }: { terminalId: st
     // Any pointer-down in the pane focuses the key-encoder — a catch-all so typing
     // always works (survives reloads / tab switches) without fragile focus juggling.
     <div
+      // WHICH RENDERER IS ON SCREEN, for a driver. It cannot be told from xterm's DOM: the key
+      // encoder below IS a real xterm and paints an `.xterm-screen` of its own, so counting those
+      // finds one in grid mode too.
+      data-grid-pane={terminalId}
       style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: palRef.current.bg }}
       onMouseDown={() => termRef.current?.focus()}
     >

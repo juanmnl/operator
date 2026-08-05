@@ -1019,6 +1019,11 @@ struct TerminalInfo {
     /// routing keys off exactly that, so tasks were typed into a corpse, tracked as running, and
     /// never delivered. Reporting the truth here is what lets the renderer heal.
     alive: bool,
+    /// This pty has a grid core (see gridterm.rs), i.e. it was spawned in grid-renderer mode.
+    /// The frontend mounts `GridTerminalPane` for these and `TerminalSurface` for the rest.
+    /// Reported rather than remembered: the core is created at spawn and the renderer decides
+    /// again after every reload, so the pty is the one place the answer cannot go stale.
+    grid: bool,
 }
 
 #[tauri::command]
@@ -1040,7 +1045,8 @@ fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
             // thread treating a transient read failure as process death.
             let alive = !matches!(child_state(mgr.inner(), &id), ChildState::Exited);
             let dev_port = ports.get(&id).copied();
-            TerminalInfo { id, cwd, dev_port, alive }
+            let grid = gridterm::has(&id);
+            TerminalInfo { id, cwd, dev_port, alive, grid }
         })
         .collect()
 }

@@ -296,6 +296,18 @@ pub fn create(id: &str, cols: usize, rows: usize, bg: (u8, u8, u8), fg: (u8, u8,
     }
 }
 
+/// Does this pty have a grid core? THE AUTHORITY ON WHICH RENDERER A SESSION USES.
+///
+/// The core is created at spawn and never afterwards, so its existence is the same fact as "this
+/// session was launched in grid mode" — and it survives a renderer reload, which is exactly when
+/// the frontend has to decide again which pane to mount. Reported through `terminal_list` so a
+/// re-attached tab reads it off the pty rather than keeping a second copy of the answer that is
+/// free to drift from this one.
+pub fn has(id: &str) -> bool {
+    if CORES.load(Ordering::Relaxed) == 0 { return false }
+    grids().lock().unwrap().contains_key(id)
+}
+
 /// Feed a pty chunk. Returns the bytes to write BACK to the pty (the terminal
 /// handshake — cursor/device reports, colour-query replies). No-op (one atomic load)
 /// for non-grid sessions. `flush` (read drained the pty) emits even inside the

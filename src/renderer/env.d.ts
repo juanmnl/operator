@@ -34,7 +34,10 @@ declare global {
       projectReplies?: (projectId: string) => Promise<ProjectReply[]>
       imageDataUrl: (path: string) => Promise<string>
       rendererHeartbeat: () => void
-      terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string } | null>
+      /** `grid` echoes back which renderer this session was actually spawned with, so the
+       *  caller records what was SENT rather than re-reading the pref a second time (which a
+       *  mid-flight change could answer differently). See `getRendererMode`. */
+      terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string; grid: boolean } | null>
       /** Launch a deferred session's Claude process at the pane's fitted size (defer-launch). */
       terminalStart: (id: string, cols: number, rows: number) => void
       /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */

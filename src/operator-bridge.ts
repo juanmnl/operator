@@ -15,7 +15,7 @@ import { relaunch, exit } from '@tauri-apps/plugin-process'
 import { buildArgs } from './renderer/lib/launch-args'
 import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
-import { getTuiMode } from './renderer/lib/terminal-options'
+import { spawnTerminalMode } from './renderer/lib/terminal-options'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
 import type { GridUpdate, NarrationEntry, ProjectReply } from './shared/types'
 
@@ -66,7 +66,19 @@ export function installBridge(): void {
         try { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() } catch { return '' }
       }
       const termBg = readVar('--bg-terminal') || '#0b0d10'
+      const termFg = readVar('--fg') || '#e6e6e6'
       const colorScheme = isLightBackground(termBg) ? 'light' : 'dark'
+      // THE FLAG THE COMMENT ABOVE HAS BEEN DESCRIBING SINCE 2026-06-30, now actually sent.
+      // `terminal_spawn` takes `grid: Option<bool>` and only stands the alacritty core up when it
+      // is true; nothing ever passed it, so it was always `None` and the grid was never created.
+      // The intent was written and the wire was not.
+      //
+      // `term_bg`/`term_fg` ride along for the same reason: the core is created at spawn
+      // specifically so it can answer Claude's OSC background query — which arrives in
+      // milliseconds, long before the pane mounts — and it needs the theme's colours to answer
+      // with. They were never passed either, so the core would have replied with its built-in
+      // near-black whatever palette was on screen.
+      const { grid, tuiMode } = spawnTerminalMode()
       // Classic (tui:default) is the DEFAULT because xterm has native scrollback and our
       // custom wheel handler scrolls it — in fullscreen/alt-screen there's no scrollback to
       // scroll and the wheel is forwarded as arrow keys, so wheel-scroll effectively stops
@@ -83,15 +95,25 @@ export function installBridge(): void {
         args: buildArgs(launchOptions, sessionId),
         sessionId,
         permissionMode: (launchOptions?.permissionMode as string) ?? null,
-        tuiMode: getTuiMode(),
+        // FULLSCREEN IS FORCED IN GRID MODE, not merely defaulted: the grid parses alt-screen
+        // correctly and that is the entire reason to run it, whereas classic is the mode whose
+        // absolute-column redraws produce the overprint this path exists to escape. Outside grid
+        // mode the user's pref is honoured exactly as before.
+        tuiMode,
         colorScheme,
+        grid,
+        termBg,
+        termFg,
         orchestrationNote: (launchOptions?.orchestrationNote as string) ?? null,
         // Stamped onto any reply this session posts, so it lands in the right project's
         // channel. The tailer can't derive it — project ids are our canonical-repo-root
         // scheme (lib/resolve-project) — so it rides along at spawn.
         projectId: (launchOptions?.projectId as string) ?? null,
       })
-      return { terminalId: id, cwd: target }
+      // `grid` goes back with the id: the caller has to mount the matching pane, and reading the
+      // pref again over there would be a second read that a mid-flight change could answer
+      // differently from the one that actually spawned this pty.
+      return { terminalId: id, cwd: target, grid }
     },
     // Launch a deferred session's Claude process once its pane has fitted and resized the
     // pty to the real grid width (see terminal_spawn's DEFERRED LAUNCH note). Idempotent.
