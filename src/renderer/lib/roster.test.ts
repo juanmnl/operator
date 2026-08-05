@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
 import type { Project } from '../../shared/types'
 
 describe('roster', () => {
@@ -343,5 +343,40 @@ describe('stripDispatchLines — quotation guards must not regress', () => {
     expect(stripDispatchLines(inline)).toBe(inline)
     const both = 'Use OPERATOR-DISPATCH [code] to delegate and OPERATOR-REPLY [project] to report.'
     expect(stripDispatchLines(both)).toBe(both)
+  })
+})
+
+// Ordering the STRIP's members by the roster is what makes a lane reorder visible. Without it the
+// drag rewrites the durable roster and the rows you dragged do not move — which is how the
+// v0.13.7 join broke reordering in a way that looked like nothing at all was wired.
+describe('orderByRoster', () => {
+  const roster = [{ id: 'operator' }, { id: 'code' }, { id: 'research' }]
+  const ids = (list: { roleId?: string; id?: string }[]) => list.map((m) => m.roleId ?? m.id)
+
+  it('puts lane members in roster order', () => {
+    const live = [{ roleId: 'research' }, { roleId: 'operator' }, { roleId: 'code' }]
+    expect(ids(orderByRoster(live, roster))).toEqual(['operator', 'code', 'research'])
+  })
+
+  it('leaves AD-HOC members exactly where they are — lanes fill only the slots lanes had', () => {
+    const live = [{ roleId: 'research' }, { id: 'adhoc-1' }, { roleId: 'operator' }, { id: 'adhoc-2' }]
+    // Slots 0 and 2 were lanes and stay lanes, now in roster order; slots 1 and 3 are untouched.
+    expect(ids(orderByRoster(live, roster))).toEqual(['operator', 'adhoc-1', 'research', 'adhoc-2'])
+  })
+
+  it('is a no-op when the members are already in roster order', () => {
+    const live = [{ roleId: 'operator' }, { roleId: 'code' }]
+    expect(ids(orderByRoster(live, roster))).toEqual(['operator', 'code'])
+  })
+
+  it('sorts a member whose lane is gone LAST among lanes, never dropping it', () => {
+    const live = [{ roleId: 'ghost' }, { roleId: 'code' }]
+    expect(ids(orderByRoster(live, roster))).toEqual(['code', 'ghost'])
+  })
+
+  it('handles an empty roster and an all-adhoc group without reordering anything', () => {
+    const live: { roleId?: string; id?: string }[] = [{ id: 'a' }, { id: 'b' }]
+    expect(ids(orderByRoster(live, []))).toEqual(['a', 'b'])
+    expect(ids(orderByRoster([{ roleId: 'code' }, { roleId: 'operator' }], []))).toEqual(['code', 'operator'])
   })
 })

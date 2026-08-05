@@ -323,6 +323,35 @@ export function reorderRoles(roles: Role[], dragId: string, targetId: string, ed
   return reorderByIds(roles, dragId, targetId, edge)
 }
 
+/** Order a group's live members so LANE members follow the ROSTER, without disturbing anything
+ *  else. This is what makes reordering a lane VISIBLE.
+ *
+ *  It is the half of lane-reordering that the v0.13.7 rail/sidebar join removed without anyone
+ *  noticing, because it was never a line of code to delete: the pre-join sidebar built its lane
+ *  rows FROM the roster, so roster order was row order by construction. The joined strip builds
+ *  rows from the live SESSIONS instead, so the roster stopped ordering anything on screen —
+ *  dragging a lane rewrote the durable roster (and the Team screen agreed) while the strip you
+ *  dragged in did not move. A drag that persists and does not appear to do anything is worse than
+ *  one that is missing.
+ *
+ *  A STABLE PARTITION, not a sort of everything. Lane members keep the SET of slots they already
+ *  occupy and are filled into them in roster order; ad-hoc members keep their exact positions.
+ *  That is the same-kind rule applied to display: the two kinds are ordered by different things
+ *  (roster vs live session order) and there is no sensible merge, so neither gets to reshuffle the
+ *  other. Sorting the whole list would have moved every ad-hoc row the first time a roster
+ *  changed.
+ *
+ *  A member whose `roleId` is not in the roster (a lane deleted while its agent still runs) sorts
+ *  last among lanes rather than vanishing or jumping to the front. */
+export function orderByRoster<T extends { roleId?: string }>(members: T[], roster: readonly { id: string }[]): T[] {
+  const rank = new Map(roster.map((r, i) => [r.id, i]))
+  const lanes = members
+    .filter((m) => m.roleId)
+    .sort((a, b) => (rank.get(a.roleId!) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.roleId!) ?? Number.MAX_SAFE_INTEGER))
+  let next = 0
+  return members.map((m) => (m.roleId ? lanes[next++] : m))
+}
+
 /** Apply a partial edit to one lane, returning the new roster. Unknown id → unchanged.
  *
  *  Pure, and taking the roster as an argument, precisely so callers can apply it to the
