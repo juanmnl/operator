@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { type Annotation, loadAnnotations, saveAnnotations, composeMessage } from '../../lib/annotations'
+import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
 import { pickPreviewUrl, portOf } from '../../lib/preview-port'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
@@ -319,7 +319,11 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
     id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
     route, url: display || undefined, viewport: pageBox.w ? { w: pageBox.w, h: pageBox.h } : undefined,
-    device: deviceLabel, createdAt: new Date().toISOString(),
+    // STAMPED, so the migration never touches a note written by this code. It happens to be a
+    // no-op on one of these (the recorded viewport IS the page box, so the rebase factor is 1),
+    // but relying on that coincidence is how a second rebase eventually lands on a note it
+    // shouldn't.
+    device: deviceLabel, v: ANNOTATION_GEOM_VERSION, createdAt: new Date().toISOString(),
   })
   const saveDraft = () => {
     if (!draft) return

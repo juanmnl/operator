@@ -27,6 +27,7 @@ import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { AppShell } from '../components/AppShell'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
+import { GridTerminalPane } from '../components/terminal/GridTerminalPane'
 import { getTerminal } from '../lib/terminal-registry'
 import { homeDir, join } from '@tauri-apps/api/path'
 import { ShellSheet } from '../components/terminal/ShellSheet'
@@ -78,6 +79,13 @@ interface TerminalTab {
   /** This tab was re-attached to a surviving pty after a reload (not freshly
    *  launched), so its pane should replay buffered scrollback on mount. */
   reattached?: boolean
+  /** Spawned in GRID-renderer mode, so this tab mounts `GridTerminalPane` instead of
+   *  `TerminalSurface`. BOUND AT SPAWN and never re-read from the pref: the alacritty core is
+   *  created by `terminal_spawn`, so a session cannot change renderer while it runs, and a pref
+   *  flipped mid-flight must never mount a different pane over a live pty. Freshly launched tabs
+   *  take it from the spawn result; re-attached ones from `ManagedTerminal.grid`, which the
+   *  backend reports off the pty itself. */
+  grid?: boolean
 }
 
 
@@ -1754,6 +1762,9 @@ export function DashboardView() {
             projectId: s?.projectId,
             roleId: s?.roleId,
             reattached: true, // replay buffered scrollback on mount
+            // Off the PTY, not off the pref: this session's renderer was decided when it was
+            // spawned, possibly before a reload and possibly before the pref was last changed.
+            grid: t.grid,
           }
         })
       })
@@ -1891,6 +1902,7 @@ export function DashboardView() {
         fanGroup,
         fanIndex: fanGroup ? i + 1 : undefined,
         fanTotal: fanGroup ? count : undefined,
+        grid: result.grid,
       }
       setTerminals((prev) => [...prev, tab])
       spawned.push(tab)
@@ -2194,6 +2206,7 @@ export function DashboardView() {
       sourceCwd: saved.sourceCwd,
       projectId: saved.projectId ?? proj.id,
       roleId: saved.roleId,
+      grid: result.grid,
     }
     setTerminals((prev) => [...prev, tab])
     setActiveTerminalId(result.terminalId)
@@ -3634,21 +3647,37 @@ export function DashboardView() {
                   pointerEvents: mainView === 'terminal' ? undefined : 'none',
                 }}
               >
-                <TerminalSurface
-                  terminalId={t.id}
-                  theme={currentTheme.xterm}
-                  // Deactivated when a Chat/Preview overlay covers it, so the hidden terminal
-                  // doesn't grab focus/keystrokes; re-activates on switch back (its size is
-                  // unchanged, so the activation fit is a no-op — no resize-hang risk).
-                  active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
-                  suspendFit={resizingPanel || windowResizing || sidebarAnimating}
-                  // Hand every sniffed dev-server port to the backend, for EVERY pane
-                  // (not just the active one) — a background lane's server is still its
-                  // server, and the banner scrolls past exactly once. This is the only
-                  // attribution source that survives a session Operator didn't hand a
-                  // port to, now that nothing inspects the process tree.
-                  onDevServerDetected={(port) => window.operator.noteSessionPort?.(t.id, port)}
-                />
+                {/* PER SESSION, never per app. `t.grid` was decided when this pty was spawned
+                    (the alacritty core is created there), so flipping the pref cannot swap the
+                    pane under a running session — and a reload reads it back off the pty.
+                    `TerminalSurface` is unchanged and remains the default and the fallback. */}
+                {t.grid ? (
+                  <GridTerminalPane
+                    terminalId={t.id}
+                    theme={currentTheme.xterm}
+                    // Same activity rule as the xterm pane. The grid pane owns its own
+                    // lifecycle from this one prop: it attaches (and pushes a fresh full
+                    // frame) when it becomes active, resizes from its own ResizeObserver,
+                    // re-themes on a new `theme`, and detaches on unmount.
+                    active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
+                  />
+                ) : (
+                  <TerminalSurface
+                    terminalId={t.id}
+                    theme={currentTheme.xterm}
+                    // Deactivated when a Chat/Preview overlay covers it, so the hidden terminal
+                    // doesn't grab focus/keystrokes; re-activates on switch back (its size is
+                    // unchanged, so the activation fit is a no-op — no resize-hang risk).
+                    active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
+                    suspendFit={resizingPanel || windowResizing || sidebarAnimating}
+                    // Hand every sniffed dev-server port to the backend, for EVERY pane
+                    // (not just the active one) — a background lane's server is still its
+                    // server, and the banner scrolls past exactly once. This is the only
+                    // attribution source that survives a session Operator didn't hand a
+                    // port to, now that nothing inspects the process tree.
+                    onDevServerDetected={(port) => window.operator.noteSessionPort?.(t.id, port)}
+                  />
+                )}
                 {t.ended && (
                   <EndedOverlay
                     onClose={() => {

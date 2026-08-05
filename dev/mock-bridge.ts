@@ -435,6 +435,17 @@ export function installMockBridge() {
   // false" here, the reconcile has no fixture and its CALLER goes untested — which is exactly
   // how the last delivery bug survived a full suite of passing unit tests.
   const deadLane = new URLSearchParams(location.search).get('deadLane')
+  // `?grid=1` — every lane reports as spawned in GRID-renderer mode, so `DashboardView` mounts
+  // `GridTerminalPane` instead of `TerminalSurface` and its attach/resize/theme/detach lifecycle
+  // becomes reachable in the harness. The grid was unwired from 2026-06-30 until it was wired
+  // back behind an opt-in pref, and this is the fixture for the WIRING.
+  //
+  // IT DELIBERATELY EMITS NO `gridterm:update`. The snapshots come from an alacritty core in
+  // Rust; faking a stream here would paint text on screen and let a driver report "the grid
+  // renders" when nothing of the actual renderer had run. A fixture more generous than reality
+  // validates a feature that cannot work. So this proves the wiring and NOTHING about the paint,
+  // which is the user's live-session test.
+  const grid = new URLSearchParams(location.search).get('grid') === '1'
   // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —
   // verbatim the six entries the real `~/.operator/role-defaults.json` held. `?worktree=1` also
   // clears the one-shot flag so the seed migration runs; any other value keeps it, which is how a
@@ -543,7 +554,10 @@ export function installMockBridge() {
       const list = empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_TERMINALS : MOCK_TERMINALS
       // Report the dead child the way the backend does: the row stays (the pty entry lingers),
       // only `alive` flips. Dropping the row entirely would exercise a different branch.
-      return deadLane ? list.map((t) => (t.id === deadLane ? { ...t, alive: false } : t)) : list
+      const withDead = deadLane ? list.map((t) => (t.id === deadLane ? { ...t, alive: false } : t)) : list
+      // The backend reports grid-ness off the pty itself (a live alacritty core), which is what
+      // makes a re-attached tab mount the right pane after a reload.
+      return grid ? withDead.map((t) => ({ ...t, grid: true })) : withDead
     },
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),
@@ -685,7 +699,7 @@ export function installMockBridge() {
     // resume) actually add a session row the driver can assert on.
     terminalSpawn: async (cwd: string, opts?: unknown) => {
       calls.push({ fn: 'terminalSpawn', cwd, opts })
-      return { terminalId: `tm${spawnN++}`, cwd }
+      return { terminalId: `tm${spawnN++}`, cwd, grid }
     },
     runCheck: async () => ({ ok: true, output: 'mock: checks green' }),
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,

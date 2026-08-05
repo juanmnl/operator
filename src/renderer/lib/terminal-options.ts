@@ -61,6 +61,65 @@ export function setTuiMode(mode: TuiMode): void {
   }
 }
 
+const RENDERER_MODE_KEY = 'operator.terminal.renderer'
+export type RendererMode = 'xterm' | 'grid'
+
+/** WHICH TERMINAL RENDERER a session is spawned with. **Default `xterm`, and that is the whole
+ *  point of it.**
+ *
+ *  `xterm` = the shipped DOM-renderer pane (`TerminalSurface`). `grid` = our own terminal
+ *  (`GridTerminalPane`): the pty bytes are parsed by alacritty in Rust and only a themed CELL
+ *  SNAPSHOT crosses into the webview, so there is no escape-sequence stream for a webview buffer
+ *  to mis-track.
+ *
+ *  THIS IS AN ESCAPE HATCH FOR A SOAK TEST, NOT A PRODUCT SURFACE. The standing rule is "do not
+ *  reintroduce a renderer toggle without a soak test", and the toggle is what makes the soak test
+ *  possible at all — the grid path has been unreachable since 2026-06-30, so nobody can judge it.
+ *  It is deliberately not exposed in Preferences: turn it on from the console with
+ *
+ *      localStorage.setItem('operator.terminal.renderer', 'grid')
+ *
+ *  and start a NEW session. It binds at SPAWN — the grid core is created by `terminal_spawn` — so
+ *  a running session cannot switch, and flipping the pref never changes which pane is mounted
+ *  over a live pty. What renderer an existing session uses is read back off the pty
+ *  (`ManagedTerminal.grid`), never off this pref.
+ *
+ *  Read the history before promoting it: the commit that created the grid (e9e02e3, 2026-06-30)
+ *  is the same commit that shelved it, for "an endless edge-case tail". */
+export function getRendererMode(): RendererMode {
+  try {
+    return localStorage.getItem(RENDERER_MODE_KEY) === 'grid' ? 'grid' : 'xterm'
+  } catch {
+    return 'xterm'
+  }
+}
+
+export function setRendererMode(mode: RendererMode): void {
+  try {
+    localStorage.setItem(RENDERER_MODE_KEY, mode)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** THE SPAWN DECISION: which renderer, and which TUI mode goes with it.
+ *
+ *  Pure and in one place because the interesting half is a COUPLING rather than two independent
+ *  prefs — grid mode forces `fullscreen` whatever the tui pref says, and that is the claim worth
+ *  being able to test. Inline in the bridge it could only be asserted in a comment, which is what
+ *  it was: `operator-bridge.ts` has described this behaviour since 2026-06-30 while sending
+ *  neither flag.
+ *
+ *  WHY THE COUPLING. The grid parses alt-screen correctly and that is the whole reason to run it;
+ *  classic is the mode whose absolute-column redraws over relatively-positioned rows produce the
+ *  overprint the grid exists to escape. Running the grid in classic mode would be testing it in
+ *  the one configuration it was not built for. Outside grid mode the user's pref is honoured
+ *  exactly as before — this must not change what a default install does. */
+export function spawnTerminalMode(): { grid: boolean; tuiMode: TuiMode } {
+  const grid = getRendererMode() === 'grid'
+  return { grid, tuiMode: grid ? 'fullscreen' : getTuiMode() }
+}
+
 /** Scrollback for the pane you are looking at. Unchanged — the visible terminal keeps the full
  *  history it has always had. */
 export const ACTIVE_SCROLLBACK = 10_000
