@@ -59,6 +59,26 @@ describe('isStockLane', () => {
     expect(isStockLane(seeded('qa', { useWorktree: false }))).toBe(true)
   })
 
+  // THE INTERACTION FLAGGED WHEN THE COORDINATOR PRESET FLIPPED TO `false` (2026-08-05): changing
+  // a preset changes which lanes count as stock, and five real coordinators carry `useWorktree:
+  // true`. Those now DIFFER from their preset, so `isStockLane` calls them a decision — a real
+  // change in this predicate's answer, pinned here rather than left to be rediscovered.
+  //
+  // It cannot reach the prune, and that is the point of writing it down: the coordinator is a
+  // FLOOR LANE, so `isPrunable` refuses it before `isStockLane` is ever consulted. The change is
+  // therefore inert for pruning, and inert in the safe direction even if the floor were removed —
+  // "not stock" means "keep". No other preset moved, so no other lane's stock-ness changed.
+  it('a coordinator with the old persisted worktree pin now reads as a decision — and is unprunable anyway', () => {
+    expect(isStockLane(seeded('operator', { useWorktree: true }))).toBe(false)
+    expect(isStockLane(seeded('operator'))).toBe(true)
+    // The floor holds regardless of which of those two it is.
+    const proj = (roster: Role[]): Project =>
+      ({ id: 'p', path: '/p', name: 'p', createdAt: '', lastActiveAt: '', roster })
+    for (const r of [seeded('operator'), seeded('operator', { useWorktree: true })]) {
+      expect(seededIdleLaneCounts([proj([r])], []).lanes).toBe(0)
+    }
+  })
+
   it("reads '' as unset, since real stored rosters carry empty strings", () => {
     expect(isStockLane(seeded('code', { model: '', accent: '', permissionMode: '' }))).toBe(true)
   })

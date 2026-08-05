@@ -188,7 +188,13 @@ export function rolePresets(): Role[] {
     // fallback (off). These are the values that seed shipped: lanes that WRITE get isolation, so
     // their diffs are attributable and two of them can't collide in one checkout. Review and QA
     // read and verify, so they stay in the main checkout where the work actually is.
-    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', useWorktree: true, accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
+    // THE COORDINATOR RUNS IN THE REPO ITSELF, and this is `false` as a matter of rule rather
+    // than taste — see `resolveAgentConfig`, which enforces it over a persisted pin. A coordinator
+    // in a worktree is on a branch of its own, so the work it merges, the branches it reaps and
+    // the HEAD it hands to every lane it launches all come from a checkout that is not the one
+    // anybody looks at. Measured 2026-08-05: 33 worktrees, 9 unmerged commits across 6 branches,
+    // most 30–137 commits behind main.
+    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', useWorktree: false, accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
     { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', useWorktree: true, accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
     { id: 'code', name: 'Code', model: 'opus', effort: 'high', useWorktree: true, accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
     { id: 'review', name: 'Review', model: 'opus', effort: 'high', useWorktree: false, accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },

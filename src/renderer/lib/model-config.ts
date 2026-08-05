@@ -1,5 +1,5 @@
 import type { Project, Role } from '../../shared/types'
-import { rolePresets } from './roster'
+import { rolePresets, isCoordinator } from './roster'
 
 // A LANE'S LAUNCH CONFIG, and the one cascade that resolves it.
 //
@@ -83,7 +83,24 @@ export function resolveAgentConfig(role: Role, projectDefaults?: Project['defaul
   const effort = [role.effort, preset?.effort].find(set) ?? HARD_FALLBACK.effort
   const permissionMode = [role.permissionMode, projectDefaults?.permissionMode].find(set) ?? HARD_FALLBACK.permissionMode
   // Tri-state, and deliberately NOT `.find(set)`: `false` is a pin, not an absence.
-  const useWorktree = [role.useWorktree, preset?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree
+  //
+  // …EXCEPT FOR A COORDINATOR, WHICH IS NOT A CASCADE AT ALL. A coordinator always runs in the
+  // repository itself, whatever is pinned on it, so this overrides the pin instead of ranking
+  // below it. That inversion is the whole point: changing the preset alone would fix only the
+  // lanes that never expressed an opinion, and five real projects have `useWorktree: true`
+  // PERSISTED on their coordinator from when the preset said so. Their stored value is backfilled
+  // separately (`clearCoordinatorWorktree`), but a migration is a one-shot on data we can see —
+  // this is the invariant, and it holds for a roster restored from a backup, synced from another
+  // machine, or hand-edited.
+  //
+  // WHY THE RULE. The coordinator merges lane branches, reaps worktrees and launches every other
+  // lane. In its own worktree it does all three from a checkout nobody is looking at: it merges
+  // into a branch that is not main, and — before the fix in `worktree.rs` — handed its own stale
+  // HEAD to every lane it spawned. That is the reported "stale branches picked up", and it is why
+  // work went missing rather than merely being untidy.
+  const useWorktree = isCoordinator(role.id)
+    ? false
+    : [role.useWorktree, preset?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree
   return { model, effort, permissionMode, useWorktree }
 }
 
@@ -156,10 +173,21 @@ export function migrateGlobalsToLanePins(
       if (before.model !== after.model) { out.model = before.model; hit = true }
       if (before.effort !== after.effort) { out.effort = before.effort; hit = true }
       if (before.permissionMode !== after.permissionMode) { out.permissionMode = before.permissionMode; hit = true }
-      if (before.useWorktree !== after.useWorktree) { out.useWorktree = before.useWorktree; hit = true }
+      // …EXCEPT a coordinator's worktree, which is no longer a preference to preserve.
+      //
+      // This function's whole contract is "what did this lane launch with yesterday? write it
+      // down" — and for every other field that is still what we want. But the old global tier is
+      // exactly where the coordinator was told to isolate (`role-defaults.json` carried
+      // `useWorktree: true` for it), so without this clause the two cascades disagree by
+      // construction on every coordinator and the migration DUTIFULLY RE-CREATES the pin that
+      // `clearCoordinatorWorktree` exists to delete — on the same hydrate, from a file we do not
+      // even read any more. A rule cannot be migrated back into a preference.
+      const worktreeIsAPreference = !isCoordinator(r.id)
+      if (worktreeIsAPreference && before.useWorktree !== after.useWorktree) { out.useWorktree = before.useWorktree; hit = true }
       if (!hit) return r
       pins += Number(before.model !== after.model) + Number(before.effort !== after.effort)
-        + Number(before.permissionMode !== after.permissionMode) + Number(before.useWorktree !== after.useWorktree)
+        + Number(before.permissionMode !== after.permissionMode)
+        + Number(worktreeIsAPreference && before.useWorktree !== after.useWorktree)
       lanes++
       changed = true
       return out
@@ -199,6 +227,36 @@ export function clearSeededRoleFields(p: Project): Project {
     if (r.effort !== undefined && r.effort === preset.effort) { delete out.effort; hit = true }
     if (!hit) return r
     changed = true
+    return out
+  })
+  return changed ? { ...p, roster: next } : p
+}
+
+/** Drop a `useWorktree` pin from a COORDINATOR role, so the stored data stops disagreeing with
+ *  what actually happens.
+ *
+ *  Five real projects carry `useWorktree: true` on their coordinator, written when the preset said
+ *  so. `resolveAgentConfig` already ignores it — that is the load-bearing fix and it does not
+ *  depend on this running — but a stored `true` is a lie that outlives the session: it draws a
+ *  pinned control, it is what a backup restores, and it is what anyone reading `projects.json`
+ *  would believe.
+ *
+ *  DELETED, NOT SET TO `false`. The pin means "I chose this", and nobody chose it — a preset wrote
+ *  it. Writing `false` would replace one fiction with another and leave the lane looking
+ *  deliberately opted out of a choice it is not offered. Absent is the truth: it inherits, and
+ *  what it inherits is a rule.
+ *
+ *  Same shape as `clearSeededRoleFields` — returns the SAME object when there is nothing to do, so
+ *  hydrate can early-bail and running it twice is free. */
+export function clearCoordinatorWorktree(p: Project): Project {
+  const roster = p.roster
+  if (!roster?.length) return p
+  let changed = false
+  const next = roster.map((r) => {
+    if (!isCoordinator(r.id) || r.useWorktree === undefined) return r
+    changed = true
+    const out: Role = { ...r }
+    delete out.useWorktree
     return out
   })
   return changed ? { ...p, roster: next } : p

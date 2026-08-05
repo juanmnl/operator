@@ -61,6 +61,60 @@ fn short_id() -> String {
     format!("{:x}", nanos & 0xffffff)
 }
 
+/// THE BRANCH A NEW LANE FORKS FROM — the repository's default branch, resolved, never the
+/// caller's `HEAD`.
+///
+/// `worktree add … HEAD` took the head of *the checkout that asked*. A coordinator sitting in its
+/// own stale worktree therefore handed its staleness to every lane it launched, and each of those
+/// lanes handed on whatever it had. Measured 2026-08-05: branches 30–137 commits behind main, 9
+/// unmerged commits across 6 of them. That is the "stale branches get picked up" the user
+/// reported. Part 1 of this change keeps the coordinator in the main repo, which makes the common
+/// case correct; this removes the fragility itself, so a lane launched from anywhere — another
+/// lane, a detached checkout, a worktree someone left open for a week — still starts from current
+/// work.
+///
+/// TWO STEPS, AND THEY ARE DIFFERENT QUESTIONS. First the NAME of the default branch, which is a
+/// property of the repository and is derived, never hardcoded: `origin/HEAD` is what a clone
+/// records, and `main`/`master` are only the fallback for a repo with no remote (a fresh `git
+/// init`, which is most tests and some real projects). Then the COMMIT-ISH to fork from, and for
+/// that the LOCAL branch wins over `origin/<name>`:
+///
+///   this project merges lane branches into local `main` and pushes later, so `origin/main` can be
+///   behind by exactly the work that was just merged. Forking from the remote ref would drop it —
+///   the same defect in the other direction, and a subtler one, because the branch would look
+///   current against the remote.
+///
+/// `None` when nothing resolves, and the caller then falls back to `HEAD`: a lane that starts from
+/// a stale base is worse than one that starts from a current base, but both are better than a
+/// launch that fails.
+fn default_base(root: &str) -> Option<String> {
+    // The name. `origin/HEAD` → `refs/remotes/origin/main` → `main`.
+    let named = git(root, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .ok()
+        .and_then(|r| r.rsplit('/').next().map(str::to_string))
+        .filter(|n| !n.is_empty());
+
+    // Candidates in order of authority: what the remote says the default is, then the two
+    // conventional names for a repo that has never had a remote.
+    let candidates: Vec<String> = named
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()])
+        .collect();
+
+    for name in candidates {
+        // A local branch of that name is the best base — it holds anything merged but not pushed.
+        if git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok() {
+            return Some(name);
+        }
+        // Otherwise the remote-tracking ref, for a checkout that never made the local branch.
+        let remote = format!("refs/remotes/origin/{name}");
+        if git(root, &["rev-parse", "--verify", "--quiet", &remote]).is_ok() {
+            return Some(format!("origin/{name}"));
+        }
+    }
+    None
+}
+
 pub fn create_worktree(source_cwd: &str) -> Result<WorktreeCreateResult, String> {
     let info = inspect_repo(source_cwd);
     let root = match (info.is_repo, info.root) {
@@ -77,9 +131,18 @@ pub fn create_worktree(source_cwd: &str) -> Result<WorktreeCreateResult, String>
     let path_str = path.to_string_lossy().to_string();
 
     std::fs::create_dir_all(worktree_root()).map_err(|e| e.to_string())?;
-    git(&root, &["worktree", "add", "-b", &branch, &path_str, "HEAD"])?;
+    // The resolved default branch, or `HEAD` if it cannot be resolved — see `default_base`. The
+    // fallback is deliberate and is the old behaviour: a lane that starts is better than one that
+    // does not.
+    let base = default_base(&root);
+    let base_ref = base.clone().unwrap_or_else(|| "HEAD".to_string());
+    git(&root, &["worktree", "add", "-b", &branch, &path_str, &base_ref])?;
 
-    Ok(WorktreeCreateResult { path: path_str, branch, base_branch: info.branch })
+    // WHAT IT ACTUALLY FORKED FROM, which is not the same question as "what branch is the caller
+    // on" — and that is what this field used to answer (`info.branch`). Now that the two can
+    // differ by design, reporting the caller's branch would describe a fork that did not happen,
+    // and the UI shows this as the lane's base in the diff/merge panel.
+    Ok(WorktreeCreateResult { path: path_str, branch, base_branch: Some(base_ref) })
 }
 
 #[derive(Serialize)]
@@ -285,6 +348,119 @@ mod tests {
         git(p, &["add", "-A"]).unwrap();
         git(p, &["commit", "-m", "seed"]).unwrap();
         dir
+    }
+
+    // A repo with a REMOTE, so `origin/HEAD` exists and the name can be derived rather than
+    // guessed. `clone` is the honest way to get one: faking refs by hand would test our fake.
+    fn scratch_clone(origin: &tempfile::TempDir) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("clone");
+        let dst_s = dst.to_str().unwrap();
+        git(".", &["clone", origin.path().to_str().unwrap(), dst_s]).unwrap();
+        git(dst_s, &["config", "user.email", "t@t"]).unwrap();
+        git(dst_s, &["config", "user.name", "t"]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn default_base_prefers_the_repos_own_default_over_the_callers_head() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        // No remote at all: the conventional names are the fallback, and `main` exists here.
+        assert_eq!(default_base(p).as_deref(), Some("main"));
+
+        // …and it does NOT follow the caller onto a side branch. This is the whole defect: a
+        // coordinator sitting on a stale branch used to hand that branch to every lane.
+        git(p, &["checkout", "-b", "operator/stale"]).unwrap();
+        assert_eq!(default_base(p).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn default_base_derives_the_name_from_origin_head_rather_than_assuming_main() {
+        // A repo whose default branch is called neither `main` nor `master`. Hardcoding either
+        // would resolve to nothing here and silently fall back to HEAD.
+        let origin = tempfile::tempdir().unwrap();
+        let o = origin.path().to_str().unwrap();
+        git(o, &["init", "-b", "trunk"]).unwrap();
+        git(o, &["config", "user.email", "t@t"]).unwrap();
+        git(o, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(origin.path().join("a.txt"), "one\n").unwrap();
+        git(o, &["add", "-A"]).unwrap();
+        git(o, &["commit", "-m", "seed"]).unwrap();
+
+        let clone = scratch_clone(&origin);
+        let c = clone.path().join("clone");
+        let cs = c.to_str().unwrap();
+        assert_eq!(default_base(cs).as_deref(), Some("trunk"));
+    }
+
+    #[test]
+    fn default_base_takes_the_LOCAL_branch_so_merged_but_unpushed_work_is_not_dropped() {
+        // This project merges lane branches into local `main` and pushes later, so `origin/main`
+        // is routinely behind by exactly the work just merged. Forking from the remote ref would
+        // lose it — the same class of defect, pointing the other way.
+        let origin = tempfile::tempdir().unwrap();
+        let o = origin.path().to_str().unwrap();
+        git(o, &["init", "-b", "main"]).unwrap();
+        git(o, &["config", "user.email", "t@t"]).unwrap();
+        git(o, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(origin.path().join("a.txt"), "one\n").unwrap();
+        git(o, &["add", "-A"]).unwrap();
+        git(o, &["commit", "-m", "seed"]).unwrap();
+
+        let clone = scratch_clone(&origin);
+        let c = clone.path().join("clone");
+        let cs = c.to_str().unwrap();
+        // A local commit on main that the remote has never seen.
+        std::fs::write(c.join("a.txt"), "one\nlocal\n").unwrap();
+        git(cs, &["add", "-A"]).unwrap();
+        git(cs, &["commit", "-m", "merged locally, not pushed"]).unwrap();
+
+        assert_eq!(default_base(cs).as_deref(), Some("main"));
+        let local = git(cs, &["rev-parse", "main"]).unwrap();
+        let remote = git(cs, &["rev-parse", "origin/main"]).unwrap();
+        assert_ne!(local, remote, "fixture must actually be ahead, or this proves nothing");
+        // The base resolves to the LOCAL ref, not the remote-tracking one.
+        assert_eq!(git(cs, &["rev-parse", &default_base(cs).unwrap()]).unwrap(), local);
+    }
+
+    #[test]
+    fn a_new_lane_is_zero_commits_behind_the_default_branch() {
+        // THE ACCEPTANCE TEST for part 2, phrased as the brief phrases it. Launch from a stale
+        // side branch and the lane must still start level with `main`.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        // main moves on…
+        std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+        git(p, &["add", "-A"]).unwrap();
+        git(p, &["commit", "-m", "main moves on"]).unwrap();
+        // …while the caller sits on a branch cut before that commit.
+        git(p, &["checkout", "-b", "operator/stale", "HEAD~1"]).unwrap();
+
+        let made = create_worktree(p).expect("worktree created");
+        let wt = made.path.clone();
+        // 0 commits in `main` that the lane's branch does not have.
+        let behind = git(&wt, &["rev-list", "--count", &format!("{}..main", made.branch)]).unwrap();
+        assert_eq!(behind, "0", "a fresh lane must not start behind the default branch");
+        // It reports what it forked FROM, not what the caller was on.
+        assert_eq!(made.base_branch.as_deref(), Some("main"));
+
+        git(p, &["worktree", "remove", "--force", &wt]).ok();
+    }
+
+    #[test]
+    fn create_worktree_still_starts_a_lane_when_no_default_branch_resolves() {
+        // Detached HEAD with no `main`/`master` and no remote: nothing to resolve, so it must fall
+        // back to the old `HEAD` behaviour rather than failing the launch.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        git(p, &["checkout", "-b", "only-branch"]).unwrap();
+        git(p, &["branch", "-D", "main"]).unwrap();
+        assert_eq!(default_base(p), None);
+
+        let made = create_worktree(p).expect("a lane still starts");
+        assert_eq!(made.base_branch.as_deref(), Some("HEAD"));
+        git(p, &["worktree", "remove", "--force", &made.path]).ok();
     }
 
     #[test]

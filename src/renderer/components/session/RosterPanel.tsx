@@ -933,17 +933,34 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
               As a two-option segmented, the third state stops needing a drawing of its own —
               "inherited" is simply the absence of the pin ring, exactly as on model and effort.
               Clicking the lit option clears back to inherit, the same gesture as the other rows. */}
+          {/* …AND FOR A COORDINATOR THERE IS NO CONTROL, because there is no choice. It runs in
+              the repository itself, always (`resolveAgentConfig` enforces it over any pin).
+              A SENTENCE, NOT AN ABSENCE: a control that silently disappears reads as a bug or as
+              something you failed to find, so the row says the rule in the space the control
+              occupied. Same right-aligned slot, same muted register as an inherited value — no
+              badge, no disabled segmented (a greyed control still implies it could be un-greyed). */}
           <div style={{ marginLeft: 'auto' }}>
-            <Segmented
-              name="worktree"
-              label="worktree"
-              options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
-              value={resolved.useWorktree ? 'on' : 'off'}
-              origin={wt === 'inherit' ? 'inherited' : 'pinned'}
-              onChange={(id) => onPatch({ useWorktree: id === 'on' })}
-              onClear={() => onPatch({ useWorktree: undefined })}
-              accent={accent}
-            />
+            {isCoordinator(role.id) ? (
+              <span
+                data-coordinator-worktree-note
+                title="The coordinator merges lane branches and launches the other lanes — it works in the repository itself, never in a worktree."
+                style={{
+                  fontFamily: 'var(--font-body)', fontSize: 10.5, color: 'var(--fg-muted)',
+                  whiteSpace: 'nowrap',
+                }}
+              >runs in the repo</span>
+            ) : (
+              <Segmented
+                name="worktree"
+                label="worktree"
+                options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
+                value={resolved.useWorktree ? 'on' : 'off'}
+                origin={wt === 'inherit' ? 'inherited' : 'pinned'}
+                onChange={(id) => onPatch({ useWorktree: id === 'on' })}
+                onClear={() => onPatch({ useWorktree: undefined })}
+                accent={accent}
+              />
+            )}
           </div>
         </div>
         {/* Effort + primary action. */}
@@ -1296,7 +1313,10 @@ function LaneRow({
       <span data-lane-config style={{
         flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)',
       }}>
-        {model} · {effort}{role.useWorktree ? ' · worktree' : ''}
+        {/* `· worktree` is suppressed for a coordinator — it never gets one, so naming it here
+            would imply a state it can be in. Read off the RESOLVED config rather than the raw
+            pin, which is also what makes a stale persisted `true` stop showing. */}
+        {model} · {effort}{!isCoordinator(role.id) && resolveAgentConfig(role).useWorktree ? ' · worktree' : ''}
       </span>
 
       {queued > 0 && (
