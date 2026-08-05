@@ -80,6 +80,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // showing a sibling lane's app.
   const [servers, setServers] = useState<number[]>([])
   const frameWrapRef = useRef<HTMLDivElement>(null)
+  /** THE STAGE — the frame's VISIBLE box, and the one coordinate system everything drawn over
+   *  the preview shares. See the derivation below `deviceLabel`. */
+  const stageRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
 
   // --- Annotations: pin/box feedback over the preview, dispatched to the agent -----------
@@ -212,23 +215,28 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // toggle-off / url change / unmount. Re-runs on `display` so it follows a URL change.
   useEffect(() => {
     if (!inspecting || !display) { window.operator.previewInspectClose?.(); return }
-    const el = frameWrapRef.current
+    // THE STAGE'S rect, not the wrapper's. The wrapper is the whole panel, so at any preset
+    // narrower than it the inspector was laid over the empty gutter as well as the page — every
+    // hover outline offset by half the slack.
+    const el = stageRef.current
     if (!el) return
     const r = el.getBoundingClientRect()
     void window.operator.previewInspectOpen?.(display, r.left, r.top, r.width, r.height)
     return () => { window.operator.previewInspectClose?.() }
   }, [inspecting, display])
-  // Keep the embedded inspector aligned to the frame as the panel resizes.
+  // Keep the embedded inspector aligned to the frame as the panel resizes — and as the PRESET
+  // changes, which is new: the stage now moves and resizes without `box` changing at all, so a
+  // preset switch that the wrapper never noticed would have stranded the webview at the old width.
   useEffect(() => {
     if (!inspecting) return
     const id = requestAnimationFrame(() => {
-      const el = frameWrapRef.current
+      const el = stageRef.current
       if (!el) return
       const r = el.getBoundingClientRect()
       window.operator.previewInspectMove?.(r.left, r.top, r.width, r.height)
     })
     return () => cancelAnimationFrame(id)
-  }, [box, inspecting])
+  }, [box, preset, inspecting])
   // The inspector's floating card composes the note itself and beacons preview:pick with the final
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
@@ -271,9 +279,46 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // dispatched feedback carries page + breakpoint, not just a position. Existing annotations
   // keep the context they were captured with (only the note is editable afterward).
   const deviceLabel = preset === 'fit' ? 'Fit' : `${preset}px`
+
+  // THE STAGE. One element that IS the frame's visible box, centred in the wrapper — and the
+  // parent of everything drawn over the preview.
+  //
+  // The left pin was `transformOrigin: 'top left'` inside a full-width wrapper, but centring is
+  // only half of what the stage is for. THREE things derive "where the page is" — the iframe, the
+  // annotation pins + capture overlay (percentages), and the native inspect webview (a rect) —
+  // and all three read the WRAPPER. "x% across the wrapper" is only "x% across the page" while
+  // the frame FILLS the wrapper, which stopped being true at any preset narrower than the panel:
+  // pins were stored against a box that included the empty gutter, and the inspector webview was
+  // laid over that same too-wide box. That drift predates centring; centring only makes it
+  // symmetrical. One stage fixes both, because there is now exactly one box to be a percentage of.
+  //
+  // WHICH CASE MOVES, and which must not:
+  //   preset ≤ box.w → `scale` clamps to 1, the page is `preset` px in a wider box, and the slack
+  //                    is the gutter. THIS is the case being centred.
+  //   preset > box.w → `scale = box.w / preset`, so the scaled width is box.w EXACTLY: `stageW`
+  //                    is the full width, the gutter is 0, and the render is pixel-identical to
+  //                    before. `Math.min(preset, box.w)` rather than `preset * scale` states that
+  //                    in integers instead of trusting a float to land on box.w.
+  const fitting = preset === 'fit' || box.w === 0
+  const scale = fitting ? 1 : Math.min(1, box.w / preset)
+  /** The stage's box in PANEL pixels — the page AFTER scaling. */
+  const stageW = fitting ? box.w : Math.min(preset, box.w)
+  /** Split evenly, and NOT rounded: half of an odd remainder is what makes the two gutters equal
+   *  rather than off by one. Vertical is untouched — the page stays top-aligned. */
+  const gutter = fitting ? 0 : Math.max(0, (box.w - stageW) / 2)
+  /** The page's OWN pixel box — what the app inside the iframe believes its viewport to be, which
+   *  is not the panel's. At a narrow preset that is `preset` wide; at a wide one the page is still
+   *  `preset` wide and `box.h / scale` tall, and it is the SCALE that fits it on screen.
+   *
+   *  This is the number the percentages have to be multiplied by now. The pins became
+   *  page-relative when they moved into the stage, so a pixel hint computed against the wrapper
+   *  would name a coordinate that does not exist on the page — `Annotation.viewport` is documented
+   *  as "pixel viewport of the preview frame", and `lib/annotations.pxOf` multiplies by it. */
+  const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
+
   const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
     id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
-    route, url: display || undefined, viewport: box.w ? { w: box.w, h: box.h } : undefined,
+    route, url: display || undefined, viewport: pageBox.w ? { w: pageBox.w, h: pageBox.h } : undefined,
     device: deviceLabel, createdAt: new Date().toISOString(),
   })
   const saveDraft = () => {
@@ -291,7 +336,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     const existing = annotations.find((a) => a.id === draft.id)
     const ann: Annotation = existing ? { ...existing, note: draft.note } : buildAnnotation(draft)
     persistAnn(existing ? annotations.map((a) => (a.id === draft.id ? ann : a)) : [...annotations, ann])
-    const msg = composeMessage([ann], route, { w: box.w, h: box.h })
+    // The PAGE's box, not the panel's — same reason as `buildAnnotation`'s viewport. This is only
+    // the fallback anyway: `composeMessage` prefers the annotation's own captured viewport.
+    const msg = composeMessage([ann], route, pageBox)
     if (msg) { if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg) }
     setDraft(null)
   }
@@ -416,26 +463,51 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
       </div>
 
       {reach === 'up' && display ? (
-        <div ref={frameWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: '#fff', position: 'relative' }}>
+        <div ref={frameWrapRef} style={{
+          flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
+          // THE GUTTER'S OWN TONE. `#fff` used to be here and it is now on the stage, where it
+          // belongs — it is the PAGE's backdrop (an app with a transparent body should sit on
+          // white, not on the app's chrome). A white page in a white panel has no visible edge, so
+          // a centred 375 would have looked like nothing happened. `--bg-deep` is the app field in
+          // every palette, so the page reads as a device on a surface at all six. A token, never a
+          // hex — and a background, so no colour-changing border on a radiused element.
+          background: 'var(--bg-deep)',
+        }}>
           {/* (If the frame renders blank — X-Frame-Options / CSP — the toolbar's ↗ opens the
               app in a real browser; no need for a second button floating over the content.) */}
-          {(() => {
-            if (preset === 'fit' || box.w === 0) {
-              return <iframe key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
-            }
-            const scale = Math.min(1, box.w / preset)
-            return (
+
+          {/* THE STAGE — see the derivation above. Absolutely positioned rather than centred by a
+              flex parent, because the annotation layer needs it to be the containing block its
+              percentages resolve against.
+              OVERFLOW IS VISIBLE, deliberately: a pin's numbered badge is chrome centred ON the
+              pin, so at the page's edge it should spill into the gutter rather than be sliced in
+              half with empty space right beside it. Nothing else can spill — a scaled iframe's
+              PAINT is exactly `stageW` wide however tall its layout box is — and the wrapper still
+              clips at the panel edge, so the wide case is untouched either way. */}
+          <div
+            ref={stageRef}
+            data-preview-stage
+            style={{
+              position: 'absolute', top: 0, left: fitting ? 0 : gutter,
+              width: fitting ? '100%' : stageW, height: '100%',
+              background: '#fff',
+            }}
+          >
+          {fitting
+            ? <iframe key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
+            : (
               <iframe
                 key={nonce}
                 src={display}
                 title="App preview"
                 style={{
                   width: preset, height: box.h / scale, border: 'none',
+                  // `top left` INSIDE the stage: the stage is already the page's visible box, so
+                  // the origin has nothing left to pin the page against — it just fills it.
                   transform: `scale(${scale})`, transformOrigin: 'top left',
                 }}
               />
-            )
-          })()}
+            )}
 
           {/* Annotation markers — numbered pins / boxes over the preview. Only shown while
               annotating: switching to Interact reveals the clean app (no leftover boxes). */}
@@ -490,11 +562,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                 <span style={{ color: 'var(--accent)', flexShrink: 0 }}>{deviceLabel}</span>
                 <span style={{ opacity: 0.5, flexShrink: 0 }}>·</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{route}</span>
-                {box.w > 0 && (
+                {/* Against the PAGE's box, not the panel's. The percentages are page-relative now,
+                    so `× box.w` would have quoted a coordinate off the end of a 375px page. */}
+                {pageBox.w > 0 && (
                   <span style={{ marginLeft: 'auto', flexShrink: 0, opacity: 0.7 }}>
                     {draft.wPct != null
-                      ? `${Math.round((draft.wPct / 100) * box.w)}×${Math.round((draft.hPct! / 100) * box.h)}px`
-                      : `${Math.round((draft.xPct / 100) * box.w)},${Math.round((draft.yPct / 100) * box.h)}px`}
+                      ? `${Math.round((draft.wPct / 100) * pageBox.w)}×${Math.round((draft.hPct! / 100) * pageBox.h)}px`
+                      : `${Math.round((draft.xPct / 100) * pageBox.w)},${Math.round((draft.yPct / 100) * pageBox.h)}px`}
                   </span>
                 )}
               </div>
@@ -521,6 +595,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               </div>
             </div>
           )}
+          </div>
         </div>
       ) : (
         <Centered title={reach === 'checking' ? 'Looking for this session’s app…' : 'No app running for this session'}>
