@@ -49,9 +49,15 @@ import type { OperatorTheme } from '../themes'
 import { playYourTurnChime } from '../lib/sounds'
 import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
+import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened } from '../lib/forgotten-projects'
 import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
+
+/** Who asked for a project upsert. `user` may lift a shelf and cancel a forget; `background`
+ *  may do neither. Default is `background` — a new call site opts IN to the destructive
+ *  direction rather than inheriting it. */
+type UpsertIntent = 'user' | 'background'
 
 interface TerminalTab {
   id: string
@@ -692,24 +698,67 @@ export function DashboardView() {
     } catch { return [] }
   })
 
+  /** WHO is asking for this upsert. The distinction exists because one of the four callers is an
+   *  EFFECT — it adopts a surviving pty at boot, with no user anywhere near it — and only a
+   *  deliberate act may lift a shelf or resurrect a forgotten project. Default is `background`,
+   *  so a caller that does not say cannot do either. */
   // Create-or-touch a project by id: fills missing defaults, bumps lastActiveAt, and keeps
   // any user rename (existing name wins). The single mutation point for the projects store.
-  const upsertProject = useCallback((r: { id: string; path: string; name: string }, opts?: { defaults?: Project['defaults'] }) => {
+  const upsertProject = useCallback((r: { id: string; path: string; name: string }, opts?: { defaults?: Project['defaults']; intent?: UpsertIntent }) => {
     const now = new Date().toISOString()
+    // WHO ASKED. Defaulting to `background` is the safe half of the asymmetry: a caller that does
+    // not say is not allowed to un-shelve anything, so a new call site has to opt IN to the
+    // destructive direction rather than inherit it by omission.
+    const intent: UpsertIntent = opts?.intent ?? 'background'
+    // DECIDED OUT HERE, not inside the updater, so the updater stays pure — and so the trace
+    // below is emitted once rather than once per React invocation.
+    const shelved = projectsRef.current.find((p) => p.id === r.id)?.archivedAt
+    const lifting = intent === 'user' && !!shelved
+    // A DELIBERATE ACT ALSO CANCELS A FORGET. Opening the folder or launching a lane in it is
+    // the user saying they want the project back; the durable list must not keep refusing to
+    // adopt its own agents afterwards.
+    if (intent === 'user' && forgottenProjectsRef.current.has(r.id)) {
+      forgottenProjectsRef.current.delete(r.id)
+      rememberProjectOpened(r.id, forgottenProjectsRef.current)
+    }
+    if (lifting) {
+      // AN AUTOMATIC LIFT WITH NO TRACE IS WHAT MADE THIS INVISIBLE. Even now that only a
+      // deliberate action can do it, say so: "why is this back on Active" must always have an
+      // answer on screen.
+      pushToast({ text: `${r.name} is back on Active`, detail: 'It was shelved; opening or launching here brought it back.' })
+    }
     setProjects((prev) => {
       const existing = prev.find((p) => p.id === r.id)
       if (existing) {
-        return prev.map((p) => p.id === r.id
-          ? { ...p, path: r.path, name: p.name || r.name, lastActiveAt: now, defaults: p.defaults ?? opts?.defaults, archivedAt: undefined }
-          : p)
+        return prev.map((p) => {
+          if (p.id !== r.id) return p
+          const next: Project = { ...p, path: r.path, name: p.name || r.name, lastActiveAt: now, defaults: p.defaults ?? opts?.defaults }
+          // THE ASYMMETRY, FIXED. `archivedAt` used to be cleared unconditionally here, which
+          // made un-shelving a SIDE EFFECT of four unrelated paths — one of them background cwd
+          // resolution, which involves no user at all. Setting the flag has always required
+          // explicit intent (see `archiveProjects`); clearing it now does too, and a project the
+          // user shelved survives every background touch.
+          if (lifting) delete next.archivedAt
+          return next
+        })
       }
-      // AUTO-LIFT: launching, restoring, opening a folder and background cwd resolution all
-      // funnel through here, so clearing `archivedAt` in this one spread un-shelves a project
-      // on EVERY revival path. Without it a running agent can hide inside a collapsed
-      // section. It also fires at boot for a pty that survived a restart (the cwd-resolution
-      // effect below) — correct, since that agent really is live, but it looks like a mystery
-      // write if nobody wrote it down. Note that merely OPENING a project does not come
-      // through here: see handleOpenProject.
+      // THE LIFT IS NOW OPT-IN, and the four callers are categorised rather than assumed:
+      //
+      //   openFolderAsProject   USER        picked a folder in the dialog
+      //   handleLaunchSession   USER        launched a lane here
+      //   handleRestoreSession  USER        clicked a dormant session (incl. Resume project)
+      //   cwd resolution        BACKGROUND  an effect adopting a surviving pty — NO user
+      //
+      // The last one is the bug the user reported as "a whole project that i marked as forget,
+      // is launching by itself": it runs at boot for every pty that outlived a restart, and it
+      // used to clear `archivedAt` on the way past. A shelved project came back on its own, and
+      // once on Active its saved sessions are eligible to restore.
+      //
+      // A running agent can now sit inside a shelved project, which the old comment argued
+      // against. That is the correct trade: the agent is still reachable (the gallery's activity
+      // view lists it, and the strip shows any project with something live regardless of shelf),
+      // and "the user's decision stands until the user changes it" outranks tidiness.
+      // Note that merely OPENING a project does not come through here: see handleOpenProject.
       // New project → ONE lane: Operator.
       //
       // This PARTLY REVERSES `dev/briefs/roster-on-demand.md`, deliberately — do not "restore"
@@ -777,7 +826,28 @@ export function DashboardView() {
   // focus-implies-scope backstop fight each other to React's update ceiling (measured: 5084
   // scope writes before "Maximum update depth exceeded"). The guard in the backstop below
   // stops the loop; this stops the dangling data that armed it.
-  const forgottenProjectsRef = useRef(new Set<string>())
+  //
+  // DURABLE, NOT PER-RUN — and that was the second half of "a project i marked as forget is
+  // launching by itself". This was a bare `useRef(new Set())`, so the guard existed only for the
+  // lifetime of the renderer. Forgetting drops the project from the store and unstamps its
+  // sessions, but it does NOT kill the ptys — so on the next boot (or the next renderer respawn,
+  // which happens on its own under memory pressure) the cwd-resolution effect sees an unstamped
+  // live pty, resolves its folder, finds an EMPTY guard, and re-creates the project from scratch
+  // with a fresh roster and a bumped `lastActiveAt`. It then looks like the most recently used
+  // project you own.
+  //
+  // `archivedAt` could not carry this: a forgotten project has no record left to hold a flag.
+  // So the id list is the record, and it has to outlive the process that made the decision.
+  const forgottenProjectsRef = useRef<Set<string>>(new Set(loadForgottenProjects()))
+
+  /** Projects whose teardown is in flight. Rendered immediately so "close" has an effect on
+   *  screen the instant it is asked for, instead of after every pty has been confirmed dead —
+   *  and it is what lets the shelf write stop being the thing that communicates progress.
+   *
+   *  Deliberately NOT persisted: a closing project that outlives the renderer is just a shelved
+   *  or an un-shelved one, and a stuck "closing…" restored from disk would be a lie no action
+   *  could clear. */
+  const [closingProjects, setClosingProjects] = useState<Set<string>>(new Set())
 
   /** Everything forgetting destroys, captured so Undo can put it back. The roster, tasks,
    *  dispatches and notes all ride along inside `project`; the two id lists are what has to
@@ -790,6 +860,7 @@ export function DashboardView() {
     // project left in it gets its terminals silently unstamped again a tick later, so the
     // undo only half-works — and the half that fails is the scope pointer.
     forgottenProjectsRef.current.delete(project.id)
+    rememberProjectOpened(project.id, forgottenProjectsRef.current)
     setProjects((prev) => (prev.some((p) => p.id === project.id) ? prev : [...prev, project]))
     const tids = new Set(terminalIds)
     setTerminals((prev) => prev.map((t) => (tids.has(t.id) ? { ...t, projectId: project.id } : t)))
@@ -808,6 +879,9 @@ export function DashboardView() {
       savedKeys: savedSessionsRef.current.filter((sv) => sv.projectId === id).map((sv) => sv.key),
     }
     forgottenProjectsRef.current.add(id)
+    // DURABLE: the ptys outlive this renderer, so the decision has to as well — otherwise the
+    // next boot re-adopts the project from its own surviving agents.
+    rememberProjectForgotten(id, forgottenProjectsRef.current)
     setProjects((prev) => prev.filter((p) => p.id !== id))
     setActiveProjectId((cur) => (cur === id ? null : cur))
     setTerminals((prev) => (prev.some((t) => t.projectId === id)
@@ -896,12 +970,47 @@ export function DashboardView() {
     if (!project) return
     const plan = closePlan(id, sessionsRef.current)
     const live = sessionsRef.current.filter((s) => plan.sessions.includes(s.id))
-    // Awaited: `handleCloseSession` kills the pty before returning, so by the time this resolves
-    // the lanes really are gone and the shelf write below is telling the truth.
-    for (const s of live) await handleCloseSessionRef.current(s)
+
+    // CLOSING IS A STATE, and it is rendered immediately. The old sequence awaited every pty
+    // death before anything at all happened on screen, so with several lanes the project just sat
+    // there for seconds looking ignored — the user's "it takes a while to get removed".
+    //
+    // This does NOT break the invariant the sequencing protected. That invariant is that a
+    // project must not appear on ACTIVE while its lanes are still alive — which is a rendering
+    // question, and `closingProjects` answers it directly instead of by withholding a write.
+    setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+    setActiveProjectId((cur) => (cur === id ? null : cur))
+
+    // BOUNDED, AND IN PARALLEL. Sequentially awaiting each lane meant one hung `handleCloseSession`
+    // stalled every lane behind it AND — because the shelf write came after the loop — meant
+    // `archivedAt` was never written at all. "User asked to close" then survived nowhere: the
+    // project silently stayed, which is the user's "if it gets removed".
+    const KILL_TIMEOUT_MS = 4000
+    const outcomes = await Promise.all(live.map(async (s) => {
+      try {
+        await Promise.race([
+          handleCloseSessionRef.current(s),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), KILL_TIMEOUT_MS)),
+        ])
+        return { s, ok: true }
+      } catch {
+        return { s, ok: false }
+      }
+    }))
+    const stuck = outcomes.filter((o) => !o.ok).map((o) => o.s)
+
+    // WRITTEN UNCONDITIONALLY, including on partial failure. A lane that would not die is a fact
+    // to report, not a reason to discard the user's decision — and the alternative (silently not
+    // shelving) is indistinguishable from the app ignoring them.
     const at = new Date().toISOString()
     setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, archivedAt: at } : p)))
-    setActiveProjectId((cur) => (cur === id ? null : cur))
+    setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
+    if (stuck.length) {
+      pushToast({
+        text: `${project.name} shelved — ${stuck.length} agent${stuck.length === 1 ? '' : 's'} did not stop`,
+        detail: stuck.map((s) => sessionLabel({ session: s })).join(', '),
+      })
+    }
     const n = plan.sessions.length
     pushToast({
       text: n ? `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended` : `Closed ${project.name}`,
@@ -928,7 +1037,7 @@ export function DashboardView() {
   // it; launches nothing itself.
   const openFolderAsProject = useCallback(async (cwd: string) => {
     const proj = await resolveProject(cwd)
-    upsertProject(proj)
+    upsertProject(proj, { intent: 'user' }) // picked a folder in the dialog — may lift a shelf
     rememberRecent(proj.path)
     setRecentProjects((prev) => {
       const filtered = prev.filter((p) => p.path !== proj.path)
@@ -1924,7 +2033,8 @@ export function DashboardView() {
     }
 
     rememberRecent(cwd)
-    upsertProject(proj, { defaults: { model: config.model, effortLevel: config.effortLevel, permissionMode: config.permissionMode } })
+    // USER: launching a lane here is as deliberate as opening the folder.
+    upsertProject(proj, { intent: 'user', defaults: { model: config.model, effortLevel: config.effortLevel, permissionMode: config.permissionMode } })
     setRecentProjects((prev) => {
       const name = cwd.split('/').pop() || cwd
       const filtered = prev.filter((p) => p.path !== cwd)
@@ -2227,7 +2337,7 @@ export function DashboardView() {
       })
     }
     rememberRecent(saved.cwd)
-    upsertProject(proj)
+    upsertProject(proj, { intent: 'user' }) // clicked a dormant session (or Resume project)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false)
@@ -3779,6 +3889,7 @@ export function DashboardView() {
             onForgetProject={forgetProject}
             onArchiveProject={archiveProject}
             onCloseProject={(id) => { void closeProject(id) }}
+            closingIds={closingProjects}
             onArchiveProjects={archiveProjects}
             onRestoreProject={restoreProject}
             onOpenFolderPrefs={handleOpenFolderPrefs}

@@ -1032,10 +1032,26 @@ fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
     // Snapshot under the lock, then ask about the children with the lock RELEASED: `child_state`
     // takes `ptys` itself, and `try_wait` is a syscall — asking inside the iterator would
     // deadlock on the first entry.
-    let snapshot: Vec<(String, String)> = lock(&mgr.ptys)
+    let mut snapshot: Vec<(String, String)> = lock(&mgr.ptys)
         .iter()
         .map(|(id, p)| (id.clone(), p.cwd.clone()))
         .collect();
+    // SORTED BY CREATION ORDER, and this is a bug fix rather than tidiness.
+    //
+    // `ptys` is a `HashMap`, and Rust's default hasher is seeded RANDOMLY PER PROCESS — so this
+    // list came back in a different order on every single app start, and could reshuffle within a
+    // run whenever the map grew. The frontend's re-attach path builds its `terminals` array from
+    // this order, and `terminals` is the canonical order for the sidebar and for ⌘1..9. That is
+    // the user's "agents randomly move positions", where random is the literal mechanism.
+    //
+    // Ids are `t{n}` from a monotonic counter, so the numeric suffix IS creation order — the
+    // order the lanes were launched in, which is the one a person can predict. Parsed rather than
+    // string-sorted so `t10` follows `t9` instead of `t1`; anything unparseable sorts last by id
+    // so a stray key can never reorder the real ones.
+    snapshot.sort_by_key(|(id, _)| {
+        let n = id.strip_prefix('t').and_then(|s| s.parse::<u64>().ok());
+        (n.is_none(), n.unwrap_or(0), id.clone())
+    });
     snapshot
         .into_iter()
         .map(|(id, cwd)| {

@@ -68,6 +68,10 @@ interface ProjectGalleryProps {
   onRestore: (s: RecentSession, resume: boolean) => void
   onForget: (key: string) => void
   onOpenFolderPath: (path: string) => void
+  /** Projects whose teardown is in flight. The card says so IMMEDIATELY — closing used to show
+   *  nothing at all until every pty had been confirmed dead, which with several lanes is seconds
+   *  of the project sitting there looking like the click was ignored. */
+  closingIds?: Set<string>
 }
 
 export function ProjectGallery({
@@ -75,6 +79,7 @@ export function ProjectGallery({
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
   onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
+  closingIds,
 }: ProjectGalleryProps) {
   // Which card's ⋯ menu is open, and which card is being renamed or having its description
   // written (at most one of each — held here, not per card, so opening a second editor
@@ -239,6 +244,7 @@ export function ProjectGallery({
                       <ProjectCard
                         key={project.id}
                         project={project}
+                        closing={closingIds?.has(project.id)}
                         live={liveByProject.get(project.id) ?? []}
                         accentOf={accentOf}
                         menuOpen={menuFor === project.id}
@@ -318,7 +324,7 @@ export function ProjectGallery({
 function ProjectCard({
   project, live, accentOf, menuOpen, onMenu, renaming, onRenamingChange,
   editingNotes, onEditingNotesChange, onOpen, onRename, onSetNotes, onForget,
-  onArchive, onCloseProject, liveCount, onRestore, onOpenFolderPrefs,
+  onArchive, onCloseProject, liveCount, onRestore, onOpenFolderPrefs, closing,
 }: {
   project: Project
   live: AgentSession[]
@@ -339,6 +345,8 @@ function ProjectCard({
   liveCount: number
   onRestore: () => void
   onOpenFolderPrefs: () => void
+  /** Teardown in flight — see `closingIds`. */
+  closing?: boolean
 }) {
   const [hover, setHover] = useState(false)
   const [draft, setDraft] = useState(project.name)
@@ -445,7 +453,21 @@ function ProjectCard({
         {/* State in WORDS, not a bare count — "1 needs you" is the thing you'd act on, and
             `3 ●` couldn't say it. Transparent badge, accent ink, no fill; accent is reserved
             for activity, so a merely-existing roster ("6 lanes") stays muted. */}
-        {activityLabel && (
+        {/* CLOSING WINS OVER THE ACTIVITY LABEL while a teardown is in flight. It is the same
+            slot, the same muted register and no fill — a state, not a badge — so the card does not
+            reflow when it appears, and the answer to "did my click land" is on screen before the
+            first pty has died. Replaces rather than joins: "3 live" beside "closing…" is two
+            answers to one question. */}
+        {closing ? (
+          <span
+            data-card-closing
+            title="Ending this project’s agents, then moving it to Previous"
+            style={{
+              flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10,
+              color: 'var(--fg-muted)',
+            }}
+          >closing…</span>
+        ) : activityLabel && (
           <span
             data-card-state
             title={activity.waiting > 0
