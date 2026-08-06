@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, type WaveStatus } from './StatusWave'
 import { SessionItem } from './SessionItem'
@@ -15,6 +15,7 @@ import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
+import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../lib/rail-foot'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
 //
@@ -137,6 +138,12 @@ const MEMBER_GAP = 6
  *  just as the orb column does. The foot keeps its own rhythm (it is not on the member column,
  *  by design), but it must not MOVE. */
 const FOOT_PAD = (RAIL_W - (FOOT_BOX * 2 + FOOT_GAP)) / 2
+
+/** The fold control's box. 18 x 14 is a real target on a 60px strip while staying narrower than a
+ *  foot cell's 24 — it is the seam's ornament, not a ninth control, and it must not read as one.
+ *  It overhangs the hairline's 9px of air either side rather than adding height of its own. */
+const DISCLOSURE_W = 18
+const DISCLOSURE_H = 14
 
 /** The ink for the horizontal group hairlines and the foot's three dividers — ALL that is left of
  *  the seam.
@@ -1083,6 +1090,12 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
 }) {
   /** A divider has to out-space the things it divides: 9px either side against a 24px row. */
   const hairline = <span data-rail-seam style={{ width: '100%', height: 1, background: SEAM, margin: '9px 0', flexShrink: 0 }} />
+
+  // Which of the eight stay at rest is decided in `lib/rail-foot` — the reasoning is long enough
+  // to deserve its own file, and the drivers assert against the same tier lists.
+  const [footExpanded, setFootExpanded] = useState(readFootExpanded)
+  const toggleFoot = useCallback(() => setFootExpanded((prev) => { writeFootExpanded(!prev); return !prev }), [])
+
   return (
     <div data-rail-foot style={{
       flexShrink: 0, width: '100%', boxSizing: 'border-box',
@@ -1139,51 +1152,59 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
           <path d="M8 2v12M2 8h12" strokeLinecap="round" />
         </FootItem>
       </FootRow>
-      {hairline}
-      {/* The two Claude-file shortcuts. A folder and a globe cannot say "project" and "global" on
-          their own, which is the argument for labelling all eight rather than some. */}
-      <FootRow>
-        <FootItem
-          collapsed={collapsed}
-          attr="data-rail-folder-prefs"
-          label=".claude"
-          mono
-          title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
-          hint="this project"
-          disabled={!project?.path}
-          active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
-          onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
-        >
-          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
-        </FootItem>
-        <FootItem collapsed={collapsed} attr="data-rail-global-prefs" label="~/.claude" mono title="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
-          <circle cx="8" cy="8" r="6" />
-          <ellipse cx="8" cy="8" rx="2.5" ry="6" />
-          <path d="M2 8h12" />
-        </FootItem>
-      </FootRow>
-      {hairline}
-      <FootRow>
-        <FootItem collapsed={collapsed} attr="data-rail-prefs" label="Preferences" title="Operator preferences" hint="settings" active={prefsViewActive} onClick={() => onOpenPrefs?.()} viewBox="0 0 24 24" strokeWidth={1.8} inkSize={12}>
-            <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </FootItem>
-          {/* 15 for the MOON, 14 for the sun. A crescent's silhouette is smaller than its own
-              box — it painted 11px against every other glyph's 12, i.e. the theme toggle read a
-              size smaller than its neighbours on exactly the three light palettes, where it is
-              the one that shows. Measured, not guessed: assertion S sweeps all six. */}
-        <FootItem collapsed={collapsed} attr="data-rail-theme" label={isDark ? 'Light mode' : 'Dark mode'} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'} hint="theme" inkSize={isDark ? 14 : 15} onClick={() => onToggleTheme?.()}>
-            {isDark ? (
-              <>
-                {/* Filled core so the sun reads distinct from the hollow-centred gear beside it. */}
-                <circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none" />
-                <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" strokeLinecap="round" />
-              </>
-            ) : (
-            <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
-          )}
-        </FootItem>
-      </FootRow>
+      {/* THE FOLD, and it lands on a hairline that was already here — see `lib/rail-foot` for which
+          tier is which and why. The seam between "navigation between projects" and "Claude files"
+          IS the control, so unfolding costs no extra row: expanded, the foot is exactly as tall as
+          it has always been; folded, it loses two rows and a hairline and keeps its rhythm. */}
+      <FootDisclosure expanded={footExpanded} onToggle={toggleFoot} />
+      {footExpanded && (
+        <>
+          {/* The two Claude-file shortcuts. A folder and a globe cannot say "project" and "global"
+              on their own, which is the argument for labelling all eight rather than some. */}
+          <FootRow>
+          <FootItem
+            collapsed={collapsed}
+            attr="data-rail-folder-prefs"
+            label=".claude"
+            mono
+            title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
+            hint="this project"
+            disabled={!project?.path}
+            active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
+            onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
+          >
+            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
+          </FootItem>
+          <FootItem collapsed={collapsed} attr="data-rail-global-prefs" label="~/.claude" mono title="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
+            <circle cx="8" cy="8" r="6" />
+            <ellipse cx="8" cy="8" rx="2.5" ry="6" />
+            <path d="M2 8h12" />
+          </FootItem>
+          </FootRow>
+          {hairline}
+          <FootRow>
+          <FootItem collapsed={collapsed} attr="data-rail-prefs" label="Preferences" title="Operator preferences" hint="settings" active={prefsViewActive} onClick={() => onOpenPrefs?.()} viewBox="0 0 24 24" strokeWidth={1.8} inkSize={12}>
+              <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </FootItem>
+            {/* 15 for the MOON, 14 for the sun. A crescent's silhouette is smaller than its own
+                box — it painted 11px against every other glyph's 12, i.e. the theme toggle read a
+                size smaller than its neighbours on exactly the three light palettes, where it is
+                the one that shows. Measured, not guessed: assertion S sweeps all six. */}
+          <FootItem collapsed={collapsed} attr="data-rail-theme" label={isDark ? 'Light mode' : 'Dark mode'} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'} hint="theme" inkSize={isDark ? 14 : 15} onClick={() => onToggleTheme?.()}>
+              {isDark ? (
+                <>
+                  {/* Filled core so the sun reads distinct from the hollow-centred gear beside it. */}
+                  <circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none" />
+                  <path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.7 3.7l1 1M11.3 11.3l1 1M3.7 12.3l1-1M11.3 4.7l1-1" strokeLinecap="round" />
+                </>
+              ) : (
+              <path d="M13.5 9.5a5.5 5.5 0 0 1-7-7A5.5 5.5 0 1 0 13.5 9.5Z" />
+            )}
+          </FootItem>
+          </FootRow>
+        </>
+      )}
       {/* The app's identity, on its own line at the bottom of the grid — CENTRED ON THE AXIS, the
           same 30 element-local (38 from the window edge) that every orb, every collapsed name and
           every Home mark sits on. It was the one element in the strip that did not, which is
@@ -1238,6 +1259,75 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+/** THE FOLD — a hairline that is also the control that unfolds it.
+ *
+ *  WHY THE SEAM AND NOT A ROW. A ninth cell would have cost a whole 24px row to save two, which is
+ *  most of the point back. This occupies the height of the hairline it REPLACES — the one that
+ *  already separated "navigation between projects" from "Claude files" — so expanded, the foot is
+ *  exactly as tall as it was before this change. Its layout box is `height: 1, margin: 9px 0`, the
+ *  same 19px a plain hairline takes; the button overhangs into that air without claiming any of
+ *  it, which is what keeps the foot's rhythm (assertion V) reading identically.
+ *
+ *  WHY A CHEVRON IS SAFE HERE. The house rule is that two verbs never share a glyph, and the
+ *  sidebar's own collapse control (`SidebarToggle`) draws a PANEL WITH A DIVIDER, not a chevron —
+ *  checked, not assumed. Nothing else in the strip uses one: the only other mark near it is the
+ *  update affordance's ringed up-ARROW in the identity row, which is a different silhouette in a
+ *  ring in the accent. The two verbs are "hide the strip" and "unfold the foot", and they carry
+ *  two different marks on two different surfaces.
+ *
+ *  IT IS NOT HOVER-ONLY. A control that appears on hover would have to reserve its space at rest,
+ *  and a foot that only LOOKS emptier saves nothing. This one is drawn always, at `--fg-muted`,
+ *  and the space it saves is real: two rows and a hairline, 67px.
+ *
+ *  ON THE AXIS at both widths, like the identity row below it — `2 × AXIS` wide with the foot's
+ *  own padding cancelled, so its centre is 30 element-local at 60 AND at 264 rather than the
+ *  midpoint of whatever row it happens to sit in. */
+function FootDisclosure({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  const [hover, setHover] = useState(false)
+  const label = footDisclosureLabel(expanded)
+  return (
+    <div style={{ position: 'relative', width: '100%', height: 1, margin: '9px 0', flexShrink: 0 }}>
+      <span data-rail-seam style={{ position: 'absolute', inset: 0, background: SEAM }} />
+      <button
+        data-rail-foot-disclosure
+        aria-expanded={expanded}
+        onClick={onToggle}
+        title={label}
+        aria-label={label}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        style={{
+          position: 'absolute', top: '50%',
+          // AXIS in foot-local coordinates (the foot pads by FOOT_PAD), minus half the box.
+          left: AXIS - FOOT_PAD - DISCLOSURE_W / 2,
+          transform: 'translateY(-50%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: DISCLOSURE_W, height: DISCLOSURE_H, padding: 0,
+          // Painted with the strip's OWN colour so the hairline reads as passing behind it rather
+          // than being interrupted — a surface, never an accent fill. Hover tints with the same
+          // overlay the foot cells use, so the seam control joins the family it sits in.
+          background: hover ? 'var(--overlay-subtle)' : 'var(--bg-sidebar)',
+          border: 'none', borderRadius: 5,
+          color: hover ? 'var(--fg)' : 'var(--fg-muted)',
+          cursor: 'pointer', outline: 'none',
+          transition: 'background 120ms ease, color 120ms ease',
+        }}
+        // A real focus state of its own — the house rule removes browser focus rings, and an inset
+        // shadow also dodges the colour-changing-border-on-a-radius trap.
+        onFocus={(e) => { e.currentTarget.style.boxShadow = 'inset 0 0 0 1px var(--accent)' }}
+        onBlur={(e) => { e.currentTarget.style.boxShadow = 'none' }}
+      >
+        {/* 9px of painted ink across, against the foot glyphs' 12. It is the seam's ornament, not
+            a ninth control, and the `+`'s rule applies: a junior mark sits AT OR UNDER the family
+            it is subordinate to. Chevron down = there is more below; up = fold it away. */}
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d={expanded ? 'M2 7.5 6 3.5l4 4' : 'M2 4.5 6 8.5l4-4'} />
+        </svg>
+      </button>
     </div>
   )
 }
