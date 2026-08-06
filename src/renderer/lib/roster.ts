@@ -125,6 +125,49 @@ const REPLY_PROTOCOL =
   `it, or you found something that CHANGES its work. Do not narrate: no "starting now", no ` +
   `step-by-step, no thinking aloud, no restating the task. One line, and only when it earns one.`
 
+/** THE ARTIFACT PLANE, asked for — the half of `dev/briefs/2026-08-05-artifact-plane.md` that the
+ *  tools alone could not deliver. The spike named the risk exactly: *"same charter-dependency risk
+ *  as sentinels, moved, not removed."* A tool a lane never invokes fixes nothing.
+ *
+ *  IT LIVES IN THE LAUNCH NOTE, NOT IN `DEFAULT_ROLE_PROMPTS`, and that is the whole reason it can
+ *  ship today. Role charters are PERSISTED per project: editing the defaults would reach only
+ *  lanes that never customised theirs, and every existing roster would keep its old text — the
+ *  same shape as the five coordinators still carrying `useWorktree: true`. This note is rebuilt
+ *  from the roster at every launch, so it reaches every lane on the next spawn, customised charter
+ *  or not, with nothing to migrate.
+ *
+ *  WHY IT NAMES THE FAILURE rather than just the tool: a lane told "call operator__report" weighs
+ *  it against writing the file it was asked for and reasonably does the file. It has to know the
+ *  file is UNREADABLE from anywhere else — that is the fact that makes the call worth a turn.
+ *
+ *  IT DOES NOT REPLACE THE FILE, and says so. The brief keeps `*-RESULT.md` and the sentinels;
+ *  briefs still name output paths, and a lane that stops writing them would break the human's
+ *  reading path to keep the machine's. Both, with the reason for each. */
+/** WHERE A RESULT GOES. Worker lanes only — the coordinator IS Operator, so "call this to reach
+ *  Operator" would be the wrong half of the plane for it (see its own paragraph below). */
+const REPORT_ARTIFACTS =
+  `\nWhen you finish a piece of work, call operator__report — summary, the taskId if it came from ` +
+  `one, and the result in \`artifacts\` as CONTENT, never a path. A file you write lives in YOUR ` +
+  `checkout and every other lane has a different one, so a path is unreadable to them. Still ` +
+  `write the file when your brief names one: the file is for the human, the report is what makes ` +
+  `it reachable.`
+
+/** THE COMPLETION SIGNAL. Shared, because a coordinator has its own tasks and leaks them exactly
+ *  the same way — stated ONCE and composed into both notes rather than duplicated, which is what
+ *  a first attempt at this did (it appended the sentence twice, run together mid-line). */
+const REPORT_TASK_STATUS =
+  `\nWhen a task you were given is finished, call operator__task_status(id, 'done') THEN — not at ` +
+  `the end of your session, which is the only other moment Operator can infer it. Use 'blocked' ` +
+  `if you stopped and cannot continue.`
+
+/** The coordinator's half: it RECEIVES reports. Worth saying explicitly because its standing
+ *  habit is to go hunting for a lane's `*-RESULT.md`, which it cannot read and which is the
+ *  behaviour this whole plane replaces. */
+const REPORT_INBOX =
+  `\nYour lanes hand results back by calling operator__report, so a finished lane's work reaches ` +
+  `you directly — don't go looking in its worktree, you cannot read one. Silence means no report, ` +
+  `not a result you missed.`
+
 /** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
  *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was
  *  appended, and deriving that by stripping the suffix beats freezing a second copy of six
@@ -262,7 +305,9 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `with your task as its opening brief — either way the work starts, and Operator notes ` +
       `back to you how each dispatch landed. If no lane fits a task, just do it yourself ` +
       `rather than forcing a poor fit.\n` +
-      REPLY_PROTOCOL
+      REPLY_PROTOCOL +
+      REPORT_INBOX +
+      REPORT_TASK_STATUS
     )
   }
 
@@ -282,7 +327,9 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `but a dispatch from your lane is HELD for the user to approve — Operator does not deliver ` +
     `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
-    REPLY_PROTOCOL
+    REPLY_PROTOCOL +
+    REPORT_ARTIFACTS +
+    REPORT_TASK_STATUS
   )
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
-import type { Project } from '../../shared/types'
+import type { Project, Role } from '../../shared/types'
 
 describe('roster', () => {
   it('seeds a default roster with unique ids and valid models', () => {
@@ -324,10 +324,14 @@ describe('orchestrationNote — the return path', () => {
   })
 
   it('keeps the note to a sane size — it rides on EVERY launch', () => {
-    // Measured: coordinator 2221 chars, lane 2136. The guard is against a slow slide, not the
-    // current value; a note that outgrows the charter it accompanies has stopped being a note.
+    // Measured: coordinator 2866 chars, lane 2952 — up from 2221/2136 when the artifact-plane
+    // protocol was added (2026-08-06). RAISED DELIBERATELY, once, for a stated addition, which is
+    // what this guard is for: it caught the first draft at 3138/3349 and that draft was trimmed
+    // (an audit anecdote and a task count came out) rather than the ceiling being moved to fit it.
+    // The guard is against a slow slide, not the current value; a note that outgrows the charter
+    // it accompanies has stopped being a note.
     for (const role of [op, code]) {
-      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(2600)
+      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(3100)
     }
   })
 })
@@ -378,5 +382,55 @@ describe('orderByRoster', () => {
     const live: { roleId?: string; id?: string }[] = [{ id: 'a' }, { id: 'b' }]
     expect(ids(orderByRoster(live, []))).toEqual(['a', 'b'])
     expect(ids(orderByRoster([{ roleId: 'code' }, { roleId: 'operator' }], []))).toEqual(['code', 'operator'])
+  })
+})
+
+// THE CHARTER HALF of the artifact plane. The tools shipped first and nothing invoked them —
+// the spike's "charter-dependency risk moved, not removed". These pin that every lane is now
+// asked, and asked ONCE.
+describe('orchestrationNote — the artifact plane is asked for', () => {
+  const roster = rolePresets()
+  const noteFor = (id: string) => orchestrationNote('proj', roster.find((r) => r.id === id)!, roster)
+
+  it('a WORKER lane is told to report its result and to close its task', () => {
+    const n = noteFor('code')
+    expect(n).toContain('operator__report')
+    expect(n).toContain("operator__task_status(id, 'done')")
+    // The REASON, not just the instruction: a lane weighing a tool call against writing the file
+    // it was asked for needs to know the file is unreadable elsewhere.
+    expect(n).toContain('unreadable to them')
+  })
+
+  it('…and is NOT told to stop writing result files — both, with a reason for each', () => {
+    expect(noteFor('code')).toContain('Still write the file when your brief names one')
+    expect(noteFor('code')).toContain('unreadable')
+  })
+
+  it('the COORDINATOR is told it RECEIVES reports, not that it should file them', () => {
+    const n = noteFor('operator')
+    expect(n).toContain('operator__report')
+    expect(n).toContain('Silence means no report')
+    // It is Operator; "call this to reach Operator" is the wrong half for it.
+    // It is Operator; it must not be told to file a report to reach itself.
+    expect(n).not.toContain('When you finish a piece of work, call operator__report')
+    // …but it still closes its own tasks.
+    expect(n).toContain("operator__task_status(id, 'done')")
+  })
+
+  it('says each instruction EXACTLY once — a first version appended it twice, run together', () => {
+    for (const id of ['operator', 'code', 'research', 'qa']) {
+      const n = noteFor(id)
+      expect((n.match(/operator__task_status/g) ?? []).length).toBe(1)
+      expect((n.match(/operator__report/g) ?? []).length).toBe(1)
+    }
+  })
+
+  it('reaches EVERY lane, including one with a customised charter — it is not the charter', () => {
+    // The reason this lives in the launch note: role prompts are persisted per project, so
+    // editing DEFAULT_ROLE_PROMPTS would reach only lanes that never customised theirs.
+    const custom: Role = { ...roster.find((r) => r.id === 'code')!, prompt: 'my own charter, nothing else' }
+    const n = orchestrationNote('proj', custom, roster)
+    expect(n).toContain('my own charter, nothing else')
+    expect(n).toContain('operator__report')
   })
 })
