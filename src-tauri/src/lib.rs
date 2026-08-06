@@ -1285,8 +1285,10 @@ fn inspect_repo(cwd: String) -> worktree::RepoInfo {
 }
 
 #[tauri::command]
-fn worktree_create(cwd: String) -> Result<worktree::WorktreeCreateResult, String> {
-    worktree::create_worktree(&cwd)
+fn worktree_create(cwd: String, branch: Option<String>) -> Result<worktree::WorktreeCreateResult, String> {
+    // `branch` = a suspended lane's own branch, to be reattached rather than replaced (see
+    // worktree::reattach_worktree). Absent for every ordinary launch.
+    worktree::create_worktree(&cwd, branch.as_deref())
 }
 
 #[tauri::command]

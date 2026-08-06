@@ -301,8 +301,10 @@ export function installBridge(): void {
 
     // --- git worktrees (real) ---
     inspectRepo: (cwd: string) => invoke('inspect_repo', { cwd }),
-    worktreeCreate: async (cwd: string) => {
-      try { return await invoke('worktree_create', { cwd }) } catch (e) { return { error: String(e) } }
+    // `branch` reattaches a SUSPENDED lane to the branch it left behind, instead of forking a
+    // new one — the resume half of task-scoped lanes. Omitted for every ordinary launch.
+    worktreeCreate: async (cwd: string, branch?: string) => {
+      try { return await invoke('worktree_create', { cwd, branch: branch ?? null }) } catch (e) { return { error: String(e) } }
     },
     worktreeStatus: (path: string) => invoke('worktree_status', { path }),
     pathExists: (path: string) => invoke<boolean>('path_exists', { path }),

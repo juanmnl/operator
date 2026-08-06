@@ -368,6 +368,17 @@ export interface SavedSession {
   claudeSessionId?: string
   /** Live pty id from the CURRENT backend run; stale (ignored) after a full restart. */
   terminalId?: string
+  /** SUSPENDED, not gone. Set when a task-scoped lane was closed automatically: its pty is dead
+   *  and its worktree directory has been removed, but this record — `claudeSessionId`,
+   *  `worktreeBranch`, `sourceCwd` — is what brings it back with `--resume` on the same branch.
+   *  Cleared the moment the lane is live again (the persist effect rewrites the row from the tab).
+   *  A lane the USER closes is still forgotten; only the automatic path suspends. */
+  suspendedAt?: string
+  /** WHY it closed, and the two are not the same claim. `reported-done` = it called
+   *  `operator__task_status(id,'done')` and then went quiet for the grace window. `went-quiet` =
+   *  it never reported at all and the long backstop took it, which is a bug signal, not a
+   *  completion. Kept on the record so the difference survives a restart. */
+  suspendedReason?: 'reported-done' | 'went-quiet'
   lastActiveAt: string
 }
 
