@@ -129,6 +129,13 @@ async function boot(theme) {
       // Deterministic starting width. The strip persists its own collapsed state, so without
       // this the first scene depends on whatever the last run left behind.
       localStorage.setItem('operator.sidebarCollapsed', '1')
+      // THE FOOT IS UNFOLDED FOR THIS SWEEP. Four of the eight controls fold away by default now
+      // (see `lib/rail-foot` for which and why), and assertions B and S are about all EIGHT
+      // glyphs — their painted ink and their survival across ⌘B. A harness that measured only the
+      // four resting ones would silently stop asserting the thing it exists for. The fold's OWN
+      // behaviour — what disappears, how much height it returns, that it persists — is asserted
+      // by `dev/drive-rail-foot-fold.mjs`, which is the harness that boots it folded.
+      localStorage.setItem('operator.railFootExpanded', '1')
     } catch { /* quota */ }
     let real
     Object.defineProperty(window, 'operator', {
