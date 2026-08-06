@@ -159,6 +159,29 @@ export function scrollbackFor(active: boolean): number {
   return active ? ACTIVE_SCROLLBACK : INACTIVE_SCROLLBACK
 }
 
+/** Should a pane's resize callback fit — and therefore resize its pty?
+ *
+ *  ONLY THE PANE YOU ARE LOOKING AT. Every session's terminal stays mounted as an absolutely
+ *  positioned sibling in one shared container, hidden with `visibility` (which keeps a real,
+ *  measurable box), so a layout change fires EVERY pane's ResizeObserver — and the per-session
+ *  Plan/Diff panel is a flex sibling of that container, so switching to a lane whose panel state
+ *  differs genuinely changes its width. Measured before this guard (scripts/resize-guard):
+ *  ONE lane switch resized 5 of 5 mounted terminals, each one a real TIOCSWINSZ → SIGWINCH →
+ *  a background Claude Code redrawing → bytes back through the pty → `note_activity` →
+ *  `phase = "running"` for 1.5s. That is the reported "switching agents wakes every lane": every
+ *  orb in every project animating because the user changed tabs.
+ *
+ *  A background pane holding a stale size is the accepted cost, and it is already how the app's
+ *  other terminal behaves (`GridTerminalPane`'s `if (activeRef.current)` reflow guard). It catches
+ *  up on activation, where the pane refits before you can look at it — and that is the ONE resize
+ *  a switch should cause.
+ *
+ *  `suspendFit` is the pre-existing half of the same policy: held during a panel drag so the
+ *  terminal reflows once on release instead of every frame. */
+export function shouldFitOnResize(active: boolean, suspendFit: boolean): boolean {
+  return active && !suspendFit
+}
+
 export function buildTerminalOptions(
   theme: ITheme,
   opts: { macOptionIsMeta?: boolean } = {},

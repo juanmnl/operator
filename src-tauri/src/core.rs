@@ -117,6 +117,16 @@ pub struct AgentSession {
     /// the panel feature is consuming it; capped to the recent tail upstream.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     messages: Vec<NarrationEntry>,
+    /// Prompts the TUI took into its message QUEUE rather than into a turn — recorded by
+    /// Claude Code as `queue-operation: enqueue` when text arrives while it is mid-turn.
+    ///
+    /// Separate from `messages` because it is not the reading surface: a queued prompt is
+    /// consumed INSIDE the running turn and, measured across 62 dispatches, never becomes a
+    /// `user` entry at all. It is here so the delivery loop can tell "the lane accepted it and
+    /// is working through it" from "it is stranded in a composer" — the two look identical
+    /// from the turns alone, and the frontend was calling the first one a lost message.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    queued: Vec<NarrationEntry>,
     /// Latest TodoWrite plan snapshot (Plan tab). Empty unless the agent uses it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     todos: Vec<TodoItem>,
@@ -298,6 +308,7 @@ impl AgentSession {
             phase: phase.to_string(),
             activity,
             messages,
+            queued: vec![],
             todos,
             active_subagents,
             last_tool_name,
@@ -308,6 +319,13 @@ impl AgentSession {
             model,
             usage,
         }
+    }
+
+    /// Attach the prompts the TUI queued (see the field). A builder rather than a 17th
+    /// constructor argument: only the tailer sets it, and only when there are any.
+    pub fn with_queued(mut self, queued: Vec<NarrationEntry>) -> AgentSession {
+        self.queued = queued;
+        self
     }
 }
 

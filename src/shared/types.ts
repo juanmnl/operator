@@ -89,6 +89,11 @@ export interface AgentSession {
   activity: ActivityEntry[]
   /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
   messages?: NarrationEntry[]
+  /** Prompts the lane's TUI took into its message QUEUE (mirrors `queue-operation: enqueue`
+   *  in the transcript), recent tail. A prompt that arrives mid-turn is queued and then
+   *  consumed inside that turn, so it NEVER shows up in `messages` — this is the only place
+   *  delivery of such a message can be observed. Not a reading surface; see delivery-confirm. */
+  queued?: NarrationEntry[]
   /** Latest TodoWrite plan snapshot (Plan tab). */
   todos?: TodoItem[]
   activeSubagents: number
@@ -401,7 +406,10 @@ export interface ToolBlock {
 }
 
 export interface NarrationEntry {
-  kind: 'text' | 'thinking' | 'user' | 'tool'
+  /** `queued` appears only in `AgentSession.queued` — a prompt the TUI accepted but has not
+   *  turned into a turn yet. It is never mixed into `messages`, so the reading surface's
+   *  `kind === 'user' ? user : agent` split is unaffected. */
+  kind: 'text' | 'thinking' | 'user' | 'tool' | 'queued'
   text: string
   timestamp: string
   /** Cache-file paths for images the user dropped into this turn (load via imageDataUrl). */

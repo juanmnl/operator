@@ -27,6 +27,17 @@ use crate::PtyManager;
 /// the reading panel. Bounds the session:update payload on long sessions.
 const NARRATION_CAP: usize = 80;
 
+/// How much of a prompt is recorded, before an ellipsis is appended. Applies to both a real
+/// user turn and a queued one — a dispatch can be long, and the session payload is not the
+/// place to carry a whole pasted brief. Mirrored by TURN_TEXT_CAP in delivery-confirm.ts,
+/// which is what lets the frontend recognise its own truncated message.
+const PROMPT_TEXT_CAP: usize = 4000;
+
+/// Queued prompts retained per session. Small on purpose: the only consumer is the delivery
+/// loop, which looks for a message written seconds ago, and a lane's queue in practice holds
+/// one or two entries — this is headroom, not history.
+const QUEUED_CAP: usize = 20;
+
 /// Launch info recorded by `terminal_spawn` so the tailer can find and attribute
 /// a transcript. `permission_mode` is carried through to the AgentSession for display.
 #[derive(Clone)]
@@ -88,6 +99,10 @@ struct Track {
     /// New narration entries not yet flushed to the chat store, drained by the tailer
     /// loop each tick. Separate from `narration` because that Vec gets tail-capped.
     pending: Vec<(u64, NarrationEntry)>,
+    /// Prompts Claude Code took into its message QUEUE (`queue-operation: enqueue`), most
+    /// recent last, capped. NOT narration: these are not persisted and not shown — they
+    /// exist so a submission can be confirmed as ACCEPTED. See `apply_queue_op`.
+    queued: Vec<NarrationEntry>,
     /// Reconstructed plan (Plan tab) as (id, item) in order. Built from either a
     /// TodoWrite snapshot OR the harness's incremental TaskCreate/TaskUpdate events.
     tasks: Vec<(String, TodoItem)>,
@@ -138,6 +153,7 @@ impl Track {
             narration: vec![],
             narration_seq: 0,
             pending: vec![],
+            queued: vec![],
             tasks: vec![],
             task_n: 0,
             summary: None,
@@ -272,8 +288,46 @@ impl Track {
         match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "user" => self.apply_user(v),
             "assistant" => self.apply_assistant(v, &ts),
+            "queue-operation" => self.apply_queue_op(v, &ts),
             _ => {}
         }
+    }
+
+    /// A prompt the TUI accepted into its QUEUE instead of starting a turn with it.
+    ///
+    /// WHY THIS IS RECORDED. Claude Code queues text that arrives mid-turn, and the queued
+    /// prompt is then consumed INSIDE the running turn — it produces no `user` entry of its
+    /// own. Measured over the 62 dispatches this app had filed `undelivered`: 52 of them are
+    /// sitting right here, enqueued a median 0s after the write, acted on, and invisible to a
+    /// watcher that only reads turns. The frontend was telling the user those lanes "never
+    /// started the task", which was the opposite of true.
+    ///
+    /// It is the honest confirmation signal for delivery, and the one delivery-confirm.ts
+    /// rejected the weak proxies for: "the lane became busy" confirms nothing because a
+    /// dispatch is routinely typed into a lane that is ALREADY running, whereas an enqueue
+    /// record carries OUR TEXT. Only `enqueue` is kept — `dequeue` has no content, and
+    /// `remove` merely says the queue let go of something it already told us it had.
+    fn apply_queue_op(&mut self, v: &Value, ts: &str) {
+        if v.get("operation").and_then(|o| o.as_str()) != Some("enqueue") {
+            return;
+        }
+        let Some(text) = v.get("content").and_then(|c| c.as_str()) else { return };
+        // The harness queues its own machinery here too (`<task-notification>`, reminders).
+        // Same filter as the reading surface: nobody typed those.
+        if text.trim().is_empty() || is_injected_turn(text) {
+            return;
+        }
+        let mut prompt = text.to_string();
+        if prompt.chars().count() > PROMPT_TEXT_CAP {
+            prompt = prompt.chars().take(PROMPT_TEXT_CAP).collect::<String>() + "…";
+        }
+        let ts = if ts.is_empty() { now_iso() } else { ts.to_string() };
+        self.queued.push(NarrationEntry { kind: "queued".to_string(), text: prompt, timestamp: ts, images: vec![], tool: None });
+        if self.queued.len() > QUEUED_CAP {
+            let over = self.queued.len() - QUEUED_CAP;
+            self.queued.drain(0..over);
+        }
+        self.dirty = true;
     }
 
     fn apply_user(&mut self, v: &Value) {
@@ -364,8 +418,8 @@ impl Track {
             // conversation (user turn + assistant answer), not a one-sided log.
             // Truncate so a big pasted doc doesn't bloat the session payload.
             let mut prompt = text.clone();
-            if prompt.chars().count() > 4000 {
-                prompt = prompt.chars().take(4000).collect::<String>() + "…";
+            if prompt.chars().count() > PROMPT_TEXT_CAP {
+                prompt = prompt.chars().take(PROMPT_TEXT_CAP).collect::<String>() + "…";
             }
             let ts = v.get("timestamp").and_then(|t| t.as_str()).map(|s| s.to_string()).unwrap_or_else(now_iso);
             // Dropped images live as base64 image blocks alongside the text; cache them
@@ -570,6 +624,7 @@ impl Track {
             // Absent until anything accumulated (keeps pre-first-turn payloads lean).
             if self.usage.output > 0 || self.usage.input > 0 { Some(self.usage) } else { None },
         )
+        .with_queued(self.queued.clone())
     }
 }
 
@@ -1240,6 +1295,57 @@ mod tests {
             assert_eq!(t.narration[0].kind, "user");
             assert_eq!(t.narration[0].text, text);
         }
+    }
+
+    /// A prompt typed into a lane that is mid-turn is QUEUED, not turned into a turn. Recording
+    /// it is what lets the frontend tell an accepted message from one stranded in a composer.
+    #[test]
+    fn an_enqueued_prompt_is_recorded_for_the_delivery_loop() {
+        let mut t = track();
+        t.apply(&json!({ "type": "queue-operation", "operation": "enqueue",
+            "content": "[Operator · message from QA] the API came back up",
+            "timestamp": "2026-08-06T07:06:17.776Z" }));
+        assert_eq!(t.queued.len(), 1);
+        assert_eq!(t.queued[0].kind, "queued");
+        assert_eq!(t.queued[0].text, "[Operator · message from QA] the API came back up");
+        // …and it is NOT narration: the reading surface renders the turn, not the queue.
+        assert!(t.narration.is_empty());
+    }
+
+    /// The queue also carries the harness's own machinery, and a `dequeue` carries nothing at
+    /// all. Neither is a message anybody sent.
+    #[test]
+    fn queue_noise_is_ignored() {
+        let mut t = track();
+        for v in [
+            json!({ "type": "queue-operation", "operation": "enqueue",
+                "content": "<task-notification>\n<task-id>abc</task-id>", "timestamp": "2026-08-06T07:06:17Z" }),
+            json!({ "type": "queue-operation", "operation": "dequeue", "timestamp": "2026-08-06T07:06:18Z" }),
+            json!({ "type": "queue-operation", "operation": "remove",
+                "content": "[Operator] already reported as enqueued", "timestamp": "2026-08-06T07:06:19Z" }),
+            json!({ "type": "queue-operation", "operation": "enqueue", "content": "   ", "timestamp": "2026-08-06T07:06:20Z" }),
+        ] {
+            t.apply(&v);
+        }
+        assert!(t.queued.is_empty(), "queue noise leaked into the delivery signal");
+    }
+
+    #[test]
+    fn queued_prompts_are_capped_and_truncated() {
+        let mut t = track();
+        for i in 0..QUEUED_CAP + 5 {
+            t.apply(&json!({ "type": "queue-operation", "operation": "enqueue",
+                "content": format!("message {i}"), "timestamp": "2026-08-06T07:06:17Z" }));
+        }
+        assert_eq!(t.queued.len(), QUEUED_CAP);
+        assert_eq!(t.queued[0].text, format!("message {}", 5)); // oldest dropped, newest kept
+        // A long dispatch is truncated exactly as a user turn is — the frontend's matcher
+        // recognises its own message by that ellipsis (TURN_TEXT_CAP in delivery-confirm.ts).
+        let mut t = track();
+        t.apply(&json!({ "type": "queue-operation", "operation": "enqueue",
+            "content": "x".repeat(PROMPT_TEXT_CAP + 500), "timestamp": "2026-08-06T07:06:17Z" }));
+        assert_eq!(t.queued[0].text.chars().count(), PROMPT_TEXT_CAP + 1);
+        assert!(t.queued[0].text.ends_with('…'));
     }
 
     #[test]

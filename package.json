@@ -12,6 +12,7 @@
     "verify:visual": "node scripts/visual/capture.mjs",
     "verify:input": "node scripts/input/capture.mjs",
     "verify:resize": "node scripts/ghostty-resize/capture.mjs",
+    "verify:resize-guard": "node scripts/resize-guard/capture.mjs",
     "tauri": "node scripts/tauri.mjs",
     "verify:width": "node scripts/width-audit/audit.mjs",
     "verify:dom": "node scripts/width-audit/dom-vs-buffer.mjs"
