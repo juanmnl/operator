@@ -19,6 +19,15 @@ mod transcript;
 mod tray_anim;
 #[path = "gridterm.rs"]
 mod gridterm;
+#[path = "artifacts.rs"]
+mod artifacts;
+#[path = "mcp.rs"]
+mod mcp;
+
+/// Entry point for `operator --mcp-serve` (see main.rs). Public so the binary can reach it.
+pub fn mcp_serve() {
+    mcp::serve()
+}
 mod chatstore;
 
 use std::collections::HashMap;
@@ -727,6 +736,40 @@ fn terminal_spawn(
         prefix.push(sys_notes.join("\n\n"));
     }
 
+    // THE ARTIFACT PLANE. Register Operator's own MCP server for this lane, so it can hand results
+    // back directly instead of writing a `*-RESULT.md` into a worktree nobody else can read.
+    //
+    // `--mcp-config` ADDS servers; only `--strict-mcp-config` would ignore the user's own. That
+    // flag is deliberately NOT passed, and this comment is the guard on it: `~/.claude.json`
+    // carries the user's `paper` and `obsidian` servers, and a lane that silently lost them would
+    // be a far worse regression than the one this fixes. Verified against `claude --help`:
+    //   --mcp-config <configs...>   Load MCP servers from JSON files or …
+    //   --strict-mcp-config         Only use MCP servers from --mcp-config, ignoring all others
+    //
+    // The config is passed INLINE rather than as a file: there is no temp file to write, collide
+    // on, or leave behind, and nothing on disk to drift from the binary that serves it.
+    //
+    // `std::env::current_exe` is the running Operator — in a dev build that is `target/debug/
+    // operator`, in the shipped app the bundled binary. Either way the lane talks to the same
+    // build it was launched from. If it cannot be resolved, the whole flag is skipped: a lane that
+    // launches without the artifact plane is a degraded lane, but a lane that fails to launch is
+    // no lane at all.
+    if let Ok(exe) = std::env::current_exe() {
+        let cfg = serde_json::json!({
+            "mcpServers": {
+                "operator": {
+                    "type": "stdio",
+                    "command": exe.to_string_lossy(),
+                    "args": ["--mcp-serve"],
+                    // OPERATOR_TERMINAL_ID is inherited from the lane's own environment (set
+                    // below), which is what lets a report be attributed to the lane that made it.
+                }
+            }
+        });
+        prefix.push("--mcp-config".to_string());
+        prefix.push(cfg.to_string());
+    }
+
     let inner = prefix
         .into_iter()
         .chain(args)
@@ -934,6 +977,37 @@ fn terminal_resize(id: String, cols: u16, rows: u16, mgr: State<Arc<PtyManager>>
     if let Some(p) = lock(&mgr.ptys).get(&id) {
         let _ = p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
     }
+}
+
+// ---- the artifact plane (see artifacts.rs / mcp.rs) -------------------------
+//
+// The READ side. A lane's MCP server writes rows from its own process; the app reads them here.
+// Two processes, one direction each, no shared mutable state — which is why neither needs a lock
+// on the other.
+
+/// Reports a lane has handed to Operator, newest first.
+#[tauri::command]
+fn artifacts_reports(limit: Option<u32>) -> Result<Vec<artifacts::Report>, String> {
+    let conn = artifacts::open()?;
+    artifacts::list_reports(&conn, limit.unwrap_or(200))
+}
+
+/// Task-status signals not yet applied to `projects.json`.
+///
+/// The renderer owns that file and is its only writer, so a status arrives as an EVENT and the
+/// renderer applies it — rather than the backend racing the renderer for the same bytes.
+#[tauri::command]
+fn artifacts_pending_status() -> Result<Vec<artifacts::StatusEvent>, String> {
+    let conn = artifacts::open()?;
+    artifacts::pending_status(&conn)
+}
+
+/// Called by the renderer AFTER it has written the task through, so a renderer that dies mid-apply
+/// replays the event instead of dropping it.
+#[tauri::command]
+fn artifacts_ack_status(ids: Vec<i64>) -> Result<(), String> {
+    let conn = artifacts::open()?;
+    artifacts::mark_status_applied(&conn, &ids)
 }
 
 // ---- grid terminal (our own, non-native — see gridterm.rs) ------------------
@@ -2214,6 +2288,9 @@ pub fn run() {
             shell_spawn,
             terminal_write,
             terminal_resize,
+            artifacts_reports,
+            artifacts_pending_status,
+            artifacts_ack_status,
             gridterm_attach,
             gridterm_resize,
             gridterm_scroll,

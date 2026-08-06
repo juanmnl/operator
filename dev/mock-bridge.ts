@@ -718,6 +718,22 @@ export function installMockBridge() {
     // on must push to `calls` itself.
     terminalKill: async (id: string) => { calls.push({ fn: 'terminalKill', args: [id] }) },
     shellSpawn: async () => 'sh0',
+    // --- the artifact plane ---------------------------------------------------------------
+    // `?artifactStatus=<taskId>:<status>` queues ONE pending status event, exactly as a lane's
+    // MCP server would have inserted it. The renderer's poller should apply it to the task and
+    // then ACK it. Nothing else here fakes the plane: reports are read-only in the UI and a fake
+    // stream would prove nothing about the server that actually writes them.
+    artifactReports: async () => [],
+    artifactPendingStatus: async () => {
+      const raw = new URLSearchParams(location.search).get('artifactStatus')
+      if (!raw || (window as unknown as { __ackedStatus?: boolean }).__ackedStatus) return []
+      const [taskId, status] = raw.split(':')
+      return [{ id: 1, at: now, terminalId: 't1', projectId: PROJECT_ID, taskId, status: status || 'done' }]
+    },
+    artifactAckStatus: async (ids: number[]) => {
+      ;(window as unknown as { __ackedStatus?: boolean; __ackedIds?: number[] }).__ackedStatus = true
+      ;(window as unknown as { __ackedIds?: number[] }).__ackedIds = ids
+    },
     gridtermAttach: noop, gridtermResize: noop, gridtermScroll: noop, gridtermSetTheme: noop, gridtermDetach: noop,
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,
     installUpdate: async () => {}, savePastedImage: async () => '/tmp/x.png',

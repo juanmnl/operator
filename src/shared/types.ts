@@ -659,3 +659,31 @@ export interface ProjectIdentity {
   /** The folder is gone — two of the real projects point at directories that no longer exist. */
   missing: boolean
 }
+
+// --- the artifact plane (phase 1: lane → Operator) ---------------------------------------
+//
+// A lane reaches Operator through its own MCP server (`src-tauri/src/mcp.rs`) rather than by
+// writing a file into a worktree nobody else can read. These are the shapes Operator reads back.
+
+export interface ArtifactReport {
+  id: number
+  at: string
+  /** The lane that called, from OPERATOR_TERMINAL_ID. Never absent — an unattributable call is
+   *  refused at the server rather than stored. */
+  terminalId: string
+  projectId?: string | null
+  roleId?: string | null
+  taskId?: string | null
+  summary: string
+  /** JSON `[{name, content}]` — CONTENT, never a path into the caller's checkout. */
+  artifacts: string
+}
+
+export interface ArtifactStatusEvent {
+  id: number
+  at: string
+  terminalId: string
+  projectId?: string | null
+  taskId: string
+  status: string
+}

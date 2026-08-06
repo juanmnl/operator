@@ -1891,6 +1891,60 @@ export function DashboardView() {
       .finally(() => setReattachDone(true))
   }, [savedHydrated, savedSessions])
 
+  // THE ARTIFACT PLANE'S COMPLETION SIGNAL, applied here.
+  //
+  // `fix-session-task-lifecycle-RESULT.md` concluded, about the ~200 tasks stuck in `running`:
+  // "Completion only fires when a lane DIES… there is no per-turn completion signal… Not fixed
+  // here and not fixable by reconciliation… Closing them needs a real completion signal."
+  // `operator__task_status` IS that signal, and this effect is where it lands.
+  //
+  // POLLED, NOT PUSHED, and that is a consequence of the design rather than a shortcut: the MCP
+  // server runs in a separate short-lived process spawned by the lane's own Claude Code, so it
+  // cannot emit a Tauri event into this window. It appends to `~/.operator/artifacts.db`; this
+  // reads what has not been applied yet. 4s matches the session-ports poller already here.
+  //
+  // ACKED ONLY AFTER THE WRITE. `setTaskStatus` is synchronous state, so by the time we ack, the
+  // task has been updated and the persist effect will write it. A renderer that dies in between
+  // replays the event on the next boot rather than dropping it — applying `done` twice is the
+  // same task; dropping it once is the leak.
+  //
+  // GATED ON HYDRATION, and this is not belt-and-braces — it is a bug I shipped into this effect
+  // and caught in the harness. The first tick runs on mount, BEFORE `loadProjects` resolves, so
+  // every task looks unknown; the unknown-task branch acked, and the event was gone forever. A
+  // signal dropped because we asked too early is the same lost completion as no signal at all.
+  useEffect(() => {
+    if (!savedHydrated) return
+    let stopped = false
+    const tick = async () => {
+      try {
+        const pending = await window.operator.artifactPendingStatus?.()
+        if (stopped || !pending?.length) return
+        const applied: number[] = []
+        for (const ev of pending) {
+          // Resolve the project from the EVENT first, then from the lane that sent it — a lane
+          // that reported before `sessions.json` caught up still has a terminal id we can match.
+          const projectId = ev.projectId
+            ?? terminalsRef.current.find((t) => t.id === ev.terminalId)?.projectId
+            ?? projectsRef.current.find((p) => (p.tasks ?? []).some((t) => t.id === ev.taskId))?.id
+          if (!projectId) continue // leave it pending: unattributable now may be attributable later
+          const known = projectsRef.current.find((p) => p.id === projectId)?.tasks?.some((t) => t.id === ev.taskId)
+          // A status for a task we do not have is ACKED, not retried forever: the lane may have
+          // invented an id, and an event that can never apply would otherwise be re-read every
+          // 4 seconds for the life of the install.
+          if (known && (ev.status === 'queued' || ev.status === 'running' || ev.status === 'done')) {
+            setTaskStatus(projectId, ev.taskId, ev.status)
+          }
+          applied.push(ev.id)
+        }
+        if (applied.length) await window.operator.artifactAckStatus?.(applied)
+      } catch { /* the store is best-effort; a failed poll retries in 4s */ }
+    }
+    void tick()
+    const timer = window.setInterval(() => { void tick() }, 4000)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [setTaskStatus, savedHydrated])
+
+
   // Close out tasks left `running` by a previous run. `ProjectTask.terminalId` is a pty id
   // from the CURRENT backend run, so a task carrying a dead one can never be matched again by
   // the completion path — which is why the store had ~200 tasks stuck in `running`, one
