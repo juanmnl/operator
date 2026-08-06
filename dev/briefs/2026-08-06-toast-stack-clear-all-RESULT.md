@@ -130,3 +130,33 @@ colour-changing border on a rounded element (the hairline is static `var(--borde
   the marker text, contrast floors, and the aria-name collision.
 - The cause of the pile-up remains the Code lane's `dev/briefs/2026-08-06-false-undelivered-toasts.md`.
   This change is the affordance only; it makes any future burst survivable, not rarer.
+
+---
+
+## Addendum — NUL byte in the source, and the commit
+
+Operator caught two things before merge; both fixed.
+
+**1. `Toast.tsx` was classified as BINARY by git** (`Bin 6957 -> 15839 bytes`). Cause: two
+**raw NUL bytes** in `coalesceKey`'s template literal — a single NUL in a file is enough for
+git to stop diffing it as text, which would have made every future diff of this component
+unreviewable.
+
+The separator itself was the right choice and is unchanged in behaviour: no toast text can
+contain a NUL, so the three fields cannot collide the way a space or a pipe would let them
+(`kind="info", text="a b"` vs `kind="info a", text="b"`). What changed is that it is now the
+**escape** `\u0000` in the source rather than a literal byte. `git diff --stat` now reports
+`223 +++++`, and the committed blob contains zero NULs.
+
+Worth knowing for whoever hits this next: the editor path in use silently converts a typed
+`\u0000` escape into a real NUL on write, so the escape had to be authored through the shell
+instead — `perl -0pi -e 's/\x00/chr(92)."u0000"/ge'`. Watch for it in any file that needs a
+backslash-escaped control character; check with `file <path>` or a `tr -dc` NUL count rather
+than trusting that the source looks right.
+
+**2. Nothing was committed.** Now committed on `operator/63f860` — all six files (the three
+source changes, the new test, the new drive script, and this RESULT).
+
+Re-verified after the separator change: `npx tsc --noEmit` clean · `npm test` 686 passed
+(56 files) · `npm run build` clean · six-palette GUI pass **PASS — all themes** (card counts,
+cap, marker text and every contrast floor unchanged).
