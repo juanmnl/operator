@@ -1,135 +1,101 @@
-# Handoff — 2026-07-28
+# Handoff — 2026-08-06
 
-## ▶ STATE: v0.10.0 IS PUBLISHED — 0.10.1 is a known fast-follow
+## ▶ STATE: v0.15.1 IS PUBLISHED
 
-**v0.10.0 shipped 2026-07-29.** Tag `v0.10.0` at `2826f48`, `main` fast-forwarded, CI signed and
-notarized, published to `operator-releases` with `latest.json`, `Operator.app.tar.gz` and
-`Operator_0.10.0_aarch64.dmg`. Release notes applied (including a Known Issues section).
+Tag `v0.15.1` at `fcbb247`, `main` pushed, CI signed + notarized, live on `operator-releases`
+with `latest.json`, `Operator.app.tar.gz` and `Operator_0.15.1_aarch64.dmg`. 701 tests, `tsc` and
+`build` clean.
 
-### ⚠ 0.10.1 — the reason it exists
+**The first tag build failed at 0s** on a GitHub-side `Internal Server Error occurred while
+resolving` for `actions/checkout@v4`, `setup-node@v4`, `dtolnay/rust-toolchain`, `Swatinem/
+rust-cache` — infrastructure, not us. `gh run rerun <id> --failed` was green. Worth knowing before
+anyone debugs a release that never built.
 
-**The ✕ on a lane card deletes the lane, not the session.** Reported by the user against the shipped
-build and confirmed in `~/.operator/projects.json` (the `operator` project lost its `research` lane).
-One click, no confirm, no undo: it wipes the lane's model/effort/accent/charter, unassigns its tasks,
-and **leaves a running session orphaned**. Meanwhile *closing a session* has a click-again-to-confirm
-guard — the more destructive control has the weaker one.
+### What shipped in 0.15.1
 
-Compounded by a second defect: the only place to re-add a lane is the roster board on Project Home,
-which is the navigation dead-end in `dev/briefs/back-to-project-view.md`. Together they read as
-"gone forever". **Fixing either alone leaves a bad experience.**
+- **A pile of toasts collapses.** Identical toasts coalesce to one card with a `×N` chip; a stack of
+  2+ grows a worded **DISMISS ALL**; the column caps at 4 with a `+N earlier` marker. Dismissal is
+  presentation only — an undelivered dispatch stays `undelivered` in the project log.
+- **The rail foot folds.** Agents · All projects · Open folder · **Plan usage** stay resting; the
+  two `.claude` shortcuts, Preferences and the theme toggle go behind the seam. Plan usage is the
+  one override on frequency — a meter you must unfold to read is one you check too late.
+- **README caught up** with task-scoped lanes, the `operator__report` / `operator__task_status`
+  surface, worktree lifetime, and Close vs Shelve.
+- 28 brief/result docs written inside lane worktrees had never reached `main`. Committed
+  (`5046d39`); working tree is clean.
 
-Briefs: `dev/briefs/lane-delete-is-destructive.md`, `dev/briefs/back-to-project-view.md`.
-User decision: *let 0.10.0 publish, fix in 0.10.1.* Documented in the shipped release notes so users
-can avoid it meanwhile.
+## ⚠ UNMERGED AND UNVERIFIED BY ME: `operator/6e13d8`
 
-### Also for 0.10.1 / soon
+Two commits from the Code lane, both built and self-reported green, **neither merged nor
+independently re-run**:
 
-- **Sidebar empty state** for a project with no lanes (roster-on-demand shipped; the empty state did
-  not). Existing projects were deliberately NOT migrated, so they still show six seeded lanes.
-- **Typewriter feed** — smooth upward scroll, in-flight, uncommitted.
-  `dev/briefs/chat-typewriter-feed.md`. The real work is the stick-threshold race, not the animation.
-- **The theme pass still has never completed** — see below. It shipped unverified.
-
----
-
-## Historical: the pre-release state
-
-- **Branch: `release/v0.10.0`** — **not `main`**. 9 commits, **unpushed**. `main` does not have them.
-- **No `v0.10.0` tag exists.** CI has not run. Nothing is signed, notarized or published.
-- Version bump is **complete and verified** across all five locations: `package.json`,
-  `package-lock.json` (×2), `tauri.conf.json`, `Cargo.toml`, and the `operator` block in `Cargo.lock`.
-- Gates: `tsc --noEmit` clean, **242 tests passing** (was 200 at session start).
-
-### The decision waiting for you
-
-The user said "go ahead" to tag+push while believing we were on `main` — because that is what I told
-them, from the session-start snapshot, without re-checking. **Do not tag before settling this:**
-merge `release/v0.10.0` → `main` and tag there, or tag the release branch deliberately. Ask.
-
-### The other gate, unmet
-
-**The theme pass has never completed.** "0 below floor across six palettes" is a stated gate
-condition. `dev/drive-theme-pass.mjs` OOM-crashed WebKit on every attempt — 2 of 6 themes clean, then
-crashes, eventually on theme 1 alone. Cause is environmental and measured: **~30 concurrent Claude
-Code processes** on this host, 1.1–1.7GB free. Not a product defect (`tsc` clean, files quiet, fails
-on the first theme). **Re-run it on a quiet host before tagging.** Two clean themes is weak positive
-evidence, not the gate.
-
-## The commit chain (bisectable — keep it that way)
+- `caa6bfc` **Confirm delivery from the lane's message QUEUE, not only its turns** — the false
+  "never started the task it was sent" reports.
+- `c33df60` **Only the pane you are looking at resizes its pty** — the orb wake-up.
 
 ```
-2826f48  Release v0.10.0
-86cc39e  Roster on demand (in-flight, another lane's work)
-71cf17e  Gallery: reveal a project in Finder
-07dff2d  Chat: liveness, interrupt, and tool calls as transcript blocks
-f660dda  Toolbar and composer: fit the row, custom-model escape hatch
-9525a28  PageShell: one page template + a guard for the muted-opacity rule
-799ab47  Project-first navigation: a gallery, sidebar scoped to one project
-f4da45e  Task lifecycle: stop `running` outliving the run that set it
-6a345d6  Dispatch delivery: scale the watchdog nudge, let stop cancel it
+git merge --no-ff operator/6e13d8 && npm test && npx tsc --noEmit
 ```
 
-`86cc39e` is another lane's in-flight work, committed only because `DashboardView` already imports
-`presetFor` and handles a `create` dispatch kind, so it was not separable at file granularity. It was
-isolated into its own commit and labelled rather than folded in silently. If the release regresses,
-that is the first commit to look at.
+Do that before trusting either. The last lane that said "landed in `<branch>`" had **zero commits
+on it** (see Process, below).
 
-## Uncommitted (none of it is in the release chain)
+## The two diagnoses behind those commits — keep these, they cost real time
 
-Documentation and harnesses — `dev/*.md`, `dev/briefs/` (21 briefs), QA rigs (`dev/qa-*`),
-`scripts/visual/` — plus **in-flight typewriter-feed work** in `CanvasConversation.tsx`,
-`dev/mock-bridge.ts` and `dev/drive-chat-feed.mjs`. Brief:
-`dev/briefs/chat-typewriter-feed.md`. Not a release blocker.
+### Why good dispatches were reported lost
 
-## What shipped in this release
+A prompt typed into a lane that is **mid-turn** never becomes a `user` transcript entry — Claude
+Code records it as a queued enqueue and only turns it into a real turn at the next turn boundary.
+`delivery-confirm.ts` matches on `kind: 'user'` turns inside a ~34s budget
+(`RESCUE_AFTER_MS` 30s + `CONFIRM_WINDOW_MS` 4s), so any lane working longer than that had its
+perfectly good message declared lost. **52 of 62 recorded `undelivered` outcomes were false.** The
+two lanes named in the user's screenshot were the coordinator and Code — the two that are almost
+always mid-turn, which is the tell.
 
-Project-first navigation (gallery → scoped sidebar), the `PageShell` settings template,
-a substantially rebuilt chat view (measure cap, orb send/stop, liveness signal, interrupt,
-tool calls as transcript blocks), task-lifecycle reconciliation, dispatch-delivery hardening,
-roster-on-demand, and nine release blockers fixed.
+The design had already, correctly, rejected "the lane became busy" as a *confirm* signal. What was
+missing is that busy is a reason **not to declare failure yet**.
 
-## Still open — nothing here blocks the release
+**Still open: ~4 of the 62 were REAL losses** — writes into a lane tab that was already dead. That
+is a different bug with a different fix (route to the resume path; don't write to a dead terminal)
+and nobody is on it.
 
-- **Structured-transcript UI** — parser and kinds landed; the block rendering is not built out.
-  Brief: `dev/briefs/structured-transcript-build.md`. Open question inside it, unanswered: *where the
-  boundary sits between the transcript and the Diff/Plan panels* if an edit block expands to show its
-  own diff. Settle before building the edit block.
-- **Renderer decision — text selection.** Research recommends **approach (a)**: a transparent DOM
-  text layer positioned from the layout ops that already exist (the PDF.js pattern), scoped to prose
-  only so the 80KB-table case is untouched. Costed as *medium, not a rewrite*. The real scope is
-  **pointer-events arbitration**, not positioning: today the canvas is `pointer-events: none` and
-  `scrollRef` is the sole hit-test target. Selection, per-message actions and code-block copy are
-  **one decision with three consumers**. Full analysis: `dev/research-chat-pipeline-audit.md`.
-  Note Design's honest caveat: a canvas transcript cannot be selected, found-in-page, or read by
-  assistive tech — that is an accessibility floor, not a preference.
-- **Per-project env vars.** `dev/project-env-design.md` + `dev/briefs/project-env-vars.md`. The
-  injection point already exists (`src-tauri/src/lib.rs:748-758`). **Config and secrets must not share
-  a storage rule** — a token in a pty is visible to everything the agent runs and can reach `chat.db`
-  via the transcript. Keychain for secrets; `~/.operator/projects.json` and `.claude/settings.json`
-  are both wrong homes.
-- **Deferred with a trigger** — see the table at the top of `dev/briefs/COORDINATION.md`: verify the
-  2000-char tool-output cap against real data once tool rows exist in `chat.db`. Check with
-  `sqlite3 ~/.operator/chat.db "SELECT COUNT(*) FROM messages WHERE kind LIKE 'tool%';"`.
-- Review's P2/P3 list in `dev/review-todays-landings.md` (`completeTerminalTasks` mis-attribution,
-  `signal.interruptible` declared and never read, small items).
+### Why switching lanes animated every orb
 
-## Hard-won lessons from this session
+Not the rail (its `collapsed` doesn't depend on lane selection) and not the Console⇄Chat⇄Preview
+toggle (an overlay, deliberately, so the terminal never resizes). The actual chain:
 
-1. **The dispatch loop is lossy in BOTH directions.** Outbound: long `OPERATOR-DISPATCH` lines get
-   split — prefix submits, tail strands in the composer. Inbound: **a lane's chat answer is invisible
-   to the coordinator; only files it writes are seen.** Research completed a full audit and a spike
-   that went unnoticed for 40 minutes and was nearly relaunched over. **Every brief must name an
-   output file, and dispatch lines stay short with the brief in `dev/briefs/*.md`.**
-2. **Read the durable state, not the UI.** The roster claimed "28 QUEUED" when the store held 23
-   `running` + 7 `done`. `~/.operator/projects.json` is the truth.
-3. **Fixtures must match reality.** A mock with invented `thinking` prose validated a disclosure
-   control whose body can never open — `thinking` is empty in 100% of real transcripts. The same
-   failure then repeated one day later on the tool-result pipeline.
-4. **A fix that moves upstream of a persistence boundary leaves the old data behind** — and that is
-   usually what the user is looking at. The injected-turn filter was correct in the parser and still
-   wrong on 188 rows already in `chat.db`.
-5. **Check a lane's transcript before concluding it is stuck.** `~/.claude/projects/<slug>/*.jsonl`.
-6. **Three of the nine release blockers came from the user clicking around**, not from Review, QA or
-   code reading — stuck tooltips, a dead stop button, an 84px header offset, a navigation dead-end.
-   That channel finds what the automated ones structurally cannot. Budget a deliberate human pass
-   before any release.
+1. Every terminal pane, **across every project**, is a sibling in one unfiltered `terminals.map(...)`
+   (`DashboardView.tsx:4162`), each `position:absolute; visibility:hidden|visible` — and
+   `visibility:hidden` still has a **measurable box**, so hidden panes' `ResizeObserver`s fire.
+2. The Plan/Diff panel is **per-session** state rendered as a flex *sibling* of the terminal
+   container. Switching to a lane whose `panelOpen` differs mounts/unmounts it → the `flex:1`
+   container genuinely changes width → every pane resizes for real.
+3. `terminal_resize` → `TIOCSWINSZ` → SIGWINCH → every Claude Code TUI redraws → bytes back →
+   `note_activity` (`lib.rs:235`) → `transcript.rs:992` forces `phase = "running"` for 1.5s.
+
+**Measured 5 of 5 mounted terminals resized per switch → 1 after the fix.** The fix is the guard
+`GridTerminalPane.tsx:263-269` has always had; `TerminalPane` never got it.
+
+Second-order, checked and benign: a spurious `running` does **not** re-arm the keep-warm timer —
+`lastActivityAt` comes only from a transcript line's own timestamp, never from `note_activity`.
+Two separate clocks. It can make a close-eligible lane transiently ineligible for 1.5s
+(`lane-lifecycle.ts:93`); low odds, and it goes away with the fix.
+
+## Process notes from this round
+
+- **A lane reporting "landed in `operator/63f860`" had committed nothing** — the branch was at
+  `main` HEAD exactly, all work uncommitted in its worktree. Verify with
+  `git log main..<branch>` before believing a hand-off. (It committed properly when told.)
+- **Raw NUL bytes in a `.tsx` source make git treat the file as binary.** A coalesce key used
+  literal NUL separators inside a template literal; `Toast.tsx` showed as `Bin 6957 → 15839` —
+  no diff, no merge, no blame. Use an escape. Check `git diff` renders as text before committing.
+- Briefs still have to be **copied into each live lane worktree** before dispatching; a lane cannot
+  see an uncommitted file in the main repo. `operator__brief` would end this.
+
+## Also open
+
+- **Renderer killed and respawned hourly at ~1.1–1.2GB** — the user experiences this as "the app
+  restarts". Retention is *not* lane-scoped (closing 17 of 27 lanes freed ~8MB/lane), so fewer
+  lanes is not the fix. `dev/briefs/2026-08-06-renderer-heap-RESULT.md`.
+- The **stale `dev/HANDOFF.md` this replaces** was from 2026-07-28 and described v0.10.0. If you
+  are reading a handoff older than the current release, distrust it.
