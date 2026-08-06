@@ -413,6 +413,12 @@ export interface ManagedTerminal {
   alive: boolean
   /** Dev-server port Operator reserved for this session (OPERATOR_DEV_PORT). */
   devPort?: number
+  /** THE DURABLE IDENTITY, reported by the backend because it outlives a renderer respawn. The
+   *  re-attach joins saved sessions to live ptys on `claudeSessionId`; `terminalId` is a per-run
+   *  counter and a tab that fails that join is created unstamped — alive, and unroutable. */
+  claudeSessionId?: string
+  /** The project this pty was launched into, straight from the backend's own record. */
+  projectId?: string
   /** Spawned in GRID-renderer mode — this pty has an alacritty core in Rust (gridterm.rs), so
    *  its pane is `GridTerminalPane` rather than `TerminalSurface`. Reported by the backend
    *  because the core is created at spawn and never after: it is the one copy of this fact that

@@ -53,6 +53,15 @@ impl TrackRegistry {
         self.map.lock().unwrap().insert(terminal_id, t);
     }
 
+    /// The durable identity of a live pty: its Claude session id and the project it was launched
+    /// into. Reported through `terminal_list` so the renderer can re-link a re-attached tab by
+    /// something that outlives a renderer respawn — `terminalId` is a per-run counter and the
+    /// renderer's own copy of the mapping dies with it.
+    pub fn identity(&self, terminal_id: &str) -> Option<(String, String)> {
+        let map = self.map.lock().unwrap();
+        map.get(terminal_id).map(|t| (t.claude_session_id.clone(), t.project_id.clone()))
+    }
+
     fn snapshot(&self) -> Vec<(String, NewTrack)> {
         self.map.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
