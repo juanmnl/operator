@@ -24,6 +24,22 @@ export function isActiveProject(p: Project, activity?: ProjectActivity): boolean
   return !p.archivedAt || (activity?.live ?? 0) > 0
 }
 
+/** Is this project ON THE RAIL right now? Live, or the one you're in.
+ *
+ *  Derived, never stored — the rail's membership rule and CLOSE's gate are the same question,
+ *  which is why they must be the same function. Close means "take it off the rail", so it is
+ *  offered exactly when there is a rail entry to take off, and it is NOT gated on liveness: a
+ *  project you opened and have not launched anything in is on the rail, and until now there was
+ *  no way to remove it (Close was hidden, and Shelve files it to Previous — the buried-away
+ *  feeling the user called "forget").
+ *
+ *  Deliberately separate from `isActiveProject`, which answers a different question about a
+ *  different surface: which SHELF the gallery files it under. A project can be off the rail and
+ *  active, or on the rail and shelved (a live lane pins it to Active). */
+export function isOnRail(p: Project, activity: ProjectActivity | undefined, activeProjectId: string | null): boolean {
+  return (activity?.live ?? 0) > 0 || p.id === activeProjectId
+}
+
 /** Would writing `archivedAt` actually move this project to Previous *right now*?
  *
  *  `isActiveProject` lifts a project with a live session back onto the active shelf whatever its

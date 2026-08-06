@@ -884,10 +884,11 @@ export function DashboardView() {
 
   /** Projects whose teardown is in flight. Rendered immediately so "close" has an effect on
    *  screen the instant it is asked for, instead of after every pty has been confirmed dead —
-   *  and it is what lets the shelf write stop being the thing that communicates progress.
+   *  and now that Close writes nothing at all, this chip is the ONLY progress signal, which is
+   *  the job it was written for.
    *
-   *  Deliberately NOT persisted: a closing project that outlives the renderer is just a shelved
-   *  or an un-shelved one, and a stuck "closing…" restored from disk would be a lie no action
+   *  Deliberately NOT persisted: a closing project that outlives the renderer is just a project
+   *  whose ptys are gone, and a stuck "closing…" restored from disk would be a lie no action
    *  could clear. */
   const [closingProjects, setClosingProjects] = useState<Set<string>>(new Set())
 
@@ -974,9 +975,11 @@ export function DashboardView() {
     // written, because it IS the user's decision and it takes effect the moment the lane ends;
     // what changes is that the toast stops claiming a move it can't make.
     const stuck = ids.filter((id) => !shelvingMoves(activitiesRef.current[id]))
+    // …and points at the verb that RESOLVES it: the lanes have to stop for the shelf to take
+    // effect, and Close is the one gesture that stops them.
     const detail = only
       ? stuck.length
-        ? 'Still running, so it stays on Active.'
+        ? 'Still running, so it stays on Active — Close ends its agents.'
         : 'It moves to Previous. Launching an agent here brings it straight back.'
       : stuck.length
         ? `${stuck.length} still running, so they stay on Active.`
@@ -991,22 +994,30 @@ export function DashboardView() {
     })
   }, [pushToast])
 
-  /** CLOSE a project: end its live sessions, then shelve it.
+  /** CLOSE a project: end its live agents. That is all it does.
    *
-   *  The verb that did not exist. Closing meant clicking ■ on every live lane by hand, then
-   *  Shelve, and knowing to do it in that order — and doing it in the other order produced the
-   *  false "moved to Previous" above.
+   *  IT NO LONGER SHELVES. Close and Shelve were fused — closing wrote `archivedAt` — which made
+   *  one gesture do two unrelated things and left the user with no way to say "take this off the
+   *  rail" without also filing it under Previous, the buried-away state they called "forget".
+   *  Unfusing them is the whole change; everything else about this function is a consequence.
    *
-   *  SEQUENCE MATTERS and is the whole reason this is one action: the sessions are ended and
-   *  awaited FIRST, and only then is `archivedAt` written. Writing the flag first re-creates the
-   *  lie, because the project is still lifted onto Active while the lanes are alive.
+   *  WHY NOT "HIDE IT WHILE IT RUNS" INSTEAD. Because `lib/forgotten-projects` is the written
+   *  record of what happens when Operator drops a project from its UI while the project's ptys
+   *  keep running: the cwd-resolution effect meets a live pty with no project, resolves its
+   *  folder, upserts — and the project comes back by itself. That cost a durable localStorage
+   *  list to fix. `isActiveProject` and `shelvingMoves` both exist to hold the same line: a
+   *  running agent must never hide. So Close ENDS the lanes, and the rail clears itself because
+   *  its membership is derived (`isOnRail`) — no new stored state anywhere.
+   *
+   *  `archivedAt` is now written from exactly ONE place, `archiveProjects` — the discipline
+   *  v0.14.0 established for CLEARING it, finally applied to writing it too.
    *
    *  Reuses `handleCloseSession` per lane — the same path the ■ button takes, which already kills
    *  the pty, finishes its running tasks, removes the worktree dir (keeping the branch) and drops
    *  the saved session. No second teardown route, and nothing pattern-kills: every session is
    *  closed by id, and only ones stamped with THIS project.
    *
-   *  Data — roster, tasks, notes, branches — is untouched, exactly as Shelve promises. */
+   *  Data — roster, tasks, notes, branches — is untouched, and the project stays on Active. */
   const closeProject = useCallback(async (id: string) => {
     const project = projectsRef.current.find((p) => p.id === id)
     if (!project) return
@@ -1015,18 +1026,20 @@ export function DashboardView() {
 
     // CLOSING IS A STATE, and it is rendered immediately. The old sequence awaited every pty
     // death before anything at all happened on screen, so with several lanes the project just sat
-    // there for seconds looking ignored — the user's "it takes a while to get removed".
+    // there for seconds looking ignored — the user's "it takes a while to get removed". With the
+    // shelf write gone this chip is the WHOLE progress signal, which is what it was written for.
     //
-    // This does NOT break the invariant the sequencing protected. That invariant is that a
-    // project must not appear on ACTIVE while its lanes are still alive — which is a rendering
-    // question, and `closingProjects` answers it directly instead of by withholding a write.
-    setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+    // Not armed when there is nothing to tear down: an idle close finishes in the same frame, and
+    // a `closing…` chip that appears and vanishes for one frame is noise about no work.
+    if (plan.sessions.length) {
+      setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+    }
     setActiveProjectId((cur) => (cur === id ? null : cur))
 
     // BOUNDED, AND IN PARALLEL. Sequentially awaiting each lane meant one hung `handleCloseSession`
-    // stalled every lane behind it AND — because the shelf write came after the loop — meant
-    // `archivedAt` was never written at all. "User asked to close" then survived nowhere: the
-    // project silently stayed, which is the user's "if it gets removed".
+    // stalled every lane behind it, so a single wedged pty could hold the whole close open
+    // indefinitely — the user's "it takes a while to get removed". The timeout turns that into a
+    // reported fact instead of a hang.
     const KILL_TIMEOUT_MS = 4000
     const outcomes = await Promise.all(live.map(async (s) => {
       try {
@@ -1041,33 +1054,34 @@ export function DashboardView() {
     }))
     const stuck = outcomes.filter((o) => !o.ok).map((o) => o.s)
 
-    // WRITTEN UNCONDITIONALLY, including on partial failure. A lane that would not die is a fact
-    // to report, not a reason to discard the user's decision — and the alternative (silently not
-    // shelving) is indistinguishable from the app ignoring them.
-    const at = new Date().toISOString()
-    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, archivedAt: at } : p)))
+    // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
+    // absence is the change: the project stays exactly where it was, on Active, with its roster,
+    // tasks, notes and branches. Reopening it is just opening it.
     setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
     if (stuck.length) {
       pushToast({
-        text: `${project.name} shelved — ${stuck.length} agent${stuck.length === 1 ? '' : 's'} did not stop`,
+        text: `${project.name} — ${stuck.length} agent${stuck.length === 1 ? '' : 's'} did not stop`,
         detail: stuck.map((s) => sessionLabel({ session: s })).join(', '),
       })
     }
     const n = plan.sessions.length
-    pushToast({
-      text: n ? `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended` : `Closed ${project.name}`,
-      // Undo puts the project back on Active. It CANNOT bring the sessions back — the ptys are
-      // gone — and saying otherwise is the same class of lie this change exists to remove.
-      // The half that must survive the clamp is the one that could mislead: Undo brings the
-      // project back to Active, and cannot bring back a pty that has been killed.
-      detail: n
-        ? 'Undo restores the shelf, not the agents.'
-        : 'It moves to Previous. Launching an agent here brings it straight back.',
-      action: {
-        label: 'Undo',
-        run: () => setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, archivedAt: undefined } : p))),
-      },
-    })
+    // NO UNDO, ON EITHER VARIANT, and that is honesty rather than a removed feature. Undo used to
+    // restore the shelf — which is no longer written — while the ptys it appeared to be offering
+    // back were already gone. With nothing to reverse, the toast's job is to say where the
+    // project went, which is also the "reads as done, not lost" answer.
+    pushToast(n
+      // A receipt for something irreversible.
+      ? {
+        text: `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended`,
+        detail: 'It stays in Active. Launching an agent here brings it back to the rail.',
+      }
+      // Nothing ended, so this is a pointer, not a receipt — and it needs no action: closing an
+      // idle project lands you on the gallery with its card in front of you, so "show me where
+      // it went" would point at itself.
+      : {
+        text: `Closed ${project.name}`,
+        detail: 'It stays in Active — open it again any time.',
+      })
   }, [pushToast])
 
   const archiveProject = useCallback((id: string) => archiveProjects([id]), [archiveProjects])
@@ -3777,23 +3791,23 @@ export function DashboardView() {
     return [
       { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
       { label: 'Project Claude files', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
-      // Only when there IS something to close — with no live lane this would be Archive under
-      // another name, and the rail is not where you shelve things.
+      // ALWAYS PRESENT. Close means "take this off the rail", and every tile in this menu is on
+      // the rail by definition (`isOnRail` is the filter that drew it) — so the `live > 0` gate
+      // that used to hide it here was always answering the wrong question. It hid the case the
+      // user actually asked for: a project you opened, launched nothing in, and could not remove
+      // from the strip except by shelving it away to Previous.
       //
-      // CONFIRM-GATED, which is one notch STRONGER than the gallery's copy of this item (there
-      // the guard is the Undo toast alone). It ends ptys that cannot be brought back, and here
-      // it is two clicks from a mis-aimed right-click on the strip you navigate by — so it arms
-      // and relabels first, and keeps the same toast afterwards. Not danger-toned: red is the
-      // gallery's mark for Forget, and the same verb must not read as two different weights on
-      // two surfaces.
-      ...(live > 0
-        ? [{
-            label: `Close project · end ${live} agent${live === 1 ? '' : 's'}`,
-            onClick: () => { void closeProject(project.id) },
-            separator: true,
-            confirm: true,
-          }]
-        : []),
+      // ONE VERB, GRADUATED. The label carries the count only when there is a count, and the
+      // confirm engages only when there is something irreversible to confirm — ending ptys, two
+      // clicks from a mis-aimed right-click on the strip you navigate by. Confirming the idle
+      // close would teach people to click through the confirms that matter. Not danger-toned:
+      // red is the gallery's mark for Forget, and one verb must not read as two weights.
+      {
+        label: live > 0 ? `Close project · end ${live} agent${live === 1 ? '' : 's'}` : 'Close project',
+        onClick: () => { void closeProject(project.id) },
+        separator: true,
+        confirm: live > 0,
+      },
     ]
   }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject])
 
@@ -4266,6 +4280,7 @@ export function DashboardView() {
             onForgetProject={forgetProject}
             onArchiveProject={archiveProject}
             onCloseProject={(id) => { void closeProject(id) }}
+            activeProjectId={activeProjectId}
             closingIds={closingProjects}
             onArchiveProjects={archiveProjects}
             onRestoreProject={restoreProject}
