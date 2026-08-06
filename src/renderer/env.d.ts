@@ -103,7 +103,7 @@ declare global {
       getMcpServers: (projectPath: string) => Promise<McpServersResult>
       pickFolder: () => Promise<string | null>
       inspectRepo: (cwd: string) => Promise<RepoInfo>
-      worktreeCreate: (cwd: string) => Promise<WorktreeCreateResult | { error: string }>
+      worktreeCreate: (cwd: string, branch?: string) => Promise<WorktreeCreateResult | { error: string }>
       worktreeStatus: (path: string) => Promise<WorktreeStatus>
       /** What a project IS (derived sources) + what its folder is doing. */
       projectIdentity: (path: string) => Promise<ProjectIdentity>

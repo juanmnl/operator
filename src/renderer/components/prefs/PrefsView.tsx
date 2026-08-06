@@ -5,6 +5,7 @@ import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
 import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '../../lib/terminal-options'
 import { resumeOnLaunchEnabled, RESUME_ON_LAUNCH_KEY } from '../../lib/workspace'
+import { getKeepWarmMinutes, setKeepWarmMinutes, DEFAULT_KEEP_WARM_MINUTES } from '../../lib/lane-lifecycle'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -158,6 +159,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const [optionIsMeta, setOptionIsMeta] = useState(() => getMacOptionIsMeta())
   const [fullscreenTui, setFullscreenTui] = useState(() => getTuiMode() === 'fullscreen')
   const [resumeOnLaunch, setResumeOnLaunch] = useState(() => resumeOnLaunchEnabled())
+  const [keepWarm, setKeepWarm] = useState(() => getKeepWarmMinutes())
 
   const toggleSounds = () => {
     const next = !sounds
@@ -183,6 +185,11 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     const next = !resumeOnLaunch
     setResumeOnLaunch(next)
     try { localStorage.setItem(RESUME_ON_LAUNCH_KEY, next ? '1' : '0') } catch { /* quota */ }
+  }
+
+  const selectKeepWarm = (minutes: number) => {
+    setKeepWarm(minutes)
+    setKeepWarmMinutes(minutes) // read per tick by the lane-close effect — applies immediately
   }
 
   const selectDockIcon = (v: DockVariant) => {
@@ -354,6 +361,38 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               }} />
             </span>
           </button>
+        </section>
+
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
+            Close finished lanes
+          </h3>
+          {/* Only an explicit `operator__task_status(id,'done')` starts this clock — a lane that
+              is merely idle, or waiting on a permission prompt, is never closed by it. Closing
+              suspends: the thread and its branch survive, and the next dispatch resumes them. */}
+          <p data-section-desc style={sectionDesc}>
+            A lane that reports its task done closes after this much quiet, freeing its process and
+            its worktree. It is suspended, not forgotten — the next dispatch resumes the same
+            conversation on the same branch. A lane waiting on you is never closed.
+          </p>
+          <div role="radiogroup" aria-label="Keep-warm window" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[0, 5, DEFAULT_KEEP_WARM_MINUTES, 30, 60].map((m) => (
+              <button
+                key={m}
+                onClick={() => selectKeepWarm(m)}
+                role="radio"
+                aria-checked={keepWarm === m}
+                style={{
+                  padding: '7px 12px', cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 11, fontWeight: 500,
+                  color: keepWarm === m ? 'var(--accent)' : 'var(--fg-muted)',
+                  background: 'var(--bg-surface)',
+                  border: `1px solid ${keepWarm === m ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 8,
+                }}
+              >{m === 0 ? 'Never' : `${m} min`}</button>
+            ))}
+          </div>
         </section>
 
         <section style={{ marginBottom: SECTION_GAP }}>

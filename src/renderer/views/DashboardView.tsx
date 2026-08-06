@@ -12,6 +12,7 @@ import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
+import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason } from '../lib/lane-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { sessionLabel } from '../lib/session-label'
@@ -1182,7 +1183,12 @@ export function DashboardView() {
   // When a lane's session ends, its still-running tasks are treated as done (auto-complete).
   // Also captures each task's diff summary — awaited by the close path BEFORE it removes the
   // worktree, so the stat survives the dir. `lane` backfills provenance the pickup path missed.
-  const completeTerminalTasks = useCallback(async (terminalId: string, roleId?: string, projectId?: string, lane?: TaskLane) => {
+  //
+  // `outcome` exists for ONE caller: the went-quiet backstop (lib/lane-lifecycle). A lane that
+  // was closed because it fell silent without ever reporting has not been seen to finish
+  // anything, and writing `done` on its tasks would be the exact lie `abandoned` was added to
+  // stop — reconciliation used to do it to 56 tasks at a time. Same close path, honest label.
+  const completeTerminalTasks = useCallback(async (terminalId: string, roleId?: string, projectId?: string, lane?: TaskLane, outcome: 'done' | 'abandoned' = 'done') => {
     const now = new Date().toISOString()
     // Matched by SESSION id first — `terminalId` collides across runs, so matching on it alone
     // let an exiting lane close a previous run's tasks that happened to share its counter.
@@ -1202,30 +1208,40 @@ export function DashboardView() {
       const hits = (p.tasks ?? []).filter(isMatch)
       if (hits.length) matched.push({ projectId: p.id, ids: hits.map((t) => t.id), task: hits[0] })
     }
+    // `abandoned` carries `reconciledAt`, not `doneAt` — the same split the reconciler uses, so
+    // every reader that already distinguishes "its run ended" from "it finished" keeps working.
     setProjects((prev) => prev.map((p) => {
       if (projectId && p.id !== projectId) return p
       const tasks = (p.tasks ?? []).map((t) => (isMatch(t)
-        ? { ...t, status: 'done' as const, doneAt: now, cwd: t.cwd ?? lane?.cwd, sourceCwd: t.sourceCwd ?? lane?.sourceCwd, worktreeBranch: t.worktreeBranch ?? lane?.worktreeBranch, worktreeBase: t.worktreeBase ?? lane?.worktreeBase }
+        ? {
+          ...t,
+          status: outcome,
+          ...(outcome === 'done' ? { doneAt: now } : { reconciledAt: now }),
+          cwd: t.cwd ?? lane?.cwd, sourceCwd: t.sourceCwd ?? lane?.sourceCwd, worktreeBranch: t.worktreeBranch ?? lane?.worktreeBranch, worktreeBase: t.worktreeBase ?? lane?.worktreeBase,
+        }
         : t))
       return tasks === p.tasks ? p : { ...p, tasks }
     }))
     // One capture per lane (all matched tasks shared the terminal/role → same diff),
     // then the verification gate — awaited so a worktree close removes the dir only
-    // after the check has run in it.
+    // after the check has run in it. The gate is skipped for abandoned work: "done and green"
+    // is a claim about finished work, and running the project's check command (minutes, and the
+    // whole test suite) on a lane that merely fell silent buys nothing. The DIFF is still
+    // captured — whatever it did write is exactly what you need to see.
     for (const m of matched) {
       const src = lane ?? m.task
       if (taskHasDiffSource(src)) {
         const stat = await fetchTaskDiffStat(src).catch(() => undefined)
         attachTaskDiffStats(m.projectId, m.ids, stat)
       }
-      await runTaskChecks(m.projectId, m.ids, src.cwd)
+      if (outcome === 'done') await runTaskChecks(m.projectId, m.ids, src.cwd)
     }
   }, [attachTaskDiffStats, runTaskChecks])
   // Fresh closure over terminals + completeTerminalTasks for the mount-time exit subscription.
   /** Per-project liveness, and the per-lane close path — both declared far below the shelve and
    *  close actions that need them, so they arrive through refs assigned on render. */
   const activitiesRef = useRef<Record<string, ProjectActivity>>({})
-  const handleCloseSessionRef = useRef<(s: AgentSession) => Promise<void>>(async () => {})
+  const handleCloseSessionRef = useRef<(s: AgentSession, suspend?: LaneCloseReason) => Promise<void>>(async () => {})
   /** `focusTerminal` is declared much further down, so the undelivered toast reaches it the
    *  same way the exit handler reaches its own late sibling — through a ref assigned on render. */
   const focusTerminalRef = useRef<(id: string) => void>(() => {})
@@ -1988,6 +2004,15 @@ export function DashboardView() {
       .finally(() => setReattachDone(true))
   }, [savedHydrated, savedSessions])
 
+  /** WHEN EACH LANE LAST REPORTED A TASK DONE, by terminal id — the only "finished" signal this
+   *  app has that isn't a guess (see lib/lane-lifecycle for why silence is not one). Stamped by
+   *  the poller below, read by the lane-close effect.
+   *
+   *  A REF, so it dies with the renderer: after a reload no lane counts as having reported, and
+   *  the worst case is a lane that stays up until it reports again. Persisting it would make the
+   *  failure point the other way — a stale stamp closing a lane that is mid-turn. */
+  const doneReportsRef = useRef<Record<string, string>>({})
+
   // THE ARTIFACT PLANE'S COMPLETION SIGNAL, applied here.
   //
   // `fix-session-task-lifecycle-RESULT.md` concluded, about the ~200 tasks stuck in `running`:
@@ -2018,6 +2043,22 @@ export function DashboardView() {
         if (stopped || !pending?.length) return
         const applied: number[] = []
         for (const ev of pending) {
+          // THE LANE-LIFECYCLE HALF of the same event: a `done` report is what makes its lane
+          // closable (lib/lane-lifecycle). Stamped even when the TASK id resolves to nothing —
+          // lanes are told to call `task_status(id,'done')` but are never handed the store's uuid,
+          // so an unresolvable id is the common case and it is still an explicit "I finished".
+          // What must not happen is inferring completion from silence, and this is not that.
+          //
+          // AGE-GUARDED because `terminalId` is a per-run counter that collides across runs: an
+          // event left pending by a renderer that died could otherwise mark a DIFFERENT lane
+          // done after a restart. Events are polled every 4s, so anything an hour old is not
+          // this run's.
+          if (ev.status === 'done' && Date.now() - Date.parse(ev.at) < 60 * 60 * 1000) {
+            const tab = terminalsRef.current.find((t) => t.id === ev.terminalId)
+            if (tab && (!ev.projectId || ev.projectId === tab.projectId)) {
+              doneReportsRef.current[ev.terminalId] = ev.at
+            }
+          }
           // Resolve the project from the EVENT first, then from the lane that sent it — a lane
           // that reported before `sessions.json` caught up still has a terminal id we can match.
           const projectId = ev.projectId
@@ -2099,7 +2140,11 @@ export function DashboardView() {
     })
   }, [savedHydrated, reattachDone, terminals])
 
-  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string; focus?: boolean }): Promise<TerminalTab[]> => {
+  /** `resume` continues a SUSPENDED lane instead of starting a cold one: the same Claude thread
+   *  (`--resume`), the same worktree branch reattached, and the same saved-session key so the
+   *  record is updated in place rather than duplicated. Single-session launches only — fan-out
+   *  spawns siblings, and there is one thread to resume. */
+  const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string; focus?: boolean; resume?: { key: string; claudeSessionId: string; worktreeBranch?: string; worktreeBase?: string } }): Promise<TerminalTab[]> => {
     // Write effort level to global settings (Claude Code reads it from there)
     const prefs = await window.operator.folderPrefsLoad(cwd)
     const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
@@ -2122,7 +2167,11 @@ export function DashboardView() {
       let worktreeBranch: string | undefined
       let worktreeBase: string | undefined
       if (config.useWorktree) {
-        const result = await window.operator.worktreeCreate(cwd)
+        // A resumed lane goes back on the branch it left, so its own committed work is in the
+        // tree its transcript remembers writing (see worktree::reattach_worktree). A fresh lane
+        // passes nothing and forks from the default branch exactly as before.
+        const reuse = count === 1 ? opts?.resume?.worktreeBranch : undefined
+        const result = await window.operator.worktreeCreate(cwd, reuse)
         // `!result` first: `'error' in undefined` THROWS, and it threw out of the whole launch —
         // so a worktree backend that answered unexpectedly took the session with it rather than
         // falling back. Now it degrades the same way a reported error does.
@@ -2150,13 +2199,19 @@ export function DashboardView() {
       // Rides to the tailer so any OPERATOR-REPLY this lane posts is stamped with its project
       // (the backend can't derive our canonical-repo-root ids).
       launchOptions.projectId = proj.id
+      // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
+      // back with its thread, so a re-dispatch costs a process start and not a cold context.
+      if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId
 
       const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
       if (!result) continue
 
       const tab: TerminalTab = {
         id: result.terminalId,
-        key: crypto.randomUUID(),
+        // A resumed lane keeps its saved-session KEY, so the persist effect rewrites that row
+        // (clearing `suspendedAt` with it) instead of leaving a suspended twin behind — the
+        // duplicate-lane-record shape this store has already been cleaned of once.
+        key: (count === 1 ? opts?.resume?.key : undefined) ?? crypto.randomUUID(),
         cwd: result.cwd,
         model: config.model || undefined,
         effortLevel: config.effortLevel,
@@ -2244,6 +2299,13 @@ export function DashboardView() {
     // `role.useWorktree` directly any more — that is what made every seeded value look pinned and
     // left a global default with nothing to override.
     const settings = resolveAgentConfig(role, project.defaults)
+    // SPAWN ON DEMAND, BUT NOT FROM SCRATCH. A lane closed by the task-scoped path left a record
+    // behind on purpose (see handleCloseSession's `suspend`); relaunching it resumes that thread
+    // rather than starting cold, which is what makes closing a lane cheap enough to do at all.
+    // Most recent wins if a role somehow has several — same rule as `pickLaneTab`.
+    const suspended = savedSessionsRef.current
+      .filter((s) => s.projectId === project.id && s.roleId === role.id && s.suspendedAt && s.claudeSessionId)
+      .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))[0]
     const tabs = await handleLaunchSession(
       project.path,
       {
@@ -2256,7 +2318,14 @@ export function DashboardView() {
         count: 1,
         prompt: combined,
       },
-      { roleId: role.id, orchestrationNote: note, focus: opts?.focus },
+      {
+        roleId: role.id,
+        orchestrationNote: note,
+        focus: opts?.focus,
+        resume: suspended
+          ? { key: suspended.key, claudeSessionId: suspended.claudeSessionId!, worktreeBranch: suspended.worktreeBranch, worktreeBase: suspended.worktreeBase }
+          : undefined,
+      },
     )
     // Now the terminal (and worktree) exist — stamp the picked-up tasks with their lane.
     if (tabs[0] && queued.length) markTasksRunning(project.id, queued.map((t) => t.id), tabs[0].id, laneOf(tabs[0]))
@@ -2468,8 +2537,32 @@ export function DashboardView() {
   // conversation (--resume); otherwise it starts the agent clean in the same
   // folder/worktree with the same config.
   const handleRestoreSession = useCallback(async (saved: SavedSession, resume: boolean) => {
+    // THE DIRECTORY MAY BE GONE, and since lanes close themselves it usually is: a suspended
+    // worktree lane kept its branch and lost its dir. Put it back on that branch before anything
+    // else touches the path — spawning into a missing cwd fails, and every step below (the prefs
+    // read, the pty) assumes it exists. A rebuild that cannot happen falls back to the source
+    // repo rather than failing the restore outright.
+    let cwd = saved.cwd
+    let worktreeBranch = saved.worktreeBranch
+    let worktreeBase = saved.worktreeBase
+    // `?? true` for a bridge without `pathExists`: assume the dir is there and restore as before,
+    // rather than rebuilding a worktree over a live one.
+    const cwdGone = !(await window.operator.pathExists?.(saved.cwd).catch(() => true) ?? true)
+    if (saved.worktreeBranch && saved.sourceCwd && cwdGone) {
+      const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch)
+      if (made && !('error' in made)) {
+        cwd = made.path
+        worktreeBranch = made.branch
+        worktreeBase = made.baseBranch ?? saved.worktreeBase
+      } else {
+        console.warn('Could not rebuild the lane worktree; restoring in the source repo', made && 'error' in made ? made.error : 'no result')
+        cwd = saved.sourceCwd
+        worktreeBranch = undefined
+        worktreeBase = undefined
+      }
+    }
     if (saved.effortLevel) {
-      const fp = await window.operator.folderPrefsLoad(saved.cwd)
+      const fp = await window.operator.folderPrefsLoad(cwd)
       const globalFile = fp.settingsFiles.find((f) => f.scope === 'global')
       if (globalFile) await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: saved.effortLevel })
     }
@@ -2487,8 +2580,8 @@ export function DashboardView() {
     launchOptions.projectId = saved.projectId ?? proj.id
 
     // Restore spawns directly into the saved cwd (the worktree path persists
-    // across quits), so no new worktree is created.
-    const result = await window.operator.terminalSpawn(saved.cwd, launchOptions)
+    // across quits), or into the one just reattached for a suspended lane.
+    const result = await window.operator.terminalSpawn(cwd, launchOptions)
     if (!result) return
 
     const tab: TerminalTab = {
@@ -2498,8 +2591,8 @@ export function DashboardView() {
       model: saved.model,
       effortLevel: saved.effortLevel,
       permissionMode: saved.permissionMode,
-      worktreeBranch: saved.worktreeBranch,
-      worktreeBase: saved.worktreeBase,
+      worktreeBranch,
+      worktreeBase,
       sourceCwd: saved.sourceCwd,
       projectId: saved.projectId ?? proj.id,
       roleId: saved.roleId,
@@ -2516,7 +2609,7 @@ export function DashboardView() {
         return next
       })
     }
-    rememberRecent(saved.cwd)
+    rememberRecent(cwd) // the same value unless a suspended lane's worktree was just rebuilt
     upsertProject(proj, { intent: 'user' }) // clicked a dormant session (or Resume project)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
@@ -2547,23 +2640,46 @@ export function DashboardView() {
     })
   }, [])
 
-  const handleCloseSession = useCallback(async (session: AgentSession) => {
+  /** Close a lane.
+   *
+   *  `suspend` is what makes lanes task-scoped: the automatic path passes it, and then close
+   *  means DETACH — the pty dies and the worktree directory goes, but the saved session survives
+   *  carrying `claudeSessionId` + `worktreeBranch`, which is exactly what `handleLaunchRole`
+   *  needs to bring the lane back with `--resume` on its own branch. If "close" ever means
+   *  "gone" here, task-scoped lanes are wrong. A close the USER asks for keeps its old meaning
+   *  and forgets the record. */
+  const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason) => {
     const terminalId = session.terminalId
     if (!terminalId) return
     const tab = terminals.find((t) => t.id === terminalId)
     // Kill the pty first so any in-flight git operations on the worktree die.
     await window.operator.terminalKill(terminalId)
+    delete doneReportsRef.current[terminalId]
     // Its running tasks → done: capture their diff summary and run the verification
     // gate while the dir still exists. NOT awaited here (a check can take minutes) —
     // worktree removal is CHAINED behind it instead, so close stays snappy and the
     // dir survives until the capture + check finish.
     const finishTasks = tab?.projectId
-      ? completeTerminalTasks(terminalId, tab.roleId, tab.projectId, laneOf(tab))
+      ? completeTerminalTasks(terminalId, tab.roleId, tab.projectId, laneOf(tab), suspend === 'went-quiet' ? 'abandoned' : 'done')
       : Promise.resolve()
     // If this was a worktree session, clean up the worktree directory afterwards.
     // Branch is intentionally left intact — user may want to merge or review later.
     if (tab?.worktreeBranch && tab?.sourceCwd) {
       void finishTasks.then(async () => {
+        // SNAPSHOT FIRST, UNCONDITIONALLY. `worktree remove` takes uncommitted edits with it, and
+        // with lanes now closing on their own that is no longer a directory the user chose to
+        // delete. The precedent is the "WIP preserved before reaping this worktree" commits from
+        // 2026-08-05, message and all; the branch survives the close, so the commit is how the
+        // work survives with it. A failed commit CANCELS the removal — leaving a stray directory
+        // is recoverable, deleting unsaved work is not.
+        const status = await window.operator.worktreeStatus(tab.cwd).catch(() => undefined)
+        if (status?.valid && status.changes > 0) {
+          const saved = await window.operator.worktreeCommit(tab.cwd, 'WIP preserved before reaping this worktree')
+          if (!saved?.ok) {
+            console.warn('WIP snapshot failed; keeping the worktree', saved?.error)
+            return
+          }
+        }
         const result = await window.operator.worktreeRemove(tab.cwd, tab.sourceCwd!)
         // `result?.ok` — an unexpected answer became an unhandled rejection here, and with
         // worktrees now a global default this path runs on every close of a writing lane.
@@ -2571,8 +2687,21 @@ export function DashboardView() {
       })
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
-    // Closing is intentional — forget the saved session so it won't offer to restore.
-    if (tab) forgetSavedSession(tab.key)
+    // Closing is intentional — forget the saved session so it won't offer to restore. Unless it
+    // is a SUSPEND, where the record is the whole point: stamped, and stripped of the pty id it
+    // no longer has (a stale `terminalId` is what made tasks unmatchable for months).
+    if (tab && suspend) {
+      setSavedSessions((prev) => {
+        const next = prev.map((sv) => (sv.key === tab.key
+          ? { ...sv, terminalId: undefined, suspendedAt: new Date().toISOString(), suspendedReason: suspend }
+          : sv))
+        try { localStorage.setItem('operator.savedSessions', JSON.stringify(next)) } catch { /* quota */ }
+        window.operator.saveSessions?.(next)
+        return next
+      })
+    } else if (tab) {
+      forgetSavedSession(tab.key)
+    }
     setTerminals((prev) => prev.filter((t) => t.id !== terminalId))
     setActiveTerminalId((current) => (current === terminalId ? null : current))
     setActiveSessionId((current) => {
@@ -2585,6 +2714,72 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
   }, [terminals, forgetSavedSession, completeTerminalTasks])
   handleCloseSessionRef.current = handleCloseSession
+
+  // TASK-SCOPED LANES: a lane that has finished stops holding a pty.
+  //
+  // The decision is entirely in lib/lane-lifecycle (pure, tested); this is the side effect. It
+  // ticks on a timer rather than on state, because the interesting input is the PASSAGE of time —
+  // a lane goes quiet by nothing happening, so there is no render to react to.
+  //
+  // WHAT IT CANNOT DO IS INVENT A COMPLETION. Only two things put a lane on this path: an
+  // explicit `operator__task_status(id,'done')` (`doneReportsRef`), or the long went-quiet
+  // backstop, which closes on different terms and labels its work `abandoned`. Idle alone is
+  // never enough — see the `waiting`/`idle` guard, the one the brief calls out as the one that
+  // will bite.
+  useEffect(() => {
+    if (!savedHydrated || !reattachDone) return
+    const tick = () => {
+      const policy = laneClosePolicy()
+      if (policy.keepWarmMs <= 0) return // auto-close off
+      const lanes: LaneSnapshot[] = terminalsRef.current.map((tab) => {
+        const session = sessionsRef.current.find((s) => s.terminalId === tab.id)
+        const claudeId = claudeIdOf(tab.id)
+        // OPEN WORK = tasks IN FLIGHT, not the whole backlog. A lane's queued tasks are not
+        // being worked on and are picked up again by the launch path when it comes back, so
+        // counting them would pin a lane open for a backlog nobody is touching.
+        const openWork = (projectsRef.current.find((p) => p.id === tab.projectId)?.tasks ?? []).filter((t) => (
+          t.status === 'running' && (
+            (!!claudeId && t.claudeSessionId === claudeId)
+            || (!!tab.roleId && t.roleId === tab.roleId)
+          )
+        )).length
+        // A lane that took new work invalidates its old report: it is not the same "finished".
+        if (openWork > 0) delete doneReportsRef.current[tab.id]
+        return {
+          terminalId: tab.id,
+          roleId: tab.roleId,
+          projectId: tab.projectId,
+          phase: session?.status === 'ended' ? undefined : session?.phase,
+          ended: tab.ended || session?.status === 'ended',
+          lastActivityAt: session?.lastActivityAt,
+          reportedDoneAt: doneReportsRef.current[tab.id],
+          openWork,
+          focused: tab.id === activeTerminalIdRef.current,
+        }
+      })
+      const plan = planLaneCloses(lanes, Date.now(), policy)
+      if (!plan.close.length) return
+      for (const { lane, reason } of plan.close) {
+        // Always found: a lane with no tracked session has no phase, and an unknown phase is
+        // never closable (lib/lane-lifecycle).
+        const session = sessionsRef.current.find((s) => s.terminalId === lane.terminalId)
+        if (!session) continue
+        const name = projectsRef.current.find((p) => p.id === lane.projectId)?.roster?.find((r) => r.id === lane.roleId)?.name
+          ?? lane.roleId ?? 'A lane'
+        void handleCloseSessionRef.current(session, reason)
+        // TWO OUTCOMES, SAID DIFFERENTLY — silence must never read as success. The reported one
+        // is routine housekeeping; the quiet one is a lane that never called `task_status`, and
+        // that is a fact about the lane worth seeing.
+        pushToast(reason === 'reported-done'
+          ? { text: `Closed ${name} — reported done`, kind: 'info', detail: 'Suspended, not gone: re-dispatching resumes the same thread on its branch.' }
+          : { text: `${name} went quiet — closed`, kind: 'info', detail: 'It never reported a task done. Its work is marked abandoned, not done; the thread is still resumable.' })
+      }
+      // Paced, never silently capped (lib/lane-lifecycle) — the rest go on the next tick.
+      if (plan.deferred) console.info(`[lanes] ${plan.deferred} more eligible to close; pacing to the next tick`)
+    }
+    const timer = window.setInterval(tick, 30_000)
+    return () => clearInterval(timer)
+  }, [savedHydrated, reattachDone, pushToast])
 
   const handleSelectSession = useCallback((session: AgentSession) => {
     const localTerminalIds = new Set(terminals.map((t) => t.id))

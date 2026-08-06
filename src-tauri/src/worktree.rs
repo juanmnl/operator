@@ -115,7 +115,42 @@ fn default_base(root: &str) -> Option<String> {
     None
 }
 
-pub fn create_worktree(source_cwd: &str) -> Result<WorktreeCreateResult, String> {
+/// REATTACHING A SUSPENDED LANE TO ITS OWN BRANCH.
+///
+/// Task-scoped lanes remove the worktree DIRECTORY on close and keep the branch, so resuming one
+/// has to put a directory back on the branch its thread thinks it is working in. Creating a fresh
+/// branch instead would hand the resumed conversation a tree without its own committed work —
+/// the transcript says "I edited X" and the file is back at base, which is worse than a cold start
+/// because it looks correct.
+///
+/// `git worktree prune` first: a directory removed by anything other than `git worktree remove`
+/// leaves an admin record behind, and that record alone makes `worktree add` refuse the branch as
+/// already checked out.
+///
+/// `None` when the branch cannot be reattached (it does not exist, it is genuinely checked out
+/// elsewhere, or the path is occupied). The caller then falls back to a fresh branch — a lane that
+/// starts is better than one that does not, the same trade `default_base` makes.
+fn reattach_worktree(root: &str, branch: &str) -> Option<WorktreeCreateResult> {
+    git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok()?;
+    let _ = git(root, &["worktree", "prune"]);
+
+    // Same directory name as the lane had, when the branch carries our `operator/<short>` shape —
+    // a lane that comes back at the path it left is one less thing that changed under it.
+    let project = root.rsplit('/').next().unwrap_or("project").to_string();
+    let short = branch.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(short_id);
+    let path = worktree_root().join(format!("{project}-{short}"));
+    let path_str = path.to_string_lossy().to_string();
+    if path.exists() {
+        return None;
+    }
+    std::fs::create_dir_all(worktree_root()).ok()?;
+    git(root, &["worktree", "add", &path_str, branch]).ok()?;
+    Some(WorktreeCreateResult { path: path_str, branch: branch.to_string(), base_branch: default_base(root) })
+}
+
+/// Make a lane a worktree. `reuse_branch` names a branch a suspended lane left behind — see
+/// `reattach_worktree`; anything else (or a reattach that cannot be done) creates a new one.
+pub fn create_worktree(source_cwd: &str, reuse_branch: Option<&str>) -> Result<WorktreeCreateResult, String> {
     let info = inspect_repo(source_cwd);
     let root = match (info.is_repo, info.root) {
         (true, Some(r)) => r,
@@ -123,6 +158,12 @@ pub fn create_worktree(source_cwd: &str) -> Result<WorktreeCreateResult, String>
     };
     git(&root, &["rev-parse", "HEAD"])
         .map_err(|_| "Repository has no commits yet — make an initial commit before using worktrees".to_string())?;
+
+    if let Some(existing) = reuse_branch.filter(|b| !b.trim().is_empty()) {
+        if let Some(reattached) = reattach_worktree(&root, existing.trim()) {
+            return Ok(reattached);
+        }
+    }
 
     let project = root.rsplit('/').next().unwrap_or("project").to_string();
     let short = short_id();
@@ -437,7 +478,7 @@ mod tests {
         // …while the caller sits on a branch cut before that commit.
         git(p, &["checkout", "-b", "operator/stale", "HEAD~1"]).unwrap();
 
-        let made = create_worktree(p).expect("worktree created");
+        let made = create_worktree(p, None).expect("worktree created");
         let wt = made.path.clone();
         // 0 commits in `main` that the lane's branch does not have.
         let behind = git(&wt, &["rev-list", "--count", &format!("{}..main", made.branch)]).unwrap();
@@ -458,9 +499,56 @@ mod tests {
         git(p, &["branch", "-D", "main"]).unwrap();
         assert_eq!(default_base(p), None);
 
-        let made = create_worktree(p).expect("a lane still starts");
+        let made = create_worktree(p, None).expect("a lane still starts");
         assert_eq!(made.base_branch.as_deref(), Some("HEAD"));
         git(p, &["worktree", "remove", "--force", &made.path]).ok();
+    }
+
+    #[test]
+    fn a_suspended_lane_comes_back_on_its_own_branch_with_its_own_work() {
+        // THE RESUME HALF of task-scoped lanes: close removes the directory and keeps the branch,
+        // so relaunching has to reattach to that branch — otherwise the resumed conversation gets
+        // a tree with none of the work it remembers doing.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+
+        let made = create_worktree(p, None).expect("lane created");
+        std::fs::write(format!("{}/lane.txt", made.path), "lane work\n").unwrap();
+        git(&made.path, &["add", "-A"]).unwrap();
+        git(&made.path, &["commit", "-m", "lane work"]).unwrap();
+        // Close: directory gone, branch kept.
+        remove_worktree(&made.path, p).unwrap();
+        assert!(!std::path::Path::new(&made.path).exists());
+
+        let back = create_worktree(p, Some(&made.branch)).expect("lane resumed");
+        assert_eq!(back.branch, made.branch, "must reattach, not fork a new branch");
+        assert_eq!(back.path, made.path, "and come back where it was");
+        assert_eq!(
+            std::fs::read_to_string(format!("{}/lane.txt", back.path)).unwrap(),
+            "lane work\n",
+            "its committed work has to be in the tree it resumes into",
+        );
+
+        git(p, &["worktree", "remove", "--force", &back.path]).ok();
+    }
+
+    #[test]
+    fn an_unreattachable_branch_still_starts_a_lane() {
+        // The branch is checked out in a worktree that is still live, or never existed. Falling
+        // back to a fresh branch is right: a lane that starts beats a launch that fails.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+
+        let held = create_worktree(p, None).expect("lane created"); // still checked out
+        let fresh = create_worktree(p, Some(&held.branch)).expect("a lane still starts");
+        assert_ne!(fresh.branch, held.branch);
+
+        let unknown = create_worktree(p, Some("operator/never-existed")).expect("a lane still starts");
+        assert_ne!(unknown.branch, "operator/never-existed");
+
+        for w in [&held.path, &fresh.path, &unknown.path] {
+            git(p, &["worktree", "remove", "--force", w]).ok();
+        }
     }
 
     #[test]
