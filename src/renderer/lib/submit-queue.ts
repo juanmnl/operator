@@ -20,6 +20,53 @@ export function submitSequence(text: string): string {
   return `\x1b[200~${text}\x1b[201~\r`
 }
 
+/** Clear a lane's composer — the bytes, as a pure function so they can be asserted.
+ *
+ *  WHY IT EXISTS: `retryDispatch` re-delivers a whole message, and if the original paste is still
+ *  sitting unsubmitted in the composer the new one APPENDS to it — the lane then reads the task
+ *  twice, concatenated. Clearing first removes the duplication.
+ *
+ *  THE BYTES, and why these three:
+ *    `\x05` Ctrl+E  move to end of line   — so the kill below is not cursor-dependent
+ *    `\x15` Ctrl+U  delete to line start  — readline's kill-to-start; the line is now empty
+ *    `\x7f` DEL     backspace             — at column 0 this joins to the line above
+ *  repeated per line, walking a multi-line paste upward one line at a time.
+ *
+ *  CHOSEN TO BE HARMLESS WHEN UNBOUND, which matters more than elegance here: these go into a
+ *  LIVE agent's pty. All three are no-ops on an empty composer, none submits anything, and none
+ *  can interrupt a turn or end a session. That rules out the sequences a person would reach for
+ *  first — `Esc` interrupts a running turn, `Ctrl+C` twice exits the lane, `Ctrl+D` exits on an
+ *  empty line. A clear that occasionally fails to clear is recoverable; one that kills a lane
+ *  mid-turn is not.
+ *
+ *  BOUNDED BY WHAT WE PASTED, not by a guess at what is there now: the caller passes the line
+ *  count of the message it originally sent, so the walk covers exactly the text this app is
+ *  responsible for. If a human has since typed MORE lines than that, the excess survives and the
+ *  retry appends to it — strictly better than the unbounded alternative, which would eat input
+ *  nobody asked us to touch.
+ *
+ *  ⚠ UNVERIFIED AGAINST A LIVE TUI. Claude Code's composer is Ink-based with its own key
+ *  handling, and its bindings are not discoverable from the shipped binary (the keybinding table
+ *  embedded there is Node's REPL, not the composer — `Ctrl+D — Exit if line empty` gives it away).
+ *  These are the readline conventions and the safe-when-unbound property is what makes shipping
+ *  them acceptable before that check. See the RESULT for the one-command way to settle it. */
+export function clearComposerSequence(lines = 1): string {
+  const n = Math.max(1, Math.min(lines, MAX_CLEAR_LINES))
+  // First (deepest) line, then walk up: join, clear, join, clear…
+  return '\x05\x15' + '\x7f\x05\x15'.repeat(n - 1)
+}
+
+/** Ceiling on the walk. A pasted brief can be long, but every step is a write into a live pty and
+ *  an unbounded loop driven by a stored string's line count is a denial-of-service on the lane if
+ *  that string is ever wrong. 200 covers every real dispatch (the longest in the store is far
+ *  under it) and bounds the damage if it is not. */
+export const MAX_CLEAR_LINES = 200
+
+/** How many lines a message occupies in the composer — the argument for the walk above. */
+export function composerLines(text: string): number {
+  return text.split('\n').length
+}
+
 /** Minimum gap between two submissions to the SAME terminal. 350ms was the smallest
  *  spacing that reliably submitted a 3-message burst in a live session; the cost of
  *  being generous here is only latency on bursts, while being too tight silently
@@ -127,6 +174,10 @@ export interface SubmitQueueDeps {
 export interface SubmitQueue {
   /** Enqueue a message for `id`; resolves once it has been written. */
   submit(id: string, text: string): Promise<void>
+  /** Clear a lane's composer, in the SAME per-terminal chain as `submit`. Chained rather than
+   *  written directly so a clear can never overtake — or be overtaken by — a submission already
+   *  queued for that lane, which would clear the wrong text. */
+  clearComposer(id: string, lines?: number): Promise<void>
   /** Disarm any watchdog CR still pending for THIS terminal.
    *
    *  Interrupting has to call this. Claude Code restores the draft text into the composer
@@ -209,6 +260,15 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const watches = new Set<Promise<void>>()
 
   return {
+    clearComposer(id, lines = 1) {
+      const prev = chains.get(id) ?? Promise.resolve()
+      // No gap wait and no confirmation window: this writes no CR, so there is no turn to wait
+      // for and nothing to rescue. It only has to be ORDERED with respect to the submissions
+      // around it.
+      const next = prev.then(async () => { deps.write(id, clearComposerSequence(lines)) })
+      chains.set(id, next.catch(() => {}))
+      return next
+    },
     submit(id, text) {
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev
