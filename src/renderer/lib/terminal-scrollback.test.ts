@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scrollbackFor, ACTIVE_SCROLLBACK, INACTIVE_SCROLLBACK, buildTerminalOptions } from './terminal-options'
+import { scrollbackFor, shouldFitOnResize, ACTIVE_SCROLLBACK, INACTIVE_SCROLLBACK, buildTerminalOptions } from './terminal-options'
 
 describe('scrollbackFor', () => {
   it('gives the visible pane its full history, unchanged', () => {
@@ -31,5 +31,27 @@ describe('scrollbackFor', () => {
   it('a fresh terminal is built with the active size (panes mount visible, then settle)', () => {
     const opts = buildTerminalOptions({ background: '#000000' })
     expect(opts.scrollback).toBe(ACTIVE_SCROLLBACK)
+  })
+})
+
+// The other half of the same policy: a hidden pane keeps a smaller buffer AND stops resizing its
+// pty. Measured in scripts/resize-guard: one lane switch used to resize 5 of 5 mounted terminals,
+// SIGWINCHing five background Claude Codes into redrawing — which is why every orb in every
+// project animated when the user changed tabs.
+describe('shouldFitOnResize', () => {
+  it('does NOT let an inactive pane reach the pty', () => {
+    expect(shouldFitOnResize(false, false)).toBe(false)
+  })
+
+  it('still fits the pane you are looking at — a real window resize must work', () => {
+    expect(shouldFitOnResize(true, false)).toBe(true)
+  })
+
+  it('holds the active pane during a panel drag, as it always did', () => {
+    expect(shouldFitOnResize(true, true)).toBe(false)
+  })
+
+  it('an inactive pane stays held whatever the drag is doing', () => {
+    expect(shouldFitOnResize(false, true)).toBe(false)
   })
 })

@@ -7,7 +7,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
-import { buildTerminalOptions, getMacOptionIsMeta, scrollbackFor } from '../../lib/terminal-options'
+import { buildTerminalOptions, getMacOptionIsMeta, scrollbackFor, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
@@ -107,8 +107,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   }, [])
 
   const handleResize = useCallback(() => {
-    // Held during a panel drag — the effect below fits once when it releases.
-    if (suspendFitRef.current) return
+    // Only the pane on screen fits: an inactive pane's ResizeObserver / window-resize callback
+    // must not reach the pty (see `shouldFitOnResize` for the measurement and the trade). Also
+    // held during a panel drag — the effect below fits once when it releases. A pane mounted
+    // while inactive still gets its true initial size: `ensureInitialFit` fits and resizes
+    // directly, not through here, and activation refits.
+    if (!shouldFitOnResize(activeRef.current, suspendFitRef.current)) return
     if (pendingFitRef.current != null) {
       clearTimeout(pendingFitRef.current)
       pendingFitRef.current = null

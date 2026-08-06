@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — lane-switch resize harness</title>
+    <style>
+      html, body, #root { background: #0b0d10; margin: 0; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <!-- Counts how many terminals a LANE SWITCH resizes. Mounts the real
+         TerminalPane N times in the app's own layout (one absolutely-positioned
+         pane per lane inside a flex:1 container, with the per-session Plan/Diff
+         panel as a flex sibling), then switches lane with the panel state
+         differing — the exact trigger. Driven by scripts/resize-guard/capture.mjs. -->
+    <div id="root"></div>
+    <script type="module" src="./harness.tsx"></script>
+  </body>
+</html>
