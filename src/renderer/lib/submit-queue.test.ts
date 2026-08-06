@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue } from './submit-queue'
+import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue, clearComposerSequence, composerLines, MAX_CLEAR_LINES } from './submit-queue'
 
 /** A deterministic clock: `sleep` advances virtual time instead of waiting. */
 function fakeClock() {
@@ -783,5 +783,43 @@ describe('a keystroke disarms the rescue', () => {
     q.confirm('t1')
     await sent
     expect(q.pending('t1')).toBeUndefined()
+  })
+})
+
+// THE COMPOSER CLEAR. These bytes go into a LIVE agent's pty, so the properties that matter are
+// as much about what they CANNOT do as what they do.
+describe('clearComposerSequence', () => {
+  it('clears one line: to the end, then kill to the start', () => {
+    expect(clearComposerSequence(1)).toBe('\x05\x15')
+  })
+
+  it('walks a multi-line paste upward, joining each line to the one above', () => {
+    // per extra line: backspace at column 0 joins, then end + kill empties the joined line
+    expect(clearComposerSequence(3)).toBe('\x05\x15' + '\x7f\x05\x15' + '\x7f\x05\x15')
+    expect(composerLines('a\nb\nc')).toBe(3)
+  })
+
+  it('contains NOTHING that submits, interrupts or exits — the property that lets it ship', () => {
+    const seq = clearComposerSequence(10)
+    expect(seq).not.toContain('\r')     // would submit
+    expect(seq).not.toContain('\n')     // would submit
+    expect(seq).not.toContain('\x1b')   // Esc — interrupts a running turn
+    expect(seq).not.toContain('\x03')   // Ctrl+C — twice exits the lane
+    expect(seq).not.toContain('\x04')   // Ctrl+D — exits on an empty line
+    // …and only the three intended bytes appear at all.
+    expect(new Set(seq.split(''))).toEqual(new Set(['\x05', '\x15', '\x7f']))
+  })
+
+  it('is bounded — a wrong line count cannot flood a live pty', () => {
+    expect(clearComposerSequence(1e6).length).toBe(clearComposerSequence(MAX_CLEAR_LINES).length)
+    // …and degenerate inputs still produce a valid, minimal sequence.
+    expect(clearComposerSequence(0)).toBe('\x05\x15')
+    expect(clearComposerSequence(-3)).toBe('\x05\x15')
+  })
+
+  it('composerLines counts what was pasted, including a trailing newline', () => {
+    expect(composerLines('one')).toBe(1)
+    expect(composerLines('one\ntwo')).toBe(2)
+    expect(composerLines('one\n')).toBe(2)
   })
 })

@@ -21,7 +21,7 @@ import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
-import { submitQueue, onUndeliveredSubmission } from '../lib/submit-queue'
+import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
@@ -1580,6 +1580,13 @@ export function DashboardView() {
     // Re-routed against the CURRENT lanes, exactly as an approval is: the target may have started
     // or died since it was sent, and the retry means "do this now".
     const srcTab = terminalsRef.current.find((t) => t.roleId === rec.fromRoleId && t.projectId === projectId && !t.ended)
+    // CLEAR FIRST, when the target is live. The stale paste is very likely still sitting in that
+    // composer — that is what `sent · never started` MEANS — and re-delivering onto it would make
+    // the lane read the task twice, concatenated. Queued on the same per-terminal chain as the
+    // delivery that follows, so it cannot overtake it. Bounded by the lines WE pasted; anything a
+    // human typed beyond that survives, deliberately.
+    const targetTab = terminalsRef.current.find((t) => t.roleId === rec.toRoleId && t.projectId === projectId && !t.ended)
+    if (targetTab) void submitQueue.clearComposer(targetTab.id, composerLines(rec.task))
     deliverDispatchRef.current({
       id, roleToken: rec.toRoleId ?? '', task: rec.task,
       terminalId: srcTab?.id, projectId, approving: true,
