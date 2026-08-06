@@ -29,7 +29,7 @@ export function ProjectView({
   project, tab, onSelectTab, onBack, onToggleSidebar, sidebarCollapsed,
   onUpdateProject, onLaunchRole, liveRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
-  onApproveDispatch, onRejectDispatch, onAssignDispatch,
+  onApproveDispatch, onRejectDispatch, onAssignDispatch, onRetryDispatch, onOpenLaneTerminal,
   resumableCount, onResumeProject, chatterPaused, onToggleChatter,
   addLaneRequest, onAddLaneRequestHandled,
 }: {
@@ -65,6 +65,12 @@ export function ProjectView({
   /** Approve / decline a dispatch a NON-coordinator lane asked for. Absent = read-only log. */
   onApproveDispatch?: (projectId: string, id: string) => void
   onRejectDispatch?: (projectId: string, id: string) => void
+  /** Re-deliver a dispatch that was sent and never arrived — same loop, so a failed retry is
+   *  visible as another failure. */
+  onRetryDispatch?: (projectId: string, id: string) => void
+  /** Focus a lane AND navigate to it; returns false when the id is no longer a live tab, so the
+   *  caller can fall back rather than silently doing nothing. */
+  onOpenLaneTerminal?: (terminalId: string) => boolean
   /** Route an unassigned dispatch to a real lane — the Waiting card's recovery path. */
   onAssignDispatch?: (projectId: string, id: string, roleId: string) => void
   /** Saved-but-not-live agents of this project — resumable as a group. */
@@ -185,6 +191,7 @@ export function ProjectView({
               onApproveDispatch={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))}
               onAssignDispatch={onAssignDispatch && ((id, roleId) => onAssignDispatch(project.id, id, roleId))}
               onRejectDispatch={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))}
+              onRetry={onRetryDispatch && ((id: string) => onRetryDispatch(project.id, id))}
               onOpenLane={(roleId) => {
                 // A lane that ISN'T running has no terminal to focus, and this guard used to end
                 // there — so on the one card that most needs it (a task sitting unread in a lane
@@ -192,9 +199,15 @@ export function ProjectView({
                 // is ABOUT: `never started` is printed two lines above it. Fall through to the
                 // roster, where a lane that isn't running is launched, so the control always
                 // moves you somewhere instead of dying on the exact case it exists for.
+                // OPEN, not focus. `onFocusTerminal` sets ids and nothing else, so from the board
+                // it changed state behind the screen and the click had no visible effect — the
+                // remaining dead path after the `else` was fixed. `onOpenLaneTerminal` navigates
+                // and REPORTS whether it landed, so a stale id (a lane that has since ended, which
+                // `liveRoles` does not filter out) falls through to the roster instead of being
+                // swallowed. Both branches now always move you somewhere.
                 const tid = liveRoles?.[roleId]
-                if (tid) onFocusTerminal?.(tid)
-                else onSelectTab('team')
+                const opened = tid ? onOpenLaneTerminal?.(tid) ?? false : false
+                if (!opened) onSelectTab('team')
               }}
             />
           </div>
