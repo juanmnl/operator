@@ -57,6 +57,20 @@ export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string,
   return best
 }
 
+/** Tabs that are ALIVE but unroutable — the bug state, named so it can be reported.
+ *
+ *  `pickLaneTab` requires `projectId` AND `roleId`. A tab missing either is invisible to it, so
+ *  `routeDispatch` answers `queue` — the same answer it gives for a lane that simply is not
+ *  running. Those two are not the same thing at all: one is "nothing to send to", the other is
+ *  "there is a live agent here and we have lost its label". Six el-encanto lanes sat in the second
+ *  state and the only signal was the user noticing they had gone quiet.
+ *
+ *  Deliberately NOT project-scoped: an orphan has no project by definition, so scoping the query
+ *  by the thing that is missing would return nothing. */
+export function orphanTabs<T extends RoutableTab>(tabs: T[]): T[] {
+  return tabs.filter((t) => !t.ended && (!t.projectId || !t.roleId))
+}
+
 export type DispatchRoute<T extends RoutableTab> =
   /** A live lane for the target role exists → type the task in. */
   | { kind: 'send'; role: Role; tab: T }

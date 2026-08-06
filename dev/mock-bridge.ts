@@ -449,6 +449,11 @@ export function installMockBridge() {
   // validates a feature that cannot work. So this proves the wiring and NOTHING about the paint,
   // which is the user's live-session test.
   const grid = new URLSearchParams(location.search).get('grid') === '1'
+  // `?driftIds=1` — the el-encanto failure, reproduced: the ptys are alive and the saved rows are
+  // correct, but their stored `terminalId` no longer matches the live pty's id. The terminalId
+  // join then fails and every tab is created UNSTAMPED — alive, visible, and unroutable. Only a
+  // join on `claudeSessionId` (which the backend now reports per pty) recovers them.
+  const driftIds = new URLSearchParams(location.search).get('driftIds') === '1'
   // `?worktree=` loads the role-defaults store as it stood BEFORE operator/research flipped on —
   // verbatim the six entries the real `~/.operator/role-defaults.json` held. `?worktree=1` also
   // clears the one-shot flag so the seed migration runs; any other value keeps it, which is how a
@@ -560,7 +565,14 @@ export function installMockBridge() {
       const withDead = deadLane ? list.map((t) => (t.id === deadLane ? { ...t, alive: false } : t)) : list
       // The backend reports grid-ness off the pty itself (a live alacritty core), which is what
       // makes a re-attached tab mount the right pane after a reload.
-      return grid ? withDead.map((t) => ({ ...t, grid: true })) : withDead
+      const stamped = withDead.map((t) => {
+        const sv = MOCK_SAVED.find((x) => x.terminalId === t.id)
+        // The backend reports the DURABLE identity per live pty (transcript registry).
+        return { ...t, claudeSessionId: sv?.claudeSessionId, projectId: sv?.projectId }
+      })
+      const out = grid ? stamped.map((t) => ({ ...t, grid: true })) : stamped
+      // Drift the pty ids away from what the saved rows remember, keeping claudeSessionId intact.
+      return driftIds ? out.map((t) => ({ ...t, id: `${t.id}-drifted` })) : out
     },
     terminalHistory: async () => '',
     getDevPorts: async () => ({ t1: 1421 }),

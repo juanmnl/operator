@@ -18,7 +18,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval } from '../lib/dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
@@ -470,6 +470,44 @@ export function DashboardView() {
         const live = await window.operator.terminalList?.()
         // The call failed: believing nothing is far safer than concluding everything is dead.
         if (!Array.isArray(live)) return
+        // RE-STAMP FIRST — recovery without a restart, and it runs on every tick rather than
+        // once at mount. A tab that is alive but carries no `projectId`/`roleId` is UNROUTABLE:
+        // `pickLaneTab` cannot see it, so `routeDispatch` returns `queue` and the work silently
+        // never leaves. Re-stamping here means the cure for that state is waiting five seconds,
+        // not relaunching six healthy agents.
+        //
+        // Keyed on `claudeSessionId`, which is why this can work at all: the backend reports it
+        // per live pty and it outlives every renderer.
+        setTerminals((prev) => {
+          const saved = savedSessionsRef.current
+          let healed = 0
+          const next = prev.map((t) => {
+            if (t.ended || (t.projectId && t.roleId)) return t
+            const info = live.find((x) => x.id === t.id)
+            const row = info?.claudeSessionId
+              ? saved.find((sv) => sv.claudeSessionId === info.claudeSessionId)
+              : undefined
+            const projectId = t.projectId ?? row?.projectId ?? info?.projectId
+            const roleId = t.roleId ?? row?.roleId
+            if (projectId === t.projectId && roleId === t.roleId) return t
+            healed++
+            return { ...t, projectId, roleId, key: t.key ?? row?.key }
+          })
+          // WHAT RE-STAMPING COULD NOT HEAL is the real bug state, and it gets said out loud
+          // ONCE. A live pty we cannot label is not "no lane running" — it is an agent that will
+          // never receive a dispatch, and the only signal until now was the user noticing six
+          // lanes had gone quiet. Reported once per id rather than every 5s: a banner that
+          // repeats is a banner people learn to ignore.
+          const stuck = orphanTabs(next).filter((t: TerminalTab) => !reportedOrphansRef.current.has(t.id))
+          if (stuck.length) {
+            for (const t of stuck) reportedOrphansRef.current.add(t.id)
+            pushToast({
+              text: `${stuck.length} live agent${stuck.length === 1 ? '' : 's'} could not be linked to a lane`,
+              detail: 'They are running but will not receive dispatches. Their session records may be missing a project or role.',
+            })
+          }
+          return healed ? next : prev
+        })
         setTerminals((prev) => {
           const stale = endedByBackend(prev, live)
           if (stale.length === 0) return prev
@@ -838,6 +876,9 @@ export function DashboardView() {
   //
   // `archivedAt` could not carry this: a forgotten project has no record left to hold a flag.
   // So the id list is the record, and it has to outlive the process that made the decision.
+  /** Orphans already reported, so the 5s reconcile names each one once rather than every tick. */
+  const reportedOrphansRef = useRef(new Set<string>())
+
   const forgottenProjectsRef = useRef<Set<string>>(new Set(loadForgottenProjects()))
 
   /** Projects whose teardown is in flight. Rendered immediately so "close" has an effect on
@@ -1906,11 +1947,19 @@ export function DashboardView() {
       // toolbar modal, not the sidebar. Claude sessions use `t` ids.
       const live = (Array.isArray(all) ? all : []).filter((t) => !t.id.startsWith('sh'))
       if (live.length === 0) return // nothing survived; `finally` still settles reattachDone
+      // JOINED ON THE DURABLE KEY FIRST. `byId` alone was the whole el-encanto failure: it keys
+      // on `terminalId`, a per-run counter, and a live pty that misses the lookup produces a tab
+      // with `projectId`/`roleId` UNDEFINED — alive and visible, but invisible to `pickLaneTab`,
+      // so every dispatch to it queues silently instead of sending. Six lanes stopped receiving
+      // work with every durable record correct. `claudeSessionId` is a uuid that survives both a
+      // renderer respawn and a backend restart, so it is the key the join should always have used;
+      // `byId` stays as the fallback for a row saved before the backend reported the uuid.
+      const bySession = new Map(savedSessions.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
       const byId = new Map(savedSessions.filter((s) => s.terminalId).map((s) => [s.terminalId!, s]))
       setTerminals((prev) => {
         if (prev.length > 0) return prev // already populated (a launch raced the re-attach)
         return live.map((t): TerminalTab => {
-          const s = byId.get(t.id)
+          const s = (t.claudeSessionId ? bySession.get(t.claudeSessionId) : undefined) ?? byId.get(t.id)
           return {
             id: t.id,
             key: s?.key ?? crypto.randomUUID(),
@@ -1921,7 +1970,9 @@ export function DashboardView() {
             worktreeBranch: s?.worktreeBranch,
             worktreeBase: s?.worktreeBase,
             sourceCwd: s?.sourceCwd,
-            projectId: s?.projectId,
+            // The backend's record is the FALLBACK, not the fallback's fallback: a pty whose
+            // saved row is missing entirely is still routable if Rust knows its project.
+            projectId: s?.projectId ?? t.projectId,
             roleId: s?.roleId,
             reattached: true, // replay buffered scrollback on mount
             // Off the PTY, not off the pref: this session's renderer was decided when it was

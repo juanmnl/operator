@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab } from './dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs } from './dispatch'
 import type { Role } from '../../shared/types'
 
 const roster: Role[] = [
@@ -169,5 +169,30 @@ describe('dispatchNeedsApproval — a read-only lane must not commission work', 
     // Charter text is advisory: Research's already said "never change code", and it complied
     // literally while dispatching Code to build what it had specced.
     expect(COORDINATOR_ROLE_IDS).toEqual(['operator', 'orchestrator'])
+  })
+})
+
+// THE BUG STATE, named. A live pty whose tab lost its stamping is invisible to `pickLaneTab`, so
+// routing answers `queue` — indistinguishable from "no lane running" unless something asks.
+describe('orphanTabs', () => {
+  const tab = (o: Partial<{ id: string; projectId: string; roleId: string; ended: boolean }>) =>
+    ({ id: 't1', ...o }) as never
+
+  it('finds a live tab missing its project or its role', () => {
+    const tabs = [
+      tab({ id: 'ok', projectId: 'p', roleId: 'code' }),
+      tab({ id: 'no-project', roleId: 'code' }),
+      tab({ id: 'no-role', projectId: 'p' }),
+      tab({ id: 'neither' }),
+    ]
+    expect(orphanTabs(tabs).map((t: { id: string }) => t.id)).toEqual(['no-project', 'no-role', 'neither'])
+  })
+
+  it('ignores ENDED tabs — a dead pty with no label is not a routing bug', () => {
+    expect(orphanTabs([tab({ id: 'dead', ended: true })])).toEqual([])
+  })
+
+  it('is empty in the healthy case', () => {
+    expect(orphanTabs([tab({ projectId: 'p', roleId: 'code' })])).toEqual([])
   })
 })

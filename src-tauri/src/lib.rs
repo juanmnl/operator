@@ -1098,10 +1098,21 @@ struct TerminalInfo {
     /// Reported rather than remembered: the core is created at spawn and the renderer decides
     /// again after every reload, so the pty is the one place the answer cannot go stale.
     grid: bool,
+    /// THE DURABLE IDENTITY of this pty — its Claude session id, and the project it was launched
+    /// into. Both are set at spawn and live in Rust, so they survive a renderer respawn that the
+    /// renderer's own tab list does not.
+    ///
+    /// Without these the re-attach could only join saved sessions to live ptys by `terminalId`, a
+    /// per-run counter — and a tab that fails that join is created UNSTAMPED: alive, visible, and
+    /// invisible to `pickLaneTab`, so every dispatch to it queues instead of sending. That is the
+    /// el-encanto failure, and it is the same disease as the task-lifecycle leak: state keyed on
+    /// the ephemeral id while the durable one sits right there.
+    claude_session_id: Option<String>,
+    project_id: Option<String>,
 }
 
 #[tauri::command]
-fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
+fn terminal_list(mgr: State<Arc<PtyManager>>, reg: State<transcript::TrackRegistry>) -> Vec<TerminalInfo> {
     let ports = mgr.dev_ports();
     // Snapshot under the lock, then ask about the children with the lock RELEASED: `child_state`
     // takes `ptys` itself, and `try_wait` is a syscall — asking inside the iterator would
@@ -1136,7 +1147,11 @@ fn terminal_list(mgr: State<Arc<PtyManager>>) -> Vec<TerminalInfo> {
             let alive = !matches!(child_state(mgr.inner(), &id), ChildState::Exited);
             let dev_port = ports.get(&id).copied();
             let grid = gridterm::has(&id);
-            TerminalInfo { id, cwd, dev_port, alive, grid }
+            let (claude_session_id, project_id) = match reg.identity(&id) {
+                Some((csid, pid)) => (Some(csid), if pid.is_empty() { None } else { Some(pid) }),
+                None => (None, None),
+            };
+            TerminalInfo { id, cwd, dev_port, alive, grid, claude_session_id, project_id }
         })
         .collect()
 }
