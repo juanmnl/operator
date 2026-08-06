@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGL renderer spike — real captured stream, looped</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; }
+      #term { padding: 8px; }
+    </style>
+  </head>
+  <body>
+    <!-- THROWAWAY spike harness (dev/webgl-terminal-in-wkwebview.md). Replays the same
+         real captured Claude turn dom-vs-buffer.ts uses, but through xterm's WebGL
+         renderer, looped several times to approximate a "long session" of repeated
+         in-place redraws (a single pass is already known to look clean). -->
+    <div id="term"></div>
+    <script type="module" src="./webgl-spike.ts"></script>
+  </body>
+</html>

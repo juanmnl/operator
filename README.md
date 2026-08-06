@@ -28,6 +28,7 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 
 - **A board, as project home.** Every project opens on a four-column board — **Backlog · Running · Waiting · Done**. Each column scrolls on its own, so a long Done list never pushes the live work off screen. Type a task, assign it to a lane, and send it; or queue it unassigned and decide later.
 - **A team of agent lanes.** **Operator**, Research, Code, Review, Design, QA — each lane pins a model, a reasoning effort, an optional isolated worktree, and a standing charter. Drag to reorder, launch one or all. Live lanes show as full cards; idle ones collapse to a single launchable row, so a quiet project doesn't open on a wall of identical placeholders. The Operator lane knows the team and routes work to the best-suited lane, doing the job itself when none fits.
+- **Lanes are scoped to a task, not to your session.** A lane that reports its work done closes itself after a keep-warm window, and the next dispatch brings it back — `--resume`, same conversation, on the branch it left. Closing **detaches**: the thread stays resumable and its transcript readable, and only your own close forgets a lane. Silence is not success, so a lane that never reports isn't taken by the short path at all — a backstop closes it and marks its work **abandoned** rather than done, capturing the diff but skipping the verification gate. The lane you're looking at, and the coordinator, are never auto-closed.
 - **A moodboard.** Drop reference images straight onto a project-scoped board — kept beside the work rather than in another app.
 - **Project-first navigation.** A persistent rail of your projects down the left edge; entering one scopes everything — sidebar, board, roster — to it. `Cmd+Shift+O` returns to the gallery, which lists every project and a cross-project activity view.
 
@@ -35,7 +36,8 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 
 - **Hand-offs that actually land.** An agent delegates with a single line — `OPERATOR-DISPATCH [lane] task`. Operator types it into that lane if it's running, or **launches the lane** with the task as its opening brief if it isn't, then tells the sender how it landed. Directives parse even when the model wraps them in bullets or backticks, and submissions are spaced and nudged so they can't merge into one draft or strand half-typed in a composer.
 - **An authority gate, per dispatch.** Work an agent commissions from another agent lands in **Waiting** for you to **Approve** or **Decline** — explicit, one card at a time. No approve-all and no timeout: a timeout that approves is not a guardrail, and one button that approves eleven things is how you commission work you never read.
-- **A visible outcome for every hand-off.** Delivered, held, declined, or sitting unread in a lane that never started — each dispatch is logged with the outcome it actually got, and a card whose lane isn't running takes you to the roster to start it.
+- **A visible outcome for every hand-off.** Delivered, held, declined, or sitting unread in a lane that never started — each dispatch is logged with the outcome it actually got, and a card whose lane isn't running takes you to the roster to start it. The outcome is *observed*, not assumed: Operator watches the receiving session's own transcript for the message it sent, so "delivered" means a turn actually began.
+- **Lanes report back through a tool, not through prose.** Operator exposes a small MCP surface to the sessions it runs — a lane calls `operator__report` to hand its result to the coordinator directly, and `operator__task_status` to mark a task done or blocked at the moment it happens. The board stops having to infer completion from the shape of a transcript.
 - **A kill switch for agent chatter.** Agent-to-agent delivery can be paused from the team screen — reachable *during* an incident, next to the lanes whose traffic it stops.
 
 #### Watching the work
@@ -48,6 +50,7 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 #### The repo
 
 - **Isolated worktrees + fan-out.** Run several agents against one repo in parallel — each gets its own git worktree, so their changes never collide. Fan a single task across N parallel agents, each badged so the group reads at a glance.
+- **A worktree lives as long as its task.** Resume a closed lane and it reattaches to the tree holding its own committed work rather than starting somewhere new. Before any worktree is removed, uncommitted edits are committed first — and if that commit fails, the removal is cancelled rather than completed. Nothing an agent wrote is thrown away by cleanup.
 - **In-app diff review.** See a session's changes in a built-in diff viewer, then **Commit**, **Merge** back to your base branch, or **Discard** — no terminal required.
 - **Tasks with provenance.** Every task carries who ran it, where, and the diff it produced — with an optional check command (`npm test`) that has to go green before it reads "done".
 
@@ -56,6 +59,7 @@ You want to run several Claude Code sessions at once — one refactoring a modul
 - **An agent library with per-task models.** A visual editor over your `.claude/agents/*.md` — the headline being which model runs each agent (Haiku for extraction, Sonnet for general work, Opus for hard reasoning), with cost and speed hints at the point of choice.
 - **A usage & cost dashboard.** Token-driven insight into what's driving your usage — high-context, subagent-heavy and long-running sessions — plus a `/usage`-style per-model breakdown: input/output/cache, cost, and API vs. wall time.
 - **Never lose your place.** Open sessions are saved continuously to a crash-safe store; relaunch and pick up under "Continue where you left off" — **Resume** the exact conversation or reopen clean. Bring back a whole **project** in one action, every previously open agent continuing its conversation.
+- **Close and shelve are different verbs.** **Close** ends a project's agents and leaves the project where it is; **Shelve** is the separate, deliberate act of filing it away. Stopping work on something is not the same as putting it in a drawer, so one no longer implies the other.
 - **Drop & click.** Drop an image anywhere on the window to paste its path into the active session; click links in the terminal to open them in your browser.
 - **Three themes, light and dark.** Mission Control, Mr Pink and 1984 — six palettes in all, every colour a semantic token, contrast measured rather than eyeballed.
 - **Self-updating.** Tagged releases are signed, notarized and published automatically; the app checks on launch and offers a one-click "Install & Restart".

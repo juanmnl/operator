@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DOM renderer perf spike — heavy write + scroll-fling frame cost</title>
+    <style>
+      html, body { background: #0b0d10; margin: 0; }
+      #term { padding: 8px; }
+    </style>
+  </head>
+  <body>
+    <!-- THROWAWAY spike harness (dev/webgl-terminal-in-wkwebview.md) — measures the DOM
+         renderer's frame delivery under a heavy write burst and a scroll-fling over deep
+         scrollback, so "the DOM renderer is acceptable" is a number, not an assumption. -->
+    <div id="term"></div>
+    <script type="module" src="./dom-perf.ts"></script>
+  </body>
+</html>
