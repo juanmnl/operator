@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchSubmission, normalizeTurn, userTurnsSince, TURN_TEXT_CAP, SINCE_SLACK_MS } from './delivery-confirm'
+import { matchSubmission, normalizeTurn, promptsSince, TURN_TEXT_CAP, SINCE_SLACK_MS } from './delivery-confirm'
 
 const at = (ms: number) => new Date(ms).toISOString()
 
@@ -67,9 +67,16 @@ describe('matchSubmission', () => {
   it('is not fooled by a turn LONGER than what we sent', () => {
     expect(matchSubmission('do the thing', ['do the thing and then some more'])).toBe('none')
   })
+
+  it('confirms our message submitted BEHIND a human draft', () => {
+    // A paste appends to whatever is in the composer. Three of the false "undelivered" reports
+    // in the 2026-08-06 batch look exactly like this: the lane received every word.
+    const sent = '[Operator · message from Code] QA round 2 fixes committed as 165ffe6'
+    expect(matchSubmission(sent, [`keep going with the thumbs, still far from it${sent}`])).toBe('delivered')
+  })
 })
 
-describe('userTurnsSince', () => {
+describe('promptsSince', () => {
   const messages = [
     { kind: 'user', text: 'old prompt', timestamp: at(1_000) },
     { kind: 'text', text: 'an assistant answer', timestamp: at(5_000) },
@@ -77,30 +84,41 @@ describe('userTurnsSince', () => {
   ]
 
   it('keeps only human prompts, dropping assistant prose', () => {
-    expect(userTurnsSince(messages, 0)).toEqual(['old prompt', 'new prompt'])
+    expect(promptsSince(messages, 0)).toEqual(['old prompt', 'new prompt'])
+  })
+
+  it('counts a QUEUED prompt — the only record a busy lane leaves', () => {
+    // A message typed into a mid-turn lane is consumed inside that turn and never becomes a
+    // `user` entry. Ignoring these is what made 52 delivered dispatches look lost.
+    const busy = [
+      { kind: 'thinking', text: 'hmm', timestamp: at(1_000) },
+      { kind: 'queued', text: 'do the thing', timestamp: at(2_000) },
+    ]
+    expect(promptsSince(busy, 0)).toEqual(['do the thing'])
+    expect(matchSubmission('do the thing', promptsSince(busy, 0))).toBe('delivered')
   })
 
   it('windows to the submission, so a REPEAT does not confirm itself', () => {
     // The case this exists for: dispatching the same sentence twice. Matching the whole tail
     // would confirm the second send instantly, using the first send's turn as proof.
-    expect(userTurnsSince(messages, 8_000)).toEqual(['new prompt'])
-    expect(userTurnsSince(messages, 20_000)).toEqual([])
+    expect(promptsSince(messages, 8_000)).toEqual(['new prompt'])
+    expect(promptsSince(messages, 20_000)).toEqual([])
   })
 
   it('allows slack for ordinary clock jitter between the write and the transcript', () => {
     // A turn timestamped a hair BEFORE our write time is still ours.
-    expect(userTurnsSince(messages, 10_000 + SINCE_SLACK_MS)).toEqual(['new prompt'])
-    expect(userTurnsSince(messages, 10_000 + SINCE_SLACK_MS + 1)).toEqual([])
+    expect(promptsSince(messages, 10_000 + SINCE_SLACK_MS)).toEqual(['new prompt'])
+    expect(promptsSince(messages, 10_000 + SINCE_SLACK_MS + 1)).toEqual([])
   })
 
   it('keeps an entry whose timestamp is missing or unparseable', () => {
     // Dropping it could only ever lose our own delivery, and the two failures are not
     // symmetric: a missed confirmation cries wolf, a stale one hides a real loss.
     const odd = [{ kind: 'user', text: 'no stamp' }, { kind: 'user', text: 'bad', timestamp: 'nope' }]
-    expect(userTurnsSince(odd, 999_999)).toEqual(['no stamp', 'bad'])
+    expect(promptsSince(odd, 999_999)).toEqual(['no stamp', 'bad'])
   })
 
   it('handles a session with no messages at all', () => {
-    expect(userTurnsSince(undefined, 0)).toEqual([])
+    expect(promptsSince(undefined, 0)).toEqual([])
   })
 })

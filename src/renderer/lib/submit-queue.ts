@@ -155,6 +155,10 @@ export function rescueDelayFor(text: string, floorMs: number = SUBMIT_NUDGE_MS, 
  *  slowly would be worse than saying nothing — the whole point is that the report is true. */
 export const CONFIRM_WINDOW_MS = 4000
 
+/** How often the verdict re-asks whether the target lane is still mid-turn. Matched to the
+ *  tailer's 1s poll: asking faster cannot learn anything sooner. */
+export const BUSY_RECHECK_MS = 1000
+
 /** How long to wait before the watchdog CR for a message of this length. */
 export function nudgeDelayFor(text: string, floorMs: number = SUBMIT_NUDGE_MS): number {
   return Math.min(SUBMIT_NUDGE_MAX_MS, floorMs + Math.round((text.length / 1000) * SUBMIT_NUDGE_PER_1K_MS))
@@ -227,6 +231,20 @@ export interface SubmitQueue {
    *  waiting on a terminal nobody is watching — half a minute of dead air per message on a pty
    *  whose transcript does not exist yet. */
   observable(id: string): void
+  /** Whether this lane is MID-TURN right now — told by the same watcher that calls `confirm`,
+   *  from the session's phase.
+   *
+   *  It is not a confirmation and must never be read as one: a lane is routinely already
+   *  running when a dispatch is typed into it, so "busy" says nothing about whether OUR message
+   *  landed. What it settles is the opposite question — whether the absence of a confirmation
+   *  means anything yet. A working lane has not reached the boundary at which a queued prompt
+   *  becomes visible, so declaring the message lost there is a guess, and it was a wrong one:
+   *  every stacked "never started the task it was sent" toast in the 2026-08-06 report came
+   *  from a lane that was working at the time and did the work afterwards.
+   *
+   *  Reporting is therefore deferred while this is true — and only while it is true. A lane that
+   *  goes idle with no turn and nothing queued still gets named; see the verdict window. */
+  busy(id: string, busy: boolean): void
   pending(id: string): { text: string; at: number } | undefined
   /** Await every outstanding delivery VERDICT (not the writes — `submit` already resolves on
    *  those). The confirmation window runs detached so it can't hold up the next dispatch, which
@@ -256,6 +274,8 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const awaiting = new Map<string, { text: string; at: number }>()
   // Terminals whose transcript is being tailed — see `observable`.
   const watched = new Set<string>()
+  // Terminals currently mid-turn — see `busy`. Read only by the verdict window.
+  const working = new Set<string>()
   // Detached confirmation windows still in flight — see `idle`.
   const watches = new Set<Promise<void>>()
 
@@ -317,6 +337,23 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           const watchDelivery = (ignoreCancel = false) => {
             const watch = (async () => {
               await sleep(CONFIRM_WINDOW_MS)
+              // BUSY IS NOT LOST. The window above is sized for a lane that is free to answer;
+              // a lane that is MID-TURN cannot produce the boundary at which a queued prompt
+              // becomes a turn, so the same silence means nothing about it. Keep watching —
+              // `confirm` still ends this the moment the transcript shows the message, and
+              // that is now also true while the lane works, since an enqueue is recorded on
+              // arrival. Unbounded on purpose: a lane working for an hour on the message we
+              // sent is not a failure, and there is no length of that hour at which saying
+              // "it never started" becomes true.
+              let held = false
+              while (!confirmed() && working.has(id)) {
+                held = true
+                await sleep(BUSY_RECHECK_MS)
+              }
+              // Going idle is not instant proof either — the turn still has to reach us through
+              // the tailer's poll. Give a lane that just stopped working the same window as one
+              // that was never busy, so the verdict is made on the same evidence.
+              if (held && !confirmed()) await sleep(CONFIRM_WINDOW_MS)
               const lost = (ignoreCancel || !cancelled()) && !confirmed()
               // Only clear if this submission is still the one being awaited: a newer send on
               // the same terminal owns the slot now, and dropping its entry would blind the
@@ -376,6 +413,10 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
     },
     observable(id) {
       watched.add(id)
+    },
+    busy(id, busy) {
+      if (busy) working.add(id)
+      else working.delete(id)
     },
     pending(id) {
       return awaiting.get(id)

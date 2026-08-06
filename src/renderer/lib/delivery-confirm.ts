@@ -5,14 +5,21 @@
 // plus a stranded draft, too late leaves the task sitting in the composer — because a timer can
 // only ever estimate the TUI's pace. This is the observation that ends the guessing.
 //
-// The signal is the transcript's own USER turns. `transcript.rs` `apply_user` pushes every real
-// human prompt into the session as `NarrationEntry { kind: 'user' }`, so the frontend can simply
-// look for the message it sent. That beats every indirect proxy considered:
+// The signal is the transcript's own record of the prompt: a USER turn, or — when the lane was
+// mid-turn — the QUEUE entry Claude Code wrote when it accepted the text. `transcript.rs`
+// `apply_user` pushes every real human prompt into the session as `NarrationEntry
+// { kind: 'user' }`, and `apply_queue_op` does the same for an enqueued one, so the frontend can
+// simply look for the message it sent. That beats every indirect proxy considered:
 //
 //   - "the lane became busy" — false on arrival, since a dispatch is routinely typed into a lane
 //     that is ALREADY running, and it would confirm a message that never left the composer;
 //   - "lastActivityAt advanced" — same defect, continuously true for a working lane;
 //   - "the composer emptied" — not observable; Operator reads a transcript, not a TUI.
+//
+// THE QUEUE ENTRY IS NOT ONE OF THOSE PROXIES, and the difference is that it carries OUR TEXT.
+// It had to be added because a queued prompt is consumed inside the running turn and produces no
+// user turn of its own, ever: of the 62 dispatches this app had filed `undelivered`, 52 were
+// enqueued (median 0s after the write) and worked on, and only turns were being watched.
 //
 // Matching the CONTENT also gets the split for free: a turn holding a strict prefix of what we
 // sent is not delivery, it is precisely the reported failure, and it is worth naming separately
@@ -68,6 +75,13 @@ export function matchSubmission(text: string, turns: readonly string[]): Deliver
     if (!got) continue
     if (got === want) return 'delivered'
     if (looksTruncated(got, want) && want.startsWith(got.slice(0, -1))) return 'delivered'
+    // OUR MESSAGE BEHIND SOMEONE ELSE'S DRAFT. A paste appends to whatever is already in the
+    // composer, so a person who had typed half a sentence when a dispatch arrived submits both
+    // as one turn: `<their draft><our text>`. Equality misses it and the dispatch gets reported
+    // lost — but the lane demonstrably received every word we sent, which is what delivery
+    // means here. Anchored at the END because that is where a paste lands; a turn that merely
+    // CONTAINS our text with more after it is a different message (see the test).
+    if (got.length > want.length && got.endsWith(want)) return 'delivered'
     // A PROPER prefix — shorter than what we sent, and the front of it. Guarded by a minimum so
     // a one-word turn ("yes", "go") that happens to open our message isn't read as our message
     // arriving broken; that is a different prompt, and calling it a split would be a lie in the
@@ -83,7 +97,9 @@ export function matchSubmission(text: string, turns: readonly string[]): Deliver
  *  dispatches of the same text. */
 export const SINCE_SLACK_MS = 2_000
 
-/** The human prompts the transcript recorded AT OR AFTER `sinceMs`, oldest first.
+/** The prompts the transcript recorded AT OR AFTER `sinceMs`, oldest first — turns the lane
+ *  started AND prompts it merely took into its queue, which are the same fact about delivery
+ *  seen at two moments.
  *
  *  The window is the point. Dispatching the same sentence twice is ordinary — a retry, a task
  *  re-run — and matching against the whole recent tail would confirm the second send the instant
@@ -92,13 +108,13 @@ export const SINCE_SLACK_MS = 2_000
  *  symmetric (a missed confirmation cries wolf; a stale one hides a real loss).
  *
  *  Kept here so the shape of a session is read in one place and the matcher never learns it. */
-export function userTurnsSince(
+export function promptsSince(
   messages: ReadonlyArray<{ kind?: string; text?: string; timestamp?: string }> | undefined,
   sinceMs: number,
 ): string[] {
   const floor = sinceMs - SINCE_SLACK_MS
   return (messages ?? [])
-    .filter((m) => m.kind === 'user' && !!m.text)
+    .filter((m) => (m.kind === 'user' || m.kind === 'queued') && !!m.text)
     .filter((m) => {
       const t = m.timestamp ? Date.parse(m.timestamp) : NaN
       return Number.isNaN(t) || t >= floor

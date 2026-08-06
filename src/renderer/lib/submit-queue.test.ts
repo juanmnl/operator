@@ -786,6 +786,83 @@ describe('a keystroke disarms the rescue', () => {
   })
 })
 
+// --- a BUSY lane is not a lost message (2026-08-06-false-undelivered-toasts) -------------
+// The verdict used to be taken 34s after the write, whether or not the lane was in a position
+// to answer. Claude Code queues text that arrives mid-turn, so a lane working for longer than
+// that produced no turn inside the window and a perfectly good dispatch was declared lost —
+// five stacked "never started the task it was sent" toasts, from the two lanes that are always
+// mid-turn. Measured on the real transcripts: 52 of 62 such reports were messages the lane had
+// already accepted into its queue.
+describe('a lane that is still working', () => {
+  /** A queue with a virtual clock, an undelivered sink that records WHEN it fired, and a hook
+   *  that runs once as time passes a mark — "the lane finished, and here is what it had". */
+  const busyQueue = (opts: { at?: number; then?: (q: SubmitQueue) => void } = {}) => {
+    let t = 0
+    let fired = false
+    const lost: { at: number; text: string }[] = []
+    let q: SubmitQueue
+    q = createSubmitQueue({
+      write: () => {},
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms
+        if (opts.at !== undefined && !fired && t >= opts.at) { fired = true; opts.then?.(q) }
+      },
+      onUndelivered: (_id, text) => lost.push({ at: t, text }),
+    })
+    return { q, lost, now: () => t }
+  }
+
+  it('says NOTHING about a message it queued, however late the confirmation is', async () => {
+    // The transcript records the enqueue on arrival, but a loaded tailer can be slow and the
+    // old window was 4s wide. Confirmation here lands eight minutes in.
+    const LATE = RESCUE_AFTER_MS + 8 * 60_000
+    const { q, lost } = busyQueue({ at: LATE, then: (qq) => { qq.confirm('t1'); qq.busy('t1', false) } })
+    q.observable('t1')
+    q.busy('t1', true)
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    expect(lost).toEqual([])
+  })
+
+  it('REPORTS it once the lane goes idle with nothing to show for it', async () => {
+    // The other direction, and the reason this is not just a longer timeout: a lane that
+    // stopped working without the message ever appearing really has lost it.
+    const IDLE_AT = RESCUE_AFTER_MS + 60_000
+    const { q, lost } = busyQueue({ at: IDLE_AT, then: (qq) => qq.busy('t1', false) })
+    q.observable('t1')
+    q.busy('t1', true)
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    expect(lost.map((l) => l.text)).toEqual(['do the thing'])
+    // …and not before it went idle. This is what the old code got wrong.
+    expect(lost[0].at).toBeGreaterThanOrEqual(IDLE_AT)
+  })
+
+  it('reports a DEAD terminal without waiting: nothing is working, so nothing is coming', async () => {
+    // The true positive the report must keep — a write into a pty the lane reaper already
+    // closed. Its session is `ended`, so it is never marked busy and the verdict is prompt.
+    const { q, lost } = busyQueue()
+    q.observable('t1')
+    q.busy('t1', false)
+    await q.submit('t1', 'do the thing')
+    await q.idle()
+    expect(lost.map((l) => l.text)).toEqual(['do the thing'])
+    expect(lost[0].at).toBeLessThanOrEqual(RESCUE_AFTER_MS + CONFIRM_WINDOW_MS)
+  })
+
+  it('is PER TERMINAL — a working lane must not silence a dead one', async () => {
+    const { q, lost } = busyQueue()
+    q.observable('t1')
+    q.observable('t2')
+    q.busy('t1', true)
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'B')])
+    q.confirm('t1') // t1's queue entry showed up; t2 has nothing at all
+    await q.idle()
+    expect(lost.map((l) => l.text)).toEqual(['B'])
+  })
+})
+
 // THE COMPOSER CLEAR. These bytes go into a LIVE agent's pty, so the properties that matter are
 // as much about what they CANNOT do as what they do.
 describe('clearComposerSequence', () => {

@@ -23,7 +23,7 @@ import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orpha
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
-import { matchSubmission, userTurnsSince } from '../lib/delivery-confirm'
+import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail } from '../components/sidebar/ProjectRail'
 import { AppShell } from '../components/AppShell'
@@ -427,9 +427,16 @@ export function DashboardView() {
         // turn worth doing at all. Told to the queue so it can wait patiently here and NOT on a
         // pty nobody is reading — see `rescueDelayFor`.
         if (!s.id.startsWith('local-')) submitQueue.observable(s.terminalId)
+        // …and whether it is mid-turn, which is what tells the queue that silence is not yet a
+        // verdict. A lane whose pty is gone is never "busy": that submission has nothing left to
+        // wait for and must be reported.
+        submitQueue.busy(s.terminalId, s.status !== 'ended' && s.phase === 'running')
         const waiting = submitQueue.pending(s.terminalId)
         if (!waiting) continue
-        const turns = userTurnsSince(s.messages, waiting.at)
+        // Turns AND queued prompts: a message typed into a working lane is accepted into its
+        // queue and consumed inside the turn it is already running, so it produces no turn of
+        // its own — the queue entry is the only record that it arrived.
+        const turns = promptsSince([...(s.messages ?? []), ...(s.queued ?? [])], waiting.at)
         // Only 'delivered' confirms. A 'split' is the failure this whole change exists to
         // catch, so it must NOT satisfy the loop — letting it through would report the broken
         // half as a success and leave the tail stranded exactly as before.
@@ -444,6 +451,11 @@ export function DashboardView() {
       // it (Cmd+W / sidebar close / the pane's "ended" overlay). Intentional
       // closes (handleCloseSession, worktree merge/discard) still remove the tab.
       exitCompleteRef.current(id) // a lane's session ended → its running tasks are done
+      // A dead pty is done working, and this is the ONLY place that can say so: an ended
+      // session drops out of `session:update` (it emits the active ones), so a lane that died
+      // mid-turn would keep the queue waiting on a lane that no longer exists — and a message
+      // written into that pty is exactly the loss the report must not swallow.
+      submitQueue.busy(id, false)
       setTerminals((prev) => prev.map((t) => (t.id === id ? { ...t, ended: true } : t)))
     })
 
@@ -515,7 +527,7 @@ export function DashboardView() {
           // The same bookkeeping the event path does, so a lane healed here also closes its
           // running tasks — otherwise they sit `running` forever, which is a leak this store
           // has already had once.
-          for (const id of stale) exitCompleteRef.current(id)
+          for (const id of stale) { exitCompleteRef.current(id); submitQueue.busy(id, false) }
           const dead = new Set(stale)
           return prev.map((t) => (dead.has(t.id) ? { ...t, ended: true } : t))
         })
