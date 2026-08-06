@@ -9,7 +9,7 @@ import type { RecentSession, RecentProject } from './RecentLists'
 import { relativeTime, tildePath } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
 import { projectActivity, projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
-import { FILTER_THRESHOLD, matchProject, partitionProjects, staleProjects } from '../../lib/project-shelf'
+import { FILTER_THRESHOLD, isOnRail, matchProject, partitionProjects, staleProjects } from '../../lib/project-shelf'
 
 // The launcher — where you are when you're inside no project. Full-bleed inside the content
 // card, with NO sidebar and no rail beside it, which is what makes "outside a project"
@@ -54,9 +54,13 @@ interface ProjectGalleryProps {
   onForgetProject: (id: string) => void
   /** Shelve / un-shelve. Both are the user's decision, never derived — see lib/project-shelf. */
   onArchiveProject: (id: string) => void
-  /** END this project's live agents, then shelve it. Distinct from Archive (which leaves them
-   *  running) and from Forget (which destroys the roster, tasks and notes). */
+  /** END this project's live agents. It stays on Active — distinct from Shelve (which files it
+   *  to Previous and leaves the agents running) and from Forget (which destroys the roster,
+   *  tasks and notes). */
   onCloseProject: (id: string) => void
+  /** The project currently in scope, for `isOnRail` — Close is offered only for a project that
+   *  has a rail entry to take off. Null while nothing is open, which is the usual state here. */
+  activeProjectId?: string | null
   /** Shelve a whole batch under one timestamp, with one undo. The tidy pass. */
   onArchiveProjects: (ids: string[]) => void
   onRestoreProject: (id: string) => void
@@ -79,7 +83,7 @@ export function ProjectGallery({
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
   onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
-  closingIds,
+  closingIds, activeProjectId,
 }: ProjectGalleryProps) {
   // Which card's ⋯ menu is open, and which card is being renamed or having its description
   // written (at most one of each — held here, not per card, so opening a second editor
@@ -260,6 +264,7 @@ export function ProjectGallery({
                         onArchive={() => onArchiveProject(project.id)}
                         onCloseProject={() => onCloseProject(project.id)}
                         liveCount={activities[project.id]?.live ?? 0}
+                        showClose={isOnRail(project, activities[project.id], activeProjectId ?? null)}
                         onRestore={() => onRestoreProject(project.id)}
                         onOpenFolderPrefs={() => onOpenFolderPrefs(project.path, project.name)}
                       />
@@ -324,7 +329,7 @@ export function ProjectGallery({
 function ProjectCard({
   project, live, accentOf, menuOpen, onMenu, renaming, onRenamingChange,
   editingNotes, onEditingNotesChange, onOpen, onRename, onSetNotes, onForget,
-  onArchive, onCloseProject, liveCount, onRestore, onOpenFolderPrefs, closing,
+  onArchive, onCloseProject, liveCount, showClose, onRestore, onOpenFolderPrefs, closing,
 }: {
   project: Project
   live: AgentSession[]
@@ -341,8 +346,11 @@ function ProjectCard({
   onForget: () => void
   onArchive: () => void
   onCloseProject: () => void
-  /** Live lanes right now — decides whether CLOSE is even a distinct verb here. */
+  /** Live lanes right now — the count Close names, and whether it needs a confirm. */
   liveCount: number
+  /** Is this project ON THE RAIL (`isOnRail`)? Close takes it off, so it is offered only when
+   *  there is an entry to take off. Computed by the caller, which is where scope lives. */
+  showClose: boolean
   onRestore: () => void
   onOpenFolderPrefs: () => void
   /** Teardown in flight — see `closingIds`. */
@@ -461,7 +469,7 @@ function ProjectCard({
         {closing ? (
           <span
             data-card-closing
-            title="Ending this project’s agents, then moving it to Previous"
+            title="Ending this project’s agents"
             style={{
               flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10,
               color: 'var(--fg-muted)',
@@ -650,25 +658,39 @@ function ProjectCard({
             // A card can still be a SHELVED project — one with a live session is lifted back
             // onto the active shelf whatever its record says — so the verb reads off the
             // record, not off which list drew it.
-            // CLOSE appears whenever there is something to close — including on an ALREADY
-            // shelved project, which is precisely the state where a live lane pins it to Active
-            // and the honest Shelve toast tells you to use this. Gating it on `!archivedAt` made
-            // that advice point at a control that wasn't there. With no live lane it is omitted:
-            // it would be a second button doing exactly what Archive does, and two verbs that
-            // look different but act the same is its own kind of lie.
-            ...(liveCount > 0
+            // CLOSE IS GATED ON RAIL MEMBERSHIP, the same derived predicate the rail filters by
+            // (`isOnRail`), because Close means "take it off the rail" and a project with no rail
+            // entry has nothing for it to do. That includes an ALREADY shelved project with a
+            // live lane — precisely the state where liveness pins it to Active and the honest
+            // Shelve toast tells you to use this.
+            //
+            // It used to be gated on `liveCount > 0`, justified as "with no live lane it would be
+            // a second button doing exactly what Archive does". That reasoning died when Close
+            // stopped writing `archivedAt`: Shelve files the project to Previous, Close leaves it
+            // on Active and takes it off the rail. Different outcomes, so the gate went.
+            //
+            // CONFIRM only when agents will actually be ended — this surface had none at all,
+            // reasoning that its Undo toast was the guard, and that guard evaporated with the
+            // shelf write there is no longer anything to undo.
+            ...(showClose
               ? [{
-                  label: `Close project · end ${liveCount} agent${liveCount === 1 ? '' : 's'}`,
+                  label: liveCount > 0 ? `Close project · end ${liveCount} agent${liveCount === 1 ? '' : 's'}` : 'Close project',
                   onClick: onCloseProject,
                   separator: true,
+                  confirm: liveCount > 0,
                 }]
               : []),
+            // "Shelve", not "Archive": three of the four surfaces already said shelf (the toast,
+            // the tidy sheet, the module), and the pair Shelve / Forget tells you which one
+            // destroys where Archive / Forget read as two flavours of the same filing.
             project.archivedAt
-              ? { label: 'Restore to active', onClick: onRestore, separator: liveCount === 0 }
-              : { label: 'Archive project', onClick: onArchive, separator: liveCount === 0 },
-            // Forget stays LAST, danger-toned and confirm-gated. Close is reversible housekeeping
-            // and Forget destroys rosters, tasks and notes — two verbs of different kind must not
-            // look alike or sit adjacent without separation (feedback_two_verbs_one_glyph).
+              ? { label: 'Restore to active', onClick: onRestore, separator: !showClose }
+              : { label: 'Shelve project', onClick: onArchive, separator: !showClose },
+            // Forget stays LAST, danger-toned and confirm-gated, and it keeps the WORD: giving
+            // the reversible shelf-write the same verb as this irreversible delete would be
+            // feedback_two_verbs_one_glyph in vocabulary instead of pixels. Three altitudes,
+            // three words — Close ends agents, Shelve files, Forget destroys — and the two that
+            // are destructive never sit adjacent without separation.
             { label: 'Forget project', onClick: onForget, danger: true, confirm: true, separator: true },
           ]}
         />

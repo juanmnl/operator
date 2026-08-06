@@ -4,7 +4,7 @@ import { StatusWave, type WaveStatus } from './StatusWave'
 import { SessionItem } from './SessionItem'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
-import { byRailOrder } from '../../lib/project-shelf'
+import { byRailOrder, isOnRail } from '../../lib/project-shelf'
 import { orderByRoster } from '../../lib/roster'
 import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
@@ -262,8 +262,11 @@ export function ProjectRail({
   // THE USER'S ORDER, not a computed one. An activity comparator recomputed on every change
   // cannot coexist with dragging — it undoes the drag the moment an agent starts or stops, which
   // is the worst kind of "it didn't save", because it does save and is then overwritten.
+  // Membership is `isOnRail` (lib/project-shelf), not an inline copy of it: CLOSE's gate asks
+  // the same question — "is there a rail entry to take off?" — and two copies of that predicate
+  // could disagree about whether a control should exist for a tile that is right there.
   const shown = projects
-    .filter((p) => (activities[p.id]?.live ?? 0) > 0 || p.id === activeProjectId)
+    .filter((p) => isOnRail(p, activities[p.id], activeProjectId))
     .sort(byRailOrder)
   const canReorder = !!onReorder && shown.length > 1
   const endDrag = () => { dragRef.current = null; setDrag(null); setDropAt(null) }
@@ -345,6 +348,18 @@ export function ProjectRail({
           padding: `6px ${CONTENT_INSET_R}px 6px 0`,
         }}
       >
+        {/* THE EMPTY RAIL IS A CORRECT AND FREQUENT STATE, not an error: close your only live
+            project from a non-project screen and there is genuinely nothing on the strip. It had
+            no empty state at all, which left a bare band under the traffic lights that reads as
+            a rendering failure. One line, in the same mono/uppercase/muted vocabulary as the
+            gallery's shelf headers — structure, not content. Omitted at 60px: there is nowhere
+            to put it, and a blank strip beside a visible gallery is not ambiguous. */}
+        {shown.length === 0 && expanded && (
+          <div data-rail-empty style={{
+            fontFamily: 'var(--font-mono)', fontSize: 9.5, textTransform: 'uppercase',
+            letterSpacing: '0.1em', color: 'var(--fg-muted)', padding: '6px 12px',
+          }}>nothing running</div>
+        )}
         {shown.map((p, i) => {
           const edge = dropAt?.id === p.id ? dropAt.edge : null
           const open = p.id === activeProjectId

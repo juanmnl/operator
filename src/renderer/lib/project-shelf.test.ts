@@ -3,7 +3,7 @@ import type { Project } from '../../shared/types'
 import type { ProjectActivity } from './project-status'
 import {
   FILTER_THRESHOLD, STALE_DAYS,
-  isActiveProject, byActivityThenRecency, partitionProjects, matchProject, staleProjects,
+  isActiveProject, isOnRail, byActivityThenRecency, partitionProjects, matchProject, staleProjects,
   shelvingMoves, closePlan,
   byRailOrder, reorderRail,
 } from './project-shelf'
@@ -43,6 +43,52 @@ describe('isActiveProject', () => {
     // First frame: the activity map isn't built yet. Undefined must not accidentally
     // un-shelve the whole Previous list.
     expect(isActiveProject(p('uwazi_web', { archivedAt: daysAgo(3) }), undefined)).toBe(false)
+  })
+})
+
+describe('isOnRail — the rail\'s membership, and therefore Close\'s gate', () => {
+  it('is true for a live project, whether or not it is the open one', () => {
+    expect(isOnRail(p('operator'), act({ live: 2 }), null)).toBe(true)
+    expect(isOnRail(p('operator'), act({ live: 2 }), 'operator')).toBe(true)
+  })
+
+  it('is true for the project you are IN with nothing running — the case the user asked for', () => {
+    // Opened, nothing launched yet. It has a tile, so Close must be able to take it off; the
+    // old `live > 0` gate hid the control in exactly this state and left Shelve — which files
+    // it to Previous — as the only way to clear the strip.
+    expect(isOnRail(p('mantel'), act({ live: 0 }), 'mantel')).toBe(true)
+    expect(isOnRail(p('mantel'), undefined, 'mantel')).toBe(true)
+  })
+
+  it('is false for a project that is neither live nor open — nothing to take off', () => {
+    expect(isOnRail(p('uwazi_web'), act({ live: 0 }), 'mantel')).toBe(false)
+    expect(isOnRail(p('uwazi_web'), undefined, null)).toBe(false)
+  })
+
+  it('ignores the shelf: a shelved project with a live lane is on the rail', () => {
+    // Liveness pins it to Active (`isActiveProject`) and puts it on the strip — which is the
+    // state the honest Shelve toast points at Close to resolve.
+    const shelved = p('mantel', { archivedAt: daysAgo(3) })
+    expect(isOnRail(shelved, act({ live: 1 }), null)).toBe(true)
+  })
+})
+
+describe('close leaves the project on ACTIVE — the unfuse', () => {
+  it('a closed project (no lanes, no archivedAt) partitions as active, not previous', () => {
+    // CLOSE STOPPED WRITING `archivedAt`. What that means for the user is entirely this: after
+    // its agents end, the project is still an Active card with its roster, tasks and notes —
+    // never filed away under Previous, which was the "forget" feeling being complained about.
+    // `archiveProjects` is the only writer of the field now.
+    const closed = p('operator') // no archivedAt, and its lanes have just been ended
+    const { active, previous } = partitionProjects([closed], { operator: act({ live: 0 }) })
+    expect(active.map((x) => x.id)).toEqual(['operator'])
+    expect(previous).toEqual([])
+    expect(closed.archivedAt).toBeUndefined()
+  })
+
+  it('…and it is off the rail, which is the only visible change', () => {
+    const closed = p('operator')
+    expect(isOnRail(closed, act({ live: 0 }), null)).toBe(false)
   })
 })
 
