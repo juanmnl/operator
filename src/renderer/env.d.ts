@@ -3,7 +3,7 @@ declare module '*.png' {
   export default src
 }
 
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -45,6 +45,12 @@ declare global {
       terminalWrite: (id: string, data: string) => void
       terminalResize: (id: string, cols: number, rows: number) => void
       terminalKill: (id: string) => Promise<void>
+      /** Reports lanes handed to Operator via `operator__report` — newest first. */
+      artifactReports: (limit?: number) => Promise<ArtifactReport[]>
+      /** `operator__task_status` signals not yet applied to projects.json. */
+      artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
+      /** Ack AFTER the task is written through, so a crash replays rather than drops. */
+      artifactAckStatus: (ids: number[]) => Promise<void>
       terminalList: () => Promise<ManagedTerminal[]>
       /** Base64 of a terminal's retained output, replayed on re-attach after reload. */
       terminalHistory: (id: string) => Promise<string>

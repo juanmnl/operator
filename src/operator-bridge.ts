@@ -183,6 +183,13 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
 
+    // --- the artifact plane (see src-tauri/src/artifacts.rs) ---
+    // Lanes write here through Operator's own MCP server, from their own processes; these are the
+    // READ side. Nothing pushes into a lane — phase 1 is lane→Operator only.
+    artifactReports: (limit?: number) => invoke('artifacts_reports', { limit: limit ?? null }),
+    artifactPendingStatus: () => invoke('artifacts_pending_status'),
+    artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
+
     // --- grid terminal (our own, non-native — see src-tauri/src/gridterm.rs) ---
     // Pty bytes are parsed into a grid by alacritty in Rust; gridterm:update carries
     // a themed cell snapshot the GridTerminalPane paints as DOM. attach starts the
