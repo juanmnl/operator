@@ -82,6 +82,9 @@ export const MOCK_PROJECTS = [
     // ever saw the live case, which is the case that already worked.
     dispatches: [
       { id: 'd-stranded', at: earlier, fromRoleId: 'operator', toRoleId: 'design', task: 'Take the moodboard pass on the empty states', outcome: 'undelivered' },
+      // …and one aimed at a LIVE lane (code = t1). The shipped fixture only had the idle case,
+      // which is the branch that was already fixed — so the remaining dead path had no fixture.
+      { id: 'd-stranded-live', at: earlier, fromRoleId: 'operator', toRoleId: 'code', task: 'Extract the dispatch router (retry probe)', outcome: 'undelivered' },
     ],
   },
   {

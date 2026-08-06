@@ -96,6 +96,8 @@ export interface TaskBoardProps {
   /** Bring a lane's session forward. The board never opens a second view of a lane; it points at
    *  the one that exists. */
   onOpenLane?: (roleId: string) => void
+  /** Re-deliver an `undelivered` dispatch. Absent = no Retry rendered. */
+  onRetry?: (id: string) => void
   /** Route a dispatch that named no lane to a real one. Absent = the picker is inert (read-only
    *  board), never missing — a card with no affordance is what this column just stopped being. */
   onAssignDispatch?: (id: string, roleId: string) => void
@@ -316,6 +318,9 @@ export function TaskBoard(props: TaskBoardProps) {
               onApprove={props.onApproveDispatch}
               onReject={props.onRejectDispatch}
               onOpenLane={props.onOpenLane}
+              // Only an `undelivered` card can be retried — the other outcomes in Waiting were
+              // never sent, so there is nothing to send AGAIN; they are approved or dismissed.
+              onRetry={d.outcome === 'undelivered' ? props.onRetry : undefined}
               roles={roles}
               onAssign={props.onAssignDispatch}
             />
@@ -579,6 +584,8 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
   onToggleDiff: () => void
   onDone: () => void
   onOpenLane?: (roleId: string) => void
+  /** Re-deliver an `undelivered` dispatch. Absent = no Retry rendered. */
+  onRetry?: (id: string) => void
 }) {
   const accent = role?.accent || 'var(--accent)'
   const started = task.startedAt ?? task.createdAt
@@ -690,13 +697,15 @@ function LaneLine({ signal, accent }: { signal?: LaneSignal; accent: string }) {
  *  The card leads with WHO ASKED WHOM, because that is the decision — approving is not "run this
  *  task", it is "let Research put this into Code". The state line is `chipForOutcome`, so every
  *  word here is one the dispatch log already writes; no state is invented for the board. */
-function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles, onAssign }: {
+function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, onRetry, roles, onAssign }: {
   record: DispatchRecord
   from?: Role
   to?: Role
   onApprove?: (id: string) => void
   onReject?: (id: string) => void
   onOpenLane?: (roleId: string) => void
+  /** Re-deliver an `undelivered` dispatch. Absent = no Retry rendered. */
+  onRetry?: (id: string) => void
   /** Lanes this project actually has — the recovery path for a dispatch that named none. */
   roles?: Role[]
   onAssign?: (id: string, roleId: string) => void
@@ -801,6 +810,21 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, roles,
                 in the same column — `Open lane →` kept `marginLeft: auto` only because it used to
                 be alone in the row opposite a sentence, and holding onto that would have given
                 the Waiting column two footer edges. */}
+            {/* RETRY LEADS — it is the verb that moves the work forward, and the footer order in
+                the two branches above is deliberate: the mover first, the closer last. Its absence
+                is why nine of these accumulated; the loop DETECTED non-arrival correctly and then
+                offered only a broken navigation and an abandon.
+                It re-delivers the whole message through the same path an approval uses, so a retry
+                that fails again lands back on `undelivered` rather than reporting a success nobody
+                observed. See `retryDispatch` for why not a bare CR into the composer. */}
+            {onRetry && (
+              <button
+                className="tb-btn tb-btn-primary"
+                data-retry={record.id}
+                onClick={() => onRetry(record.id)}
+                title={`Send this to ${to?.name ?? 'the lane'} again — it was sent once and never started`}
+              >Retry</button>
+            )}
             {record.toRoleId && onOpenLane && (
               <button
                 className="tb-btn"

@@ -1547,6 +1547,45 @@ export function DashboardView() {
     setDispatchOutcome(projectId, id, 'rejected')
   }, [])
 
+  /** THE RECOVERY PATH for a dispatch that was SENT and never arrived.
+   *
+   *  `undelivered` is detected by the closed loop and, until now, offered no way forward: the card
+   *  had `Open lane →` and `Dismiss`, one of which was broken and the other of which abandons the
+   *  work. Nine of these accumulated over two days. Detection without recovery is why.
+   *
+   *  IT RE-DELIVERS THE WHOLE MESSAGE, rather than submitting whatever is in the lane's composer.
+   *  Both were on the table and the composer-CR is cheaper, but it is only correct if the composer
+   *  still holds exactly what was pasted there — and these cards are hours to days old. A bare CR
+   *  against a composer someone has since typed into submits text nobody chose to send; against a
+   *  cleared one it is a silent no-op. Re-delivery depends on nothing that may have changed.
+   *
+   *  It also goes through `deliverDispatch`, the SAME machinery approval and routing use, which is
+   *  what makes a failed retry visible: that path arms the delivery confirmation, so a retry that
+   *  does not arrive lands back on `undelivered` instead of quietly flipping the card to
+   *  delivered. A second send path would have had to re-implement that, and would drift.
+   *
+   *  THE COST, STATED: if the original paste is still sitting in the composer, the new one appends
+   *  to it and the lane reads the task twice, concatenated. That is ugly and it is not
+   *  destructive — the lane still gets the task and acts once. There is no composer-clear
+   *  primitive in the app today (the rescue is a CR, which submits rather than clears); adding one
+   *  would remove the duplication and is the obvious follow-up.
+   *
+   *  SEVERAL CARDS, ONE LANE: they queue. `submitQueue` is an ordered FIFO per terminal, so
+   *  retries are delivered in the order they were clicked rather than racing each other. No
+   *  refusal to retry more than one — the queue already answers it. */
+  const retryDispatch = useCallback((projectId: string, id: string) => {
+    const project = projectsRef.current.find((p) => p.id === projectId)
+    const rec = project?.dispatches?.find((x) => x.id === id)
+    if (!rec || rec.outcome !== 'undelivered') return
+    // Re-routed against the CURRENT lanes, exactly as an approval is: the target may have started
+    // or died since it was sent, and the retry means "do this now".
+    const srcTab = terminalsRef.current.find((t) => t.roleId === rec.fromRoleId && t.projectId === projectId && !t.ended)
+    deliverDispatchRef.current({
+      id, roleToken: rec.toRoleId ?? '', task: rec.task,
+      terminalId: srcTab?.id, projectId, approving: true,
+    })
+  }, [])
+
   /** THE RECOVERY PATH for a dispatch that named no lane: route it to a real one now.
    *
    *  The backlog row it used to create was a rescue path — you could assign and send it — so
@@ -2199,6 +2238,35 @@ export function DashboardView() {
     if (tab.projectId) setActiveProjectId(tab.projectId)
   }, [terminals, sessions])
   focusTerminalRef.current = focusTerminal
+
+  /** OPEN a lane — focus it AND go there. Distinct from `focusTerminal` on purpose.
+   *
+   *  `focusTerminal` sets `activeTerminalId`/`activeSessionId`/`activeProjectId` and nothing else,
+   *  which is right for its callers (a toast's "Show", the reconcile effect) — they nudge state
+   *  under whatever the user is looking at. From the BOARD that is not enough: `contentMode`
+   *  ranks `prefs`/`agents`/`globalPrefs`/`folderPrefs` ABOVE `localTerminal`, so if any of those
+   *  is up the click changes ids behind the screen and you see nothing happen. It also returns
+   *  early when the id is not a live tab, which is the other way `Open lane →` did nothing at all.
+   *
+   *  So this clears the competing surfaces the way `handleSelectSession` does, pins the surface to
+   *  the Console (the lane's own output — landing on a stale Chat/Preview overlay is the same
+   *  "nothing happened" from the user's side), and REPORTS whether it found the lane, so the
+   *  caller can fall back instead of silently doing nothing. Added here rather than inside
+   *  `focusTerminal` because its other callers rely on focus-without-navigation. */
+  const openLaneTerminal = useCallback((terminalId: string): boolean => {
+    const tab = terminals.find((t) => t.id === terminalId)
+    if (!tab) return false
+    setActiveFolderPrefs(null)
+    setGlobalPrefsActive(false)
+    setAgentsViewActive(false)
+    setPrefsViewActive(false)
+    setActiveTerminalId(terminalId)
+    const hook = sessions.find((s) => s.terminalId === terminalId)
+    setActiveSessionId(hook?.id ?? `local-${terminalId}`)
+    if (tab.projectId) setActiveProjectId(tab.projectId)
+    selectMainView('terminal')
+    return true
+  }, [terminals, sessions, selectMainView])
 
   // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
   // (bracketed paste + CR); otherwise launch the lane with the task. The autonomous
@@ -3734,6 +3802,8 @@ export function DashboardView() {
               // DispatchLog would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
+              onRetryDispatch={retryDispatch}
+              onOpenLaneTerminal={openLaneTerminal}
               onAssignDispatch={assignDispatch}
               // The delivery kill switch, rehomed from the channel header onto Team.
               chatterPaused={chatterPaused}
