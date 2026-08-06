@@ -392,6 +392,15 @@ export function DashboardView() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
+  // Presentation only. Clearing the notices never touches a DispatchRecord outcome:
+  // an `undelivered` dispatch stays `undelivered` in the project log after its toast
+  // is gone. The log is the record; the toast is the notice. Takes explicit ids
+  // rather than emptying the array, so a toast pushed while the stack fades out
+  // survives the clear.
+  const dismissAllToasts = useCallback((ids: string[]) => {
+    const gone = new Set(ids)
+    setToasts((prev) => prev.filter((t) => !gone.has(t.id)))
+  }, [])
   const [currentTheme, setCurrentTheme] = useState<OperatorTheme>(() => {
     return themes[resolveThemeKey(localStorage.getItem('operator.theme'))]
   })
@@ -4391,7 +4400,7 @@ export function DashboardView() {
         <CommandPalette actions={paletteActions} onClose={() => setPaletteOpen(false)} />
       )}
 
-      <Toasts messages={toasts} onDismiss={dismissToast} />
+      <Toasts messages={toasts} onDismiss={dismissToast} onDismissAll={dismissAllToasts} />
     </div>
   )
 }

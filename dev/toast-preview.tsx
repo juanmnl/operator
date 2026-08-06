@@ -66,6 +66,38 @@ const SAMPLES: { label: string; make: () => ToastMessage }[] = [
   },
 ]
 
+// The pile-up that motivated coalescing + Dismiss all: an undelivered-dispatch
+// burst is N BYTE-IDENTICAL sentences whose Show buttons each target a different
+// terminal. Spawned as a set so the stack reproduces in one click.
+const BURSTS: { label: string; make: () => ToastMessage[] }[] = [
+  {
+    label: 'burst: 4× identical + 1',
+    make: () => [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        id: nextId(), kind: 'error' as const,
+        text: 'Operator never started the task it was sent',
+        detail: 'It may still be sitting in its composer.',
+        action: { label: 'Show', run: () => console.log('show operator', i) },
+      })),
+      {
+        id: nextId(), kind: 'error' as const,
+        text: 'Code never started the task it was sent',
+        detail: 'It may still be sitting in its composer.',
+        action: { label: 'Show', run: () => console.log('show code') },
+      },
+    ],
+  },
+  {
+    label: 'burst: 7 distinct (overflow cap)',
+    make: () => Array.from({ length: 7 }, (_, i) => ({
+      id: nextId(), kind: (['info', 'success', 'error'] as const)[i % 3],
+      text: `Lane ${i + 1} never started the task it was sent`,
+      detail: 'It may still be sitting in its composer.',
+      action: { label: 'Show', run: () => console.log('show', i) },
+    })),
+  },
+]
+
 function Harness() {
   const [messages, setMessages] = useState<ToastMessage[]>([])
   const [identity, setIdentity] = useState('mission-control')
@@ -126,12 +158,19 @@ function Harness() {
             {SAMPLES.map((s) => (
               <button key={s.label} style={chip(false)} onClick={() => spawn(s.make)}>{s.label}</button>
             ))}
+            {BURSTS.map((b) => (
+              <button key={b.label} style={chip(false)} onClick={() => setMessages((prev) => [...prev, ...b.make()])}>{b.label}</button>
+            ))}
             <button style={chip(false)} onClick={() => setMessages([])}>clear</button>
           </div>
         </div>
       </div>
 
-      <Toasts messages={messages} onDismiss={dismiss} />
+      <Toasts
+        messages={messages}
+        onDismiss={dismiss}
+        onDismissAll={(ids) => setMessages((prev) => prev.filter((m) => !ids.includes(m.id)))}
+      />
     </div>
   )
 }
