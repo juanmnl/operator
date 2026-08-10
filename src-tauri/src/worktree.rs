@@ -898,11 +898,88 @@ impl SessionIndex {
 
 const TRASH_DIR_NAME: &str = ".operator-worktree-trash";
 
-/// A HIDDEN SIBLING of the worktree, so the rename can never cross a volume — the whole point of
-/// deferring is that the expensive part happens after the caller has returned, and a cross-volume
-/// rename is a copy.
-fn trash_root_for(worktree_path: &Path) -> PathBuf {
+/// THE ONE PLACE TRASH GOES, whenever it can. Inside the directory this feature already owns, so
+/// the sweep always knows where to look.
+///
+/// It did not used to work this way: the root was a hidden sibling of *whatever was being removed*,
+/// while the boot sweep only ever looked in this one path. `remove_worktree` accepts any path, so
+/// wiring deferred deletion to it would have dropped whole worktree copies into
+/// `.operator-worktree-trash` directories beside the user's actual projects, where nothing would
+/// ever have swept them — silent, unbounded growth in locations nothing tracks.
+fn canonical_trash_root() -> PathBuf {
+    worktree_root().join(TRASH_DIR_NAME)
+}
+
+/// The FALLBACK root: a hidden sibling of the worktree, used only when the rename into the
+/// canonical root fails — which in practice means the worktree is on another volume, and a
+/// cross-volume rename is a copy, which is the one thing deferral exists to avoid.
+///
+/// Every sibling root that gets used is written to the registry (see `record_trash_root`), so the
+/// sweep can find it on a later run. A root the sweep cannot find is a leak.
+fn sibling_trash_root(worktree_path: &Path) -> PathBuf {
     worktree_path.parent().unwrap_or(Path::new("/")).join(TRASH_DIR_NAME)
+}
+
+// --- The registry of trash roots the sweep must visit -------------------------
+
+fn trash_registry_file() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join("operator-test-trash-roots.json");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".operator").join("worktree-trash-roots.json")
+}
+
+fn load_trash_roots(registry: &Path) -> Vec<String> {
+    std::fs::read_to_string(registry).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn write_trash_roots(registry: &Path, roots: &[String]) {
+    if let Some(dir) = registry.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(roots) {
+        let tmp = registry.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, registry);
+        }
+    }
+}
+
+/// Remember a fallback root BEFORE anything is renamed into it. Order matters: a root recorded
+/// after a successful rename would be lost if the process died in between, and the entry it holds
+/// would then be invisible forever.
+fn record_trash_root(registry: &Path, root: &Path) {
+    let root = root.to_string_lossy().to_string();
+    let mut all = load_trash_roots(registry);
+    if all.iter().any(|r| same_path(r, &root)) {
+        return;
+    }
+    all.push(root);
+    write_trash_roots(registry, &all);
+}
+
+/// Drop a root the sweep found empty or gone. The registry is only useful as a to-do list; a root
+/// that has nothing left in it is not one.
+fn forget_trash_root(registry: &Path, root: &Path) {
+    let mut all = load_trash_roots(registry);
+    let before = all.len();
+    all.retain(|r| !same_path(r, &root.to_string_lossy()));
+    if all.len() != before {
+        write_trash_roots(registry, &all);
+    }
+}
+
+/// Every root a sweep must visit: the canonical one, always, plus each recorded fallback.
+fn all_trash_roots(canonical: &Path, registry: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![canonical.to_path_buf()];
+    for r in load_trash_roots(registry) {
+        let p = PathBuf::from(&r);
+        if !roots.iter().any(|x| same_path(&x.to_string_lossy(), &r)) {
+            roots.push(p);
+        }
+    }
+    roots
 }
 
 /// `wt-<epoch-ms>-<8 hex>`. The nonce is what keeps two concurrent removals of same-named
@@ -931,29 +1008,60 @@ pub fn is_trash_entry_name(name: &str) -> bool {
 }
 
 /// Move a worktree aside so the caller can return before the recursive delete runs. `None` when
-/// the rename is unavailable and the caller must delete in place instead — and in that case the
-/// trash root we just made is removed again, so a failed deferral leaves nothing behind.
+/// no rename worked and the caller must delete in place instead — and in that case every trash
+/// root this call created is removed again, so a failed deferral leaves nothing behind.
+///
+/// The canonical root is tried FIRST and the sibling only as a fallback, which inverts the
+/// original order. A rename that would cross a volume fails immediately and cheaply (EXDEV — no
+/// bytes move), so trying it costs nothing, and getting the entry into the one place the sweep
+/// always looks is worth a failed syscall.
 #[allow(dead_code)]
 pub fn move_to_trash(worktree_path: &Path, mode: ReapMode) -> Option<PathBuf> {
-    let root = trash_root_for(worktree_path);
+    move_to_trash_into(worktree_path, &canonical_trash_root(), &trash_registry_file(), mode)
+}
+
+fn move_to_trash_into(
+    worktree_path: &Path,
+    canonical: &Path,
+    registry: &Path,
+    mode: ReapMode,
+) -> Option<PathBuf> {
+    let sibling = sibling_trash_root(worktree_path);
     if mode == ReapMode::DryRun {
-        println!("[worktree:dry-run] would move {} into {}", worktree_path.display(), root.display());
+        println!("[worktree:dry-run] would move {} into {}", worktree_path.display(), canonical.display());
         return None;
     }
-    let target = root.join(trash_entry_name(&worktree_path.to_string_lossy()));
-    if std::fs::create_dir_all(&root).is_ok() {
+    let name = trash_entry_name(&worktree_path.to_string_lossy());
+    let mut made: Vec<PathBuf> = vec![];
+    for root in [canonical.to_path_buf(), sibling] {
+        if same_path(&root.to_string_lossy(), &canonical.to_string_lossy()) && !made.is_empty() {
+            continue; // the sibling IS the canonical root — do not try the same rename twice
+        }
+        if std::fs::create_dir_all(&root).is_err() {
+            continue;
+        }
+        made.push(root.clone());
         match std::fs::symlink_metadata(&root) {
-            Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {
-                if std::fs::rename(worktree_path, &target).is_ok() {
-                    return Some(target);
-                }
-            }
-            _ => {}
+            Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {}
+            _ => continue, // never rename into a symlinked or non-directory root
+        }
+        // Recorded BEFORE the rename: a root remembered only on success is a root we lose if the
+        // process dies in between, and its contents would then be swept by nothing.
+        if !same_path(&root.to_string_lossy(), &canonical.to_string_lossy()) {
+            record_trash_root(registry, &root);
+        }
+        if std::fs::rename(worktree_path, root.join(&name)).is_ok() {
+            return Some(root.join(&name));
         }
     }
     // `remove_dir` and not `remove_dir_all`: entries queued by an earlier removal are still
-    // waiting in there, and this failure is not a reason to take them with us.
-    let _ = std::fs::remove_dir(&root);
+    // waiting in there, and this failure is not a reason to take them with us. An empty fallback
+    // root also leaves the registry, so the sweep is not sent somewhere pointless.
+    for root in made {
+        if std::fs::remove_dir(&root).is_ok() && !same_path(&root.to_string_lossy(), &canonical.to_string_lossy()) {
+            forget_trash_root(registry, &root);
+        }
+    }
     None
 }
 
@@ -992,15 +1100,47 @@ pub fn schedule_trash_deletion(trash_path: PathBuf, mode: ReapMode) {
         println!("[worktree:dry-run] would delete trashed entry {}", trash_path.display());
         return;
     }
-    let _ = trash_worker().send(trash_path);
+    dispatch_delete(trash_path, |p| trash_worker().send(p).map_err(|e| e.to_string()));
 }
 
-/// Trash entries a previous run left behind — a crash or a kill mid-delete. Bounded so the scan
-/// stays cheap however many directories the root is holding.
-const TRASH_SWEEP_MAX_ENTRIES: usize = 200;
+/// A DEAD WORKER MUST NOT SWALLOW THE WORK. `let _ = send(…)` meant that if the worker thread ever
+/// went away, every subsequent delete was dropped on the floor in silence. The queue exists to
+/// serialise I/O, not to be the only way a delete can happen — so a failed send says so out loud
+/// and the delete runs on its own thread instead. Returns that thread's handle when it takes the
+/// fallback, so the failure is observable rather than fire-and-forget.
+fn dispatch_delete(
+    path: PathBuf,
+    send: impl FnOnce(PathBuf) -> Result<(), String>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let Err(e) = send(path.clone()) else { return None };
+    eprintln!("[worktree] trash worker unavailable ({e}); deleting {} directly", path.display());
+    Some(std::thread::spawn(move || {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("[worktree] failed to delete {}: {e}", path.display());
+        }
+    }))
+}
 
-pub fn sweep_trash(roots: &[PathBuf], mode: ReapMode) -> usize {
-    let mut removed = 0usize;
+/// How many entries ONE sweep will delete. A cap on deletions, not on entries examined: the
+/// previous version was `read_dir().take(200)`, which capped how far into the directory listing it
+/// looked, so entry 201 was never reached on any run — not this boot, not the next one. Capping
+/// the work instead guarantees progress, because what a run deletes is gone before the next one
+/// starts.
+const TRASH_SWEEP_MAX_DELETES: usize = 200;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    pub removed: usize,
+    pub failed: usize,
+    /// Matching entries left for the next run because the budget ran out. Never silent — a bound
+    /// that is not reported reads as "there was nothing else".
+    pub deferred: usize,
+    /// Entries `read_dir` could not describe. They do not consume the delete budget.
+    pub unreadable: usize,
+}
+
+pub fn sweep_trash(roots: &[PathBuf], mode: ReapMode) -> SweepReport {
+    let mut r = SweepReport::default();
     for root in roots {
         let md = match std::fs::symlink_metadata(root) {
             Ok(md) => md,
@@ -1010,33 +1150,71 @@ pub fn sweep_trash(roots: &[PathBuf], mode: ReapMode) -> usize {
             continue;
         }
         let Ok(entries) = std::fs::read_dir(root) else { continue };
-        for entry in entries.flatten().take(TRASH_SWEEP_MAX_ENTRIES) {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !is_trash_entry_name(&name) {
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => {
+                    r.unreadable += 1;
+                    continue;
+                }
+            };
+            if !is_trash_entry_name(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if r.removed + r.failed >= TRASH_SWEEP_MAX_DELETES {
+                r.deferred += 1;
                 continue;
             }
             if mode == ReapMode::DryRun {
                 println!("[worktree:dry-run] would sweep {}", entry.path().display());
-                removed += 1;
+                r.removed += 1;
                 continue;
             }
             match std::fs::remove_dir_all(entry.path()) {
-                Ok(()) => removed += 1,
-                Err(e) => eprintln!("[worktree] failed to sweep {}: {e}", entry.path().display()),
+                Ok(()) => r.removed += 1,
+                Err(e) => {
+                    r.failed += 1;
+                    eprintln!("[worktree] failed to sweep {}: {e}", entry.path().display());
+                }
             }
         }
     }
-    removed
+    if r.deferred > 0 {
+        println!("[worktree] sweep stopped at {TRASH_SWEEP_MAX_DELETES} deletions; {} entr(ies) left for the next run", r.deferred);
+    }
+    if r.unreadable > 0 {
+        eprintln!("[worktree] sweep could not read {} director(y/ies) entr(ies)", r.unreadable);
+    }
+    r
+}
+
+/// Sweep the canonical root and every registered fallback, then forget the fallbacks that are
+/// finished. Pruning is a write, so it only happens on a real run.
+fn sweep_all(canonical: &Path, registry: &Path, mode: ReapMode) -> SweepReport {
+    let roots = all_trash_roots(canonical, registry);
+    let report = sweep_trash(&roots, mode);
+    if mode == ReapMode::Execute {
+        for root in roots.iter().skip(1) {
+            let empty = std::fs::read_dir(root).map(|mut d| d.next().is_none()).unwrap_or(true);
+            if empty {
+                let _ = std::fs::remove_dir(root);
+                forget_trash_root(registry, root);
+            }
+        }
+    }
+    report
 }
 
 /// Called once at app start, fire-and-forget. DRY RUN in phase 1: it reports what a real sweep
 /// would take and touches nothing.
 pub fn boot_sweep() {
     std::thread::spawn(|| {
-        let roots = vec![trash_root_for(&worktree_root().join("any"))];
-        let n = sweep_trash(&roots, ReapMode::DryRun);
-        if n > 0 {
-            println!("[worktree:dry-run] boot sweep: {n} leftover entr(ies) would be deleted");
+        let r = sweep_all(&canonical_trash_root(), &trash_registry_file(), ReapMode::DryRun);
+        if r.removed > 0 || r.deferred > 0 {
+            println!(
+                "[worktree:dry-run] boot sweep: {} leftover entr(ies) would be deleted, {} deferred",
+                r.removed, r.deferred
+            );
         }
     });
 }
@@ -2232,18 +2410,21 @@ mod tests {
 
     #[test]
     fn a_trash_rename_is_reversible_and_only_generated_names_are_ever_swept() {
+        let home = tempfile::tempdir().unwrap();
+        let canonical = home.path().join("worktrees").join(TRASH_DIR_NAME);
+        let registry = home.path().join("trash-roots.json");
         let parent = tempfile::tempdir().unwrap();
         let wt = parent.path().join("project-ab12");
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join("keep.txt"), "work").unwrap();
 
         // The dry run does not move anything.
-        assert!(move_to_trash(&wt, ReapMode::DryRun).is_none());
+        assert!(move_to_trash_into(&wt, &canonical, &registry, ReapMode::DryRun).is_none());
         assert!(wt.join("keep.txt").exists());
 
-        let trashed = move_to_trash(&wt, ReapMode::Execute).expect("renamed aside");
+        let trashed = move_to_trash_into(&wt, &canonical, &registry, ReapMode::Execute).expect("renamed aside");
         assert!(!wt.exists());
-        assert_eq!(trashed.parent().unwrap(), parent.path().join(TRASH_DIR_NAME));
+        assert_eq!(trashed.parent().unwrap(), canonical, "the canonical root is preferred");
         assert!(is_trash_entry_name(&trashed.file_name().unwrap().to_string_lossy()));
 
         // Restore puts it back byte for byte — block, don't orphan.
@@ -2251,16 +2432,143 @@ mod tests {
         assert_eq!(std::fs::read_to_string(wt.join("keep.txt")).unwrap(), "work");
 
         // Sweep only ever removes entries it can prove it named.
-        let trash_root = parent.path().join(TRASH_DIR_NAME);
-        let mine = trash_root.join("wt-1754870000000-deadbeef");
-        let theirs = trash_root.join("someone-elses-backup");
+        let mine = canonical.join("wt-1754870000000-deadbeef");
+        let theirs = canonical.join("someone-elses-backup");
         std::fs::create_dir_all(&mine).unwrap();
         std::fs::create_dir_all(&theirs).unwrap();
-        assert_eq!(sweep_trash(&[trash_root.clone()], ReapMode::DryRun), 1, "dry run counts, deletes nothing");
+        assert_eq!(sweep_trash(&[canonical.clone()], ReapMode::DryRun).removed, 1, "dry run counts, deletes nothing");
         assert!(mine.exists());
-        assert_eq!(sweep_trash(&[trash_root.clone()], ReapMode::Execute), 1);
+        assert_eq!(sweep_trash(&[canonical.clone()], ReapMode::Execute).removed, 1);
         assert!(!mine.exists());
         assert!(theirs.exists(), "a directory we did not name is not ours to delete");
+    }
+
+    // --- R14: every root the sweep must visit is a root it can find ----------------
+
+    #[test]
+    fn trash_goes_to_the_one_root_the_sweep_always_looks_in() {
+        // The root used to be a sibling of whatever was removed, while the sweep only ever looked
+        // in `~/.operator/worktrees/.operator-worktree-trash`. Since `remove_worktree` takes any
+        // path, wiring deferral would have parked whole worktree copies beside the user's own
+        // projects where nothing swept them.
+        let home = tempfile::tempdir().unwrap();
+        let canonical = home.path().join(TRASH_DIR_NAME);
+        let registry = home.path().join("trash-roots.json");
+        // A worktree living somewhere else entirely — a user project, not under our root.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let wt = elsewhere.path().join("their-project");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("work.txt"), "theirs").unwrap();
+
+        let trashed = move_to_trash_into(&wt, &canonical, &registry, ReapMode::Execute).expect("moved");
+        assert_eq!(trashed.parent().unwrap(), canonical, "not a sibling of the user's project");
+        assert!(!elsewhere.path().join(TRASH_DIR_NAME).exists(), "no stray root beside their project");
+        assert!(load_trash_roots(&registry).is_empty(), "the canonical root needs no registry entry");
+
+        // And the boot sweep reaches it with no help.
+        let r = sweep_all(&canonical, &registry, ReapMode::Execute);
+        assert_eq!(r.removed, 1);
+        assert!(!trashed.exists());
+    }
+
+    #[test]
+    fn a_fallback_root_is_registered_before_use_so_the_sweep_can_find_it_later() {
+        // When the canonical rename cannot work — another volume — the sibling is the only
+        // option, and the registry is what stops it becoming a leak. Simulated by making the
+        // canonical root impossible to create (a FILE sits where the directory would go), which
+        // is the same code path a cross-volume EXDEV takes.
+        let home = tempfile::tempdir().unwrap();
+        let blocked = home.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let canonical = blocked.join(TRASH_DIR_NAME);
+        let registry = home.path().join("trash-roots.json");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let wt = elsewhere.path().join("far-away");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("only-copy.txt"), "work").unwrap();
+
+        let trashed = move_to_trash_into(&wt, &canonical, &registry, ReapMode::Execute).expect("fell back");
+        let sibling = elsewhere.path().join(TRASH_DIR_NAME);
+        assert_eq!(trashed.parent().unwrap(), sibling, "fell back to the sibling");
+        let recorded = load_trash_roots(&registry);
+        assert_eq!(recorded.len(), 1);
+        assert!(same_path(&recorded[0], &sibling.to_string_lossy()), "{recorded:?}");
+
+        // A sweep that is told nothing but the canonical root still reaches it, via the registry.
+        let r = sweep_all(&canonical, &registry, ReapMode::Execute);
+        assert_eq!(r.removed, 1);
+        assert!(!trashed.exists());
+        // …and once it is drained the root and its registry entry are gone, so the to-do list
+        // does not grow forever.
+        assert!(!sibling.exists(), "an emptied fallback root is removed");
+        assert!(load_trash_roots(&registry).is_empty(), "and forgotten");
+    }
+
+    #[test]
+    fn a_failed_deferral_leaves_no_root_and_no_registry_entry_behind() {
+        // Nothing can be renamed (the worktree does not exist), so the caller must fall back to
+        // deleting in place — and must not be left with empty trash roots or a registry pointing
+        // at them.
+        let home = tempfile::tempdir().unwrap();
+        let canonical = home.path().join(TRASH_DIR_NAME);
+        let registry = home.path().join("trash-roots.json");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let missing = elsewhere.path().join("never-existed");
+
+        assert!(move_to_trash_into(&missing, &canonical, &registry, ReapMode::Execute).is_none());
+        assert!(!canonical.exists(), "no empty canonical root left behind");
+        assert!(!elsewhere.path().join(TRASH_DIR_NAME).exists(), "no empty sibling root either");
+        assert!(load_trash_roots(&registry).is_empty());
+    }
+
+    #[test]
+    fn a_sweep_caps_deletions_not_the_listing_and_says_what_it_left() {
+        // `read_dir().take(200)` capped how far into the LISTING it looked, so past the 200th
+        // entry the sweep never reclaimed anything on any run, ever, with no message. Capping
+        // deletions instead guarantees progress: what one run deletes is gone before the next.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(TRASH_DIR_NAME);
+        std::fs::create_dir_all(&root).unwrap();
+        let total = TRASH_SWEEP_MAX_DELETES + 25;
+        for i in 0..total {
+            std::fs::create_dir_all(root.join(format!("wt-17548700000{i:02}-deadbe{:02x}", i % 256))).unwrap();
+        }
+        // Entries we did not name sit in the same directory and must never consume the budget.
+        std::fs::create_dir_all(root.join("not-ours")).unwrap();
+
+        let first = sweep_trash(&[root.clone()], ReapMode::Execute);
+        assert_eq!(first.removed, TRASH_SWEEP_MAX_DELETES);
+        assert_eq!(first.deferred, 25, "what it left must be counted, not silent");
+
+        let second = sweep_trash(&[root.clone()], ReapMode::Execute);
+        assert_eq!(second.removed, 25, "the next run drains the rest — progress, not a wall");
+        assert_eq!(second.deferred, 0);
+
+        let third = sweep_trash(&[root.clone()], ReapMode::Execute);
+        assert_eq!(third, SweepReport::default());
+        assert!(root.join("not-ours").exists());
+    }
+
+    #[test]
+    fn a_delete_whose_queue_is_gone_still_happens() {
+        // The queue serialises I/O; it is not permission for the work to vanish. `let _ = send(…)`
+        // meant a dead worker silently dropped every subsequent delete.
+        let dir = tempfile::tempdir().unwrap();
+        let doomed = dir.path().join("wt-1754870000000-deadbeef");
+        std::fs::create_dir_all(doomed.join("inside")).unwrap();
+        std::fs::write(doomed.join("inside/f.txt"), "x").unwrap();
+
+        let handle = dispatch_delete(doomed.clone(), |_| Err("worker is gone".into()))
+            .expect("a failed send must fall back, not return quietly");
+        handle.join().unwrap();
+        assert!(!doomed.exists(), "the directory still has to be deleted");
+
+        // A send that works queues it and does not double-delete.
+        let queued = dir.path().join("wt-1754870000001-deadbeef");
+        std::fs::create_dir_all(&queued).unwrap();
+        assert!(dispatch_delete(queued.clone(), |_| Ok(())).is_none());
+        assert!(queued.exists(), "the queue owns it now");
     }
 
     #[test]
