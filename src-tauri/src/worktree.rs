@@ -513,26 +513,47 @@ pub fn dangerous_removal_reason(worktree_path: &str, repo: Option<&str>) -> Opti
     None
 }
 
-/// Registered worktree paths of `repo`, straight from git. Empty when git cannot answer — the
-/// callers treat that as "no evidence", never as "nothing nested here".
-fn registered_worktrees(repo: &str) -> Vec<String> {
-    git(repo, &["worktree", "list", "--porcelain"])
-        .map(|out| {
-            out.lines()
-                .filter_map(|l| l.strip_prefix("worktree ").map(|p| p.trim().to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
+/// WHAT A NESTING CHECK IS ALLOWED TO SAY. Three answers, not two.
+///
+/// The first version of this returned `Option<String>`, and `None` meant four different things:
+/// the walk finished · it gave up at a budget · it never looked past a depth limit · it could not
+/// open a directory. Three of those are "I do not know" wearing the costume of "nothing is
+/// nested". A bound that cannot be reported is a bound that lies, and the lie is in the direction
+/// of deletion — so `Unknown` exists and every caller refuses on it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Nesting {
+    Clean,
+    Nested(String),
+    Unknown(String),
+}
+
+/// Registered worktree paths of `repo`, straight from git. An `Err` when git cannot answer, which
+/// is the whole point: the previous version returned an empty list, and an empty list read as
+/// "nothing is nested" to every caller.
+fn registered_worktrees(repo: &str) -> Result<Vec<String>, String> {
+    git(repo, &["worktree", "list", "--porcelain"]).map(|out| {
+        out.lines()
+            .filter_map(|l| l.strip_prefix("worktree ").map(|p| p.trim().to_string()))
+            .collect()
+    })
 }
 
 /// REFUSE TO REMOVE A WORKTREE THAT CONTAINS ANOTHER ONE. `git worktree remove --force` treats a
 /// nested worktree as an ordinary untracked directory: it deletes the working files and leaves
 /// git a prunable child record, so the loss is silent in both directions — the files are gone and
 /// git does not think anything happened.
-fn nested_registered_worktree(worktree_path: &str, repo: &str) -> Option<String> {
-    registered_worktrees(repo)
-        .into_iter()
-        .find(|p| !same_path(p, worktree_path) && contains_path(worktree_path, p))
+///
+/// This can only see worktrees of `repo`, which is why it is never used alone: a lane that checked
+/// out a DIFFERENT project inside its own directory is invisible to `git worktree list` here. See
+/// `nested_checkout`.
+fn nested_registered_worktree(worktree_path: &str, repo: &str) -> Nesting {
+    match registered_worktrees(repo) {
+        Err(e) => Nesting::Unknown(format!("`git worktree list` failed in {repo}: {e}")),
+        Ok(list) => match list.iter().find(|p| !same_path(p, worktree_path) && contains_path(worktree_path, p)) {
+            Some(p) => Nesting::Nested(p.clone()),
+            None => Nesting::Clean,
+        },
+    }
 }
 
 // --- Bidirectional gitdir proof ----------------------------------------------
@@ -543,17 +564,53 @@ pub enum GitdirProof {
     /// All three links hold and the admin entry points back here: a live worktree of this repo.
     /// Removal goes through `git worktree remove`, never a raw recursive delete.
     Registered,
-    /// The `.git` file is well-formed and names a direct child of `<repo>/.git/worktrees/`, and
-    /// that admin entry is GONE. Nothing can still own the directory, so it is reapable.
-    /// `repo_missing` when the source repository has been deleted outright rather than pruned —
-    /// the commonest shape in the measured pile, and the stronger evidence of the two.
-    Orphan { repo_missing: bool },
+    /// The repository ANSWERED — it resolved its own admin directory — and the entry for this
+    /// candidate is gone from it. Git pruned it; nothing can still own the directory.
+    Orphan,
+    /// The repository could not be asked, so nothing here is proved. See `RepoAbsence`.
+    RepoUnreachable { repo: String, why: RepoAbsence },
     /// The admin entry exists and back-references a DIFFERENT directory. A copied `.git` file
     /// looks exactly like the real thing up to this point; only the back-reference catches it.
     Foreign { admin: String, points_at: String },
     /// No `.git` at all — the proof cannot run, and provenance is the only remaining evidence.
     NoMarker,
     Malformed(String),
+}
+
+/// WHY THE REPOSITORY COULD NOT BE ASKED, and the two are not the same claim.
+///
+/// `Path::exists()` answers `false` for every error, which is how the first version concluded
+/// "deleted" from a `chmod 000` on a parent directory, an unmounted volume, a network share that
+/// had not come back, or a dangling symlink. `boot_sweep` runs at app start — precisely when
+/// volumes have not remounted — and the repositories in question live under `~/Documents`, a
+/// TCC-protected folder this project has a documented, intermittent access problem with.
+///
+/// `prove_gitdir` already draws exactly this distinction for the WORKTREE's own `.git`, and
+/// refuses on anything that is not a clean `NotFound`, on the grounds that broken is not the same
+/// as absent. This applies the same standard to the repo.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RepoAbsence {
+    /// A clean `NotFound`. Still not proof of deletion — a MOVED repository looks exactly like
+    /// this from the candidate's side, keeps a live back-reference, and `git worktree repair`
+    /// puts it back in one command — which is why `Absent` never authorises a delete either.
+    Absent,
+    /// Anything else. We were not allowed to look, or could not.
+    Unknown(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RepoPresence {
+    Present,
+    Absent,
+    Unknown(String),
+}
+
+fn repo_presence(repo: &str) -> RepoPresence {
+    match std::fs::symlink_metadata(repo) {
+        Ok(_) => RepoPresence::Present,
+        Err(ref e) if is_missing(e) => RepoPresence::Absent,
+        Err(e) => RepoPresence::Unknown(format!("{e}")),
+    }
 }
 
 fn is_missing(e: &std::io::Error) -> bool {
@@ -619,8 +676,12 @@ fn repo_worktrees_dir(repo: &str) -> Option<String> {
 /// Step 3 is the one that matters. A `.git` file copied out of another worktree satisfies 1 and 2
 /// perfectly while naming someone else's admin entry; the back-reference is the only thing that
 /// says the entry still belongs to THIS directory. When the admin entry has vanished entirely
-/// there is no back-reference to read and also no other owner to harm — that is `Orphan`, and it
-/// is the state the 4 reapable directories are in.
+/// there is no back-reference to read and also no other owner to harm — that is `Orphan`.
+///
+/// ALL THREE STEPS NEED THE REPOSITORY TO ANSWER. Step 2 resolves `<repo>/.git/worktrees` by
+/// asking the repo, and that is the only part of this corroborated by something the candidate does
+/// not control. A repo that cannot be reached therefore ends the proof at `RepoUnreachable`
+/// instead of continuing on reconstructed values — see the comment at that branch.
 pub fn prove_gitdir(worktree_path: &str, repo: &str) -> GitdirProof {
     let git_marker = Path::new(worktree_path).join(".git");
     let md = match std::fs::symlink_metadata(&git_marker) {
@@ -643,17 +704,28 @@ pub fn prove_gitdir(worktree_path: &str, repo: &str) -> GitdirProof {
     };
     let resolved = resolve_against(&gitdir, Path::new(worktree_path));
 
-    // THE SOURCE REPOSITORY MAY BE GONE — deleted, not merely pruned, which is what happened to
-    // most of the measured pile. Asking the repo where it keeps its admin entries then has no
-    // answer, so the shape of the gitdir path is checked lexically instead. That is not a weaker
-    // proof: a repository that no longer exists cannot still own anything, and the back-reference
-    // check below runs unchanged. A repo whose directory IS there but whose `.git` will not read
-    // is a different situation and stays refused — that is a broken repo, not an absent one.
-    let repo_missing = !Path::new(repo).exists();
+    // EVERYTHING PAST THIS POINT NEEDS THE REPOSITORY TO ANSWER, and when it cannot, this stops.
+    //
+    // The previous version reconstructed `<repo>/.git/worktrees` from the very gitdir string it
+    // was about to validate, which made step 2 unable to disagree, and then read step 3's file at
+    // a path named by that same string — absent, because the repo is absent. Three links, one
+    // source, all of it content read out of the candidate itself. That is not a bidirectional
+    // proof; it is a restatement of step 1's premise, and it was the only branch that authorised a
+    // delete. It now returns `RepoUnreachable`, which no sweep may act on.
     let worktrees_dir = match repo_worktrees_dir(repo) {
         Some(d) => d,
-        None if repo_missing => lexical(&Path::new(repo).join(".git").join("worktrees").to_string_lossy()),
-        None => return GitdirProof::Malformed(format!("cannot resolve {repo}/.git/worktrees")),
+        None => {
+            let why = match repo_presence(repo) {
+                // The directory is there but will not tell us where its admin entries live —
+                // a broken repository, not an absent one. Unchanged: refuse.
+                RepoPresence::Present => {
+                    return GitdirProof::Malformed(format!("cannot resolve {repo}/.git/worktrees"))
+                }
+                RepoPresence::Absent => RepoAbsence::Absent,
+                RepoPresence::Unknown(e) => RepoAbsence::Unknown(e),
+            };
+            return GitdirProof::RepoUnreachable { repo: repo.to_string(), why };
+        }
     };
     match relative_components(&worktrees_dir, &resolved) {
         Some(rel) if rel.len() == 1 => {}
@@ -680,7 +752,7 @@ pub fn prove_gitdir(worktree_path: &str, repo: &str) -> GitdirProof {
         Err(ref e) if is_missing(e) => match std::fs::symlink_metadata(&resolved) {
             // The whole admin entry is gone: git has already pruned it, so no live worktree can
             // still claim this directory.
-            Err(ref e) if is_missing(e) => GitdirProof::Orphan { repo_missing },
+            Err(ref e) if is_missing(e) => GitdirProof::Orphan,
             _ => GitdirProof::Malformed(format!("admin entry {resolved} exists but has no gitdir")),
         },
         Err(e) => GitdirProof::Malformed(format!("cannot read admin gitdir: {e}")),
@@ -758,6 +830,63 @@ fn record_provenance_in(store: &Path, entry: Provenance) {
 
 fn provenance_for(store: &Path, path: &str) -> Option<Provenance> {
     load_provenance_from(store).into_iter().find(|p| same_path(&p.path, path))
+}
+
+// --- Is anybody working in there? ---------------------------------------------
+
+/// THE SESSION REGISTRY, WHICH NOTHING WAS ASKING. `sessions.json` sits beside the provenance
+/// store and records every lane's working directory; 22 of 46 records point at a worktree. Chain
+/// that gap with any wrong absence verdict and the failure is a running agent's checkout deleted
+/// underneath it mid-turn. Operator hit this by hand: 3 of 15 candidates in a manual pass were
+/// live lane worktrees.
+///
+/// SUSPENDED SESSIONS COUNT TOO, deliberately. A suspended lane's directory is exactly the thing
+/// resume rebuilds and reattaches, so a record pointing at it is a claim on it whether or not a
+/// pty is alive right now.
+struct SessionIndex {
+    cwds: Vec<String>,
+    /// Set when the registry could not be read or parsed. Callers refuse — "I could not check
+    /// whether anyone is working here" is not "nobody is".
+    unknown: Option<String>,
+}
+
+fn sessions_file() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".operator").join("sessions.json")
+}
+
+fn load_sessions(path: &Path) -> SessionIndex {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        // No registry at all is a legitimate state (a fresh profile), and it really does mean no
+        // sessions. Any OTHER read error does not.
+        Err(ref e) if is_missing(e) => return SessionIndex { cwds: vec![], unknown: None },
+        Err(e) => {
+            return SessionIndex { cwds: vec![], unknown: Some(format!("cannot read {}: {e}", path.display())) }
+        }
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return SessionIndex { cwds: vec![], unknown: Some(format!("{} is not valid JSON", path.display())) };
+    };
+    // Bare array today; `{ "sessions": [...] }` is the shape `mcp.rs` also tolerates.
+    let list = v.as_array().cloned().or_else(|| v.get("sessions")?.as_array().cloned());
+    let Some(list) = list else {
+        return SessionIndex { cwds: vec![], unknown: Some(format!("{} holds no session list", path.display())) };
+    };
+    let cwds = list
+        .iter()
+        .filter_map(|s| s.get("cwd").and_then(serde_json::Value::as_str))
+        .filter(|c| !c.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    SessionIndex { cwds, unknown: None }
+}
+
+impl SessionIndex {
+    /// A recorded working directory that is `candidate` or sits inside it.
+    fn claim_on(&self, candidate: &str) -> Option<&str> {
+        self.cwds.iter().find(|c| contains_path(candidate, c)).map(String::as_str)
+    }
 }
 
 // --- Deferred deletion: rename now, delete later ------------------------------
@@ -918,8 +1047,13 @@ pub fn boot_sweep() {
 /// files (node_modules), and neither the size report nor the nesting check is worth an unbounded
 /// scan of the user's disk.
 const WALK_MAX_ENTRIES: usize = 400_000;
-const NEST_MAX_DEPTH: usize = 6;
-const NEST_MAX_ENTRIES: usize = 20_000;
+/// Sized so the walk COMPLETES on a realistic checkout rather than bailing into `Unknown`. Review
+/// measured this project's fully built main checkout at 122,494 entries to depth 6 alone
+/// (`src-tauri/target` by itself is 159,386), against an old cap of 20,000 — so one `cargo build`
+/// in a lane silently switched the nesting refusal off. The cost of the higher ceiling is paid
+/// only when there is nothing nested, because the walk returns the moment it finds a marker.
+const NEST_MAX_DEPTH: usize = 32;
+const NEST_MAX_ENTRIES: usize = 1_000_000;
 
 fn dir_size(path: &Path) -> (u64, bool) {
     let mut total = 0u64;
@@ -942,33 +1076,79 @@ fn dir_size(path: &Path) -> (u64, bool) {
     (total, false)
 }
 
-/// A worktree nested inside the candidate, found without asking git — the reaper's candidates
-/// often have no repo left to ask. A `.git` FILE with a `gitdir:` line is exactly the marker a
-/// linked worktree leaves.
-fn nested_worktree_marker(path: &Path) -> Option<String> {
+/// A CHECKOUT NESTED INSIDE THE CANDIDATE, found without asking git — the reaper's candidates
+/// often have no repo left to ask, and git can only ever see worktrees of one repository anyway.
+///
+/// TWO MARKERS, NOT ONE. A linked worktree leaves a `.git` FILE holding a `gitdir:` line. A plain
+/// `git clone` — a vendored dependency, a scratch checkout, anything a lane cloned — leaves a
+/// `.git` DIRECTORY, and that is the more damaging of the two to delete: a nested worktree loses
+/// uncommitted work, but a nested clone's object store is the only copy of its unpushed commits.
+/// The first version of this checked `is_file()` only, so the worse case was the unchecked one.
+///
+/// NOTHING IS SKIPPED BY NAME. `node_modules` used to be skipped for cost, which quietly meant a
+/// worktree linked inside it (pnpm workspaces make real directories) was never looked at, reported
+/// as clean. Running out of budget is now `Unknown`, which refuses — the honest version of the
+/// same trade.
+fn nested_checkout(path: &Path) -> Nesting {
+    nested_checkout_within(path, NEST_MAX_ENTRIES, NEST_MAX_DEPTH)
+}
+
+/// The walk with its bounds as parameters, so the tests can reach the caps without building a
+/// million files to do it.
+fn nested_checkout_within(path: &Path, max_entries: usize, max_depth: usize) -> Nesting {
+    // A directory that is not there cannot contain anything. Only the ROOT gets this treatment:
+    // a subdirectory that vanishes mid-walk is a race, and a race is not an answer.
+    if std::fs::symlink_metadata(path).is_err_and(|e| is_missing(&e)) {
+        return Nesting::Clean;
+    }
     let mut seen = 0usize;
     let mut stack = vec![(path.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => return Nesting::Unknown(format!("cannot read {}: {e}", dir.display())),
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => return Nesting::Unknown(format!("cannot list {}: {e}", dir.display())),
+            };
             seen += 1;
-            if seen > NEST_MAX_ENTRIES {
-                return None;
+            if seen > max_entries {
+                return Nesting::Unknown(format!("gave up after {max_entries} entries under {}", path.display()));
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let Ok(ft) = entry.file_type() else { continue };
-            if depth > 0 && name == ".git" && ft.is_file() {
-                let contents = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                if parse_gitdir_line(&contents).is_some() {
-                    return Some(dir.to_string_lossy().to_string());
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(e) => return Nesting::Unknown(format!("cannot stat {}: {e}", entry.path().display())),
+            };
+            if depth > 0 && name == ".git" {
+                if ft.is_dir() {
+                    return Nesting::Nested(format!("{} (a repository)", dir.display()));
+                }
+                if ft.is_file() {
+                    match std::fs::read_to_string(entry.path()) {
+                        Ok(c) if parse_gitdir_line(&c).is_some() => {
+                            return Nesting::Nested(format!("{} (a linked worktree)", dir.display()))
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Nesting::Unknown(format!("cannot read {}: {e}", entry.path().display()))
+                        }
+                    }
                 }
             }
-            if ft.is_dir() && depth + 1 <= NEST_MAX_DEPTH && name != ".git" && name != "node_modules" {
+            // `.git` is never descended into — it is enormous and holds nothing we are looking
+            // for — but it is now always LOOKED AT, above, which is the difference that matters.
+            if ft.is_dir() && name != ".git" {
+                if depth + 1 > max_depth {
+                    return Nesting::Unknown(format!("stopped at depth {max_depth}: {}", entry.path().display()));
+                }
                 stack.push((entry.path(), depth + 1));
             }
         }
     }
-    None
+    Nesting::Clean
 }
 
 #[derive(Serialize)]
@@ -977,9 +1157,14 @@ pub struct ReapCandidate {
     pub path: String,
     pub size_bytes: u64,
     pub size_truncated: bool,
-    /// `registered` · `orphaned` · `stranded` · `foreign` · `malformed`
+    /// `registered` · `orphaned` · `repo-unreachable` · `stranded` · `in-use` · `foreign` ·
+    /// `malformed` · `protected`
     pub state: String,
-    /// `keep` · `reap` · `refuse`
+    /// `keep` · `reap` · `needs-confirmation` · `refuse`.
+    ///
+    /// `needs-confirmation` is a QUARANTINE, not a soft reap: no sweep may act on it, and only an
+    /// explicit user decision resolves it. It exists because the evidence that would settle the
+    /// question is not on the machine — see `RepoAbsence`.
     pub verdict: String,
     /// The rule that decided it.
     pub rule: String,
@@ -998,6 +1183,9 @@ pub struct ReapPlan {
     pub scanned: usize,
     pub reapable: usize,
     pub reapable_bytes: u64,
+    /// Quarantined: surfaced to the user, never acted on by anything automatic.
+    pub needs_confirmation: usize,
+    pub needs_confirmation_bytes: u64,
     pub candidates: Vec<ReapCandidate>,
     /// One line per candidate — path, size, rule, proof — for the log and the report.
     pub lines: Vec<String>,
@@ -1014,7 +1202,7 @@ fn human_bytes(n: u64) -> String {
     if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[i]) }
 }
 
-fn classify(path: &Path, store: &Path) -> ReapCandidate {
+fn classify(path: &Path, store: &Path, sessions: &SessionIndex) -> ReapCandidate {
     let path_s = path.to_string_lossy().to_string();
     let prov = provenance_for(store, &path_s);
     let repo = prov.as_ref().map(|p| p.source_repo.clone()).or_else(|| repo_hint_from_marker(&path_s));
@@ -1040,6 +1228,21 @@ fn classify(path: &Path, store: &Path) -> ReapCandidate {
         return c;
     }
 
+    // Then: is anybody working in there? Cheap, already on disk, and an absolute veto — no proof
+    // of ownership makes a directory somebody is mid-turn in safe to delete.
+    if let Some(why) = &sessions.unknown {
+        c.state = "in-use".into();
+        c.rule = format!("refuse: cannot tell whether a session is working here — {why}");
+        c.proof = "not attempted — the session registry could not be read".into();
+        return c;
+    }
+    if let Some(cwd) = sessions.claim_on(&path_s) {
+        c.state = "in-use".into();
+        c.rule = format!("refuse: a saved session records {cwd} as its working directory");
+        c.proof = "not attempted — the directory is claimed".into();
+        return c;
+    }
+
     let proof = match repo.as_deref() {
         Some(repo) => prove_gitdir(&path_s, repo),
         None => match std::fs::symlink_metadata(path.join(".git")) {
@@ -1056,12 +1259,31 @@ fn classify(path: &Path, store: &Path) -> ReapCandidate {
             c.proof = "PASS all three: .git file → admin entry → back-reference".into();
             return c;
         }
-        GitdirProof::Orphan { repo_missing } => {
+        GitdirProof::Orphan => {
             c.state = "orphaned".into();
-            c.proof = format!(
-                "PASS orphan: .git names a direct child of <repo>/.git/worktrees, admin entry absent → no live owner ({})",
-                if repo_missing { "source repo deleted" } else { "admin entry pruned" },
-            );
+            c.proof = "PASS orphan: the repo resolved its own admin directory and holds no entry for this path — git pruned it".into();
+        }
+        GitdirProof::RepoUnreachable { ref repo, ref why } => {
+            // R1/R2/R3: this is the branch that used to authorise every delete in the plan, on
+            // the strength of a path not being there when we looked. It is now quarantined.
+            c.state = "repo-unreachable".into();
+            match why {
+                RepoAbsence::Absent => {
+                    c.verdict = "needs-confirmation".into();
+                    c.rule = format!(
+                        "needs confirmation: {repo} is not there — but a MOVED repo looks identical from here, \
+                         keeps a live back-reference, and `git worktree repair` fixes it in one command"
+                    );
+                    c.proof = "UNPROVEN: the repo cannot corroborate anything, and every remaining link \
+                               would be read out of this directory itself"
+                        .into();
+                }
+                RepoAbsence::Unknown(e) => {
+                    c.rule = format!("refuse: cannot tell whether {repo} exists — {e}");
+                    c.proof = "UNPROVEN: could not look at the repo, which is not the same as it being gone".into();
+                }
+            }
+            return c;
         }
         GitdirProof::Foreign { ref admin, ref points_at } => {
             c.state = "foreign".into();
@@ -1087,27 +1309,36 @@ fn classify(path: &Path, store: &Path) -> ReapCandidate {
 
     // Nesting is checked last because it is the expensive one, and only for a directory that has
     // already earned a reap.
-    if let Some(nested) = nested_worktree_marker(path) {
-        c.rule = format!("refuse: contains another worktree ({nested})");
-        return c;
-    }
-    if let Some(repo) = repo.as_deref() {
-        if let Some(nested) = nested_registered_worktree(&path_s, repo) {
-            c.rule = format!("refuse: contains a registered worktree ({nested})");
+    //
+    // ONLY the on-disk walk here, not `nested_registered_worktree`. The walk is a strict superset
+    // for this question — every nested worktree leaves a `.git` marker the walk now finds — and
+    // asking git adds nothing except a second way to fail: a candidate's recorded source repo is
+    // routinely the one that is gone, so `git worktree list` would answer `Unknown` and refuse
+    // every reap in the plan for a reason that says nothing about nesting. `remove_worktree` keeps
+    // that check because there git is about to be invoked in that repo anyway.
+    match nested_checkout(path) {
+        Nesting::Clean => {}
+        Nesting::Nested(what) => {
+            c.rule = format!("refuse: contains another checkout ({what})");
+            return c;
+        }
+        Nesting::Unknown(why) => {
+            c.rule = format!("refuse: cannot rule out a nested checkout — {why}");
             return c;
         }
     }
 
     c.verdict = "reap".into();
     c.rule = if c.state == "orphaned" {
-        "reap: orphaned worktree, ownership proved by gitdir shape with no surviving admin entry".into()
+        "reap: the owning repo answered and no longer holds an entry for this path".into()
     } else {
         "reap: stranded, but provenance records that Operator created it".into()
     };
     c
 }
 
-fn reap_plan_in(root: &Path, store: &Path, mode: ReapMode) -> ReapPlan {
+fn reap_plan_in(root: &Path, store: &Path, sessions_path: &Path, mode: ReapMode) -> ReapPlan {
+    let sessions = load_sessions(sessions_path);
     let mut candidates: Vec<ReapCandidate> = vec![];
     if let Ok(entries) = std::fs::read_dir(root) {
         let mut paths: Vec<PathBuf> = entries
@@ -1122,7 +1353,7 @@ fn reap_plan_in(root: &Path, store: &Path, mode: ReapMode) -> ReapPlan {
             .collect();
         paths.sort();
         for p in paths {
-            candidates.push(classify(&p, store));
+            candidates.push(classify(&p, store, &sessions));
         }
     }
 
@@ -1142,14 +1373,20 @@ fn reap_plan_in(root: &Path, store: &Path, mode: ReapMode) -> ReapPlan {
         })
         .collect();
 
-    let reapable = candidates.iter().filter(|c| c.verdict == "reap").count();
-    let reapable_bytes = candidates.iter().filter(|c| c.verdict == "reap").map(|c| c.size_bytes).sum();
+    let tally = |verdict: &str| -> (usize, u64) {
+        let it = candidates.iter().filter(|c| c.verdict == verdict);
+        (it.clone().count(), it.map(|c| c.size_bytes).sum())
+    };
+    let (reapable, reapable_bytes) = tally("reap");
+    let (needs_confirmation, needs_confirmation_bytes) = tally("needs-confirmation");
     ReapPlan {
         dry_run: mode == ReapMode::DryRun,
         root: root.to_string_lossy().to_string(),
         scanned: candidates.len(),
         reapable,
         reapable_bytes,
+        needs_confirmation,
+        needs_confirmation_bytes,
         candidates,
         lines,
     }
@@ -1159,17 +1396,30 @@ fn reap_plan_in(root: &Path, store: &Path, mode: ReapMode) -> ReapPlan {
 /// There is no execute path wired to this — deciding when a healthy worktree retires is a policy
 /// question that is not settled, and 21GB of the user's work is what a wrong answer costs.
 pub fn reap_dry_run() -> ReapPlan {
-    reap_plan_in(&worktree_root(), &provenance_file(), ReapMode::DryRun)
+    reap_plan_in(&worktree_root(), &provenance_file(), &sessions_file(), ReapMode::DryRun)
 }
 
 pub fn remove_worktree(path: &str, source_root: &str) -> Result<(), String> {
     if let Some(reason) = dangerous_removal_reason(path, Some(source_root)) {
         return Err(format!("Refusing to remove worktree {path}: {reason}"));
     }
-    if let Some(nested) = nested_registered_worktree(path, source_root) {
-        return Err(format!(
-            "Refusing to remove worktree {path}: it contains another registered worktree ({nested})"
-        ));
+    // THE PATH THAT DELETES FILES TODAY GETS THE STRONGER CHECK, not the weaker one. This used to
+    // ask `git worktree list` and nothing else, so a lane that had checked out a different project
+    // inside its own directory was invisible, and git failing to answer at all read as "nothing is
+    // nested" and went straight on to `--force`. Both scans now run and both refuse when they
+    // cannot answer — an operation the user can retry beats files that are already gone.
+    for scan in [nested_registered_worktree(path, source_root), nested_checkout(Path::new(path))] {
+        match scan {
+            Nesting::Clean => {}
+            Nesting::Nested(what) => {
+                return Err(format!("Refusing to remove worktree {path}: it contains {what}"))
+            }
+            Nesting::Unknown(why) => {
+                return Err(format!(
+                    "Refusing to remove worktree {path}: cannot rule out a nested checkout — {why}"
+                ))
+            }
+        }
     }
     if git(source_root, &["worktree", "remove", path]).is_err() {
         git(source_root, &["worktree", "remove", "--force", path])?;
@@ -1239,6 +1489,32 @@ mod tests {
         git(p, &["add", "-A"]).unwrap();
         git(p, &["commit", "-m", "seed"]).unwrap();
         dir
+    }
+
+    /// Paths that deliberately do not exist. A missing provenance store holds no records, and a
+    /// missing session registry really does mean no sessions — both are legitimate states, and
+    /// both are distinct from a store that could not be read.
+    fn no_store() -> PathBuf {
+        std::env::temp_dir().join("operator-test-absent-provenance.json")
+    }
+    fn no_sessions() -> PathBuf {
+        std::env::temp_dir().join("operator-test-absent-sessions.json")
+    }
+
+    /// Root ignores directory permissions, so the EPERM fixtures cannot be built there. Probe for
+    /// the behaviour rather than guessing at a uid — the question is only whether `chmod 000`
+    /// actually denies us.
+    fn permissions_are_enforced(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("perm-probe");
+        if std::fs::create_dir_all(&probe).is_err() {
+            return false;
+        }
+        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000));
+        let denied = std::fs::read_dir(&probe).is_err();
+        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&probe);
+        denied
     }
 
     // A repo with a REMOTE, so `origin/HEAD` exists and the name can be derived rather than
@@ -1484,9 +1760,9 @@ mod tests {
         let inner = outer.join("nested");
         git(p, &["worktree", "add", "-b", "operator/inner", inner.to_str().unwrap(), "main"]).unwrap();
 
-        assert!(nested_registered_worktree(outer_s, p).is_some(), "the fixture must actually nest");
+        assert!(matches!(nested_registered_worktree(outer_s, p), Nesting::Nested(_)), "the fixture must actually nest");
         let err = remove_worktree(outer_s, p).expect_err("must refuse");
-        assert!(err.contains("contains another registered worktree"), "{err}");
+        assert!(err.contains("contains"), "{err}");
         // The nested worktree's files are still there — that is the whole point.
         assert!(inner.join(".git").exists());
 
@@ -1510,16 +1786,16 @@ mod tests {
         // directory and its `.git` file left behind.
         let admin = repo.path().join(".git").join("worktrees").join(wt.file_name().unwrap());
         std::fs::remove_dir_all(&admin).unwrap();
-        assert_eq!(prove_gitdir(wt_s, p), GitdirProof::Orphan { repo_missing: false });
+        assert_eq!(prove_gitdir(wt_s, p), GitdirProof::Orphan);
 
         std::fs::remove_dir_all(&wt).ok();
     }
 
     #[test]
-    fn a_worktree_whose_repo_was_deleted_outright_still_proves_orphan() {
-        // THE SHAPE THE MEASURED PILE IS ACTUALLY IN: not a pruned admin entry but a repository
-        // that no longer exists at all. Requiring the repo to answer would refuse exactly the
-        // directories nobody can ever reclaim.
+    fn an_absent_repo_is_quarantined_and_never_reaped() {
+        // R2/R3. Phase 1 called this `Orphan { repo_missing: true }` and reaped it. It is not a
+        // proof of anything: with the repo unreachable, all three "independent" links reduce to
+        // content read out of the candidate itself.
         let repo = scratch_repo();
         let repo_path = repo.path().to_path_buf();
         let wt = repo_path.parent().unwrap().join(format!("gone-{}", short_id()));
@@ -1530,12 +1806,257 @@ mod tests {
         drop(repo); // the whole repository goes away, the worktree directory stays
 
         assert!(!Path::new(&repo_s).exists(), "the fixture must actually delete the repo");
-        assert_eq!(prove_gitdir(&wt_s, &repo_s), GitdirProof::Orphan { repo_missing: true });
-        // The repo hint is read straight out of the surviving `.git` file, which is the only
-        // record of who made it once the repository is gone.
+        assert_eq!(
+            prove_gitdir(&wt_s, &repo_s),
+            GitdirProof::RepoUnreachable { repo: repo_s.clone(), why: RepoAbsence::Absent },
+        );
+        // The repo hint is still read out of the surviving `.git` file — it is what the candidate
+        // CLAIMS, which is exactly why it cannot also be the corroboration.
         assert!(same_path(&repo_hint_from_marker(&wt_s).expect("repo named by .git"), &repo_s));
 
+        let c = classify(&wt, &no_store(), &load_sessions(&no_sessions()));
+        assert_eq!(c.verdict, "needs-confirmation", "quarantine, never an automatic delete");
+        assert_eq!(c.state, "repo-unreachable");
+        assert!(c.proof.starts_with("UNPROVEN"), "{}", c.proof);
+
         std::fs::remove_dir_all(&wt).ok();
+    }
+
+    #[test]
+    fn a_moved_repo_is_never_reaped_because_git_can_repair_it_in_one_command() {
+        // R2, the review's fixture end to end. After a rename the candidate's `.git` still names
+        // the dead path — byte-identical to a deletion from here — but the BACK-REFERENCE at the
+        // new location survives, git still lists the worktree as live, and `git worktree repair`
+        // fixes it. The worktree's uncommitted work is the only copy, and phase 1 reaped it.
+        let home = tempfile::tempdir().unwrap();
+        let repo_dir = home.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let r = repo_dir.to_str().unwrap();
+        git(r, &["init", "-b", "main"]).unwrap();
+        git(r, &["config", "user.email", "t@t"]).unwrap();
+        git(r, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(repo_dir.join("a.txt"), "one\n").unwrap();
+        git(r, &["add", "-A"]).unwrap();
+        git(r, &["commit", "-m", "seed"]).unwrap();
+
+        let root = home.path().join("worktrees");
+        std::fs::create_dir_all(&root).unwrap();
+        let wt = root.join("lane");
+        git(r, &["worktree", "add", "-b", "lane", wt.to_str().unwrap()]).unwrap();
+        std::fs::write(wt.join("only-copy.txt"), "uncommitted work\n").unwrap();
+
+        let moved = home.path().join("repo-moved");
+        std::fs::rename(&repo_dir, &moved).unwrap();
+
+        // The state the review described, asserted rather than assumed.
+        assert!(!repo_dir.exists(), "the old path is gone");
+        let back = std::fs::read_to_string(moved.join(".git/worktrees/lane/gitdir")).unwrap();
+        assert!(same_path(back.trim(), &wt.join(".git").to_string_lossy()), "back-reference survives the move");
+        let listed = git(moved.to_str().unwrap(), &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(listed.contains(&wt.to_string_lossy().to_string()), "git still calls this worktree live");
+
+        let plan = reap_plan_in(&root, &no_store(), &no_sessions(), ReapMode::DryRun);
+        let c = plan.candidates.iter().find(|c| c.path.ends_with("lane")).unwrap();
+        assert_ne!(c.verdict, "reap", "a repairable worktree must never be reaped");
+        assert_eq!(c.verdict, "needs-confirmation");
+        assert_eq!(plan.reapable, 0);
+        assert_eq!(plan.needs_confirmation, 1);
+        assert!(wt.join("only-copy.txt").exists());
+
+        // And it really is one command away from working again.
+        git(moved.to_str().unwrap(), &["worktree", "repair", wt.to_str().unwrap()]).unwrap();
+        assert_eq!(prove_gitdir(&wt.to_string_lossy(), &moved.to_string_lossy()), GitdirProof::Registered);
+    }
+
+    #[test]
+    fn a_repo_we_are_not_allowed_to_look_at_is_refused_outright() {
+        // R1. `Path::exists()` is false for EVERY error, so an unreadable parent — a sandbox, a
+        // TCC-protected folder, an unmounted volume at boot — used to read as "the repo is gone"
+        // and authorised a delete. Only a clean NotFound may mean absent.
+        let repo = scratch_repo();
+        if !permissions_are_enforced(repo.path()) {
+            eprintln!("skipped: directory permissions are not enforced here (root?)");
+            return;
+        }
+        let repo_path = repo.path().to_path_buf();
+        let wt = repo_path.parent().unwrap().join(format!("locked-{}", short_id()));
+        let wt_s = wt.to_str().unwrap().to_string();
+        git(repo_path.to_str().unwrap(), &["worktree", "add", "-b", "operator/locked", &wt_s, "main"]).unwrap();
+
+        // Make the repo's PARENT untraversable — the repository itself is untouched and alive.
+        let parent = repo_path.parent().unwrap().to_path_buf();
+        let locked = parent.join(format!("locked-parent-{}", short_id()));
+        std::fs::create_dir_all(&locked).unwrap();
+        let hidden_repo = locked.join("repo");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let hidden = hidden_repo.to_string_lossy().to_string();
+        assert!(!Path::new(&hidden).exists(), "exists() lies here — that is the whole finding");
+        match repo_presence(&hidden) {
+            RepoPresence::Unknown(_) => {}
+            other => panic!("an unreadable parent must be Unknown, got {other:?}"),
+        }
+        match prove_gitdir(&wt_s, &hidden) {
+            GitdirProof::RepoUnreachable { why: RepoAbsence::Unknown(_), .. } => {}
+            other => panic!("must not conclude absence, got {other:?}"),
+        }
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&locked).ok();
+        std::fs::remove_dir_all(&wt).ok();
+    }
+
+    #[test]
+    fn a_candidate_a_session_is_working_in_is_refused() {
+        // R4. The session registry sits beside the provenance store and nothing was reading it;
+        // Operator hit this by hand, with 3 of 15 candidates turning out to be live lanes.
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions.json");
+        let store = home.path().join("provenance.json");
+
+        let busy = root.path().join("project-busy");
+        let idle = root.path().join("project-idle");
+        for d in [&busy, &idle] {
+            std::fs::create_dir_all(d).unwrap();
+            record_provenance_in(&store, Provenance {
+                path: d.to_string_lossy().to_string(),
+                created_at: 1,
+                created_by: "operator".into(),
+                source_repo: "/dev/project".into(),
+                branch: "operator/x".into(),
+                lane_id: None,
+            });
+        }
+        std::fs::write(
+            &sessions,
+            format!(r#"[{{"key":"k","cwd":{:?},"roleId":"research"}}]"#, busy.to_string_lossy()),
+        )
+        .unwrap();
+
+        let plan = reap_plan_in(root.path(), &store, &sessions, ReapMode::DryRun);
+        let busy_c = plan.candidates.iter().find(|c| c.path.ends_with("busy")).unwrap();
+        let idle_c = plan.candidates.iter().find(|c| c.path.ends_with("idle")).unwrap();
+        assert_eq!(busy_c.verdict, "refuse");
+        assert_eq!(busy_c.state, "in-use");
+        assert_eq!(idle_c.verdict, "reap", "the control must still reap, or this proves nothing");
+
+        // A registry that cannot be read is not an empty registry.
+        std::fs::write(&sessions, "{ not json").unwrap();
+        let plan = reap_plan_in(root.path(), &store, &sessions, ReapMode::DryRun);
+        assert_eq!(plan.reapable, 0, "an unreadable session registry refuses everything");
+        assert!(plan.candidates.iter().all(|c| c.rule.contains("cannot tell whether a session")));
+    }
+
+    #[test]
+    fn a_nested_plain_clone_is_detected_not_only_a_nested_worktree() {
+        // R7. A nested worktree loses uncommitted work; a nested CLONE loses unpushed commits,
+        // because its object store is the only copy. The `.git` DIRECTORY was the unchecked case.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let cand = repo.path().parent().unwrap().join(format!("cand-{}", short_id()));
+        std::fs::create_dir_all(cand.join("deep").join("deeper")).unwrap();
+        assert_eq!(nested_checkout(&cand), Nesting::Clean);
+
+        git(".", &["clone", "-q", p, cand.join("deep").join("vendored").to_str().unwrap()]).unwrap();
+        assert!(cand.join("deep/vendored/.git").is_dir(), "the fixture must be a clone, not a worktree");
+        match nested_checkout(&cand) {
+            Nesting::Nested(what) => assert!(what.contains("vendored") && what.contains("repository"), "{what}"),
+            other => panic!("a nested clone must be found, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&cand).ok();
+    }
+
+    #[test]
+    fn remove_worktree_refuses_foreign_nesting_and_refuses_when_git_cannot_answer() {
+        // R6, both halves. The live removal path had the WEAK check: `git worktree list` in the
+        // source repo, which cannot see another project's checkout, and which returned an empty
+        // list on failure that read as "nothing is nested" before going on to `--force`.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let other = scratch_repo(); // a DIFFERENT repository
+        let wt = repo.path().parent().unwrap().join(format!("host-{}", short_id()));
+        let wt_s = wt.to_str().unwrap().to_string();
+        git(p, &["worktree", "add", "-b", "operator/host", &wt_s, "main"]).unwrap();
+
+        // A worktree of the OTHER repo, checked out inside ours. Invisible to our `worktree list`.
+        let foreign = wt.join("vendor").join("other");
+        std::fs::create_dir_all(wt.join("vendor")).unwrap();
+        git(other.path().to_str().unwrap(), &["worktree", "add", "-b", "x", foreign.to_str().unwrap()]).unwrap();
+        assert_eq!(nested_registered_worktree(&wt_s, p), Nesting::Clean, "git genuinely cannot see it");
+
+        let err = remove_worktree(&wt_s, p).expect_err("must refuse");
+        assert!(err.contains("contains"), "{err}");
+        assert!(foreign.join("a.txt").exists(), "the foreign checkout's files must survive");
+
+        // …and a source repo git cannot answer for is a refusal, not a green light.
+        let nowhere = repo.path().parent().unwrap().join("no-such-repo").to_string_lossy().to_string();
+        match nested_registered_worktree(&wt_s, &nowhere) {
+            Nesting::Unknown(_) => {}
+            other => panic!("git failing must be Unknown, got {other:?}"),
+        }
+        let err = remove_worktree(&wt_s, &nowhere).expect_err("must refuse");
+        assert!(err.contains("cannot rule out"), "{err}");
+
+        git(other.path().to_str().unwrap(), &["worktree", "remove", "--force", foreign.to_str().unwrap()]).ok();
+        git(p, &["worktree", "remove", "--force", &wt_s]).ok();
+    }
+
+    #[test]
+    fn a_walk_that_ran_out_of_budget_or_depth_says_so_instead_of_clean() {
+        // R8. `None` used to mean four things, three of which were "I did not look". Review
+        // measured this project's built checkout at 122,494 entries against a 20,000 cap — one
+        // `cargo build` in a lane silently switched the nesting refusal off.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cand");
+        let mut deep = root.clone();
+        for seg in ["a", "b", "c"] {
+            deep = deep.join(seg);
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        for i in 0..12 {
+            std::fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+
+        // Bounds honoured: the walk completes and says so.
+        assert_eq!(nested_checkout_within(&root, 10_000, 32), Nesting::Clean);
+
+        // Out of entries — NOT clean.
+        match nested_checkout_within(&root, 4, 32) {
+            Nesting::Unknown(why) => assert!(why.contains("gave up after 4 entries"), "{why}"),
+            other => panic!("exceeding the entry cap must be Unknown, got {other:?}"),
+        }
+        // Out of depth — NOT clean, even though nothing was found in what it did see.
+        match nested_checkout_within(&root, 10_000, 2) {
+            Nesting::Unknown(why) => assert!(why.contains("stopped at depth 2"), "{why}"),
+            other => panic!("exceeding the depth cap must be Unknown, got {other:?}"),
+        }
+
+        // And an `Unknown` walk refuses the candidate rather than reaping it — through the real
+        // caps this time, with a subdirectory the walk is not allowed to open. Without provenance
+        // this directory would be refused for being stranded, so the record is what makes the
+        // nesting rule the thing under test.
+        if permissions_are_enforced(dir.path()) {
+            use std::os::unix::fs::PermissionsExt;
+            let store = dir.path().join("provenance.json");
+            record_provenance_in(&store, Provenance {
+                path: root.to_string_lossy().to_string(),
+                created_at: 1,
+                created_by: "operator".into(),
+                source_repo: "/dev/project".into(),
+                branch: "operator/x".into(),
+                lane_id: None,
+            });
+            let shut = root.join("a");
+            std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let plan = reap_plan_in(dir.path(), &store, &no_sessions(), ReapMode::DryRun);
+            let c = plan.candidates.iter().find(|c| c.path.ends_with("cand")).unwrap();
+            assert_eq!(c.verdict, "refuse");
+            assert!(c.rule.contains("cannot rule out a nested checkout"), "{}", c.rule);
+            std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     #[test]
@@ -1642,7 +2163,7 @@ mod tests {
             lane_id: None,
         });
 
-        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        let plan = reap_plan_in(root.path(), &store, &no_sessions(), ReapMode::DryRun);
         assert!(plan.dry_run);
         assert_eq!(plan.scanned, 2);
         let ours_c = plan.candidates.iter().find(|c| c.path.ends_with("project-ours")).unwrap();
@@ -1668,7 +2189,7 @@ mod tests {
         git(p, &["worktree", "add", "-b", "operator/dead", dead.to_str().unwrap(), "main"]).unwrap();
         std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("dead")).unwrap();
 
-        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        let plan = reap_plan_in(root.path(), &store, &no_sessions(), ReapMode::DryRun);
         let live_c = plan.candidates.iter().find(|c| c.path.ends_with("live")).unwrap();
         let dead_c = plan.candidates.iter().find(|c| c.path.ends_with("dead")).unwrap();
         assert_eq!((live_c.state.as_str(), live_c.verdict.as_str()), ("registered", "keep"));
@@ -1696,11 +2217,11 @@ mod tests {
         // the live inner worktree's files with it.
         std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("outer")).unwrap();
 
-        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        let plan = reap_plan_in(root.path(), &store, &no_sessions(), ReapMode::DryRun);
         let c = plan.candidates.iter().find(|c| c.path.ends_with("outer")).unwrap();
         assert_eq!(c.state, "orphaned");
         assert_eq!(c.verdict, "refuse");
-        assert!(c.rule.contains("contains another worktree"), "{}", c.rule);
+        assert!(c.rule.contains("contains another checkout"), "{}", c.rule);
         assert!(c.proof.starts_with("PASS orphan"), "the proof passed; the nesting rule is what refused");
 
         git(p, &["worktree", "remove", "--force", inner.to_str().unwrap()]).ok();
@@ -1773,6 +2294,34 @@ mod tests {
     /// `cargo test -- --ignored --nocapture dry_run_over_the_real_worktree_root`.
     /// Ignored by default because it walks tens of gigabytes and its output is a report, not an
     /// assertion. It deletes nothing — there is no execute path wired to `reap_dry_run`.
+    /// What the nesting walk COSTS, now that `remove_worktree` pays it on every lane close:
+    /// `cargo test -- --ignored --nocapture nesting_walk_cost_over_the_real_worktree_root`.
+    /// Ignored for the same reason as the dry run — it is a measurement, not an assertion.
+    #[test]
+    #[ignore]
+    fn nesting_walk_cost_over_the_real_worktree_root() {
+        let mut rows: Vec<(u128, String, String)> = vec![];
+        // `OPERATOR_NEST_PROBE=<dir>` points it somewhere else — a fully built checkout is the
+        // interesting case and does not live under the worktree root.
+        let root = std::env::var("OPERATOR_NEST_PROBE").map(PathBuf::from).unwrap_or_else(|_| worktree_root());
+        let Ok(entries) = std::fs::read_dir(root) else { return };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let start = std::time::Instant::now();
+            let verdict = nested_checkout(&e.path());
+            rows.push((start.elapsed().as_millis(), name, format!("{verdict:?}")));
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        let total: u128 = rows.iter().map(|r| r.0).sum();
+        println!("{} dirs, {total} ms total, slowest first:", rows.len());
+        for (ms, name, verdict) in rows.iter().take(12) {
+            println!("  {ms:>6} ms  {name}  {}", verdict.chars().take(90).collect::<String>());
+        }
+    }
+
     #[test]
     #[ignore]
     fn dry_run_over_the_real_worktree_root() {
