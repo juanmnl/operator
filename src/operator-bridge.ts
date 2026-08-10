@@ -303,8 +303,10 @@ export function installBridge(): void {
     inspectRepo: (cwd: string) => invoke('inspect_repo', { cwd }),
     // `branch` reattaches a SUSPENDED lane to the branch it left behind, instead of forking a
     // new one — the resume half of task-scoped lanes. Omitted for every ordinary launch.
-    worktreeCreate: async (cwd: string, branch?: string) => {
-      try { return await invoke('worktree_create', { cwd, branch: branch ?? null }) } catch (e) { return { error: String(e) } }
+    // `laneId` only labels the creation-provenance record the backend writes (see
+    // worktree::Provenance) — the reaper may only remove what we can prove we made.
+    worktreeCreate: async (cwd: string, branch?: string, laneId?: string) => {
+      try { return await invoke('worktree_create', { cwd, branch: branch ?? null, laneId: laneId ?? null }) } catch (e) { return { error: String(e) } }
     },
     worktreeStatus: (path: string) => invoke('worktree_status', { path }),
     pathExists: (path: string) => invoke<boolean>('path_exists', { path }),

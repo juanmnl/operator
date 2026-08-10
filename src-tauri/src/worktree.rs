@@ -1,11 +1,11 @@
 // Git worktree operations (port of worktree.ts). Each agent session can run in
 // an isolated worktree under ~/.operator/worktrees, with in-app diff/merge/discard.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 fn worktree_root() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -150,7 +150,14 @@ fn reattach_worktree(root: &str, branch: &str) -> Option<WorktreeCreateResult> {
 
 /// Make a lane a worktree. `reuse_branch` names a branch a suspended lane left behind — see
 /// `reattach_worktree`; anything else (or a reattach that cannot be done) creates a new one.
-pub fn create_worktree(source_cwd: &str, reuse_branch: Option<&str>) -> Result<WorktreeCreateResult, String> {
+/// `lane_id` is whatever the caller knows about who this is for — the session does not exist yet
+/// at launch, so it is the role id in practice, and it is only ever a label on the provenance
+/// record (see `Provenance`).
+pub fn create_worktree(
+    source_cwd: &str,
+    reuse_branch: Option<&str>,
+    lane_id: Option<&str>,
+) -> Result<WorktreeCreateResult, String> {
     let info = inspect_repo(source_cwd);
     let root = match (info.is_repo, info.root) {
         (true, Some(r)) => r,
@@ -161,6 +168,15 @@ pub fn create_worktree(source_cwd: &str, reuse_branch: Option<&str>) -> Result<W
 
     if let Some(existing) = reuse_branch.filter(|b| !b.trim().is_empty()) {
         if let Some(reattached) = reattach_worktree(&root, existing.trim()) {
+            // A reattached lane is a directory we just made, exactly as much as a fresh one is.
+            record_provenance_in(&provenance_file(), Provenance {
+                path: reattached.path.clone(),
+                created_at: now_ms(),
+                created_by: "operator".into(),
+                source_repo: root.clone(),
+                branch: reattached.branch.clone(),
+                lane_id: lane_id.map(str::to_string),
+            });
             return Ok(reattached);
         }
     }
@@ -178,6 +194,17 @@ pub fn create_worktree(source_cwd: &str, reuse_branch: Option<&str>) -> Result<W
     let base = default_base(&root);
     let base_ref = base.clone().unwrap_or_else(|| "HEAD".to_string());
     git(&root, &["worktree", "add", "-b", &branch, &path_str, &base_ref])?;
+
+    // PROVENANCE, RECORDED HERE AND NOWHERE ELSE. Reaping later can only be as safe as the
+    // evidence it has, and this is the one moment we know for certain that the directory is ours.
+    record_provenance_in(&provenance_file(), Provenance {
+        path: path_str.clone(),
+        created_at: now_ms(),
+        created_by: "operator".into(),
+        source_repo: root.clone(),
+        branch: branch.clone(),
+        lane_id: lane_id.map(str::to_string),
+    });
 
     // WHAT IT ACTUALLY FORKED FROM, which is not the same question as "what branch is the caller
     // on" — and that is what this field used to answer (`info.branch`). Now that the two can
@@ -320,7 +347,830 @@ pub fn branch_diff(source_root: &str, branch: &str, base_branch: &str) -> Worktr
     WorktreeDiff { branch: Some(branch.to_string()), files, diff }
 }
 
+// =============================================================================
+// REAPING — phase 1: the mechanics, behind a dry run that deletes nothing.
+//
+// `~/.operator/worktrees` had grown to 70 directories / 21GB because nobody owns retirement.
+// The machinery below is what a reaper needs before it is allowed to delete anything: guard
+// rails, a proof that a directory really is ours, provenance recorded at creation, and deferred
+// deletion. Ported from Orca (MIT) — the rules are theirs, the failure modes each rule prevents
+// are real bugs we would otherwise have discovered by losing the user's work.
+//
+// WHAT THIS PHASE DELIBERATELY DOES NOT DO: decide when a HEALTHY worktree retires, and delete
+// anything at all outside a test. `ReapMode::Execute` exists so the mechanics can be proven by
+// the test suite; every caller in the app passes `ReapMode::DryRun`.
+// =============================================================================
+
+/// Whether a reaping operation may touch the filesystem. Phase 1 ships `DryRun` at every call
+/// site — the mode is a parameter rather than a global so there is no flag to flip by accident.
+#[allow(dead_code)] // `Execute` has no production caller in phase 1 — the tests are what exercise it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReapMode {
+    DryRun,
+    Execute,
+}
+
+// --- Lexical path safety -----------------------------------------------------
+// Every comparison here is LEXICAL — no `canonicalize`, because these run against paths that may
+// already be half-deleted, and a resolve that touches the filesystem answers "does not exist"
+// instead of "would be catastrophic to delete".
+
+/// A path split into components with `.` dropped and `..` popped, the way `path.resolve` does it.
+/// Relative input is anchored to the cwd. An empty vec IS the filesystem root.
+///
+/// Popping `..` lexically is what separates `..` from `..name`: the first escapes the parent, the
+/// second is an ordinary directory whose name happens to start with two dots. String-prefix
+/// containment gets that wrong in both directions.
+fn lexical_components(input: &str) -> Vec<String> {
+    let raw = Path::new(input);
+    let joined: PathBuf = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")).join(raw)
+    };
+    let mut out: Vec<String> = vec![];
+    for c in joined.components() {
+        match c {
+            Component::Prefix(p) => out.push(p.as_os_str().to_string_lossy().into_owned()),
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(s) => out.push(s.to_string_lossy().into_owned()),
+        }
+    }
+    out
+}
+
+fn lexical(input: &str) -> String {
+    format!("/{}", lexical_components(input).join("/"))
+}
+
+/// The same components with SYMLINKS RESOLVED as far as the path actually exists, and the rest
+/// kept lexical.
+///
+/// Not an optimisation — a correctness requirement. git writes fully resolved paths into `.git`
+/// files and reports them from `worktree list`, so on macOS the admin entry says
+/// `/private/var/…/x` for a directory the caller knows as `/var/…/x`. Compared lexically those are
+/// two different places: the ownership proof fails on a worktree that is plainly ours, and the
+/// nested-worktree refusal misses a nesting that is plainly there.
+///
+/// The tail has to stay lexical because the interesting paths are the ones that no longer exist —
+/// a pruned admin entry, a directory queued for deletion — and `canonicalize` on those answers
+/// "not found" rather than an address.
+fn resolved_components(input: &str) -> Vec<String> {
+    let comps = lexical_components(input);
+    let mut head = comps.clone();
+    let mut tail: Vec<String> = vec![];
+    while !head.is_empty() {
+        if let Ok(real) = std::fs::canonicalize(format!("/{}", head.join("/"))) {
+            let mut out = lexical_components(&real.to_string_lossy());
+            out.extend(tail.into_iter().rev());
+            return out;
+        }
+        tail.push(head.pop().unwrap_or_default());
+    }
+    comps
+}
+
+fn resolved(input: &str) -> String {
+    format!("/{}", resolved_components(input).join("/"))
+}
+
+/// macOS and Windows filesystems are case-insensitive by default, so `/Users/X/Repo` and
+/// `/users/x/repo` are the same directory and a case-sensitive guard rail would wave one through.
+fn same_component(a: &str, b: &str) -> bool {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    let (a, b) = (resolved_components(a), resolved_components(b));
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_component(x, y))
+}
+
+/// True when `child` is `parent` or lives underneath it.
+fn contains_path(parent: &str, child: &str) -> bool {
+    let (p, c) = (resolved_components(parent), resolved_components(child));
+    c.len() >= p.len() && p.iter().zip(c.iter()).all(|(x, y)| same_component(x, y))
+}
+
+/// Components of `child` below `parent`, or `None` when it is not underneath.
+fn relative_components(parent: &str, child: &str) -> Option<Vec<String>> {
+    let (p, c) = (resolved_components(parent), resolved_components(child));
+    if c.len() < p.len() || !p.iter().zip(c.iter()).all(|(x, y)| same_component(x, y)) {
+        return None;
+    }
+    Some(c[p.len()..].to_vec())
+}
+
+/// THE PATHS THAT MAY NEVER BE RECURSIVELY DELETED, whatever else says they can be. Returns the
+/// reason so a refusal can be reported rather than silently swallowed.
+///
+/// Each rule is a bug we do not have to discover for ourselves: a caller that passes an empty
+/// string deletes the cwd, one that passes the repo deletes the project, and `worktree` = a path
+/// that CONTAINS the repo deletes the project plus everything beside it. `repo` may be `None`
+/// when the owning repository is unknown (a stranded directory) — the rules that do not need it
+/// still apply.
+pub fn dangerous_removal_reason(worktree_path: &str, repo: Option<&str>) -> Option<String> {
+    if worktree_path.trim().is_empty() {
+        return Some("path is empty".into());
+    }
+    if let Some(repo) = repo {
+        if same_path(worktree_path, repo) {
+            return Some("path is the repository itself".into());
+        }
+    }
+    let comps = resolved_components(worktree_path);
+    if comps.is_empty() {
+        return Some("path is the filesystem root".into());
+    }
+    let here = resolved(worktree_path);
+    if let Some(repo) = repo {
+        if contains_path(worktree_path, repo) {
+            return Some(format!("path contains the repository ({})", resolved(repo)));
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.trim().is_empty() && contains_path(worktree_path, &home) {
+        return Some(format!("path contains $HOME ({})", resolved(&home)));
+    }
+    // The home-shaped rules are about the NAME the caller asked for, so they run on the literal
+    // path as well as the resolved one. macOS firmlinks `/home` to `/System/Volumes/Data/home`,
+    // and a rule that only looked at the resolved form would wave `/home` straight through.
+    for form in [lexical(worktree_path), here.clone()] {
+        if form == "/home" || form == "/root" {
+            return Some(format!("path is {form}"));
+        }
+        let c = lexical_components(&form);
+        if c.len() == 2 && (same_component(&c[0], "home") || same_component(&c[0], "Users")) {
+            return Some(format!("path is a user home directory ({form})"));
+        }
+    }
+    None
+}
+
+/// Registered worktree paths of `repo`, straight from git. Empty when git cannot answer — the
+/// callers treat that as "no evidence", never as "nothing nested here".
+fn registered_worktrees(repo: &str) -> Vec<String> {
+    git(repo, &["worktree", "list", "--porcelain"])
+        .map(|out| {
+            out.lines()
+                .filter_map(|l| l.strip_prefix("worktree ").map(|p| p.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// REFUSE TO REMOVE A WORKTREE THAT CONTAINS ANOTHER ONE. `git worktree remove --force` treats a
+/// nested worktree as an ordinary untracked directory: it deletes the working files and leaves
+/// git a prunable child record, so the loss is silent in both directions — the files are gone and
+/// git does not think anything happened.
+fn nested_registered_worktree(worktree_path: &str, repo: &str) -> Option<String> {
+    registered_worktrees(repo)
+        .into_iter()
+        .find(|p| !same_path(p, worktree_path) && contains_path(worktree_path, p))
+}
+
+// --- Bidirectional gitdir proof ----------------------------------------------
+
+/// What `<worktree>/.git` proves about who owns the directory.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GitdirProof {
+    /// All three links hold and the admin entry points back here: a live worktree of this repo.
+    /// Removal goes through `git worktree remove`, never a raw recursive delete.
+    Registered,
+    /// The `.git` file is well-formed and names a direct child of `<repo>/.git/worktrees/`, and
+    /// that admin entry is GONE. Nothing can still own the directory, so it is reapable.
+    /// `repo_missing` when the source repository has been deleted outright rather than pruned —
+    /// the commonest shape in the measured pile, and the stronger evidence of the two.
+    Orphan { repo_missing: bool },
+    /// The admin entry exists and back-references a DIFFERENT directory. A copied `.git` file
+    /// looks exactly like the real thing up to this point; only the back-reference catches it.
+    Foreign { admin: String, points_at: String },
+    /// No `.git` at all — the proof cannot run, and provenance is the only remaining evidence.
+    NoMarker,
+    Malformed(String),
+}
+
+fn is_missing(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::NotFound) || e.raw_os_error() == Some(20) // ENOTDIR
+}
+
+fn parse_gitdir_line(contents: &str) -> Option<String> {
+    let first = contents.lines().next()?.trim();
+    let rest = first.get(..7).filter(|p| p.eq_ignore_ascii_case("gitdir:"))?;
+    let _ = rest;
+    let value = first[7..].trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn first_line_path(contents: &str) -> Option<String> {
+    let first = contents.lines().next()?.trim();
+    (!first.is_empty()).then(|| first.to_string())
+}
+
+/// Resolve a gitdir value, which git writes as either absolute or relative to the file holding it.
+fn resolve_against(value: &str, base: &Path) -> String {
+    if Path::new(value).is_absolute() {
+        lexical(value)
+    } else {
+        lexical(&base.join(value).to_string_lossy())
+    }
+}
+
+/// Where `<repo>` keeps its linked-worktree admin entries. Usually `<repo>/.git/worktrees`, but a
+/// repo can itself BE a linked worktree (Operator launches lanes from lanes), in which case its
+/// `.git` is a file and its siblings live next to its own admin entry. A separate git dir can also
+/// sit under a directory called `worktrees` by coincidence — only the admin backlink tells the two
+/// apart.
+fn repo_worktrees_dir(repo: &str) -> Option<String> {
+    let repo_git = Path::new(repo).join(".git");
+    let md = std::fs::symlink_metadata(&repo_git).ok()?;
+    if !md.is_file() {
+        return Some(lexical(&repo_git.join("worktrees").to_string_lossy()));
+    }
+    let contents = std::fs::read_to_string(&repo_git).ok()?;
+    let gitdir = parse_gitdir_line(&contents)?;
+    let resolved = resolve_against(&gitdir, Path::new(repo));
+    let parent = Path::new(&resolved).parent()?.to_string_lossy().to_string();
+    let parent_name = Path::new(&parent).file_name()?.to_string_lossy().to_string();
+    if parent_name == "worktrees" {
+        let back = std::fs::read_to_string(Path::new(&resolved).join("gitdir"))
+            .ok()
+            .and_then(|c| first_line_path(&c))
+            .map(|p| resolve_against(&p, Path::new(&resolved)));
+        if back.is_some_and(|b| same_path(&b, &repo_git.to_string_lossy())) {
+            return Some(parent);
+        }
+    }
+    Some(lexical(&Path::new(&resolved).join("worktrees").to_string_lossy()))
+}
+
+/// PROVE, BOTH WAYS, THAT A DIRECTORY IS THIS REPO'S WORKTREE — before any recursive delete.
+///
+/// 1. `<worktree>/.git` must be a FILE containing `gitdir: <path>`
+/// 2. that path must be a DIRECT child of `<repo>/.git/worktrees/` (one level, no nesting)
+/// 3. `<gitdir>/gitdir` must point BACK at `<worktree>/.git`
+///
+/// Step 3 is the one that matters. A `.git` file copied out of another worktree satisfies 1 and 2
+/// perfectly while naming someone else's admin entry; the back-reference is the only thing that
+/// says the entry still belongs to THIS directory. When the admin entry has vanished entirely
+/// there is no back-reference to read and also no other owner to harm — that is `Orphan`, and it
+/// is the state the 4 reapable directories are in.
+pub fn prove_gitdir(worktree_path: &str, repo: &str) -> GitdirProof {
+    let git_marker = Path::new(worktree_path).join(".git");
+    let md = match std::fs::symlink_metadata(&git_marker) {
+        Ok(md) => md,
+        Err(ref e) if is_missing(e) => return GitdirProof::NoMarker,
+        Err(e) => return GitdirProof::Malformed(format!("cannot stat .git: {e}")),
+    };
+    if md.file_type().is_symlink() {
+        return GitdirProof::Malformed(".git is a symlink".into());
+    }
+    if !md.is_file() {
+        return GitdirProof::Malformed(".git is a directory — a repository, not a worktree".into());
+    }
+    let contents = match std::fs::read_to_string(&git_marker) {
+        Ok(c) => c,
+        Err(e) => return GitdirProof::Malformed(format!("cannot read .git: {e}")),
+    };
+    let Some(gitdir) = parse_gitdir_line(&contents) else {
+        return GitdirProof::Malformed(".git has no `gitdir:` line".into());
+    };
+    let resolved = resolve_against(&gitdir, Path::new(worktree_path));
+
+    // THE SOURCE REPOSITORY MAY BE GONE — deleted, not merely pruned, which is what happened to
+    // most of the measured pile. Asking the repo where it keeps its admin entries then has no
+    // answer, so the shape of the gitdir path is checked lexically instead. That is not a weaker
+    // proof: a repository that no longer exists cannot still own anything, and the back-reference
+    // check below runs unchanged. A repo whose directory IS there but whose `.git` will not read
+    // is a different situation and stays refused — that is a broken repo, not an absent one.
+    let repo_missing = !Path::new(repo).exists();
+    let worktrees_dir = match repo_worktrees_dir(repo) {
+        Some(d) => d,
+        None if repo_missing => lexical(&Path::new(repo).join(".git").join("worktrees").to_string_lossy()),
+        None => return GitdirProof::Malformed(format!("cannot resolve {repo}/.git/worktrees")),
+    };
+    match relative_components(&worktrees_dir, &resolved) {
+        Some(rel) if rel.len() == 1 => {}
+        _ => {
+            return GitdirProof::Malformed(format!(
+                "gitdir {resolved} is not a direct child of {worktrees_dir}"
+            ))
+        }
+    }
+
+    let admin_gitdir = Path::new(&resolved).join("gitdir");
+    match std::fs::read_to_string(&admin_gitdir) {
+        Ok(text) => {
+            let Some(back) = first_line_path(&text) else {
+                return GitdirProof::Malformed("admin gitdir is empty".into());
+            };
+            let back = resolve_against(&back, Path::new(&resolved));
+            if same_path(&back, &git_marker.to_string_lossy()) {
+                GitdirProof::Registered
+            } else {
+                GitdirProof::Foreign { admin: resolved, points_at: back }
+            }
+        }
+        Err(ref e) if is_missing(e) => match std::fs::symlink_metadata(&resolved) {
+            // The whole admin entry is gone: git has already pruned it, so no live worktree can
+            // still claim this directory.
+            Err(ref e) if is_missing(e) => GitdirProof::Orphan { repo_missing },
+            _ => GitdirProof::Malformed(format!("admin entry {resolved} exists but has no gitdir")),
+        },
+        Err(e) => GitdirProof::Malformed(format!("cannot read admin gitdir: {e}")),
+    }
+}
+
+/// The repository a `.git` file names, read out of the gitdir path shape rather than asked of git
+/// — for an orphan there is no admin entry left to ask. Only a hint: whatever comes back is fed
+/// straight into `prove_gitdir`, which re-derives the same path independently.
+fn repo_hint_from_marker(worktree_path: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(Path::new(worktree_path).join(".git")).ok()?;
+    let resolved = resolve_against(&parse_gitdir_line(&contents)?, Path::new(worktree_path));
+    let comps = lexical_components(&resolved);
+    // <repo>/.git/worktrees/<name>
+    if comps.len() >= 4 && comps[comps.len() - 2] == "worktrees" && comps[comps.len() - 3] == ".git" {
+        return Some(format!("/{}", comps[..comps.len() - 3].join("/")));
+    }
+    None
+}
+
+// --- Provenance --------------------------------------------------------------
+
+/// WHAT WE MADE, RECORDED WHEN WE MAKE IT. Path shape is not authority: the user can put their own
+/// git worktrees in `~/.operator/worktrees`, and a reaper that globs the directory would eat them.
+///
+/// It lives beside `sessions.json` rather than inside the worktree on purpose — the case it has to
+/// answer is a directory that has already lost its `.git`, and anything stored inside it is gone
+/// by then too.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Provenance {
+    pub path: String,
+    pub created_at: u64,
+    pub created_by: String,
+    pub source_repo: String,
+    pub branch: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub lane_id: Option<String>,
+}
+
+fn provenance_file() -> PathBuf {
+    // The suite exercises `create_worktree`, which records — and must never write the user's real
+    // store with tempdir paths that will be gone a second later.
+    if cfg!(test) {
+        return std::env::temp_dir().join("operator-test-worktree-provenance.json");
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".operator").join("worktree-provenance.json")
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+fn load_provenance_from(store: &Path) -> Vec<Provenance> {
+    std::fs::read_to_string(store).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// Same crash-safe temp+rename contract as `sessions.json`: a half-written provenance file would
+/// make every worktree it described unreapable, which is the safe direction but still a leak.
+fn record_provenance_in(store: &Path, entry: Provenance) {
+    let mut all = load_provenance_from(store);
+    all.retain(|p| !same_path(&p.path, &entry.path));
+    all.push(entry);
+    if let Some(dir) = store.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&all) {
+        let tmp = store.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, store);
+        }
+    }
+}
+
+fn provenance_for(store: &Path, path: &str) -> Option<Provenance> {
+    load_provenance_from(store).into_iter().find(|p| same_path(&p.path, path))
+}
+
+// --- Deferred deletion: rename now, delete later ------------------------------
+
+// NOTHING IN THIS SECTION HAS A PRODUCTION CALLER YET, hence the `dead_code` allows: switching the
+// live removal path (`remove_worktree`) onto deferred deletion is a behaviour change that cannot be
+// validated under a brief that forbids deleting anything, so it is phase 2. The machinery is built
+// and proved by the suite now so that phase 2 is a wiring change and not a design.
+
+const TRASH_DIR_NAME: &str = ".operator-worktree-trash";
+
+/// A HIDDEN SIBLING of the worktree, so the rename can never cross a volume — the whole point of
+/// deferring is that the expensive part happens after the caller has returned, and a cross-volume
+/// rename is a copy.
+fn trash_root_for(worktree_path: &Path) -> PathBuf {
+    worktree_path.parent().unwrap_or(Path::new("/")).join(TRASH_DIR_NAME)
+}
+
+/// `wt-<epoch-ms>-<8 hex>`. The nonce is what keeps two concurrent removals of same-named
+/// worktrees from landing on the same trash entry; it is derived rather than random because a
+/// dependency for 4 bytes of entropy is not worth it and a collision only needs to be improbable
+/// within one millisecond.
+#[allow(dead_code)]
+fn trash_entry_name(seed: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed).hash(&mut h);
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0).hash(&mut h);
+    format!("wt-{}-{:08x}", now_ms(), h.finish() as u32)
+}
+
+/// The sweep only ever deletes entries it can prove it named. That pattern match IS the safety.
+pub fn is_trash_entry_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("wt-") else { return false };
+    let Some((ms, nonce)) = rest.rsplit_once('-') else { return false };
+    !ms.is_empty()
+        && ms.bytes().all(|b| b.is_ascii_digit())
+        && nonce.len() == 8
+        && nonce.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Move a worktree aside so the caller can return before the recursive delete runs. `None` when
+/// the rename is unavailable and the caller must delete in place instead — and in that case the
+/// trash root we just made is removed again, so a failed deferral leaves nothing behind.
+#[allow(dead_code)]
+pub fn move_to_trash(worktree_path: &Path, mode: ReapMode) -> Option<PathBuf> {
+    let root = trash_root_for(worktree_path);
+    if mode == ReapMode::DryRun {
+        println!("[worktree:dry-run] would move {} into {}", worktree_path.display(), root.display());
+        return None;
+    }
+    let target = root.join(trash_entry_name(&worktree_path.to_string_lossy()));
+    if std::fs::create_dir_all(&root).is_ok() {
+        match std::fs::symlink_metadata(&root) {
+            Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {
+                if std::fs::rename(worktree_path, &target).is_ok() {
+                    return Some(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    // `remove_dir` and not `remove_dir_all`: entries queued by an earlier removal are still
+    // waiting in there, and this failure is not a reason to take them with us.
+    let _ = std::fs::remove_dir(&root);
+    None
+}
+
+/// Undo the rename when the bookkeeping that follows it fails. Block, don't orphan.
+#[allow(dead_code)]
+pub fn restore_from_trash(trash_path: &Path, worktree_path: &Path) -> bool {
+    std::fs::rename(trash_path, worktree_path).is_ok()
+}
+
+/// Background deletes run ONE AT A TIME through a single worker, so a burst of removals cannot
+/// saturate disk I/O while the user keeps working.
+#[allow(dead_code)]
+fn trash_worker() -> std::sync::MutexGuard<'static, std::sync::mpsc::Sender<PathBuf>> {
+    static TX: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<PathBuf>>> =
+        std::sync::OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        std::thread::spawn(move || {
+            for path in rx {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    // A warning and no more: the directory is already invisible to the user, and
+                    // the boot sweep retries it.
+                    eprintln!("[worktree] failed to delete trashed worktree {}: {e}", path.display());
+                }
+            }
+        });
+        std::sync::Mutex::new(tx)
+    })
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
+#[allow(dead_code)]
+pub fn schedule_trash_deletion(trash_path: PathBuf, mode: ReapMode) {
+    if mode == ReapMode::DryRun {
+        println!("[worktree:dry-run] would delete trashed entry {}", trash_path.display());
+        return;
+    }
+    let _ = trash_worker().send(trash_path);
+}
+
+/// Trash entries a previous run left behind — a crash or a kill mid-delete. Bounded so the scan
+/// stays cheap however many directories the root is holding.
+const TRASH_SWEEP_MAX_ENTRIES: usize = 200;
+
+pub fn sweep_trash(roots: &[PathBuf], mode: ReapMode) -> usize {
+    let mut removed = 0usize;
+    for root in roots {
+        let md = match std::fs::symlink_metadata(root) {
+            Ok(md) => md,
+            Err(_) => continue,
+        };
+        if !md.is_dir() || md.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(root) else { continue };
+        for entry in entries.flatten().take(TRASH_SWEEP_MAX_ENTRIES) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_trash_entry_name(&name) {
+                continue;
+            }
+            if mode == ReapMode::DryRun {
+                println!("[worktree:dry-run] would sweep {}", entry.path().display());
+                removed += 1;
+                continue;
+            }
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => eprintln!("[worktree] failed to sweep {}: {e}", entry.path().display()),
+            }
+        }
+    }
+    removed
+}
+
+/// Called once at app start, fire-and-forget. DRY RUN in phase 1: it reports what a real sweep
+/// would take and touches nothing.
+pub fn boot_sweep() {
+    std::thread::spawn(|| {
+        let roots = vec![trash_root_for(&worktree_root().join("any"))];
+        let n = sweep_trash(&roots, ReapMode::DryRun);
+        if n > 0 {
+            println!("[worktree:dry-run] boot sweep: {n} leftover entr(ies) would be deleted");
+        }
+    });
+}
+
+// --- The reaper: classify, decide, report -------------------------------------
+
+/// Caps on the two recursive walks. A single lane checkout is routinely a few hundred thousand
+/// files (node_modules), and neither the size report nor the nesting check is worth an unbounded
+/// scan of the user's disk.
+const WALK_MAX_ENTRIES: usize = 400_000;
+const NEST_MAX_DEPTH: usize = 6;
+const NEST_MAX_ENTRIES: usize = 20_000;
+
+fn dir_size(path: &Path) -> (u64, bool) {
+    let mut total = 0u64;
+    let mut seen = 0usize;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > WALK_MAX_ENTRIES {
+                return (total, true);
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(entry.path()),
+                Ok(ft) if ft.is_file() => total += entry.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    (total, false)
+}
+
+/// A worktree nested inside the candidate, found without asking git — the reaper's candidates
+/// often have no repo left to ask. A `.git` FILE with a `gitdir:` line is exactly the marker a
+/// linked worktree leaves.
+fn nested_worktree_marker(path: &Path) -> Option<String> {
+    let mut seen = 0usize;
+    let mut stack = vec![(path.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > NEST_MAX_ENTRIES {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(ft) = entry.file_type() else { continue };
+            if depth > 0 && name == ".git" && ft.is_file() {
+                let contents = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                if parse_gitdir_line(&contents).is_some() {
+                    return Some(dir.to_string_lossy().to_string());
+                }
+            }
+            if ft.is_dir() && depth + 1 <= NEST_MAX_DEPTH && name != ".git" && name != "node_modules" {
+                stack.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    None
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReapCandidate {
+    pub path: String,
+    pub size_bytes: u64,
+    pub size_truncated: bool,
+    /// `registered` · `orphaned` · `stranded` · `foreign` · `malformed`
+    pub state: String,
+    /// `keep` · `reap` · `refuse`
+    pub verdict: String,
+    /// The rule that decided it.
+    pub rule: String,
+    /// What the bidirectional proof found, pass or fail.
+    pub proof: String,
+    pub has_provenance: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_repo: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReapPlan {
+    pub dry_run: bool,
+    pub root: String,
+    pub scanned: usize,
+    pub reapable: usize,
+    pub reapable_bytes: u64,
+    pub candidates: Vec<ReapCandidate>,
+    /// One line per candidate — path, size, rule, proof — for the log and the report.
+    pub lines: Vec<String>,
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[i]) }
+}
+
+fn classify(path: &Path, store: &Path) -> ReapCandidate {
+    let path_s = path.to_string_lossy().to_string();
+    let prov = provenance_for(store, &path_s);
+    let repo = prov.as_ref().map(|p| p.source_repo.clone()).or_else(|| repo_hint_from_marker(&path_s));
+    let (size_bytes, size_truncated) = dir_size(path);
+
+    let mut c = ReapCandidate {
+        path: path_s.clone(),
+        size_bytes,
+        size_truncated,
+        state: "unknown".into(),
+        verdict: "refuse".into(),
+        rule: String::new(),
+        proof: String::new(),
+        has_provenance: prov.is_some(),
+        source_repo: repo.clone(),
+    };
+
+    // Guard rails first — they outrank every proof and every provenance record.
+    if let Some(reason) = dangerous_removal_reason(&path_s, repo.as_deref()) {
+        c.state = "protected".into();
+        c.rule = format!("guard rail: {reason}");
+        c.proof = "not attempted — guard rail refused first".into();
+        return c;
+    }
+
+    let proof = match repo.as_deref() {
+        Some(repo) => prove_gitdir(&path_s, repo),
+        None => match std::fs::symlink_metadata(path.join(".git")) {
+            Err(ref e) if is_missing(e) => GitdirProof::NoMarker,
+            _ => GitdirProof::Malformed("a .git exists but names no resolvable repository".into()),
+        },
+    };
+
+    match proof {
+        GitdirProof::Registered => {
+            c.state = "registered".into();
+            c.verdict = "keep".into();
+            c.rule = "still registered with git — out of scope for phase 1".into();
+            c.proof = "PASS all three: .git file → admin entry → back-reference".into();
+            return c;
+        }
+        GitdirProof::Orphan { repo_missing } => {
+            c.state = "orphaned".into();
+            c.proof = format!(
+                "PASS orphan: .git names a direct child of <repo>/.git/worktrees, admin entry absent → no live owner ({})",
+                if repo_missing { "source repo deleted" } else { "admin entry pruned" },
+            );
+        }
+        GitdirProof::Foreign { ref admin, ref points_at } => {
+            c.state = "foreign".into();
+            c.rule = "refuse: the admin entry belongs to another directory (copied .git file)".into();
+            c.proof = format!("FAIL back-reference: {admin}/gitdir → {points_at}");
+            return c;
+        }
+        GitdirProof::Malformed(ref why) => {
+            c.state = "malformed".into();
+            c.rule = format!("refuse: {why}");
+            c.proof = format!("FAIL: {why}");
+            return c;
+        }
+        GitdirProof::NoMarker => {
+            c.state = "stranded".into();
+            c.proof = "NOT RUN: no .git — nothing to prove ownership with".into();
+            if prov.is_none() {
+                c.rule = "refuse: stranded and no creation provenance — path shape is not authority".into();
+                return c;
+            }
+        }
+    }
+
+    // Nesting is checked last because it is the expensive one, and only for a directory that has
+    // already earned a reap.
+    if let Some(nested) = nested_worktree_marker(path) {
+        c.rule = format!("refuse: contains another worktree ({nested})");
+        return c;
+    }
+    if let Some(repo) = repo.as_deref() {
+        if let Some(nested) = nested_registered_worktree(&path_s, repo) {
+            c.rule = format!("refuse: contains a registered worktree ({nested})");
+            return c;
+        }
+    }
+
+    c.verdict = "reap".into();
+    c.rule = if c.state == "orphaned" {
+        "reap: orphaned worktree, ownership proved by gitdir shape with no surviving admin entry".into()
+    } else {
+        "reap: stranded, but provenance records that Operator created it".into()
+    };
+    c
+}
+
+fn reap_plan_in(root: &Path, store: &Path, mode: ReapMode) -> ReapPlan {
+    let mut candidates: Vec<ReapCandidate> = vec![];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                // Dot-entries are skipped wholesale, which is also what keeps the sweep and the
+                // reaper from ever looking at each other's trash root.
+                !name.starts_with('.') && e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            })
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        for p in paths {
+            candidates.push(classify(&p, store));
+        }
+    }
+
+    let lines = candidates
+        .iter()
+        .map(|c| {
+            let size = format!("{}{}", human_bytes(c.size_bytes), if c.size_truncated { "+" } else { "" });
+            format!(
+                "[{}] {} ({}) state={} rule={} proof={}",
+                c.verdict.to_uppercase(),
+                c.path,
+                size,
+                c.state,
+                c.rule,
+                c.proof
+            )
+        })
+        .collect();
+
+    let reapable = candidates.iter().filter(|c| c.verdict == "reap").count();
+    let reapable_bytes = candidates.iter().filter(|c| c.verdict == "reap").map(|c| c.size_bytes).sum();
+    ReapPlan {
+        dry_run: mode == ReapMode::DryRun,
+        root: root.to_string_lossy().to_string(),
+        scanned: candidates.len(),
+        reapable,
+        reapable_bytes,
+        candidates,
+        lines,
+    }
+}
+
+/// THE DELIVERABLE OF PHASE 1: what a reaper WOULD do to `~/.operator/worktrees`, and nothing else.
+/// There is no execute path wired to this — deciding when a healthy worktree retires is a policy
+/// question that is not settled, and 21GB of the user's work is what a wrong answer costs.
+pub fn reap_dry_run() -> ReapPlan {
+    reap_plan_in(&worktree_root(), &provenance_file(), ReapMode::DryRun)
+}
+
 pub fn remove_worktree(path: &str, source_root: &str) -> Result<(), String> {
+    if let Some(reason) = dangerous_removal_reason(path, Some(source_root)) {
+        return Err(format!("Refusing to remove worktree {path}: {reason}"));
+    }
+    if let Some(nested) = nested_registered_worktree(path, source_root) {
+        return Err(format!(
+            "Refusing to remove worktree {path}: it contains another registered worktree ({nested})"
+        ));
+    }
     if git(source_root, &["worktree", "remove", path]).is_err() {
         git(source_root, &["worktree", "remove", "--force", path])?;
     }
@@ -478,7 +1328,7 @@ mod tests {
         // …while the caller sits on a branch cut before that commit.
         git(p, &["checkout", "-b", "operator/stale", "HEAD~1"]).unwrap();
 
-        let made = create_worktree(p, None).expect("worktree created");
+        let made = create_worktree(p, None, None).expect("worktree created");
         let wt = made.path.clone();
         // 0 commits in `main` that the lane's branch does not have.
         let behind = git(&wt, &["rev-list", "--count", &format!("{}..main", made.branch)]).unwrap();
@@ -499,7 +1349,7 @@ mod tests {
         git(p, &["branch", "-D", "main"]).unwrap();
         assert_eq!(default_base(p), None);
 
-        let made = create_worktree(p, None).expect("a lane still starts");
+        let made = create_worktree(p, None, None).expect("a lane still starts");
         assert_eq!(made.base_branch.as_deref(), Some("HEAD"));
         git(p, &["worktree", "remove", "--force", &made.path]).ok();
     }
@@ -512,7 +1362,7 @@ mod tests {
         let repo = scratch_repo();
         let p = repo.path().to_str().unwrap();
 
-        let made = create_worktree(p, None).expect("lane created");
+        let made = create_worktree(p, None, None).expect("lane created");
         std::fs::write(format!("{}/lane.txt", made.path), "lane work\n").unwrap();
         git(&made.path, &["add", "-A"]).unwrap();
         git(&made.path, &["commit", "-m", "lane work"]).unwrap();
@@ -520,7 +1370,7 @@ mod tests {
         remove_worktree(&made.path, p).unwrap();
         assert!(!std::path::Path::new(&made.path).exists());
 
-        let back = create_worktree(p, Some(&made.branch)).expect("lane resumed");
+        let back = create_worktree(p, Some(&made.branch), None).expect("lane resumed");
         assert_eq!(back.branch, made.branch, "must reattach, not fork a new branch");
         assert_eq!(back.path, made.path, "and come back where it was");
         assert_eq!(
@@ -539,11 +1389,11 @@ mod tests {
         let repo = scratch_repo();
         let p = repo.path().to_str().unwrap();
 
-        let held = create_worktree(p, None).expect("lane created"); // still checked out
-        let fresh = create_worktree(p, Some(&held.branch)).expect("a lane still starts");
+        let held = create_worktree(p, None, None).expect("lane created"); // still checked out
+        let fresh = create_worktree(p, Some(&held.branch), None).expect("a lane still starts");
         assert_ne!(fresh.branch, held.branch);
 
-        let unknown = create_worktree(p, Some("operator/never-existed")).expect("a lane still starts");
+        let unknown = create_worktree(p, Some("operator/never-existed"), None).expect("a lane still starts");
         assert_ne!(unknown.branch, "operator/never-existed");
 
         for w in [&held.path, &fresh.path, &unknown.path] {
@@ -572,6 +1422,365 @@ mod tests {
         // Unknown branch → empty, not a panic.
         let none = branch_diff(p, "operator/gone", "main");
         assert!(none.files.is_empty() && none.diff.is_empty());
+    }
+
+    // --- Reaper: guard rails ---------------------------------------------------
+
+    #[test]
+    fn guard_rails_refuse_every_path_that_would_take_more_than_a_worktree() {
+        let repo = "/Users/x/dev/project";
+        // Each of these is a distinct way to lose the user's work, and each is a rule.
+        for (path, why) in [
+            ("", "empty"),
+            ("   ", "whitespace only"),
+            ("/Users/x/dev/project", "the repo itself"),
+            ("/", "the filesystem root"),
+            ("/Users/x/dev", "contains the repo"),
+            ("/home", "the posix home root"),
+            ("/root", "root's home"),
+            ("/home/someone", "a user home"),
+            ("/Users/someone", "a macOS user home"),
+        ] {
+            assert!(
+                dangerous_removal_reason(path, Some(repo)).is_some(),
+                "must refuse {path} ({why})",
+            );
+        }
+        // …and an ordinary sibling worktree is allowed through.
+        assert_eq!(dangerous_removal_reason("/Users/x/.operator/worktrees/project-ab12", Some(repo)), None);
+    }
+
+    #[test]
+    fn guard_rails_refuse_anything_that_contains_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert!(!home.is_empty(), "the fixture needs a HOME");
+        assert!(dangerous_removal_reason(&home, None).is_some());
+        let parent = Path::new(&home).parent().unwrap().to_string_lossy().to_string();
+        assert!(dangerous_removal_reason(&parent, None).is_some(), "a parent of $HOME takes $HOME with it");
+    }
+
+    #[test]
+    fn path_containment_separates_dotdot_from_a_directory_merely_named_dotdot_something() {
+        // `..` escapes the parent; `..name` is an ordinary child whose name starts with two dots.
+        // A string-prefix test gets both wrong, in opposite directions.
+        assert!(contains_path("/a/b", "/a/b/..name"));
+        assert!(!contains_path("/a/b", "/a/b/.."));
+        assert!(!contains_path("/a/b", "/a/b/../c"));
+        assert!(contains_path("/a/b", "/a/b/..name/deeper"));
+        // And a sibling whose name merely starts with the same characters is not inside.
+        assert!(!contains_path("/a/b", "/a/bc"));
+        assert!(contains_path("/a/b", "/a/b"));
+    }
+
+    #[test]
+    fn removal_refuses_a_worktree_that_contains_another_registered_worktree() {
+        // `git worktree remove --force` would delete the nested worktree's files as ordinary
+        // untracked content and leave git a prunable record — silent data loss both ways.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let outer = repo.path().parent().unwrap().join(format!("outer-{}", short_id()));
+        let outer_s = outer.to_str().unwrap();
+        git(p, &["worktree", "add", "-b", "operator/outer", outer_s, "main"]).unwrap();
+        let inner = outer.join("nested");
+        git(p, &["worktree", "add", "-b", "operator/inner", inner.to_str().unwrap(), "main"]).unwrap();
+
+        assert!(nested_registered_worktree(outer_s, p).is_some(), "the fixture must actually nest");
+        let err = remove_worktree(outer_s, p).expect_err("must refuse");
+        assert!(err.contains("contains another registered worktree"), "{err}");
+        // The nested worktree's files are still there — that is the whole point.
+        assert!(inner.join(".git").exists());
+
+        git(p, &["worktree", "remove", "--force", inner.to_str().unwrap()]).ok();
+        git(p, &["worktree", "remove", "--force", outer_s]).ok();
+    }
+
+    // --- Reaper: the bidirectional gitdir proof ---------------------------------
+
+    #[test]
+    fn a_live_worktree_proves_registered_and_an_unlinked_one_proves_orphan() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let wt = repo.path().parent().unwrap().join(format!("wt-{}", short_id()));
+        let wt_s = wt.to_str().unwrap();
+        git(p, &["worktree", "add", "-b", "operator/proof", wt_s, "main"]).unwrap();
+
+        assert_eq!(prove_gitdir(wt_s, p), GitdirProof::Registered);
+
+        // Now make it what the 4 reapable directories are: the admin entry pruned away, the
+        // directory and its `.git` file left behind.
+        let admin = repo.path().join(".git").join("worktrees").join(wt.file_name().unwrap());
+        std::fs::remove_dir_all(&admin).unwrap();
+        assert_eq!(prove_gitdir(wt_s, p), GitdirProof::Orphan { repo_missing: false });
+
+        std::fs::remove_dir_all(&wt).ok();
+    }
+
+    #[test]
+    fn a_worktree_whose_repo_was_deleted_outright_still_proves_orphan() {
+        // THE SHAPE THE MEASURED PILE IS ACTUALLY IN: not a pruned admin entry but a repository
+        // that no longer exists at all. Requiring the repo to answer would refuse exactly the
+        // directories nobody can ever reclaim.
+        let repo = scratch_repo();
+        let repo_path = repo.path().to_path_buf();
+        let wt = repo_path.parent().unwrap().join(format!("gone-{}", short_id()));
+        let wt_s = wt.to_str().unwrap().to_string();
+        git(repo_path.to_str().unwrap(), &["worktree", "add", "-b", "operator/gone", &wt_s, "main"]).unwrap();
+
+        let repo_s = repo_path.to_string_lossy().to_string();
+        drop(repo); // the whole repository goes away, the worktree directory stays
+
+        assert!(!Path::new(&repo_s).exists(), "the fixture must actually delete the repo");
+        assert_eq!(prove_gitdir(&wt_s, &repo_s), GitdirProof::Orphan { repo_missing: true });
+        // The repo hint is read straight out of the surviving `.git` file, which is the only
+        // record of who made it once the repository is gone.
+        assert!(same_path(&repo_hint_from_marker(&wt_s).expect("repo named by .git"), &repo_s));
+
+        std::fs::remove_dir_all(&wt).ok();
+    }
+
+    #[test]
+    fn a_copied_git_file_is_refused_because_the_back_reference_points_elsewhere() {
+        // THE CASE THE THIRD STEP EXISTS FOR. Steps 1 and 2 pass perfectly: the `.git` file is
+        // well-formed and names a direct child of `<repo>/.git/worktrees`. Only the admin entry's
+        // back-reference says it belongs to somebody else.
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let real = repo.path().parent().unwrap().join(format!("real-{}", short_id()));
+        git(p, &["worktree", "add", "-b", "operator/real", real.to_str().unwrap(), "main"]).unwrap();
+
+        let impostor = repo.path().parent().unwrap().join(format!("impostor-{}", short_id()));
+        std::fs::create_dir_all(&impostor).unwrap();
+        std::fs::copy(real.join(".git"), impostor.join(".git")).unwrap();
+
+        match prove_gitdir(impostor.to_str().unwrap(), p) {
+            GitdirProof::Foreign { .. } => {}
+            other => panic!("a copied .git must not prove ownership, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&impostor).ok();
+        git(p, &["worktree", "remove", "--force", real.to_str().unwrap()]).ok();
+    }
+
+    #[test]
+    fn a_directory_with_no_git_marker_proves_nothing_and_a_plain_repo_is_malformed() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+
+        let bare = repo.path().parent().unwrap().join(format!("bare-{}", short_id()));
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(prove_gitdir(bare.to_str().unwrap(), p), GitdirProof::NoMarker);
+
+        // A `.git` DIRECTORY is a repository of its own, never a worktree of ours.
+        let own = repo.path().parent().unwrap().join(format!("own-{}", short_id()));
+        std::fs::create_dir_all(own.join(".git")).unwrap();
+        assert!(matches!(prove_gitdir(own.to_str().unwrap(), p), GitdirProof::Malformed(_)));
+
+        // A gitdir pointing somewhere that is not a direct child of `<repo>/.git/worktrees`.
+        let nested = repo.path().parent().unwrap().join(format!("nested-{}", short_id()));
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join(".git"),
+            format!("gitdir: {}/.git/worktrees/a/b\n", repo.path().display()),
+        )
+        .unwrap();
+        assert!(matches!(prove_gitdir(nested.to_str().unwrap(), p), GitdirProof::Malformed(_)));
+
+        for d in [&bare, &own, &nested] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    // --- Reaper: provenance ------------------------------------------------------
+
+    #[test]
+    fn provenance_survives_the_directory_and_is_the_only_evidence_for_a_stranded_one() {
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("worktree-provenance.json");
+        record_provenance_in(&store, Provenance {
+            path: "/w/project-ab12".into(),
+            created_at: 1,
+            created_by: "operator".into(),
+            source_repo: "/dev/project".into(),
+            branch: "operator/ab12".into(),
+            lane_id: Some("code".into()),
+        });
+        assert_eq!(provenance_for(&store, "/w/project-ab12").unwrap().lane_id.as_deref(), Some("code"));
+        assert!(provenance_for(&store, "/w/somebody-elses").is_none());
+
+        // Re-recording the same path replaces rather than duplicates.
+        record_provenance_in(&store, Provenance {
+            path: "/w/project-ab12".into(),
+            created_at: 2,
+            created_by: "operator".into(),
+            source_repo: "/dev/project".into(),
+            branch: "operator/ab12".into(),
+            lane_id: None,
+        });
+        assert_eq!(load_provenance_from(&store).len(), 1);
+        assert_eq!(provenance_for(&store, "/w/project-ab12").unwrap().created_at, 2);
+    }
+
+    #[test]
+    fn a_stranded_directory_is_reaped_only_when_provenance_says_we_made_it() {
+        // The 3 measured stranded directories have no `.git`, so the proof cannot run on them.
+        // Path shape is not authority — the user can keep their own worktrees in the same folder.
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("worktree-provenance.json");
+        let ours = root.path().join("project-ours");
+        let theirs = root.path().join("project-theirs");
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(ours.join("file.txt"), "x").unwrap();
+
+        record_provenance_in(&store, Provenance {
+            path: ours.to_string_lossy().to_string(),
+            created_at: 1,
+            created_by: "operator".into(),
+            source_repo: "/dev/project".into(),
+            branch: "operator/ours".into(),
+            lane_id: None,
+        });
+
+        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        assert!(plan.dry_run);
+        assert_eq!(plan.scanned, 2);
+        let ours_c = plan.candidates.iter().find(|c| c.path.ends_with("project-ours")).unwrap();
+        let theirs_c = plan.candidates.iter().find(|c| c.path.ends_with("project-theirs")).unwrap();
+        assert_eq!(ours_c.verdict, "reap");
+        assert_eq!(ours_c.state, "stranded");
+        assert_eq!(theirs_c.verdict, "refuse");
+        assert!(theirs_c.rule.contains("provenance"), "{}", theirs_c.rule);
+        // A dry run deletes nothing, whatever it decided.
+        assert!(ours.exists() && theirs.exists());
+    }
+
+    #[test]
+    fn the_dry_run_keeps_a_registered_worktree_and_reaps_an_orphaned_one() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap().path().join("provenance.json");
+
+        let live = root.path().join("live");
+        let dead = root.path().join("dead");
+        git(p, &["worktree", "add", "-b", "operator/live", live.to_str().unwrap(), "main"]).unwrap();
+        git(p, &["worktree", "add", "-b", "operator/dead", dead.to_str().unwrap(), "main"]).unwrap();
+        std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("dead")).unwrap();
+
+        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        let live_c = plan.candidates.iter().find(|c| c.path.ends_with("live")).unwrap();
+        let dead_c = plan.candidates.iter().find(|c| c.path.ends_with("dead")).unwrap();
+        assert_eq!((live_c.state.as_str(), live_c.verdict.as_str()), ("registered", "keep"));
+        assert_eq!((dead_c.state.as_str(), dead_c.verdict.as_str()), ("orphaned", "reap"));
+        assert_eq!(plan.reapable, 1);
+        assert!(live_c.proof.starts_with("PASS all three"), "{}", live_c.proof);
+        // Both directories are still on disk: a dry run reports, it does not act.
+        assert!(live.exists() && dead.exists());
+
+        git(p, &["worktree", "remove", "--force", live.to_str().unwrap()]).ok();
+    }
+
+    #[test]
+    fn an_orphan_holding_another_worktree_is_refused_even_though_its_own_proof_passed() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap().path().join("provenance.json");
+
+        let outer = root.path().join("outer");
+        git(p, &["worktree", "add", "-b", "operator/outer2", outer.to_str().unwrap(), "main"]).unwrap();
+        let inner = outer.join("inner");
+        git(p, &["worktree", "add", "-b", "operator/inner2", inner.to_str().unwrap(), "main"]).unwrap();
+        // Orphan the OUTER one only: its own proof now passes, and deleting it would still take
+        // the live inner worktree's files with it.
+        std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("outer")).unwrap();
+
+        let plan = reap_plan_in(root.path(), &store, ReapMode::DryRun);
+        let c = plan.candidates.iter().find(|c| c.path.ends_with("outer")).unwrap();
+        assert_eq!(c.state, "orphaned");
+        assert_eq!(c.verdict, "refuse");
+        assert!(c.rule.contains("contains another worktree"), "{}", c.rule);
+        assert!(c.proof.starts_with("PASS orphan"), "the proof passed; the nesting rule is what refused");
+
+        git(p, &["worktree", "remove", "--force", inner.to_str().unwrap()]).ok();
+        std::fs::remove_dir_all(&outer).ok();
+    }
+
+    // --- Reaper: deferred trash + sweep -------------------------------------------
+
+    #[test]
+    fn a_trash_rename_is_reversible_and_only_generated_names_are_ever_swept() {
+        let parent = tempfile::tempdir().unwrap();
+        let wt = parent.path().join("project-ab12");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("keep.txt"), "work").unwrap();
+
+        // The dry run does not move anything.
+        assert!(move_to_trash(&wt, ReapMode::DryRun).is_none());
+        assert!(wt.join("keep.txt").exists());
+
+        let trashed = move_to_trash(&wt, ReapMode::Execute).expect("renamed aside");
+        assert!(!wt.exists());
+        assert_eq!(trashed.parent().unwrap(), parent.path().join(TRASH_DIR_NAME));
+        assert!(is_trash_entry_name(&trashed.file_name().unwrap().to_string_lossy()));
+
+        // Restore puts it back byte for byte — block, don't orphan.
+        assert!(restore_from_trash(&trashed, &wt));
+        assert_eq!(std::fs::read_to_string(wt.join("keep.txt")).unwrap(), "work");
+
+        // Sweep only ever removes entries it can prove it named.
+        let trash_root = parent.path().join(TRASH_DIR_NAME);
+        let mine = trash_root.join("wt-1754870000000-deadbeef");
+        let theirs = trash_root.join("someone-elses-backup");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        assert_eq!(sweep_trash(&[trash_root.clone()], ReapMode::DryRun), 1, "dry run counts, deletes nothing");
+        assert!(mine.exists());
+        assert_eq!(sweep_trash(&[trash_root.clone()], ReapMode::Execute), 1);
+        assert!(!mine.exists());
+        assert!(theirs.exists(), "a directory we did not name is not ours to delete");
+    }
+
+    #[test]
+    fn trash_entry_names_are_unique_and_recognised_exactly() {
+        let a = trash_entry_name("/w/project-ab12");
+        let b = trash_entry_name("/w/project-ab12");
+        assert_ne!(a, b, "the nonce is what stops concurrent same-named removals colliding");
+        assert!(is_trash_entry_name(&a) && is_trash_entry_name(&b));
+        for bad in ["wt-", "wt-abc-deadbeef", "wt-123-DEADBEEF", "wt-123-dead", "project-ab12", "wt-123-deadbeeff"] {
+            assert!(!is_trash_entry_name(bad), "{bad} must not look like ours");
+        }
+    }
+
+    #[test]
+    fn creating_a_lane_records_who_made_it() {
+        let repo = scratch_repo();
+        let p = repo.path().to_str().unwrap();
+        let made = create_worktree(p, None, Some("code")).expect("lane created");
+
+        let rec = provenance_for(&provenance_file(), &made.path).expect("provenance recorded");
+        assert_eq!(rec.created_by, "operator");
+        assert_eq!(rec.lane_id.as_deref(), Some("code"));
+        assert_eq!(rec.branch, made.branch);
+        assert!(same_path(&rec.source_repo, p));
+        assert!(rec.created_at > 0);
+
+        git(p, &["worktree", "remove", "--force", &made.path]).ok();
+    }
+
+    /// The phase-1 deliverable, run against the REAL `~/.operator/worktrees`:
+    /// `cargo test -- --ignored --nocapture dry_run_over_the_real_worktree_root`.
+    /// Ignored by default because it walks tens of gigabytes and its output is a report, not an
+    /// assertion. It deletes nothing — there is no execute path wired to `reap_dry_run`.
+    #[test]
+    #[ignore]
+    fn dry_run_over_the_real_worktree_root() {
+        let plan = reap_dry_run();
+        println!("root={} scanned={} reapable={} ({})", plan.root, plan.scanned, plan.reapable, human_bytes(plan.reapable_bytes));
+        for line in &plan.lines {
+            println!("{line}");
+        }
     }
 
     #[test]

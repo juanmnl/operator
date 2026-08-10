@@ -1285,10 +1285,18 @@ fn inspect_repo(cwd: String) -> worktree::RepoInfo {
 }
 
 #[tauri::command]
-fn worktree_create(cwd: String, branch: Option<String>) -> Result<worktree::WorktreeCreateResult, String> {
+fn worktree_create(cwd: String, branch: Option<String>, lane_id: Option<String>) -> Result<worktree::WorktreeCreateResult, String> {
     // `branch` = a suspended lane's own branch, to be reattached rather than replaced (see
     // worktree::reattach_worktree). Absent for every ordinary launch.
-    worktree::create_worktree(&cwd, branch.as_deref())
+    // `lane_id` labels the creation-provenance record — see worktree::Provenance.
+    worktree::create_worktree(&cwd, branch.as_deref(), lane_id.as_deref())
+}
+
+/// What a worktree reaper WOULD remove from `~/.operator/worktrees`, and nothing else: phase 1
+/// has no execute path (see worktree::reap_dry_run).
+#[tauri::command]
+fn worktree_reap_dry_run() -> worktree::ReapPlan {
+    worktree::reap_dry_run()
 }
 
 #[tauri::command]
@@ -2292,6 +2300,9 @@ pub fn run() {
                 let _ = app.handle().run_on_main_thread(|| apply_dock_icon("dark"));
             }
             std::thread::spawn(prune_pasted_images);
+            // Fire-and-forget retry of any worktree trash a previous run was killed mid-delete.
+            // DRY RUN in phase 1 — it reports and deletes nothing (see worktree::boot_sweep).
+            worktree::boot_sweep();
             transcript::start_tailer(app.handle().clone());
             build_tray(app)?;
             tray_anim::start(app.handle().clone());
@@ -2322,6 +2333,7 @@ pub fn run() {
             get_sessions,
             inspect_repo,
             worktree_create,
+            worktree_reap_dry_run,
             worktree_status,
             path_exists,
             project_identity,

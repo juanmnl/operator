@@ -2206,7 +2206,7 @@ export function DashboardView() {
         // tree its transcript remembers writing (see worktree::reattach_worktree). A fresh lane
         // passes nothing and forks from the default branch exactly as before.
         const reuse = count === 1 ? opts?.resume?.worktreeBranch : undefined
-        const result = await window.operator.worktreeCreate(cwd, reuse)
+        const result = await window.operator.worktreeCreate(cwd, reuse, opts?.roleId)
         // `!result` first: `'error' in undefined` THROWS, and it threw out of the whole launch —
         // so a worktree backend that answered unexpectedly took the session with it rather than
         // falling back. Now it degrades the same way a reported error does.
@@ -2584,7 +2584,7 @@ export function DashboardView() {
     // rather than rebuilding a worktree over a live one.
     const cwdGone = !(await window.operator.pathExists?.(saved.cwd).catch(() => true) ?? true)
     if (saved.worktreeBranch && saved.sourceCwd && cwdGone) {
-      const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch)
+      const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch, saved.roleId)
       if (made && !('error' in made)) {
         cwd = made.path
         worktreeBranch = made.branch
