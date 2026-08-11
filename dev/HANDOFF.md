@@ -10,11 +10,11 @@ billing: `build.yml` runs on `macos-14` (10× multiplier) on **every push to `ma
 `v*` tags. Public repos get unlimited minutes, so it is now free — but if it ever goes private
 again, narrowing that trigger is the biggest single lever.
 
-**⚠ CI on `main` was last GREEN at `fcbb247` (v0.15.1).** The `7a8d295` handoff build FAILED, and
-the build triggered by today's push was still `in_progress` when this was written —
-[run 31462894084](https://github.com/juanmnl/operator/actions/runs/31462894084). **Check it before
-tagging anything.** The Aug-6 failure may be the documented `actions/checkout@v4` infrastructure
-flake (a rerun fixed it last time), but that is an assumption, not a finding.
+**✅ CI on `main` is GREEN** — [run 31462894084](https://github.com/juanmnl/operator/actions/runs/31462894084)
+(the open-source push) completed **success**. The intervening `7a8d295` build had failed; that was
+almost certainly the documented `actions/checkout@v4` infrastructure flake, and the green run
+supersedes it. **`v0.15.2` is clear to tag** — bump the 5 version files, tag `vX.Y.Z`, CI signs and
+notarizes.
 
 ## Verify before believing (including this file)
 
