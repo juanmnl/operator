@@ -12,64 +12,42 @@
   <em>You run the agents. Operator makes the work visible and steerable.</em>
 </p>
 
+<p align="center">
+  <a href="#install"><img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-1d1d1f" /></a>
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue" /></a>
+  <a href="https://claude.com/claude-code"><img alt="Claude Code" src="https://img.shields.io/badge/requires-Claude%20Code-6b4fbb" /></a>
+</p>
+
 ---
 
-Operator is a desktop app for running a *team* of Claude Code agents on one codebase. Give a project a roster of lanes — each with its own model, reasoning effort and optional git worktree — put work on its board, and watch every tool call and subagent live. Agents hand work to each other; you approve what gets commissioned and review the diff before it lands.
+Operator is a macOS desktop app for running a *team* of Claude Code agents on one codebase. Give a project a roster of lanes — each with its own model, reasoning effort and optional git worktree — put work on its board, and watch every tool call and subagent live. Agents hand work to each other; you approve what gets commissioned and review the diff before it lands.
 
-### The problem
+It **orchestrates** Claude Code rather than replacing it: it hosts the real CLI and reads the transcripts it already writes. Nothing is installed into your projects, no traffic is proxied, and a `claude` you run in any other terminal is completely unaffected.
 
-You want to run several Claude Code sessions at once — one refactoring a module, one writing tests, one debugging a deploy script — and let each delegate to subagents. But each session lives in its own terminal: you're constantly switching between them, scanning for permission prompts, with no view of who delegated to whom, how long a tool ran, or what any of it cost. And running them in parallel against the same repo means they trip over each other's changes.
+> **Status:** built and used daily by its author, but young and single-maintainer. Expect rough edges. Issues and PRs welcome.
 
-### What Operator does
+## Install
 
-**The work is the primary object.** You open a project and see its *board* — what's queued, what's running, what's blocked on you, what's done — not an org chart of idle agents. The team is one tab away, and it exists to get the board moving.
+Download the latest `.dmg` from **[operator-releases](https://github.com/juanmnl/operator-releases/releases/latest)** — signed and notarized, so it opens without a Gatekeeper warning.
 
-#### The project
+**Requirements:** macOS on Apple Silicon, and [Claude Code](https://claude.com/claude-code) installed and logged in. Operator drives the `claude` CLI you already have.
 
-- **A board, as project home.** Every project opens on a four-column board — **Backlog · Running · Waiting · Done**. Each column scrolls on its own, so a long Done list never pushes the live work off screen. Type a task, assign it to a lane, and send it; or queue it unassigned and decide later.
-- **A team of agent lanes.** **Operator**, Research, Code, Review, Design, QA — each lane pins a model, a reasoning effort, an optional isolated worktree, and a standing charter. Drag to reorder, launch one or all. Live lanes show as full cards; idle ones collapse to a single launchable row, so a quiet project doesn't open on a wall of identical placeholders. The Operator lane knows the team and routes work to the best-suited lane, doing the job itself when none fits.
-- **Lanes are scoped to a task, not to your session.** A lane that reports its work done closes itself after a keep-warm window, and the next dispatch brings it back — `--resume`, same conversation, on the branch it left. Closing **detaches**: the thread stays resumable and its transcript readable, and only your own close forgets a lane. Silence is not success, so a lane that never reports isn't taken by the short path at all — a backstop closes it and marks its work **abandoned** rather than done, capturing the diff but skipping the verification gate. The lane you're looking at, and the coordinator, are never auto-closed.
-- **A moodboard.** Drop reference images straight onto a project-scoped board — kept beside the work rather than in another app.
-- **Project-first navigation.** A persistent rail of your projects down the left edge; entering one scopes everything — sidebar, board, roster — to it. `Cmd+Shift+O` returns to the gallery, which lists every project and a cross-project activity view.
+Updates are automatic — the app checks on launch and offers a one-click **Install & Restart**.
 
-#### Delegation
+### From source
 
-- **Hand-offs that actually land.** An agent delegates with a single line — `OPERATOR-DISPATCH [lane] task`. Operator types it into that lane if it's running, or **launches the lane** with the task as its opening brief if it isn't, then tells the sender how it landed. Directives parse even when the model wraps them in bullets or backticks, and submissions are spaced and nudged so they can't merge into one draft or strand half-typed in a composer.
-- **An authority gate, per dispatch.** Work an agent commissions from another agent lands in **Waiting** for you to **Approve** or **Decline** — explicit, one card at a time. No approve-all and no timeout: a timeout that approves is not a guardrail, and one button that approves eleven things is how you commission work you never read.
-- **A visible outcome for every hand-off.** Delivered, held, declined, or sitting unread in a lane that never started — each dispatch is logged with the outcome it actually got, and a card whose lane isn't running takes you to the roster to start it. The outcome is *observed*, not assumed: Operator watches the receiving session's own transcript for the message it sent, so "delivered" means a turn actually began.
-- **Lanes report back through a tool, not through prose.** Operator exposes a small MCP surface to the sessions it runs — a lane calls `operator__report` to hand its result to the coordinator directly, and `operator__task_status` to mark a task done or blocked at the moment it happens. The board stops having to infer completion from the shape of a transcript.
-- **A kill switch for agent chatter.** Agent-to-agent delivery can be paused from the team screen — reachable *during* an incident, next to the lanes whose traffic it stops.
+```bash
+npm install
+npm run tauri dev     # or `npm run dev` for the frontend alone
+```
 
-#### Watching the work
+## First five minutes
 
-- **A live operations timeline.** Each session's tool calls and subagent delegations as they happen — nested by who-spawned-whom, with a live-ticking duration on the in-flight tool and elapsed time on finished ones. Reconstructed straight from Claude Code's own transcripts, so it needs nothing installed.
-- **Three ways to watch one session.** **Console** (the real terminal), **Chat** (a document-style read of the conversation, with its own composer), and **Preview** — a live view of the app the session is building. The preview's port is *attributed*, never guessed: Operator reserves a port per working directory and reads the URL the session itself prints, so a sibling agent's dev server on `:5173` can never be shown as this one's app. A picker appears when a session serves several.
-- **Annotate what you see.** Drop pins and boxes on the preview, or inspect a real element down to `component@file:line`, and send either straight to the agent or into the task queue.
-- **A side panel that follows the work.** **Plan** and **Diff** beside any session, resizable, without leaving the surface you're on.
+Press `Cmd+N` (or **+ New Session**) and pick a folder — that folder becomes a project. If it's a git repo, worktree isolation defaults on; bump **Agents** above 1 to fan one task across parallel worktree agents.
 
-#### The repo
+You land on the project's **board**. Type a task, assign it to a lane, and send it — the lane launches if it isn't already running. **Team** is where you shape the roster: pin each lane's model, effort, worktree and charter, or add one. `Cmd+Shift+O` takes you back to every project.
 
-- **Isolated worktrees + fan-out.** Run several agents against one repo in parallel — each gets its own git worktree, so their changes never collide. Fan a single task across N parallel agents, each badged so the group reads at a glance.
-- **A worktree lives as long as its task.** Resume a closed lane and it reattaches to the tree holding its own committed work rather than starting somewhere new. Before any worktree is removed, uncommitted edits are committed first — and if that commit fails, the removal is cancelled rather than completed. Nothing an agent wrote is thrown away by cleanup.
-- **In-app diff review.** See a session's changes in a built-in diff viewer, then **Commit**, **Merge** back to your base branch, or **Discard** — no terminal required.
-- **Tasks with provenance.** Every task carries who ran it, where, and the diff it produced — with an optional check command (`npm test`) that has to go green before it reads "done".
-
-#### Around the edges
-
-- **An agent library with per-task models.** A visual editor over your `.claude/agents/*.md` — the headline being which model runs each agent (Haiku for extraction, Sonnet for general work, Opus for hard reasoning), with cost and speed hints at the point of choice.
-- **A usage & cost dashboard.** Token-driven insight into what's driving your usage — high-context, subagent-heavy and long-running sessions — plus a `/usage`-style per-model breakdown: input/output/cache, cost, and API vs. wall time.
-- **Never lose your place.** Open sessions are saved continuously to a crash-safe store; relaunch and pick up under "Continue where you left off" — **Resume** the exact conversation or reopen clean. Bring back a whole **project** in one action, every previously open agent continuing its conversation.
-- **Close and shelve are different verbs.** **Close** ends a project's agents and leaves the project where it is; **Shelve** is the separate, deliberate act of filing it away. Stopping work on something is not the same as putting it in a drawer, so one no longer implies the other.
-- **Drop & click.** Drop an image anywhere on the window to paste its path into the active session; click links in the terminal to open them in your browser.
-- **Three themes, light and dark.** Mission Control, Mr Pink and 1984 — six palettes in all, every colour a semantic token, contrast measured rather than eyeballed.
-- **Self-updating.** Tagged releases are signed, notarized and published automatically; the app checks on launch and offers a one-click "Install & Restart".
-- **Command palette** (`Cmd+K`) and a menu-bar tray whose menu lists your active sessions and their live states.
-
-### What Operator is not
-
-It doesn't proxy your API traffic, doesn't wrap Claude Code in its own agent loop, and doesn't ask you to move your config. It **orchestrates** Claude Code — hosting the real CLI and reading the transcripts it already writes. A `claude` you run in any other terminal is completely unaffected, and if you quit Operator tomorrow your projects, agents and settings are exactly where Claude Code left them.
-
-### How it works
+## How it works
 
 Operator is a **pure observer** of the sessions it launches — nothing installed, no global config, no machine-wide hooks. It pins each session's id at launch (`claude --session-id <uuid>`) and tails that session's transcript to rebuild the timeline live:
 
@@ -85,82 +63,53 @@ Permissions are handled by Claude Code itself in the terminal as usual; Operator
 
 Everything Operator knows about a session comes from that pipeline or from what it handed the session at launch — it never inspects another process. Dev-server ports, for example, are attributed from the port Operator reserved for that working directory plus the URL the session printed in its own output, then confirmed with a loopback connect. That's a deliberate constraint: reading another process's open files requires privileges macOS prompts for, repeatedly, and a background poll is the worst possible place to need them.
 
-### Install
+If you quit Operator tomorrow, your projects, agents and settings are exactly where Claude Code left them.
 
-Download the latest `.dmg` from **[operator-releases](https://github.com/juanmnl/operator-releases/releases/latest)** — signed and notarized, so it opens without a Gatekeeper warning. macOS on Apple Silicon.
+## What it does
 
-Operator drives the `claude` CLI you already have, so [Claude Code](https://claude.com/claude-code) needs to be installed and logged in. Nothing else is configured, and nothing is installed into your projects.
+**The work is the primary object.** You open a project and see its *board* — what's queued, running, blocked on you, done — not an org chart of idle agents. The team is one tab away, and it exists to get the board moving.
 
-Updates are automatic: the app checks on launch and offers a one-click **Install & Restart**.
+### The project
 
-### Quick start (from source)
+- **A board, as project home.** Four columns — **Backlog · Running · Waiting · Done** — each scrolling on its own, so a long Done list never pushes live work off screen.
+- **A team of agent lanes.** Operator, Research, Code, Review, Design, QA — each pins a model, a reasoning effort, an optional isolated worktree, and a standing charter. Live lanes show as full cards; idle ones collapse to a launchable row. The Operator lane routes work to the best-suited lane, and does the job itself when none fits.
+- **Lanes are scoped to a task, not to your session.** A lane that reports done closes itself after a keep-warm window; the next dispatch brings it back with `--resume`, same conversation, on the branch it left. Closing **detaches** — the thread stays resumable and its transcript readable. Silence is not success: a lane that never reports is closed by a backstop and its work marked **abandoned** rather than done.
+- **Project-first navigation.** A persistent rail of projects down the left edge; entering one scopes sidebar, board and roster to it.
 
-```bash
-npm install
-npm run tauri dev   # or `npm run dev` for the frontend alone
-```
+### Delegation
 
-Press `Cmd+N` (or click **+ New Session**) and pick a folder — that folder becomes a project. If it's a git repo, worktree isolation defaults on; bump **Agents** above 1 to fan the same task across parallel worktree agents.
+- **Hand-offs that land.** An agent delegates with one line — `OPERATOR-DISPATCH [lane] task`. Operator types it into that lane if it's running, or **launches the lane** with the task as its opening brief if it isn't, then tells the sender how it landed.
+- **An authority gate, per dispatch.** Work an agent commissions from another lands in **Waiting** for you to **Approve** or **Decline**, one card at a time. No approve-all and no timeout: a timeout that approves is not a guardrail.
+- **A visible outcome for every hand-off.** Delivered, held, declined, or unread in a lane that never started. The outcome is *observed*, not assumed — Operator watches the receiving session's transcript for the message it sent, so "delivered" means a turn actually began.
+- **Lanes report through a tool, not prose.** A small MCP surface — `operator__report` hands a result to the coordinator directly, `operator__task_status` marks a task done or blocked at the moment it happens. The board stops inferring completion from the shape of a transcript.
 
-You land on the project's **board**. Type a task, assign it to a lane, and send it — the lane launches if it isn't already running. **Team** is where you shape the roster: pin each lane's model, effort, worktree and charter, or add one. `Cmd+Shift+O` takes you back to every project.
+### Watching the work
 
-### Development
+- **A live operations timeline.** Tool calls and subagent delegations as they happen, nested by who-spawned-whom, with live-ticking durations. Reconstructed from Claude Code's own transcripts, so it needs nothing installed.
+- **Three ways to watch one session.** **Console** (the real terminal), **Chat** (a document-style read with its own composer), and **Preview** — a live view of the app the session is building, on a port that's *attributed* rather than guessed.
+- **Annotate what you see.** Pins and boxes on the preview, or inspect a real element down to `component@file:line`, and send either to the agent or the task queue.
+- **A side panel that follows the work.** **Plan** and **Diff** beside any session, resizable.
 
-```bash
-npm test                       # unit tests (vitest)
-cargo test --manifest-path src-tauri/Cargo.toml
-npm run build                  # tsc + vite
-```
+### The repo
 
-The terminal is the hard part of this app, so it has its own harnesses. Each boots the
-**production** xterm config in headless WebKit (the same engine family as the app's
-WKWebView) rather than a stand-in:
+- **Isolated worktrees + fan-out.** Each agent gets its own git worktree, so parallel changes never collide. Fan one task across N agents, each badged so the group reads at a glance.
+- **A worktree lives as long as its task.** Resume a closed lane and it reattaches to the tree holding its committed work. Before any worktree is removed, uncommitted edits are committed first — and if that commit fails, the removal is cancelled rather than completed.
+- **In-app diff review.** See a session's changes, then **Commit**, **Merge**, or **Discard** — no terminal required.
+- **Tasks with provenance.** Every task carries who ran it, where, and the diff it produced, with an optional check command (`npm test`) that has to go green before it reads "done".
 
-| Command | Answers |
-| --- | --- |
-| `npm run verify:width` | Do xterm and Claude Code agree on every glyph's cell width? (A disagreement drifts the cursor and garbles scrollback.) |
-| `npm run verify:dom` | Does the DOM renderer leave stale text under incremental writes? (Separates a renderer bug from a compositor one.) |
-| `npm run verify:visual` | What do the symbol/emoji fallback paths actually render? |
-| `npm run verify:input` | Do keystrokes reach the pty in order? |
+### Around the edges
 
-`dev/` holds a mock `window.operator` bridge that boots the real renderer against
-fixtures in a plain browser, so the UI can be driven and screenshotted without the Tauri
-shell. Start a dev server (`npx vite --port 1440`) and run any of the `dev/drive-*.mjs`
-scripts against it — each drives a real surface and asserts on the real DOM. It's
-development-only: the production build declares its entry points explicitly, so `dev/`
-is never bundled.
+- **An agent library with per-task models** — a visual editor over your `.claude/agents/*.md`, with cost and speed hints at the point of choice.
+- **A usage & cost dashboard** — input/output/cache, cost, and API vs. wall time per model.
+- **Never lose your place.** Open sessions are saved continuously to a crash-safe store; relaunch and **Resume** the exact conversation, or bring back a whole project in one action.
+- **Three themes, light and dark** — Mission Control, Mr Pink and 1984; every colour a semantic token, contrast measured rather than eyeballed.
+- **Self-updating**, plus a **command palette** (`Cmd+K`) and a menu-bar tray listing active sessions and their live states.
 
-Two house rules that the drivers exist to enforce, both learned the expensive way:
-
-- **A driver must be able to fail.** Every one exits non-zero on a failed assertion, and
-  the way to earn that claim is to revert the fix and watch the driver go red before
-  restoring it. A driver that has never failed is a driver that is asserting nothing —
-  we have shipped one that read an empty screen and passed for two releases.
-- **A fixture must not be kinder than reality.** A mock more generous than the real thing
-  validates features that cannot work: a disclosure whose body was always empty, a
-  dispatch button that had only ever been clicked on lanes that were running. When a
-  driver can't reach a case, the fix belongs in the fixture, not in the assertion.
-
-### Building a signed & notarized release
-
-The build is configured to sign with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`). Signing happens automatically; notarization runs too if Apple credentials are present in the environment:
-
-```bash
-# one-time: generate an app-specific password at appleid.apple.com
-export APPLE_ID="you@example.com"
-export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
-export APPLE_TEAM_ID="UJS4C5GUCW"
-
-npm run tauri build                           # signs, notarizes, and staples
-```
-
-Without those variables the build still produces a signed (un-notarized) `.app` + `.dmg` — fine for local use, but Gatekeeper will warn on other machines. App Store Connect API keys (`APPLE_API_KEY` / `APPLE_API_ISSUER` / `APPLE_API_KEY_PATH`) work as an alternative to the Apple ID variables.
-
-### Keyboard
+## Keyboard
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+K` | Command palette — sessions, but also Operator's own functions: switch surface, open Plan/Diff, launch a project's lane, start its queued backlog |
+| `Cmd+K` | Command palette — sessions, and Operator's own functions |
 | `Cmd+N` | New session |
 | `Cmd+W` | Close active session |
 | `Cmd+B` | Collapse ⇄ expand the sidebar |
@@ -171,13 +120,61 @@ Without those variables the build still produces a signed (un-notarized) `.app` 
 
 Only these chords are Operator's; everything else — including plain `Cmd+O` and `Cmd+P` — goes to the terminal untouched.
 
-### Stack
+## Development
 
-React 19 + Vite + Tailwind 4 frontend on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, xterm.js (DOM renderer) for the terminal surface, a transcript tailer that rebuilds the session timeline, and `serde`/`serde_yaml` for the agent library, projects, and the durable session store. The build produces a ~10 MB signed app.
+```bash
+npm test                                        # unit tests (vitest)
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run build                                   # tsc + vite
+```
 
-### Brand & assets
+**Stack:** React 19 + Vite + Tailwind 4 on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, xterm.js (DOM renderer) for the terminal surface, a transcript tailer that rebuilds the session timeline, and `serde`/`serde_yaml` for the agent library, projects and durable session store. The build produces a ~10 MB signed app.
 
-All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circle — a "frozen twinkle" (each dot a different size/opacity) — the same geometry the app animates live in the sidebar (`LogoMark`) and per-session status (`StatusWave`).
+### Terminal harnesses
+
+The terminal is the hard part of this app, so it has its own harnesses. Each boots the **production** xterm config in headless WebKit — the same engine family as the app's WKWebView — rather than a stand-in:
+
+| Command | Answers |
+| --- | --- |
+| `npm run verify:width` | Do xterm and Claude Code agree on every glyph's cell width? (A disagreement drifts the cursor and garbles scrollback.) |
+| `npm run verify:dom` | Does the DOM renderer leave stale text under incremental writes? (Separates a renderer bug from a compositor one.) |
+| `npm run verify:ghost` | Does the fullscreen composer go stale in the DOM after a resize or a pane hide/show? |
+| `npm run verify:visual` | What do the symbol/emoji fallback paths actually render? |
+| `npm run verify:input` | Do keystrokes reach the pty in order? |
+
+`dev/` holds a mock `window.operator` bridge that boots the real renderer against fixtures in a plain browser, so the UI can be driven and screenshotted without the Tauri shell. Start a dev server (`npx vite --port 1440`) and run any `dev/drive-*.mjs` script against it. It's development-only — the production build declares its entry points explicitly, so `dev/` is never bundled.
+
+### Two house rules
+
+Both learned the expensive way, and the drivers exist to enforce them:
+
+- **A driver must be able to fail.** Every one exits non-zero on a failed assertion, and the way to earn that claim is to revert the fix and watch the driver go red before restoring it. A driver that has never failed is asserting nothing — we shipped one that read an empty screen and passed for two releases.
+- **A fixture must not be kinder than reality.** A mock more generous than the real thing validates features that cannot work: a disclosure whose body was always empty, a dispatch button only ever clicked on lanes that were running. When a driver can't reach a case, the fix belongs in the fixture, not the assertion.
+
+### Releases (maintainer)
+
+Tagging `vX.Y.Z` builds, signs, notarizes and publishes automatically. Locally, the build signs with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`); notarization runs too if Apple credentials are present:
+
+```bash
+export APPLE_ID="you@example.com"
+export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
+export APPLE_TEAM_ID="YOURTEAMID"
+
+npm run tauri build                           # signs, notarizes, staples
+```
+
+Without those variables you still get a signed (un-notarized) `.app` + `.dmg` — fine locally, but Gatekeeper warns on other machines. App Store Connect API keys (`APPLE_API_KEY` / `APPLE_API_ISSUER` / `APPLE_API_KEY_PATH`) work as an alternative.
+
+## Contributing
+
+Issues and pull requests are welcome. Before a PR, please run `npm test`, `cargo test` and `npm run build` — and if you touch the terminal, the relevant `verify:*` harness. If you're changing behaviour a harness covers, make it fail first.
+
+<details>
+<summary><strong>Brand &amp; assets</strong></summary>
+
+<br/>
+
+All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circle — a "frozen twinkle", each dot a different size and opacity — the same geometry the app animates live in the sidebar (`LogoMark`) and per-session status (`StatusWave`).
 
 <table>
   <tr>
@@ -219,6 +216,10 @@ All brand assets live under [`assets/`](assets/). The mark is a dot-matrix circl
 
 > The dot-circle mark is generated from the same algorithm as the in-app `LogoMark` (37 dots, deterministic frozen-twinkle weighting). The older bars-in-circle logo (`logos/logo.svg`, `logo-64.png`, `logo-light-64.png`, and the legacy `logos/trayTemplate*.png`) is retained for reference but no longer used in the UI.
 
-### License
+</details>
 
-Private
+## License
+
+[MIT](LICENSE) © Juan Cornejo
+
+Operator is an independent project. It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic.
