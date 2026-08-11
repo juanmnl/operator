@@ -15,7 +15,8 @@
     "verify:resize-guard": "node scripts/resize-guard/capture.mjs",
     "tauri": "node scripts/tauri.mjs",
     "verify:width": "node scripts/width-audit/audit.mjs",
-    "verify:dom": "node scripts/width-audit/dom-vs-buffer.mjs"
+    "verify:dom": "node scripts/width-audit/dom-vs-buffer.mjs",
+    "verify:ghost": "node scripts/width-audit/fullscreen-ghost.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.1",
