@@ -22,6 +22,7 @@ import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
+import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -1062,6 +1063,18 @@ export function DashboardView() {
     // indefinitely — the user's "it takes a while to get removed". The timeout turns that into a
     // reported fact instead of a hang.
     const KILL_TIMEOUT_MS = 4000
+    // A PTY THAT IS ALREADY DEAD IS NOT AN AGENT THAT REFUSED TO STOP. Asked once, up front, so
+    // the verdict below can tell the two apart: `stuck` is supposed to mean "this process would
+    // not die", and reporting a lane whose child exited hours ago as stuck is both wrong and
+    // unactionable — there is nothing for the user to go and look at. `null` when the backend
+    // cannot answer, which falls back to the old all-or-nothing reading rather than guessing
+    // everything is dead.
+    const listed = await window.operator.terminalList?.().catch(() => undefined)
+    const aliveIds = Array.isArray(listed)
+      ? new Set(listed.filter((t) => t.alive).map((t) => t.id))
+      : null
+    const wasDead = (s: AgentSession) => aliveIds !== null && !!s.terminalId && !aliveIds.has(s.terminalId)
+
     const outcomes = await Promise.all(live.map(async (s) => {
       try {
         await Promise.race([
@@ -1070,10 +1083,23 @@ export function DashboardView() {
         ])
         return { s, ok: true }
       } catch {
-        return { s, ok: false }
+        // Timed out — but if there was no process behind it when we started, the teardown had
+        // nothing to wait for and the close SUCCEEDED. Only a lane that was genuinely running is
+        // allowed to be reported as one that would not stop.
+        return { s, ok: wasDead(s) }
       }
     }))
     const stuck = outcomes.filter((o) => !o.ok).map((o) => o.s)
+    // Whatever the teardown managed, a tab with no live pty must not keep the project on the rail:
+    // `isOnRail` reads `projectActivity.live`, so one tab that never got dropped is the whole
+    // "closing it left it there" bug. Marking them ended (rather than deleting) keeps the ordinary
+    // exit bookkeeping — the sidebar still shows the lane as finished, it just stops counting.
+    const deadIds = new Set(live.filter(wasDead).map((s) => s.terminalId!))
+    if (deadIds.size) {
+      setTerminals((prev) => (prev.some((t) => deadIds.has(t.id) && !t.ended)
+        ? prev.map((t) => (deadIds.has(t.id) ? { ...t, ended: true } : t))
+        : prev))
+    }
 
     // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
     // absence is the change: the project stays exactly where it was, on Active, with its roster,
@@ -1998,19 +2024,14 @@ export function DashboardView() {
       // toolbar modal, not the sidebar. Claude sessions use `t` ids.
       const live = (Array.isArray(all) ? all : []).filter((t) => !t.id.startsWith('sh'))
       if (live.length === 0) return // nothing survived; `finally` still settles reattachDone
-      // JOINED ON THE DURABLE KEY FIRST. `byId` alone was the whole el-encanto failure: it keys
-      // on `terminalId`, a per-run counter, and a live pty that misses the lookup produces a tab
-      // with `projectId`/`roleId` UNDEFINED — alive and visible, but invisible to `pickLaneTab`,
-      // so every dispatch to it queues silently instead of sending. Six lanes stopped receiving
-      // work with every durable record correct. `claudeSessionId` is a uuid that survives both a
-      // renderer respawn and a backend restart, so it is the key the join should always have used;
-      // `byId` stays as the fallback for a row saved before the backend reported the uuid.
-      const bySession = new Map(savedSessions.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
-      const byId = new Map(savedSessions.filter((s) => s.terminalId).map((s) => [s.terminalId!, s]))
+      // JOINED ON THE DURABLE KEY, and on the recycled one only where it cannot lie — see
+      // `joinReattach`, which owns the rule and is tested against it. The short version: a saved
+      // `terminalId` is a per-run counter, so after a backend restart it can staple one project's
+      // record onto another project's live pty, and a MISLABELLED tab never heals the way an
+      // unlabelled one does (the 5s re-stamp below fixes unlabelled; nothing fixes wrong).
       setTerminals((prev) => {
         if (prev.length > 0) return prev // already populated (a launch raced the re-attach)
-        return live.map((t): TerminalTab => {
-          const s = (t.claudeSessionId ? bySession.get(t.claudeSessionId) : undefined) ?? byId.get(t.id)
+        return joinReattach(live, savedSessions).map(({ pty: t, saved: s }): TerminalTab => {
           return {
             id: t.id,
             key: s?.key ?? crypto.randomUUID(),
@@ -2206,7 +2227,7 @@ export function DashboardView() {
         // tree its transcript remembers writing (see worktree::reattach_worktree). A fresh lane
         // passes nothing and forks from the default branch exactly as before.
         const reuse = count === 1 ? opts?.resume?.worktreeBranch : undefined
-        const result = await window.operator.worktreeCreate(cwd, reuse)
+        const result = await window.operator.worktreeCreate(cwd, reuse, opts?.roleId)
         // `!result` first: `'error' in undefined` THROWS, and it threw out of the whole launch —
         // so a worktree backend that answered unexpectedly took the session with it rather than
         // falling back. Now it degrades the same way a reported error does.
@@ -2584,7 +2605,7 @@ export function DashboardView() {
     // rather than rebuilding a worktree over a live one.
     const cwdGone = !(await window.operator.pathExists?.(saved.cwd).catch(() => true) ?? true)
     if (saved.worktreeBranch && saved.sourceCwd && cwdGone) {
-      const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch)
+      const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch, saved.roleId)
       if (made && !('error' in made)) {
         cwd = made.path
         worktreeBranch = made.branch
@@ -2878,7 +2899,15 @@ export function DashboardView() {
     // project/role linkage + the launch model/effort. Overlay them onto the tracked session
     // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
     // badge) the moment the observer starts tracking it.
-    const operatorFields = { projectId: t.projectId, roleId: t.roleId, savedKey: t.key, model: t.model, effortLevel: t.effortLevel }
+    // THE TAB'S OWN DEATH IS PART OF ITS IDENTITY HERE, and it was being dropped. `t.ended` is the
+    // reconciled truth (`endedByBackend`, polling the backend's real `try_wait`); the observer's
+    // silence is not, because `get_sessions` returns only sessions it still considers active — so a
+    // lane that exits DISAPPEARS from `sessions` and the synthetic branch below used to resurrect
+    // it as `status: 'active'`, permanently. Everything downstream believed that: the "N running"
+    // label, `projectActivity.live`, `isOnRail` (which is why closing a project left it on the
+    // rail), and `closePlan`. See `tabSessionStatus`.
+    const status = tabSessionStatus(t, hookSession)
+    const operatorFields = { projectId: t.projectId, roleId: t.roleId, savedKey: t.key, model: t.model, effortLevel: t.effortLevel, status }
     // Model precedence: the tab's model (launch config / the user's pill pick — updated the
     // instant they act) wins over the transcript, which lags an assistant turn behind and
     // would otherwise revert a fresh /model switch. The transcript fills the blank for
@@ -2890,7 +2919,6 @@ export function DashboardView() {
       workingDirectory: t.cwd,
       projectName: t.cwd.split('/').pop() || t.cwd,
       ...operatorFields,
-      status: 'active' as const,
       phase: 'idle' as const,
       activity: [],
       activeSubagents: 0,

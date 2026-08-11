@@ -9,6 +9,7 @@ import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
 import { buildTerminalOptions, getMacOptionIsMeta, scrollbackFor, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
+import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
 import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
@@ -259,6 +260,16 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     window.addEventListener('focus', refocusIfActive)
     const onVisibility = () => { if (document.visibilityState === 'visible') refocusIfActive() }
     document.addEventListener('visibilitychange', onVisibility)
+
+    // Composer-ghost probe, OFF unless `operator.terminal.ghostProbe` is '1' in localStorage —
+    // with the flag unset nothing here runs: no listener, no global, no cost. When it is on,
+    // Ctrl+Alt+Shift+G (or `window.__ghostProbe()`) dumps the bottom 8 rows' buffer text against
+    // their live DOM text, which is the one comparison that separates a stale DOM from stale
+    // pixels. It is strictly READ-ONLY on purpose: a repaint would clear the ghost before it could
+    // be captured. See lib/ghost-probe.ts.
+    const disposeProbe = ghostProbeEnabled()
+      ? installGhostProbe(term, terminalId, () => activeRef.current)
+      : undefined
 
     // Fit only once the container actually has width. Fitting against a 0/tiny
     // container sends a tiny column count to the pty, so Claude Code renders its
@@ -593,6 +604,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       textarea?.removeEventListener('paste', onPaste, { capture: true } as EventListenerOptions)
       window.removeEventListener('focus', refocusIfActive)
       document.removeEventListener('visibilitychange', onVisibility)
+      disposeProbe?.()
       unregisterTerminal(terminalId)
       term.dispose()
       termRef.current = null
