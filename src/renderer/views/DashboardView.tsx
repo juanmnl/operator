@@ -44,6 +44,9 @@ import { DiffPanel } from '../components/session/DiffPanel'
 import { AgentsHubView } from '../components/agents/AgentsHubView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
+import { QuitGuard } from '../components/QuitGuard'
+import { askBeforeQuitEnabled, type LaneIdentity, type QuitRequest } from '../lib/quit-guard'
+import { chatSignal } from '../lib/chat-signal'
 import { ProjectGallery } from '../components/dashboard/ProjectGallery'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
@@ -3043,6 +3046,43 @@ export function DashboardView() {
     setSessionAccents(saveSessionAccent(session.savedKey, accent))
   }, [roleOf, projects, updateProject])
 
+  // --- Quit guard ----------------------------------------------------------------------
+  // Rust holds the veto and sends the snapshot; this only renders it. Kept as a frozen
+  // payload rather than derived state on purpose: a list that re-orders (or a dialog that
+  // disappears) because a lane finished mid-decision is a mis-click generator, and the
+  // mis-click here is the accident again.
+  const [quitRequest, setQuitRequest] = useState<QuitRequest | null>(null)
+
+  useEffect(() => {
+    // Rust cannot read localStorage, and must still be right when the renderer is gone.
+    window.operator.quitSetAsk?.(askBeforeQuitEnabled())
+    return window.operator.onQuitRequested?.((req) => {
+      // Frozen once it's up: a second ⌘Q re-emits, and swapping the snapshot would re-order
+      // the list under the pointer. The re-emit exists for the other case — a renderer that
+      // respawned mid-question and has no dialog to show.
+      setQuitRequest((cur) => cur ?? req)
+      window.operator.quitDialogShown?.()
+    })
+  }, [])
+
+  const answerQuit = useCallback((quit: boolean) => {
+    setQuitRequest(null)
+    window.operator.quitDecision?.(quit)
+  }, [])
+
+  /** What only this view knows about a lane Rust named: the label ladder, the lane accent,
+   *  and the same state wording the chat and sidebar already use. A lane it cannot match
+   *  still renders — quit-guard.ts falls back to the payload's own project and phase word. */
+  const identifyQuitLane = useCallback((terminalId: string): LaneIdentity | undefined => {
+    const session = sessions.find((s) => s.terminalId === terminalId)
+    if (!session) return undefined
+    return {
+      name: sessionLabel({ session, role: roleOf(session), customName: customNames[session.id] }),
+      state: chatSignal(session)?.label,
+      accent: accentOf(session),
+    }
+  }, [sessions, roleOf, customNames, accentOf])
+
   // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
   // hint on a row is the chord that reaches it. Kept as the single source both the hints and
   // the key handler read from.
@@ -3322,9 +3362,13 @@ export function DashboardView() {
         e.preventDefault()
         setPreviewAnnotate((v) => !v)
       } else if (e.key === 'w' || e.key === 'W') {
+        // ALWAYS preventDefault, even with nothing to close. The File menu's native
+        // `performClose:` is also bound to ⌘W, so falling through here doesn't close a lane —
+        // it closes the WINDOW, which is the same blast radius as the red traffic-light, for a
+        // shortcut people believe is lane-scoped. ⌘W with nothing to close is a no-op.
+        e.preventDefault()
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
-          e.preventDefault()
           handleCloseSession(active)
         }
       } else if (e.key >= '1' && e.key <= '9') {
@@ -4438,6 +4482,18 @@ export function DashboardView() {
 
       {paletteOpen && (
         <CommandPalette actions={paletteActions} onClose={() => setPaletteOpen(false)} />
+      )}
+
+      {/* Mounted HERE rather than in AppShell: AppShell is instantiated once per content mode,
+          so a dialog placed in it would exist once per mode. This is the one root that renders
+          over the gallery, settings and preview alike — the same place the palette mounts. */}
+      {quitRequest && (
+        <QuitGuard
+          request={quitRequest}
+          identify={identifyQuitLane}
+          onStay={() => answerQuit(false)}
+          onQuit={() => answerQuit(true)}
+        />
       )}
 
       <Toasts messages={toasts} onDismiss={dismissToast} onDismissAll={dismissAllToasts} />

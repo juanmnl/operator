@@ -5,6 +5,7 @@ import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
 import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '../../lib/terminal-options'
 import { resumeOnLaunchEnabled, RESUME_ON_LAUNCH_KEY } from '../../lib/workspace'
+import { askBeforeQuitEnabled, ASK_BEFORE_QUIT_KEY } from '../../lib/quit-guard'
 import { getKeepWarmMinutes, setKeepWarmMinutes, DEFAULT_KEEP_WARM_MINUTES } from '../../lib/lane-lifecycle'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
@@ -159,6 +160,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const [optionIsMeta, setOptionIsMeta] = useState(() => getMacOptionIsMeta())
   const [fullscreenTui, setFullscreenTui] = useState(() => getTuiMode() === 'fullscreen')
   const [resumeOnLaunch, setResumeOnLaunch] = useState(() => resumeOnLaunchEnabled())
+  const [askBeforeQuit, setAskBeforeQuit] = useState(() => askBeforeQuitEnabled())
   const [keepWarm, setKeepWarm] = useState(() => getKeepWarmMinutes())
 
   const toggleSounds = () => {
@@ -185,6 +187,14 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     const next = !resumeOnLaunch
     setResumeOnLaunch(next)
     try { localStorage.setItem(RESUME_ON_LAUNCH_KEY, next ? '1' : '0') } catch { /* quota */ }
+  }
+
+  const toggleAskBeforeQuit = () => {
+    const next = !askBeforeQuit
+    setAskBeforeQuit(next)
+    try { localStorage.setItem(ASK_BEFORE_QUIT_KEY, next ? '1' : '0') } catch { /* quota */ }
+    // Rust owns the veto and cannot read localStorage — mirror it, or the switch is decorative.
+    window.operator.quitSetAsk?.(next)
   }
 
   const selectKeepWarm = (minutes: number) => {
@@ -357,6 +367,46 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <span style={{
                 position: 'absolute', top: 2, left: resumeOnLaunch ? 16 : 2, width: 14, height: 14,
                 borderRadius: '50%', background: resumeOnLaunch ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
+        </section>
+
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
+            On quit
+          </h3>
+          {/* The honest home for "I never want this". The dialog deliberately has NO
+              "don't ask again" checkbox: that decision would be made at the moment of maximum
+              haste, by the exact person who isn't reading, and it would disarm the guard
+              permanently. Same decision, made away from the moment and findable again. */}
+          <p data-section-desc style={sectionDesc}>
+            Operator asks before quitting while agents are still working, and names the ones it’s
+            about to end. It never asks when nothing is running — a question with nothing behind
+            it is a question you learn to click through. ⌥⌘Q always skips it.
+          </p>
+          <button
+            onClick={toggleAskBeforeQuit}
+            data-ask-before-quit={askBeforeQuit ? 'on' : 'off'}
+            role="switch"
+            aria-checked={askBeforeQuit}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Ask before quitting with agents running</span>
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: askBeforeQuit ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: askBeforeQuit ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: askBeforeQuit ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
                 transition: 'left 0.15s, background 0.15s',
               }} />
             </span>

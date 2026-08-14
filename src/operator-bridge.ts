@@ -17,6 +17,7 @@ import { base64ToBytes } from './renderer/lib/base64'
 import { isLightBackground } from './renderer/lib/terminal'
 import { spawnTerminalMode } from './renderer/lib/terminal-options'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
+import type { QuitLane } from './renderer/lib/quit-guard'
 import type { GridUpdate, NarrationEntry, ProjectReply } from './shared/types'
 
 type Unsub = () => void
@@ -261,9 +262,24 @@ export function installBridge(): void {
       const p = getCurrentWindow().onResized(() => cb())
       return () => { void p.then((f) => f()) }
     },
-    // Quit the whole app (⌘Q). There's no native macOS app menu, so the OS doesn't
-    // intercept ⌘Q — the renderer drives the quit explicitly via plugin-process.
+    // Quit the whole app. This lands on `RunEvent::ExitRequested`, so the backend's quit
+    // guard sees it like any other path and may hold it open to ask (see src-tauri/quit.rs).
     quitApp: () => { void exit(0) },
+
+    // --- quit guard ---
+    // Rust owns the veto AND the lane count: the accident this guards left the webview
+    // navigated away, which is exactly when a frontend-owned count is absent. The dialog is a
+    // pure function of this payload, so it renders with no store read and no loading state.
+    onQuitRequested: (cb: (req: { lanes: QuitLane[]; idle: number }) => void): Unsub => {
+      const p = listen('quit:requested', (e) => cb(e.payload as { lanes: QuitLane[]; idle: number }))
+      return () => { void p.then((f) => f()) }
+    },
+    // Ack on mount. Rust falls back to a native ask if this doesn't arrive in 400ms.
+    quitDialogShown: () => { void invoke('quit_dialog_shown') },
+    quitDecision: (quit: boolean) => { void invoke('quit_decision', { quit }) },
+    // Mirror of the "Ask before quitting…" switch, which lives in localStorage with the app's
+    // other prefs. Rust cannot read that, and must still be right when the renderer is gone.
+    quitSetAsk: (ask: boolean) => { void invoke('quit_set_ask', { ask }) },
     // Grow/shrink the OS window width by `delta` CSS px (negative shrinks), so a
     // side panel can be APPENDED to the right of the window instead of stealing
     // width from the terminal. Clamped to a sane minimum. No-op if maximized.
