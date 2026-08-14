@@ -5,7 +5,7 @@ import { installDropGuard } from './drop-guard'
 // `dropEffect` — so a plain cancelable Event carrying a stub is a faithful stand-in.
 type Stub = { types: readonly string[]; dropEffect?: string }
 
-function fire(el: Element, type: 'dragover' | 'drop', dt: Stub | null = { types: ['Files'] }) {
+function fire(el: Element, type: 'dragenter' | 'dragover' | 'drop', dt: Stub | null = { types: ['Files'] }) {
   const e = new Event(type, { bubbles: true, cancelable: true })
   Object.defineProperty(e, 'dataTransfer', { value: dt })
   el.dispatchEvent(e)
@@ -41,6 +41,29 @@ describe('the defect: an unhandled file drop navigates the webview away', () => 
     off()
   })
 
+  // The tick a drag ENTERS a new element dispatches `dragenter`, not `dragover`, and WebKit takes
+  // that event's cancellation as the answer for the tick. A flick released before the pointer
+  // moves again is decided here and nowhere else — which is how the original incident happened.
+  it('cancels the DRAGENTER too — a flick that never gets a second tick', () => {
+    const off = installDropGuard()
+    expect(fire(root, 'dragenter').defaultPrevented).toBe(true)
+    off()
+  })
+
+  // …but it must NOT write `dropEffect` there. No app drop target listens for `dragenter` — they
+  // all decide on `dragover` — so a "none" on this tick would refuse a drag the composer is about
+  // to accept, and a flick released on exactly that tick would lose the file rather than attach
+  // it. Cancelling alone takes the drop away from the navigation default and leaves the drop
+  // firing, which is all the backstop needs.
+  it('does not force dropEffect on dragenter — a target may still claim the drag', () => {
+    const off = installDropGuard()
+    const dt: Stub = { types: ['Files'], dropEffect: 'copy' }
+    // Cancelled (so the webview cannot navigate) but the effect is left where it was.
+    expect(fire(root, 'dragenter', dt).defaultPrevented).toBe(true)
+    expect(dt.dropEffect).toBe('copy')
+    off()
+  })
+
   it('cancels a dragged URL too — a link dropped on the page navigates the same way', () => {
     const off = installDropGuard()
     expect(fire(root, 'dragover', { types: ['text/uri-list', 'text/plain'] }).defaultPrevented).toBe(true)
@@ -60,6 +83,7 @@ describe('the defect: an unhandled file drop navigates the webview away', () => 
     off()
     expect(fire(root, 'drop').defaultPrevented).toBe(false)
     expect(fire(root, 'dragover').defaultPrevented).toBe(false)
+    expect(fire(root, 'dragenter').defaultPrevented).toBe(false)
   })
 })
 
@@ -148,6 +172,49 @@ describe('text fields keep their native drag-to-edit', () => {
     const off = installDropGuard()
     const plain = root.querySelector('#plain')!
     expect(fire(plain, 'drop', { types: ['text/uri-list'] }).defaultPrevented).toBe(true)
+    off()
+  })
+
+  it('lets a URL land in a plaintext-only region — WebKit supports it and it takes the text', () => {
+    const off = installDropGuard()
+    root.innerHTML = '<div contenteditable="plaintext-only"><span>y</span></div>'
+    const span = root.querySelector('span')!
+    expect(fire(span, 'dragover', { types: ['text/uri-list'] }).defaultPrevented).toBe(false)
+    off()
+  })
+})
+
+// THE CARVE-OUT IS ABOUT EDITABILITY, NOT TAGS. A field that cannot absorb the text is not a text
+// field, whatever its tag says: the URL falls straight through to the webview's navigation
+// default, which is the thing this file exists to stop. Asking by tag got every row below wrong.
+describe('a field that cannot take the text gets no pass', () => {
+  const cases: Array<[string, string]> = [
+    ['a readonly textarea', '<textarea readonly></textarea>'],
+    ['a disabled textarea', '<textarea disabled></textarea>'],
+    ['a readonly text input', '<input readonly>'],
+    ['a disabled text input', '<input disabled>'],
+    ['a checkbox', '<input type="checkbox">'],
+    ['a range slider', '<input type="range">'],
+    ['an input-shaped button', '<input type="button" value="b">'],
+    ['a contenteditable="false" island', '<div contenteditable="false"><span>n</span></div>'],
+  ]
+  for (const [name, html] of cases) {
+    it(`guards a dragged URL over ${name}`, () => {
+      const off = installDropGuard()
+      root.innerHTML = html
+      const el = root.querySelector('span') ?? root.firstElementChild!
+      expect(fire(el, 'dragover', { types: ['text/uri-list'] }).defaultPrevented).toBe(true)
+      expect(fire(el, 'drop', { types: ['text/uri-list'] }).defaultPrevented).toBe(true)
+      off()
+    })
+  }
+
+  it('still lets the text-entry input types through', () => {
+    const off = installDropGuard()
+    root.innerHTML = '<input type="text"><input type="search"><input type="url"><input type="tel"><input type="email"><input type="password"><input type="number"><input>'
+    for (const el of root.querySelectorAll('input')) {
+      expect(fire(el, 'dragover', { types: ['text/uri-list'] }).defaultPrevented).toBe(false)
+    }
     off()
   })
 })
