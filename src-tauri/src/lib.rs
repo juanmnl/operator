@@ -23,6 +23,8 @@ mod gridterm;
 mod artifacts;
 #[path = "mcp.rs"]
 mod mcp;
+#[path = "quit.rs"]
+mod quit;
 
 /// Entry point for `operator --mcp-serve` (see main.rs). Public so the binary can reach it.
 pub fn mcp_serve() {
@@ -2118,7 +2120,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
     let h = app.handle();
-    let menu = MenuBuilder::new(h).text("show", "Show Operator").separator().quit().build()?;
+    // A custom Quit item, NOT MenuBuilder::quit() — that is the same predefined item whose
+    // native `terminate:` selector bypasses the quit guard entirely (see quit.rs).
+    let menu = MenuBuilder::new(h)
+        .text("show", "Show Operator")
+        .separator()
+        .text(quit::TRAY_QUIT, "Quit Operator")
+        .build()?;
     let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
     TrayIconBuilder::with_id("operator")
@@ -2129,6 +2137,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(true) // click → show active sessions + states
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
+            if id == quit::TRAY_QUIT {
+                quit::request_quit(app, false);
+                return;
+            }
             if id == "show" || id.starts_with("session:") {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
@@ -2283,8 +2295,27 @@ pub fn run() {
                 )
                 .build(),
         )
+        // Replace ONLY the app menu's Quit item; everything else stays the Tauri default.
+        // Calling `.menu(...)` at all makes us the owner of the whole menu bar — see
+        // quit::build_menu for why that matters to copy/paste.
+        .menu(quit::build_menu)
+        .on_menu_event(|app, event| quit::on_menu_event(app, event.id().as_ref()))
+        // The accident: the red traffic-light on `main` destroys the window, the window store
+        // empties, and the app exits. Hold the window open and ask first. Only `main` — the
+        // splash window closes programmatically on every launch.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                quit::request_quit(window.app_handle(), false);
+            }
+        })
         .manage(Arc::new(PtyManager::default()))
         .manage(Sessions::default())
+        .manage(quit::QuitGuard::default())
+        .manage(transcript::LiveLanes::default())
         .manage(transcript::TrackRegistry::default())
         .manage(tray_anim::TrayState::default())
         .manage(Arc::new(chatstore::ChatStore::open(&chat_db_file())))
@@ -2377,10 +2408,30 @@ pub fn run() {
             project_replies,
             image_data_url,
             renderer_heartbeat,
+            quit::quit_dialog_shown,
+            quit::quit_decision,
+            quit::quit_set_ask,
             app_ready
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // Defence in depth: any OTHER path that empties the window store cascades to
+        // ExitRequested. `AppHandle::exit` (the renderer's `quitApp`) lands here too.
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                // The updater's relaunch. `prevent_exit()` is already a no-op for this code
+                // (tauri-2.11.2/src/app.rs:86-94) and vetoing it would wedge a half-applied
+                // update — the user consented seconds earlier, in that flow.
+                if code == Some(tauri::RESTART_EXIT_CODE) {
+                    return;
+                }
+                if app.state::<quit::QuitGuard>().is_confirmed() {
+                    return; // this exit IS the answer
+                }
+                api.prevent_exit();
+                quit::request_quit(app, false);
+            }
+        });
 }
 
 #[cfg(test)]

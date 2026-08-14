@@ -795,3 +795,8 @@ input[data-launch-brief]::placeholder {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   animation: tb-landed 1400ms ease-out forwards;
 }
+
+/* The quit guard's scrim. Opacity only, 90ms — the panel itself must not scale, slide or
+   bounce: motion means BUSY in this app, and a dialog is not busy. The orbs inside it animate,
+   and that is the one movement in there. */
+@keyframes quit-guard-in { from { opacity: 0; } to { opacity: 1; } }

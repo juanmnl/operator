@@ -719,6 +719,18 @@ export function installMockBridge() {
     runCheck: async () => ({ ok: true, output: 'mock: checks green' }),
     saveSessions: noop, saveProjects: noop, setActiveSession: noop, rendererHeartbeat: noop,
     showMainWindow: noop, quitApp: noop,
+    // Quit guard. `onQuitRequested` hands the harness the trigger — `window.__quitRequest(req)`
+    // opens the real dialog with a payload of the harness's choosing, which is the only way to
+    // drive it without a real ⌘Q. The three answers are RECORDED, not no-op'd: "did Stay open
+    // actually tell Rust to stand down?" is the assertion that matters, and a silent noop
+    // passes a dialog whose buttons are wired to nothing.
+    onQuitRequested: (cb: (req: unknown) => void) => {
+      ;(window as unknown as { __quitRequest?: (r: unknown) => void }).__quitRequest = cb
+      return () => {}
+    },
+    quitDialogShown: () => { calls.push({ fn: 'quitDialogShown' }) },
+    quitDecision: (quit: boolean) => { calls.push({ fn: 'quitDecision', quit }) },
+    quitSetAsk: (ask: boolean) => { calls.push({ fn: 'quitSetAsk', ask }) },
     // Recorded for the same reason `terminalKill` is (see below): these two are how a press on
     // a DragRegion escapes into the window manager, so "did this control's click get eaten as
     // a titlebar drag?" is a question only the harness can answer — and while they were plain

@@ -78,6 +78,41 @@ impl TrackRegistry {
     }
 }
 
+/// One live lane, as the tailer sees it. This is the SAME triple the tray menu is built
+/// from below (`tracks` × `mgr.alive` × `last_phase`) — published so the quit guard can
+/// answer "what is running right now" without asking the webview. That matters because the
+/// accident this guard exists for left the webview navigated away with no React app at all:
+/// a count read from a frontend store is absent in exactly the case it is needed.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveLane {
+    pub terminal_id: String,
+    /// Folder name of the lane's cwd — the display fallback when the frontend can't match
+    /// the terminal id to a session it knows.
+    pub project: String,
+    /// The frontend's canonical project id (empty for an ad-hoc session).
+    pub project_id: String,
+    /// `idle` | `running` | `compacting` | `waiting`.
+    pub phase: String,
+    pub last_activity_at: String,
+}
+
+/// Latest live-lane snapshot, republished by the tailer once a second.
+#[derive(Default)]
+pub struct LiveLanes {
+    lanes: Mutex<Vec<LiveLane>>,
+}
+
+impl LiveLanes {
+    fn publish(&self, lanes: Vec<LiveLane>) {
+        *self.lanes.lock().unwrap() = lanes;
+    }
+
+    pub fn snapshot(&self) -> Vec<LiveLane> {
+        self.lanes.lock().unwrap().clone()
+    }
+}
+
 /// Per-session parser state, owned by the tailer thread.
 struct Track {
     terminal_id: String,
@@ -1073,6 +1108,23 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 last_tray_entries = entries;
             }
 
+            // Same filter as the tray, kept literally adjacent to it so the two can't drift:
+            // one pty-alive lane per entry, carrying the phase the tray just labelled it with.
+            // The quit guard reads this (see crate::quit) instead of the frontend's session list.
+            app.state::<LiveLanes>().publish(
+                tracks
+                    .values()
+                    .filter(|t| mgr.alive(&t.terminal_id))
+                    .map(|t| LiveLane {
+                        terminal_id: t.terminal_id.clone(),
+                        project: t.cwd.rsplit('/').next().unwrap_or(&t.cwd).to_string(),
+                        project_id: t.project_id.clone(),
+                        phase: t.last_phase.clone(),
+                        last_activity_at: t.last_activity_at.clone(),
+                    })
+                    .collect(),
+            );
+
             // Aggregate signal for the animated tray icon (crate::tray_anim):
             // any session working → busy; else any awaiting the user → your-turn;
             // nothing open → idle.
@@ -1117,7 +1169,9 @@ fn refresh_tray_menu(app: &tauri::AppHandle, sessions: &[(String, String)]) {
         }
         b = b.separator();
     }
-    if let Ok(menu) = b.quit().build() {
+    // Custom item, not MenuBuilder::quit() — the predefined one bypasses the quit guard. Keep
+    // this in step with `build_tray`, which builds the same menu before the first refresh.
+    if let Ok(menu) = b.text(crate::quit::TRAY_QUIT, "Quit Operator").build() {
         let _ = tray.set_menu(Some(menu));
     }
 }

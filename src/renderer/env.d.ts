@@ -3,6 +3,7 @@ declare module '*.png' {
   export default src
 }
 
+import type { QuitRequest } from './lib/quit-guard'
 import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../shared/types'
 
 interface PlanLimits {
@@ -82,8 +83,16 @@ declare global {
       toggleWindowMaximize: () => void
       /** Subscribe to OS window resize/zoom events; returns an unsubscribe fn. */
       onWindowResize: (callback: () => void) => () => void
-      /** Quit the whole app (⌘Q) — no native menu, so the renderer drives it. */
+      /** Quit the whole app. Goes through the backend's quit guard like every other path. */
       quitApp: () => void
+      /** Rust asked before quitting: busy lanes + how many idle ones go with them. */
+      onQuitRequested?: (callback: (req: QuitRequest) => void) => () => void
+      /** Ack the dialog mounted — cancels the 400ms native-dialog fallback. */
+      quitDialogShown?: () => void
+      /** `false` = Stay open. The veto then stands and nothing else happens. */
+      quitDecision?: (quit: boolean) => void
+      /** Mirror the "Ask before quitting with agents running" preference into Rust. */
+      quitSetAsk?: (ask: boolean) => void
       /** Grow/shrink the OS window width by `delta` CSS px (negative shrinks). */
       growWindowWidth: (delta: number) => void
       openExternal: (url: string) => void
