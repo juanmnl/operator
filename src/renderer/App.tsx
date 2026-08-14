@@ -2,10 +2,16 @@ import { useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { DashboardView } from './views/DashboardView'
 import { applyTheme, themes, resolveThemeKey } from './themes'
+import { installDropGuard } from './lib/drop-guard'
 
 export default function App() {
   useEffect(() => {
     applyTheme(themes[resolveThemeKey(localStorage.getItem('operator.theme'))])
+
+    // A file dropped outside the app's own drop targets would otherwise navigate the webview
+    // to file:///… and take the whole UI with it. Installed here (not in tauri-main) so the
+    // mock-bridge harness runs the real app WITH the guard in place.
+    const removeDropGuard = installDropGuard()
     // Re-apply the saved dock-icon choice — setApplicationIconImage only affects
     // the running app, so it must be set on every launch (default: light/bundle).
     const dock = localStorage.getItem('operator.dockIcon') === 'dark' ? 'dark' : 'light'
@@ -31,7 +37,7 @@ export default function App() {
     // the pings stop and the backend kills+respawns the frozen WebContent to self-heal.
     window.operator.rendererHeartbeat?.()
     const heartbeat = setInterval(() => window.operator.rendererHeartbeat?.(), 1000)
-    return () => { clearTimeout(safety); clearInterval(heartbeat) }
+    return () => { clearTimeout(safety); clearInterval(heartbeat); removeDropGuard() }
   }, [])
 
   return <DashboardView />
