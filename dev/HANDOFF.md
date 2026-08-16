@@ -1,122 +1,157 @@
-# Handoff — 2026-08-11
+# Handoff — 2026-08-16
 
-**`main` = `a7f2a9c`, pushed, working tree clean.** `npm test` 731 / 59 files · `cargo test` 171 ·
-`tsc --noEmit` clean. Version is still **0.15.1** (tag `v0.15.1`) — today's work is on `main` but
-**unreleased**.
+**`main` = `cc3de74`, NOT pushed** — `origin/main` is still `2121b7a`. `npm test` 775 / 61 files ·
+`cargo test` 173 · `tsc --noEmit` clean, all run against the merged tree.
 
-**The repo is now PUBLIC and MIT-licensed.** `github.com/juanmnl/operator`, description + 8 topics
-set, `LICENSE` added, README rewritten for a cold reader. This was done to stop GitHub Actions
-billing: `build.yml` runs on `macos-14` (10× multiplier) on **every push to `main`**, not just
-`v*` tags. Public repos get unlimited minutes, so it is now free — but if it ever goes private
-again, narrowing that trigger is the biggest single lever.
+**`v0.15.2` IS tagged and pushed** (`3f774a7` → `2121b7a`), correcting the previous handoff and the
+memory index, which both said "untagged". So the 6 unpushed commits are **post-release** work, and
+shipping them needs a **version bump**, not just a tag. The five files carrying the version:
+`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`,
+`src-tauri/tauri.conf.json` — note **`package-lock.json` is stale at `0.15.1`**, missed by the
+v0.15.2 bump; a new bump should correct it.
 
-**✅ CI on `main` is GREEN** — [run 31462894084](https://github.com/juanmnl/operator/actions/runs/31462894084)
-(the open-source push) completed **success**. The intervening `7a8d295` build had failed; that was
-almost certainly the documented `actions/checkout@v4` infrastructure flake, and the green run
-supersedes it. **`v0.15.2` is clear to tag** — bump the 5 version files, tag `vX.Y.Z`, CI signs and
-notarizes.
+Working tree is dirty with **the user's own two changes**, not this session's: `.claude/settings.json`
+staged for deletion, `.gitignore` modified to ignore `.claude`. They were stashed and restored around
+the merges; leave them alone.
+
+## ⚠ The one thing to do before anything else
+
+**Two fixes were merged to `main` without ever being exercised in a real window.** The user chose to
+merge before verifying, deliberately and on the record. Every claim behind them is unit-level or
+DOM-level. Three checks are outstanding, and one of them is a whole-app regression risk:
+
+1. **Flick a screenshot in from Finder, releasing fast.** Does the window still navigate to
+   `file://…`? This is the entire point of the drop guard.
+2. **⌘C / ⌘V / ⌘A anywhere in the app.** The macOS menu bar was rebuilt to make ⌘Q interceptable.
+   The Edit submenu is what gives the webview copy/paste. If this broke, it broke app-wide.
+3. **⌘Q with a lane running.** The dialog should name the busy lanes.
+
+None of this is testable from the Vite dev server — a browser page is not WKWebView with
+`dragDropEnabled: false`, and the quit handling is Rust. Use `npm run tauri dev`.
 
 ## Verify before believing (including this file)
 
-The previous handoff's own commit message said "unmerged on `operator/6e13d8`". **It was wrong** —
-`e4fff9f` had already merged it, `git log main..operator/6e13d8` is 0 commits, and the branch tip
-`c33df60` is in `main`. That false flag sat in the memory index for four days.
+The last handoff's rule earned its keep again. **Three claims made confidently in this session were
+wrong and had to be corrected mid-flight:**
 
-So: `git log main..<branch>` before believing any hand-off, this one included. As of writing,
-`operator/63cc58`, `operator/ghost-fix` and `operator/rail-close` are **all 0 commits ahead** —
-everything is in `main`.
+- **"Tray → Quit is guarded."** False. `MenuBuilder::…quit()` (`lib.rs:2121`) is the same predefined
+  `terminate:` item as ⌘Q. The tray is **not** guarded.
+- **"Dock → Quit arrives as `ExitRequested`."** False — the design spec asserted it; reading
+  `muda-0.19.2/src/platform_impl/macos/mod.rs:994` disproved it.
+- **"Nothing iterates lanes that were live at last quit."** False — `workspace.ts` +
+  `DashboardView.tsx:3486-3620` already do. The Design lane caught this and corrected the brief.
 
-## What shipped today (8 commits, one user-visible)
+Pattern: **the wrong claims were all about behaviour nobody had read the source for.** The correct
+ones came from the vendored crate cache, not the docs site.
 
-**`35de7b7` — the rail fix. This is the only user-visible change.** Closing a project now takes it
-off the rail. Root cause was *not* `sessions.json` (which no activity rollup reads): `localSessions`
-never read `TerminalTab.ended`, and since `get_active()` returns only `status == "active"` sessions,
-an exited lane *disappears* from the tracked list and the projection synthesised `status: 'active'`
-for it. Dead lanes counted as live forever, and `isOnRail` is literally the rail's membership rule.
-`endedByBackend` had been polling `try_wait` and getting the right answer the whole time — nothing
-read it. Second bug in the same path: the re-attach join fell back to `byId.get(t.id)`, and
-`terminalId` is a per-run `AtomicU64` counter, so `t3` across runs are different sessions — that
-stapled one project's saved row onto another project's live pty. Both rules now live in
-`lib/session-reattach.ts` with 11 tests (6 fail against the old code).
+## What shipped (2 merges, both user-visible, neither verified)
 
-**The worktree reaper — `6d7d558`, `4a2b913`, `0096329`. Ships INERT.** Dry-run only: `boot_sweep`
-hardcodes `ReapMode::DryRun`, nothing outside tests passes `Execute`, `move_to_trash` is not wired
-into `remove_worktree`, and `worktree_reap_dry_run` has no frontend caller. Current plan over the
-real root: **0 reap · 4 needs-confirmation · 23 refuse · 34 keep**.
+**`d708de9` — the drop guard.** A file dropped outside the app's own drop targets made WKWebView
+navigate to `file:///…`, replacing the whole React app with the raw file — with no way back, because
+the React app that owns every keybinding is gone. `installDropGuard()`
+(`src/renderer/lib/drop-guard.ts`) installs `dragenter` + `dragover` + `drop` on `window` in the
+bubble phase.
 
-Two live defects were fixed on the path that *does* delete today: `remove_worktree` now runs the
-guard rails **and both** nesting scans, refusing on `Nested` **or** `Unknown`, before it ever
-reaches `git worktree remove --force`. Previously git failing to answer read as "nothing nested"
-and went straight to `--force`, which deletes a nested worktree's files as untracked content.
+Two non-obvious constraints, both found by a failing test rather than by reasoning:
+- **Scoped to `Files` + `text/uri-list`, never blanket.** The rail signals "I refuse this drag" by
+  deliberately *not* cancelling `dragover` (`ProjectRail.tsx:1030`). A blanket cancel turns every
+  refusal into an accept — `dev/drive-lane-reorder.mjs` R4/R5 fail exactly that way.
+- **`dragenter` cancels but must NOT set `dropEffect = 'none'`.** No app drop target listens for
+  `dragenter`; they all decide on `dragover`. Setting it there suppresses the `drop` event entirely,
+  so an *intentional* screenshot flicked at the composer would silently vanish.
 
-**`c7acdaf` / `be1ea87` — `npm run verify:ghost` and the ghost probe.** First fullscreen terminal
-coverage in the repo; every other fixture is `{"tui":"default"}`. The harness carries a self-check
-that blanks 3 rows on purpose and **fails if they come back clean**.
+**`cc3de74` — the quit guardrail.** Closing the main window quit the app and killed every lane pty
+with it. Rust owns both the veto and the count (`src-tauri/src/quit.rs`, `transcript.rs`'s `LiveLanes`)
+**because the webview is gone in exactly the case that motivated the feature.** Frontend renders from
+the emitted payload; a native `tauri-plugin-dialog` fallback fires if the webview doesn't ack in 400ms.
+Triggers on **busy** (`running`/`compacting`/`waiting`), not merely alive.
+
+**Guarded:** red traffic-light, ⌘Q, app menu Quit, ⌘W fall-through.
+**NOT guarded, by decision:** Dock → Quit, tray → Quit, macOS logout/restart, Force Quit.
+
+Three findings worth keeping:
+- `Builder::menu` makes you owner of the **whole** menu bar, and a closure returning `Err` after it
+  has begun mutating aborts `Builder::build` — i.e. a failed menu edit yields *no app at all*.
+  `build_menu` edits `Menu::default`, touches only the first submenu, and never returns `Err` after
+  its first mutation.
+- muda 0.19.2 has **no alternate-item support**, so ⌥⌘Q is a plain visible row, not an ⌥-reveal.
+  A deviation from the design spec, accepted.
+- `prevent_exit()` already no-ops for `RESTART_EXIT_CODE` (`tauri-2.11.2/src/app.rs:86-94`), so the
+  updater restart needs no special-casing.
 
 ## Open, in priority order
 
-1. **Composer ghosting — REAL, UNDIAGNOSED, and the user's daily annoyance.** Every lane runs
-   `tui=fullscreen`, whose whole justification is "alt-screen ⇒ structurally can't ghost". It
-   ghosts anyway.
-   **A research spike blamed pane hide/show (DOM-only) — that finding was RETRACTED.** Code
-   reproduced the spike's exact signature from two harness bugs: `document.querySelectorAll` reads
-   the *first* terminal on the page, and xterm's `RenderService` **pauses for a terminal outside
-   the viewport** (`RenderService.ts:134`), so stacked panes render under different rules. One
-   terminal per page ⇒ 0 mismatches across 9 scenarios × 2 fixtures. The recommended mitigation
-   (drop the DOM row cache before `refresh()`) was **measured and not shipped**: `DomRenderer` has
-   no row cache, and in stacked panes the "fix" *causes* 15 blanked rows.
-   **Next step is a LIVE capture, and it needs the user.** Set `operator.terminal.ghostProbe='1'`,
-   reload, hit **Ctrl+Alt+Shift+G** while the ghost is on screen. Buffer and DOM agree ⇒ it is the
-   WKWebView compositor and the DOM theory is closed. They disagree ⇒ the harness is missing
-   something real. Also watch for a DEC 2026 synchronized-output frame left open — `refreshRows`
-   buffers and returns while that mode is set, and Claude Code wraps every redraw in one.
-2. **Tag `v0.15.2`** once CI is confirmed green. One user-visible fix (the rail). Everything else
-   inert. Or hold one cycle and ship the ghost fix with it.
-3. **4 quarantined worktrees, 449 MB** — the `uwazi_2026-*` set, verdict `needs-confirmation`,
-   no UI to resolve them. Deliberate: a **moved** repo is byte-identical to a deleted one, keeps a
-   live back-reference, and `git worktree repair` fixes it in one command. The user confirmed by
-   hand that this repo was genuinely deleted. The affordance that resolves these is `worktree
-   repair` against a user-supplied path, not a filesystem search.
-4. **Disk: 62 worktrees, 18 GB.** 12 merged-and-clean trees were reaped by hand today (6.1 GB).
-   **Two of them — `uwazi_app-qa`, `web27-d2e050` — came back as 8 KB stubs** (`app/`,
-   `node_modules/` recreated at 13:29), so something still running wrote through those paths.
-   In-use detection needs to cover more than Claude sessions; a dev server holding a path is enough.
-   The remaining bulk is **~35 merged-but-DIRTY** trees — residue from work that already landed.
-   No safe automatic rule covers those; "dirty" is exactly where unsaved work hides.
-5. **Agents cannot create tasks.** The MCP surface is only `operator__report` and
-   `operator__task_status` (which *updates* an existing id). Tasks exist solely when the
-   `OPERATOR-DISPATCH` parser calls `addRunning`/`addTask`. This is deliberate —
-   `TaskBoard.tsx:59-62` records eight lane *status reports* from July that were filed as tasks,
-   later assigned, and dispatched back as work, six of them already finished. If a lane should be
-   able to file work, that is a new `operator__task_create`, designed against that failure.
-   *(Investigated because the board looked empty. It was not broken: 377 tasks exist, all
-   `done`/`abandoned`; Backlog/Running/Waiting were legitimately empty.)*
-6. **Renderer killed + respawned hourly at ~1.1–1.2 GB** — the user calls it "the app restarts".
-   Retention is NOT lane-scoped (~8 MB/lane freed). Untouched today.
+1. **The three GUI checks above.** Merged, unverified. Nothing else should ship on top.
 
-## Direction — a competitor now exists
+2. **⚠ LIVE BUG — lane messaging dies after a long session, and the fleet goes idle.** User-reported,
+   researched, **not fixed**. Full report: `~/.operator/briefs/OUT-delivery-brakes-stall.md`.
+   It is `agent-delivery.ts`'s circuit breakers doing their job, plus one real design flaw:
+   - **`inheritedHop` is one scalar per lane, shared across every conversation it is party to.** In
+     hub-and-spoke, **6 messages spread across 4 unrelated lane pairs trip the same `HOP_LIMIT = 6`**
+     that a single runaway pair needs 3 full round-trips to reach. Ordinary fleet traffic trips a
+     brake built for two agents ping-ponging.
+   - **Exhaustion spreads.** The check reads `exhausted[from]`; a block marks **both** ends. Once the
+     hub is marked, its next reply to *any* lane — including one never involved — is blocked, and
+     that block marks the fresh lane too.
+   - **`exhausted` has no timer.** `resetChainFor` has exactly three call sites, all human-UI.
+     `handleHumanSend` fires for the lane whose chat the human is typing into — so **the coordinator
+     self-heals through ordinary use, and worker lanes have no comparable net.**
+   - **It is nearly invisible.** A 3.5s `kind:'info'` toast with no action button (`Toast.tsx:244`,
+     `AUTO_DISMISS_MS = 3500`), and `TaskBoard.tsx:47` **deliberately** excludes brake outcomes. Only
+     Team → Dispatches shows them. **Zero UI components read `exhausted`.**
+   - "Tasks/goals stay idle" is downstream, not a second bug: dispatch is confirmed **unbraked**, and
+     task closure runs off the worker's own phase. What stalls is the coordinator's *awareness* — it
+     never hears the work finished, so it never dispatches the next thing. **"Goal" is not a
+     data-model concept at all** — prose in the coordinator's seeded prompt only.
+   - Immediate workarounds: **restart the app** (the state is a ref, deliberately not persisted), or
+     **send the lane a task from the board**.
 
-**`stablyai/orca`** (verified via `gh`): **41,436 stars, created 2026-03-17**, ≥100 contributors,
-top author only 34% of commits, **multiple releases per day**, MIT. It already ships per-agent
-worktrees, an embedded Chromium element inspector, diff annotations, a fleet view. It is
-**Electron + `electron-vite` + React 19 + xterm.js** — the stack this repo deleted — and it ships
-`@xterm/addon-webgl`, which this app refuted twice, purely because Chromium is not WKWebView.
+3. **Terminal ghosting — new live sighting, and the leading theory doesn't fit it.** Seen while
+   scrolling (2026-08-14): **cell-level overprint** — two sentences interleaved glyph-by-glyph, a
+   `1 new message` banner struck across body text. The `bgBufferRef` 512KB-cap theory predicts
+   **loss**; this shows **double-write**, nothing missing. Research ruled out "scrolling corrupts
+   scrollback" at the xterm 6.0.0 source level (writes are `ybase`-relative). Two candidates remain
+   and one frame cannot separate them; the proposed repro is capture+replay checking the **buffer**,
+   not the DOM. **The screenshot was unstashable** — the memory note is the only record.
 
-**Fleet-of-agents-in-worktrees is not a defensible wedge.** Orca bet on breadth (20+ agents), which
-forces lowest-common-denominator integration. Operator's bet is depth on one harness, and that is
-the only defensible position. See `openchamber/openchamber` (8.1k stars, front-end for **OpenCode**,
-66% single-author) — the structural analogue, and evidence the depth bet works.
+4. **Resume-on-relaunch: designed, not built.** `~/.operator/briefs/OUT-resume-on-relaunch-design.md`.
+   Corrects its own brief: workspace restore already exists. The record is written **while the lane
+   lives**, and the *absence of cleanup* is the signal — the lockfile pattern, the only one that works
+   on a path giving no notice. §1.2 documents the defect that breaks it on exactly those paths.
+   This is what covers Dock quit, logout and Force Quit, which no guard can.
 
-**The concrete opportunity:** Claude Code **2.1.224+** ships a native cross-session bus —
-`ListAgents` + `SendMessage`, backed by `~/.claude/sessions/<pid>.json` and per-pid Unix sockets at
-`/tmp/cc-socks/<pid>.sock`. **Reachable from outside a Claude session**, so Operator's Rust backend
-can use it directly; wire format captured (see `project_native_cross_session_messaging` memory).
-It is the `operator__dispatch` that was held back — and something a 20-agent tool cannot lean on.
-**Caveat: there is no application-level ack.** `"success":true` is a local transport signal, so
-`delivery-confirm.ts` stays necessary. Do not claim "undelivered goes away".
+5. **Operator cannot raise an OS notification at all.** `src-tauri/Cargo.toml` has `opener`, `dialog`,
+   `updater`, `process`, `window-state` — **no `tauri-plugin-notification`**. Operator already computes
+   the hard half (`waiting` is a first-class phase); it just can't tell anyone. A local ping when a
+   lane needs a human is small work on state that already exists.
+
+6. **Renderer killed + respawned hourly at ~1.1–1.2 GB.** Untouched again.
+
+## Direction — a second competitor, adjacent not overlapping
+
+**`zeronsh/comet`** (zeron.sh) — *"Access your agents from any device."* Rust/GPUI, MIT, 399 stars,
+560 commits, v0.2.1. Runs Claude Code, Codex, Grok, Hermes and Pi; pilot from phone or iPad. Hosts
+Claude via **ACP** (not pty, not the SDK, not jsonl tailing — their own `ARCHITECTURE.md` is stale on
+this) and syncs through a **Cloudflare relay, explicitly not P2P and not E2E encrypted**.
+**Verdict: adjacent job, not a threat — zero multi-agent dispatch.** Orca remains the serious
+competitor by an order of magnitude.
+
+Worth naming: Zeron is the **third** close analogue to choose native GPU rendering over a webview
+(with diri and this repo's own shelved alacritty spike). They don't pay the WKWebView tax — the hourly
+renderer kill, the ghosting. That is not an argument to reopen a shelved decision, but three
+independent teams landing on the same choice is a data point, not noise.
+
+The market signal the user flagged the same day (Danny Postma, 2026-08-14): *"I write a spec, go to
+the gym, and my phone only pings when an agent needs a decision."* **The primitive there is the ping,
+not the remote control** — which is item 5 above, and Operator already does the hard half.
 
 ## Reference
 
-Reports from today's lanes are under `/tmp/operator-shots/` (`code-*.md`, `research-*.md`,
-`review-*.md`) — that directory is a screenshot stash and may be reaped; copy anything worth keeping.
-`review-reaper-phase1.md` in particular is the best adversarial review this project has produced.
+Lane briefs and reports now live in **`~/.operator/briefs/`** — an absolute path outside the repo, so
+every lane worktree can read them. This replaces the old `/tmp/operator-shots/` convention, which was
+subject to reaping. `OUT-*.md` are lane outputs; the unprefixed files are the briefs they answer.
+
+Best reports from this session: `OUT-delivery-brakes-stall.md` (the live bug, with a hand-executed
+state trace), `OUT-quit-guardrail-research.md` (every quit path, verified against the vendored crate
+source rather than the docs), and `OUT-review-drop-guard.md` (found the `dragenter` hole that the
+original fix left open — very likely the actual path of the incident that started all this).
