@@ -1,0 +1,28 @@
+{
+  "name": "operator-electron-shell",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Electron shell for the Operator renderer — measures the WebGL/memory/bundle questions, and is shaped as the seed of a real shell rather than a throwaway.",
+  "type": "module",
+  "main": "out/main/index.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:main": "node scripts/build-main.mjs",
+    "build:renderer": "vite build --config vite.config.ts",
+    "build": "npm run build:main && npm run build:renderer",
+    "package": "npm run build && electron-packager . Operator-Electron --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=dev.operator.electron.spike --icon=../../src-tauri/icons/icon.icns --ignore='^/src($|/)' --ignore='^/scripts($|/)' --ignore='^/measurements($|/)' --ignore='^/dist($|/)' --ignore='^/mcp-probe($|/)' --ignore='^/tsconfig.*' --ignore='^/vite.config.ts$' --ignore='\\.map$'",
+    "postinstall": "electron-rebuild -f -w node-pty || true",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@electron/rebuild": "^4.0.1",
+    "@types/node": "^26.2.0",
+    "electron": "^43.4.1",
+    "esbuild": "^0.27.7"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "yaml": "^2.9.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "operator-mcp-probe",
+  "productName": "OperatorMcpProbe",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Thinnest packaged+signed Electron app that doubles as an --mcp-serve stdio server, to prove the artifact plane survives the shell change.",
+  "main": "main.cjs"
+}
