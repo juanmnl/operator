@@ -19,14 +19,15 @@ async function readText(path: string): Promise<string> {
   try { return await readFile(path, 'utf8') } catch { return '' }
 }
 
-interface SettingsFile { path: string; label: string; scope: string; readOnly: boolean; exists: boolean; settings: unknown }
-interface ClaudeMdFile { path: string; label: string; scope: string; exists: boolean; content: string }
-export interface FolderPreferences { projectPath: string; projectName: string; settingsFiles: SettingsFile[]; mdFiles: ClaudeMdFile[] }
+// The renderer's own types — the seam is derived, not restated, and that includes the scope
+// unions (`SettingsFileScope`, `MdFileScope`), which a local `string` would quietly widen.
+import type { SettingsFile, ClaudeMdFile, FolderPreferences, McpServerInfo, McpServersResult, ClaudeSettings } from '../../../../src/shared/types'
+export type { FolderPreferences, McpServerInfo }
 
-const sf = async (path: string, label: string, scope: string, readOnly: boolean): Promise<SettingsFile> =>
-  ({ path, label, scope, readOnly, exists: existsSync(path), settings: await readJson(path) })
+const sf = async (path: string, label: string, scope: SettingsFile['scope'], readOnly: boolean): Promise<SettingsFile> =>
+  ({ path, label, scope, readOnly, exists: existsSync(path), settings: (await readJson(path)) as ClaudeSettings })
 
-const md = async (path: string, label: string, scope: string): Promise<ClaudeMdFile> =>
+const md = async (path: string, label: string, scope: ClaudeMdFile['scope']): Promise<ClaudeMdFile> =>
   ({ path, label, scope, exists: existsSync(path), content: await readText(path) })
 
 // Order matters: it is the precedence order Claude Code applies, and the UI renders it as-is.
@@ -87,21 +88,19 @@ export async function createFile(path: string, kind: 'settings' | 'md'): Promise
   await writeFile(path, kind === 'settings' ? '{}\n' : '', 'utf8')
 }
 
-export interface McpServerInfo { name: string; type: string; source: string }
-
 function collectMcp(data: Record<string, unknown>, source: string, out: McpServerInfo[]): void {
   const map = data.mcpServers
   if (!map || typeof map !== 'object') return
   for (const [name, cfg] of Object.entries(map as Record<string, unknown>)) {
     const type = (cfg as Record<string, unknown> | null)?.type
-    out.push({ name, type: typeof type === 'string' ? type : 'stdio', source })
+    out.push({ name, type: (typeof type === 'string' ? type : 'stdio') as McpServerInfo['type'], source })
   }
 }
 
 /** Read-only by design — Operator shows what Claude Code is configured with, it does not
  *  configure it. `claudeAiMcpEverConnected` is the cloud-connector list, which has no
  *  `mcpServers` entry and would otherwise be invisible. */
-export async function getMcpServers(projectPath: string): Promise<{ servers: McpServerInfo[] }> {
+export async function getMcpServers(projectPath: string): Promise<McpServersResult> {
   const servers: McpServerInfo[] = []
   const userJson = await readJson(join(homedir(), '.claude.json'))
   collectMcp(userJson, '~/.claude.json', servers)

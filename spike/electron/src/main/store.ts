@@ -15,7 +15,13 @@ import { mkdir, readFile, rename, writeFile, copyFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-export const operatorDir = (): string => join(homedir(), '.operator')
+/** `~/.operator`, or wherever `OPERATOR_DIR` points.
+ *
+ *  The override exists for TESTS. Everything under here is real user data — the session roster,
+ *  the project store, the worktree provenance — and a test that exercises the real paths would
+ *  be writing into it. The Rust tests take temp dirs as parameters for the same reason; an env
+ *  var is the version of that which works when the path is read from three modules. */
+export const operatorDir = (): string => process.env.OPERATOR_DIR || join(homedir(), '.operator')
 
 const sessionsFile = () => join(operatorDir(), 'sessions.json')
 const projectsFile = () => join(operatorDir(), 'projects.json')

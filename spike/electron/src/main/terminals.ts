@@ -54,6 +54,10 @@ interface Managed {
   history: Buffer[]
   historyBytes: number
   devPort?: number
+  /** Ports seen in this session's OWN output (dev-server banners). */
+  sniffedPorts: Set<number>
+  /** ms of the last pty chunk, for `activeWithin`. */
+  lastActivityAt?: number
   exited: boolean
 }
 
@@ -134,7 +138,7 @@ export class TerminalManager {
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, pty: null, pending: null, history: [], historyBytes: 0, devPort, exited: false }
+    const managed: Managed = { id, cwd: o.cwd, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), exited: false }
     this.terminals.set(id, managed)
 
     const launch = (c: number, r: number) => {
@@ -149,6 +153,7 @@ export class TerminalManager {
       // bytes the terminal sees.
       p.onData((chunk) => {
         const buf = Buffer.from(chunk, 'utf8')
+        managed.lastActivityAt = Date.now()
         this.pushHistory(managed, buf)
         this.onData(id, buf.toString('base64'))
       })
@@ -176,7 +181,7 @@ export class TerminalManager {
    *  is no startup banner wrapped to the wrong width to protect. */
   spawnShell(cwd: string): string {
     const id = this.nextId()
-    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, exited: false }
+    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), exited: false }
     this.terminals.set(id, managed)
     const shell = process.env.SHELL || '/bin/zsh'
     const p = ptySpawn(shell, ['-il'], {
@@ -186,6 +191,7 @@ export class TerminalManager {
     managed.pty = p
     p.onData((chunk) => {
       const buf = Buffer.from(chunk, 'utf8')
+      managed.lastActivityAt = Date.now()
       this.pushHistory(managed, buf)
       this.onData(id, buf.toString('base64'))
     })
@@ -238,10 +244,50 @@ export class TerminalManager {
     return t ? Buffer.concat(t.history).toString('base64') : ''
   }
 
+  /** Record a dev-server port sniffed from this session's own terminal output.
+   *
+   *  This is what REPLACED the per-pid `lsof` walk, which fired a macOS TCC prompt ("would
+   *  like to access data from other apps") once per inspected process. Attribution comes from
+   *  the session's own bytes, so a sibling lane's server can never be mistaken for this one's
+   *  and nothing inspects another process. */
+  noteSessionPort(id: string, port: number): void {
+    const t = this.terminals.get(id)
+    if (!t || !Number.isInteger(port) || port < 1 || port > 65535) return
+    t.sniffedPorts.add(port)
+  }
+
+  /** Ports this session is actually serving on: the one Operator reserved for it plus the ones
+   *  sniffed from its output, filtered to those answering a loopback connect. */
+  async sessionPorts(id: string): Promise<number[]> {
+    const t = this.terminals.get(id)
+    if (!t) return []
+    const candidates = new Set<number>(t.sniffedPorts)
+    if (t.devPort) candidates.add(t.devPort)
+    const live = await Promise.all([...candidates].map(async (p) => (await isLive(p)) ? p : null))
+    return live.filter((p): p is number => p != null).sort((a, b) => a - b)
+  }
+
   devPorts(): Record<string, number> {
     const out: Record<string, number> = {}
     for (const t of this.terminals.values()) if (t.devPort) out[t.id] = t.devPort
     return out
+  }
+
+  /** Is this pty's child actually running? The frontend once hardcoded `true` for this, which
+   *  made the list a register of ptys that EXIST rather than ptys that WORK. */
+  isAlive(id: string): boolean {
+    const t = this.terminals.get(id)
+    return !!t && !t.exited
+  }
+
+  /** Did this terminal emit output within `ms`? i.e. is it actively working right now.
+   *
+   *  The tailer uses this to outrank the transcript: bytes are moving NOW, while the transcript
+   *  is written after the fact, so deriving "waiting" from the file while output streams would
+   *  flicker every lane between running and waiting once a second. */
+  activeWithin(id: string, ms: number): boolean {
+    const at = this.terminals.get(id)?.lastActivityAt
+    return at != null && Date.now() - at < ms
   }
 
   /** Kill every pty. Called from the quit path — the shell owns these children, and leaving
@@ -260,6 +306,24 @@ export class TerminalManager {
       t.historyBytes -= t.history.shift()!.length
     }
   }
+}
+
+/** Is something listening on this loopback port?
+ *
+ *  BOTH loopbacks are probed. Vite (via Node's localhost resolution) binds [::1] ONLY on some
+ *  machines, so a v4-only probe reads a live server as down — and the caller then starts a
+ *  second one on the v4 side of the same port. */
+async function isLive(port: number): Promise<boolean> {
+  const { createConnection } = await import('node:net')
+  const probe = (host: string) => new Promise<boolean>((resolve) => {
+    const sock = createConnection({ port, host })
+    const done = (v: boolean) => { sock.destroy(); resolve(v) }
+    sock.setTimeout(250)
+    sock.once('connect', () => done(true))
+    sock.once('timeout', () => done(false))
+    sock.once('error', () => done(false))
+  })
+  return (await probe('127.0.0.1')) || (await probe('::1'))
 }
 
 /** Single-quote for a POSIX shell, mirroring `shell_quote` in lib.rs. */

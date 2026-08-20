@@ -12,16 +12,20 @@
     "build": "npm run build:main && npm run build:renderer",
     "package": "npm run build && electron-packager . Operator-Electron --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=dev.operator.electron.spike --icon=../../src-tauri/icons/icon.icns --ignore='^/src($|/)' --ignore='^/scripts($|/)' --ignore='^/measurements($|/)' --ignore='^/dist($|/)' --ignore='^/mcp-probe($|/)' --ignore='^/tsconfig.*' --ignore='^/vite.config.ts$' --ignore='\\.map$'",
     "postinstall": "electron-rebuild -f -w node-pty || true",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
     "@electron/rebuild": "^4.0.1",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
     "electron": "^43.4.1",
-    "esbuild": "^0.27.7"
+    "esbuild": "^0.27.7",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "node-pty": "^1.1.0",
     "yaml": "^2.9.0"
   }

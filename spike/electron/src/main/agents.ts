@@ -10,19 +10,9 @@ import { homedir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 
-export interface AgentDefinition {
-  name: string
-  description: string
-  model?: string
-  tools?: string[]
-  effort?: string
-  maxTurns?: number
-  color?: string
-  prompt: string
-  scope: string
-  projectPath?: string
-  path: string
-}
+// The renderer's own type — including the `AgentScope` union, which a local `string` widens.
+import type { AgentDefinition } from '../../../../src/shared/types'
+export type { AgentDefinition }
 
 const userAgentsDir = () => join(homedir(), '.claude', 'agents')
 
@@ -72,7 +62,7 @@ async function parseAgent(path: string, scope: string, projectPath?: string): Pr
     maxTurns: typeof fm.maxTurns === 'number' ? fm.maxTurns : undefined,
     color: str(fm.color),
     prompt: body.trim(),
-    scope,
+    scope: scope as AgentDefinition['scope'],
     projectPath,
     path,
   }

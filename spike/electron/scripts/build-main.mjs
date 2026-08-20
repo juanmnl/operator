@@ -20,9 +20,11 @@ const common = {
   format: 'cjs',
   outExtension: { '.js': '.cjs' },
   sourcemap: true,
-  // `electron` is the runtime's own module; `node-pty` is a native addon that must stay a real
-  // require so its .node binary resolves next to it in node_modules.
-  external: ['electron', 'node-pty'],
+  // `electron` is the runtime's own module. The others are NATIVE ADDONS and must stay real
+  // requires: bundling one rewrites the require into the output directory, and its `.node`
+  // binary is then looked for next to the BUNDLE instead of next to the package —
+  // "Cannot find module out/build/Release/better_sqlite3.node".
+  external: ['electron', 'node-pty', 'better-sqlite3'],
   logLevel: 'info',
 }
 

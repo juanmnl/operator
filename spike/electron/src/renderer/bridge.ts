@@ -79,6 +79,9 @@ export function installSpikeBridge(): void {
       })
     },
 
+    // Sessions arrive as one array per tick. Passed straight through — the shape is already
+    // the renderer's own AgentSession (main imports it from shared/types), which is the point
+    // of deriving the seam rather than restating it.
     onTerminalExit: (cb: unknown) => {
       return (native.onTerminalExit as AnyFn)((id: unknown, code: unknown, signal: unknown) => {
         const key = String(id)
