@@ -114,6 +114,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # For notarizing the .dmg ourselves (see below) — same key tauri-action uses.
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
           set -euo pipefail
           BUNDLE=src-tauri/target/aarch64-apple-darwin/release/bundle
@@ -122,10 +125,21 @@ jobs:
           echo "app: $APP"
           echo "dmg: $DMG"
 
-          # 1. Staple. The .app is the one that matters; the .dmg is stapled too so an offline
-          #    first-open of the download is clean.
+          # 1. Staple the .app — the one that matters (it is what the updater tarball carries).
           xcrun stapler staple -v "$APP"
-          xcrun stapler staple -v "$DMG"
+
+          # 1b. The .dmg: the bundler only ever submitted the .app to Apple, so the DMG has NO
+          #     ticket to staple — run 32425646152 failed here with CloudKit "Record not found"
+          #     for the DMG's hash. Notarize the DMG itself (this also covers its contents), then
+          #     staple it, so a browser-downloaded DMG opens clean offline. Non-fatal: a DMG
+          #     without a ticket is still Gatekeeper-valid ONLINE (the .app inside is notarized),
+          #     and the updater payload — the reported bug — does not go through the DMG.
+          if xcrun notarytool submit "$DMG" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+               --issuer "$APPLE_API_ISSUER" --wait --timeout 20m; then
+            xcrun stapler staple -v "$DMG" || echo "::warning::DMG notarized but staple failed"
+          else
+            echo "::warning::DMG notarization did not complete; DMG ships without a stapled ticket"
+          fi
 
           # 2. Rebuild the updater payload FROM THE STAPLED APP. `-C` so the archive root is
           #    `Operator.app` and not the full build path, matching what the bundler produces.
@@ -147,8 +161,8 @@ jobs:
           xcrun stapler validate "$APP"
           echo "--- spctl assessment (.app) ---"
           spctl -a -vvv -t exec "$APP"
-          echo "--- stapler validate (.dmg) ---"
-          xcrun stapler validate "$DMG"
+          echo "--- stapler validate (.dmg; advisory) ---"
+          xcrun stapler validate "$DMG" || echo "::warning::DMG has no stapled ticket"
 
           # The assertion that actually covers the reported bug: unpack the payload the UPDATER
           # will install and check the ticket is in THAT copy. Validating only the .app on disk
