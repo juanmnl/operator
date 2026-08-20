@@ -1,0 +1,195 @@
+name: electron
+
+# The Electron preview, shipped as a GitHub PRE-RELEASE ON THIS REPO — deliberately not through
+# `latest.json` on juanmnl/operator-releases.
+#
+# That feed is what every installed Tauri copy polls, and the cross-shell swap is a ONE-WAY DOOR:
+# once an Electron build replaces the app, the Tauri updater is gone and the Electron one takes
+# over. Publishing there would push that door open for everyone at once, unprompted. A
+# pre-release download is opt-in, and the user drags it over /Applications themselves.
+#
+# The tag pattern is `electron-v*` on purpose: `v*` triggers the Tauri release job in build.yml.
+on:
+  push:
+    tags: ['electron-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Same bar as build.yml's verify job. A preview that ships what the tests would have caught is
+  # not a preview, it is a liability.
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install root deps
+        run: npm ci
+      - name: Typecheck + bundle
+        run: npm run build
+      - name: Renderer tests
+        run: npm test
+      - name: Shell deps
+        working-directory: spike/electron
+        run: npm ci --foreground-scripts
+      - name: Shell typecheck + tests
+        working-directory: spike/electron
+        run: npm run typecheck && npm test
+
+  release:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The ROOT install is not optional: the shell's Vite config resolves @vitejs/plugin-react
+      # and @tailwindcss/vite from the root node_modules, because the renderer it builds IS the
+      # root renderer.
+      - name: Install root deps
+        run: npm ci
+
+      # `--foreground-scripts` because npm's install-scripts policy skipped esbuild's and
+      # node-pty's install steps silently on a developer machine — and a skipped esbuild install
+      # is a missing binary, while a skipped node-pty build is a missing .node.
+      - name: Install shell deps
+        working-directory: spike/electron
+        run: npm ci --foreground-scripts
+
+      # Belt and braces: run the two install scripts explicitly if the policy still skipped them.
+      # Both are idempotent.
+      - name: Ensure native deps are built
+        working-directory: spike/electron
+        run: |
+          set -euo pipefail
+          node node_modules/esbuild/install.js || true
+          npx electron-rebuild -f -w node-pty,better-sqlite3
+          test -f node_modules/node-pty/build/Release/pty.node || { echo "::error::node-pty did not build"; exit 1; }
+          test -n "$(ls node_modules/better-sqlite3/build/Release/*.node 2>/dev/null)" || { echo "::error::better-sqlite3 did not build"; exit 1; }
+          npx esbuild --version
+
+      # Developer ID into a temp keychain, mirroring what tauri-action does in build.yml.
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # Put it FIRST in the search list, and keep the login keychain so system roots resolve.
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Prepare notarization key
+        env:
+          KEY_B64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$KEY_B64" || { echo "::error::APPLE_API_KEY_BASE64 is empty — cannot notarize"; exit 1; }
+          echo "$KEY_B64" | base64 --decode > "$RUNNER_TEMP/apple_api_key.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple_api_key.p8" >> "$GITHUB_ENV"
+
+      # Build → package → prune → sign → ASSERT --mcp-serve → notarize → staple → validate →
+      # DMG/zip/yml. All of it is scripts/release.mjs, which is the same script a laptop runs
+      # (with SKIP_NOTARIZE=1) — so what ships is what was tested.
+      - name: Build, sign, notarize, package
+        working-directory: spike/electron
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run release
+
+      - name: Release notes
+        id: notes
+        working-directory: spike/electron
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          **Electron preview of Operator $VERSION.** Same app, different shell.
+
+          ### Why
+          The renderer used to be killed and respawned by WebKit at ~1.2 GB — what you experienced
+          as *"the app restarts"*. Chromium's ceiling is 3586 MB, and at our measured fleet shape
+          (27 lanes, production scrollback) it rests at 230 MB and stays flat. That symptom should
+          be gone.
+
+          ### What changed for you
+          - No hourly renderer restart.
+          - Terminal renders on the DOM renderer, as before. WebGL is **not** switched on — it was
+            clean for 60 minutes under test, which is not yet the 2-hour soak that would settle it.
+          - **The download is much bigger: ~143 MB DMG, ~313 MB installed** (Electron ships its own
+            Chromium; the Tauri build used the system WebView at ~15 MB).
+
+          ### Installing
+          Open the DMG and drag **Operator** onto **Applications**, replacing the existing one. It
+          keeps the same bundle id, so it replaces the Tauri build cleanly and your macOS
+          permissions carry over. It reads the same \`~/.operator\` state — your projects, sessions,
+          chat history and artifact reports are all still there.
+
+          **Quit the running Operator first.** Its lanes are child processes and replacing the app
+          under them is not something to find out about mid-task.
+
+          ### Auto-update is deliberately NOT wired
+          This build does not update itself, and the Tauri app will not update *into* it. That
+          swap is a one-way door — after it, the old updater is gone — so it is opt-in and manual
+          for now.
+
+          ### Going back
+          Re-download 0.16.0 from
+          [operator-releases](https://github.com/juanmnl/operator-releases/releases/latest) and drag
+          it over. Your \`~/.operator\` state is untouched by either direction.
+
+          ### Known gaps
+          - The custom title bar is not draggable yet (Electron has no programmatic window drag).
+          - The grid terminal (an unused experiment) is not ported.
+          - \`gridterm\`-based sessions and the in-app updater are inert.
+          EOF
+          echo "notes=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd spike/electron/release
+          TAG="${GITHUB_REF_NAME}"
+          # workflow_dispatch has no tag; name the draft after the version so a manual run is
+          # still inspectable rather than failing at the last step.
+          case "$TAG" in electron-v*) ;; *) TAG="electron-v${VERSION}" ;; esac
+          gh release create "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease \
+            --title "Operator ${VERSION} (Electron preview)" \
+            --notes-file "${{ steps.notes.outputs.notes }}" \
+            "Operator_${VERSION}_aarch64.dmg" \
+            "Operator-${VERSION}-arm64-mac.zip" \
+            latest-mac.yml \
+            SHA256SUMS.txt
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Operator_${VERSION}_aarch64.dmg"
+          {
+            echo "## Operator ${VERSION} (Electron preview)"
+            echo ""
+            echo "**[Download the DMG](${URL})**"
+            echo ""
+            echo "Pre-release on \`${GITHUB_REPOSITORY}\`, tag \`${TAG}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL"

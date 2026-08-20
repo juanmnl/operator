@@ -22,12 +22,10 @@ const PROTOCOL_VERSION = '2024-11-05'
  *  package.json beside the bundle, and fall back rather than throw: a server that refuses to
  *  start because it could not name itself is worse than one that says "unknown". */
 const VERSION = (() => {
-  for (const p of [join(__dirname, '..', '..', 'package.json'), join(__dirname, '..', '..', '..', '..', 'package.json')]) {
-    try {
-      const v = JSON.parse(readFileSync(p, 'utf8')).version
-      if (typeof v === 'string' && v !== '0.0.1') return v
-    } catch { /* try the next */ }
-  }
+  try {
+    const v = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')).version
+    if (typeof v === 'string') return v
+  } catch { /* fall through */ }
   return process.env.npm_package_version ?? 'unknown'
 })()
 

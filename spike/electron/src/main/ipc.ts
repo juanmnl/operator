@@ -167,15 +167,17 @@ export function registerIpc(d: Deps): void {
       try { return `data:${mime};base64,${(await readFile(path)).toString('base64')}` } catch { return '' }
     },
     // THE APP'S version, not Electron's. `app.getVersion()` reads the running bundle's
-    // Info.plist, which under `electron .` is Electron's own — the gallery showed "v43.4.1".
-    // Packaged, the bundle IS the app and this falls through to the same answer.
+    // Info.plist — right when packaged, but under `electron .` it is Electron's own and the
+    // gallery showed "v43.4.1". The SHELL's package.json is the source, and it is what the
+    // packager stamps into Info.plist, so dev and packaged agree. (Reading the repo root
+    // instead would report the Tauri app's version, which is a different number.)
     getUsageStats: (days) => computeUsage(days ?? 0),
     getUsageInsights: (days) => computeInsights(days ?? 0),
     checkUpdate: () => checkUpdate(),
     installUpdate: () => installUpdate(),
     getVersion: async () => {
       try {
-        const pkg = JSON.parse(await readFile(join(__dirname, '..', '..', '..', '..', 'package.json'), 'utf8'))
+        const pkg = JSON.parse(await readFile(join(__dirname, '..', '..', 'package.json'), 'utf8'))
         if (typeof pkg.version === 'string') return pkg.version
       } catch { /* packaged: fall through to the bundle's own version */ }
       return app.getVersion()
