@@ -1,5 +1,4 @@
 import { useEffect } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { DashboardView } from './views/DashboardView'
 import { applyTheme, themes, resolveThemeKey } from './themes'
 import { installDropGuard } from './lib/drop-guard'
@@ -25,7 +24,12 @@ export default function App() {
     const reveal = () => {
       if (revealed) return
       revealed = true
-      void invoke('app_ready').catch(() => {})
+      // Through the SEAM, not `invoke('app_ready')` directly. That import was the last place
+      // a view reached past `window.operator` into Tauri, and it meant the reveal — the thing
+      // that takes the app from "hidden behind a splash" to "on screen" — could only ever work
+      // under one shell. `showMainWindow` is the same operation with a name every shell can
+      // implement; the Tauri bridge still calls `app_ready` behind it.
+      try { window.operator.showMainWindow() } catch { /* the window is already up */ }
     }
     // Hold the splash ~1s so it registers as an intentional launch beat, not a flash.
     // The safety timer (longer) still guarantees reveal if rAF never settles.

@@ -148,6 +148,14 @@ declare global {
        *  cached there (5-min TTL). `force` skips the cache for an explicit refresh. Never
        *  rejects: an unreadable answer comes back with empty fields and a `note`. */
       planLimits?: (force?: boolean) => Promise<PlanLimits>
+      /** `~/.operator` — the durable store's root.
+       *
+       *  Exists because `DashboardView` needed it and reached for `@tauri-apps/api/path`
+       *  directly, which is the ONE place a view bypassed this seam. That import throws under
+       *  any shell that is not Tauri (there is no `invoke` to answer it), and it silently
+       *  disabled the saved-session prune's backup — "no backup, no prune". A path the backend
+       *  already knows belongs on the seam, not in a view. */
+      operatorHome: () => Promise<string>
       /** Lazily create + return ~/.operator/projects/<id>/ (moodboard/context asset dir). */
       projectAssetDir: (id: string) => Promise<string>
       /** Project-scoped moodboard: copy an image in (→ filename), list, load one, remove. */
