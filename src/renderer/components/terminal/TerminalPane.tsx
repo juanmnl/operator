@@ -7,7 +7,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
-import { buildTerminalOptions, getMacOptionIsMeta, scrollbackFor, shouldFitOnResize } from '../../lib/terminal-options'
+import { buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, scrollbackFor, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
 import { isAppChord } from '../../lib/key-routing'
@@ -51,6 +51,10 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // hold fits until output has been quiet briefly (see handleResize).
   const lastDataAtRef = useRef(0)
   const pendingFitRef = useRef<number | null>(null)
+  // When the CURRENT resize request was first held back by the quiet gate (null = not held yet).
+  // This is what bounds the deferral: without it, `handleResize` rescheduled itself forever under
+  // a stream that ticks faster than FIT_QUIET_MS, and the fit simply never ran.
+  const firstDeferAtRef = useRef<number | null>(null)
   // WKWebView drops/mis-composites xterm's rapid partial-row repaints under Claude
   // Code's cursor-up rewrites → stale/superimposed rows ("overprint"). xterm's
   // BUFFER is correct, so we force a full re-render of all visible rows from the
@@ -87,11 +91,6 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // A 2026-07 spot-test looked clean and v0.8.0 shipped WebGL, but real long sessions still
   // corrupted WHOLESALE, so the GPU bug is NOT fixed in this WebKit. Do not re-enable `webgl`
   // without a sustained-session soak test — see TerminalSurface's header for the history.
-  // Quiet window (ms) after the last pty chunk before a deferred fit is allowed.
-  // Claude's spinner updates leave gaps well over this, so fits still apply
-  // between frames; only mid-burst fits are held back.
-  const FIT_QUIET_MS = 150
-
   const doFit = useCallback(() => {
     // Never fit against a hidden/collapsed container (display:none → 0 width).
     // Doing so would send a ~1-column size to the pty and make Claude Code
@@ -118,16 +117,24 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       clearTimeout(pendingFitRef.current)
       pendingFitRef.current = null
     }
-    // If output is actively streaming, defer the fit until it quiets so a resize
-    // never interrupts an in-flight TUI redraw. Re-checks on each retry.
-    const sinceData = Date.now() - lastDataAtRef.current
-    if (sinceData < FIT_QUIET_MS) {
+    // If output is actively streaming, defer the fit until it quiets so a resize never interrupts
+    // an in-flight TUI redraw — but only up to FIT_MAX_DEFER_MS from the first time THIS request
+    // was held. The decision is a pure function so the bound is a test rather than a stopwatch
+    // (see planDeferredFit); the refs and the timer stay here.
+    const now = Date.now()
+    const plan = planDeferredFit(now, lastDataAtRef.current, firstDeferAtRef.current)
+    if (!plan.fit) {
+      // Stamp on the FIRST hold only. A replacing resize must not restart the budget, or a burst
+      // of ResizeObserver callbacks would push the deadline out indefinitely.
+      if (firstDeferAtRef.current == null) firstDeferAtRef.current = now
       pendingFitRef.current = window.setTimeout(() => {
         pendingFitRef.current = null
         handleResize()
-      }, FIT_QUIET_MS - sinceData + 10)
+      }, plan.retryInMs)
       return
     }
+    // A fit is running, so the next resize request starts with a fresh budget.
+    firstDeferAtRef.current = null
     doFit()
   }, [doFit])
 

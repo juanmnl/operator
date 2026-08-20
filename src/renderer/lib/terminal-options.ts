@@ -182,6 +182,65 @@ export function shouldFitOnResize(active: boolean, suspendFit: boolean): boolean
   return active && !suspendFit
 }
 
+/** Quiet window (ms) after the last pty chunk before a deferred fit is allowed.
+ *
+ *  The gate exists so a resize never lands mid-frame: a fit that changes cols/rows sends a
+ *  SIGWINCH, and Claude Code redrawing between its cursor-up and its rewrite desyncs into
+ *  stacked/garbled status lines. Between spinner frames there is comfortably more than this,
+ *  so ordinary streaming still gets fitted — only mid-burst fits are held back. */
+export const FIT_QUIET_MS = 150
+
+/** The BOUND on that deferral, measured from the first time a given resize request was held.
+ *
+ *  THE GATE USED TO BE UNBOUNDED, and that is the bug this constant exists to fix. `handleResize`
+ *  rescheduled itself whenever output had arrived within `FIT_QUIET_MS` — so any stream that
+ *  ticks faster than every 150 ms starved the fit completely. A Claude Code spinner is exactly
+ *  such a stream: QA measured **0 resizes in 2000 ms** after a sidebar collapse, against ~327 ms
+ *  for the same collapse on an idle lane. That is the "slow to take the freed width" report, and
+ *  it applied to every resize source — sidebar, window, panel drag — not just the collapse.
+ *
+ *  500 ms is chosen to be longer than any gap the gate is meant to protect (a redraw burst is
+ *  milliseconds) and shorter than a person will sit looking at a stale width. Past it, one
+ *  possibly-mistimed fit is strictly better than never fitting at all: the redraw it might
+ *  interrupt is self-healing (TerminalPane's repaint loop), where a permanently wrong width is
+ *  not — it gets baked into the scrollback. */
+export const FIT_MAX_DEFER_MS = 500
+
+/** What a resize request should do right now: fit, or wait and ask again.
+ *
+ *  Pure so the starvation is a test rather than a stopwatch — the whole defect was a timing
+ *  policy that could only be observed by watching, which is why it survived. Mirrors
+ *  `shouldFitOnResize` above: the decision lives here, the refs and timers stay in the pane.
+ *
+ *  `firstDeferAt` is null until a request has actually been held once, and is cleared by the
+ *  caller when a fit RUNS — never when a new resize replaces a pending one. That distinction is
+ *  load-bearing: resetting the budget per resize callback would let a burst of ResizeObserver
+ *  callbacks (which is the normal case during a drag) push the deadline out forever, which is
+ *  the same starvation wearing a different hat. */
+export function planDeferredFit(
+  now: number,
+  lastDataAt: number,
+  firstDeferAt: number | null,
+  opts: { quietMs?: number; maxDeferMs?: number } = {},
+): { fit: boolean; retryInMs: number } {
+  const quietMs = opts.quietMs ?? FIT_QUIET_MS
+  const maxDeferMs = opts.maxDeferMs ?? FIT_MAX_DEFER_MS
+
+  const sinceData = now - lastDataAt
+  if (sinceData >= quietMs) return { fit: true, retryInMs: 0 }
+
+  // The bound. Note this is checked only once a request has been held at least once, so an
+  // otherwise-quiet resize is never delayed by it.
+  if (firstDeferAt != null && now - firstDeferAt >= maxDeferMs) return { fit: true, retryInMs: 0 }
+
+  // Wait out the remaining quiet window (+10ms so the retry lands after it, not on the boundary),
+  // but never past the deadline — otherwise the last hop could overshoot the bound by a whole
+  // quiet window, and the bound is the thing under test.
+  const untilQuiet = quietMs - sinceData + 10
+  const untilDeadline = firstDeferAt == null ? maxDeferMs : maxDeferMs - (now - firstDeferAt)
+  return { fit: false, retryInMs: Math.max(0, Math.min(untilQuiet, untilDeadline)) }
+}
+
 export function buildTerminalOptions(
   theme: ITheme,
   opts: { macOptionIsMeta?: boolean } = {},
