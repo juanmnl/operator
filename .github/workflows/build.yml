@@ -88,6 +88,78 @@ jobs:
           # release lands in the PUBLIC repo, not this private one.
           args: --target aarch64-apple-darwin
 
+      # THE TICKET HAS TO END UP INSIDE THE .app, AND INSIDE THE TARBALL.
+      #
+      # Notarization succeeded on every recent run ("Finished with status Accepted"), yet
+      # `xcrun stapler validate /Applications/Operator.app` on a shipped 0.16.0 says "does not
+      # have a ticket stapled" and `spctl` calls it "Unnotarized Developer ID". Apple holds the
+      # ticket; the bundle never got it. Two distinct reasons, both real:
+      #
+      #   1. Stapling a .dmg attaches the ticket to the DISK IMAGE. An app dragged out of it is
+      #      not itself stapled — it is a copy of what was inside.
+      #   2. `createUpdaterArtifacts` builds Operator.app.tar.gz from the .app as it stands when
+      #      the bundler reaches that step. Anything stapled afterwards is not in the tarball.
+      #
+      # So we staple explicitly here, at the end, and then REBUILD the updater payload from the
+      # stapled .app and re-sign it. `stapler staple` is idempotent, so this is safe whether or
+      # not the bundler already did it.
+      #
+      # Why it matters beyond a tidy `spctl`: Gatekeeper reads a stapled ticket without going to
+      # Apple's servers. A quarantined copy without one is refused — and when the refused binary
+      # is the app spawning ITSELF as the artifact-plane MCP server (`--mcp-serve`), the spawn
+      # hangs with no output, no error and no exit code. See
+      # dev/briefs/2026-08-20-electron-mcp-serve-probe-RESULT.md, where that failure is measured.
+      - name: Staple the notarization ticket, rebuild + re-sign the updater payload
+        if: ${{ env.APPLE_API_KEY_PATH != '' }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUNDLE=src-tauri/target/aarch64-apple-darwin/release/bundle
+          APP=$(ls -d "$BUNDLE"/macos/*.app | head -1)
+          DMG=$(ls "$BUNDLE"/dmg/*.dmg | head -1)
+          echo "app: $APP"
+          echo "dmg: $DMG"
+
+          # 1. Staple. The .app is the one that matters; the .dmg is stapled too so an offline
+          #    first-open of the download is clean.
+          xcrun stapler staple -v "$APP"
+          xcrun stapler staple -v "$DMG"
+
+          # 2. Rebuild the updater payload FROM THE STAPLED APP. `-C` so the archive root is
+          #    `Operator.app` and not the full build path, matching what the bundler produces.
+          #    COPYFILE_DISABLE stops bsdtar adding AppleDouble `._` entries, which are not in
+          #    the bundler's Rust-written tar and would be junk inside the app on extract.
+          TARGZ="$BUNDLE/macos/$(basename "$APP").tar.gz"
+          rm -f "$TARGZ" "$TARGZ.sig"
+          COPYFILE_DISABLE=1 tar -czf "$TARGZ" -C "$(dirname "$APP")" "$(basename "$APP")"
+          echo "rebuilt $TARGZ ($(du -h "$TARGZ" | cut -f1))"
+
+          # 3. Re-sign it with the SAME minisign key the bundler uses. The key, its password and
+          #    the public key in tauri.conf.json are untouched — regenerating any of them would
+          #    strand every installed copy.
+          npx tauri signer sign "$TARGZ"
+          test -s "$TARGZ.sig" || { echo "::error::updater payload was not re-signed"; exit 1; }
+
+          # 4. ASSERT, so this cannot silently regress into another release.
+          echo "--- stapler validate (.app) ---"
+          xcrun stapler validate "$APP"
+          echo "--- spctl assessment (.app) ---"
+          spctl -a -vvv -t exec "$APP"
+          echo "--- stapler validate (.dmg) ---"
+          xcrun stapler validate "$DMG"
+
+          # The assertion that actually covers the reported bug: unpack the payload the UPDATER
+          # will install and check the ticket is in THAT copy. Validating only the .app on disk
+          # would have passed happily while shipping an unstapled tarball — which is the bug.
+          VERIFY=$(mktemp -d)
+          tar -xzf "$TARGZ" -C "$VERIFY"
+          xcrun stapler validate "$VERIFY/$(basename "$APP")"
+          spctl -a -vvv -t exec "$VERIFY/$(basename "$APP")"
+          rm -rf "$VERIFY"
+          echo "stapled .app, .dmg and updater payload all validate"
+
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -95,6 +167,8 @@ jobs:
           path: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: warn
 
       # On a version tag, publish the notarized .dmg to the PUBLIC releases repo
