@@ -213,14 +213,26 @@ re-testing on the same gestures.
 `@electron/osx-sign` + `@electron/notarize` replace Tauri's bundler (same Developer ID cert);
 `electron-updater` replaces the Tauri updater. Equivalent, solved work.
 
-**Can existing installs migrate across shells?** *Probably, once, through a one-way door.* The
-Tauri updater verifies the payload against the baked-in minisign key and replaces the `.app` in
-place without inspecting its contents — so an Electron `.app` with the same bundle id and
-Developer ID should install over it like any other update. **This is an inference from how the
-updater works, not something this spike tested**, and getting it wrong strands every installed
-copy. After the swap the Tauri updater is gone, so the changeover release must ship a working
-`electron-updater` feed or the next update has no path. The standing rule gets sharper: **never
-regenerate the updater key** — it is the only thing that makes the one migration release
+**Can existing installs migrate across shells?** **Yes, with conditions — and this is now
+settled from source, not inferred.** `dev/briefs/2026-08-20-tauri-updater-crossshell-handoff-RESULT.md`
+read `tauri-plugin-updater` at the pinned `2.10.1` and found: the only content check is a raw
+minisign verification over the downloaded bytes, the archive's top-level `.app` folder name is
+stripped and never compared to anything, the target directory is derived from `current_exe()`
+rather than from any config, and `identifier`/`bundle_id`/`CFBundleIdentifier` appear nowhere in
+the verify or extract path. So the updater has no concept of "Tauri-ness" to fail on.
+
+That report flagged ONE inference it could not settle: whether `tauri signer sign` refuses bytes
+it did not produce. **It does not — measured here.** The stapling fix's dry run (see
+`2026-08-20-staple-notarization-ticket-RESULT.md`) signed a plain `tar czf` of an *Electron* `.app`
+— the MCP probe's 129 MB signed bundle — with `tauri signer sign` and a throwaway key, and got a
+valid 408-byte minisign `.sig`. The signer treats it as bytes, exactly as the verifier does.
+
+The remaining risks are macOS-side rather than updater-side: LaunchServices re-registering a
+changed bundle id at a stable path (ordinary, low risk) and TCC grants tied to the old identity
+(real, and the reason to consider holding `com.operator.app.tauri` as the identifier through the
+changeover). And after the swap the Tauri updater is gone, so the changeover release must ship a
+working `electron-updater` feed or the next update has no path. **The standing rule gets sharper:
+never regenerate the updater key** — it is the only thing that makes the one migration release
 installable.
 
 ---
