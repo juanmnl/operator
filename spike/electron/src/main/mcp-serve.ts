@@ -17,6 +17,20 @@ import { ArtifactStore } from './chat-store'
 
 const PROTOCOL_VERSION = '2024-11-05'
 
+/** The APP's version, for `serverInfo`. `npm_package_version` is only set when npm launched the
+ *  process, which a lane's spawn never does — packaged, it reported "0.0.0". Read from the
+ *  package.json beside the bundle, and fall back rather than throw: a server that refuses to
+ *  start because it could not name itself is worse than one that says "unknown". */
+const VERSION = (() => {
+  for (const p of [join(__dirname, '..', '..', 'package.json'), join(__dirname, '..', '..', '..', '..', 'package.json')]) {
+    try {
+      const v = JSON.parse(readFileSync(p, 'utf8')).version
+      if (typeof v === 'string' && v !== '0.0.1') return v
+    } catch { /* try the next */ }
+  }
+  return process.env.npm_package_version ?? 'unknown'
+})()
+
 interface Caller { terminalId: string; projectId: string | null; roleId: string | null }
 
 /** WHO IS CALLING — and a call that cannot answer this is REFUSED.
@@ -141,7 +155,7 @@ export function handle(req: Record<string, unknown>): Record<string, unknown> | 
 
   switch (method) {
     case 'initialize':
-      return { jsonrpc: '2.0', id, result: { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'operator', version: process.env.npm_package_version ?? '0.0.0' } } }
+      return { jsonrpc: '2.0', id, result: { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'operator', version: VERSION } } }
     case 'tools/list':
       return { jsonrpc: '2.0', id, result: { tools: TOOLS } }
     case 'tools/call':

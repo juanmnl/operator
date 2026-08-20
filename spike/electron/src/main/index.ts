@@ -16,6 +16,7 @@ import { QuitGuard } from './quit'
 import { registerIpc, broadcast } from './ipc'
 import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
+import { installPreviewInspect } from './preview-inspect'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
 // so `__dirname` is the real thing here — `import.meta.url` compiles to an empty string.
@@ -162,6 +163,7 @@ function boot(): void {
   )
   quit.install()
 
+  installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
   registerIpc({ terminals, transcript, chat, artifacts, quit, getWindow: () => mainWindow })
   mainWindow = createWindow()
 }

@@ -5,6 +5,7 @@
 // preload has no ESM loader at all. `electron` is external in both — it is provided by the
 // runtime, not bundled.
 import { build, context } from 'esbuild'
+import { copyFileSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -28,9 +29,17 @@ const common = {
   logLevel: 'info',
 }
 
+// The preview inspector's script lives in the REPO (src/shared/preview-inspector.js) so the
+// Rust `include_str!`s the same file. A packaged app has no repo above it, so it is copied in
+// beside the bundles — one source, two shells, and it still ships.
+mkdirSync(resolve(root, 'out'), { recursive: true })
+copyFileSync(resolve(root, '..', '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
+
 const targets = [
   { entryPoints: [resolve(root, 'src/main/index.ts')], outfile: resolve(root, 'out/main/index.cjs') },
   { entryPoints: [resolve(root, 'src/preload/index.ts')], outfile: resolve(root, 'out/preload/index.cjs') },
+  // The embedded preview webview's own preload — see preview-inspect.ts for why it exists.
+  { entryPoints: [resolve(root, 'src/preload/inspector.ts')], outfile: resolve(root, 'out/preload/inspector.cjs') },
 ]
 
 if (watch) {

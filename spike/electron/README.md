@@ -1,12 +1,13 @@
 # `spike/electron` — an Electron shell for the Operator renderer
 
-Runs the **unmodified** Operator renderer (`src/renderer`, 29k LOC) on Electron, with the
-terminal implemented for real over `node-pty`. Nothing under `src/` or `src-tauri/` is touched.
+Runs the Operator renderer (`src/renderer`, 29k LOC) on Electron. **85 of the 91
+`window.operator` methods are native**; the 6 that are not are `gridterm*`, dropped by
+decision.
 
-It exists to answer three measured questions — does WebGL xterm survive under Chromium, what
-does our fleet shape cost in memory, and what does the shell itself cost — and it is built as
-the **seed of a real shell** rather than a throwaway: typed IPC derived from the renderer's own
-contract, a main/preload split worth keeping, and the navigation guards the app already needed.
+It began as a spike answering three measured questions (see
+`dev/briefs/2026-08-20-electron-shell-spike-RESULT.md`) and is now the working shell: the pty
+layer, the transcript tailer, worktrees, the chat + artifact stores, the MCP server, the quit
+guard, usage, plan limits, the preview inspector and the updater are all ported.
 
 ## Run it
 
@@ -64,15 +65,32 @@ to be.
 ```
 src/shared/operator-api.ts   the contract: OperatorApi = Window['operator'], + the SPEC table
 src/shared/ipc-contract.ts   typed invoke/send/event maps derived from those signatures
-src/main/index.ts            lifecycle, window, navigation guards
-src/main/terminals.ts        node-pty: the one backend piece implemented for real
+src/main/index.ts            lifecycle, window, navigation guards, the --mcp-serve branch
 src/main/ipc.ts              handler registration (no channel strings, no `any` payloads)
+src/main/terminals.ts        node-pty              ← lib.rs
+src/main/transcript.ts       the JSONL tailer      ← transcript.rs
+src/main/directives.ts       the OPERATOR-* sentinels + their quotation guards
+src/main/worktree.ts         git worktrees         ← worktree.rs
+src/main/chat-store.ts       SQLite                ← chatstore.rs + artifacts.rs
+src/main/mcp-serve.ts        the artifact plane    ← mcp.rs
+src/main/store.ts            durable JSON          ← core.rs
+src/main/folder-prefs.ts     settings + MCP list   ← folderprefs.rs
+src/main/agents.ts           subagent .md files    ← agents.rs
+src/main/usage.ts            token aggregation     ← usage.rs
+src/main/plan-limits.ts      `claude -p /usage`    ← planlimits.rs
+src/main/quit.ts             the quit guard        ← quit.rs
+src/main/moodboard.ts        project assets        ← lib.rs
+src/main/preview-inspect.ts  the embedded inspector
+src/main/updater.ts          electron-updater
 src/main/bench.ts            measurement hooks, off unless env-var'd
 src/preload/index.ts         contextBridge → window.__operatorNative, + the drop guard
+src/preload/inspector.ts     the embedded preview webview's own preload
 src/renderer/bridge.ts       mock-bridge with the real methods laid over it
-src/renderer/main.tsx        the real App
-src/renderer/bench.tsx       the harness
 ```
+
+Run the shell's own tests with `npm test` (84, node environment). They cover the parsing and
+policy that is easy to get subtly wrong: the removal guard, the tailer's offset discipline, the
+sentinel quotation guards, the store's upsert, the `/usage` parser.
 
 **The contract is derived, not copied.** `src/renderer/env.d.ts` declares the API as a global,
 so `Window['operator']` reaches the whole shape. A hand-written mirror of 90 signatures would
@@ -102,12 +120,24 @@ Operator's whole premise is that a lane you are not looking at keeps working.
 
 ## What is NOT here
 
-- **The artifact plane.** Lanes reach Operator's MCP server via `<current_exe> --mcp-serve`;
-  under Electron that is the Electron binary and would need an argv branch. Deliberately not
-  wired: a lane pointed at a server that does not exist is worse than a lane with none.
-- **The grid terminal.** `gridterm.rs` embeds `alacritty_terminal`; there is no npm equivalent.
-  Spawn reports `grid: false`.
-- **The quit guard, transcript tailer, worktrees, chat store, usage** — all mock. `SPEC` says
-  so, per method, and `ipc.ts` asserts at boot that nothing marked `native` lacks a handler.
+- **The grid terminal.** `gridterm.rs` embeds `alacritty_terminal`; there is no npm equivalent,
+  and it was dropped by decision. Spawn reports `grid: false` and the six methods fall through
+  to the mock. `SPEC` says so per method, and `ipc.ts` asserts at boot that nothing marked
+  `native` lacks a handler.
 - **A draggable title bar.** Electron has no programmatic window drag; it needs
-  `-webkit-app-region: drag` on the element, which lives in `src/renderer`. See the ledger.
+  `-webkit-app-region: drag` on the element, which lives in `src/renderer`. See the ledger —
+  it is the one place the renderer's contract does not map onto Electron.
+- **A published update feed.** `updater.ts` is written but inert until `OPERATOR_UPDATE_FEED`
+  points at a real `latest-mac.yml`. Tauri's `latest.json` is a different format; the feed has
+  to exist before an Electron build ships, and the switch is a one-way door.
+
+## Two things that will bite
+
+**Native addons must stay external to esbuild.** Bundling `better-sqlite3` or `node-pty`
+rewrites their require into `out/`, and the `.node` binary is then looked for beside the bundle
+("Cannot find module out/build/Release/better_sqlite3.node"). Both are in `external` in
+`scripts/build-main.mjs`, and `postinstall` rebuilds them against Electron's ABI.
+
+**An `npm install <pkg>` in this directory once silently rewrote `package.json`** and dropped
+every devDependency, including electron. That is why the spike is tracked in git — check
+`git diff package.json` after adding a dependency.

@@ -22,6 +22,9 @@ import * as agents from './agents'
 import * as wt from './worktree'
 import * as moodboard from './moodboard'
 import { fetchPlanLimits } from './plan-limits'
+import { computeUsage, computeInsights } from './usage'
+import { checkUpdate, installUpdate } from './updater'
+import { previewApi } from './preview-inspect'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
@@ -139,6 +142,7 @@ export function registerIpc(d: Deps): void {
 
     // --- project assets ----------------------------------------------------------------
     operatorHome: async () => store.operatorDir(),
+    previewInspectOpen: async (url, x, y, w, h) => { previewApi.open(url, x, y, w, h) },
     projectAssetDir: (id) => moodboard.projectAssetDir(id),
     moodboardAdd: (id, dataB64, ext) => moodboard.moodboardAdd(id, dataB64, ext),
     moodboardList: (id) => moodboard.moodboardList(id),
@@ -165,6 +169,10 @@ export function registerIpc(d: Deps): void {
     // THE APP'S version, not Electron's. `app.getVersion()` reads the running bundle's
     // Info.plist, which under `electron .` is Electron's own — the gallery showed "v43.4.1".
     // Packaged, the bundle IS the app and this falls through to the same answer.
+    getUsageStats: (days) => computeUsage(days ?? 0),
+    getUsageInsights: (days) => computeInsights(days ?? 0),
+    checkUpdate: () => checkUpdate(),
+    installUpdate: () => installUpdate(),
     getVersion: async () => {
       try {
         const pkg = JSON.parse(await readFile(join(__dirname, '..', '..', '..', '..', 'package.json'), 'utf8'))
@@ -205,6 +213,8 @@ export function registerIpc(d: Deps): void {
     // counterpart: a custom title bar is dragged with the CSS `-webkit-app-region: drag`, which
     // lives on the element — i.e. inside `src/renderer`. It is the one place where the
     // renderer's contract does not map onto Electron. See PORT-LEDGER.md.
+    previewInspectMove: (x, y, w, h) => previewApi.move(x, y, w, h),
+    previewInspectClose: () => previewApi.close(),
     startWindowDrag: () => {},
     setDockIcon: (variant) => {
       if (process.platform !== 'darwin' || !app.dock) return
