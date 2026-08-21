@@ -77,20 +77,22 @@ const NAMES = [
 // The strip's own geometry, as declared in ProjectRail.tsx. Everything is asserted against these,
 // not against whatever the DOM happens to report — a driver that derives its expectation from the
 // thing it is testing agrees with any bug that is internally consistent.
-const RAIL_W = 60
+const RAIL_W = 70
 const RAIL_W_OPEN = 264
 /** Zero — see ProjectRail's own note. It was 8 while the strip had a right-hand seam to stop
  *  short of; deleting the seam moved the visible boundary and the inset was never re-derived. */
 const CONTENT_INSET_R = 0
 /** `DashboardView`'s root padding, painted in the strip's own colour. The column a person sees
- *  runs from the WINDOW EDGE to the card's edge — 0 → 76 — so its centre is 38, and that is the
+ *  runs from the WINDOW EDGE to the card's edge — 0 → 86 — so its centre is 43, and that is the
  *  number this driver checks. Asserting only that the elements agree with each other at their
- *  element-local axis is what let a 4px error stand: they agreed perfectly, at 34. */
+ *  element-local axis is what let a 4px error stand: they agreed perfectly, at 34 when the column
+ *  ran 0 → 76. */
 const WINDOW_PAD = 8
-const OPTICAL_CENTRE = 38
+const OPTICAL_CENTRE = 43
 /** The optical axis. The strip has NO right-hand seam any more, so the column runs to the rail's
- *  own edge and the axis is simply the field's midpoint: (60 − 8) / 2 = 26 element-local, 34 from
- *  the window edge, the centre of the visible 68px strip.
+ *  own edge and the axis is simply the field's midpoint: (70 − 0) / 2 = 35 element-local, 43 from
+ *  the window edge, the centre of the visible 78px strip. (Subtracting a right inset is what got
+ *  this wrong twice: (60 − 8) / 2 = 26 was the seam-era derivation and it survived the seam.)
  *
  *  The old derivation subtracted a 1px seam that was an INSET BOX-SHADOW — which does not reduce
  *  the content box — so the prose centred at 29.5 while the CSS centred at 30.0. A standing 0.5px
@@ -520,7 +522,7 @@ for (const [theme, short] of THEMES) {
   const fails = []
 
   // Scene 1 — COLLAPSED, which is the state every axis claim is about.
-  const m1 = await measure(p, `${short} · collapsed (60)`)
+  const m1 = await measure(p, `${short} · collapsed (${RAIL_W})`)
   const r1 = report(m1)
   if (Math.abs(m1.rr.width - RAIL_W) > 0.5) fails.push(`collapsed width ${m1.rr.width}, expected ${RAIL_W}`)
   // The colliding pair must be two GROUPS, not one: same accent, separate hairlines. The strip is
@@ -544,7 +546,7 @@ for (const [theme, short] of THEMES) {
   await p.mouse.move(700, 450)
   await p.evaluate(() => document.activeElement?.blur?.())
   await p.waitForTimeout(7000)
-  const m2 = await measure(p, `${short} · expanded (264)`)
+  const m2 = await measure(p, `${short} · expanded (${RAIL_W_OPEN})`)
   const r2 = report(m2)
   if (Math.abs(m2.rr.width - RAIL_W_OPEN) > 0.5) fails.push(`expanded width ${m2.rr.width}, expected ${RAIL_W_OPEN}`)
 
@@ -561,7 +563,7 @@ for (const [theme, short] of THEMES) {
   // moves looks exactly like a regression to anyone reading this file cold — it isn't; it is the
   // decision. What is still true, and still gated:
   //   • the orb must not RESIZE between states (a disc that grows on ⌘B is a defect, not a choice)
-  //   • the COLLAPSED axis stays at 30 element-local / 38 from the window edge, which is the
+  //   • the COLLAPSED axis stays at 35 element-local / 43 from the window edge, which is the
   //     optical-centre fix from D1-FIX-1 and lives one neighbourhood away from this change.
   console.log('\nX · the orb must not RESIZE when the strip expands (Δx retired — see the note)')
   let worstX = 0

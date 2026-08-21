@@ -154,7 +154,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         data-accent-orb={session.id}
         // The SAME hook the collapsed strip's orb carries, so a driver can assert the one across
         // both states: `dev/drive-rail-invariant.mjs` measures this element's painted centre at
-        // 60 and at 264 and fails if it moved. Two selectors would have measured two elements.
+        // 70 and at 264 and fails if it moved. Two selectors would have measured two elements.
         data-rail-orb={session.id}
         onContextMenu={onPickAccent && ((e) => {
           // Right-click the orb to recolour; left-click falls through to row select.

@@ -38,8 +38,8 @@ const THEMES = process.env.THEMES === 'all'
     ? ALL_THEMES.filter(([k]) => process.env.THEMES.split(',').includes(k))
     : [ALL_THEMES[0], ALL_THEMES[1]]
 
-/** The optical axis, element-local — the same 30 every orb and the identity row sits on. */
-const AXIS = 30
+/** The optical axis, element-local — the same 35 every orb and the identity row sits on. */
+const AXIS = 35
 const TOL = 0.75
 
 const RESTING = ['data-rail-agents', 'data-rail-usage', 'data-rail-gallery', 'data-rail-open-folder']
