@@ -1,35 +1,81 @@
 // Auto-update. Replaces the Tauri updater plugin with `electron-updater`.
 //
-// THE FEED FORMAT CHANGES, AND THAT IS THE WHOLE MIGRATION RISK HERE. Tauri checks a
-// `latest.json` on `juanmnl/operator-releases` against a minisign key baked into
-// `tauri.conf.json`; electron-updater expects a `latest-mac.yml` alongside a `.zip`, verified
-// through the bundle's code signature instead. Both cannot be served from one artifact set, so
-// the changeover release has to publish the electron-updater feed BEFORE any Electron build
-// ships — see dev/briefs/2026-08-20-electron-mcp-serve-probe-RESULT.md on the one-way door.
+// THE FEED FORMAT CHANGES, AND THAT WAS THE WHOLE MIGRATION RISK. Tauri checks a `latest.json`
+// on `juanmnl/operator-releases` against a minisign key baked into `tauri.conf.json`;
+// electron-updater expects a `latest-mac.yml` alongside a `.zip`, verified through the bundle's
+// code signature instead. Both cannot be served from one artifact set — so the swap release
+// (`electron-vX.Y.Z`, no prerelease suffix) publishes BOTH to the same operator-releases
+// release: `latest.json` for the copies still running Tauri, `latest-mac.yml` + `.zip` for the
+// ones that have crossed over. See `.github/workflows/electron.yml`.
 //
-// Until that feed exists, `checkUpdate` answers "no update" rather than throwing. That matches
-// the Tauri bridge, which wraps its own check in a catch and returns null: an update checker
-// that surfaces its own plumbing errors to the user is worse than one that stays quiet.
+// A failed check still answers "no update" rather than throwing. That matches the Tauri bridge,
+// which wraps its own check in a catch and returns null: an update checker that surfaces its own
+// plumbing to the user is worse than one that stays quiet.
+import { app } from 'electron'
 import { autoUpdater } from 'electron-updater'
 
-/** Set once the release feed is published. Until then the updater is deliberately inert —
- *  pointing it at the Tauri `latest.json` would have it parse a format it does not speak and
- *  report a corrupt-feed error on every launch. */
-const FEED_URL = process.env.OPERATOR_UPDATE_FEED ?? null
+/** The packaged default feed.
+ *
+ *  `provider: 'generic'` pointed at `releases/latest/download`, NOT `provider: 'github'`, and the
+ *  reason is which URLs each one actually touches:
+ *
+ *  - Generic makes ONE metadata request. `GenericProvider.getLatestVersion` fetches
+ *    `<url>/latest-mac.yml` (`GenericProvider.js:18-23`; the `-mac` suffix comes from
+ *    `Provider.getChannelFilePrefix`, `Provider.js:30-38`) and resolves the `.zip` against the
+ *    same base (`GenericProvider.js:46-48`). Both are `releases/latest/download/<name>`, which
+ *    GitHub answers with a 302 to the current "Latest" release's asset — the very URL shape
+ *    `tauri.conf.json`'s endpoint has been using in production.
+ *  - GitHub makes THREE, and one of them is undocumented: `releases.atom`
+ *    (`GitHubProvider.js:43`), then `GET /<owner>/<repo>/releases/latest` with
+ *    `Accept: application/json` (`GitHubProvider.js:158-171`) — an HTML route that answers JSON
+ *    only for that header, and only after a same-origin 302 whose headers survive by way of
+ *    `HttpExecutor.prepareRedirectUrlOptions` (`builder-util-runtime/out/httpExecutor.js:286`) —
+ *    and only then the `latest-mac.yml` under the resolved tag.
+ *
+ *  What GitHub buys is a tag-pinned download, so a release published mid-check cannot be raced.
+ *  Generic's window is closed instead by the `sha512` in the yml, which `resolveFiles` requires
+ *  and refuses to proceed without (`Provider.js:127-129`) — a mismatch fails the verify rather
+ *  than installing the wrong build. One request against a proven URL shape beats three against a
+ *  route GitHub never promised. */
+const DEFAULT_FEED_URL = 'https://github.com/juanmnl/operator-releases/releases/latest/download'
+
+/** Which feed to use, as a pure decision so it can be tested without an Electron app.
+ *
+ *  A DEV BUILD MUST STAY INERT. `npm run dev` runs the same code with the same version number as
+ *  whatever is published, so a default feed that applied unpackaged would offer every developer
+ *  an "update" to the build they are sitting on. */
+export function resolveFeedUrl(env: string | undefined, isPackaged: boolean): string | null {
+  if (env) return env
+  return isPackaged ? DEFAULT_FEED_URL : null
+}
+
+/** `app` is undefined when this module is loaded outside Electron — the unit tests import it
+ *  under plain node, where `require('electron')` resolves to a path string. Treat that as "not
+ *  packaged" rather than letting a property read throw inside the checker. */
+function packaged(): boolean {
+  try {
+    return app?.isPackaged === true
+  } catch {
+    return false
+  }
+}
 
 let pending: { version: string } | null = null
-let configured = false
+let configuredUrl: string | null = null
 
 function configure(): boolean {
-  if (!FEED_URL) return false
-  if (!configured) {
-    autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL })
+  // Read the env on every call rather than at import: the module is imported at startup, and
+  // caching the answer there made `OPERATOR_UPDATE_FEED` untestable without a module reset.
+  const url = resolveFeedUrl(process.env.OPERATOR_UPDATE_FEED, packaged())
+  if (!url) return false
+  if (configuredUrl !== url) {
+    autoUpdater.setFeedURL({ provider: 'generic', url })
     // The renderer drives this: `checkUpdate` then `installUpdate`, both explicit. Downloading
     // on its own would spend the user's bandwidth on a decision they have not made.
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false
     autoUpdater.logger = { info: console.error, warn: console.error, error: console.error, debug: () => {} }
-    configured = true
+    configuredUrl = url
   }
   return true
 }

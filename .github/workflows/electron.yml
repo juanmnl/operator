@@ -1,12 +1,20 @@
 name: electron
 
-# The Electron preview, shipped as a GitHub PRE-RELEASE ON THIS REPO — deliberately not through
-# `latest.json` on juanmnl/operator-releases.
+# The Electron build, and THE SWAP RELEASE.
 #
-# That feed is what every installed Tauri copy polls, and the cross-shell swap is a ONE-WAY DOOR:
-# once an Electron build replaces the app, the Tauri updater is gone and the Electron one takes
-# over. Publishing there would push that door open for everyone at once, unprompted. A
-# pre-release download is opt-in, and the user drags it over /Applications themselves.
+# Two outcomes from one workflow, decided by the tag alone:
+#
+#   electron-v0.17.0-rc.1   → a pre-release on THIS repo carrying every swap asset.
+#                             operator-releases is not touched. Nothing installed sees anything.
+#   electron-v0.17.0        → the same assets, plus a `v0.17.0` release on
+#                             juanmnl/operator-releases marked Latest — which is what
+#                             `src-tauri/tauri.conf.json`'s endpoint resolves to. That is the
+#                             ONE-WAY DOOR: every installed Tauri copy is offered an update into
+#                             the Electron app, and afterwards the Tauri updater is gone and
+#                             `electron-updater` takes over.
+#
+# The dry run builds byte-identical artefacts, so the rehearsal is the real thing minus the
+# publish. The gate is a prerelease suffix on the tag and nothing else — see the `gate` step.
 #
 # The tag pattern is `electron-v*` on purpose: `v*` triggers the Tauri release job in build.yml.
 on:
@@ -129,15 +137,152 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run release
 
-      - name: Release notes
-        id: notes
-        working-directory: electron
+      # ---------------------------------------------------------------- the one-way door
+      # THE SWAP RELEASE IS DECIDED HERE, AND ONLY HERE. A stable `electron-vX.Y.Z` publishes
+      # the Tauri feed to operator-releases and moves EVERY installed copy; the same tag with a
+      # prerelease suffix (`-rc.1`, `-alpha.3`) builds byte-identical assets and publishes none
+      # of them. The difference is the suffix, and nothing else — so the dry run exercises the
+      # real path rather than an approximation of it.
+      - name: Decide whether this tag publishes the swap feed
+        id: gate
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          PKG=$(node -p "require('./electron/package.json').version")
+          TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in
+            electron-v*) TAG_VERSION="${TAG#electron-v}" ;;
+            # workflow_dispatch has no tag: build everything, publish nothing.
+            *) TAG_VERSION="" ;;
+          esac
+          # A tag that disagrees with package.json would advertise a version the app does not
+          # have — the updater compares `latest.json.version` against the INSTALLED version, so
+          # the mismatch surfaces as an update loop on the user's machine, not as a CI failure.
+          # Compare the BASE versions: a prerelease suffix on the tag is the dry-run marker, not
+          # a different build. `electron-v0.17.0-rc.1` is a rehearsal OF 0.17.0.
+          base() { printf '%s' "${1%%-*}"; }
+          if [ -n "$TAG_VERSION" ] && [ "$(base "$TAG_VERSION")" != "$(base "$PKG")" ]; then
+            echo "::error::tag $TAG is version $TAG_VERSION but electron/package.json says $PKG"
+            exit 1
+          fi
+          STABLE=false
+          if printf '%s' "$TAG_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then STABLE=true; fi
+          # A stable tag publishes `latest.json` with version = PKG at the url `v$PKG`. If PKG
+          # still carried a prerelease suffix those two would disagree, and the feed would name a
+          # version whose asset is at a different path. Refuse rather than publish that.
+          if [ "$STABLE" = true ] && [ "$TAG_VERSION" != "$PKG" ]; then
+            echo "::error::stable tag $TAG cannot publish a prerelease package version ($PKG) — bump electron/package.json to $TAG_VERSION"
+            exit 1
+          fi
+          echo "version=$PKG" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+          if [ "$STABLE" = true ]; then
+            echo "swap feed: PUBLISH — v$PKG goes to juanmnl/operator-releases; every installed Tauri copy will be offered it"
+          else
+            echo "swap feed: dry run (prerelease) — assets built and attached to this repo's release only; operator-releases untouched"
+          fi
+
+      # Built on EVERY run, stable or not, so a dry run produces the exact artefacts a stable tag
+      # would publish and they can be inspected (or pointed at a local feed) before the door opens.
+      - name: Build the swap payload (Tauri updater tarball + signature + latest.json)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          OUT=electron/release
+          APP="$OUT/Operator.app"
+          test -d "$APP" || { echo "::error::$APP is missing — release.mjs did not produce a bundle"; exit 1; }
+
+          # 1. Stage with `ditto`, never `cp -R`/`cpSync`. Both rewrite a framework's
+          #    `Versions/Current` symlink to its resolved absolute target, and a bundle whose
+          #    symlinks moved fails its own signature check on extract — that is the alpha.1 DMG
+          #    bug, and the reason release.mjs stages the DMG the same way.
+          STAGE=$(mktemp -d)
+          ditto "$APP" "$STAGE/Operator.app"
+          codesign --verify --deep --strict "$STAGE/Operator.app"
+
+          # 2. The shape the Tauri updater requires: root entry `Operator.app/`, `Contents/` at
+          #    the second level (it untars stripping the first path component). COPYFILE_DISABLE
+          #    stops bsdtar writing AppleDouble `._` entries, which are not in what tauri-bundler
+          #    produces and would land as junk inside the installed app.
+          COPYFILE_DISABLE=1 tar -czf "$OUT/Operator.app.tar.gz" -C "$STAGE" Operator.app
+          FIRST=$(tar -tzf "$OUT/Operator.app.tar.gz" | head -1)
+          [ "$FIRST" = "Operator.app/" ] || { echo "::error::tarball root entry is '$FIRST', expected 'Operator.app/'"; exit 1; }
+
+          # 3. Sign with the SAME minisign key every installed copy already trusts. Regenerating
+          #    it — or signing with a different one — strands all of them, permanently.
+          npx tauri signer sign "$OUT/Operator.app.tar.gz"
+          test -s "$OUT/Operator.app.tar.gz.sig" || { echo "::error::the swap payload was not signed"; exit 1; }
+
+          # 4. `tauri signer sign` exiting 0 proves a signature was written, not that the
+          #    installed app will accept it. Verify it against the pubkey in tauri.conf.json
+          #    independently — key-id match plus ed25519 over the blake2b-512 prehash. This is
+          #    the plugin's ONLY content check on the payload; if it is wrong, the user finds out
+          #    after a 300 MB download, on a release that cannot be recalled.
+          node scripts/verify-updater-signature.mjs "$OUT/Operator.app.tar.gz" "$OUT/Operator.app.tar.gz.sig"
+
+          # 5. THE TICKET HAS TO BE INSIDE THE TARBALL, not just the .app on disk. 0.16.0 shipped
+          #    an unstapled payload while its .app validated fine (see build.yml's staple step) —
+          #    so assert on the copy the updater will actually install.
+          VERIFY=$(mktemp -d)
+          tar -xzf "$OUT/Operator.app.tar.gz" -C "$VERIFY"
+          xcrun stapler validate "$VERIFY/Operator.app"
+          spctl -a -vvv -t exec "$VERIFY/Operator.app"
+          rm -rf "$VERIFY" "$STAGE"
+
+          # 6. The notes the swap release carries. Short on purpose: this text is the release body
+          #    on operator-releases and the `notes` field of latest.json.
+          cat > "$RUNNER_TEMP/swap-notes.md" <<EOF
+          **Operator ${VERSION} — the app moves from Tauri to Electron.** Same app, same
+          \`~/.operator\`: your projects, sessions, chat history and artifact reports are all
+          still there, and \`--mcp-serve\` is unchanged.
+
+          - **No more hourly renderer restart.** WebKit was killing and respawning the renderer at
+            ~1.2 GB; Chromium's ceiling is far higher and the fleet rests flat under it.
+          - **The download is much bigger** — ~143 MB, ~313 MB installed. Electron ships its own
+            Chromium where the Tauri build used the system WebView.
+          - **\`gridterm\` sessions end here.** That experiment is not ported.
+          - **Updates come from the Electron updater from now on.** This is the last release the
+            Tauri updater installs.
+          EOF
+
+          # 7. latest.json — the feed every installed Tauri copy polls. Same shape build.yml
+          #    writes. The url points at the operator-releases release this run publishes, NOT at
+          #    this repo: `src-tauri/tauri.conf.json`'s endpoint is operator-releases' LATEST
+          #    release, and the asset has to sit on the release that endpoint resolves to.
+          jq -n --arg v "$VERSION" \
+                --arg sig "$(cat "$OUT/Operator.app.tar.gz.sig")" \
+                --arg url "https://github.com/juanmnl/operator-releases/releases/download/v${VERSION}/Operator.app.tar.gz" \
+                --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --rawfile notes "$RUNNER_TEMP/swap-notes.md" \
+                '{version:$v, notes:$notes, pub_date:$date, platforms:{"darwin-aarch64":{signature:$sig, url:$url}}}' \
+                > "$OUT/latest.json"
+
+          # 8. SHA256SUMS covers what ships. release.mjs wrote it for the DMG and the zip, before
+          #    this tarball existed — a checksum file that omits an asset is worse than none.
+          ( cd "$OUT" && shasum -a 256 Operator.app.tar.gz >> SHA256SUMS.txt )
+
+          echo "--- swap payload ---"
+          ls -lh "$OUT/Operator.app.tar.gz" "$OUT/Operator.app.tar.gz.sig" "$OUT/latest.json"
+          cat "$OUT/latest.json" | jq '{version, pub_date, url: .platforms["darwin-aarch64"].url, sig_len: (.platforms["darwin-aarch64"].signature | length)}'
+
+      - name: Release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.gate.outputs.version }}
+          STABLE: ${{ steps.gate.outputs.stable }}
+        run: |
+          set -euo pipefail
+          if [ "$STABLE" = "true" ]; then
+            HEADLINE="**Operator $VERSION — the swap release.** The app moves from Tauri to Electron, and this is the release the Tauri updater installs."
+            SHELL_NOTE=$'### Auto-update\nThis release publishes BOTH feeds to [operator-releases](https://github.com/juanmnl/operator-releases/releases/latest): `latest.json` for the copies still running Tauri, and `latest-mac.yml` + the `.zip` for the ones that have crossed over. **It is a one-way door** — after it, the Tauri updater is gone and `electron-updater` takes over.'
+          else
+            HEADLINE="**Electron preview of Operator $VERSION.** Same app, different shell."
+            SHELL_NOTE=$'### Auto-update is NOT wired for this build\nThis is a pre-release: the swap assets below (`Operator.app.tar.gz`, its `.sig`, `latest.json`) were built exactly as a stable tag would build them, but nothing was published to operator-releases. Installed copies see nothing.'
+          fi
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          **Electron preview of Operator $VERSION.** Same app, different shell.
+          $HEADLINE
 
           ### Why
           The renderer used to be killed and respawned by WebKit at ~1.2 GB — what you experienced
@@ -161,49 +306,111 @@ jobs:
           **Quit the running Operator first.** Its lanes are child processes and replacing the app
           under them is not something to find out about mid-task.
 
-          ### Auto-update is deliberately NOT wired
-          This build does not update itself, and the Tauri app will not update *into* it. That
-          swap is a one-way door — after it, the old updater is gone — so it is opt-in and manual
-          for now.
+          $SHELL_NOTE
 
           ### Going back
           Re-download 0.16.0 from
-          [operator-releases](https://github.com/juanmnl/operator-releases/releases/latest) and drag
-          it over. Your \`~/.operator\` state is untouched by either direction.
+          [operator-releases](https://github.com/juanmnl/operator-releases/releases/tag/v0.16.0) and
+          drag it over. Your \`~/.operator\` state is untouched by either direction.
 
           ### Known gaps
           - The custom title bar is not draggable yet (Electron has no programmatic window drag).
           - The grid terminal (an unused experiment) is not ported.
-          - \`gridterm\`-based sessions and the in-app updater are inert.
+          - \`gridterm\`-based sessions are inert.
           EOF
           echo "notes=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
 
-      - name: Create pre-release
+      # The release on THIS repo. It carries the swap assets whether or not they are published,
+      # so a dry run is inspectable and can be pointed at a local feed for the install check.
+      - name: Create the release on juanmnl/operator
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.notes.outputs.version }}
+          VERSION: ${{ steps.gate.outputs.version }}
+          STABLE: ${{ steps.gate.outputs.stable }}
         run: |
           set -euo pipefail
           cd electron/release
           TAG="${GITHUB_REF_NAME}"
-          # workflow_dispatch has no tag; name the draft after the version so a manual run is
+          # workflow_dispatch has no tag; name the release after the version so a manual run is
           # still inspectable rather than failing at the last step.
           case "$TAG" in electron-v*) ;; *) TAG="electron-v${VERSION}" ;; esac
+          if [ "$STABLE" = "true" ]; then
+            TITLE="Operator ${VERSION} (Electron)"
+            PRERELEASE=""
+          else
+            TITLE="Operator ${VERSION} (Electron preview)"
+            PRERELEASE="--prerelease"
+          fi
+          # shellcheck disable=SC2086 — PRERELEASE is a flag or empty, deliberately unquoted.
           gh release create "$TAG" \
             --repo "${GITHUB_REPOSITORY}" \
-            --prerelease \
-            --title "Operator ${VERSION} (Electron preview)" \
+            $PRERELEASE \
+            --title "$TITLE" \
             --notes-file "${{ steps.notes.outputs.notes }}" \
             "Operator_${VERSION}_aarch64.dmg" \
             "Operator-${VERSION}-arm64-mac.zip" \
+            Operator.app.tar.gz \
+            Operator.app.tar.gz.sig \
+            latest.json \
             latest-mac.yml \
             SHA256SUMS.txt
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Operator_${VERSION}_aarch64.dmg"
           {
-            echo "## Operator ${VERSION} (Electron preview)"
+            echo "## $TITLE"
             echo ""
             echo "**[Download the DMG](${URL})**"
             echo ""
-            echo "Pre-release on \`${GITHUB_REPOSITORY}\`, tag \`${TAG}\`."
+            echo "Release on \`${GITHUB_REPOSITORY}\`, tag \`${TAG}\`."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "$URL"
+
+      # THE DOOR. Only on a stable `electron-vX.Y.Z`.
+      #
+      # `src-tauri/tauri.conf.json`'s endpoint is
+      # `https://github.com/juanmnl/operator-releases/releases/latest/download/latest.json`, which
+      # GitHub answers with a 302 to whichever release is marked Latest. Creating this release
+      # with `--latest` is therefore the act that hands every installed Tauri copy an update INTO
+      # the Electron app — there is no separate switch to throw.
+      #
+      # BOTH FEEDS GO ON THE SAME RELEASE, in the same minute, on purpose: a copy that crosses
+      # over stops speaking `latest.json` and starts asking for `latest-mac.yml` at
+      # `releases/latest/download/`. If that file were not already there, the crossed-over app
+      # would report a broken feed on its first launch after the update it just installed.
+      - name: Publish the swap release to operator-releases
+        if: steps.gate.outputs.stable == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+          VERSION: ${{ steps.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd electron/release
+          echo "swap feed: PUBLISH — creating v${VERSION} on juanmnl/operator-releases"
+          gh release create "v${VERSION}" \
+            --repo juanmnl/operator-releases \
+            --title "Operator ${VERSION}" \
+            --notes-file "$RUNNER_TEMP/swap-notes.md" \
+            --latest \
+            --verify-tag=false \
+            "Operator_${VERSION}_aarch64.dmg" \
+            Operator.app.tar.gz \
+            latest.json \
+            "Operator-${VERSION}-arm64-mac.zip" \
+            latest-mac.yml \
+            SHA256SUMS.txt
+          {
+            echo ""
+            echo "### Swap feed PUBLISHED"
+            echo "\`v${VERSION}\` on juanmnl/operator-releases, marked Latest."
+            echo "Every installed Tauri copy now resolves \`releases/latest/download/latest.json\` to it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Swap feed NOT published (dry run)
+        if: steps.gate.outputs.stable != 'true'
+        run: |
+          echo "swap feed: dry run (prerelease) — operator-releases untouched."
+          echo "The swap assets are attached to this repo's release: Operator.app.tar.gz, its .sig, latest.json."
+          {
+            echo ""
+            echo "### Swap feed: dry run"
+            echo "operator-releases was NOT touched. The swap assets are attached to this repo's release."
+          } >> "$GITHUB_STEP_SUMMARY"
