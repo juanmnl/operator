@@ -15,7 +15,7 @@
 // at all — a lane whose MCP server hangs fails silently, with no output and no exit code.
 import { execFileSync, execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, readlinkSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, readlinkSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
@@ -72,7 +72,15 @@ const [built] = await packager({
   arch: ARCH,
   out: packaged,
   overwrite: true,
-  asar: true,
+  // NOT `asar: true`. On macOS node-pty execs a helper binary that sits NEXT TO its `.node`
+  // (`lib/unixTerminal.js`: `native.dir + '/spawn-helper'`, with `app.asar` rewritten to
+  // `app.asar.unpacked`). Packager's default unpack pattern is `.node` files only, so the helper
+  // stayed sealed inside the archive where nothing can exec it and every `pty.spawn()` in the
+  // packaged app died with `posix_spawnp failed.` — i.e. not one lane could launch (found in the
+  // rc.1 bundle, `dev/briefs/2026-08-21-node-pty-spawn-helper-unpack.md`). Setting `asar` to an
+  // object REPLACES the default pattern, so packager's own `**/{.**,**}/**/*.node` is repeated
+  // here verbatim and the helper added beside it.
+  asar: { unpack: '{**/{.**,**}/**/*.node,**/node-pty/**/spawn-helper}' },
   appBundleId: BUNDLE_ID,
   appVersion: VERSION,
   buildVersion: VERSION,
@@ -85,6 +93,18 @@ const [built] = await packager({
     /^\/tsconfig.*/, /^\/vite\.config\.ts$/, /^\/vitest\.config\.ts$/,
     /\.map$/, /\.test\.ts$/,
     /node_modules\/node-pty\/prebuilds\/(?!darwin-arm64)/,
+  ],
+  // asar copies an unpacked file with the mode it had in the staged app, and node-pty ships its
+  // PREBUILT helper at 0644 — unpacked but not executable is the same dead end as sealed. Fix the
+  // mode on the STAGED COPY (never the user's node_modules), before the asar is built and before
+  // signing. `build/Release` wins at runtime and is already 0755; this covers the fallback.
+  afterCopy: [
+    async ({ buildPath }) => {
+      const helpers = execFileSync('find', [join(buildPath, 'node_modules', 'node-pty'), '-name', 'spawn-helper'], { encoding: 'utf8' })
+        .split('\n').filter(Boolean)
+      for (const h of helpers) chmodSync(h, 0o755)
+      console.log(`  spawn-helper: ${helpers.length} made 0755 before asar`)
+    },
   ],
   ...(SKIP_SIGN ? {} : {
     osxSign: {
@@ -127,6 +147,76 @@ step('verify what shipped')
   if (!SKIP_SIGN) {
     sh(`codesign --verify --deep --strict --verbose=1 ${JSON.stringify(APP)}`)
     console.log(`  ${shOut(`codesign -dv ${JSON.stringify(APP)} 2>&1 | grep Authority | head -1`)}`)
+  }
+
+  // node-pty's spawn-helper: OUT of the archive, EXECUTABLE, and SIGNED. All three or no lane
+  // launches — and the third one is not optional, because an unsigned nested Mach-O inside a
+  // hardened-runtime bundle is what notarization rejects.
+  const unpackedPty = join(APP, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', 'node-pty')
+  const helpers = existsSync(unpackedPty)
+    ? execFileSync('find', [unpackedPty, '-name', 'spawn-helper'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+    : []
+  if (!helpers.length) {
+    console.error('::error::no spawn-helper in app.asar.unpacked — node-pty is sealed in the archive and pty.spawn() will fail with `posix_spawnp failed.`')
+    process.exit(1)
+  }
+  for (const h of helpers) {
+    const mode = statSync(h).mode & 0o777
+    if (!(mode & 0o111)) {
+      console.error(`::error::${h} is not executable (mode ${mode.toString(8)})`)
+      process.exit(1)
+    }
+    let sig = 'unsigned (SKIP_SIGN=1)'
+    if (!SKIP_SIGN) {
+      // No pipe: a `codesign -dv | grep` pipeline reports GREP's exit code, so an unsigned helper
+      // would read as a pass. Take codesign's own status, then pick the line out in JS.
+      let info
+      try {
+        info = execSync(`codesign -dv ${JSON.stringify(h)} 2>&1`, { encoding: 'utf8' })
+      } catch {
+        console.error(`::error::${h} was NOT signed — osxSign skipped it, and notarization will reject the bundle`)
+        process.exit(1)
+      }
+      sig = info.split('\n').find((l) => /^(Signature|Authority)/.test(l))?.trim() ?? 'signed'
+    }
+    console.log(`  spawn-helper ${h.slice(APP.length + 1)} · mode ${mode.toString(8)} · ${sig}`)
+  }
+
+  // And then actually spawn one. The checks above are what the packager did; this is what a lane
+  // does. `ELECTRON_RUN_AS_NODE=1` runs the SHIPPED binary as a plain node with no window, so it
+  // is the packaged app's own copy of node-pty being exercised — the path node-pty rewrites
+  // (`app.asar` → `app.asar.unpacked`) only resolves correctly from inside the bundle.
+  console.log('  pty smoke test (ELECTRON_RUN_AS_NODE, no window):')
+  {
+    const smoke = `
+      const pty = require(process.argv[1] + '/node_modules/node-pty')
+      const bail = (m) => { console.log(m); process.exit(1) }
+      const timer = setTimeout(() => bail('FAIL: the pty never exited'), 20000)
+      try {
+        const p = pty.spawn('/bin/echo', ['hi'], { name: 'xterm-256color', cols: 80, rows: 24 })
+        p.onExit(({ exitCode }) => {
+          clearTimeout(timer)
+          if (exitCode !== 0) bail('FAIL: /bin/echo exited ' + exitCode)
+          console.log('OK: pty spawned, /bin/echo exited 0')
+          process.exit(0)
+        })
+      } catch (e) { bail('FAIL: ' + e.message) }
+    `
+    let out
+    try {
+      out = execFileSync(join(APP, 'Contents', 'MacOS', PRODUCT), ['-e', smoke, join(APP, 'Contents', 'Resources', 'app.asar')], {
+        encoding: 'utf8',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim()
+    } catch (e) {
+      out = `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || `the smoke test produced no output (${e.message})`
+    }
+    for (const line of out.split('\n')) console.log(`    ${line}`)
+    if (!out.startsWith('OK:')) {
+      console.error('::error::the packaged app cannot spawn a pty — no lane will launch')
+      process.exit(1)
+    }
   }
 }
 
