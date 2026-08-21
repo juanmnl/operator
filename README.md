@@ -34,11 +34,14 @@ Download the latest `.dmg` from **[operator-releases](https://github.com/juanmnl
 
 Updates are automatic — the app checks on launch and offers a one-click **Install & Restart**.
 
+> **Operator is moving to Electron.** 0.16.x (the stable download above) is the Tauri build. The next line, 0.17, runs the same renderer on an Electron shell — the reasons and the measurements are in [`dev/briefs/2026-08-20-electron-shell-spike-RESULT.md`](dev/briefs/2026-08-20-electron-shell-spike-RESULT.md) (the short version: WKWebView killed the renderer hourly at ~1.2 GB and could not run the WebGL terminal; Chromium does neither). A signed, notarized **preview** is published as a pre-release on this repo: **[electron-v0.17.0-alpha.2](https://github.com/juanmnl/operator/releases/tag/electron-v0.17.0-alpha.2)**. It has the same bundle id and reads the same `~/.operator`, so dragging it over `/Applications/Operator.app` replaces the Tauri build in place; it does **not** arrive through the Tauri app's auto-update yet, and going back is re-downloading 0.16.0. Expect a bigger download (~150 MB) and higher idle memory in exchange for the fixes above.
+
 ### From source
 
 ```bash
 npm install
-npm run tauri dev     # or `npm run dev` for the frontend alone
+cd electron && npm install && npm run dev   # the Electron shell (0.17+)
+npm run tauri dev                           # the Tauri shell (0.16.x); `npm run dev` = renderer alone
 ```
 
 ## First five minutes
@@ -123,16 +126,22 @@ Only these chords are Operator's; everything else — including plain `Cmd+O` an
 ## Development
 
 ```bash
-npm test                                        # unit tests (vitest)
-cargo test --manifest-path src-tauri/Cargo.toml
+npm test                                        # renderer unit tests (vitest)
+(cd electron && npm test)                       # Electron shell tests
+cargo test --manifest-path src-tauri/Cargo.toml # Tauri shell tests (while it ships)
 npm run build                                   # tsc + vite
 ```
 
-**Stack:** React 19 + Vite + Tailwind 4 on a **Tauri 2 (Rust)** backend — `portable-pty` for the embedded terminals, xterm.js (DOM renderer) for the terminal surface, a transcript tailer that rebuilds the session timeline, and `serde`/`serde_yaml` for the agent library, projects and durable session store. The build produces a ~10 MB signed app.
+**Stack:** a React 19 + Vite + Tailwind 4 renderer (`src/renderer`) behind one seam, `window.operator` (`src/renderer/env.d.ts`), and two shells that implement it during the transition:
+
+- **`electron/` — Electron (0.17+).** `node-pty` for the embedded terminals, xterm.js with the WebGL renderer, `better-sqlite3` for the chat and artifact stores, a Node transcript tailer that matches the Rust one row-for-row (`dev/briefs/2026-08-20-electron-s1-transcript-tailer-RESULT.md`). The typed IPC contract is derived from `env.d.ts` and refuses to compile if a renderer method goes unhandled. ~150 MB download.
+- **`src-tauri/` — Tauri 2 (Rust), what 0.16.x ships.** `portable-pty`, xterm.js DOM renderer, `rusqlite`, `serde`/`serde_yaml`. ~15 MB. Stays in the tree until the Electron build is the stable download.
+
+On-disk state (`~/.operator/*`, `chat.db`, the agent library) is byte-compatible between the two; either shell opens what the other wrote.
 
 ### Terminal harnesses
 
-The terminal is the hard part of this app, so it has its own harnesses. Each boots the **production** xterm config in headless WebKit — the same engine family as the app's WKWebView — rather than a stand-in:
+The terminal is the hard part of this app, so it has its own harnesses. Each boots the **production** xterm config in headless WebKit — the engine family of the Tauri shell's WKWebView (the Electron shell renders in Chromium, where the WebGL renderer ran an hour of continuous Claude Code output clean; see the spike result) — rather than a stand-in:
 
 | Command | Answers |
 | --- | --- |
@@ -142,7 +151,7 @@ The terminal is the hard part of this app, so it has its own harnesses. Each boo
 | `npm run verify:visual` | What do the symbol/emoji fallback paths actually render? |
 | `npm run verify:input` | Do keystrokes reach the pty in order? |
 
-`dev/` holds a mock `window.operator` bridge that boots the real renderer against fixtures in a plain browser, so the UI can be driven and screenshotted without the Tauri shell. Start a dev server (`npx vite --port 1440`) and run any `dev/drive-*.mjs` script against it. It's development-only — the production build declares its entry points explicitly, so `dev/` is never bundled.
+`dev/` holds a mock `window.operator` bridge that boots the real renderer against fixtures in a plain browser, so the UI can be driven and screenshotted without either shell (the Electron shell layers its native handlers over this same mock, which is what made the port incremental). Start a dev server (`npx vite --port 1440`) and run any `dev/drive-*.mjs` script against it. It's development-only — the production build declares its entry points explicitly, so `dev/` is never bundled.
 
 ### Two house rules
 
@@ -153,7 +162,12 @@ Both learned the expensive way, and the drivers exist to enforce them:
 
 ### Releases (maintainer)
 
-Tagging `vX.Y.Z` builds, signs, notarizes and publishes automatically. Locally, the build signs with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`); notarization runs too if Apple credentials are present:
+Two pipelines while both shells exist:
+
+- **Electron** — tagging `electron-vX.Y.Z` runs `.github/workflows/electron.yml`: tests, build, sign, notarize, staple, then a **pre-release on this repo** with the `.dmg`, a `.zip` + `latest-mac.yml` (the `electron-updater` feed) and `SHA256SUMS.txt`. It never writes `latest.json` or touches operator-releases — installed Tauri users are not moved until that hand-off is deliberately shipped (`dev/briefs/2026-08-20-tauri-updater-crossshell-handoff-RESULT.md` proves the updater can swap the shell in place; `…-s4-packaging-handoff-RESULT.md` has the recipe).
+- **Tauri** — tagging `vX.Y.Z` builds, signs, notarizes and publishes automatically to operator-releases.
+
+For the Tauri build: Locally, the build signs with the `Developer ID Application` identity in `src-tauri/tauri.conf.json` (hardened runtime + `entitlements.plist`); notarization runs too if Apple credentials are present:
 
 ```bash
 export APPLE_ID="you@example.com"
@@ -167,7 +181,7 @@ Without those variables you still get a signed (un-notarized) `.app` + `.dmg` �
 
 ## Contributing
 
-Issues and pull requests are welcome. Before a PR, please run `npm test`, `cargo test` and `npm run build` — and if you touch the terminal, the relevant `verify:*` harness. If you're changing behaviour a harness covers, make it fail first.
+Issues and pull requests are welcome. Before a PR, please run `npm test`, `cd electron && npm test`, `cargo test` and `npm run build` — and if you touch the terminal, the relevant `verify:*` harness. If you're changing behaviour a harness covers, make it fail first.
 
 <details>
 <summary><strong>Brand &amp; assets</strong></summary>
