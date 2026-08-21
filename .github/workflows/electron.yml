@@ -39,13 +39,13 @@ jobs:
       # Rebuild the native/binary packages for the Node that runs the tests instead. The
       # release job does the Electron rebuild; this job must not.
       - name: Shell deps (Node ABI, no electron-rebuild)
-        working-directory: spike/electron
+        working-directory: electron
         run: |
           npm ci --ignore-scripts
           npm rebuild better-sqlite3 node-pty esbuild --foreground-scripts
           node -e "require('better-sqlite3'); require('node-pty'); require('esbuild'); console.log('native deps load under node', process.version)"
       - name: Shell typecheck + tests
-        working-directory: spike/electron
+        working-directory: electron
         run: npm run typecheck && npm test
 
   release:
@@ -67,13 +67,13 @@ jobs:
       # node-pty's install steps silently on a developer machine — and a skipped esbuild install
       # is a missing binary, while a skipped node-pty build is a missing .node.
       - name: Install shell deps
-        working-directory: spike/electron
+        working-directory: electron
         run: npm ci --foreground-scripts
 
       # Belt and braces: run the two install scripts explicitly if the policy still skipped them.
       # Both are idempotent.
       - name: Ensure native deps are built
-        working-directory: spike/electron
+        working-directory: electron
         run: |
           set -euo pipefail
           node node_modules/esbuild/install.js || true
@@ -121,7 +121,7 @@ jobs:
       # DMG/zip/yml. All of it is scripts/release.mjs, which is the same script a laptop runs
       # (with SKIP_NOTARIZE=1) — so what ships is what was tested.
       - name: Build, sign, notarize, package
-        working-directory: spike/electron
+        working-directory: electron
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -131,7 +131,7 @@ jobs:
 
       - name: Release notes
         id: notes
-        working-directory: spike/electron
+        working-directory: electron
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
@@ -184,7 +184,7 @@ jobs:
           VERSION: ${{ steps.notes.outputs.version }}
         run: |
           set -euo pipefail
-          cd spike/electron/release
+          cd electron/release
           TAG="${GITHUB_REF_NAME}"
           # workflow_dispatch has no tag; name the draft after the version so a manual run is
           # still inspectable rather than failing at the last step.

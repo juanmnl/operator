@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+# Measurement output — PNGs and CSVs from a bench run. The RESULT brief carries the
+# numbers and the frames worth keeping; the raw run does not belong in the history.
+measurements/
+release/
+probes/*/node_modules/
+probes/*/dist/
