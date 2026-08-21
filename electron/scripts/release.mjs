@@ -15,7 +15,7 @@
 // at all — a lane whose MCP server hangs fails silently, with no output and no exit code.
 import { execFileSync, execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, readlinkSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
@@ -198,7 +198,18 @@ const DMG = join(OUT, `Operator_${VERSION}_aarch64.dmg`)
   const stage = join(OUT, 'dmg-stage')
   rmSync(stage, { recursive: true, force: true })
   mkdirSync(stage, { recursive: true })
-  cpSync(APP, join(stage, `${PRODUCT}.app`), { recursive: true })
+  // `ditto`, NOT fs.cpSync: cpSync rewrites every symlink to its RESOLVED absolute target
+  // (verbatimSymlinks defaults to false), so the frameworks' `Versions/Current` links inside the
+  // DMG pointed at /Users/runner/... on the CI box and the installed app failed codesign with
+  // "bundle format unrecognized" (alpha.1's DMG, 2026-08-21). The zip was made with ditto and
+  // was fine — do the same here, and prove it before the image is built.
+  execFileSync('ditto', [APP, join(stage, `${PRODUCT}.app`)])
+  sh(`codesign --verify --deep --strict ${JSON.stringify(join(stage, `${PRODUCT}.app`))}`)
+  {
+    const cur = join(stage, `${PRODUCT}.app`, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'Current')
+    const target = readlinkSync(cur)
+    if (target.startsWith('/')) throw new Error(`DMG stage has an absolute symlink: ${cur} -> ${target}`)
+  }
   // The /Applications symlink is what makes the window a drag-and-drop install rather than a
   // folder the user has to know what to do with.
   execFileSync('ln', ['-s', '/Applications', join(stage, 'Applications')])
