@@ -18,6 +18,7 @@ import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
 import { createTray, type OperatorTray } from './tray'
+import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
 // so `__dirname` is the real thing here — `import.meta.url` compiles to an empty string.
@@ -33,6 +34,8 @@ let transcript: Transcript | null = null
 let chat: ChatStore | null = null
 let artifacts: ArtifactStore | null = null
 let tray: OperatorTray | null = null
+let trayPhase: TrayPhase = 'idle'
+let stopTrayAnim: (() => void) | null = null
 
 /** The ONLY origins this app may navigate to. Anything else — a dropped file, a link the
  *  renderer mishandled, a redirect — is refused and, if it looks like a real web URL, handed to
@@ -107,6 +110,8 @@ function teardown(): void {
   terminals?.killAll()
   chat?.close()
   artifacts?.close()
+  stopTrayAnim?.()
+  stopTrayAnim = null
   tray?.destroy()
   tray = null
 }
@@ -169,6 +174,10 @@ function boot(): void {
   try {
     tray = createTray({ showWindow, quit: () => app.quit() })
     refreshTray()
+    // The icon breathes with the fleet. The animator PULLS `trayPhase` rather than being pushed
+    // at, so a missed `sessions` event cannot leave it stuck mid-twinkle.
+    const dots = buildDots()
+    stopTrayAnim = startTrayAnimation(() => trayPhase, (state, t) => tray?.setImage(frameImage(dots, state, t)))
   } catch (e) {
     console.error('[shell] tray unavailable:', e)
   }
@@ -186,7 +195,9 @@ function showWindow(): void {
  *  cannot disagree about what is running. */
 function refreshTray(): void {
   if (!tray || !transcript || !terminals) return
-  tray.refresh(transcript.liveLanes((id) => terminals!.isAlive(id)))
+  const lanes = transcript.liveLanes((id) => terminals!.isAlive(id))
+  tray.refresh(lanes)
+  trayPhase = aggregateState(lanes)
 }
 
 if (process.argv.includes('--mcp-serve')) {
