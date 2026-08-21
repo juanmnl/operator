@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -146,5 +146,124 @@ describe('runCheck', () => {
     expect(r.ok).toBe(false)
     expect(r.code).toBe(3)
     expect(r.output).toContain('boom')
+  })
+})
+
+// S3 acceptance: the operations S1's tests did not reach — merge, discard, and the diff shapes
+// the Plan/Diff panel renders. All on throwaway repos under the sandbox.
+describe('merge, discard, and the guards around them', () => {
+  it('merges a lane branch back with --no-ff and removes the worktree', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'feature.txt'), 'work\n')
+    await wt.commitAll(lane.path, 'lane work')
+
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    expect(r.ok).toBe(true)
+    // The work is on main…
+    expect(git(repo, ['show', 'main:feature.txt'])).toBe('work')
+    // …as a MERGE commit, not fast-forwarded: the lane's shape stays visible in the history.
+    expect(git(repo, ['rev-list', '--merges', '--count', 'main'])).toBe('1')
+    // …and the worktree directory is gone.
+    expect(await wt.pathExists(lane.path)).toBe(false)
+  })
+
+  it('REFUSES to merge when the source repo is dirty', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(repo, 'uncommitted.txt'), 'in the way\n')
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    expect(r.ok).toBe(false)
+    expect(r.message).toMatch(/uncommitted changes/)
+  })
+
+  it('ABORTS a conflicting merge and leaves the repo clean, not mid-conflict', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    // Both sides edit the same line.
+    writeFileSync(join(lane.path, 'a.txt'), 'lane version\n')
+    await wt.commitAll(lane.path, 'lane edit')
+    writeFileSync(join(repo, 'a.txt'), 'main version\n')
+    git(repo, ['commit', '-am', 'main edit'])
+
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    expect(r.ok).toBe(false)
+    expect(r.message).toMatch(/Merge failed/)
+    // The repo must be usable afterwards — no MERGE_HEAD left behind.
+    expect(git(repo, ['status', '--porcelain'])).toBe('')
+    expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(false)
+  })
+
+  it('discard removes the worktree AND deletes the branch', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'throwaway.txt'), 'x\n')
+    await wt.commitAll(lane.path, 'work nobody wants')
+
+    await wt.discardBranch(lane.path, repo, lane.branch)
+    expect(await wt.pathExists(lane.path)).toBe(false)
+    expect(git(repo, ['branch', '--list', lane.branch])).toBe('')
+  })
+
+  it('worktreeDiff against a BASE spans committed work, not just uncommitted edits', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'committed.txt'), 'already in\n')
+    await wt.commitAll(lane.path, 'lane commit')
+    writeFileSync(join(lane.path, 'uncommitted.txt'), 'not yet\n')
+
+    // Against HEAD, only the uncommitted file is a change.
+    const vsHead = await wt.worktreeDiff(lane.path)
+    expect(vsHead.files.map((f) => f.path)).toContain('uncommitted.txt')
+    expect(vsHead.files.map((f) => f.path)).not.toContain('committed.txt')
+
+    // Against the base, BOTH show — an agent that commits would otherwise read as "no changes".
+    const vsBase = await wt.worktreeDiff(lane.path, 'main')
+    expect(vsBase.files.map((f) => f.path)).toEqual(expect.arrayContaining(['committed.txt', 'uncommitted.txt']))
+  })
+
+  it('counts added/removed lines per file', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'a.txt'), 'one\ntwo\nthree\n')
+    const d = await wt.worktreeDiff(lane.path)
+    const entry = d.files.find((f) => f.path === 'a.txt')!
+    expect(entry.added).toBeGreaterThan(0)
+  })
+
+  it('inspectRepo reports a non-repo without throwing', async () => {
+    const notARepo = mkdtempSync(join(SANDBOX, 'plain-'))
+    expect(await wt.inspectRepo(notARepo)).toEqual({ isRepo: false })
+  })
+
+  it('worktreeStatus reports invalid for a path that is not a checkout', async () => {
+    const notARepo = mkdtempSync(join(SANDBOX, 'plain2-'))
+    expect((await wt.worktreeStatus(notARepo)).valid).toBe(false)
+  })
+
+  it('refuses to create a worktree in a repo with no commits', async () => {
+    const empty = mkdtempSync(join(SANDBOX, 'empty-'))
+    git(empty, ['init', '-b', 'main'])
+    await expect(wt.createWorktree(empty)).rejects.toThrow(/no commits yet/)
+  })
+
+  it('records provenance for every worktree it creates — the reaper may only remove what we made', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo, null, 'lane-7')
+    const prov = JSON.parse(readFileSync(join(process.env.OPERATOR_DIR!, 'worktree-provenance.json'), 'utf8'))
+    const mine = prov.find((p: { path: string }) => p.path === lane.path)
+    // `sourceRepo` is git's canonical root (`rev-parse --show-toplevel`), not the path the
+    // caller happened to pass — on macOS /var is a symlink to /private/var, so the two differ.
+    // Recording the resolved one is right: the reaper compares it against real paths.
+    const canonical = (await wt.inspectRepo(repo)).root
+    expect(mine).toMatchObject({ createdBy: 'operator', sourceRepo: canonical, branch: lane.branch, laneId: 'lane-7' })
+  })
+
+  it('lanes in the SAME repo get distinct branches and directories', async () => {
+    const repo = scratchRepo()
+    const a = await wt.createWorktree(repo)
+    const b = await wt.createWorktree(repo)
+    expect(a.branch).not.toBe(b.branch)
+    expect(a.path).not.toBe(b.path)
   })
 })

@@ -10,6 +10,19 @@ import { app, BrowserWindow, dialog } from 'electron'
 
 export interface QuitLane { terminalId: string; project: string; phase: string }
 
+/** The phases that mean "mid-turn", and the one decision in this module that is pure.
+ *
+ *  `waiting` IS BUSY, deliberately: an agent blocked on YOU is the precise lane you forgot
+ *  about. `idle` is not, because a guard that fires on nearly every quit is one that trains its
+ *  own dismissal.
+ *
+ *  Ported from `is_busy` in quit.rs. The Electron wiring originally asked for
+ *  `running || compacting` and dropped `waiting` — which is to say it stayed silent about
+ *  exactly the lane the guard exists for. */
+export function isBusy(phase: string): boolean {
+  return phase === 'running' || phase === 'compacting' || phase === 'waiting'
+}
+
 /** How long to wait for the renderer to confirm it mounted the dialog before falling back to a
  *  native one. The renderer may be mid-reload, crashed, or navigated away — which is precisely
  *  the accident this exists for — and a guard that silently does nothing in that case is not a
