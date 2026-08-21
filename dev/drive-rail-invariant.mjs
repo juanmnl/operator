@@ -36,7 +36,8 @@
 //   X. THE ORB DOES NOT RESIZE between states, and the COLLAPSED axis stays at 30 element-local /
 //      38 from the window edge. This assertion used to also require the orb's painted centre to be
 //      IDENTICAL at both widths — see the note at the check itself for why that half is retired.
-//   L. ONE LEFT EDGE, expanded: the header's text, the orb and the `+` all start at the same x.
+//   L. ONE LEFT EDGE, expanded: the header's text, the open group's path, the orb and the `+`
+//      all start at the same x.
 //   Y. the four foot ROWS land on identical y at both widths (Arrangement A's whole claim — the
 //      bottom of the strip is as fixed as the member column).
 //   B. ⌘B removes NONE of the eight foot controls. That is the live defect D1 fixes: collapsing
@@ -556,8 +557,11 @@ for (const [theme, short] of THEMES) {
   // ("agent orb should be more to the left, balanced"). It required an orb's painted centre to be
   // identical collapsed and expanded, and it is what forced the 264 width: holding the orb column
   // at 2 × the axis cost ~30px of the name column. The expanded orb now starts at the row's own
-  // left edge with everything else (assertion L below), so it slides ~10px on ⌘B and that is the
-  // accepted trade.
+  // left edge with everything else (assertion L below), so it slides on ⌘B and that is the
+  // accepted trade. The SIZE of the slide is `ROW_INSET_L` against the axis, and it is a number
+  // someone chose rather than a consequence: ~10px at ROW_INSET_L 8 against a 60px strip, 15 when
+  // RAIL_W went to 70 for the Electron shell's traffic lights, 11 at ROW_INSET_L 12 (2026-08-21,
+  // user's call). Read it off the Δx column below — it is printed, not asserted.
   //
   // DO NOT PUT IT BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
   // moves looks exactly like a regression to anyone reading this file cold — it isn't; it is the
@@ -582,13 +586,19 @@ for (const [theme, short] of THEMES) {
   // The other half of "balanced": reading down the expanded strip, the project header, the orb and
   // the `+` used to start at three different x (8.5 / 18 / 26 measured). A strip whose items start
   // at three different x reads as broken however correct each one is on its own.
-  console.log('\nL · ONE LEFT EDGE — expanded: header text, orb, and the + of "Start an agent"')
+  //
+  // THE OPEN GROUP'S PATH IS IN THE LIST NOW. It was left out while `ROW_INSET_L` was 8, and it
+  // agreed with the edge for the wrong reason — its own padding was a bare 8 literal. Moving the
+  // inset to 12 stranded it 4px out, and this assertion passed anyway. An item is on the edge or
+  // it is measured; there is no third state.
+  console.log('\nL · ONE LEFT EDGE — expanded: header text, path, orb, and the + of "Start an agent"')
   {
     const rr = await railRect(p)
     const clip = { x: rr.left, y: rr.top, width: rr.width, height: rr.height }
     const edges = []
     for (const [name, sel] of [
       ['header text', '[data-rail-project-header]'],
+      ['path', '[data-rail-path]'],
       ['orb', '[data-rail-orb]'],
       ['+ Start an agent', '[data-rail-add-lane] svg'],
     ]) {

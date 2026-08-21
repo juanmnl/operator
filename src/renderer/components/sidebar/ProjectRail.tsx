@@ -15,6 +15,7 @@ import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
+import { ROW_INSET_L } from './rail-metrics'
 import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../lib/rail-foot'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
@@ -108,22 +109,6 @@ const MEMBER_BOX = 36
  *  optical-centre rule and it is untouched — only the axis it is measured from moved. */
 const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
 const ORB = 24
-/** EXPANDED, everything starts here instead — the header's text, the orb, the Home mark and the
- *  `+`. ONE left edge for the whole strip.
- *
- *  THE CONSTANT-X INVARIANT IS RETIRED (user's call, 2026-08-04: "agent orb should be more to the
- *  left, balanced"). It said an orb sits at the same absolute x collapsed and expanded, and it is
- *  what forced the 264 width — holding the orb column at 2 × the axis cost ~30px of the name
- *  column. The cost of retiring it was put to the user and accepted: the orb slides ~10px when the
- *  strip expands, in exchange for a strip whose items no longer start at three different x. They
- *  were, measured before this change: header ink 8.5, the disc 18, the `+` 26.
- *
- *  What survives from that invariant, and is still asserted: the orb does not RESIZE between
- *  states, and the COLLAPSED axis stays at the centre of the visible column — 35 element-local /
- *  43 from the window edge, and it was 30 / 38 while the strip was 60 wide. That is
- *  the optical-centre fix from D1-FIX-1 and this must not drift it. See
- *  `dev/drive-rail-invariant.mjs`, assertion X. */
-const ROW_INSET_L = 8
 /** The `+`'s ink, EXPANDED. Sized against the orb's painted extent, measured rather than chosen:
  *  the disc paints 24×24 and the plus at 24 painted 24×24 too — the same extent, which is exactly
  *  why it read heavier. A cross reaches the corners of its box; a disc of dots does not, so equal
@@ -711,7 +696,7 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
             flex: 1, minWidth: 0, height: 24, boxSizing: 'border-box',
             // ZERO HORIZONTAL PADDING WHEN COLLAPSED. 4px each side takes the usable width to 44
             // and clips `operator` — caught by measurement, not by eye.
-            padding: collapsed ? 0 : '0 8px',
+            padding: collapsed ? 0 : `0 8px 0 ${ROW_INSET_L}px`,
             // A BLOCK, not a flex row. `text-overflow: ellipsis` applies to a block container's
             // inline content — inside a flex container the name is an anonymous flex item and the
             // ellipsis never fires, so an over-long name was clipped on BOTH sides instead
@@ -764,10 +749,14 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
         )}
       </div>
       {/* The path, under the OPEN group's name only, expanded only. Collapsed, the hover card
-          carries it. */}
+          carries it.
+          ON `ROW_INSET_L` LIKE EVERYTHING ELSE, and it was a bare 8 that agreed with the edge only
+          because the edge happened to be 8 too — the moment the inset moved, the path was the one
+          line in the strip still starting 4px left of the name above it. Assertion L does not
+          cover it (it measures the header, the orb and the `+`), so nothing would have caught it. */}
       {!collapsed && open && project.path && (
         <div data-rail-path style={{
-          padding: '0 8px 2px', fontFamily: 'var(--font-mono)', fontSize: 9.5,
+          padding: `0 8px 2px ${ROW_INSET_L}px`, fontFamily: 'var(--font-mono)', fontSize: 9.5,
           color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{tildePath(project.path)}</div>
       )}
