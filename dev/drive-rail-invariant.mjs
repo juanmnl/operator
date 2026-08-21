@@ -104,6 +104,10 @@ const OPTICAL_CENTRE = 43
  *  i.e. would demand that the orbs re-centre themselves in the wider box, which is the exact
  *  behaviour D1 exists to forbid. One number, both scenes. */
 const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
+/** THE ⌘B ORB SLIDE, and the reason `ROW_INSET_L` has the value it has. See assertion X: this is a
+ *  chosen number, not a derived one, and it is asserted here so that choosing a new `RAIL_W` cannot
+ *  quietly change it. `rail-metrics.ts` carries the same 10 as prose beside the inset it solves. */
+const ORB_SLIDE = 10
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
 // The foot is four pairs around three hairlines, and a hairline's whole job is to out-space what
@@ -558,18 +562,21 @@ for (const [theme, short] of THEMES) {
   // identical collapsed and expanded, and it is what forced the 264 width: holding the orb column
   // at 2 × the axis cost ~30px of the name column. The expanded orb now starts at the row's own
   // left edge with everything else (assertion L below), so it slides on ⌘B and that is the
-  // accepted trade. The SIZE of the slide is `ROW_INSET_L` against the axis, and it is a number
-  // someone chose rather than a consequence: ~10px at ROW_INSET_L 8 against a 60px strip, 15 when
-  // RAIL_W went to 70 for the Electron shell's traffic lights, 11 at ROW_INSET_L 12 (2026-08-21,
-  // user's call). Read it off the Δx column below — it is printed, not asserted.
+  // accepted trade. The SIZE of the slide is `ORB_SLIDE` — a number someone chose rather than a
+  // consequence — and `ROW_INSET_L` is it solved for against the axis.
   //
-  // DO NOT PUT IT BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
+  // DO NOT PUT Δx = 0 BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
   // moves looks exactly like a regression to anyone reading this file cold — it isn't; it is the
   // decision. What is still true, and still gated:
   //   • the orb must not RESIZE between states (a disc that grows on ⌘B is a defect, not a choice)
   //   • the COLLAPSED axis stays at 35 element-local / 43 from the window edge, which is the
   //     optical-centre fix from D1-FIX-1 and lives one neighbourhood away from this change.
-  console.log('\nX · the orb must not RESIZE when the strip expands (Δx retired — see the note)')
+  //   • THE SLIDE IS `ORB_SLIDE`, and that is asserted now rather than printed. Retiring Δx = 0 did
+  //     not make the slide free — it made it a CHOSEN number, and a chosen number that nothing
+  //     checks is exactly what drifted: `RAIL_W` 60 → 70 moved the axis, `ROW_INSET_L` stayed at 8,
+  //     and the accepted 10 silently became 15. `ROW_INSET_L` in `rail-metrics.ts` is this solved
+  //     for; if RAIL_W moves again, this fails and that line is the one to re-solve.
+  console.log(`\nX · the orb slides exactly ${ORB_SLIDE}px on ⌘B, and must not RESIZE (Δx = 0 retired — see the note)`)
   let worstX = 0
   for (const [id, a] of Object.entries(r1.orbs)) {
     const b = r2.orbs[id]
@@ -577,9 +584,12 @@ for (const [theme, short] of THEMES) {
     const dx = ((b.left + b.right) / 2) - ((a.left + a.right) / 2)
     const dw = (b.right - b.left) - (a.right - a.left)
     if (Math.abs(dx) > Math.abs(worstX)) worstX = dx
-    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)} (informational)   Δsize ${f(dw)}` +
+    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)} (want ${ORB_SLIDE})   Δsize ${f(dw)}` +
       (Math.abs(dw) > TOL ? '  ◀ OFF' : '  ok'))
     if (Math.abs(dw) > TOL) fails.push(`orb ${id} resized ${dw.toFixed(2)}px on expand`)
+    if (Math.abs(Math.abs(dx) - ORB_SLIDE) > TOL) {
+      fails.push(`orb ${id} slid ${Math.abs(dx).toFixed(2)}px on expand, expected ${ORB_SLIDE} — re-solve ROW_INSET_L`)
+    }
   }
 
   // ---- L. ONE LEFT EDGE ----------------------------------------------------------------------
