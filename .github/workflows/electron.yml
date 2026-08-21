@@ -26,16 +26,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22  # better-sqlite3@13 needs >=22; vitest must load native deps built for THIS node
       - name: Install root deps
         run: npm ci
       - name: Typecheck + bundle
         run: npm run build
       - name: Renderer tests
         run: npm test
-      - name: Shell deps
+      # --ignore-scripts: the shell's postinstall runs `electron-rebuild`, which compiles
+      # better-sqlite3/node-pty for ELECTRON's ABI — vitest then loads them under system Node
+      # and the worker fork dies (run 32445202114: chat-store.test.ts crashed, 5/6 files passed).
+      # Rebuild the native/binary packages for the Node that runs the tests instead. The
+      # release job does the Electron rebuild; this job must not.
+      - name: Shell deps (Node ABI, no electron-rebuild)
         working-directory: spike/electron
-        run: npm ci --foreground-scripts
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3 node-pty esbuild --foreground-scripts
+          node -e "require('better-sqlite3'); require('node-pty'); require('esbuild'); console.log('native deps load under node', process.version)"
       - name: Shell typecheck + tests
         working-directory: spike/electron
         run: npm run typecheck && npm test
