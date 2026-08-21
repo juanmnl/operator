@@ -31,11 +31,31 @@ const roleDefaultsFile = () => join(operatorDir(), 'role-defaults.json')
  *  path for the same reason the Rust version ignores them: these are fire-and-forget commands
  *  (`void invoke`) with no caller to report to, and throwing here would surface as an
  *  unhandled rejection rather than as anything a user could act on. */
+/** Serialize the way `serde_json::to_string_pretty` does — 2-space indent, and **keys sorted**.
+ *
+ *  The sort is the non-obvious half. serde_json without the `preserve_order` feature backs a
+ *  JSON object with a `BTreeMap`, so it writes keys alphabetically; `JSON.stringify` writes them
+ *  in insertion order. Round-tripping a Rust-written file hides this (its keys are already
+ *  sorted), but the FIRST fresh save from the frontend would have rewritten every object in a
+ *  different order — so a user moving between the two builds would see the whole file churn on
+ *  each save, and no diff of `projects.json` would ever be readable again.
+ *
+ *  Key order carries no meaning in JSON; matching it costs one comparator and makes the two
+ *  shells produce identical bytes for identical state. */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_k, v) => {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      return Object.fromEntries(Object.keys(v as Record<string, unknown>).sort().map((k) => [k, (v as Record<string, unknown>)[k]]))
+    }
+    return v
+  }, 2)
+}
+
 async function writeAtomic(path: string, value: unknown): Promise<void> {
   try {
     await mkdir(dirname(path), { recursive: true })
     const tmp = `${path}.tmp`
-    await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
+    await writeFile(tmp, stableStringify(value), 'utf8')
     await rename(tmp, path)
   } catch (e) {
     console.error(`[store] failed to write ${path}:`, e)

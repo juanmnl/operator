@@ -2,7 +2,7 @@
   "name": "operator-electron-shell",
   "private": true,
   "version": "0.17.0-alpha.2",
-  "description": "Operator — mission control for working agents. Electron shell.",
+  "description": "Operator \u2014 mission control for working agents. Electron shell.",
   "type": "module",
   "main": "out/main/index.cjs",
   "scripts": {
@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run",
     "release": "node scripts/release.mjs",
-    "probe:s1": "node probes/build.mjs && node probes/s1-chat-parity.mjs && node probes/s1-tailer-parity.mjs && npx electron probes/s1-sentinel-roundtrip.cjs"
+    "probe:s1": "node probes/build.mjs && node probes/s1-chat-parity.mjs && node probes/s1-tailer-parity.mjs && npx electron probes/s1-sentinel-roundtrip.cjs",
+    "probe:s2s3": "node probes/build.mjs && node scripts/build-main.mjs && node probes/s2-store-parity.mjs && node probes/s2-agents-parity.mjs && node probes/s3-mcp-artifacts.mjs && npx electron probes/s3-gridterm-failsoft.cjs"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",

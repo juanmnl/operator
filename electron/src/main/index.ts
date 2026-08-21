@@ -6,16 +6,16 @@
 // (2026-08-14: a stray Finder drop navigated the WKWebView to `file:///…/image.png`, and
 // closing the resulting window killed every lane's pty).
 import { app, BrowserWindow, shell } from 'electron'
-import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { TerminalManager } from './terminals'
 import { Transcript, type DispatchEvent, type ReplyEvent } from './transcript'
 import type { AgentSession, NarrationEntry } from '../../../src/shared/types'
 import { ChatStore, ArtifactStore } from './chat-store'
-import { QuitGuard } from './quit'
+import { QuitGuard, isBusy } from './quit'
 import { registerIpc, broadcast } from './ipc'
 import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
+import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
@@ -34,22 +34,9 @@ let artifacts: ArtifactStore | null = null
 
 /** The ONLY origins this app may navigate to. Anything else — a dropped file, a link the
  *  renderer mishandled, a redirect — is refused and, if it looks like a real web URL, handed to
- *  the system browser instead. */
-function isAllowedNavigation(url: string): boolean {
-  // Compare ORIGIN, not the prefix: the dev URL carries a page and a query string, and a prefix
-  // test would refuse the app's own reload while happily allowing
-  // `http://localhost:1450.evil.test/`.
-  if (DEV_URL) {
-    try { if (new URL(url).origin === new URL(DEV_URL).origin) return true } catch { return false }
-  }
-  // Packaged: `file://` inside our own out/renderer dir is the app itself. This deliberately
-  // does NOT allow file:// generally — that is precisely the hole a dropped image walks through.
-  const appDir = join(here, '..', 'renderer')
-  if (url.startsWith('file://')) {
-    try { return fileURLToPath(url).startsWith(appDir) } catch { return false }
-  }
-  return false
-}
+ *  the system browser instead. The decision itself lives in `navigation.ts` so it is testable
+ *  without a window. */
+const allowNavigation = (url: string) => isAllowedNavigation(url, DEV_URL, join(here, '..', 'renderer'))
 
 function installNavigationGuards(win: BrowserWindow): void {
   const wc = win.webContents
@@ -59,12 +46,12 @@ function installNavigationGuards(win: BrowserWindow): void {
   // the layer that can be mid-reload, crashed, or not listening yet, and this is the layer that
   // cannot.
   wc.on('will-navigate', (e, url) => {
-    if (isAllowedNavigation(url)) return
+    if (allowNavigation(url)) return
     e.preventDefault()
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
   })
   // Same guard, the redirect path — `will-navigate` does not fire for a server-side redirect.
-  wc.on('will-redirect', (e, url) => { if (!isAllowedNavigation(url)) e.preventDefault() })
+  wc.on('will-redirect', (e, url) => { if (!allowNavigation(url)) e.preventDefault() })
   // `window.open` / target=_blank: never a new Electron window, always the system browser.
   wc.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
@@ -156,9 +143,10 @@ function boot(): void {
   const quit = new QuitGuard(
     () => mainWindow,
     () => transcript!.liveLanes((id) => terminals!.isAlive(id))
-      .filter((l) => l.phase === 'running' || l.phase === 'compacting')
+      .filter((l) => isBusy(l.phase))
       .map((l) => ({ terminalId: l.terminalId, project: l.project, phase: l.phase })),
-    () => transcript!.liveLanes((id) => terminals!.isAlive(id)).filter((l) => l.phase !== 'running').length,
+    // The idle ones go too, and are counted in one line of the dialog.
+    () => transcript!.liveLanes((id) => terminals!.isAlive(id)).filter((l) => !isBusy(l.phase)).length,
     teardown,
   )
   quit.install()

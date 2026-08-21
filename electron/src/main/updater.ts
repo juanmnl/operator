@@ -35,8 +35,12 @@ function configure(): boolean {
 }
 
 export async function checkUpdate(): Promise<{ version: string } | null> {
-  if (!configure()) return null
+  // `configure()` is INSIDE the try. It was outside, and anything it threw — a malformed feed
+  // URL, electron-updater reaching for `app.getVersion()` before the app exists — rejected this
+  // promise instead of resolving null, which breaks the renderer's `.then()` chain rather than
+  // quietly reporting "no update". A checker must never reject.
   try {
+    if (!configure()) return null
     const result = await autoUpdater.checkForUpdates()
     const version = result?.updateInfo?.version
     if (!version) return null
@@ -49,8 +53,14 @@ export async function checkUpdate(): Promise<{ version: string } | null> {
 }
 
 export async function installUpdate(): Promise<void> {
-  if (!pending || !configure()) return
-  await autoUpdater.downloadUpdate()
-  // `true` = force even with other windows open; the renderer only calls this after asking.
-  autoUpdater.quitAndInstall(false, true)
+  if (!pending) return
+  try {
+    if (!configure()) return
+    await autoUpdater.downloadUpdate()
+    // `true` = force even with other windows open; the renderer only calls this after asking.
+    autoUpdater.quitAndInstall(false, true)
+  } catch (e) {
+    // Same reasoning as the check: the caller is a menu item, not an error reporter.
+    console.error('[updater] install failed:', e)
+  }
 }
