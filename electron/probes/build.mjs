@@ -11,5 +11,8 @@ await Promise.all([
   build({ ...common, entryPoints: [resolve(root, 'src/main/transcript.ts')], outfile: resolve(root, 'out/main/transcript.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/main/chat-store.ts')], outfile: resolve(root, 'out/main/chat-store.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/shared/operator-api.ts')], outfile: resolve(root, 'out/main/event-channel.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, 'src/main/store.ts')], outfile: resolve(root, 'out/main/store.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, 'src/main/agents.ts')], outfile: resolve(root, 'out/main/agents.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, 'src/main/usage.ts')], outfile: resolve(root, 'out/main/usage.cjs') }),
 ])
 console.log('probe bundles built into out/')
