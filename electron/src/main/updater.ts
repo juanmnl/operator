@@ -60,6 +60,16 @@ function packaged(): boolean {
   }
 }
 
+/** The running version, or null outside Electron — same reasoning as `packaged()`: the checker
+ *  must answer, not throw, when `app` is a path string under plain node. */
+function currentVersion(): string | null {
+  try {
+    return app?.getVersion?.() ?? null
+  } catch {
+    return null
+  }
+}
+
 let pending: { version: string } | null = null
 let configuredUrl: string | null = null
 
@@ -88,8 +98,19 @@ export async function checkUpdate(): Promise<{ version: string } | null> {
   try {
     if (!configure()) return null
     const result = await autoUpdater.checkForUpdates()
-    const version = result?.updateInfo?.version
+    // `updateInfo` IS NOT THE ANSWER TO "IS THERE AN UPDATE". `checkForUpdates()` resolves with
+    // the latest entry in the feed whether or not it is newer than what is running, so a
+    // packaged 0.17.0 checking a feed whose latest is 0.17.0 gets `updateInfo.version` =
+    // '0.17.0'. Reading that alone is what made the shipped 0.17.0 offer itself an update to
+    // itself on every launch. The comparison lives in the separate `isUpdateAvailable` flag
+    // (`electron-updater/out/AppUpdater.js:400-422`), which is what the Tauri bridge's null
+    // return meant and what the renderer still reads as "up to date".
+    if (result?.isUpdateAvailable !== true) return null
+    const version = result.updateInfo?.version
     if (!version) return null
+    // Belt and braces. If the flag and the version ever disagree — a feed quirk, a semver
+    // compare surprise — the version already running is not worth a download and a relaunch.
+    if (version === currentVersion()) return null
     pending = { version }
     return pending
   } catch (e) {
