@@ -79,8 +79,14 @@ function createWindow(): BrowserWindow {
     width: 1100,
     height: 720,
     minWidth: 720,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 14, y: 18 },
+    // TAURI PARITY, and it is the traffic lights that decide it. `tauri.conf.json` asks for
+    // `titleBarStyle: "Overlay"` + `hiddenTitle` — a standard titled window with a transparent,
+    // full-size content view, buttons where AppKit puts them. Electron's equivalent is `hidden`;
+    // `hiddenInset` is the TOOLBAR variant, which enlarges the buttons and spreads them (measured
+    // on the packaged 0.17.0: ~13pt lights on 23pt centres, 23.75pt below the top edge, against
+    // the standard 12pt on 20pt centres), and the explicit `trafficLightPosition` that used to
+    // sit here only moved that wrong geometry around.
+    titleBarStyle: 'hidden',
     show: false, // the renderer calls showMainWindow(), exactly as it does under Tauri
     backgroundColor: '#0b0d10',
     webPreferences: {
