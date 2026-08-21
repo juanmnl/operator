@@ -79,7 +79,13 @@ jobs:
           node node_modules/esbuild/install.js || true
           npx electron-rebuild -f -w node-pty,better-sqlite3
           test -f node_modules/node-pty/build/Release/pty.node || { echo "::error::node-pty did not build"; exit 1; }
-          test -n "$(ls node_modules/better-sqlite3/build/Release/*.node 2>/dev/null)" || { echo "::error::better-sqlite3 did not build"; exit 1; }
+          # better-sqlite3@13 ships N-API prebuilds (prebuilds/<platform>-<arch>.node) and loads
+          # from there; electron-rebuild leaves build/Release empty. Run 32445379757 failed on a
+          # build/Release-only check while the module was fine. Accept either location.
+          test -f node_modules/better-sqlite3/prebuilds/darwin-arm64.node \
+            || test -n "$(ls node_modules/better-sqlite3/build/Release/*.node 2>/dev/null)" \
+            || { echo "::error::better-sqlite3 has no darwin-arm64 binary"; exit 1; }
+          ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron -e "require('better-sqlite3'); require('node-pty'); console.log('native deps load under electron node', process.version)"
           npx esbuild --version
 
       # Developer ID into a temp keychain, mirroring what tauri-action does in build.yml.
