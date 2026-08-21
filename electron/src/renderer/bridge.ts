@@ -5,11 +5,11 @@
 // fixtures, so the shell only has to override the ones it actually owns. The layering is what
 // makes the port incremental: move a method from mock to native in `SPEC`, implement it in
 // main, and this file needs no change at all.
-import { installMockBridge } from '../../../../dev/mock-bridge'
-import { base64ToBytes } from '../../../../src/renderer/lib/base64'
-import { createWriteQueue, type WriteQueue } from '../../../../src/renderer/lib/write-queue'
-import { spawnTerminalMode } from '../../../../src/renderer/lib/terminal-options'
-import { isLightBackground } from '../../../../src/renderer/lib/terminal'
+import { installMockBridge } from '../../../dev/mock-bridge'
+import { base64ToBytes } from '../../../src/renderer/lib/base64'
+import { createWriteQueue, type WriteQueue } from '../../../src/renderer/lib/write-queue'
+import { spawnTerminalMode } from '../../../src/renderer/lib/terminal-options'
+import { isLightBackground } from '../../../src/renderer/lib/terminal'
 
 type AnyFn = (...args: unknown[]) => unknown
 

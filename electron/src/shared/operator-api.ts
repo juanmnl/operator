@@ -7,7 +7,7 @@
 // that a TYPE ERROR, in `DELIVERY` below.
 //
 // Nothing in this file is Electron-specific. It is the contract; `ipc.ts` is the transport.
-/// <reference path="../../../../src/renderer/env.d.ts" />
+/// <reference path="../../../src/renderer/env.d.ts" />
 
 export type OperatorApi = Window['operator']
 export type ApiMethod = keyof OperatorApi
@@ -70,7 +70,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   rendererHeartbeat:    { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
 
   // --- everything else: the mock answers, and the ledger says what a real port costs ---
-  // (see spike/electron/PORT-LEDGER.md for the S/M/L estimates that go with these)
+  // (see electron/PORT-LEDGER.md for the S/M/L estimates that go with these)
   onSessionUpdate:        { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
   onOrchestratorDispatch: { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
   onOrchestratorReply:    { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },

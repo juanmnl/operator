@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, extname } from 'node:path'
-import { buildArgs } from '../../../../src/renderer/lib/launch-args'
+import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-api'
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
 import type { TerminalManager } from './terminals'
@@ -220,7 +220,7 @@ export function registerIpc(d: Deps): void {
     startWindowDrag: () => {},
     setDockIcon: (variant) => {
       if (process.platform !== 'darwin' || !app.dock) return
-      const icon = join(__dirname, '..', '..', '..', '..', 'src-tauri', 'icons', variant === 'light' ? 'icon.png' : 'icon.png')
+      const icon = join(__dirname, '..', '..', '..', 'src-tauri', 'icons', variant === 'light' ? 'icon.png' : 'icon.png')
       const img = nativeImage.createFromPath(icon)
       if (!img.isEmpty()) app.dock.setIcon(img)
     },

@@ -5,3 +5,5 @@ dist/
 # numbers and the frames worth keeping; the raw run does not belong in the history.
 measurements/
 release/
+probes/*/node_modules/
+probes/*/dist/

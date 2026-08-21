@@ -11,7 +11,7 @@ import { extname, join, resolve } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 
 // The renderer's own type — including the `AgentScope` union, which a local `string` widens.
-import type { AgentDefinition } from '../../../../src/shared/types'
+import type { AgentDefinition } from '../../../src/shared/types'
 export type { AgentDefinition }
 
 const userAgentsDir = () => join(homedir(), '.claude', 'agents')

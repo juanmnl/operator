@@ -13,7 +13,7 @@
 import { spawn as ptySpawn, type IPty } from 'node-pty'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { buildArgs } from '../../../../src/renderer/lib/launch-args'
+import { buildArgs } from '../../../src/renderer/lib/launch-args'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
  *  pane re-attaches after a renderer reload. Trimmed with the same hysteresis (let it reach
@@ -94,7 +94,7 @@ export class TerminalManager {
 
   /** Build the login-shell command line exactly as `terminal_spawn` does. The `-ilc` form is
    *  not incidental: Claude Code is usually on a PATH that only an interactive login shell
-   *  sets up, and dropping to a bare exec is how a spike "can't find claude" while the real
+   *  sets up, and dropping to a bare exec is how a build "can't find claude" while the real
    *  app can. */
   private buildCommand(o: SpawnOptions): { shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; id: string } {
     const id = this.nextId()
@@ -113,7 +113,7 @@ export class TerminalManager {
     // NOTE — the artifact plane (`--mcp-config` pointing at Operator's own `--mcp-serve`) is
     // deliberately NOT wired here. It resolves `std::env::current_exe`, which in this shell is
     // the Electron binary, and a lane talking to an MCP server that doesn't exist is worse than
-    // a lane without one. Porting it is an L in the ledger, not a line in this spike.
+    // a lane without one. It is wired now — see mcp-serve.ts and the --mcp-serve branch in index.ts.
 
     const inner = [...prefix, ...o.args].map(shellQuote).join(' ')
     const shell = process.env.SHELL || '/bin/zsh'

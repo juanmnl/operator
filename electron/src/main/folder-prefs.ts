@@ -21,7 +21,7 @@ async function readText(path: string): Promise<string> {
 
 // The renderer's own types — the seam is derived, not restated, and that includes the scope
 // unions (`SettingsFileScope`, `MdFileScope`), which a local `string` would quietly widen.
-import type { SettingsFile, ClaudeMdFile, FolderPreferences, McpServerInfo, McpServersResult, ClaudeSettings } from '../../../../src/shared/types'
+import type { SettingsFile, ClaudeMdFile, FolderPreferences, McpServerInfo, McpServersResult, ClaudeSettings } from '../../../src/shared/types'
 export type { FolderPreferences, McpServerInfo }
 
 const sf = async (path: string, label: string, scope: SettingsFile['scope'], readOnly: boolean): Promise<SettingsFile> =>

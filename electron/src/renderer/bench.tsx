@@ -25,8 +25,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { installSpikeBridge } from './bridge'
-import { TerminalPane } from '../../../../src/renderer/components/terminal/TerminalPane'
-import '../../../../src/renderer/styles.css'
+import { TerminalPane } from '../../../src/renderer/components/terminal/TerminalPane'
+import '../../../src/renderer/styles.css'
 
 const q = new URLSearchParams(location.search)
 const WEBGL = q.get('renderer') === 'webgl'

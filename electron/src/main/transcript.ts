@@ -21,7 +21,7 @@ import { parseDispatches, parseReplies, directiveId } from './directives'
 // The RENDERER'S types, not a parallel set. The whole premise of this port is that the seam is
 // derived rather than restated, and that has to include the payload shapes: a session this
 // module builds must satisfy the same `AgentSession` the UI destructures.
-import type { AgentSession, NarrationEntry, ActivityEntry, TodoItem } from '../../../../src/shared/types'
+import type { AgentSession, NarrationEntry, ActivityEntry, TodoItem } from '../../../src/shared/types'
 
 /** Narration entries retained per session in the LIVE payload. The durable history is the chat
  *  store's job; this is the tail the UI renders without a query. */

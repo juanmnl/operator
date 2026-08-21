@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
-const repo = resolve(root, '..', '..')
+const repo = resolve(root, '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
 const VERSION = pkg.version
@@ -48,7 +48,7 @@ step(`build ${PRODUCT} ${VERSION} (${ARCH})`)
 rmSync(OUT, { recursive: true, force: true })
 mkdirSync(OUT, { recursive: true })
 sh('node scripts/build-main.mjs')
-// The ROOT's vite, by path, not `npx vite`. The spike declares no vite of its own — the
+// The ROOT's vite, by path, not `npx vite`. This package declares no vite of its own — the
 // renderer it builds is the root renderer — and `npx` answers a missing binary by DOWNLOADING
 // the latest from the registry. It fetched vite 8 here and silently changed the bundler to
 // rolldown; in CI it would fetch whatever is newest that morning.
@@ -81,7 +81,7 @@ const [built] = await packager({
   // node-pty ships a prebuild per platform and ABI — 58MB, all but one useless here.
   ignore: [
     /^\/src($|\/)/, /^\/scripts($|\/)/, /^\/measurements($|\/)/, /^\/release($|\/)/,
-    /^\/dist($|\/)/, /^\/mcp-probe($|\/)/, /^\/build($|\/)/,
+    /^\/dist($|\/)/, /^\/probes($|\/)/, /^\/build($|\/)/,
     /^\/tsconfig.*/, /^\/vite\.config\.ts$/, /^\/vitest\.config\.ts$/,
     /\.map$/, /\.test\.ts$/,
     /node_modules\/node-pty\/prebuilds\/(?!darwin-arm64)/,
@@ -144,7 +144,7 @@ step('assert the packaged app serves --mcp-serve')
   // and judge the steps, rather than letting the exit code decide.
   let out
   try {
-    out = execFileSync(process.execPath, [join(root, 'mcp-probe', 'scripts', 'drive.mjs'), exe, '--mcp-serve'], {
+    out = execFileSync(process.execPath, [join(root, 'probes', 'mcp-probe', 'scripts', 'drive.mjs'), exe, '--mcp-serve'], {
       encoding: 'utf8',
       // A SANDBOXED HOME: `operator__report` really inserts a row, and pointing it at the real
       // ~/.operator would leave a probe report in the user's artifact store on every build.

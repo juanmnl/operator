@@ -22,7 +22,7 @@ const INSPECTOR_JS = (() => {
     // Packaged and dev alike: `build:main` copies it beside the bundles.
     join(__dirname, '..', 'preview-inspector.js'),
     // Running straight from the repo without a build step.
-    join(__dirname, '..', '..', '..', '..', 'src', 'shared', 'preview-inspector.js'),
+    join(__dirname, '..', '..', '..', 'src', 'shared', 'preview-inspector.js'),
   ]
   for (const p of candidates) {
     try { return readFileSync(p, 'utf8') } catch { /* try the next */ }

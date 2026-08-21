@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import { operatorDir } from './store'
 
 // The renderer's own types — see the note in transcript.ts.
-import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../../../../src/shared/types'
+import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../../../src/shared/types'
 export type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent }
 
 function openDb(path: string): Database.Database {

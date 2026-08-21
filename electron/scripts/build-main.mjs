@@ -33,7 +33,7 @@ const common = {
 // Rust `include_str!`s the same file. A packaged app has no repo above it, so it is copied in
 // beside the bundles — one source, two shells, and it still ships.
 mkdirSync(resolve(root, 'out'), { recursive: true })
-copyFileSync(resolve(root, '..', '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
+copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
 
 const targets = [
   { entryPoints: [resolve(root, 'src/main/index.ts')], outfile: resolve(root, 'out/main/index.cjs') },

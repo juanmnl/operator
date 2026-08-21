@@ -1,10 +1,10 @@
-# `spike/electron` — an Electron shell for the Operator renderer
+# `electron/` — the Electron shell for the Operator renderer
 
 Runs the Operator renderer (`src/renderer`, 29k LOC) on Electron. **85 of the 91
 `window.operator` methods are native**; the 6 that are not are `gridterm*`, dropped by
 decision.
 
-It began as a spike answering three measured questions (see
+It began under `spike/` as a throwaway answering three measured questions (see
 `dev/briefs/2026-08-20-electron-shell-spike-RESULT.md`) and is now the working shell: the pty
 layer, the transcript tailer, worktrees, the chat + artifact stores, the MCP server, the quit
 guard, usage, plan limits, the preview inspector and the updater are all ported.
@@ -12,7 +12,7 @@ guard, usage, plan limits, the preview inspector and the updater are all ported.
 ## Run it
 
 ```sh
-cd spike/electron
+cd electron
 npm install          # also rebuilds node-pty against Electron's ABI
 npm run dev          # Vite + esbuild --watch + Electron
 ```

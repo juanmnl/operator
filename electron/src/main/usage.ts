@@ -7,7 +7,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, join, basename } from 'node:path'
-import type { UsageStats, UsageInsights } from '../../../../src/shared/types'
+import type { UsageStats, UsageInsights } from '../../../src/shared/types'
 
 /** $/1M tokens, (input, output). Substring-matched so a dated model id
  *  (`claude-opus-5-20260101`) resolves without a table entry per release — and an unknown

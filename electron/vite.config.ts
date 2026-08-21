@@ -5,12 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const repoRoot = resolve(here, '..', '..')
+const repoRoot = resolve(here, '..')
 
 // Spike-local config — the root `vite.config.ts` is NOT touched (and is Tauri's, pointed at
 // Tauri's dev port). Two entries: the real App, and the measurement bench.
 //
-// `server.fs.allow` is the only unusual line: the entries live under `spike/electron` but
+// `server.fs.allow` is the only unusual line: the entries live under `electron/` but
 // import `src/renderer/*` and `dev/mock-bridge.ts` from above it, which Vite refuses to serve
 // by default. Allowing the repo root — not `/` — is the narrow version of that.
 export default defineConfig({

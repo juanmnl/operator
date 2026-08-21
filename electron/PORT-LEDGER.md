@@ -44,7 +44,7 @@ already knows this codebase.
 | `gridterm.rs` | 418 | 5 | **none** | **DROPPED** | The one module with no Node equivalent: it embeds `alacritty_terminal` as a real VT parser and ships cell snapshots. Nothing on npm is that parser. The honest options are (a) drop it — it has been unreachable since 2026-06-30 and its own commit shelved it, or (b) keep a Rust sidecar binary just for it. This shell reports `grid: false` at spawn and mocks the five commands. |
 | `mcp.rs` | 337 | 1 | `fs` read of `~/.claude.json` + project config | **S** | **DONE. **Read-only viewer. |
 | `quit.rs` | 324 | 3 | `before-quit` + `dialog` | **S** | **DONE. ****Cheaper in Electron than in Rust.** `event.preventDefault()` on `before-quit` is the veto the Tauri version had to build around `RunEvent::ExitRequested`, and the 400 ms native-dialog fallback exists because Tauri could not be sure the webview would answer. |
-| `artifacts.rs` | 271 | 3 | SQLite + an MCP stdio server | **M** | **DONE — the MCP server too, verified against the packaged+signed binary. **The read side is three queries. The write side is the part that matters: lanes reach it by launching `<current_exe> --mcp-serve`, so the Electron binary must serve MCP when invoked with that flag — an `app.commandLine`/`process.argv` branch that runs headless before `whenReady`. Not wired in this spike, deliberately: a lane pointed at an MCP server that does not exist is worse than a lane with none. |
+| `artifacts.rs` | 271 | 3 | SQLite + an MCP stdio server | **M** | **DONE — the MCP server too, verified against the packaged+signed binary. **The read side is three queries. The write side is the part that matters: lanes reach it by launching `<current_exe> --mcp-serve`, so the Electron binary must serve MCP when invoked with that flag — an `app.commandLine`/`process.argv` branch that runs headless before `whenReady`. Wired: `mcp-serve.ts`, behind the `--mcp-serve` branch at the top of `index.ts`. |
 | `agents.rs` | 235 | 3 | `fs` over `.claude/agents/*.md` | **S** | **DONE. **Front-matter read/write. |
 | `folderprefs.rs` | 175 | 5 | `fs` over `settings.json` / `CLAUDE.md` | **S** | **DONE. **|
 
@@ -84,7 +84,7 @@ bundle identifier, should install over the existing app like any other update. T
 both real:
 
 1. **Verify before believing this.** It is an inference from how the updater works, not
-   something this spike tested. Getting it wrong strands every installed copy.
+   something this build tested. Getting it wrong strands every installed copy.
 2. **After the swap, the Tauri updater is gone**, and the Electron one takes over — so the
    changeover release must ship a working `electron-updater` feed or the next update has no
    path at all. There is no going back through the same door.
