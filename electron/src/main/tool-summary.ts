@@ -11,19 +11,28 @@ const strField = (input: unknown, key: string): string | undefined => {
   return typeof v === 'string' ? v : undefined
 }
 
+/** The first line, trimmed, capped at `max` CHARACTERS INCLUDING the ellipsis.
+ *
+ *  Both details are load-bearing for parity with `first_line` in core.rs, and both were wrong
+ *  here first: the Rust trims the line, and on overflow it takes `max - 1` and appends `…` so
+ *  the result is exactly `max` — not `max + 1`. Caught by diffing 2,038 real transcript rows
+ *  against the ones the Tauri build wrote for the same session (691 differed). */
 export function firstLine(s: string, max: number): string {
-  const line = s.split('\n')[0] ?? ''
-  return [...line].length > max ? `${[...line].slice(0, max).join('')}…` : line
+  const line = (s.split('\n')[0] ?? '').trim()
+  const chars = [...line]
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : line
 }
 
 const basename = (p: string) => p.split('/').pop() || p
 
-/** Commands worth flagging louder in the timeline. Deliberately coarse — this colours a row,
- *  it does not gate anything, so a false "high" costs attention and a false "low" costs
- *  nothing that another control was relying on. */
+/** Commands worth flagging louder in the timeline. Deliberately coarse — this colours a row, it
+ *  does not gate anything. Ported substring-for-substring from `bash_severity` in core.rs
+ *  rather than rewritten as regexes: the two must agree on what counts as destructive. */
 function bashSeverity(command: string): string {
-  if (/\brm\s+-[rf]|\bgit\s+push\b|\bsudo\b|\bcurl\b.*\|\s*(sh|bash)/.test(command)) return 'high'
-  if (/\bgit\s+(commit|merge|checkout|reset)\b|\bnpm\s+(install|publish)\b/.test(command)) return 'medium'
+  const c = command.toLowerCase()
+  if (c.includes('rm -rf') || c.includes('rm -fr') || c.includes('git push -f') ||
+      c.includes('git push --force') || c.includes('drop table') || c.includes('drop database')) return 'high'
+  if (c.includes('sudo ') || (c.includes('curl ') && c.includes('| sh')) || c.includes('| bash')) return 'medium'
   return 'low'
 }
 

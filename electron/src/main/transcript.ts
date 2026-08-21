@@ -135,7 +135,14 @@ class Track {
   queued: NarrationEntry[] = []
   tasks: Array<[string, TodoItem]> = []
   taskN = 0
-  pending: NarrationEntry[] = []
+  /** The DURABLE key half of (session_id, seq). Owned by the track, not by the flush: a tool
+   *  row is written when the CALL is seen and rewritten when its RESULT arrives, and the two
+   *  must land on the same seq or the store gets two rows instead of one. */
+  narrationSeq = 0
+  /** tool_use id → the seq its block was written at, so a result arriving later re-queues that
+   *  same seq rather than appending a new row. */
+  toolSeqs = new Map<string, number>()
+  pending: Array<[number, NarrationEntry]> = []
   pendingDispatches: DispatchEvent[] = []
   pendingReplies: ReplyEvent[] = []
 
@@ -160,6 +167,8 @@ class Track {
     this.inSidechain = false
     this.activeSubagents = 0
     this.narration.length = 0
+    this.narrationSeq = 0
+    this.toolSeqs.clear()
     this.activity.length = 0
     this.queued.length = 0
     this.tasks.length = 0
@@ -168,11 +177,35 @@ class Track {
     // emitted still needs to go out, and the directive ids make a repeat harmless anyway.
   }
 
-  private pushNarration(e: NarrationEntry): void {
+  /** The single choke point for a narration entry: assign its durable seq, queue it for the
+   *  chat store, append to the capped live tail, mark dirty. One place so seq assignment and
+   *  persistence cannot be forgotten at a call site. Returns the seq. */
+  private pushNarration(e: NarrationEntry): number {
+    const seq = this.narrationSeq++
+    // A SNAPSHOT into the queue, not the live object. `pending` crosses an event boundary to
+    // main and is written asynchronously; the live entry keeps being mutated (a tool result
+    // attaches to its call in place), so sharing the reference lets a later mutation rewrite a
+    // row that was already handed over. The Rust clones here for the same reason.
+    this.pending.push([seq, { ...e, tool: e.tool ? { ...e.tool } : undefined }])
     this.narration.push(e)
-    if (this.narration.length > NARRATION_CAP) this.narration.splice(0, this.narration.length - NARRATION_CAP)
-    this.pending.push(e)
+    if (this.narration.length > NARRATION_CAP) {
+      // EVICT TOOL BLOCKS FIRST. Tool entries share this cap with prose, and a tool-heavy turn
+      // produces dozens — enough to evict the answers the user is actually reading. Falls back
+      // to prose only when there are no tool entries left. Order is preserved either way: this
+      // drops, it never reorders.
+      //
+      // Safe because the cap bounds only the live tail shipped in `session:update` — every
+      // entry is already queued for chat.db, and the reading surface merges the durable
+      // history with this tail. Nothing is lost, only deferred to the store.
+      let over = this.narration.length - NARRATION_CAP
+      for (let i = 0; over > 0 && i < this.narration.length; ) {
+        if (this.narration[i].kind === 'tool') { this.narration.splice(i, 1); over-- }
+        else i++
+      }
+      if (over > 0) this.narration.splice(0, over)
+    }
     this.dirty = true
+    return seq
   }
 
   async poll(): Promise<void> {
@@ -279,7 +312,11 @@ class Track {
             entry.tool.output = [...raw].slice(0, TOOL_RESULT_CAP).join('')
             entry.tool.outputChars = chars
             entry.tool.truncated = chars > TOOL_RESULT_CAP
-            this.pending.push(entry)
+            // Re-queue at the seq the CALL was written at, so the store UPSERTs that row rather
+            // than appending a second one. Without this the chat history shows every tool call
+            // twice: once empty, once with its output.
+            const seq = this.toolSeqs.get(id)
+            if (seq !== undefined) this.pending.push([seq, { ...entry, tool: { ...entry.tool } }])
             this.dirty = true
             break
           }
@@ -374,22 +411,33 @@ class Track {
 
       const s = summarize(name, input)
       this.lastToolName = name
-      this.activity.push({ toolName: name, target: s.target, timestamp: ts, status: 'auto', kind: 'tool', detail: s.preview })
-      this.pushNarration({
+      // Task/Agent are DELEGATIONS, and the timeline draws them differently — the preview (the
+      // subagent's prompt) is what makes a delegate row worth reading, and it is noise on an
+      // ordinary tool row.
+      const isDelegate = name === 'Task' || name === 'Agent'
+      this.activity.push({
+        toolName: name, target: s.target, timestamp: ts, status: 'auto',
+        kind: isDelegate ? 'delegate' : 'tool',
+        detail: isDelegate ? s.preview : undefined,
+      })
+      const toolSeq = this.pushNarration({
         kind: 'tool',
-        text: '',
+        // A plain-text fallback: any surface that does not know `kind: 'tool'` still reads
+        // sensibly, and a text search over the transcript finds the call.
+        text: s.target ? `${name} ${s.target}` : name,
         timestamp: ts,
         images: [],
         tool: {
           name,
           target: s.target,
-          caller: typeof v.userType === 'string' ? v.userType : undefined,
+          caller: typeof block.caller === 'string' ? block.caller : undefined,
           output: '',
           outputChars: 0,
           truncated: false,
           id,
         },
       })
+      if (id) this.toolSeqs.set(id, toolSeq)
     }
   }
 

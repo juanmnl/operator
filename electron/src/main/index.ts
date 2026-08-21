@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { TerminalManager } from './terminals'
 import { Transcript, type DispatchEvent, type ReplyEvent } from './transcript'
-import type { AgentSession } from '../../../src/shared/types'
+import type { AgentSession, NarrationEntry } from '../../../src/shared/types'
 import { ChatStore, ArtifactStore } from './chat-store'
 import { QuitGuard } from './quit'
 import { registerIpc, broadcast } from './ipc'
@@ -133,10 +133,10 @@ function boot(): void {
 
   // The tailer's outputs. `chat` is persisted BEFORE the event goes out, matching the Rust —
   // the frontend's re-read on a reply relies on the row already being there.
-  transcript.on('chat', (sessionId: string, entries: Array<Record<string, unknown>>) => {
-    // seq is the store's primary key alongside session_id; the tailer emits entries in order,
-    // so a monotonic counter per flush is enough to make the upsert idempotent.
-    chat?.append(sessionId, entries.map((e, i) => [seqFor(sessionId, i), e as never]))
+  // The tailer assigns the durable seq (it owns the tool-call→result pairing); main just
+  // persists what it is handed.
+  transcript.on('chat', (sessionId: string, entries: Array<[number, NarrationEntry]>) => {
+    chat?.append(sessionId, entries)
   })
   transcript.on('dispatch', (d: DispatchEvent) => { const w = win(); if (w) broadcast(w, 'onOrchestratorDispatch', d) })
   transcript.on('reply', (r: ReplyEvent) => {
@@ -166,17 +166,6 @@ function boot(): void {
   installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
   registerIpc({ terminals, transcript, chat, artifacts, quit, getWindow: () => mainWindow })
   mainWindow = createWindow()
-}
-
-/** Per-session append counter. The tailer hands us entries in order; the store upserts on
- *  (session_id, seq), so a tool row written at call time and rewritten when its result lands
- *  must reuse its seq. Tracking the count per session gives exactly that as long as the flush
- *  order is stable, which it is — `pending` is a FIFO. */
-const seqCounters = new Map<string, number>()
-function seqFor(sessionId: string, _i: number): number {
-  const n = seqCounters.get(sessionId) ?? 0
-  seqCounters.set(sessionId, n + 1)
-  return n
 }
 
 if (process.argv.includes('--mcp-serve')) {

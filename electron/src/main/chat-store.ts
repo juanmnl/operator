@@ -6,13 +6,22 @@
 // existing `chat.db` must open and read correctly under the new shell, so the DDL here is the
 // Rust's DDL, column for column.
 import Database from 'better-sqlite3'
-import { mkdirSync } from 'node:fs'
+import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { operatorDir } from './store'
 
 // The renderer's own types — see the note in transcript.ts.
 import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../../../src/shared/types'
 export type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent }
+
+const SCHEMA_VERSION = 1
+
+/** The same prefixes as `isInjectedTurn` in transcript.ts — keep the two lists in sync. Written
+ *  as SQL patterns so the delete matches exactly what the parser and the renderer filter. */
+const INJECTED_PREFIXES = [
+  '<local-command-%', '<command-name>%', '<command-message>%', '<command-args>%',
+  '<system-reminder>%', '<task-notification>%', '<synthetic>%',
+]
 
 function openDb(path: string): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
@@ -56,6 +65,45 @@ export class ChatStore {
     for (const col of ['images', 'tool']) {
       try { this.db.exec(`ALTER TABLE messages ADD COLUMN ${col} TEXT`) } catch { /* already present */ }
     }
+    this.purgeInjectedRows(path)
+  }
+
+  /** ONE-TIME cleanup of Claude Code's plumbing turns that were persisted before the parser
+   *  learned to drop them (measured on a real store: 191 rows across 33 sessions).
+   *
+   *  The renderer filters these anyway (`lib/chat-turns.isRenderableTurn`), so this is about the
+   *  store rather than about correctness on screen — both guards stay. Deleting them here means
+   *  the rows stop being loaded, searched and shipped to the renderer on every session open.
+   *
+   *  Guarded by `PRAGMA user_version` so it runs exactly once per database, and it takes a FILE
+   *  BACKUP first: this is the only destructive statement in the app, and a bad prefix would eat
+   *  real conversation. The backup sits beside the db as `chat.db.pre-v1.bak` and is never
+   *  cleaned up automatically — it is the user's undo.
+   *
+   *  Deleting rows leaves gaps in `seq`. That is safe: `load` orders by seq and never assumes it
+   *  is dense, and the next seq comes from the tailer's own counter, not from the store. */
+  private purgeInjectedRows(path: string): void {
+    const version = Number((this.db.pragma('user_version', { simple: true }) as number) ?? 0)
+    if (version >= SCHEMA_VERSION) return
+
+    const where = INJECTED_PREFIXES.map(() => 'text LIKE ?').join(' OR ')
+    // Count first — a backup is only worth writing if there is something to lose.
+    const doomed = Number((this.db.prepare(`SELECT COUNT(*) c FROM messages WHERE ${where}`)
+      .get(...INJECTED_PREFIXES) as { c: number }).c)
+
+    if (doomed > 0 && path !== ':memory:') {
+      // Checkpoint first, or the backup copy misses everything still sitting in the WAL.
+      this.db.pragma('wal_checkpoint(TRUNCATE)')
+      try {
+        copyFileSync(path, `${path}.pre-v1.bak`)
+      } catch {
+        // NO BACKUP, NO DELETE. Leaving the rows is harmless (the renderer hides them);
+        // deleting them without an undo is not.
+        return
+      }
+    }
+    if (doomed > 0) this.db.prepare(`DELETE FROM messages WHERE ${where}`).run(...INJECTED_PREFIXES)
+    this.db.pragma(`user_version = ${SCHEMA_VERSION}`)
   }
 
   /** UPSERT on (session_id, seq). A tool call is written when it starts and rewritten when its
