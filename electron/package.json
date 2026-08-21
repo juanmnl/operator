@@ -1,8 +1,8 @@
 {
   "name": "operator-electron-shell",
   "private": true,
-  "version": "0.17.0-alpha.2",
-  "description": "Operator \u2014 mission control for working agents. Electron shell.",
+  "version": "0.17.0-alpha.3",
+  "description": "Operator — mission control for working agents. Electron shell.",
   "type": "module",
   "main": "out/main/index.cjs",
   "scripts": {
