@@ -205,11 +205,27 @@ const DMG = join(OUT, `Operator_${VERSION}_aarch64.dmg`)
   sh(`hdiutil create -volname ${JSON.stringify(`${PRODUCT} ${VERSION}`)} -srcfolder ${JSON.stringify(stage)} -ov -format UDZO ${JSON.stringify(DMG)}`)
   rmSync(stage, { recursive: true, force: true })
   if (!SKIP_NOTARIZE) {
-    // Staple the DMG too, so the first open of a downloaded image is clean offline. Note this
-    // does NOT staple the .app inside it — that was already stapled above, which is the half
-    // that the Tauri pipeline was missing.
-    sh(`xcrun stapler staple -v ${JSON.stringify(DMG)}`)
-    sh(`xcrun stapler validate ${JSON.stringify(DMG)}`)
+    // The DMG has to be NOTARIZED before it can be stapled — a ticket exists only for hashes
+    // Apple has seen, and only the .app was submitted above. Run 32445562659 failed exactly
+    // here ("stapler staple" on the DMG → error 65), the same way build.yml's first staple run
+    // did for the Tauri DMG. Submit the image itself (this also covers its contents), then
+    // staple it so the first open of a download is clean offline. Advisory: a DMG without a
+    // ticket is still Gatekeeper-valid online because the .app inside is notarized+stapled,
+    // which is the half that actually matters (and the half the updater zip ships).
+    try {
+      step('notarize the DMG')
+      const { notarize } = await import('@electron/notarize')
+      await notarize({
+        appPath: DMG,
+        appleApiKey: process.env.APPLE_API_KEY_PATH,
+        appleApiKeyId: process.env.APPLE_API_KEY,
+        appleApiIssuer: process.env.APPLE_API_ISSUER,
+      })
+      sh(`xcrun stapler staple -v ${JSON.stringify(DMG)}`)
+      sh(`xcrun stapler validate ${JSON.stringify(DMG)}`)
+    } catch (e) {
+      console.warn(`::warning::DMG notarization/staple did not complete (${e?.message ?? e}); the DMG ships without a stapled ticket — the .app inside is notarized and stapled`)
+    }
   }
 }
 
