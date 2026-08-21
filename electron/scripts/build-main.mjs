@@ -35,6 +35,12 @@ const common = {
 mkdirSync(resolve(root, 'out'), { recursive: true })
 copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
 
+// The tray icon, for the same reason: `src-tauri/icons/tray.png` is the one copy in the repo
+// (the Rust `include_bytes!`s it), and the packaged app has no repo above it. `out/` is not in
+// the packager's `ignore` list, so this lands inside `app.asar` next to the bundles and
+// `tray.ts` reads it back with `fs` — see the note there about `createFromPath` and asar.
+copyFileSync(resolve(root, '..', 'src-tauri', 'icons', 'tray.png'), resolve(root, 'out', 'tray.png'))
+
 const targets = [
   { entryPoints: [resolve(root, 'src/main/index.ts')], outfile: resolve(root, 'out/main/index.cjs') },
   { entryPoints: [resolve(root, 'src/preload/index.ts')], outfile: resolve(root, 'out/preload/index.cjs') },
