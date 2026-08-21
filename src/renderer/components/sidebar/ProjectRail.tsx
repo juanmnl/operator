@@ -15,6 +15,7 @@ import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
 import { PlanMeter, usePlanLimits } from './PlanMeter'
 import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
+import { ROW_INSET_L } from './rail-metrics'
 import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../lib/rail-foot'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
@@ -22,7 +23,7 @@ import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../
 // The duplication that kept coming back (an agent listed in the rail AND in the sidebar beside
 // it, 40px apart) was never a rule two files failed to keep; it was two files each deciding, on
 // their own, to list agents. `Sidebar.tsx` and `SidebarRail.tsx` are deleted, and this renders the
-// one list at 60px or at 264px. Collapsed and expanded are mutually exclusive states of ONE
+// one list at 70px or at 264px. Collapsed and expanded are mutually exclusive states of ONE
 // element, so "a project's agents appear exactly once" holds by construction rather than by
 // discipline.
 //
@@ -30,7 +31,7 @@ import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../
 //
 //   A project group shows what is LIVE in it. EVERY group, including the open one.
 //
-// applied identically at both widths — live agents are orbs at 60 and rows at 264. The rule used
+// applied identically at both widths — live agents are orbs at 70 and rows at 264. The rule used
 // to have a second half ("the open group additionally shows its whole team"), and it is withdrawn:
 // five IDLE rows under one live agent is a roster, and the strip is a picture of WORK. The strip
 // therefore says the same thing at both widths and in every group, which is the shortest the rule
@@ -52,22 +53,35 @@ import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../
 // Fastrack-landing / FastTrack, and the colour hash serves four projects at once, so the tile was
 // carrying an identity it did not have. A name does.
 
-/** The ELEMENT is 60. The STRIP YOU SEE is 68, and that is the number the traffic lights fix.
+/** The ELEMENT is 70. The STRIP YOU SEE is 78, and that is the number the traffic lights fix.
  *
  *  `DashboardView`'s root pads 8px and paints it `--bg-sidebar` — the same colour this paints —
  *  so the rail's box does not start at the window edge but the visible strip does. Balance the
  *  cluster in what a person can see, not in the element:
  *
- *      close 8.0–19.5 · min 28.0–39.5 · zoom 48.0–59.75   (macOS defaults, measured on screen)
- *      cluster = 51.75 wide → visible strip = 8 + 51.75 + 8 = 67.75 → 68 → element 68 − 8 = 60
+ *      close 9–23 · min 32–46 · zoom 55–69   (14pt buttons, centres (16,16) · (39,16) · (62,16))
+ *      cluster = 9 → 69 = 60 wide, sitting 9 clear of the window edge — so mirror that 9 on its
+ *      right: visible strip = 9 + 60 + 9 = 78 → element 78 − 8 = 70
  *
- *  MEASURED OFF THE SIGNED BUNDLE, and that matters: `target/debug/operator` has no Info.plist,
- *  so macOS 26 draws it LARGER traffic lights than the bundle's (which declares
- *  LSMinimumSystemVersion 10.15). The strip looks cramped in a dev build and is correct in the
- *  app people run. Do not retune these numbers from a `tauri dev` screenshot. */
-const RAIL_W = 60
-/** Expanded. Forced by the constant-x invariant below, not chosen: the orb column has to be
- *  2 × the axis, so the axis can stay put when the width changes. */
+ *  These are the MODERN AppKit metrics, which is the whole reason this moved. The number here was
+ *  60, derived from a LEGACY cluster — 12pt buttons on 20pt centres, `close 8.0–19.5 · min
+ *  28.0–39.5 · zoom 48.0–59.75`, 51.75 wide, visible strip 8 + 51.75 + 8 ≈ 68. That cluster
+ *  belonged to the Tauri bundle, which declared `LSMinimumSystemVersion 10.15`; the Electron shell
+ *  declares 12.0 and links modern AppKit, so it gets 14pt buttons on 23pt centres under
+ *  `titleBarStyle: 'hidden'`. At 60 the zoom button ended ~1pt PAST the strip's right edge.
+ *
+ *  RETUNE FROM A DEV BUILD — the opposite of what this comment used to say, and for the same
+ *  reason it said it. The old warning existed because `target/debug/operator` had no Info.plist
+ *  and drew a different cluster from the signed bundle, so only the bundle could be trusted. The
+ *  Electron shell has one Info.plist: `cd electron && npm run dev` and the packaged app draw the
+ *  SAME 14pt cluster. (An `LSMinimumSystemVersion 10.15` override does NOT bring the small
+ *  buttons back — probed. The style mask is not the lever either; `hidden` and `hiddenInset`
+ *  differ only in origin.) */
+const RAIL_W = 70
+/** Expanded. NOT forced by anything any more — the constant-x invariant that fixed it at
+ *  2 × the axis was retired on 2026-08-04 (see `ROW_INSET_L`), and 264 outlived it as a value the
+ *  name column was already tuned to. It does NOT follow `RAIL_W`: expanded content starts at
+ *  `ROW_INSET_L`, not on the axis, so widening the collapsed strip leaves this alone. */
 const RAIL_W_OPEN = 264
 /** ZERO. There is nothing left for the content to be inset FROM.
  *
@@ -76,39 +90,25 @@ const RAIL_W_OPEN = 264
  *  re-derived — which is a sequencing artifact, and the exact mistake this file's header warns
  *  about: measuring to the element's box instead of to the column a person can see.
  *
- *      window edge 0 │ root pad 8 │ rail element 8→68 │ gap 8 │ card edge 76
+ *      window edge 0 │ root pad 8 │ rail element 8→78 │ gap 8 │ card edge 86
  *
  *  Both fields are painted `--bg-sidebar`, the rail's own colour, and the rail draws no edge on
- *  either side — so the column runs 0 → 76 and its centre is 38. With an 8px inset the content
- *  centred on 34, i.e. 4px left of the middle of what you see, which is what the user reported as
- *  "not optically centred". At 0 the element's own midpoint IS the optical centre. */
+ *  either side — so the column runs 0 → 86 and its centre is 43. An 8px inset puts the content
+ *  4px left of the middle of what you see (it was 34 against 38 when the strip was 60 wide, and
+ *  the error is the same half-inset at any width), which is what the user reported as "not
+ *  optically centred". At 0 the element's own midpoint IS the optical centre. */
 const CONTENT_INSET_R = 0
-/** The optical axis: 30 element-local = **38 from the window edge** = the centre of the visible
+/** The optical axis: 35 element-local = **43 from the window edge** = the centre of the visible
  *  column, window edge to card edge. The second number is the one that matters — a driver that
- *  only checks the elements agree with each other at 30 would have passed the 34 too. */
+ *  only checks the elements agree with each other at 35 would have passed a wrong 31 too. */
 const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
 /** A member's hit box — the orb's 24px disc inside it, and `+ Add an agent` and Home on the same
  *  box, so every clickable thing in the strip is one column at one x. */
 const MEMBER_BOX = 36
-/** COLLAPSED, a member's box is centred on the axis: `AXIS − MEMBER_BOX / 2` = 12. That is the
- *  optical-centre rule and it is untouched. */
+/** COLLAPSED, a member's box is centred on the axis: `AXIS − MEMBER_BOX / 2` = 17. That is the
+ *  optical-centre rule and it is untouched — only the axis it is measured from moved. */
 const MEMBER_INSET_L = AXIS - MEMBER_BOX / 2
 const ORB = 24
-/** EXPANDED, everything starts here instead — the header's text, the orb, the Home mark and the
- *  `+`. ONE left edge for the whole strip.
- *
- *  THE CONSTANT-X INVARIANT IS RETIRED (user's call, 2026-08-04: "agent orb should be more to the
- *  left, balanced"). It said an orb sits at the same absolute x collapsed and expanded, and it is
- *  what forced the 264 width — holding the orb column at 2 × the axis cost ~30px of the name
- *  column. The cost of retiring it was put to the user and accepted: the orb slides ~10px when the
- *  strip expands, in exchange for a strip whose items no longer start at three different x. They
- *  were, measured before this change: header ink 8.5, the disc 18, the `+` 26.
- *
- *  What survives from that invariant, and is still asserted: the orb does not RESIZE between
- *  states, and the COLLAPSED axis stays at 30 element-local / 38 from the window edge — that is
- *  the optical-centre fix from D1-FIX-1 and this must not drift it. See
- *  `dev/drive-rail-invariant.mjs`, assertion X. */
-const ROW_INSET_L = 8
 /** The `+`'s ink, EXPANDED. Sized against the orb's painted extent, measured rather than chosen:
  *  the disc paints 24×24 and the plus at 24 painted 24×24 too — the same extent, which is exactly
  *  why it read heavier. A cross reaches the corners of its box; a disc of dots does not, so equal
@@ -130,16 +130,16 @@ const ADD_GLYPH = 20
 const MEMBER_GAP = 6
 /** Foot geometry — shared with `PlanMeter`, which brings its own button (see `foot-cell.ts`).
  *  24 at a 4px gap was derived when the collapsed field was 52 (24 + 4 + 24 = 52, exactly): it FIT,
- *  and the fit is what set it. The field is 60 now, so nothing forces 24 any more — deliberately
+ *  and the fit is what set it. The field is 70 now, so nothing forces 24 any more — deliberately
  *  left alone rather than drifting. What the wider field buys is that the pair no longer has to be
  *  flush: `FOOT_PAD` centres it under the member column. */
-/** (60 − (24 + 4 + 24)) / 2 = 4. The foot pair straddles the axis instead of hugging the left
+/** (70 − (24 + 4 + 24)) / 2 = 9. The foot pair straddles the axis instead of hugging the left
  *  edge — and the SAME padding applies at 264, so the left glyph column holds its x across ⌘B
  *  just as the orb column does. The foot keeps its own rhythm (it is not on the member column,
  *  by design), but it must not MOVE. */
 const FOOT_PAD = (RAIL_W - (FOOT_BOX * 2 + FOOT_GAP)) / 2
 
-/** The fold control's box. 18 x 14 is a real target on a 60px strip while staying narrower than a
+/** The fold control's box. 18 x 14 is a real target on a 70px strip while staying narrower than a
  *  foot cell's 24 — it is the seam's ornament, not a ninth control, and it must not read as one.
  *  It overhangs the hairline's 9px of air either side rather than adding height of its own. */
 const DISCLOSURE_W = 18
@@ -200,7 +200,7 @@ export interface ProjectRailProps {
   agentsActive?: boolean
   onReorder?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   /** Right-click a header. The strip REPORTS the anchor and nothing else: it is a clipping
-   *  scroller at the window's edge, so a menu parented to a row would be cut off at 60. */
+   *  scroller at the window's edge, so a menu parented to a row would be cut off at 70. */
   onTileMenu?: (projectId: string, anchor: { top: number; left: number }) => void
   menuProjectId?: string | null
   /** EVERY live session, across every project — the strip groups them itself. It used to be
@@ -221,7 +221,7 @@ export interface ProjectRailProps {
   onCloseSession?: (session: AgentSession) => void
   /** The `+` row's menu — this project's idle lanes, plus "add one". Reported as an ANCHOR and
    *  rendered by the view, like every other menu here: the strip is a clipping scroller at the
-   *  window's edge, so a popover parented to a row would be cut off at 60. */
+   *  window's edge, so a popover parented to a row would be cut off at 70. */
   onAgentMenu?: (projectId: string, anchor: { top: number; left: number }) => void
   onAddLane?: () => void
   /** Reorder two AD-HOC session rows. Lane rows are ordered by the roster instead. */
@@ -280,7 +280,7 @@ export function ProjectRail({
 
   // A group's live members, with its LANES in roster order — see `orderByRoster`. Ordering here
   // rather than at the render site is what makes both widths agree: the orbs and the rows read
-  // the same list, so a lane dragged at 264 is in the same place at 60.
+  // the same list, so a lane dragged at 264 is in the same place at 70.
   const liveOf = (projectId: string) => {
     const live = sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
     const roster = projects.find((p) => p.id === projectId)?.roster ?? []
@@ -334,7 +334,11 @@ export function ProjectRail({
       transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
     }}>
       {/* The strip is the leftmost thing on screen, so IT hosts the macOS traffic lights: 40px of
-          bare titlebar, still draggable, nothing drawn in it. */}
+          bare titlebar, still draggable, nothing drawn in it. 40 is the VERTICAL half of the same
+          clearance `RAIL_W` is the horizontal half of, and it did not have to move with it: the
+          modern cluster spans y 9→23 (14pt buttons centred on y 16), so the band clears it by 17
+          — more air than the 9.25 it had under the old `hiddenInset` + `{14,18}` origin, not less.
+          `ProjectGallery`'s own 40px strip is the same number for the same reason. */}
       <DragRegion style={{ paddingTop: 40, width: '100%', flexShrink: 0 }} />
 
       <div
@@ -359,7 +363,7 @@ export function ProjectRail({
             project from a non-project screen and there is genuinely nothing on the strip. It had
             no empty state at all, which left a bare band under the traffic lights that reads as
             a rendering failure. One line, in the same mono/uppercase/muted vocabulary as the
-            gallery's shelf headers — structure, not content. Omitted at 60px: there is nowhere
+            gallery's shelf headers — structure, not content. Omitted at 70px: there is nowhere
             to put it, and a blank strip beside a visible gallery is not ambiguous. */}
         {shown.length === 0 && expanded && (
           <div data-rail-empty style={{
@@ -509,7 +513,7 @@ export function ProjectRail({
                     accent={accentOf?.(s)}
                     initial={initialFor(s)}
                     // The SAME drag the expanded row gets — one surface at two widths, so a
-                    // gesture that worked at 264 and not at 60 would be two surfaces again.
+                    // gesture that worked at 264 and not at 70 would be two surfaces again.
                     drag={dragFor(s)}
                     onSelect={() => onSelectSession?.(s)}
                     onPickAccent={onPickAccent}
@@ -625,8 +629,9 @@ export function ProjectRail({
  *  The name is rendered WHOLE and truncated by CSS. It used to be cut to six characters in JS,
  *  which is not a truncation but a hard clip — `OPERATOR` became `OPERAT`, indistinguishable from
  *  a project actually called that, and the `textOverflow: ellipsis` beneath it could never fire.
- *  At 60 every single-token name in the real store fits; only the hyphenated compounds ellipsise,
- *  and the hover card carries them whole. */
+ *  Measured at 60, every single-token name in the real store fit and only the hyphenated compounds
+ *  ellipsised, with the hover card carrying those whole. The strip is 70 now, so that bound only
+ *  loosens — `EL-ENCANTO` fits where it used to clip — and nothing here had to change for it. */
 function GroupHeader({ project, activity, open, collapsed, draggable, dragging, onDragStart, onDragEnd, onOpen, onMenu, menuOpen, onRestore }: {
   project: Project
   activity: ProjectActivity
@@ -691,7 +696,7 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
             flex: 1, minWidth: 0, height: 24, boxSizing: 'border-box',
             // ZERO HORIZONTAL PADDING WHEN COLLAPSED. 4px each side takes the usable width to 44
             // and clips `operator` — caught by measurement, not by eye.
-            padding: collapsed ? 0 : '0 8px',
+            padding: collapsed ? 0 : `0 8px 0 ${ROW_INSET_L}px`,
             // A BLOCK, not a flex row. `text-overflow: ellipsis` applies to a block container's
             // inline content — inside a flex container the name is an anonymous flex item and the
             // ellipsis never fires, so an over-long name was clipped on BOTH sides instead
@@ -720,7 +725,7 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
           onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
         >{project.name}</button>
         {/* You can browse into a shelved project from the gallery, and nothing in here used to say
-            so. The chip is the state AND the way out of it. Expanded only: at 60 there is no room
+            so. The chip is the state AND the way out of it. Expanded only: at 70 there is no room
             for a second thing on this row, and the hover card carries the state. */}
         {!collapsed && open && project.archivedAt && onRestore && (
           <button
@@ -744,10 +749,14 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
         )}
       </div>
       {/* The path, under the OPEN group's name only, expanded only. Collapsed, the hover card
-          carries it. */}
+          carries it.
+          ON `ROW_INSET_L` LIKE EVERYTHING ELSE, and it was a bare 8 that agreed with the edge only
+          because the edge happened to be 8 too — the moment the inset moved, the path was the one
+          line in the strip still starting 4px left of the name above it. Assertion L does not
+          cover it (it measures the header, the orb and the `+`), so nothing would have caught it. */}
       {!collapsed && open && project.path && (
         <div data-rail-path style={{
-          padding: '0 8px 2px', fontFamily: 'var(--font-mono)', fontSize: 9.5,
+          padding: `0 8px 2px ${ROW_INSET_L}px`, fontFamily: 'var(--font-mono)', fontSize: 9.5,
           color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{tildePath(project.path)}</div>
       )}
@@ -1062,7 +1071,7 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
 
 /** THE APP'S OWN ROW — Arrangement A: four groups of two, three hairlines, the same order and the
  *  same total height at both widths. Only the CELL width changes, so every foot row lands on an
- *  identical y at 60 and at 264. That is the analogue of the member column's constant x: the
+ *  identical y at 70 and at 264. That is the analogue of the member column's constant x: the
  *  bottom of the strip is as fixed as the top, so ⌘B adds words and moves nothing, anywhere.
  *
  *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
@@ -1206,17 +1215,17 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
         </>
       )}
       {/* The app's identity, on its own line at the bottom of the grid — CENTRED ON THE AXIS, the
-          same 30 element-local (38 from the window edge) that every orb, every collapsed name and
+          same 35 element-local (43 from the window edge) that every orb, every collapsed name and
           every Home mark sits on. It was the one element in the strip that did not, which is
           exactly why it was the one thing still reading as unbalanced once Fix 1 put everything
-          else on 38: bare left-aligned text under a foot whose every other row is a tiled
+          else on the axis: bare left-aligned text under a foot whose every other row is a tiled
           two-column grid, i.e. an orphan rather than a caption.
           NOT `marginLeft: auto` and not "fill the leftover space" — that is what the OLD comment
           here was written to prevent (the foot used to shove the version into whatever gap was
           left, and with `flexWrap` on it would drop to a line of its own the moment it did not
           fit). That prevention still stands; what changed is the answer to "then where?", which is
           the axis, because the axis is where the whole strip already is.
-          The box is `2 × AXIS` — the widest a box centred on the axis can be inside a 60px strip —
+          The box is `2 × AXIS` — the widest a box centred on the axis can be inside a 70px strip —
           rather than the foot's full width, so its centre is the AXIS at both widths instead of the
           midpoint of a 256px row at 264. It cancels the foot's own padding to get there, which the
           grid rows above it keep.
@@ -1284,7 +1293,7 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
  *  and the space it saves is real: two rows and a hairline, 67px.
  *
  *  ON THE AXIS at both widths, like the identity row below it — `2 × AXIS` wide with the foot's
- *  own padding cancelled, so its centre is 30 element-local at 60 AND at 264 rather than the
+ *  own padding cancelled, so its centre is 35 element-local at 70 AND at 264 rather than the
  *  midpoint of whatever row it happens to sit in. */
 function FootDisclosure({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   const [hover, setHover] = useState(false)

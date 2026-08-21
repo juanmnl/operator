@@ -4,6 +4,7 @@ import { AgentSession } from '../../../shared/types'
 import { StatusWave } from './StatusWave'
 import { sessionWaveStatus } from '../../lib/session-status'
 import { laneTextColor } from '../../lib/lane-color'
+import { ROW_INSET_L } from './rail-metrics'
 
 interface SessionItemProps {
   session: AgentSession
@@ -121,12 +122,11 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // NEUTRAL inset ring (not an accent stripe — see the global no-left-marker rule), so it
         // reads as a distinct card, unmistakable next to a merely-RUNNING row (faint accent
         // wash). Running is a secondary tint; selected always wins.
-        // 8 LEFT — `ProjectRail.ROW_INSET_L`, the one left edge the expanded strip starts
-        // everything on: this row's orb, the project header's text and the `+` of "Start an
-        // agent". It was 12 (the collapsed axis, `AXIS − MEMBER_BOX / 2`) while the orb was held
-        // at constant x across ⌘B; that invariant was retired on 2026-08-04 in favour of a strip
-        // whose items do not start at three different x. See ProjectRail's ROW_INSET_L.
-        padding: '0 8px 0 8px',
+        // LEFT = `ROW_INSET_L`, the one left edge the expanded strip starts everything on: this
+        // row's orb, the project header's text and the `+` of "Start an agent". It is IMPORTED,
+        // not retyped — it was a literal `8` here beside a comment naming the constant, which is
+        // how two numbers that must agree stop agreeing. See `rail-metrics.ts` for why 12.
+        padding: `0 8px 0 ${ROW_INSET_L}px`,
         // NO transparent left border. It was a leftover reservation from a marker stripe this app
         // no longer draws (selected is a surface + inset ring), and 2px of it pushed this row's
         // orb to x=28 while the collapsed strip's sat at 26 — a 2px slide on every ⌘B, which is
@@ -154,7 +154,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         data-accent-orb={session.id}
         // The SAME hook the collapsed strip's orb carries, so a driver can assert the one across
         // both states: `dev/drive-rail-invariant.mjs` measures this element's painted centre at
-        // 60 and at 264 and fails if it moved. Two selectors would have measured two elements.
+        // 70 and at 264 and fails if it moved. Two selectors would have measured two elements.
         data-rail-orb={session.id}
         onContextMenu={onPickAccent && ((e) => {
           // Right-click the orb to recolour; left-click falls through to row select.

@@ -36,7 +36,8 @@
 //   X. THE ORB DOES NOT RESIZE between states, and the COLLAPSED axis stays at 30 element-local /
 //      38 from the window edge. This assertion used to also require the orb's painted centre to be
 //      IDENTICAL at both widths — see the note at the check itself for why that half is retired.
-//   L. ONE LEFT EDGE, expanded: the header's text, the orb and the `+` all start at the same x.
+//   L. ONE LEFT EDGE, expanded: the header's text, the open group's path, the orb and the `+`
+//      all start at the same x.
 //   Y. the four foot ROWS land on identical y at both widths (Arrangement A's whole claim — the
 //      bottom of the strip is as fixed as the member column).
 //   B. ⌘B removes NONE of the eight foot controls. That is the live defect D1 fixes: collapsing
@@ -77,20 +78,22 @@ const NAMES = [
 // The strip's own geometry, as declared in ProjectRail.tsx. Everything is asserted against these,
 // not against whatever the DOM happens to report — a driver that derives its expectation from the
 // thing it is testing agrees with any bug that is internally consistent.
-const RAIL_W = 60
+const RAIL_W = 70
 const RAIL_W_OPEN = 264
 /** Zero — see ProjectRail's own note. It was 8 while the strip had a right-hand seam to stop
  *  short of; deleting the seam moved the visible boundary and the inset was never re-derived. */
 const CONTENT_INSET_R = 0
 /** `DashboardView`'s root padding, painted in the strip's own colour. The column a person sees
- *  runs from the WINDOW EDGE to the card's edge — 0 → 76 — so its centre is 38, and that is the
+ *  runs from the WINDOW EDGE to the card's edge — 0 → 86 — so its centre is 43, and that is the
  *  number this driver checks. Asserting only that the elements agree with each other at their
- *  element-local axis is what let a 4px error stand: they agreed perfectly, at 34. */
+ *  element-local axis is what let a 4px error stand: they agreed perfectly, at 34 when the column
+ *  ran 0 → 76. */
 const WINDOW_PAD = 8
-const OPTICAL_CENTRE = 38
+const OPTICAL_CENTRE = 43
 /** The optical axis. The strip has NO right-hand seam any more, so the column runs to the rail's
- *  own edge and the axis is simply the field's midpoint: (60 − 8) / 2 = 26 element-local, 34 from
- *  the window edge, the centre of the visible 68px strip.
+ *  own edge and the axis is simply the field's midpoint: (70 − 0) / 2 = 35 element-local, 43 from
+ *  the window edge, the centre of the visible 78px strip. (Subtracting a right inset is what got
+ *  this wrong twice: (60 − 8) / 2 = 26 was the seam-era derivation and it survived the seam.)
  *
  *  The old derivation subtracted a 1px seam that was an INSET BOX-SHADOW — which does not reduce
  *  the content box — so the prose centred at 29.5 while the CSS centred at 30.0. A standing 0.5px
@@ -101,6 +104,10 @@ const OPTICAL_CENTRE = 38
  *  i.e. would demand that the orbs re-centre themselves in the wider box, which is the exact
  *  behaviour D1 exists to forbid. One number, both scenes. */
 const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
+/** THE ⌘B ORB SLIDE, and the reason `ROW_INSET_L` has the value it has. See assertion X: this is a
+ *  chosen number, not a derived one, and it is asserted here so that choosing a new `RAIL_W` cannot
+ *  quietly change it. `rail-metrics.ts` carries the same 10 as prose beside the inset it solves. */
+const ORB_SLIDE = 10
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
 // The foot is four pairs around three hairlines, and a hairline's whole job is to out-space what
@@ -520,7 +527,7 @@ for (const [theme, short] of THEMES) {
   const fails = []
 
   // Scene 1 — COLLAPSED, which is the state every axis claim is about.
-  const m1 = await measure(p, `${short} · collapsed (60)`)
+  const m1 = await measure(p, `${short} · collapsed (${RAIL_W})`)
   const r1 = report(m1)
   if (Math.abs(m1.rr.width - RAIL_W) > 0.5) fails.push(`collapsed width ${m1.rr.width}, expected ${RAIL_W}`)
   // The colliding pair must be two GROUPS, not one: same accent, separate hairlines. The strip is
@@ -544,7 +551,7 @@ for (const [theme, short] of THEMES) {
   await p.mouse.move(700, 450)
   await p.evaluate(() => document.activeElement?.blur?.())
   await p.waitForTimeout(7000)
-  const m2 = await measure(p, `${short} · expanded (264)`)
+  const m2 = await measure(p, `${short} · expanded (${RAIL_W_OPEN})`)
   const r2 = report(m2)
   if (Math.abs(m2.rr.width - RAIL_W_OPEN) > 0.5) fails.push(`expanded width ${m2.rr.width}, expected ${RAIL_W_OPEN}`)
 
@@ -554,16 +561,22 @@ for (const [theme, short] of THEMES) {
   // ("agent orb should be more to the left, balanced"). It required an orb's painted centre to be
   // identical collapsed and expanded, and it is what forced the 264 width: holding the orb column
   // at 2 × the axis cost ~30px of the name column. The expanded orb now starts at the row's own
-  // left edge with everything else (assertion L below), so it slides ~10px on ⌘B and that is the
-  // accepted trade.
+  // left edge with everything else (assertion L below), so it slides on ⌘B and that is the
+  // accepted trade. The SIZE of the slide is `ORB_SLIDE` — a number someone chose rather than a
+  // consequence — and `ROW_INSET_L` is it solved for against the axis.
   //
-  // DO NOT PUT IT BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
+  // DO NOT PUT Δx = 0 BACK WITHOUT ASKING. Four passes of pixel work depended on it, so an orb that
   // moves looks exactly like a regression to anyone reading this file cold — it isn't; it is the
   // decision. What is still true, and still gated:
   //   • the orb must not RESIZE between states (a disc that grows on ⌘B is a defect, not a choice)
-  //   • the COLLAPSED axis stays at 30 element-local / 38 from the window edge, which is the
+  //   • the COLLAPSED axis stays at 35 element-local / 43 from the window edge, which is the
   //     optical-centre fix from D1-FIX-1 and lives one neighbourhood away from this change.
-  console.log('\nX · the orb must not RESIZE when the strip expands (Δx retired — see the note)')
+  //   • THE SLIDE IS `ORB_SLIDE`, and that is asserted now rather than printed. Retiring Δx = 0 did
+  //     not make the slide free — it made it a CHOSEN number, and a chosen number that nothing
+  //     checks is exactly what drifted: `RAIL_W` 60 → 70 moved the axis, `ROW_INSET_L` stayed at 8,
+  //     and the accepted 10 silently became 15. `ROW_INSET_L` in `rail-metrics.ts` is this solved
+  //     for; if RAIL_W moves again, this fails and that line is the one to re-solve.
+  console.log(`\nX · the orb slides exactly ${ORB_SLIDE}px on ⌘B, and must not RESIZE (Δx = 0 retired — see the note)`)
   let worstX = 0
   for (const [id, a] of Object.entries(r1.orbs)) {
     const b = r2.orbs[id]
@@ -571,22 +584,31 @@ for (const [theme, short] of THEMES) {
     const dx = ((b.left + b.right) / 2) - ((a.left + a.right) / 2)
     const dw = (b.right - b.left) - (a.right - a.left)
     if (Math.abs(dx) > Math.abs(worstX)) worstX = dx
-    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)} (informational)   Δsize ${f(dw)}` +
+    console.log(`  ${pad(id.slice(-8), 12)} centre ${f((a.left + a.right) / 2)} → ${f((b.left + b.right) / 2)}   Δx ${f(dx)} (want ${ORB_SLIDE})   Δsize ${f(dw)}` +
       (Math.abs(dw) > TOL ? '  ◀ OFF' : '  ok'))
     if (Math.abs(dw) > TOL) fails.push(`orb ${id} resized ${dw.toFixed(2)}px on expand`)
+    if (Math.abs(Math.abs(dx) - ORB_SLIDE) > TOL) {
+      fails.push(`orb ${id} slid ${Math.abs(dx).toFixed(2)}px on expand, expected ${ORB_SLIDE} — re-solve ROW_INSET_L`)
+    }
   }
 
   // ---- L. ONE LEFT EDGE ----------------------------------------------------------------------
   // The other half of "balanced": reading down the expanded strip, the project header, the orb and
   // the `+` used to start at three different x (8.5 / 18 / 26 measured). A strip whose items start
   // at three different x reads as broken however correct each one is on its own.
-  console.log('\nL · ONE LEFT EDGE — expanded: header text, orb, and the + of "Start an agent"')
+  //
+  // THE OPEN GROUP'S PATH IS IN THE LIST NOW. It was left out while `ROW_INSET_L` was 8, and it
+  // agreed with the edge for the wrong reason — its own padding was a bare 8 literal. Moving the
+  // inset to 12 stranded it 4px out, and this assertion passed anyway. An item is on the edge or
+  // it is measured; there is no third state.
+  console.log('\nL · ONE LEFT EDGE — expanded: header text, path, orb, and the + of "Start an agent"')
   {
     const rr = await railRect(p)
     const clip = { x: rr.left, y: rr.top, width: rr.width, height: rr.height }
     const edges = []
     for (const [name, sel] of [
       ['header text', '[data-rail-project-header]'],
+      ['path', '[data-rail-path]'],
       ['orb', '[data-rail-orb]'],
       ['+ Start an agent', '[data-rail-add-lane] svg'],
     ]) {
