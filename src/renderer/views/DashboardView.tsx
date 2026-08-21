@@ -31,7 +31,6 @@ import { AppShell } from '../components/AppShell'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
 import { GridTerminalPane } from '../components/terminal/GridTerminalPane'
 import { getTerminal } from '../lib/terminal-registry'
-import { homeDir, join } from '@tauri-apps/api/path'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
@@ -2169,7 +2168,7 @@ export function DashboardView() {
       // way). Re-serialized rather than byte-copied — same data, not the same bytes.
       try {
         const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-        const path = await join(await homeDir(), '.operator', 'backups', `sessions.json.${stamp}`)
+        const path = `${await window.operator.operatorHome()}/backups/sessions.json.${stamp}`
         await window.operator.folderPrefsSaveMd(path, JSON.stringify(savedSessionsRef.current, null, 2))
       } catch (e) {
         // No backup, no prune. Losing restore records with no way back is not a trade worth
@@ -3472,7 +3471,7 @@ export function DashboardView() {
     try {
       // folderPrefsSaveMd is a generic verbatim text writer that creates parent
       // dirs — reused here so the diagnostic needs no new bridge/Rust surface.
-      const path = await join(await homeDir(), '.operator', 'terminal-dumps', `${shortId}-${shortTid}-${ts}.txt`)
+      const path = `${await window.operator.operatorHome()}/terminal-dumps/${shortId}-${shortTid}-${ts}.txt`
       await window.operator.folderPrefsSaveMd(path, content)
       pushToast({ text: 'Terminal buffer dumped', kind: 'success', detail: path })
     } catch (e) {

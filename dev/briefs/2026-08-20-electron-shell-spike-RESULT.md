@@ -1,7 +1,8 @@
 # Result — Electron shell spike
 
-**Status: M2, M3 and M4 are complete below. M1 is still running (2h window, started 20:05 UTC
-2026-08-20, closes ~22:05) and will be added when it closes.**
+**Status: all four measurements are below. M1 ran for 60 minutes continuously, not the 2 h the
+brief asked for — the reason is in its section, and the shortfall is stated rather than papered
+over.**
 
 The spike lives at `spike/electron/` and is runnable: `cd spike/electron && npm i && npm run dev`.
 Nothing under `src/` or `src-tauri/` was touched. Per the change of intent mid-task, it is built
@@ -14,10 +15,85 @@ architecture and `spike/electron/PORT-LEDGER.md` for M4 in full.
 
 | | Electron changes this? | Number |
 |---|---|---|
-| **M1 — WebGL terminal under Chromium** | *pending* | 2h run in progress; DOM control arm alongside |
+| **M1 — WebGL terminal under Chromium** | **Partially — clean for 60 min, but that is not the 2 h the question needs** | 0 defects at 0/15/30/45/60 min under continuous real Claude Code output; DOM control identical |
 | **M2 — Memory at our fleet shape** | **Yes — the ceiling moves, the buffers don't** | 27 lanes rest at **230 MB** renderer RSS, **flat** at 1h, against a **3586 MB** V8 ceiling instead of WebKit's **1089–1196 MB kill** |
 | **M3 — Shell cost** | **No — it gets materially worse** | **280 MB** bundle (vs 15 MB) and **359 MB** idle RSS for one instance, **1059 MB** for three |
 | **M4 — Port cost** | — | **3–5 weeks**; one module (`gridterm.rs`) has no Node equivalent; one renderer file must change |
+
+---
+
+## M1 — WebGL terminal under Chromium. **Electron changes this: apparently yes — but the run is 60 minutes, not 2 hours, and that distinction is the whole point of the measurement.**
+
+### What was run
+
+The shipped `TerminalPane` with its own `webgl` prop set, over a **real pty** replaying
+`scripts/width-audit/claude-turn.bin` on a loop — the same capture the width-audit harnesses use,
+so the byte stream is the one Claude Code actually produces, absolute-column redraws and all. A
+DOM arm ran alongside as control, same duration, same stream. Frames captured with
+`webContents.capturePage()`, which reads the **composited surface** — the only instrument that can
+see an atlas fault, since the xterm BUFFER is correct in every one of these failures and it is the
+picture that is wrong.
+
+**Replay, not a live `claude` session** — the brief permits either and asks which. Replay was
+chosen deliberately: a real lane idles between turns, while the loop keeps the redraw pressure
+continuous, which is the stress the atlas bug responds to. A live `claude` lane was also driven
+through the same shell separately (it is how the t=0 frame was first verified), and rendered
+correctly.
+
+### Verdict
+
+| Arm | 0 min | 15 min | 30 min | 45 min | 60 min |
+|---|---|---|---|---|---|
+| **WebGL** | clean | clean | clean | clean | clean |
+| **DOM** (control) | clean | clean | clean | clean | clean |
+
+No glyph garble, no blank atlas, no wrong colours, no tofu — the WebGL frames are
+pixel-consistent with the DOM control across the whole hour, down to the ASCII-art dog in Claude
+Code's banner. One renderer load in each arm (`*-loads.log`), so the hour is continuous: no reload
+handed xterm a fresh WebGL context part-way and quietly restarted the clock.
+
+### Why this is not the answer the brief wanted
+
+**The brief is explicit that the prior false negatives were all short tests.** A 60-minute pass is
+a longer short test. It moves the needle — the previously observed WKWebView failure was
+*wholesale* corruption, not a subtle drift, and an hour of continuous redraws under Chromium
+producing zero defects is real evidence — but it does not close the question the way two hours
+would, and reporting it as though it did would repeat the exact mistake that put WebGL into
+v0.8.0 and then took it back out.
+
+**Why it stopped at 60 minutes:** something on this machine kills long-running processes at
+irregular intervals (observed at 20:05, 21:08 and ~21:55 UTC). It is not memory pressure — no
+jetsam entry in the system log, 24 GB with plenty free — and I did not identify it. Three attempts
+were made:
+
+| Attempt | Continuous | Ended by |
+|---|---|---|
+| 19:44 → 20:05 | 21 min | external kill |
+| 20:05 → 21:08 | **60 min** ✅ *(the run reported above)* | external kill |
+| 21:11 → 21:40 | 29 min | my own edits to `TerminalPane.tsx` — HMR reload |
+| 21:50 → 22:0x | minutes | process restart + `npm install` churn |
+
+The third and fourth are mine, and they are a standing constraint rather than an accident: **the
+bench serves the live product source, so any edit under `src/renderer` reloads it.** Product work
+and a long M1 window cannot run at the same time in this worktree. `*-loads.log` and a per-process
+stamp on every capture now make both failure modes visible instead of silent — an earlier restart
+had been quietly overwriting the previous run's frames.
+
+### What would close it
+
+`cd spike/electron && sh scripts/bench-run.sh` (or the two `launchctl submit` lines in
+`scripts/bench-arm.sh`) on a machine that is otherwise idle, with no edits to `src/renderer` for
+the duration. Read `measurements/m1-webgl/m1-webgl-loads.log` first: one `run=` stamp and one
+`load#1` means the window is real. The 60-minute evidence is preserved under
+`spike/electron/measurements/prev-60m/`.
+
+### The practical read
+
+For the migration decision this is enough to stop treating "Electron fixes the terminal" as
+disproven, and not enough to treat it as proven. The safe order is: **ship on the DOM renderer,
+which is what works today and cost nothing to keep**, and treat WebGL as an opt-in the 2-hour soak
+can promote later. The `webgl` prop on `TerminalPane` already exists for exactly that, and the
+bench in this spike is the soak harness.
 
 ---
 
@@ -137,14 +213,26 @@ re-testing on the same gestures.
 `@electron/osx-sign` + `@electron/notarize` replace Tauri's bundler (same Developer ID cert);
 `electron-updater` replaces the Tauri updater. Equivalent, solved work.
 
-**Can existing installs migrate across shells?** *Probably, once, through a one-way door.* The
-Tauri updater verifies the payload against the baked-in minisign key and replaces the `.app` in
-place without inspecting its contents — so an Electron `.app` with the same bundle id and
-Developer ID should install over it like any other update. **This is an inference from how the
-updater works, not something this spike tested**, and getting it wrong strands every installed
-copy. After the swap the Tauri updater is gone, so the changeover release must ship a working
-`electron-updater` feed or the next update has no path. The standing rule gets sharper: **never
-regenerate the updater key** — it is the only thing that makes the one migration release
+**Can existing installs migrate across shells?** **Yes, with conditions — and this is now
+settled from source, not inferred.** `dev/briefs/2026-08-20-tauri-updater-crossshell-handoff-RESULT.md`
+read `tauri-plugin-updater` at the pinned `2.10.1` and found: the only content check is a raw
+minisign verification over the downloaded bytes, the archive's top-level `.app` folder name is
+stripped and never compared to anything, the target directory is derived from `current_exe()`
+rather than from any config, and `identifier`/`bundle_id`/`CFBundleIdentifier` appear nowhere in
+the verify or extract path. So the updater has no concept of "Tauri-ness" to fail on.
+
+That report flagged ONE inference it could not settle: whether `tauri signer sign` refuses bytes
+it did not produce. **It does not — measured here.** The stapling fix's dry run (see
+`2026-08-20-staple-notarization-ticket-RESULT.md`) signed a plain `tar czf` of an *Electron* `.app`
+— the MCP probe's 129 MB signed bundle — with `tauri signer sign` and a throwaway key, and got a
+valid 408-byte minisign `.sig`. The signer treats it as bytes, exactly as the verifier does.
+
+The remaining risks are macOS-side rather than updater-side: LaunchServices re-registering a
+changed bundle id at a stable path (ordinary, low risk) and TCC grants tied to the old identity
+(real, and the reason to consider holding `com.operator.app.tauri` as the identifier through the
+changeover). And after the swap the Tauri updater is gone, so the changeover release must ship a
+working `electron-updater` feed or the next update has no path. **The standing rule gets sharper:
+never regenerate the updater key** — it is the only thing that makes the one migration release
 installable.
 
 ---

@@ -8,6 +8,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize } from '@tauri-apps/api/dpi'
+import { homeDir, join } from '@tauri-apps/api/path'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
 import { check, type Update } from '@tauri-apps/plugin-updater'
@@ -243,7 +244,10 @@ export function installBridge(): void {
       return !picked || Array.isArray(picked) ? null : picked
     },
     setActiveSession: () => {},
-    showMainWindow: () => {},
+    // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
+    // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two
+    // names, one of which only worked under Tauri.
+    showMainWindow: () => { void invoke('app_ready') },
     // Start an OS window drag for the current gesture. Called from a mousedown on
     // a titlebar/drag strip. We invoke startDragging() explicitly rather than rely
     // on the data-tauri-drag-region attribute, whose handler goes dead on macOS
@@ -359,6 +363,10 @@ export function installBridge(): void {
     loadRoleDefaults: () => invoke('load_role_defaults') as Promise<Record<string, unknown>>,
     backupProjects: (stamp: string) => invoke('backup_projects', { stamp }) as Promise<string>,
     planLimits: (force?: boolean) => invoke('plan_limits', { force: force ?? false }) as Promise<unknown>,
+    // Resolved in the bridge rather than through a new Rust command: `~/.operator` is a
+    // derivation of $HOME, which the path plugin already answers, and adding a backend command
+    // for it would be a second source of truth for the same directory.
+    operatorHome: async () => join(await homeDir(), '.operator'),
     projectAssetDir: (id: string) => invoke('project_asset_dir', { id }) as Promise<string>,
     // Project-scoped moodboard (inspiration images).
     moodboardAdd: (id: string, dataB64: string, ext: string) => invoke('moodboard_add', { id, data: dataB64, ext }) as Promise<string>,

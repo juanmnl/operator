@@ -704,6 +704,7 @@ export function installMockBridge() {
     branchDiff: async () => ({ files: [], insertions: 0, deletions: 0 }),
     moodboardList: async () => [],
     projectAssetDir: async () => '/tmp/mock',
+    operatorHome: async () => '/tmp/mock-operator-home',
     pickFolder: async () => PROJECT_PATH,
 
     // --- writes: recorded so the harness can assert what the UI attempted --------
