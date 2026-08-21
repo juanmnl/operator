@@ -17,6 +17,7 @@ import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
+import { createTray, type OperatorTray } from './tray'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
 // so `__dirname` is the real thing here — `import.meta.url` compiles to an empty string.
@@ -31,6 +32,7 @@ let terminals: TerminalManager | null = null
 let transcript: Transcript | null = null
 let chat: ChatStore | null = null
 let artifacts: ArtifactStore | null = null
+let tray: OperatorTray | null = null
 
 /** The ONLY origins this app may navigate to. Anything else — a dropped file, a link the
  *  renderer mishandled, a redirect — is refused and, if it looks like a real web URL, handed to
@@ -105,6 +107,8 @@ function teardown(): void {
   terminals?.killAll()
   chat?.close()
   artifacts?.close()
+  tray?.destroy()
+  tray = null
 }
 
 function boot(): void {
@@ -133,7 +137,11 @@ function boot(): void {
     const w = win()
     if (w) broadcast(w, 'onOrchestratorReply', r)
   })
-  transcript.on('sessions', (sessions: AgentSession[]) => { const w = win(); if (w) broadcast(w, 'onSessionUpdate', sessions) })
+  transcript.on('sessions', (sessions: AgentSession[]) => {
+    const w = win()
+    if (w) broadcast(w, 'onSessionUpdate', sessions)
+    refreshTray()
+  })
 
   transcript.start({
     isAlive: (id) => terminals!.isAlive(id),
@@ -154,6 +162,31 @@ function boot(): void {
   installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
   registerIpc({ terminals, transcript, chat, artifacts, quit, getWindow: () => mainWindow })
   mainWindow = createWindow()
+
+  // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way
+  // back to a hidden app, so it must never be the thing that failed to start: a tray that
+  // throws (no menu bar at all, a display swapped mid-launch) must not take the app with it.
+  try {
+    tray = createTray({ showWindow, quit: () => app.quit() })
+    refreshTray()
+  } catch (e) {
+    console.error('[shell] tray unavailable:', e)
+  }
+}
+
+/** Show and focus the main window, recreating it if it is gone — the same answer `activate`
+ *  gives. Closing the window is not quitting on macOS, and the lanes keep running behind it. */
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+/** Relabel the tray from the same lane list the quit guard reads, so the menu and the guard
+ *  cannot disagree about what is running. */
+function refreshTray(): void {
+  if (!tray || !transcript || !terminals) return
+  tray.refresh(transcript.liveLanes((id) => terminals!.isAlive(id)))
 }
 
 if (process.argv.includes('--mcp-serve')) {
