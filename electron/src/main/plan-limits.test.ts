@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { parseUsage, percentIn, resetsIn, parenLabel } from './plan-limits'
+import { describe, it, expect, afterAll, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fetchPlanLimits, parseUsage, percentIn, resetsIn, parenLabel } from './plan-limits'
 
 describe('field extractors', () => {
   it('reads the number immediately before the % sign', () => {
@@ -64,5 +67,43 @@ describe('parseUsage', () => {
   it('does not mistake a percentage line for the plan sentence', () => {
     const r = parseUsage('Your subscription is at 40%\nCurrent session: 40%')
     expect(r.plan).toBeUndefined()
+  })
+})
+
+// THE REGRESSION. Packaged 0.17.0 ran `/bin/sh -ilc`, which reads `~/.profile` and never
+// `~/.zshrc` — so `~/.local/bin` was off PATH and the card said "sh: claude: command not found"
+// (plus "no job control", `sh -i` with no tty). Driven for real rather than mocked: a stand-in
+// $SHELL on disk, which only gets to answer if the spawn actually honours SHELL.
+describe('fetchPlanLimits runs through the USER\'S login shell', () => {
+  const SHELL = process.env.SHELL
+  const dir = mkdtempSync(join(tmpdir(), 'operator-shell-test-'))
+  afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+  afterEach(() => { if (SHELL === undefined) delete process.env.SHELL; else process.env.SHELL = SHELL })
+
+  function fakeShell(body: string): string {
+    const path = join(dir, `shell-${Math.abs(body.length)}-${body.charCodeAt(0)}.sh`)
+    writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+    return path
+  }
+
+  it('asks $SHELL, and parses what it answers', async () => {
+    // A shell that knows where `claude` is — i.e. the user's own, which is the whole point.
+    process.env.SHELL = fakeShell([
+      `echo "argv: $1 $2" >&2`,
+      'echo "You are currently using your subscription."',
+      'echo "Current session: 42% · resets in 1h 5m"',
+    ].join('\n'))
+    const r = await fetchPlanLimits(true)
+    expect(r.sessionPct).toBe(42)
+    expect(r.sessionResets).toBe('in 1h 5m')
+    expect(r.note).toBeUndefined() // no "command not found"
+  })
+
+  it('is invoked as an INTERACTIVE login shell — `-ilc`, as planlimits.rs does', async () => {
+    // The shell echoes its own argv back, dressed as the plan line so the parser carries it out
+    // (`plan` is the line mentioning a subscription without a percentage).
+    process.env.SHELL = fakeShell('echo "subscription invoked as: $1 :: $2"')
+    const r = await fetchPlanLimits(true)
+    expect(r.plan).toBe("subscription invoked as: -ilc :: claude -p '/usage'")
   })
 })
