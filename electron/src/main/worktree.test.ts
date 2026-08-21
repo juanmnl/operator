@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
@@ -265,5 +265,45 @@ describe('merge, discard, and the guards around them', () => {
     const b = await wt.createWorktree(repo)
     expect(a.branch).not.toBe(b.branch)
     expect(a.path).not.toBe(b.path)
+  })
+})
+
+// Same defect as the Plan card's, same fix: the verification gate ran `/bin/sh -lc`, which reads
+// `~/.profile` and not the user's rc file — so an nvm/mise-managed `node` or `pnpm` is as
+// invisible to it as `claude` was. Driven for real: a stand-in $SHELL that only gets to answer
+// if the spawn honours SHELL.
+describe('runCheck runs the project command through the USER\'S login shell', () => {
+  const SHELL = process.env.SHELL
+  afterEach(() => { if (SHELL === undefined) delete process.env.SHELL; else process.env.SHELL = SHELL })
+
+  function fakeShell(name: string, body: string): string {
+    const path = join(SANDBOX, name)
+    writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+    return path
+  }
+
+  it('spawns $SHELL as a login shell (`-lc`) with the command, and hands back its output', async () => {
+    process.env.SHELL = fakeShell('fake-shell.sh', 'echo "shell=$0 flag=$1 cmd=$2"')
+    const r = await wt.runCheck(SANDBOX, 'npm test')
+    expect(r.ok).toBe(true)
+    expect(r.output).toContain('fake-shell.sh')
+    expect(r.output).toContain('flag=-lc')
+    expect(r.output).toContain('cmd=npm test')
+    expect(r.output).not.toContain('/bin/sh')
+  })
+
+  it('a failing check still comes back with its output and its code', async () => {
+    process.env.SHELL = fakeShell('fake-shell-fail.sh', 'echo "boom"; exit 3')
+    const r = await wt.runCheck(SANDBOX, 'npm test')
+    expect(r.ok).toBe(false)
+    expect(r.code).toBe(3)
+    expect(r.output).toContain('boom')
+  })
+
+  it('falls back to zsh when SHELL is unset — never /bin/sh', async () => {
+    delete process.env.SHELL
+    const r = await wt.runCheck(SANDBOX, 'echo $ZSH_VERSION')
+    expect(r.ok).toBe(true)
+    expect(r.output).not.toBe('') // zsh answered with its version; /bin/sh would print nothing
   })
 })

@@ -6,6 +6,7 @@
 // on an otherwise-empty result rather than as an error or, worse, as zeroes: an empty meter
 // with no explanation is indistinguishable from a broken one.
 import { execFile } from 'node:child_process'
+import { loginShell } from './login-shell'
 
 export interface PlanLimits {
   sessionPct?: number | null
@@ -99,9 +100,10 @@ const TIMEOUT_MS = 30_000
 export async function fetchPlanLimits(force = false): Promise<PlanLimits> {
   if (!force && cache && Date.now() - cache.at < TTL_MS) return cache.value
   const value = await new Promise<PlanLimits>((resolve) => {
-    // A login shell for the same reason terminals use one: `claude` is usually on a PATH that
-    // only an interactive login shell sets up.
-    execFile('/bin/sh', ['-ilc', "claude -p '/usage'"], { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+    // THE USER'S login shell, for the same reason terminals use one: `claude` is usually on a
+    // PATH that only an interactive login shell sets up, and `/bin/sh` reads `~/.profile`
+    // instead of `~/.zshrc` — which is how the shipped 0.17.0 got `claude: command not found`.
+    const child = execFile(loginShell(), ['-ilc', "claude -p '/usage'"], { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => {
         if (err && !stdout) {
           const timedOut = (err as NodeJS.ErrnoException & { killed?: boolean }).killed
@@ -115,6 +117,9 @@ export async function fetchPlanLimits(force = false): Promise<PlanLimits> {
         }
         resolve(parseUsage(stdout))
       })
+    // Close stdin, as `planlimits.rs:281` does with `Stdio::null()`. An interactive shell holding
+    // an open pipe it can read from is a shell that can sit there until the timeout.
+    child.stdin?.end()
   })
   cache = { at: Date.now(), value }
   return value

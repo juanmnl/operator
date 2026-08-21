@@ -12,6 +12,7 @@
 // with no pending master/slave pair to hold open.
 import { spawn as ptySpawn, type IPty } from 'node-pty'
 import { randomUUID } from 'node:crypto'
+import { loginShell } from './login-shell'
 import { homedir } from 'node:os'
 import { buildArgs } from '../../../src/renderer/lib/launch-args'
 
@@ -116,7 +117,7 @@ export class TerminalManager {
     // a lane without one. It is wired now — see mcp-serve.ts and the --mcp-serve branch in index.ts.
 
     const inner = [...prefix, ...o.args].map(shellQuote).join(' ')
-    const shell = process.env.SHELL || '/bin/zsh'
+    const shell = loginShell()
     const env: NodeJS.ProcessEnv = { ...stripNestedSessionEnv(process.env) }
     env.OPERATOR_TERMINAL_ID = id
     if (devPort) {
@@ -183,7 +184,7 @@ export class TerminalManager {
     const id = this.nextId()
     const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), exited: false }
     this.terminals.set(id, managed)
-    const shell = process.env.SHELL || '/bin/zsh'
+    const shell = loginShell()
     const p = ptySpawn(shell, ['-il'], {
       name: 'xterm-256color', cols: DEFAULT_COLS, rows: DEFAULT_ROWS, cwd,
       env: { ...stripNestedSessionEnv(process.env), TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,

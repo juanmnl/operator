@@ -6,6 +6,7 @@
 // and every rule in `dangerousRemovalReason` is there because some path shape would otherwise
 // have taken something that was not a worktree with it.
 import { execFile } from 'node:child_process'
+import { loginShell } from './login-shell'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -373,12 +374,14 @@ export async function discardBranch(worktreePath: string, sourceRoot: string, br
 
 /** The verification gate: run a project's check command in a lane's directory.
  *
- *  A login shell (`-lc`) because the command is the project's own (`npm test`, `cargo test`) and
- *  usually needs a PATH only a login shell sets up. 10-minute cap, and the OUTPUT COMES BACK
- *  EITHER WAY — a check that fails is the interesting case, and its output is the reason. */
+ *  THE USER'S login shell (`-lc`, as `lib.rs:1228` runs it) because the command is the project's
+ *  own (`npm test`, `cargo test`) and usually needs a PATH only a login shell sets up — an
+ *  nvm-managed `node` is exactly as invisible to `/bin/sh` as `claude` was. 10-minute cap, and
+ *  the OUTPUT COMES BACK EITHER WAY — a check that fails is the interesting case, and its output
+ *  is the reason. */
 export async function runCheck(cwd: string, command: string): Promise<{ ok: boolean; code?: number; output: string }> {
   return new Promise((resolve) => {
-    const child = execFile('/bin/sh', ['-lc', command], { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 600_000 },
+    const child = execFile(loginShell(), ['-lc', command], { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 600_000 },
       (err, stdout, stderr) => {
         const output = `${stdout}${stderr}`.trim()
         if (!err) return resolve({ ok: true, code: 0, output })
