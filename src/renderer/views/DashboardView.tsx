@@ -57,6 +57,7 @@ import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened 
 import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
+import { writesForDroppedPaths } from '../lib/paste-image'
 
 /** Who asked for a project upsert. `user` may lift a shelf and cancel a forget; `background`
  *  may do neither. Default is `background` — a new call site opts IN to the destructive
@@ -548,13 +549,17 @@ export function DashboardView() {
     void reconcile()
     const reconcileTimer = setInterval(() => { void reconcile() }, RECONCILE_MS)
 
-    // Files dropped on the window → paste their paths into the active terminal,
-    // so you can drop an image straight into the conversation.
+    // Files dropped ANYWHERE ELSE on the window → into the active terminal, so you can drop an
+    // image straight into the conversation without aiming at the terminal. A drop that lands ON
+    // a pane never gets here: `TerminalPane.handleDrop` stops it, because that pane already
+    // delivers the file itself and two deliveries per gesture is the bug this replaced.
+    //
+    // Images go as a bracketed paste of the raw path, so they become `[Image #N]` here exactly
+    // as they do on the pane; other files keep the shell-quoted plain write.
     const unsubDrop = window.operator.onFileDrop?.((paths) => {
       const tid = activeTerminalIdRef.current
       if (!tid || !paths.length) return
-      const text = paths.map((p) => (/\s/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p)).join(' ') + ' '
-      window.operator.terminalWrite(tid, text)
+      for (const write of writesForDroppedPaths(paths)) window.operator.terminalWrite(tid, write)
     }) ?? (() => {})
 
     return () => { unsubSession(); unsubExit(); unsubDrop(); clearInterval(reconcileTimer) }
