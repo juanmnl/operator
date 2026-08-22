@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { persistFiles, imageFilesFrom } from './paste-image'
+import { persistFiles, imageFilesFrom, bracketedPaste, isImagePath, writesForDroppedPaths } from './paste-image'
 
 // jsdom's File.arrayBuffer() doesn't reliably round-trip bytes, so use explicit
 // File-like stubs — this also lets us simulate an unreadable file deterministically.
@@ -56,5 +56,57 @@ describe('imageFilesFrom', () => {
 
   it('handles a null DataTransfer', () => {
     expect(imageFilesFrom(null)).toEqual([])
+  })
+})
+
+// ONE DELIVERY PER GESTURE, and it has to be the `[Image #N]` one. Under Electron a dropped
+// screenshot arrived TWICE — the pane's bracketed temp path AND, from the preload's window
+// listener, the literal quoted real path:
+//   '/var/folders/…/Screenshot 2026-08-21 at 8.59.45 PM.png' [Image #4]
+// The pane now stops its own drops from reaching the window listener; what is left for the
+// window listener is drops that land anywhere ELSE, and these are the writes it makes.
+describe('bracketedPaste', () => {
+  it('is what makes Claude Code attach a path instead of printing it', () => {
+    expect(bracketedPaste('/tmp/a.png')).toBe('\x1b[200~/tmp/a.png\x1b[201~')
+  })
+})
+
+describe('isImagePath', () => {
+  it('knows the extensions Claude Code will attach, case-insensitively', () => {
+    for (const p of ['/tmp/a.png', '/tmp/a.JPG', '/tmp/a.jpeg', '/tmp/a.gif', '/tmp/a.webp', '/tmp/a.BMP']) {
+      expect(isImagePath(p)).toBe(true)
+    }
+  })
+
+  it('is not fooled by a dot in a directory name, or by no extension at all', () => {
+    expect(isImagePath('/tmp/my.photos/notes')).toBe(false)
+    expect(isImagePath('/tmp/README')).toBe(false)
+    expect(isImagePath('/tmp/.png')).toBe(false) // a dotfile named ".png" is not an image
+    expect(isImagePath('/tmp/archive.zip')).toBe(false)
+    expect(isImagePath('/tmp/clip.heic')).toBe(false) // real image, but not one it attaches
+  })
+})
+
+describe('writesForDroppedPaths', () => {
+  it('sends an image as ONE bracketed paste, raw — quoting it would defeat the attachment', () => {
+    const shot = '/var/folders/x/TemporaryItems/Screenshot 2026-08-21 at 8.59.45 PM.png'
+    expect(writesForDroppedPaths([shot])).toEqual([`\x1b[200~${shot}\x1b[201~`])
+  })
+
+  it('keeps the shell-quoted plain write for anything that is not an image', () => {
+    expect(writesForDroppedPaths(['/tmp/notes.txt'])).toEqual(['/tmp/notes.txt '])
+    expect(writesForDroppedPaths(['/tmp/my notes.txt'])).toEqual(["'/tmp/my notes.txt' "])
+    expect(writesForDroppedPaths(["/tmp/it's here.txt"])).toEqual(["'/tmp/it'\\''s here.txt' "])
+  })
+
+  it('groups a multi-file drop into at most two writes, images first', () => {
+    expect(writesForDroppedPaths(['/a.png', '/notes.txt', '/b.jpg'])).toEqual([
+      '\x1b[200~/a.png /b.jpg\x1b[201~',
+      '/notes.txt ',
+    ])
+  })
+
+  it('writes nothing for nothing', () => {
+    expect(writesForDroppedPaths([])).toEqual([])
   })
 })

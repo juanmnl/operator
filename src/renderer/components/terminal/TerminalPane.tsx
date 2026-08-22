@@ -11,7 +11,7 @@ import { buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, scrollbackFo
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
 import { isAppChord } from '../../lib/key-routing'
-import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
+import { persistFiles, imageFilesFrom, bracketedPaste } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 import { submitQueue } from '../../lib/submit-queue'
 
@@ -253,10 +253,14 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       const images = imageFilesFrom(e.clipboardData)
       if (images.length === 0) return
       e.preventDefault()
-      e.stopPropagation()
+      // stopIMMEDIATEPropagation, not stopPropagation: xterm listens for `paste` on this SAME
+      // textarea (and on its element), registered in `open()` — plain stopPropagation does not
+      // stop a listener on the node the event is already at, so the guarantee "an image paste
+      // writes once" would rest on which listener happened to be registered first.
+      e.stopImmediatePropagation()
       const paths = await persistFiles(images, window.operator.savePastedImage)
       // Bracketed paste so Claude Code converts the path to a native `[Image #N]` (see handleDrop).
-      if (paths.length) window.operator.terminalWrite(terminalId, `\x1b[200~${paths.join(' ')}\x1b[201~`)
+      if (paths.length) window.operator.terminalWrite(terminalId, bracketedPaste(paths.join(' ')))
     }
     textarea?.addEventListener('paste', onPaste, { capture: true })
 
@@ -689,6 +693,14 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // (Needs `dragDropEnabled: false` in tauri.conf so the webview gets HTML5 DnD.)
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
+    // A DROP ON THE PANE IS THIS PANE'S, and saying so is the whole fix for the double write.
+    // The preload also listens for `drop` on the WINDOW (the drop-anywhere route, and the
+    // navigation backstop), so under Electron one gesture used to travel both roads: this
+    // handler's bracketed temp-file path AND a literal quoted path from the window listener.
+    // React delegates at the root container — an ancestor of this pane but a descendant of
+    // `window` — so stopping propagation here is what keeps the window listener out of it
+    // (verified in a real Chromium, not assumed).
+    e.stopPropagation()
     const files = Array.from(e.dataTransfer.files)
     if (files.length === 0) return
     // Persist each dropped file to a temp path (works for unsaved screenshots that
@@ -697,7 +709,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // BRACKETED PASTE (ESC[200~ … ESC[201~), not a plain write: Claude Code only converts a
     // path to a native `[Image #N]` attachment when it arrives as a PASTE. A plain typed
     // write leaves the ugly literal path (the "didn't get shortened" bug).
-    if (paths.length > 0) window.operator.terminalWrite(terminalId, `\x1b[200~${paths.join(' ')}\x1b[201~`)
+    if (paths.length > 0) window.operator.terminalWrite(terminalId, bracketedPaste(paths.join(' ')))
   }, [terminalId])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

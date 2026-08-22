@@ -49,3 +49,46 @@ export function imageFilesFrom(dt: DataTransfer | null | undefined): File[] {
   if (!dt) return []
   return Array.from(dt.files).filter((f) => f.type.startsWith('image/'))
 }
+
+/** Wrap text in a BRACKETED PASTE (ESC[200~ … ESC[201~).
+ *
+ *  Not decoration: Claude Code only turns a path into a native `[Image #N]` attachment when it
+ *  arrives as a PASTE. The same bytes written plainly stay a literal path in the composer — the
+ *  "didn't get shortened" bug. */
+export function bracketedPaste(text: string): string {
+  return `\x1b[200~${text}\x1b[201~`
+}
+
+/** The extensions Claude Code will attach when it reads the path. Anything else is a file, not
+ *  an image, and belongs in the prompt as a path the person can act on. */
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'])
+
+export function isImagePath(path: string): boolean {
+  const dot = path.lastIndexOf('.')
+  const slash = path.lastIndexOf('/')
+  return dot > slash + 1 && IMAGE_EXT.has(path.slice(dot + 1).toLowerCase())
+}
+
+/** What to write to the pty for a set of dropped REAL PATHS — the drop-anywhere route, which
+ *  has no bytes to persist because the files already exist on disk.
+ *
+ *  Two payloads at most, because the two kinds want opposite treatment:
+ *   - images go through a bracketed paste, RAW and unquoted, so Claude Code attaches them as
+ *     `[Image #N]` exactly like a drop onto the terminal itself. Quoting here would defeat that;
+ *     the path never reaches a shell.
+ *   - everything else keeps the plain, shell-quoted write it has always had (the person is
+ *     usually about to type a command around it), with the trailing space that separates it
+ *     from whatever they type next. */
+export function writesForDroppedPaths(paths: string[]): string[] {
+  const images = paths.filter(isImagePath)
+  const rest = paths.filter((p) => !isImagePath(p))
+  const out: string[] = []
+  if (images.length) out.push(bracketedPaste(images.join(' ')))
+  if (rest.length) out.push(rest.map(shellQuote).join(' ') + ' ')
+  return out
+}
+
+/** Single-quote a path that carries whitespace, the way a shell needs it. */
+function shellQuote(p: string): string {
+  return /\s/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p
+}
