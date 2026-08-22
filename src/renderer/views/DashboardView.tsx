@@ -3929,6 +3929,29 @@ export function DashboardView() {
   }, [laneMenuProject, allSidebarSessions, handleLaunchRole, handleAddLane])
 
   return (
+    /* THE FRAME — 8 on all four sides, and the top is not an exception. That is the decision, and
+       it is the vertical half of the traffic-light relationship `ProjectRail`'s `RAIL_W` settles
+       horizontally.
+    
+       Under `titleBarStyle: 'hidden'` the cluster spans y 9 → 23, so the card's lid at 8 sits a
+       point ABOVE the crown of the lights — an almost-alignment, which normally reads as a mistake.
+       Here it is not one, because the card's toolbar IS the title bar on the right of the window:
+       the card is not ignoring the band the lights sit in, it is being it. Push it below that band
+       and you get the 84px double-count this file already rejected once — see the note by the
+       disabled 40px `DragRegion` further down.
+    
+       TWO ALTERNATIVES WERE RENDERED, not argued, and both rejected:
+         • card top = 9, tangent to the lights' crown — PIXEL-IDENTICAL to the frame at 2x. It buys
+           an invisible relationship (a straight edge tangent to a circle is not one the eye reads)
+           and costs a uniform frame.
+         • card top = 16, on the lights' centreline — visible, and it does read as deliberate, but
+           it costs 8pt of height in EVERY mode to buy a relationship that exists in one corner.
+       Shots and numbers: `~/.operator/briefs/OUT-rail-cluster-vertical.md`.
+    
+       What the user actually saw ("the border looking like a bump, and the traffic lights almost
+       overlapping") was HORIZONTAL: at `RAIL_W = 60` the card's edge came within 7pt of the zoom
+       button. It is 17 now. `dev/drive-rail-invariant.mjs` assertion TL gates both halves — the
+       frame, and the gap — so neither can drift back without the driver saying so. */
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
           rail scrollers, which clip their overflow. */}
@@ -4047,7 +4070,16 @@ export function DashboardView() {
             NARROW, not full-width: the card's top 40px is where the toolbar's own controls live,
             and an opaque band across all of it would cover them. It is 4px — the vertical rule and
             nothing else. The card keeps its top and its full height; nothing is pushed down, and
-            no radiused element changes border colour (the WKWebView re-rasterize trap). */}
+            no radiused element changes border colour (the WKWebView re-rasterize trap).
+            WHAT IT DOES NOT COVER, measured rather than assumed: this element is clipped by the
+            card's own `overflow: hidden` and 12px radius, so above y≈12 it covers NOTHING. The
+            corner ARC and the top edge draw across the band regardless, and the run it actually
+            hides starts below the lights rather than beside them.
+            THAT IS CORRECT, and widening it is not the fix — tried at 14px, which is the radius:
+            the arc vanishes and the top edge starts in mid-air, so the card reads as a lid with a
+            broken corner. The rule this mask enforces is the one it is named for — no VERTICAL
+            rule in the titlebar — and an arc is where a vertical rule becomes a horizontal one.
+            It stays. */}
         <div aria-hidden style={{
           position: 'absolute', top: 0, left: 0, width: 4, height: 40, zIndex: 2, pointerEvents: 'none',
           background: 'linear-gradient(to bottom, var(--bg-terminal) 0, var(--bg-terminal) 28px, transparent 40px)',
