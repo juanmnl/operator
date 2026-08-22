@@ -29,13 +29,17 @@
 //     grouping work, so "two adjacent groups the same colour must not read as one group" needs a
 //     fixture rather than a hope.
 //
-// SIX ASSERTIONS
-//   H. every element in the MEMBER COLUMN has its painted centre x on the optical axis — 26 in
-//      rail-local coordinates, the centre of the visible 68px strip. Reported as a signed delta,
-//      never a pass/fail: the size of the error is the diagnosis.
-//   X. THE ORB DOES NOT RESIZE between states, and the COLLAPSED axis stays at 30 element-local /
-//      38 from the window edge. This assertion used to also require the orb's painted centre to be
-//      IDENTICAL at both widths — see the note at the check itself for why that half is retired.
+// EIGHT ASSERTIONS
+//   H. every element in the MEMBER COLUMN has its painted centre x on the optical axis — 35 in
+//      rail-local coordinates, 43 from the window edge, the centre of the visible 78px strip.
+//      Reported as a signed delta, never a pass/fail: the size of the error is the diagnosis.
+//   X. THE ORB DOES NOT RESIZE between states, the COLLAPSED axis stays at 35 element-local /
+//      43 from the window edge, and the ⌘B slide is exactly `ORB_SLIDE`. This assertion used to
+//      require the orb's painted centre to be IDENTICAL at both widths — see the note at the check
+//      itself for why that half is retired and why the slide is gated in its place.
+//   TL. THE TRAFFIC-LIGHT CLUSTER'S CLEARANCES, which are the reason `RAIL_W` and the frame are
+//      the numbers they are. Both halves, because both were tuned to a cluster that no longer
+//      ships — see the check itself.
 //   L. ONE LEFT EDGE, expanded: the header's text, the open group's path, the orb and the `+`
 //      all start at the same x.
 //   Y. the four foot ROWS land on identical y at both widths (Arrangement A's whole claim — the
@@ -108,6 +112,19 @@ const AXIS = (RAIL_W - CONTENT_INSET_R) / 2
  *  chosen number, not a derived one, and it is asserted here so that choosing a new `RAIL_W` cannot
  *  quietly change it. `rail-metrics.ts` carries the same 10 as prose beside the inset it solves. */
 const ORB_SLIDE = 10
+/** THE macOS TRAFFIC-LIGHT CLUSTER, in window coordinates, under `titleBarStyle: 'hidden'` — the
+ *  modern AppKit metrics the Electron shell gets: 14pt buttons on 23pt centres at (16,16) ·
+ *  (39,16) · (62,16). Every number in assertion TL is measured against these rather than against
+ *  anything the page reports, because the cluster is drawn by the OS: the page cannot see it, and a
+ *  harness that asked the page where the lights are would agree with any layout at all.
+ *
+ *  If macOS or the shell ever changes them, THIS is the line to edit, and assertion TL is what will
+ *  tell you it happened — the whole `RAIL_W` 60 → 70 exercise began with a cluster that had changed
+ *  silently under a strip tuned to the old one. */
+const CLUSTER = { left: 9, right: 69, top: 9, bottom: 23 }
+/** `DashboardView`'s root padding — the FRAME the content card floats in, uniform on all four
+ *  sides. Assertion TL holds the top of it, which is the half that has no other guard. */
+const FRAME = 8
 
 // INTENDED VERTICAL RHYTHM, stated up front so the table has something to be measured against.
 // The foot is four pairs around three hairlines, and a hairline's whole job is to out-space what
@@ -530,6 +547,57 @@ for (const [theme, short] of THEMES) {
   const m1 = await measure(p, `${short} · collapsed (${RAIL_W})`)
   const r1 = report(m1)
   if (Math.abs(m1.rr.width - RAIL_W) > 0.5) fails.push(`collapsed width ${m1.rr.width}, expected ${RAIL_W}`)
+
+  // ---- TL. THE TRAFFIC-LIGHT CLUSTER'S CLEARANCES ---------------------------------------------
+  //
+  // Both halves of the one relationship, and both were derived from a cluster that no longer ships.
+  //
+  // HORIZONTAL — the cluster is BALANCED IN THE VISIBLE STRIP: it sits `CLUSTER.left` clear of the
+  // window edge, so the strip must leave the same clearance on its right. That equality is what
+  // sets `RAIL_W`, and until now nothing checked it — `RAIL_W = 60` survived the cluster growing
+  // from 51.75 to 60 wide with every assertion in this file green, and the zoom button ended a
+  // point PAST the strip's edge.
+  //
+  // VERTICAL — the card is NOT aligned to the cluster, and that is the decision, not an oversight.
+  // Its top is the FRAME, the same 8 as its left, right and bottom, because the card's toolbar IS
+  // the title bar on the right of the window: the card is not ignoring the band the lights sit in,
+  // it is being it. Two alternatives were rendered and rejected (see
+  // `~/.operator/briefs/OUT-rail-cluster-vertical.md`): the card's top at `CLUSTER.top` is
+  // pixel-identical to the frame at 2x — an invisible change that would cost a uniform frame to buy
+  // a straight edge tangent to a circle — and the card's top on the cluster's centreline is visible
+  // but costs 8pt of height in every mode to buy a relationship that exists in one corner.
+  //
+  // So what is asserted vertically is the FRAME, plus the thing that actually goes wrong: the card
+  // must stay CLEAR OF THE CLUSTER. They overlap in y by design (the card's lid is level with the
+  // lights); the whole separation is horizontal, so if `RAIL_W` ever shrinks again this is what
+  // catches it. The user's report that started this — "the border looking like a bump, and the
+  // traffic lights almost overlapping" — was that gap at 3pt.
+  {
+    const card = await p.evaluate(() => {
+      const c = document.querySelector('[data-term-focus-zone]')
+      return c ? (({ top, left }) => ({ top, left }))(c.getBoundingClientRect()) : null
+    })
+    // `rr` carries left/width, not right — the visible strip runs from the WINDOW EDGE (0, since
+    // the frame paints the strip's own colour) to the rail element's far edge.
+    const strip = { right: m1.rr.left + m1.rr.width }
+    const clearL = CLUSTER.left
+    const clearR = strip.right - CLUSTER.right
+    const gap = card ? card.left - CLUSTER.right : null
+    console.log('\nTL · the traffic lights: balanced in the strip, and clear of the card')
+    console.log(`  cluster            x ${CLUSTER.left} → ${CLUSTER.right}   y ${CLUSTER.top} → ${CLUSTER.bottom}`)
+    console.log(`  visible strip      0 → ${strip.right.toFixed(2)}   clear left ${clearL}  ·  clear right ${clearR.toFixed(2)}` +
+      (Math.abs(clearL - clearR) > TOL ? '  ◀ NOT BALANCED' : '  ok'))
+    console.log(`  card               top ${card ? card.top.toFixed(2) : '—'} (frame ${FRAME})  ·  left ${card ? card.left.toFixed(2) : '—'}  ·  gap to zoom ${gap === null ? '—' : gap.toFixed(2)}` +
+      (card && Math.abs(card.top - FRAME) <= TOL && gap >= FRAME ? '  ok' : '  ◀ OFF'))
+    if (Math.abs(clearL - clearR) > TOL) {
+      fails.push(`the cluster is not balanced in the visible strip: ${clearL} left, ${clearR.toFixed(2)} right — re-derive RAIL_W`)
+    }
+    if (!card) fails.push('TL: no content card found')
+    else {
+      if (Math.abs(card.top - FRAME) > TOL) fails.push(`card top ${card.top.toFixed(2)}, expected the frame (${FRAME})`)
+      if (gap < FRAME) fails.push(`card is ${gap.toFixed(2)}pt from the zoom button, closer than the frame (${FRAME}) — that is the "bump"`)
+    }
+  }
   // The colliding pair must be two GROUPS, not one: same accent, separate hairlines. The strip is
   // grouped by proximity and a rule, never by tint, and this is the fixture that proves it.
   const collide = Object.entries(r1.accents).filter(([, a]) => a === r1.accents['web27-id'])
