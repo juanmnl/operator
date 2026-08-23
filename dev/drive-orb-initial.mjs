@@ -133,6 +133,28 @@ const ratio = (a, b) => {
   return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100
 }
 
+/** `StatusWave`'s rest levels, mirrored. A driver that imported them could not disagree with the
+ *  component, which is the point of mirroring: if someone retunes `REST_OP` without re-measuring,
+ *  this file is what says so. */
+const REST_OP = 0.25
+const ENDED_OP = 0.12
+
+/** CIELAB ΔE*ab. The perceptual distance WCAG cannot express — a luminance ratio is blind to
+ *  chroma, and on the light palettes every lane accent IS light, so it scores two obviously
+ *  different discs at ~1.1:1. Used for "does this orb still read as a coloured object", never for
+ *  text legibility, which stays WCAG. */
+function lab(c) {
+  const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+  const [r, g, b] = c.map(f)
+  let X = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047
+  let Y = (r * 0.2126729 + g * 0.7151522 + b * 0.0721750)
+  let Z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883
+  const t = (v) => v > 0.008856 ? Math.cbrt(v) : (7.787 * v + 16 / 116)
+  const [fx, fy, fz] = [t(X), t(Y), t(Z)]
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+}
+const deltaE = (p, q) => { const A = lab(p), B = lab(q); return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]) }
+
 async function boot(theme, roster) {
   const browser = await webkit.launch()
   const ctx = await browser.newContext({
@@ -253,7 +275,9 @@ for (const [theme, short] of THEMES) {
   // Three grounds: the halo the glyph actually sits on, the dot it would sit on without one, and
   // the knockout that was rejected. Only the first is the shipped claim; the others are the
   // receipts for why it is the shipped one.
-  const m = await p.evaluate((accents) => {
+  // REST_OP / ENDED_OP are passed IN, not closed over: this callback runs in the page, where a
+  // Node-scope const does not exist. (It failed exactly that way first.)
+  const m = await p.evaluate(([accents, REST_OP, ENDED_OP]) => {
     const css = getComputedStyle(document.documentElement)
     const probe = document.createElement('span')
     document.body.appendChild(probe)
@@ -264,22 +288,47 @@ for (const [theme, short] of THEMES) {
     }
     const fg = rgb(css.getPropertyValue('--fg'))
     const halo = rgb(css.getPropertyValue('--bg-sidebar'))
+    const muted = rgb(css.getPropertyValue('--fg-muted'))
     // A running dot peaks at 0.95 opacity in its accent, over the strip's own background.
     const peak = (a) => rgb(a).map((v, i) => v * 0.95 + halo[i] * 0.05)
-    const out = accents.map((a) => ({ a, dot: peak(a) }))
+    // A RESTING dot — the other ground the letter sits on, and the one this file used to skip.
+    // `StatusWave` paints it `color-mix(in srgb, accent 82%, --fg-muted)` at `REST_OP`, over the
+    // strip. Kept as a literal rather than imported: this is a .mjs driver and `StatusWave` is TSX,
+    // so the number is mirrored on purpose and the assertion below is what holds them together.
+    const rest = (a, op) => rgb(a)
+      .map((v, i) => v * 0.82 + muted[i] * 0.18)
+      .map((v, i) => v * op + halo[i] * (1 - op))
+    const out = accents.map((a) => ({ a, dot: peak(a), restDot: rest(a, REST_OP), endedDot: rest(a, ENDED_OP) }))
     probe.remove()
     return { fg, halo, dots: out }
-  }, DEFAULT_ACCENTS)
+  }, [DEFAULT_ACCENTS, REST_OP, ENDED_OP])
 
   const vsHalo = ratio(m.fg, m.halo)
   const vsDots = m.dots.map((d) => ratio(m.fg, d.dot))
   const knockout = m.dots.map((d) => ratio(m.halo, d.dot))
+  // THE LETTER ON A RESTING DISC — the ground this file never measured. Its own comment said so
+  // ("measured across every default lane accent with a running dot at its 0.95 peak"), and when
+  // `REST_OP` dropped 0.42 → 0.25 that gap was the thing nobody could check. It gets DIMMER, so
+  // the ground moves toward the halo and the letter can only gain, but "can only gain" is a
+  // prediction and this is the measurement.
+  const vsRest = m.dots.map((d) => ratio(m.fg, d.restDot))
+  const vsEnded = m.dots.map((d) => ratio(m.fg, d.endedDot))
+  // REST MUST STILL READ AS A COLOURED OBJECT — the collapsed strip says WHICH lane with it. The
+  // floor is perceptual, not a contrast ratio: on the light palettes every accent is light, so a
+  // luminance ratio calls a plainly-visible disc 1.1:1. See StatusWave's REST_OP note.
+  const restVsStrip = m.dots.map((d) => deltaE(d.restDot, m.halo))
   rows.push({
     short, vsHalo,
     dotMin: Math.min(...vsDots), dotMax: Math.max(...vsDots),
+    restMin: Math.min(...vsRest), restMax: Math.max(...vsRest),
+    endedMin: Math.min(...vsEnded),
+    restEmin: Math.min(...restVsStrip),
     koMin: Math.min(...knockout), koMax: Math.max(...knockout),
   })
   if (vsHalo < 4.5) fails.push(`${short}: glyph on its halo measures ${vsHalo}:1 — below the 4.5 floor`)
+  if (Math.min(...vsRest) < 4.5) fails.push(`${short}: glyph on a RESTING disc measures ${Math.min(...vsRest)}:1 — below the 4.5 floor`)
+  if (Math.min(...vsEnded) < 4.5) fails.push(`${short}: glyph on an ENDED disc measures ${Math.min(...vsEnded)}:1 — below the 4.5 floor`)
+  if (Math.min(...restVsStrip) < 5) fails.push(`${short}: a resting orb is ΔE ${Math.min(...restVsStrip).toFixed(1)} from the strip — REST_OP is too low to say which lane`)
 
   await browser.close()
 }
@@ -312,6 +361,19 @@ for (const r of rows) {
 console.log('\n  ON ITS HALO is the shipped treatment and the only column that gates (floor 4.5:1).')
 console.log('  The other two are the receipts: the halo-less glyph is what Design first measured and')
 console.log('  nearly rejected T1 over, and the knockout is T2, dead on the light palettes.')
+
+console.log(`\nREST — the ground this file used to skip. Dots at REST_OP ${REST_OP} / ENDED_OP ${ENDED_OP}.`)
+console.log('  ' + 'PALETTE'.padEnd(10) + 'glyph on rest'.padEnd(16) + 'glyph on ended'.padEnd(16) + 'rest vs the strip (ΔE*ab)')
+console.log('  ' + '-'.repeat(70))
+for (const r of rows) {
+  console.log('  ' + r.short.padEnd(10) +
+    `${r.restMin}–${r.restMax}:1`.padEnd(16) +
+    `${String(r.endedMin)}:1`.padEnd(16) +
+    `${r.restEmin.toFixed(1)}` + (r.restEmin < 5 ? '  ◀ TOO FAINT' : '  ok'))
+}
+console.log('\n  Both glyph columns gate at 4.5:1, and the ΔE column gates at 5 — the floor that keeps a')
+console.log('  quiet orb saying WHICH lane. A luminance ratio cannot express that floor: on the light')
+console.log('  palettes every accent is itself light, so WCAG scores a plainly visible disc at ~1.1:1.')
 
 console.log('\nNOTES')
 for (const n of notes) console.log(`  · ${n}`)
