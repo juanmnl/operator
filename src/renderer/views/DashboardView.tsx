@@ -58,6 +58,7 @@ import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 import { writesForDroppedPaths } from '../lib/paste-image'
+import { paneVisibility } from '../lib/pane-visibility'
 
 /** Who asked for a project upsert. `user` may lift a shelf and cancel a forget; `background`
  *  may do neither. Default is `background` — a new call site opts IN to the destructive
@@ -4294,7 +4295,10 @@ export function DashboardView() {
                 style={{
                   position: 'absolute',
                   inset: 0,
-                  visibility: t.id === activeTerminalId ? 'visible' : 'hidden',
+                  // Not just "is this the active lane" — also "is anything covering it". A
+                  // cross-origin preview iframe is composited out-of-process under Chromium and
+                  // the terminal below it can land ON TOP; see `paneVisibility`.
+                  visibility: paneVisibility(t.id, activeTerminalId, mainView),
                   // Inert while a Chat/Preview overlay covers it — otherwise the wheel falls
                   // through the canvas (pointerEvents:none) to the still-visible console and
                   // scrolls ITS scrollback under the overlay (the "chat won't scroll, but the

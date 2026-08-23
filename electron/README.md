@@ -60,6 +60,24 @@ that is wrong. **Read `<label>-loads.log` before reading the frames**: a rendere
 restarts the panes with a fresh WebGL context, so a run that reloaded is not the run it claims
 to be.
 
+## Probes
+
+`probes/*.cjs` run under `npx electron` and answer one question each with evidence rather than
+opinion. The one worth knowing about:
+
+```sh
+npx electron probes/preview-bleed.cjs [--target http://localhost:1427] [--out <dir>]
+```
+
+**preview-bleed** rebuilds the Preview topology — a real xterm pane under an overlay holding a
+CROSS-ORIGIN iframe, in a window configured like the app's — and captures it with
+`capturePage()` twice, with the active pane visible and hidden. It counts a witness colour (the
+terminal's selection, set to magenta because neither the framed page nor the stage can produce
+it) inside the stage rect, so "the terminal bleeds through the preview" is a pixel count, not a
+judgement. It also records every frame-scoped event and console line the subframe produces,
+which is how you tell "the shell blocked the page" from "the page failed to mount". Exits
+non-zero if the pane-hidden case still bleeds.
+
 ## How it is put together
 
 ```
