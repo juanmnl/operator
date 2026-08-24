@@ -33,7 +33,7 @@ source by Operator, released as one tag:
    `stopPropagation` in `handleDrop`; paste hardened (`stopImmediatePropagation`); images
    dropped ANYWHERE now become `[Image #N]` via `paste-image.ts`.
 
-## Ready for 0.17.2 — two branches VERIFIED against their briefs, NOT merged (user's call)
+## 0.17.2 — SHIPPED 2026-08-24 (tag `electron-v0.17.2`, both branches merged; feeds verified)
 
 - **`operator/26b80` @ `607979d` — Preview bleed.** The active terminal painted THROUGH the
   preview iframe (Chromium OOPIF; WKWebView's opaque frame masked it). Fix: `pane-visibility.ts`
@@ -52,8 +52,8 @@ source by Operator, released as one tag:
   (the 6s pulse beacon still fires on entry). If that information matters, it needs a MARKER,
   not a brightness notch. 760 green + the known 33 jsdom/Node-26 localStorage failures.
 
-Merging both + bump to 0.17.2 mirrors the 0.17.1 flow (`~/.operator/briefs/electron-0.17.1-merge-bump.md`
-is the template; bump = `electron/package.json` + lock only; tag `electron-v0.17.2` is the user's push).
+Merged, bumped, tagged and published 2026-08-24 (run 32736637878). The two ⚠ flags above remain
+live questions: the black-stage notice follow-up, and the missing waiting signal on the rail.
 
 ## User eyeball checks pending (need a real window — install 0.17.1 first)
 1. Traffic lights at (16,16)/(39,16)/(62,16), zoom 17pt clear of the card; the "bump" gone.
