@@ -4109,6 +4109,14 @@ export function DashboardView() {
           <FolderPreferencesView
             projectPath={activeFolderPrefs.projectPath}
             projectName={activeFolderPrefs.projectName}
+            // The Operator-side record, for the Environment tab. Matched by PATH because that
+            // is all this view is opened with; `projects.json` keys on the canonical repo root,
+            // which is what `projectPath` already is here.
+            project={projects.find((p) => p.path === activeFolderPrefs.projectPath) ?? null}
+            onPatchProject={(patch) => {
+              const proj = projects.find((p) => p.path === activeFolderPrefs.projectPath)
+              if (proj) updateProject(proj.id, patch)
+            }}
           />
           </AppShell>
         )}

@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -104,6 +104,9 @@ declare global {
       savePastedImage: (dataB64: string, ext: string) => Promise<string>
       onFileDrop: (callback: (paths: string[]) => void) => () => void
       setActiveSession: (sessionId: string | null) => void
+      /** Every skill Claude Code would load for this project, walked off disk (three roots).
+       *  Read-only: nothing here writes a skill's state. Pass '' for the global view. */
+      skillsCatalog: (projectPath: string) => Promise<SkillsCatalog>
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
       folderPrefsLoadGlobal: () => Promise<FolderPreferences>
       folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings) => Promise<void>

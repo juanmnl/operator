@@ -210,6 +210,62 @@ export interface SessionConfig {
 
 /** A project = a folder/repo (its canonical git root) that owns many sessions over time.
  *  The durable home for a repo's sessions, defaults, roster, and — later — moodboard/context. */
+/** Claude Code's four listing modes for a skill. Absent = on.
+ *
+ *  Its own words, from the CLI binary — kept verbatim because the UI copy must describe the
+ *  EFFECT without misrepresenting the mechanism: `"name-only"` lists the skill without its
+ *  description; `"user-invocable-only"` hides it from the model but keeps `/name`; `"off"`
+ *  hides it from both. */
+export type SkillMode = 'on' | 'name-only' | 'user-invocable-only' | 'off'
+
+/** One environment row at one altitude.
+ *
+ *  Three shapes, and the third is the one a `Record<string, string>` cannot hold: `unset` is a
+ *  TOMBSTONE that masks whatever the altitude below set. Deleting a row is the only way to
+ *  unset a name — clearing its value gives you `""`, which is a different thing, and `[ -z ]`
+ *  and `[ -v ]` disagree exactly there. */
+export type EnvEntry =
+  | { name: string; value: string }
+  /** A secret NAME, resolved into the pty environment at spawn. Never a value: this record is
+   *  written to `projects.json`, and a value here would be plaintext in a file we own. */
+  | { name: string; secret: string }
+  | { name: string; unset: true }
+
+export interface SkillPolicy {
+  /** Keyed by skill name. Absent = on.
+   *
+   *  GLOBAL AND PROJECT SKILLS ONLY. Verified against CLI 2.1.235: no key form —
+   *  `tdd`, `mattpocock-skills:tdd`, nor `mattpocock-skills@claude-plugins-official:tdd` —
+   *  has any effect on a plugin-contributed skill. `plugins` below is the only control for
+   *  those. See `dev/results/session-settings-s0-s3.md`. */
+  overrides?: Record<string, SkillMode>
+  /** Mirrors Claude Code's own `enabledPlugins` key, so it can be written straight through.
+   *  Keyed `<plugin>@<marketplace>`. This is the ONLY way to turn a plugin's skills off. */
+  plugins?: Record<string, boolean>
+}
+
+/** One skill found on disk. Built by the backend's directory walk, not by asking the CLI. */
+export interface SkillCatalogEntry {
+  name: string
+  description: string
+  source: {
+    kind: 'global' | 'project' | 'plugin'
+    label: string
+    path: string
+    /** `<plugin>@<marketplace>` — present only for plugin skills. */
+    plugin?: string
+  }
+}
+
+export interface SkillsCatalog {
+  entries: SkillCatalogEntry[]
+  /** Roots that could not be READ — so the UI can say so rather than render an empty group
+   *  that claims there are no skills. */
+  errors: Array<{ label: string; path: string; message: string }>
+  /** Plugin ids `installed_plugins.json` still lists. */
+  installedPlugins: string[]
+}
+
 export interface Project {
   id: string
   /** Canonical repo root, or the folder path itself for a non-git folder. */
@@ -235,6 +291,15 @@ export interface Project {
    *  Written by the user, edited from the gallery card's ⋯ menu, and shown there as a
    *  two-line snippet. Absent or empty = no description; the card just omits the row. */
   contextNotes?: string
+  /** Environment variables set on every lane Operator launches in this project.
+   *
+   *  A LIST, never a Record: a map keyed by name cannot carry a tombstone, and `unset` is
+   *  exactly the case a map has no way to express. Stored in `projects.json` on this Mac — not
+   *  in the repo, and never in the repo's own `.claude/settings.json`, which has its own writer
+   *  (`FolderPreferencesView`). One writer per file. */
+  env?: EnvEntry[]
+  /** Per-skill listing modes and plugin toggles for every lane in this project. */
+  skills?: SkillPolicy
   /** The user's chosen position in the ProjectRail, and the ONLY thing that orders it.
    *
    *  A total order over every project, not just the ones currently on the rail: a drag restamps

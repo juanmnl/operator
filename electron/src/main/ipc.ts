@@ -25,6 +25,13 @@ import { fetchPlanLimits } from './plan-limits'
 import { computeUsage, computeInsights } from './usage'
 import { checkUpdate, installUpdate } from './updater'
 import { previewApi } from './preview-inspect'
+import { skillsCatalog } from './skills'
+import {
+  resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
+  skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
+} from '../../../src/renderer/lib/resolve-session-config'
+import { denyReason } from '../../../src/renderer/lib/env-policy'
+import type { Project } from '../../../src/shared/types'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
@@ -44,6 +51,47 @@ export interface Deps {
   getWindow: () => BrowserWindow | null
 }
 
+/** The project altitude of the env/skills cascade, read straight out of `projects.json`.
+ *
+ *  Only the PROJECT layer exists today — `Role.env` (S5) and the launch sheet's run layer (S6)
+ *  are later steps, and the resolver already takes a list of layers so adding them is adding an
+ *  element, not changing a shape.
+ *
+ *  Everything here fails soft. A store that cannot be read, or a project id that matches
+ *  nothing, means a lane launches exactly as it did before this existed — which is the correct
+ *  outcome for a feature whose whole job is to add optional configuration. */
+async function projectConfig(projectId: string): Promise<{
+  env?: Record<string, string>
+  unsetEnv?: string[]
+  skillOverrides?: Record<string, import('../../../src/shared/types').SkillMode>
+  enabledPlugins?: Record<string, boolean>
+}> {
+  if (!projectId) return {}
+  try {
+    const projects = (await store.loadProjects()) as Project[]
+    const project = projects.find((p) => p?.id === projectId)
+    if (!project) return {}
+    const rows = resolveEnv([{ origin: 'project', entries: project.env }])
+    const skills = resolveSkills([{ origin: 'project', policy: project.skills }])
+    // The denylist runs again on the way out. The UI refuses these names at entry, but
+    // `projects.json` is a file on the user's disk and an older build never knew the rule —
+    // and a stale `PORT` reaching a lane would hand every one of them the same port.
+    const env = envForSettingsFile(rows, (n) => denyReason(n) != null)
+    const unsetEnv = envNamesToUnset(rows)
+    const skillOverrides = skillOverridesForSettingsFile(skills)
+    const enabledPlugins = enabledPluginsForSettingsFile(skills)
+    return {
+      env: Object.keys(env).length ? env : undefined,
+      unsetEnv: unsetEnv.length ? unsetEnv : undefined,
+      skillOverrides: Object.keys(skillOverrides).length ? skillOverrides : undefined,
+      enabledPlugins: Object.keys(enabledPlugins).length ? enabledPlugins : undefined,
+    }
+  } catch (e) {
+    console.error('[ipc] could not resolve project config:', e)
+    return {}
+  }
+}
+
 export function registerIpc(d: Deps): void {
   const invoke: InvokeHandlers = {
     // --- terminals ---------------------------------------------------------------------
@@ -61,6 +109,13 @@ export function registerIpc(d: Deps): void {
       const o = launchOptions ?? {}
       const resumeId = o.resumeSessionId
       const sessionId = resumeId ? String(resumeId) : randomUUID()
+      // S3 — the project altitude, resolved HERE rather than in the renderer.
+      //
+      // Both launch paths already stamp `projectId` (it rides to the tailer for reply scoping),
+      // so main can read the project's own env and skills out of `projects.json` without a new
+      // surface or a renderer change. That is what makes S3 the first step where the feature
+      // does something while adding no UI at all.
+      const layers = await projectConfig(String(o.projectId ?? ''))
       const spawned = d.terminals.spawn({
         cwd: target,
         args: buildArgs(o, sessionId),
@@ -68,6 +123,7 @@ export function registerIpc(d: Deps): void {
         tuiMode: o.tuiMode === 'fullscreen' ? 'fullscreen' : 'default',
         colorScheme: o.colorScheme === 'light' ? 'light' : 'dark',
         orchestrationNote: (o.orchestrationNote as string) ?? null,
+        ...layers,
       })
       // Register BEFORE returning: the tailer must be watching before Claude's first line
       // lands, or the opening turn is read only on the next poll — or not at all if the pane
@@ -88,6 +144,7 @@ export function registerIpc(d: Deps): void {
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
+    skillsCatalog: (projectPath) => skillsCatalog(String(projectPath ?? '')),
     sessionPorts: async (id) => d.terminals.sessionPorts(id),
 
     // --- sessions, chat, artifacts -----------------------------------------------------

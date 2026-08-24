@@ -243,6 +243,16 @@ export function installBridge(): void {
       const picked = await open({ directory: true })
       return !picked || Array.isArray(picked) ? null : picked
     },
+    // NOT IMPLEMENTED on the Tauri backend. The skills catalog is a directory walk that only
+    // the Electron shell grew (`electron/src/main/skills.ts`), and the Tauri build has no
+    // command behind it — so this answers with an EMPTY catalog carrying an explicit error
+    // rather than throwing an unhandled invoke. The Skills page then says it could not read the
+    // roots, which is true here, instead of rendering an empty list that claims there are none.
+    skillsCatalog: async () => ({
+      entries: [],
+      errors: [{ label: 'skills', path: '', message: 'The Tauri build has no skills catalog.' }],
+      installedPlugins: [],
+    }),
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
     // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two

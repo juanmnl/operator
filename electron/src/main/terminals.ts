@@ -18,6 +18,7 @@ import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { reapTree, snapshotPs, type PsRow } from './reap'
 import { claimLease, releaseLease } from './leases'
 import { isPortLive } from './port-probe'
+import { writeSessionSettings, type SkillMode } from './session-settings'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
  *  pane re-attaches after a renderer reload. Trimmed with the same hysteresis (let it reach
@@ -47,6 +48,15 @@ export interface SpawnOptions {
   orchestrationNote?: string | null
   cols?: number
   rows?: number
+  /** Config env resolved from the project layer (S3). Values only — a secret's value never
+   *  reaches here, and never reaches the settings file. */
+  env?: Record<string, string>
+  /** Tombstoned names: masked, so they must be DELETED from the inherited environment. The
+   *  settings file cannot express "unset" — a key with any value is a key that gets set — so
+   *  the pty env is the only place this can be honoured. */
+  unsetEnv?: string[]
+  skillOverrides?: Record<string, SkillMode>
+  enabledPlugins?: Record<string, boolean>
 }
 
 interface Managed {
@@ -110,7 +120,25 @@ export class TerminalManager {
   private buildCommand(o: SpawnOptions): { shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; id: string } {
     const id = this.nextId()
     const devPort = this.allocPort(o.cwd)
-    const prefix = ['claude', '--settings', JSON.stringify({ tui: o.tuiMode })]
+    // S0 — a settings FILE, not an inline JSON string.
+    //
+    // The inline form (`--settings {"tui":"default"}`) works for exactly one scalar and nothing
+    // else: env blocks, skill overrides and plugin toggles are objects, and a growing JSON
+    // literal inside an `-ilc` command line is one quoting bug away from a lane that will not
+    // start. The file is also the only form the user can read afterwards to see what a lane was
+    // actually given. `--settings` MERGES at highest precedence (verified, not assumed — see
+    // session-settings.ts), so writing only our keys does not drop the user's global model or
+    // permissions.
+    //
+    // The fallback to the inline form is deliberate: an unwritable settings directory must cost
+    // a lane its env block, never its launch.
+    const settingsPath = writeSessionSettings(o.sessionId, {
+      tui: o.tuiMode,
+      env: o.env,
+      skillOverrides: o.skillOverrides,
+      enabledPlugins: o.enabledPlugins,
+    })
+    const prefix = ['claude', '--settings', settingsPath ?? JSON.stringify({ tui: o.tuiMode })]
     const notes: string[] = []
     if (devPort) {
       notes.push(
@@ -141,6 +169,14 @@ export class TerminalManager {
       env.OPERATOR_DEV_PORT = String(devPort)
       env.PORT = String(devPort)
     }
+    // The project's own variables, onto the pty as well as into the settings file. The file is
+    // what Claude Code reads for its own subprocesses; the pty env is what the lane's SHELL
+    // sees, which is where a user checks with `env | grep`. Set BEFORE the terminal-capability
+    // block below so the names Operator manages still win — the denylist should already have
+    // refused those at the UI, and this is the backstop for a hand-edited store.
+    for (const [k, v] of Object.entries(o.env ?? {})) env[k] = v
+    // Tombstones, honoured the only way they can be.
+    for (const k of o.unsetEnv ?? []) delete env[k]
     env.FORCE_COLOR = '1'
     env.TERM = 'xterm-256color'
     env.COLORTERM = 'truecolor'
