@@ -15,6 +15,9 @@ import { randomUUID } from 'node:crypto'
 import { loginShell } from './login-shell'
 import { homedir } from 'node:os'
 import { buildArgs } from '../../../src/renderer/lib/launch-args'
+import { reapTree, snapshotPs, type PsRow } from './reap'
+import { claimLease, releaseLease } from './leases'
+import { isPortLive } from './port-probe'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
  *  pane re-attaches after a renderer reload. Trimmed with the same hysteresis (let it reach
@@ -49,6 +52,8 @@ export interface SpawnOptions {
 interface Managed {
   id: string
   cwd: string
+  /** Claude session uuid — the durable key the dev-port lease is filed under. */
+  sessionId?: string
   pty: IPty | null
   /** Set while the pty is open but the command has not been exec'd (deferred launch). */
   pending: { spawn: (cols: number, rows: number) => void; timer: NodeJS.Timeout } | null
@@ -60,6 +65,11 @@ interface Managed {
   /** ms of the last pty chunk, for `activeWithin`. */
   lastActivityAt?: number
   exited: boolean
+  /** A reap is in flight. `kill()` now runs for up to the grace period before it does its
+   *  bookkeeping, so the map entry is still present in that window and a second `kill(id)` —
+   *  the frontend closes a lane and then the project containing it — would otherwise signal the
+   *  same tree twice and double-free the port. */
+  killing?: Promise<void>
 }
 
 type DataSink = (id: string, base64: string) => void
@@ -120,6 +130,13 @@ export class TerminalManager {
     const shell = loginShell()
     const env: NodeJS.ProcessEnv = { ...stripNestedSessionEnv(process.env) }
     env.OPERATOR_TERMINAL_ID = id
+    // WHICH Operator spawned this lane. Inherited by every descendant, so a next-launch sweep
+    // can tell a survivor of a DEAD Operator (reap it) from a lane belonging to an instance
+    // running right now (leave it strictly alone) — the distinction that makes the boot reap
+    // safe at all. A live sweep of this machine found the running `Operator.app` ITSELF carrying
+    // `OPERATOR_TERMINAL_ID` (it had been launched from a tagged shell), so "tagged" alone is
+    // not evidence of an orphan. Nothing reads this at runtime; it exists to be found in `ps -E`.
+    env.OPERATOR_APP_PID = String(process.pid)
     if (devPort) {
       env.OPERATOR_DEV_PORT = String(devPort)
       env.PORT = String(devPort)
@@ -139,7 +156,7 @@ export class TerminalManager {
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), exited: false }
+    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), exited: false }
     this.terminals.set(id, managed)
 
     const launch = (c: number, r: number) => {
@@ -147,6 +164,15 @@ export class TerminalManager {
       if (managed.pending) { clearTimeout(managed.pending.timer); managed.pending = null }
       const p = ptySpawn(shell, argv, { name: 'xterm-256color', cols: c, rows: r, cwd: o.cwd, env: env as Record<string, string> })
       managed.pty = p
+      // The lease goes to disk HERE, not at `spawn()`: until the pty is exec'd there is no tree
+      // to orphan. Not awaited — a lane must not wait on a file write to start, and the only
+      // reader is the next boot.
+      if (devPort && o.sessionId) {
+        void claimLease({
+          sessionId: o.sessionId, terminalId: id, devPort, cwd: o.cwd,
+          shellPid: p.pid, appPid: process.pid, startedAt: new Date().toISOString(),
+        })
+      }
       // The transport is base64 all the way, matching `TerminalDataPayload`: the renderer's
       // `onTerminalData` does atob → bytes → STREAMING TextDecoder, which is what stitches a
       // multibyte character split across two pty reads. Handing it a JS string here would
@@ -216,15 +242,55 @@ export class TerminalManager {
     try { t.pty.resize(Math.floor(cols), Math.floor(rows)) } catch { /* pty can race teardown */ }
   }
 
-  kill(id: string): void {
+  /** End a lane AND everything it started.
+   *
+   *  `pty.kill()` alone signals ONE pid — the login shell — which is why every `npm run dev` a
+   *  lane ever launched outlived it. The sequence here is: one `ps` snapshot taken BEFORE
+   *  anything is signalled (at that instant every descendant is still attached to the shell by
+   *  `ppid`, whatever its own process group), walk the tree, SIGTERM the shell plus each
+   *  distinct group, wait out the grace period, SIGKILL whatever survived, and only then do the
+   *  map/port bookkeeping. See `reap.ts` for why groups rather than sessions, and why never
+   *  `lsof`.
+   *
+   *  `rows` lets `killAll` reap the whole fleet from a single snapshot rather than one per lane.
+   *
+   *  AWAITING THIS IS THE POINT at the call sites that remove a worktree afterwards: the tree
+   *  holding files open in that directory is gone before `git worktree remove` runs, which the
+   *  old fire-and-forget kill could not promise. */
+  async kill(id: string, rows?: PsRow[]): Promise<void> {
     const t = this.terminals.get(id)
     if (!t) return
+    if (t.killing) return t.killing
+    const done = this.reapAndForget(t, rows)
+    t.killing = done
+    return done
+  }
+
+  private async reapAndForget(t: Managed, rows?: PsRow[]): Promise<void> {
     if (t.pending) { clearTimeout(t.pending.timer); t.pending = null }
+    const pid = t.pty?.pid
+    if (pid) {
+      try {
+        const snapshot = rows ?? await snapshotPs()
+        const { found, pgids, escalated } = await reapTree(pid, snapshot)
+        if (escalated.length) {
+          console.error(`[reap] ${t.id}: SIGKILLed ${escalated.length} of ${found.length} (groups ${pgids.join(', ')})`)
+        }
+      } catch (e) {
+        console.error(`[reap] ${t.id}: tree reap failed, falling back to the pty:`, e)
+      }
+    }
+    // Belt and braces, and the ONLY path when there is no pty yet (a deferred launch cancelled
+    // before it exec'd) or when the snapshot came back empty: node-pty's own single-pid SIGHUP,
+    // which is what this method used to be in its entirety.
     try { t.pty?.kill() } catch { /* already gone */ }
+
     // Same as the Rust path: removing the entry is what makes a second `terminal:exit`
     // impossible, and the frontend's exit path must not run twice.
-    this.terminals.delete(id)
+    this.terminals.delete(t.id)
     if (t.devPort && this.portsByCwd.get(t.cwd) === t.devPort) this.portsByCwd.delete(t.cwd)
+    // A CLEAN kill — so there is nothing left here for the next boot to hunt for.
+    if (t.sessionId) await releaseLease(t.sessionId)
   }
 
   list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; devPort?: number }> {
@@ -264,7 +330,7 @@ export class TerminalManager {
     if (!t) return []
     const candidates = new Set<number>(t.sniffedPorts)
     if (t.devPort) candidates.add(t.devPort)
-    const live = await Promise.all([...candidates].map(async (p) => (await isLive(p)) ? p : null))
+    const live = await Promise.all([...candidates].map(async (p) => (await isPortLive(p)) ? p : null))
     return live.filter((p): p is number => p != null).sort((a, b) => a - b)
   }
 
@@ -291,10 +357,19 @@ export class TerminalManager {
     return at != null && Date.now() - at < ms
   }
 
-  /** Kill every pty. Called from the quit path — the shell owns these children, and leaving
-   *  them behind is the accident `CloseRequested` exists to prevent on the Tauri side. */
-  killAll(): void {
-    for (const id of [...this.terminals.keys()]) this.kill(id)
+  /** Kill every pty AND every tree under them. Called from the quit path — the shell owns these
+   *  children, and leaving them behind is the accident `CloseRequested` exists to prevent on the
+   *  Tauri side. Quit had the IDENTICAL leak as lane close, because it was only ever a loop over
+   *  `kill()`; it still is, which is what makes one fix cover both.
+   *
+   *  ONE snapshot for the whole fleet, and the lanes reap CONCURRENTLY: serialising ten lanes
+   *  through their own grace periods would put a visible multi-second stall on every quit.
+   *  `teardown()` awaits this before the app is allowed to exit. */
+  async killAll(): Promise<void> {
+    const ids = [...this.terminals.keys()]
+    if (!ids.length) return
+    const rows = await snapshotPs()
+    await Promise.all(ids.map((id) => this.kill(id, rows)))
   }
 
   private pushHistory(t: Managed, buf: Buffer): void {
@@ -307,24 +382,6 @@ export class TerminalManager {
       t.historyBytes -= t.history.shift()!.length
     }
   }
-}
-
-/** Is something listening on this loopback port?
- *
- *  BOTH loopbacks are probed. Vite (via Node's localhost resolution) binds [::1] ONLY on some
- *  machines, so a v4-only probe reads a live server as down — and the caller then starts a
- *  second one on the v4 side of the same port. */
-async function isLive(port: number): Promise<boolean> {
-  const { createConnection } = await import('node:net')
-  const probe = (host: string) => new Promise<boolean>((resolve) => {
-    const sock = createConnection({ port, host })
-    const done = (v: boolean) => { sock.destroy(); resolve(v) }
-    sock.setTimeout(250)
-    sock.once('connect', () => done(true))
-    sock.once('timeout', () => done(false))
-    sock.once('error', () => done(false))
-  })
-  return (await probe('127.0.0.1')) || (await probe('::1'))
 }
 
 /** Single-quote for a POSIX shell, mirroring `shell_quote` in lib.rs. */
@@ -346,6 +403,7 @@ function stripNestedSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Ours, not Claude's: this shell sets them per lane below, and inheriting the parent's
   // would hand every lane the port reserved for whoever launched the app.
   delete out.OPERATOR_TERMINAL_ID
+  delete out.OPERATOR_APP_PID
   delete out.OPERATOR_DEV_PORT
   delete out.PORT
   return out

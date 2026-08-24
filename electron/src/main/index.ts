@@ -18,6 +18,9 @@ import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
 import { createTray, type OperatorTray } from './tray'
+import { reapOrphanedDevServers } from './reap'
+import { releaseLeasesOf } from './leases'
+import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
@@ -111,19 +114,53 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-function teardown(): void {
-  transcript?.stop()
-  terminals?.killAll()
-  chat?.close()
-  artifacts?.close()
-  stopTrayAnim?.()
-  stopTrayAnim = null
-  tray?.destroy()
-  tray = null
+/** How long quit will wait for the lane trees to be reaped before going anyway.
+ *
+ *  `killAll` reaps concurrently and its own grace period is 1.5s, so the honest worst case is a
+ *  little over that. This ceiling exists because the alternative failure mode is an app that
+ *  cannot be quit — and a leaked dev server is a far smaller problem than that. */
+const TEARDOWN_DEADLINE_MS = 4000
+
+/** Memoized so every path into quit (`QuitGuard.decide`, the guard's non-asking branches,
+ *  `will-quit`) waits on the SAME teardown rather than starting a second one. */
+let teardownPromise: Promise<void> | null = null
+
+function teardown(): Promise<void> {
+  if (teardownPromise) return teardownPromise
+  teardownPromise = (async () => {
+    transcript?.stop()
+    // AWAITED, and it is why teardown is async at all: `killAll` now reaps each lane's whole
+    // process tree, and quit must not race the app's exit against the SIGTERM it just sent to a
+    // dev server. Quitting used to leak exactly as much as closing a lane did.
+    try {
+      await Promise.race([
+        terminals?.killAll() ?? Promise.resolve(),
+        new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS)),
+      ])
+      await releaseLeasesOf(process.pid)
+    } catch (e) {
+      console.error('[shell] teardown reap failed:', e)
+    }
+    chat?.close()
+    artifacts?.close()
+    stopTrayAnim?.()
+    stopTrayAnim = null
+    tray?.destroy()
+    tray = null
+  })()
+  return teardownPromise
 }
 
 function boot(): void {
   const win = () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null)
+
+  // BEFORE the first port is handed out. A previous run that crashed or was force-quit leaves
+  // its dev servers bound to ports in the same 1420-1520 range this run is about to allocate
+  // from, and the collision reaches the user as a lane whose dev server "won't start".
+  // Not awaited: it takes up to its own grace period and nothing about opening the window
+  // depends on it. It never throws, and it never signals anything it cannot prove is orphaned —
+  // see `reapOrphanedDevServers`.
+  void reapOrphanedDevServers(loadSessions)
 
   terminals = new TerminalManager(
     (id, data) => { const w = win(); if (w) broadcast(w, 'onTerminalData', id, data) },
@@ -219,7 +256,18 @@ if (process.argv.includes('--mcp-serve')) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 
   // `before-quit` is also where QuitGuard hangs its veto; this runs after it decides.
-  app.on('will-quit', teardown)
+  //
+  // The quit is HELD OPEN for one pass so the reap can finish. Electron gives `will-quit` no way
+  // to await anything, so the shape is: veto once, await the (memoized) teardown, quit again —
+  // the second pass finds `tornDown` set and lets the app go. Without the hold, `app.quit()`
+  // tears the process down microseconds after the SIGTERM goes out and the dev servers survive
+  // the very fix meant to end them.
+  let tornDown = false
+  app.on('will-quit', (e) => {
+    if (tornDown) return
+    e.preventDefault()
+    void teardown().finally(() => { tornDown = true; app.quit() })
+  })
 
   app.on('web-contents-created', (_e, contents) => {
     contents.setWindowOpenHandler(({ url }) => {

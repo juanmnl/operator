@@ -80,7 +80,10 @@ export function registerIpc(d: Deps): void {
       })
       return spawned
     },
-    terminalKill: async (id) => { d.terminals.kill(id) },
+    // AWAITED: `kill` now reaps the lane's whole process tree, and the frontend's close path
+    // removes the worktree directory straight after this resolves — so the dev server holding
+    // files open in there has to be gone first, not merely signalled.
+    terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
