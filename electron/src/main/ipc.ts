@@ -215,6 +215,11 @@ export function registerIpc(d: Deps): void {
     // counterpart: a custom title bar is dragged with the CSS `-webkit-app-region: drag`, which
     // lives on the element — i.e. inside `src/renderer`. It is the one place where the
     // renderer's contract does not map onto Electron. See PORT-LEDGER.md.
+    // That CSS now EXISTS (`.drag-region` in src/renderer/styles.css), so this no-op is the
+    // finished shape of the method here, not a gap: the renderer still calls it on every
+    // titlebar mousedown and there is nothing for it to do. WebKit doesn't implement the
+    // property (verified: `CSS.supports('-webkit-app-region','drag')` is false there), so the
+    // rule is inert under Tauri and its imperative path is untouched.
     previewInspectMove: (x, y, w, h) => previewApi.move(x, y, w, h),
     previewInspectClose: () => previewApi.close(),
     startWindowDrag: () => {},

@@ -55,6 +55,14 @@ whether the port is trustworthy — they are the ones the orchestration product 
 
 ## The one thing that does not map
 
+> **Done 2026-08-24.** `.drag-region` in `src/renderer/styles.css` now carries
+> `-webkit-app-region: drag`, with `no-drag` on the interactive descendants (the same selector
+> `DragRegion`'s own mousedown uses, plus a `[data-no-drag]` hook for overlays rendered inside a
+> strip). Tauri is provably unaffected: WebKit does not implement the property at all, so the
+> declaration is dropped at parse time. The one behavioural difference left is the double-click:
+> under Electron the drag region is non-client, so macOS — not `toggleWindowMaximize` — decides
+> what a double-click does, per the system title-bar preference. See `dev/results/titlebar-drag.md`.
+
 **`startWindowDrag` has no Electron counterpart.** Tauri exposes `startDragging()`, which the
 custom title bar calls on `mousedown`; Electron drags a frameless window only through the CSS
 `-webkit-app-region: drag`, which must be set on the element. That element is `DragRegion` in

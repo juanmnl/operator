@@ -2,8 +2,28 @@
 
 /* Window drag strips signal draggability with a grab cursor (grabbing on press).
    Interactive children (buttons/inputs) override with their own pointer cursor. */
-.drag-region { cursor: grab; }
+.drag-region { cursor: grab; -webkit-app-region: drag; }
 .drag-region:active { cursor: grabbing; }
+
+/* `-webkit-app-region: drag` is how a frameless window is dragged under Electron: there is no
+   programmatic equivalent of Tauri's `startDragging()`, so the shell's `startWindowDrag` is a
+   deliberate no-op (electron/src/main/ipc.ts) and the region on the ELEMENT is the whole
+   mechanism. WKWebView doesn't implement the property, so Tauri keeps driving the drag from
+   DragRegion's mousedown exactly as before — this is additive there, not a swap.
+
+   The property INHERITS, so every interactive descendant has to opt back out or its clicks
+   become window drags. This list mirrors DragRegion's own mousedown selector 1:1 — the two are
+   the same question ("is this bare titlebar?") asked in CSS and in JS, and they must not drift.
+   `[data-no-drag]` is the escape hatch for what that selector can't name: an overlay rendered
+   INSIDE a strip (SessionToolbar's MCP dropdown and its full-viewport backdrop), which would
+   otherwise turn the whole screen into a drag handle for as long as it is open. */
+.drag-region button,
+.drag-region a,
+.drag-region input,
+.drag-region textarea,
+.drag-region select,
+.drag-region [role="button"],
+.drag-region [data-no-drag] { -webkit-app-region: no-drag; }
 
 /* The sidebar header's two focusables. Both opt out of the browser ring (house rule) and had
    no substitute, so tabbing to either changed nothing on screen and Enter navigated from a

@@ -348,12 +348,18 @@ function McpDropdown({ servers, onClose }: { servers: McpServerInfo[]; onClose: 
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop. `data-no-drag` because this dropdown renders INSIDE the toolbar's
+          DragRegion, and Electron's `-webkit-app-region: drag` inherits: without the opt-out
+          this full-viewport div would make the entire screen a window-drag handle for as long
+          as the dropdown is open, and the click-away would move the window instead of closing
+          it. See the `.drag-region` block in styles.css. */}
       <div
+        data-no-drag
         onClick={onClose}
         style={{ position: 'fixed', inset: 0, zIndex: 99 }}
       />
       <div
+        data-no-drag
         style={{
           position: 'absolute',
           top: 'calc(100% + 4px)',
