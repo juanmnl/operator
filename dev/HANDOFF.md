@@ -1,119 +1,81 @@
-# Handoff — 2026-08-21
+# Handoff — 2026-08-24
 
-**`main` = `484d6a9`, pushed.** Root `npm test` 786 / 61 files · `tsc --noEmit` clean ·
-`cargo check` clean · shell (`electron/`) 191 tests + 44 probe checks green on CI. Working tree
-carries the user's own two changes from before this session (`.gitignore` modified,
-`.claude/settings.json` staged for deletion) — leave them alone.
+**`main` = `d26dfce`, pushed. 0.17.1 is PUBLISHED and LIVE** (tag `electron-v0.17.1`, run
+32660149264 green ~5.5m, 2026-08-23 19:05Z). operator-releases `v0.17.1` serves BOTH feeds:
+`latest.json` 0.17.1 signed (Tauri copies) + `latest-mac.yml` 0.17.1 (Electron copies). Every
+0.17.0 will offer 0.17.1 once and then stop self-offering. Root `npm test` 798 · `tsc` clean ·
+`electron/` 226 + typecheck clean. Working tree: the user's own `.gitignore` edit — leave it.
 
-## The decision: Operator is moving from Tauri/WKWebView to Electron
+## What 0.17.1 was: the first week of Electron in the wild
 
-Made 2026-08-20 by the user ("we're going electron"), after a measured case, not a vibe. The record:
-`dev/briefs/2026-08-20-electron-shell-spike-RESULT.md` (M1: WebGL xterm under Chromium clean for
-60 min continuous on real Claude Code output, DOM control identical; M2: 27-lane fleet rests at
-230 MB renderer RSS under a 3.5 GB V8 ceiling instead of WebKit's hourly ~1.2 GB kill; M3: the
-cost — 280 MB bundle / 359 MB idle / ~1 GB for three instances; M4: port ledger),
-`…-electron-migration-plan-RESULT.md` (S0–S4), `…-tauri-updater-crossshell-handoff-RESULT.md`
-(the Tauri updater WILL swap in an Electron `.app`: minisign over raw bytes, blind directory swap,
-relaunch re-reads `CFBundleExecutable`), `…-electron-mcp-serve-probe-RESULT.md` (`--mcp-serve`
-works from a packaged Electron app; **notarization is load-bearing** — an unnotarized quarantined
-bundle hangs silently as an MCP server), `…-vscode-agent-host-competitive-RESULT.md` (AHP: the
-same bet, no fleet surface yet; steal its reconnect model).
+The user found six regressions in the shipped 0.17.0 in one sitting; all fixed, verified in
+source by Operator, released as one tag:
 
-## What shipped
+1. **Self-update loop** — `updater.ts` read `updateInfo.version`, never `isUpdateAvailable`;
+   electron-updater fills `updateInfo` in both directions, so 0.17.0 offered itself on every
+   launch (toast stacked ×4). Now gated + `app.getVersion()` belt-and-braces (`e7bf2cf`).
+2. **Traffic lights big** — the port reinstated `hiddenInset` + `trafficLightPosition{14,18}`,
+   the override Tauri dropped in `63a55ae`. `hiddenInset` is the TOOLBAR variant. Now
+   `titleBarStyle:'hidden'` = Tauri's Overlay; centres (16,16)/(39,16)/(62,16). ⚠ The 12pt
+   legacy SIZE is not recoverable — modern-linked framework metric, Swift-probed; plist doesn't move it.
+3. **No tray** — never ported. Now `tray.ts` + `tray-anim.ts` (template PNG inside app.asar
+   read via fs; Quit via `app.quit()` so QuitGuard vetoes; animation pulls from the same
+   `liveLanes()` as the guard; skipped on `--mcp-serve`).
+4. **`claude: command not found` (Plan usage) + worktree setup** — `/bin/sh` hardcoded where
+   Tauri used `$SHELL`; `sh -l` never reads `~/.zshrc`. Now `login-shell.ts` in both call sites.
+5. **Rail vs lights** — `RAIL_W` 60→70 (modern 14pt cluster spans 9→69), constants in
+   `rail-metrics.ts`; card lid stays at 8 (decided + gated in `drive-rail-invariant.mjs` — a
+   14px lid was tried and reads as a broken corner). The "don't retune from dev" comment is
+   inverted: Electron dev and packaged draw the SAME cluster.
+6. **Drop/paste double delivery** — a drop hit BOTH the preload window listener (quoted real
+   path) and the pane's bytes→bracketed-paste route (`[Image #N]`). Probe in real Electron 43:
+   only DROP double-fired; paste never did (capture-phase preempts xterm). Fixed with
+   `stopPropagation` in `handleDrop`; paste hardened (`stopImmediatePropagation`); images
+   dropped ANYWHERE now become `[Image #N]` via `paste-image.ts`.
 
-- **`electron/`** — the Electron shell. 85 of 91 `window.operator` methods native (the 6 left are
-  `gridterm*`, dropped by decision: `alacritty_terminal` has no Node twin). Typed IPC derived from
-  `src/renderer/env.d.ts` (fails to compile if a renderer method is unhandled), node-pty terminal,
-  better-sqlite3 stores byte-compatible with the Rust ones, Node transcript tailer **accepted
-  against the Tauri build's own `chat.db` rows: 9,213 rows / 5 real sessions / zero diffs**
-  (`2026-08-20-electron-s1-transcript-tailer-RESULT.md`). S2/S3 accepted the same way
-  (`2026-08-21-electron-s2-s3-acceptance-RESULT.md`): three real divergences found vs the Rust and
-  fixed — the quit guard dropped `waiting` (a lane blocked on the user was missing from the ⌘Q
-  dialog and counted idle), `JSON.stringify` insertion order vs serde's sorted keys (a first
-  Electron save would have churned every key in `projects.json`), a `checkUpdate` rejection path.
-  `src/shared/preview-inspector.js` is now the ONE source of the inspector script (`lib.rs`
-  `include_str!`s it; Electron injects it). Renderer touched only to stop reaching past the seam
-  (`showMainWindow`, `operatorHome`) and for `DragRegion`'s `-webkit-app-region` under Electron.
-- **Three signed, notarized, stapled pre-releases** on `juanmnl/operator` via
-  `.github/workflows/electron.yml` (tags `electron-v*` ONLY — `v*` is the Tauri job):
-  `electron-v0.17.0-alpha.3` is current (DMG 151 MB · zip + `latest-mac.yml` · SHA256SUMS);
-  alpha.2 superseded; **alpha.1's DMG was broken and removed** (its zip is fine). Bundle id stays
-  `com.operator.app.tauri` on purpose (hand-off recipe), so a drag-over replaces the Tauri app in
-  place and reads the same `~/.operator`. **Nothing goes through `latest.json`/operator-releases**
-  — installed Tauri users are untouched until the one-way swap release is deliberately shipped.
-- **Renderer fix, both shells:** `TerminalPane.tsx` fit starvation — the 150 ms "quiet" deferral
-  had no bound, so streaming output starved every resize (0 fits in 2 s after a sidebar collapse);
-  now `planDeferredFit` with a 500 ms cap (`2026-08-20-fit-starvation-fix-RESULT.md`).
-- **Tauri CI fix:** `build.yml` now staples the `.app`, rebuilds + re-signs the updater tarball
-  from the stapled app, notarizes the DMG itself (it never was), and asserts on the unpacked payload
-  — proven green. Until this, every shipped Tauri build had NO stapled ticket.
-- README updated for the move; the landing (`~/Developer/Operator-landing`, pushed) says so too —
-  **its deploy is manual and still pending** (juanmnl.com/operator-app/).
+## Ready for 0.17.2 — two branches VERIFIED against their briefs, NOT merged (user's call)
 
-## Verify before believing (this session's own corrections)
+- **`operator/26b80` @ `607979d` — Preview bleed.** The active terminal painted THROUGH the
+  preview iframe (Chromium OOPIF; WKWebView's opaque frame masked it). Fix: `pane-visibility.ts`
+  — the active pane is `visibility:hidden` under any Chat/Preview overlay (no resize, so the
+  never-resize rule holds). PROOF: `electron/probes/preview-bleed.cjs` captures with
+  `capturePage()` and pixel-counts the selection colour — user's screenshot reproduced
+  (76377px), 0px with the fix; exits non-zero on bleed. 798 root + 226 electron green.
+  ⚠ The BLACK stage is NOT ours: mantel's app fails to MOUNT when framed (frame console
+  captured; the probe's control page proves capturePage sees OOPIF content). An easy follow-up
+  if wanted: Preview shows "the app didn't mount" instead of a black rectangle.
+- **`operator/rail-orbs-mute` @ `1455efe` — resting orbs recede.** All rest states unified at
+  `REST_OP` 0.25 (was waiting .58 / idle .42 / error .5); running 0.95 is now the only bright
+  thing; ΔE + luminance ratios derived across all 4 themes (Light was the risk; initial stays
+  crisp). ⚠ Deliberate cost, flagged for the user: the waiting-vs-idle notch measured invisible
+  (ΔE 5.3 on 1984 Light), so it was dropped — **"waiting on you" currently has NO rail signal**
+  (the 6s pulse beacon still fires on entry). If that information matters, it needs a MARKER,
+  not a brightness notch. 760 green + the known 33 jsdom/Node-26 localStorage failures.
 
-- The DMG of alpha.1 passed every CI assertion and was broken anyway: `release.mjs` staged it with
-  `fs.cpSync`, which rewrites symlinks to ABSOLUTE targets; the zip (`ditto`) was fine. Now staged
-  with `ditto` + a relative-symlink + `codesign` assertion before `hdiutil`. Lesson: **assert on the
-  artefact you ship, where it ships** (the CI now validates the unpacked payload, not the build dir).
-- Locally npm's install-scripts policy silently skips `esbuild`/`node-pty`/`electron-rebuild`
-  postinstalls, so local tests passed where CI's first run died (vitest loading native deps built
-  for Electron's ABI). The CI test job now installs `--ignore-scripts` + `npm rebuild` for the
-  Node ABI, on Node 22 (better-sqlite3@13 needs ≥22); the release job does the Electron rebuild.
-- better-sqlite3@13 ships N-API `prebuilds/darwin-arm64.node`; `build/Release` stays empty after
-  electron-rebuild. Assert the prebuild, not `build/Release`.
-- **Dispatches to a RUNNING lane were dropped twice** (zero trace in the lane's jsonl, no Operator
-  note). After dispatching, grep the lane's transcript for the text before waiting on it. See
-  memory `project_delivery_brakes_stall`.
-- `/Applications/Operator.app` on this Mac is a **stale 0.5.0** copy (Jun 30). The user's running
-  Operator is `src-tauri/target/release/bundle/macos/Operator.app` — don't confuse the two.
-- The "something kills long-running processes" scare was the Code lane's own bench tooling, not
-  Operator (`2026-08-20-external-process-kills-RESULT.md`).
+Merging both + bump to 0.17.2 mirrors the 0.17.1 flow (`~/.operator/briefs/electron-0.17.1-merge-bump.md`
+is the template; bump = `electron/package.json` + lock only; tag `electron-v0.17.2` is the user's push).
 
-## Rules learned the hard way (now in memory, apply them)
+## User eyeball checks pending (need a real window — install 0.17.1 first)
+1. Traffic lights at (16,16)/(39,16)/(62,16), zoom 17pt clear of the card; the "bump" gone.
+2. Tray: icon in the menu bar, twinkles when a lane runs, menu lists sessions, Quit asks.
+3. Plan usage card populates; paste/drop a screenshot → ONLY `[Image #N]`.
+4. On `operator/rail-orbs-mute` (`cd electron && npm run dev`): one running lane is the only
+   bright orb, on Mission Control AND Light.
 
-- **Do not install or launch GUI apps on the user's Mac unasked — lanes included.** I installed a
-  side-by-side `Operator Preview.app` + `~/.operator-preview` to dodge a running lane; the user said
-  no; both removed. A brief that said "run it from the bundle dir" made Code open Operator windows
-  (and the stale 0.5.0). Write briefs as headless/simulated checks, or hand the user the command.
-- `cp -R` breaks bundle symlinks on macOS; always `ditto`.
-- The MCP plane has TWO tools (`report`, `task_status`); my briefs said three.
+## ⚠ Operator defect surfaced by dogfooding this week
+**2 of ~9 OPERATOR-DISPATCH lines vanished with ZERO trace in any lane jsonl** (login-shell,
+preview-bleed — both re-dispatched successfully later when the lane was idle). Distinct from the
+known brake/HOP_LIMIT stall ([[project_delivery_brakes_stall]]): these left no queue-operation
+either. Until fixed, a coordinator must grep lane transcripts for the brief filename after every
+dispatch. Not yet on the board as its own investigation — the user was asked, no answer yet.
 
-## Open, in priority order
+## Direction notes from this session
+- **IDE question** ("what about adding an ide?"): recommended NO embedded editor (orchestrator,
+  not harness; Orca-breadth is the wrong race). Instead: (a) "Open in editor" on projects +
+  lane worktrees (only Reveal-in-Finder exists today), (b) Diff-panel line comments that become
+  `OPERATOR-DISPATCH` lines, (c) maybe Claude Code's own `/ide` per lane. Not yet briefed.
+- Light-theme screenshots came from the packaged app — the user does switch themes; check both.
 
-1. **The user's three one-minute window checks on alpha.3** (they need a real window): a Finder
-   drop onto the window (must not navigate; path lands in the terminal), ⌘Q with one lane mid-turn
-   and one waiting (both listed, idle count right, "Stay open" keeps them), tray/inspector visuals.
-   Also the old three from the Tauri handoff (Finder drop, ⌘C/⌘V/⌘A after the menu rebuild, ⌘Q)
-   were never done on Tauri either — moot if the Electron build becomes the daily driver.
-2. **The one-way swap release (0.17.0 proper).** Proven: `…-s4-packaging-handoff-RESULT.md` —
-   Tauri 0.16.0 staged locally pulled the minisign-signed Electron tarball from a local feed,
-   swapped in place, relaunched as Electron `Operator`; the only unexercised inch is pressing
-   "Install & Restart" in a live Tauri window. Recipe: keep bundle id, tar the Electron `.app`,
-   `tauri signer sign` with `~/.operator/updater-private.key` (NEVER regenerate), publish
-   `latest.json` (v > 0.16.0) + `latest-mac.yml` + zip in one release. This moves EVERY installed
-   copy and cannot be undone from the app — the user's call, explicitly.
-3. `src-tauri/` stays on `main` until that release has soaked; then branch + remove; the
-   5-file version bump collapses to `package.json`s.
-4. Electron-specific: gridterm mocks fail soft (confirmed) — decide whether a Rust sidecar terminal
-   is ever wanted; `electron-updater` is inert until `OPERATOR_UPDATE_FEED` / the packaged default
-   serves a real `latest-mac.yml` (the pre-releases already publish one); bundle-id rename to
-   `com.operator.app` as a later ordinary update (TCC risk isolated).
-5. Still-open product items from before, unchanged: delivery brakes cascade
-   (`project_delivery_brakes_stall`), close-project no-op, scrollback baseline sizing at 27 lanes,
-   the renderer-side ghost candidates (follow us to Electron; now debuggable in Chromium devtools).
-
-## Lanes at handoff
-
-All idle. Code's worktree `operator-c25838` (branch `operator/c25838`) is fully merged. QA and
-Research reported via files (no `operator__report` ever reached the coordinator this session —
-results were read from the worktrees). Leftover on this machine from me: the Electron dev shell
-may still be running (`electron/` at commit 91a3eb2 in a scratchpad checkout, pid 54234, Vite on
-:1430, `OPERATOR_DIR` pointed at a scratchpad copy) — safe to kill; nothing else.
-
-## Reference
-
-- Memory: `project_electron_decision.md` (the full timeline), `project_shell_electron_reconsider.md`
-  (the background), `feedback_no_unasked_installs.md`, `project_delivery_brakes_stall.md`.
-- Briefs + results: `dev/briefs/2026-08-20-*`, `dev/briefs/2026-08-21-*`.
-- Release: https://github.com/juanmnl/operator/releases/tag/electron-v0.17.0-alpha.3
+## Where things live
+Briefs + OUTs: `~/.operator/briefs/electron-*.md`, `rail-*.md`. Screenshot stash:
+`/tmp/operator-shots/`. Hub note updated through 2026-08-23. Memory index: RESUME line points here.
