@@ -3,6 +3,10 @@ import { PageShell, sectionHeader, sectionDesc, SECTION_GAP } from '../settings/
 import { themes, themeKey, identities, type OperatorTheme } from '../../themes'
 import { LogoMark } from '../LogoMark'
 import { soundsEnabled, setSoundsEnabled, playYourTurnChime } from '../../lib/sounds'
+import {
+  IDLE, installPressed, installProgressed, installFailed,
+  installBusy, installLabel, installStatus, type InstallState,
+} from '../../lib/update-install'
 import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '../../lib/terminal-options'
 import { resumeOnLaunchEnabled, RESUME_ON_LAUNCH_KEY } from '../../lib/workspace'
 import { askBeforeQuitEnabled, ASK_BEFORE_QUIT_KEY } from '../../lib/quit-guard'
@@ -152,7 +156,10 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const mode: 'light' | 'dark' = currentTheme.isDark ? 'dark' : 'light'
   const [version, setVersion] = useState<string | null>(null)
   const [state, setState] = useState<CheckState>({ kind: 'idle' })
-  const [installing, setInstalling] = useState(false)
+  // The install, as a state rather than the boolean it was. `installing` went true on the press
+  // and never came back, so a running download, a finished one and one that died in its first
+  // second were the same pixel — see lib/update-install.ts.
+  const [installState, setInstall] = useState<InstallState>(IDLE)
   const [dockIcon, setDockIcon] = useState<DockVariant>(
     () => (localStorage.getItem('operator.dockIcon') === 'dark' ? 'dark' : 'light'),
   )
@@ -219,8 +226,21 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     }).catch(() => setState({ kind: 'error' }))
   }
 
+  // The main process has reported both of these since 0.18.1 (electron/src/main/updater.ts);
+  // this surface was simply not listening. Subscribed on mount rather than on the press,
+  // because an install started from the SIDEBAR's arrow has to show up here too — the two
+  // controls drive one install, and a preferences page claiming "Install & Restart" over a
+  // download already in flight is the same lie in a new place.
+  useEffect(() => {
+    const offProgress = window.operator.onUpdateProgress?.((percent, transferred, total) => {
+      setInstall((prev) => installProgressed(prev, percent, transferred, total))
+    })
+    const offError = window.operator.onUpdateError?.((message) => { setInstall(installFailed(message)) })
+    return () => { offProgress?.(); offError?.() }
+  }, [])
+
   const install = () => {
-    setInstalling(true)
+    setInstall(installPressed())
     void window.operator.installUpdate?.() // downloads, installs, relaunches
   }
 
@@ -243,15 +263,28 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
             {state.kind === 'available' ? (
               <button
                 onClick={install}
-                disabled={installing}
+                disabled={installBusy(installState)}
                 style={{
                   padding: '6px 14px', fontSize: 11, fontWeight: 600,
-                  background: 'var(--accent)', border: '1px solid var(--accent)',
+                  border: '1px solid var(--accent)',
+                  // The fill IS the progress bar. A separate track under the button would be a
+                  // second thing to look at for one fact, and the button is already the accent
+                  // across its whole width — so the download simply un-fills it from the right.
+                  background: installState.kind === 'downloading'
+                    ? `linear-gradient(to right, var(--accent) ${installState.percent}%, color-mix(in srgb, var(--accent) 20%, transparent) ${installState.percent}%)`
+                    : 'var(--accent)',
                   borderRadius: 5, color: 'var(--fg-on-accent)', fontFamily: 'inherit',
-                  cursor: installing ? 'default' : 'pointer', opacity: installing ? 0.6 : 1,
+                  cursor: installBusy(installState) ? 'default' : 'pointer',
+                  // `installing` is now only ever the real handover, so the dimming means what
+                  // it always claimed to: the app is about to go away.
+                  opacity: installState.kind === 'installing' ? 0.6 : 1,
+                  fontVariantNumeric: 'tabular-nums',
+                  // A percent that changes width would nudge the label on every tick.
+                  minWidth: 168, textAlign: 'center',
+                  transition: 'background 120ms linear',
                 }}
               >
-                {installing ? 'Installing…' : `Install v${state.version} & Restart`}
+                {installLabel(installState, state.version)}
               </button>
             ) : (
               <button
@@ -269,10 +302,18 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               </button>
             )}
 
-            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-              {state.kind === 'uptodate' && 'You’re up to date.'}
-              {state.kind === 'available' && `Update ${state.version} available.`}
-              {state.kind === 'error' && 'Couldn’t reach the releases feed.'}
+            {/* THE INSTALL'S LINE WINS WHEN IT HAS ONE. Everything else here is a status; the
+                failure text is the one line that tells someone what to do next, so it replaces
+                them rather than queueing behind them. `installStatus` returns null at rest,
+                which is when the check's own words show through unchanged. */}
+            <span style={{ fontSize: 11, color: installStatus(installState)?.isError ? 'var(--color-error)' : 'var(--fg-muted)' }}>
+              {installStatus(installState)?.text ?? (
+                <>
+                  {state.kind === 'uptodate' && 'You’re up to date.'}
+                  {state.kind === 'available' && `Update ${state.version} available.`}
+                  {state.kind === 'error' && 'Couldn’t reach the releases feed.'}
+                </>
+              )}
             </span>
           </div>
         </section>
