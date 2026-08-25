@@ -51,17 +51,17 @@ const lane = { OPERATOR_TERMINAL_ID: 't-s3-probe' }
 const res = await drive([
   { jsonrpc: '2.0', id: 1, method: 'initialize' },
   { jsonrpc: '2.0', id: 2, method: 'tools/list' },
-  { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'operator__report', arguments: { summary: 's3 probe report', taskId: 'task-s3', artifacts: [{ name: 'a.md', content: 'body' }] } } },
-  { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'operator__task_status', arguments: { id: 'task-s3', status: 'done' } } },
-  { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'operator__task_status', arguments: { id: 'task-s3', status: 'nonsense' } } },
-  { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'operator__report', arguments: {} } },
+  { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'report', arguments: { summary: 's3 probe report', taskId: 'task-s3', artifacts: [{ name: 'a.md', content: 'body' }] } } },
+  { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'task_status', arguments: { id: 'task-s3', status: 'done' } } },
+  { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'task_status', arguments: { id: 'task-s3', status: 'nonsense' } } },
+  { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'report', arguments: {} } },
 ], lane)
 
 const byId = Object.fromEntries(res.filter((r) => r.id != null).map((r) => [r.id, r]))
 // mcp.rs declares exactly two tools. The S2/S3 brief mentions a third (`brief`); it does not
 // exist in the Rust, so the port matching at two is correct.
 check('tools/list has exactly the two tools mcp.rs declares',
-      JSON.stringify(byId[2]?.result?.tools?.map((t) => t.name)) === JSON.stringify(['operator__report', 'operator__task_status']),
+      JSON.stringify(byId[2]?.result?.tools?.map((t) => t.name)) === JSON.stringify(['report', 'task_status']),
       JSON.stringify(byId[2]?.result?.tools?.map((t) => t.name)))
 check('report accepted', byId[3]?.result?.isError !== true, byId[3]?.result?.content?.[0]?.text?.slice(0, 60))
 check('task_status accepted', byId[4]?.result?.isError !== true, byId[4]?.result?.content?.[0]?.text)
@@ -70,7 +70,7 @@ check('a report with no summary is REFUSED', byId[6]?.result?.isError === true, 
 
 // An UNATTRIBUTABLE call must be refused: a report Operator cannot trace is worse than none.
 console.log('\nan unattributable call (no OPERATOR_TERMINAL_ID)')
-const anon = await drive([{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'operator__report', arguments: { summary: 'from nowhere' } } }],
+const anon = await drive([{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'report', arguments: { summary: 'from nowhere' } } }],
                          { OPERATOR_TERMINAL_ID: '' })
 check('refused, and says why', anon[0]?.result?.isError === true && /unattributable/.test(anon[0]?.result?.content?.[0]?.text ?? ''),
       anon[0]?.result?.content?.[0]?.text?.slice(0, 70))
@@ -100,7 +100,7 @@ console.log('\ntwo writers at once (a lane inserting while the app acks)')
 const { ArtifactStore } = await import('../out/main/chat-store.cjs')
 const app = new ArtifactStore(join(SANDBOX, 'artifacts.db'))
 const pending = app.pendingStatus()
-const concurrent = await drive([{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'operator__report', arguments: { summary: 'while the app holds the db' } } }], lane)
+const concurrent = await drive([{ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'report', arguments: { summary: 'while the app holds the db' } } }], lane)
 check('a lane can write while the app has the store open', concurrent[0]?.result?.isError !== true,
       concurrent[0]?.result?.content?.[0]?.text?.slice(0, 50))
 app.markApplied(pending.map((p) => p.id))

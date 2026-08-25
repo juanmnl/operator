@@ -13,3 +13,6 @@ scripts/visual/out/
 
 # Width-audit replay capture (regenerable via scripts/width-audit/capture-claude.py)
 scripts/width-audit/claude-stream.bin
+
+# Claude Code local config (never commit — repo is public)
+.claude/
