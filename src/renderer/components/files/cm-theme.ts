@@ -15,29 +15,38 @@ import { tags as t } from '@lezer/highlight'
 // 1984) × light/dark. `CLAUDE.md` still says four themes; the standalone "Light" identity was
 // removed. Anything verified by eye here has to be verified six times.
 
-/** §6's five roles plus plain, mapped onto tokens every palette already defines.
+/** §6's five roles plus plain — now on their OWN per-palette tokens, not the ANSI ones.
  *
- *  Six roles is a DELIBERATE FLOOR. A twenty-role TextMate grammar would need a palette per theme
- *  and would be the first thing to rot; six roles keyed to hues that already exist survive a
- *  seventh theme with no work at all. The ANSI vars are already tuned per palette against that
- *  palette's own background, which is why they are the right pegs. */
+ *  Six roles is still a DELIBERATE FLOOR: a twenty-role TextMate grammar would need a palette per
+ *  theme and would be the first thing to rot.
+ *
+ *  WHY NOT THE ANSI VARS, which is what this shipped with. The assumption was that they are
+ *  "already tuned per palette against that palette's own background" — true for a terminal, false
+ *  for small syntax text on the LIGHT palettes, and my own result doc flagged it as the thing to
+ *  check. Measured against each palette's `--bg-terminal`: green 2.92 / 2.67 / 2.32:1, yellow
+ *  3.05 / 3.03 / 1.86:1, and on 1984-light EVERY role failed — keyword 2.63, type 2.44, attr
+ *  2.07, and `--fg-muted` for comments 4.30. QA reported the 1.86 independently.
+ *
+ *  `--syn-*` is defined in all six palettes, holds hue and saturation, and moves only lightness,
+ *  so a palette still reads as itself. `themes/index.test.ts` computes every one of them against
+ *  its own ground and fails under 4.5:1, so this cannot regress silently. */
 export const codeHighlightStyle = HighlightStyle.define([
   // keyword / control → the reserved-word hue in all six xterm palettes
-  { tag: [t.keyword, t.controlKeyword, t.moduleKeyword, t.operatorKeyword, t.definitionKeyword], color: 'var(--magenta)' },
+  { tag: [t.keyword, t.controlKeyword, t.moduleKeyword, t.operatorKeyword, t.definitionKeyword], color: 'var(--syn-keyword)' },
   // string / char
-  { tag: [t.string, t.special(t.string), t.character, t.regexp], color: 'var(--green)' },
+  { tag: [t.string, t.special(t.string), t.character, t.regexp], color: 'var(--syn-string)' },
   // number / constant / boolean
-  { tag: [t.number, t.bool, t.null, t.atom, t.literal], color: 'var(--yellow)' },
+  { tag: [t.number, t.bool, t.null, t.atom, t.literal], color: 'var(--syn-number)' },
   // comment / doc — comments are meta ink, and this is the app's meta ink
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment, t.docString], color: 'var(--fg-muted)', fontStyle: 'italic' },
+  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment, t.docString], color: 'var(--syn-comment)', fontStyle: 'italic' },
   // type / class / function name
-  { tag: [t.typeName, t.className, t.namespace, t.function(t.variableName), t.function(t.propertyName), t.definition(t.function(t.variableName))], color: 'var(--blue)' },
+  { tag: [t.typeName, t.className, t.namespace, t.function(t.variableName), t.function(t.propertyName), t.definition(t.function(t.variableName))], color: 'var(--syn-type)' },
   // Everything below is still one of the six — these are the tags that would otherwise fall to
   // plain `--fg` and read flatter than the language deserves, mapped onto a role already listed.
-  { tag: [t.tagName, t.angleBracket], color: 'var(--blue)' },
-  { tag: [t.attributeName, t.propertyName], color: 'var(--cyan)' },
-  { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: 'var(--fg-muted)' },
-  { tag: [t.link, t.url], color: 'var(--cyan)', textDecoration: 'underline' },
+  { tag: [t.tagName, t.angleBracket], color: 'var(--syn-type)' },
+  { tag: [t.attributeName, t.propertyName], color: 'var(--syn-attr)' },
+  { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: 'var(--syn-comment)' },
+  { tag: [t.link, t.url], color: 'var(--syn-attr)', textDecoration: 'underline' },
   { tag: [t.heading], color: 'var(--fg)', fontWeight: '600' },
   { tag: [t.emphasis], fontStyle: 'italic' },
   { tag: [t.strong], fontWeight: '600' },

@@ -45,6 +45,22 @@ export const missionControlVars = {
   '--blue': '#58b2ff',
   '--magenta': '#c98bff',
   '--cyan': '#3fd9c9',
+  /* SYNTAX INK — the code viewer's six roles, per palette.
+     They exist because the ANSI tokens they used to borrow FAIL as small text on the light
+     palettes. Measured against each palette's own `--bg-terminal` before the change:
+     green 2.92 / 2.67 / 2.32:1, yellow 3.05 / 3.03 / 1.86:1, and on 1984-light every role
+     failed — keyword 2.63, type 2.44, attr 2.07, and `--fg-muted` for comments 4.30.
+     Every value below clears 4.5:1 on its own ground; the dark palettes' are the ANSI tokens
+     unchanged, because those already did.
+     Hue and saturation are held and only lightness moves, so a palette still reads as itself.
+     NOT opacity on `--fg-muted` for comments — the token IS the recede, and stacking is the
+     documented way this ink has failed before. */
+  '--syn-keyword': '#c98bff',
+  '--syn-string': '#2fe39a',
+  '--syn-number': '#ffb454',
+  '--syn-type': '#58b2ff',
+  '--syn-attr': '#3fd9c9',
+  '--syn-comment': '#8a94a0',
   '--selection': '#ffffff2e',
   '--border': '#21272f',
   '--color-success': '#2fe39a',
