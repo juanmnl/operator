@@ -196,6 +196,13 @@ export function installBridge(): void {
     // Lanes write here through Operator's own MCP server, from their own processes; these are the
     // READ side. Nothing pushes into a lane — phase 1 is lane→Operator only.
     artifactReports: (limit?: number) => invoke('artifacts_reports', { limit: limit ?? null }),
+    // The lifecycle columns are an Electron-side migration; the Rust store has no such columns
+    // and no commands for them. Answering emptily is right here — a Tauri build simply has no
+    // undelivered queue — and the two marks are no-ops rather than throws so the Inbox renders
+    // read-only instead of erroring on open.
+    artifactUndelivered: async () => [],
+    artifactMarkDelivered: async () => {},
+    artifactMarkAcked: async () => {},
     artifactPendingStatus: () => invoke('artifacts_pending_status'),
     artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
 

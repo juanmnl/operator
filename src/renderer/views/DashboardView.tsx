@@ -19,7 +19,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs } from '../lib/dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
@@ -37,6 +37,8 @@ import { FolderPreferencesView } from '../components/preferences/FolderPreferenc
 import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
+import { InboxPanel } from '../components/session/InboxPanel'
+import { announcement } from '../lib/inbox'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -119,7 +121,7 @@ type MainView = 'terminal' | 'chat' | 'preview' | 'files'
 // The right side panel's tabs. Contextual to the main view: Chat is offered here when the
 // main view is Console or Preview (so you can watch the terminal / preview AND read the
 // conversation), but dropped in Chat view where it's already the main surface.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
+type PanelTab = 'plan' | 'diff' | 'chat' | 'files' | 'inbox'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
@@ -261,10 +263,10 @@ export function DashboardView() {
   // are one reader, and a tab that duplicates the surface beside it is the thing §4's rule A
   // exists to prevent, expressed in the tab set rather than only in the routing.
   const panelTabs: PanelTab[] = mainView === 'chat'
-    ? ['plan', 'diff', 'files']
+    ? ['plan', 'diff', 'files', 'inbox']
     : mainView === 'files'
-      ? ['plan', 'diff', 'chat']
-      : ['plan', 'diff', 'chat', 'files']
+      ? ['plan', 'diff', 'chat', 'inbox']
+      : ['plan', 'diff', 'chat', 'files', 'inbox']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
@@ -3315,6 +3317,44 @@ export function DashboardView() {
 
   // with uncommitted changes. Show one in-app toast per (terminalId, idle-arrival).
   const lastPhaseRef = useRef<Record<string, string>>({})
+  // REPORT DELIVERY-ON-IDLE. The audit is explicit that this must NOT be pty-typed like an
+  // OPERATOR-REPLY: reports exist precisely because pasting a long result into a live TUI races
+  // its own composer. So a report is announced, not delivered — one short line naming the id and
+  // where the text is, and only when the lane is between turns so nothing is interrupted.
+  //
+  // `delivered_at` is written by the same pass, which is what stops a report being announced on
+  // every subsequent idle. The mark is the memory; there is no in-renderer seen-set to lose on a
+  // respawn (which is how the delivery brakes lost theirs — see the audit's loss #5).
+  const announcingRef = useRef(false)
+  useEffect(() => {
+    for (const tab of terminals) {
+      const role = (tab.roleId ?? '').toLowerCase()
+      if (!COORDINATOR_ROLE_IDS.includes(role)) continue
+      const session = sessions.find((s) => s.terminalId === tab.id)
+      // BETWEEN TURNS ONLY. `running`/`compacting` means a turn is in flight and typing into the
+      // composer would land mid-thought; `ended` means there is nobody to tell.
+      if (!session || session.status === 'ended') continue
+      if (session.phase !== 'idle' && session.phase !== 'waiting') continue
+      if (announcingRef.current) continue
+
+      announcingRef.current = true
+      void window.operator.artifactUndelivered?.(role, 3)
+        .then(async (pending) => {
+          for (const report of pending ?? []) {
+            // Mark FIRST. A crash between the write and the mark would re-announce; a crash
+            // between the mark and the write loses one announcement but leaves the report in the
+            // Inbox, which is where the text lives anyway. Losing the louder half is the right
+            // way round.
+            await window.operator.artifactMarkDelivered?.(report.id)
+            if (tab.id) void submitQueue.submit(tab.id, announcement(report))
+          }
+        })
+        .catch(() => { /* best-effort: the Inbox still has everything */ })
+        .finally(() => { announcingRef.current = false })
+      break
+    }
+  }, [terminals, sessions])
+
   const notifiedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     for (const tab of terminals) {
@@ -4555,6 +4595,18 @@ export function DashboardView() {
             customName={activeSession ? customNames[activeSession.id] : undefined}
             accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
+            inboxTab={(() => {
+              const tab = terminals.find((t) => t.id === activeTerminalId)
+              const role = tab?.roleId ?? ''
+              const proj = projects.find((p) => p.id === tab?.projectId)
+              return (
+                <InboxPanel
+                  role={role}
+                  isCoordinator={COORDINATOR_ROLE_IDS.includes(role.toLowerCase())}
+                  records={proj?.dispatches ?? []}
+                />
+              )
+            })()}
             filesTab={(() => {
               const tab = terminals.find((t) => t.id === activeTerminalId)
               return (

@@ -165,7 +165,12 @@ export function registerIpc(d: Deps): void {
     getSessions: async () => d.transcript.sessions(),
     chatHistory: async (sessionId) => d.chat.load(sessionId),
     projectReplies: async (projectId) => d.chat.replies(projectId),
-    artifactReports: async (limit) => d.artifacts.listReports(limit ?? 50),
+    artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
+    // The lifecycle. `written → delivered → acked`, and each step is a separate call because each
+    // is a separate fact: stored, shown, read.
+    artifactUndelivered: async (role, limit) => d.artifacts.undeliveredFor(String(role), Number(limit) || 10),
+    artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
+    artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

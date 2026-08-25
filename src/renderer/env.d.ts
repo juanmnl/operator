@@ -48,6 +48,12 @@ declare global {
       terminalKill: (id: string) => Promise<void>
       /** Reports lanes handed to Operator via `operator__report` — newest first. */
       artifactReports: (limit?: number) => Promise<ArtifactReport[]>
+      /** Reports written FOR `role` that have never been shown to it, oldest first. */
+      artifactUndelivered: (role: string, limit?: number) => Promise<ArtifactReport[]>
+      /** The recipient has now been shown it. Idempotent. */
+      artifactMarkDelivered: (id: number) => Promise<void>
+      /** Someone opened it — the only read receipt in the system. */
+      artifactMarkAcked: (id: number) => Promise<void>
       /** `operator__task_status` signals not yet applied to projects.json. */
       artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
       /** Ack AFTER the task is written through, so a crash replays rather than drops. */

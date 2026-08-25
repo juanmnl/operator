@@ -161,6 +161,23 @@ export class ChatStore {
 
 /** THE ARTIFACT PLANE. Lanes write here from their own processes, through Operator's MCP
  *  server; the app reads. Phase 1 is lane→Operator only — nothing pushes into a lane. */
+/** One `reports` row → the shape the renderer is typed against.
+ *
+ *  `artifacts` stays the RAW JSON STRING, not a parsed array: `ArtifactReport.artifacts` is
+ *  declared as `string` in shared/types.ts and the renderer parses it itself. Handing it an array
+ *  here would have it call JSON.parse on an object. */
+function rowToReport(r: Record<string, unknown>): ArtifactReport {
+  return {
+    id: Number(r.id), at: String(r.at), terminalId: String(r.terminal_id),
+    projectId: (r.project_id as string) ?? undefined, roleId: (r.role_id as string) ?? undefined,
+    taskId: (r.task_id as string) ?? undefined, summary: String(r.summary),
+    artifacts: String(r.artifacts ?? '[]'),
+    toRole: (r.to_role as string) ?? undefined,
+    deliveredAt: (r.delivered_at as string) ?? undefined,
+    ackedAt: (r.acked_at as string) ?? undefined,
+  }
+}
+
 export class ArtifactStore {
   private readonly db: Database.Database
 
@@ -190,14 +207,56 @@ export class ArtifactStore {
       );
       CREATE INDEX IF NOT EXISTS task_status_applied ON task_status (applied, id);
     `)
+    this.migrateReports()
   }
 
-  insertReport(at: string, terminalId: string, projectId: string | null, roleId: string | null, taskId: string | null, summary: string, artifactsJson: string): number {
+  /** THE LIFECYCLE COLUMNS, added rather than replacing anything.
+   *
+   *  A report row used to mean only "this exists in a table", which stood in for "it reached
+   *  someone" — and for the whole life of the Electron shell nothing read the table at all, so the
+   *  two were very far apart. `to_role` says who it is FOR (it used to implicitly mean "the
+   *  coordinator" and nothing else); `delivered_at` is set when a human or the coordinator has
+   *  actually been shown it; `acked_at` when someone opened it. written → delivered → acked.
+   *
+   *  `ALTER TABLE … ADD COLUMN` per column, each tolerated if it is already there: SQLite has no
+   *  `IF NOT EXISTS` for columns, and this database has 298 rows of real history that a
+   *  drop-and-recreate would throw away. */
+  private migrateReports(): void {
+    for (const col of ['to_role TEXT', 'delivered_at TEXT', 'acked_at TEXT']) {
+      try { this.db.exec(`ALTER TABLE reports ADD COLUMN ${col}`) } catch { /* already present */ }
+    }
+  }
+
+  insertReport(at: string, terminalId: string, projectId: string | null, roleId: string | null, taskId: string | null, summary: string, artifactsJson: string, toRole: string | null = null): number {
     const r = this.db.prepare(
-      `INSERT INTO reports (at, terminal_id, project_id, role_id, task_id, summary, artifacts)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(at, terminalId, projectId, roleId, taskId, summary, artifactsJson)
+      `INSERT INTO reports (at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(at, terminalId, projectId, roleId, taskId, summary, artifactsJson, toRole)
     return Number(r.lastInsertRowid)
+  }
+
+  /** Mark a report as SHOWN to its recipient. Idempotent — the first delivery is the one that
+   *  counts, and a second announcement of the same report is the noise this timestamp prevents. */
+  markReportDelivered(id: number, at: string): void {
+    this.db.prepare('UPDATE reports SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL').run(at, id)
+  }
+
+  /** Mark a report as OPENED. This is the only signal in the system that a report was actually
+   *  read, as opposed to written, stored, or announced. */
+  markReportAcked(id: number, at: string): void {
+    this.db.prepare('UPDATE reports SET acked_at = ?, seen = 1 WHERE id = ?').run(at, id)
+  }
+
+  /** Reports written for `role` that have never been delivered, oldest first — the queue the
+   *  idle announcement drains. Oldest first because a backlog should be read in the order it
+   *  happened, not newest-first like a browsing list. */
+  undeliveredFor(role: string, limit: number): ArtifactReport[] {
+    const rows = this.db.prepare(
+      `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
+         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)
+        ORDER BY id ASC LIMIT ?`,
+    ).all(role, limit) as Array<Record<string, unknown>>
+    return rows.map(rowToReport)
   }
 
   insertStatus(at: string, terminalId: string, projectId: string | null, taskId: string, status: string): number {
@@ -209,17 +268,10 @@ export class ArtifactStore {
 
   listReports(limit: number): ArtifactReport[] {
     const rows = this.db.prepare(
-      'SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts FROM reports ORDER BY id DESC LIMIT ?',
+      `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
+         FROM reports ORDER BY id DESC LIMIT ?`,
     ).all(limit) as Array<Record<string, unknown>>
-    return rows.map((r) => ({
-      id: Number(r.id), at: String(r.at), terminalId: String(r.terminal_id),
-      projectId: (r.project_id as string) ?? undefined, roleId: (r.role_id as string) ?? undefined,
-      taskId: (r.task_id as string) ?? undefined, summary: String(r.summary),
-      // The RAW JSON string, not a parsed array: `ArtifactReport.artifacts` is declared as
-      // `string` in shared/types.ts and the renderer parses it itself. Handing it an array
-      // here would have it call JSON.parse on an object.
-      artifacts: String(r.artifacts ?? '[]'),
-    }))
+    return rows.map(rowToReport)
   }
 
   pendingStatus(): ArtifactStatusEvent[] {

@@ -843,6 +843,14 @@ export interface ArtifactReport {
   summary: string
   /** JSON `[{name, content}]` — CONTENT, never a path into the caller's checkout. */
   artifacts: string
+  /** Which role this report is FOR. Absent means the coordinator, which is what every row
+   *  written before this column existed meant implicitly. */
+  toRole?: string | null
+  /** When the recipient was actually SHOWN this. A row without it has been written and stored
+   *  and reached nobody — which, before there was any consumer, described every row. */
+  deliveredAt?: string | null
+  /** When someone OPENED it. The only signal in the system that a report was read. */
+  ackedAt?: string | null
 }
 
 export interface ArtifactStatusEvent {
