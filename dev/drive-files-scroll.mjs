@@ -27,9 +27,12 @@
 import { webkit } from 'playwright'
 
 const PORT = process.env.MOCK_PORT || 1460
+// The viewport width, so the same script can be run narrow and wide. Both matter: wrapping that
+// only holds at 1440 is not wrapping, and the footer's overflow only shows up when it is tight.
+const W = Number(process.env.W || 1440)
 
 const b = await webkit.launch()
-const p = await b.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' })
+const p = await b.newPage({ viewport: { width: W, height: 900 }, colorScheme: 'dark' })
 p.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 200)))
 
 // The file APIs the mock does not have. Wrapping the `window.operator` SETTER (rather than
@@ -41,7 +44,13 @@ await p.addInitScript(() => {
       ? { path: `dir-${i}`, name: `dir-${i}`, dir: true }
       : { path: `file-${i}.ts`, name: `file-${i}.ts`, dir: false, size: 1200 + i }
   ))
-  const LINES = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i} // a line long enough to be worth reading`)
+  // Every seventh line is far wider than any pane, which is what the horizontal checks need: a
+  // fixture whose lines all fit cannot tell a wrapping viewer from a sideways-scrolling one.
+  const LINES = Array.from({ length: 400 }, (_, i) => (
+    i % 7 === 0
+      ? `const line${i} = ${'"a line far wider than the pane, which must wrap rather than scroll sideways"'.repeat(3)}`
+      : `const line${i} = ${i} // a line long enough to be worth reading`
+  ))
   let real
   Object.defineProperty(window, 'operator', {
     configurable: true,
@@ -142,6 +151,31 @@ await p.keyboard.press('PageDown')
 await p.waitForTimeout(400)
 const kbTree = await box()
 check('S4b', kbTree.tree.top > 0, `PageDown moved the tree to scrollTop ${kbTree.tree.top}`)
+
+// S7 — NOTHING OVERFLOWS SIDEWAYS. The vertical fix left the other axis alone: CodeMirror was
+// configured never to wrap, so a viewer 912px wide held 2337px of content and the file had to be
+// dragged left and right to be read. `EditorView.lineWrapping` + `overflow-wrap: anywhere` mean
+// the scroller's content is never wider than the scroller.
+const wide = await p.evaluate(() => {
+  const m = (el) => (el ? { cw: el.clientWidth, sw: el.scrollWidth } : null)
+  const view = document.querySelector('[data-files-view]')
+  return {
+    scroller: m(document.querySelector('.cm-scroller')),
+    tree: m(document.querySelector('[data-files-tree]')),
+    view: m(view),
+    // The whole surface, on the vertical axis too: a footer that wraps to two lines pushes the
+    // body past its own box, which is how the 24px footer used to overlap the last line of code.
+    viewH: view ? { ch: view.clientHeight, sh: view.scrollHeight } : null,
+    doc: { cw: document.documentElement.clientWidth, sw: document.documentElement.scrollWidth },
+  }
+})
+check('S7a', wide.scroller && wide.scroller.sw <= wide.scroller.cw + 1,
+  `cm-scroller content ${wide.scroller?.sw} fits its ${wide.scroller?.cw}px width`)
+check('S7b', wide.tree && wide.tree.sw <= wide.tree.cw + 1,
+  `tree content ${wide.tree?.sw} fits its ${wide.tree?.cw}px column`)
+check('S7c', wide.doc.sw <= wide.doc.cw, `the document itself does not scroll sideways (${wide.doc.sw}/${wide.doc.cw})`)
+check('S7d', wide.viewH && wide.viewH.sh <= wide.viewH.ch + 1,
+  `and nothing overflows the surface vertically either (${wide.viewH?.sh}/${wide.viewH?.ch})`)
 
 // S5 — the other three main views are untouched.
 await p.locator('button[title="Console view"]').click()

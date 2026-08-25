@@ -131,6 +131,13 @@ export function FileViewer({ root, path, highlight, form = 'medium', onAsk }: Fi
         doc: content.text,
         extensions: [
           lineNumbers(),
+          // LINES WRAP. They used to scroll sideways, on the reasoning that wrapping "destroys
+          // the one-line-one-number contract a deep link depends on" — which is not what CM6
+          // does: `lineWrapping` wraps a LOGICAL line across visual rows and the gutter still
+          // prints exactly one number for it, next to the row the line starts on. So the
+          // addressing scheme is untouched, and what is gained is a file you can read without
+          // dragging it left and right. A viewer 900px wide had 2337px of content in it.
+          EditorView.lineWrapping,
           syntaxHighlighting(codeHighlightStyle),
           codeTheme,
           arrivalField,
@@ -205,28 +212,40 @@ export function FileViewer({ root, path, highlight, form = 'medium', onAsk }: Fi
       <div ref={hostRef} style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }} />
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
-        padding: '0 10px', height: 24, borderTop: '1px solid var(--border)',
+        padding: '0 10px', height: 24, boxSizing: 'border-box', overflow: 'hidden',
+        borderTop: '1px solid var(--border)',
         fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)',
         textTransform: 'uppercase', letterSpacing: '0.1em',
       }}>
-        {/* Stated once, positively — not apologised for, and never a greyed toolbar. */}
-        <span>read-only</span>
-        <span>·</span>
-        <span>{content.language ?? 'plain text'}</span>
-        {form !== 'narrow' && (
-          <>
-            <span>·</span>
-            <span>{content.lines} lines</span>
-            <span>·</span>
-            <span>{formatBytes(content.bytes)}</span>
-          </>
-        )}
-        {content.truncated && (
-          <>
-            <span>·</span>
-            <span style={{ color: 'var(--yellow)' }}>truncated</span>
-          </>
-        )}
+        {/* THE METADATA CLUSTER, in its own shrinkable box. As loose spans in the row they each
+            shrank below their text and WRAPPED, so a 24px footer grew to two lines, overlapped
+            the last line of code and pushed the surface 2px past its own box — visible at any
+            width where the file's stats no longer fit on one line. Nowrap plus a clipping box
+            means the least important fact at the end (the byte count) is what goes, and the
+            "Ask the lane" action never moves. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap',
+        }}>
+          {/* Stated once, positively — not apologised for, and never a greyed toolbar. */}
+          <span>read-only</span>
+          <span>·</span>
+          <span>{content.language ?? 'plain text'}</span>
+          {form !== 'narrow' && (
+            <>
+              <span>·</span>
+              <span>{content.lines} lines</span>
+              <span>·</span>
+              <span>{formatBytes(content.bytes)}</span>
+            </>
+          )}
+          {content.truncated && (
+            <>
+              <span>·</span>
+              <span style={{ color: 'var(--yellow)' }}>truncated</span>
+            </>
+          )}
+        </div>
         {onAsk && path && (
           // The answer to "I want to change this" is the app's own answer. Editing isn't missing;
           // it is delegated to the thing that edits, and this single affordance is what stops the
@@ -234,7 +253,8 @@ export function FileViewer({ root, path, highlight, form = 'medium', onAsk }: Fi
           <button
             onClick={() => onAsk(path, highlight)}
             style={{
-              marginLeft: 'auto', background: 'none', border: 'none', outline: 'none',
+              marginLeft: 'auto', flexShrink: 0, whiteSpace: 'nowrap',
+              background: 'none', border: 'none', outline: 'none',
               cursor: 'pointer', color: 'var(--accent)', font: 'inherit', letterSpacing: 'inherit', padding: 0,
             }}
           >

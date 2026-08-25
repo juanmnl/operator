@@ -70,11 +70,15 @@ export const codeTheme = EditorView.theme({
   '.cm-scroller': {
     fontFamily: 'var(--font-mono)',
     lineHeight: '1.55',
-    // Long lines scroll horizontally; they never wrap. Wrapping renumbers nothing but destroys
-    // the one-line-one-number contract a deep link depends on.
+    // Lines WRAP (`EditorView.lineWrapping` in FileViewer), so there is normally nothing to
+    // scroll sideways. `auto` stays rather than `hidden`: a token with no break opportunity —
+    // a base64 blob, a minified bundle — still cannot be wrapped by any rule, and hiding it
+    // would make it unreadable instead of merely wide.
     overflowX: 'auto',
   },
-  '.cm-content': { padding: '6px 0', caretColor: 'transparent' },
+  // `anywhere`, so a long unbroken token breaks mid-token rather than pushing the line out. The
+  // alternative (`break-word`) leaves exactly the URLs, hashes and base64 that overflow worst.
+  '.cm-content': { padding: '6px 0', caretColor: 'transparent', overflowWrap: 'anywhere' },
   '.cm-line': { padding: '0 10px' },
 
   '.cm-gutters': {

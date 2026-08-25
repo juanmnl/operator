@@ -15,7 +15,9 @@ import { SURFACE_FILL, PANEL_SUBHEAD_H, TOOLBAR_BAND_H } from './chrome'
 //
 // Same shape as `muted-opacity.guard.test.ts` — a rule enforced only by review is not enforced.
 
-const SOURCES = import.meta.glob('../**/*.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
+// `.ts` as well as `.tsx`: the wrapping rule lives in `cm-theme.ts`, which is a theme object and
+// not a component.
+const SOURCES = import.meta.glob('../**/*.{ts,tsx}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 
 /** Every surface mounted into a slot that is a BLOCK rather than a flex column. A new main view
  *  or a new panel tab belongs on this list. */
@@ -114,6 +116,42 @@ describe('every surface in a block slot sizes itself for a BLOCK parent', () => 
     // a root sized by `flex: 1` alone — the exact shape that shipped broken.
     const explicit = /SURFACE_FILL/.test(root) || /height:\s*'100%'/.test(root)
     expect(explicit).toBe(true)
+  })
+})
+
+describe('the two mount slots are flex columns, not blocks', () => {
+  // The deeper half of the same fix. `SURFACE_FILL` makes each surface state its own height,
+  // which works — but it only works because every ancestor happens to have a definite one, and a
+  // percentage height silently falls back to `auto` the moment one does not. Making the SLOTS
+  // flex columns is what makes the `flex: 1` every surface already declares mean something, for
+  // these tabs and for the next one added.
+  it('the right panel body is a flex column', () => {
+    const src = stripComments(sourceOf('components/session/CanvasPanel.tsx'))
+    const slot = src.slice(src.indexOf("{ flex: 1, minHeight: 0"))
+    expect(slot.slice(0, 120)).toMatch(/display: 'flex'/)
+    expect(slot.slice(0, 120)).toMatch(/flexDirection: 'column'/)
+  })
+
+  it('the main-view overlay is a flex column', () => {
+    const src = stripComments(sourceOf('views/DashboardView.tsx'))
+    const at = src.indexOf("position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)'")
+    expect(at).toBeGreaterThan(-1)
+    const slot = src.slice(at, at + 260)
+    expect(slot).toMatch(/display: 'flex'/)
+    expect(slot).toMatch(/flexDirection: 'column'/)
+  })
+})
+
+describe('the file viewer reads down, not sideways', () => {
+  // The other axis. The viewer was configured never to wrap, so a 912px pane held 2337px of
+  // content and a long line had to be dragged into view. CM6 wraps a LOGICAL line across visual
+  // rows and still prints one gutter number for it, so nothing a deep link addresses moves.
+  it('turns line wrapping on', () => {
+    expect(stripComments(sourceOf('components/files/FileViewer.tsx'))).toMatch(/EditorView\.lineWrapping/)
+  })
+
+  it('breaks a token with no break opportunity, or a base64 blob overflows anyway', () => {
+    expect(stripComments(sourceOf('components/files/cm-theme.ts'))).toMatch(/overflowWrap: 'anywhere'/)
   })
 })
 

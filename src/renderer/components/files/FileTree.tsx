@@ -21,6 +21,13 @@ export interface FileTreeProps {
 
 const ROW_H = 20
 
+/** How many levels of indent are actually drawn. Indent is 12px a level and the tree column is
+ *  240px, so an unbounded depth eventually spends the whole row on whitespace and pushes the name
+ *  out of the column — a horizontal scrollbar under a list of names nobody wants to scroll
+ *  sideways. Past this depth the rows stop stepping right; the name still identifies the file and
+ *  the `title` still carries the full path. */
+const MAX_INDENT_LEVELS = 8
+
 export function FileTree({ root, expanded, onToggle, selected, onSelect, changed, showIgnored }: FileTreeProps) {
   /** dir → children. `undefined` = never asked; `null` = asked and it failed. */
   const [cache, setCache] = useState<Record<string, TreeEntry[] | null>>({})
@@ -83,7 +90,7 @@ export function FileTree({ root, expanded, onToggle, selected, onSelect, changed
             data-file-row={entry.path}
             style={{
               display: 'flex', alignItems: 'center', gap: 4, width: '100%',
-              height: ROW_H, padding: `0 8px 0 ${8 + depth * 12}px`, boxSizing: 'border-box',
+              height: ROW_H, padding: `0 8px 0 ${8 + Math.min(depth, MAX_INDENT_LEVELS) * 12}px`, boxSizing: 'border-box',
               background: isSelected ? 'var(--overlay-subtle)' : 'transparent',
               border: 'none', outline: 'none', cursor: 'pointer', textAlign: 'left',
               fontFamily: 'var(--font-mono)', fontSize: 11,

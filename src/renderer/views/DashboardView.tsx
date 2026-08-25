@@ -4541,7 +4541,12 @@ export function DashboardView() {
             {mainView !== 'terminal' && activeSession
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId && (
-              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)' }}>
+              // A FLEX COLUMN, for the same reason the panel body is one: the surfaces mounted
+              // here ask for their height with `flex: 1`, and a plain block gives them nothing —
+              // they size to their content, overflow this box, and get clipped, which is what
+              // made Files unscrollable in 0.18.0. Column keeps full-width stretch, so Chat and
+              // Preview lay out exactly as they did.
+              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
                 {mainView === 'chat' && (
                   <CanvasConversation
                     session={activeSession}

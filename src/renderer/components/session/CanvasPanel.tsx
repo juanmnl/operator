@@ -96,7 +96,13 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
           </button>
         ))}
       </DragRegion>
-      <div style={{ flex: 1, minHeight: 0 }}>
+      {/* A FLEX COLUMN, not a plain block. Every tab below asks for its height with `flex: 1`,
+          which means nothing to a block parent — the tab then sizes to its CONTENT, grows past
+          this slot and gets clipped, and no scroller inside it ever overflows, so nothing can be
+          scrolled. Files shipped that way in 0.18.0. Fixing the SLOT fixes it for every tab and
+          for the next one, instead of each surface restating its own height. Column, so a child
+          still stretches to full width exactly as it did under a block. */}
+      <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {mode === 'plan' && (
           <PlanPanel
             session={session}
