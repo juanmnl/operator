@@ -38,7 +38,7 @@ import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { InboxPanel } from '../components/session/InboxPanel'
-import { announcement, canAnnounceTo, unreadByRole } from '../lib/inbox'
+import { announcement, canAnnounceTo, forProject, unreadByRole } from '../lib/inbox'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -2333,6 +2333,10 @@ export function DashboardView() {
       // Rides to the tailer so any OPERATOR-REPLY this lane posts is stamped with its project
       // (the backend can't derive our canonical-repo-root ids).
       launchOptions.projectId = proj.id
+      // And the role, for the same reason one layer down: it becomes `OPERATOR_ROLE_ID` in the
+      // lane's environment, which is what lets its MCP server stamp a report with who filed it
+      // rather than looking up a terminal id that several sessions share.
+      if (opts?.roleId) launchOptions.roleId = opts.roleId
       // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
       // back with its thread, so a re-dispatch costs a process start and not a cold context.
       if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId
@@ -2712,6 +2716,7 @@ export function DashboardView() {
 
     // Same reply-scoping stamp as the launch path.
     launchOptions.projectId = saved.projectId ?? proj.id
+    if (saved.roleId) launchOptions.roleId = saved.roleId
 
     // Restore spawns directly into the saved cwd (the worktree path persists
     // across quits), or into the one just reattached for a suspended lane.
@@ -3385,8 +3390,21 @@ export function DashboardView() {
     const t = window.setInterval(refreshReports, 4000)
     return () => clearInterval(t)
   }, [refreshReports])
-  /** roleId → reports addressed to it that nobody has acked. */
-  const unreadCounts = useMemo(() => unreadByRole(reports, 'operator'), [reports])
+  /** The active LANE's project — distinct from `activeProjectId`, which is where you have
+   *  navigated to. Every report surface below is scoped to it. The fetch stays
+   *  global (one poll, and the store itself is global), and the scoping happens here where the
+   *  receiving lane is known. */
+  const activeLaneProjectId = useMemo(
+    () => terminals.find((t) => t.id === activeTerminalId)?.projectId,
+    [terminals, activeTerminalId],
+  )
+  /** roleId → reports addressed to it that nobody has acked, IN THIS PROJECT. Role ids repeat
+   *  across projects — every project has an `operator`, a `code` — so an unscoped count badged
+   *  this lane with another repo's unread work. */
+  const unreadCounts = useMemo(
+    () => unreadByRole(forProject(reports, activeLaneProjectId), 'operator'),
+    [reports, activeLaneProjectId],
+  )
 
   const announcingRef = useRef(false)
   useEffect(() => {
@@ -3398,7 +3416,11 @@ export function DashboardView() {
       if (announcingRef.current) continue
 
       announcingRef.current = true
-      void window.operator.artifactUndelivered?.(role, 3)
+      // SCOPED TO THIS COORDINATOR'S PROJECT. `artifacts.db` is one global store for every
+      // project on the machine, so the role filter alone had `uwazi-app`'s reports announced into
+      // the composer of whatever project's coordinator was idle first — observed with #313/#316/
+      // #318. A coordinator is only told about work in the project it is coordinating.
+      void window.operator.artifactUndelivered?.(role, 3, tab.projectId)
         .then(async (pending) => {
           if (pending?.length) refreshReports()
           for (const report of pending ?? []) {
@@ -4694,7 +4716,7 @@ export function DashboardView() {
                   isCoordinator={COORDINATOR_ROLE_IDS.includes(role.toLowerCase())}
                   records={proj?.dispatches ?? []}
                   accent={accentOf(activeSession)}
-                  reports={reports}
+                  reports={forProject(reports, tab?.projectId)}
                   onRefresh={refreshReports}
                 />
               )

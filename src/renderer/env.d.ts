@@ -49,7 +49,7 @@ declare global {
       /** Reports lanes handed to Operator via `operator__report` — newest first. */
       artifactReports: (limit?: number) => Promise<ArtifactReport[]>
       /** Reports written FOR `role` that have never been shown to it, oldest first. */
-      artifactUndelivered: (role: string, limit?: number) => Promise<ArtifactReport[]>
+      artifactUndelivered: (role: string, limit?: number, projectId?: string) => Promise<ArtifactReport[]>
       /** The recipient has now been shown it. Idempotent. */
       artifactMarkDelivered: (id: number) => Promise<void>
       /** Someone opened it — the only read receipt in the system. */

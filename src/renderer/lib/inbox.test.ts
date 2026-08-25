@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AgentSession, ArtifactReport, DispatchRecord } from '../../shared/types'
-import { headline, inboxFor, outboxFor, laneComms, unreadCount, unreadByRole, reportState, announcement, canAnnounceTo } from './inbox'
+import { forProject, headline, inboxFor, outboxFor, laneComms, unreadCount, unreadByRole, reportState, announcement, canAnnounceTo } from './inbox'
 
 const report = (over: Partial<ArtifactReport> = {}): ArtifactReport => ({
   id: 1, at: '2026-08-24T10:00:00Z', terminalId: 't3', projectId: 'p', roleId: 'code',
@@ -179,5 +179,34 @@ describe('canAnnounceTo — the guard that has to be asked twice', () => {
   it('refuses an ended lane and a tab with no session — there is nobody to tell', () => {
     expect(canAnnounceTo(at({ status: 'ended' }))).toBe(false)
     expect(canAnnounceTo(undefined)).toBe(false)
+  })
+})
+
+describe('forProject — one global store, many projects', () => {
+  // `~/.operator/artifacts.db` holds every project on the machine. Unscoped, an Inbox opened in
+  // `operator` listed reports filed by lanes in `uwazi-app`, and `unreadByRole` merged the two
+  // projects' `operator` lanes into one count because role ids repeat across projects.
+  const ours = report({ id: 1, projectId: 'operator-3cfdffb0' })
+  const theirs = report({ id: 2, projectId: 'uwazi-app-d9bb8dcc' })
+  const orphan = report({ id: 3, projectId: undefined })
+
+  it('keeps this project and drops the others', () => {
+    expect(forProject([ours, theirs], 'operator-3cfdffb0').map((r) => r.id)).toEqual([1])
+  })
+
+  it('keeps a report that names no project — unattributable is not foreign', () => {
+    // A row that belongs to no list is a row nobody reads, which is the failure this module
+    // exists to end. Shown to the wrong coordinator beats shown to none.
+    expect(forProject([theirs, orphan], 'operator-3cfdffb0').map((r) => r.id)).toEqual([3])
+  })
+
+  it('returns everything when there is no project to scope by', () => {
+    expect(forProject([ours, theirs], undefined).map((r) => r.id)).toEqual([1, 2])
+  })
+
+  it('keeps the count honest — the badge is what made the bleed visible', () => {
+    const scoped = forProject([ours, theirs], 'operator-3cfdffb0')
+    expect(unreadByRole(scoped, 'operator')).toEqual({ operator: 1 })
+    expect(unreadByRole([ours, theirs], 'operator')).toEqual({ operator: 2 })
   })
 })

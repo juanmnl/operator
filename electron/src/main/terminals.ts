@@ -59,6 +59,11 @@ export interface SpawnOptions {
   unsetEnv?: string[]
   skillOverrides?: Record<string, SkillMode>
   enabledPlugins?: Record<string, boolean>
+  /** WHO THIS LANE IS, exported into its environment so `--mcp-serve` can stamp a report without
+   *  guessing. Terminal ids repeat across app runs and projects, so the `sessions.json` lookup
+   *  they used to be resolved through picked the wrong row — see `resolveCaller`. */
+  projectId?: string | null
+  roleId?: string | null
 }
 
 interface Managed {
@@ -178,6 +183,12 @@ export class TerminalManager {
     // `OPERATOR_TERMINAL_ID` (it had been launched from a tagged shell), so "tagged" alone is
     // not evidence of an orphan. Nothing reads this at runtime; it exists to be found in `ps -E`.
     env.OPERATOR_APP_PID = String(process.pid)
+    // WHOSE LANE THIS IS. Read by `mcp-serve.ts` to stamp `report` / `task_status` rows. The
+    // terminal id alone could not answer it: ids restart at `t0` each run while `sessions.json`
+    // is durable, so one id matches several rows and the first was taken — which is how a review
+    // of `operator` was filed under `uwazi-app`. Stated at spawn, where it is known for certain.
+    if (o.projectId) env.OPERATOR_PROJECT_ID = o.projectId
+    if (o.roleId) env.OPERATOR_ROLE_ID = o.roleId
     if (devPort) {
       env.OPERATOR_DEV_PORT = String(devPort)
       env.PORT = String(devPort)
@@ -491,6 +502,8 @@ function stripNestedSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Ours, not Claude's: this shell sets them per lane below, and inheriting the parent's
   // would hand every lane the port reserved for whoever launched the app.
   delete out.OPERATOR_TERMINAL_ID
+  delete out.OPERATOR_PROJECT_ID
+  delete out.OPERATOR_ROLE_ID
   delete out.OPERATOR_APP_PID
   delete out.OPERATOR_DEV_PORT
   delete out.PORT

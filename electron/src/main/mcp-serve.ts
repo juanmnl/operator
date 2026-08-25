@@ -46,18 +46,40 @@ function resolveCaller(): Caller {
       'only available to a lane Operator launched.',
     )
   }
-  // sessions.json maps terminal id → project and role. A lane not yet in the snapshot is still
-  // attributable BY TERMINAL — the row is written with what is known rather than rejected.
-  let projectId: string | null = null
-  let roleId: string | null = null
+  // THE ENVIRONMENT IS THE AUTHORITY, and sessions.json is only the fallback.
+  //
+  // `OPERATOR_TERMINAL_ID` IS NOT UNIQUE. Terminal ids are minted per app run and start again at
+  // `t0` every launch, so `sessions.json` — which is durable across runs and across projects —
+  // holds the same id many times over. A live snapshot had `t2` four times: uwazi-app/operator,
+  // el-encanto/operator, operator/review, operator/research. `list.find` takes the FIRST, so
+  // every report from `t2` was stamped with whichever project happened to sit earliest in the
+  // file, and reports #313/#316/#318 landed in the store as `uwazi-app-d9bb8dcc` while their text
+  // was a review of `operator`. No amount of filtering downstream can recover from a row that
+  // names the wrong project; the fix has to be at the stamp.
+  //
+  // `terminals.ts` knows both facts at spawn and exports them, so a lane launched by this build
+  // states who it is instead of being looked up. The snapshot lookup stays for a lane spawned by
+  // an OLDER build (it has no such variables and is still running), and is now narrowed by
+  // whichever of the two the environment did supply.
+  let projectId: string | null = (process.env.OPERATOR_PROJECT_ID ?? '').trim() || null
+  let roleId: string | null = (process.env.OPERATOR_ROLE_ID ?? '').trim() || null
+  if (projectId && roleId) return { terminalId, projectId, roleId }
   try {
     const raw = JSON.parse(readFileSync(join(process.env.OPERATOR_DIR || join(homedir(), '.operator'), 'sessions.json'), 'utf8'))
     const list: unknown = Array.isArray(raw) ? raw : (raw as Record<string, unknown>)?.sessions
     if (Array.isArray(list)) {
-      const hit = list.find((s) => (s as Record<string, unknown>)?.terminalId === terminalId) as Record<string, unknown> | undefined
+      const hit = list.find((s) => {
+        const row = s as Record<string, unknown>
+        if (row?.terminalId !== terminalId) return false
+        // Narrowed by what the environment already told us. With neither variable set this is
+        // the old first-match-wins lookup, which is all an older lane can be given.
+        if (projectId && row.projectId !== projectId) return false
+        if (roleId && row.roleId !== roleId) return false
+        return true
+      }) as Record<string, unknown> | undefined
       if (hit) {
-        projectId = typeof hit.projectId === 'string' ? hit.projectId : null
-        roleId = typeof hit.roleId === 'string' ? hit.roleId : null
+        projectId = projectId ?? (typeof hit.projectId === 'string' ? hit.projectId : null)
+        roleId = roleId ?? (typeof hit.roleId === 'string' ? hit.roleId : null)
       }
     }
   } catch { /* no snapshot yet — terminal id alone is enough */ }

@@ -248,6 +248,28 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     store.close()
   })
 
+  it('the undelivered queue is scoped to the receiving project, and keeps unattributable rows', () => {
+    // One global `artifacts.db` serves every project on the machine. Filtered by role alone, the
+    // `operator` lane of whatever project was idle first got announced another repo's work —
+    // observed as #313/#316/#318, stamped `uwazi-app-d9bb8dcc`, announced in `operator`.
+    const store = new ArtifactStore(join(SANDBOX, 'scoped.db'))
+    store.insertReport('2026-08-25T10:00:00Z', 't2', 'uwazi-app-d9bb8dcc', 'review', null, 'theirs', '[]')
+    store.insertReport('2026-08-25T10:01:00Z', 't2', 'operator-3cfdffb0', 'review', null, 'ours', '[]')
+    store.insertReport('2026-08-25T10:02:00Z', 't2', null, 'review', null, 'unattributable', '[]')
+
+    // A row with no project belongs to no project's queue, so it rides with every one — the
+    // alternative is a report nobody is ever told about, which is the failure this plane exists
+    // to remove.
+    expect(store.undeliveredFor('operator', 10, 'operator-3cfdffb0').map((r) => r.summary))
+      .toEqual(['ours', 'unattributable'])
+    expect(store.undeliveredFor('operator', 10, 'uwazi-app-d9bb8dcc').map((r) => r.summary))
+      .toEqual(['theirs', 'unattributable'])
+    // No project asked for = the pre-scoping behaviour, not an empty queue.
+    expect(store.undeliveredFor('operator', 10).map((r) => r.summary))
+      .toEqual(['theirs', 'ours', 'unattributable'])
+    store.close()
+  })
+
   it('mark-unread clears the ack and the seen flag, and leaves delivery alone', () => {
     const store = new ArtifactStore(join(SANDBOX, 'unread.db'))
     const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'read then not', '[]')

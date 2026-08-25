@@ -317,13 +317,31 @@ export class ArtifactStore {
 
   /** Reports written for `role` that have never been delivered, oldest first — the queue the
    *  idle announcement drains. Oldest first because a backlog should be read in the order it
-   *  happened, not newest-first like a browsing list. */
-  undeliveredFor(role: string, limit: number): ArtifactReport[] {
+   *  happened, not newest-first like a browsing list.
+   *
+   *  SCOPED BY PROJECT, because this database is not. `~/.operator/artifacts.db` is ONE global
+   *  store for every project on the machine, and the queue was filtered by role alone — so a
+   *  `code` lane reporting in `uwazi-app` was announced into the composer of the `operator` lane
+   *  of whatever project happened to be open, with a summary about a repo that coordinator has
+   *  never seen. Observed: reports #313/#316/#318, all stamped `project_id=uwazi-app-d9bb8dcc`,
+   *  announced to a coordinator working in `operator`.
+   *
+   *  `project_id IS NULL` still passes. A row that could not name its project is unattributable,
+   *  not foreign; dropping it from every queue would make it permanently unannounceable, which is
+   *  the silence this whole plane exists to remove. A null-project row is the one case where
+   *  showing it to the wrong coordinator beats showing it to nobody.
+   *
+   *  Omitting `projectId` keeps the old unscoped behaviour, for a caller that genuinely has no
+   *  project to scope by (there is none in the app today; the parameter is optional so a bridge
+   *  that cannot supply it degrades to what it did before rather than returning nothing). */
+  undeliveredFor(role: string, limit: number, projectId?: string | null): ArtifactReport[] {
+    const scope = projectId ? ' AND (project_id = ? OR project_id IS NULL)' : ''
+    const params: unknown[] = projectId ? [role, projectId, limit] : [role, limit]
     const rows = this.db.prepare(
       `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
-         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)
+         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)${scope}
         ORDER BY id ASC LIMIT ?`,
-    ).all(role, limit) as Array<Record<string, unknown>>
+    ).all(...params) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
   }
 

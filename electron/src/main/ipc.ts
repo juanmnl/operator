@@ -125,6 +125,11 @@ export function registerIpc(d: Deps): void {
         tuiMode: o.tuiMode === 'fullscreen' ? 'fullscreen' : 'default',
         colorScheme: o.colorScheme === 'light' ? 'light' : 'dark',
         orchestrationNote: (o.orchestrationNote as string) ?? null,
+        // Into the lane's ENVIRONMENT, so its `--mcp-serve` stamps reports with the project and
+        // role it was launched as instead of resolving a non-unique terminal id against
+        // `sessions.json` and taking the first row that matched.
+        projectId: (o.projectId as string) ?? null,
+        roleId: (o.roleId as string) ?? null,
         ...layers,
       })
       // Register BEFORE returning: the tailer must be watching before Claude's first line
@@ -168,7 +173,12 @@ export function registerIpc(d: Deps): void {
     artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
     // The lifecycle. `written → delivered → acked`, and each step is a separate call because each
     // is a separate fact: stored, shown, read.
-    artifactUndelivered: async (role, limit) => d.artifacts.undeliveredFor(String(role), Number(limit) || 10),
+    // `projectId` is the receiving session's, not the report's: the store is global across every
+    // project on the machine, so an unscoped queue announces another repo's work into this
+    // coordinator's composer. Undefined = unscoped, the pre-scoping behaviour.
+    artifactUndelivered: async (role, limit, projectId) => d.artifacts.undeliveredFor(
+      String(role), Number(limit) || 10, projectId ? String(projectId) : null,
+    ),
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
     artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
     artifactMarkUnread: async (id) => { d.artifacts.markReportUnread(Number(id)) },

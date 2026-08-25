@@ -62,6 +62,28 @@ export type CommsRow =
    *  having (A3). */
   | { kind: 'reported'; id: number; at: string; to: string; title: string; summary: string; state: ReportState }
 
+/** THE PROJECT SCOPE, applied to a fetched report list.
+ *
+ *  `~/.operator/artifacts.db` is ONE store for every project on this machine — the fetch has no
+ *  project in it and neither did any surface downstream, so an Inbox opened in `operator` listed
+ *  and badged reports filed by lanes in `uwazi-app`. Role ids are what make it more than cosmetic:
+ *  every project has an `operator` and a `code`, so `unreadByRole` merged two projects' lanes into
+ *  one count under the same key.
+ *
+ *  A report with NO `projectId` passes every scope. It is unattributable rather than foreign, and
+ *  a row that belongs to no list is a row nobody ever reads — the failure this module exists to
+ *  end. Passing no `projectId` returns the list untouched.
+ *
+ *  Pure and separate from `inboxFor`/`unreadByRole` so the scope is one tested decision rather
+ *  than a `.filter` repeated at three call sites that can drift apart. */
+export function forProject(
+  reports: readonly ArtifactReport[],
+  projectId: string | undefined | null,
+): ArtifactReport[] {
+  if (!projectId) return [...reports]
+  return reports.filter((r) => !r.projectId || r.projectId === projectId)
+}
+
 /** The first line of a summary, which is what a list row shows. Reports are written as prose and
  *  routinely open with a heading or a sentence; the rest belongs in the expanded body. */
 export function headline(summary: string, max = 120): string {
