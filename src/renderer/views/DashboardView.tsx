@@ -38,7 +38,7 @@ import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { InboxPanel } from '../components/session/InboxPanel'
-import { announcement, unreadByRole } from '../lib/inbox'
+import { announcement, canAnnounceTo, unreadByRole } from '../lib/inbox'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -3393,11 +3393,8 @@ export function DashboardView() {
     for (const tab of terminals) {
       const role = (tab.roleId ?? '').toLowerCase()
       if (!COORDINATOR_ROLE_IDS.includes(role)) continue
-      const session = sessions.find((s) => s.terminalId === tab.id)
-      // BETWEEN TURNS ONLY. `running`/`compacting` means a turn is in flight and typing into the
-      // composer would land mid-thought; `ended` means there is nobody to tell.
-      if (!session || session.status === 'ended') continue
-      if (session.phase !== 'idle' && session.phase !== 'waiting') continue
+      // BETWEEN TURNS ONLY — see `canAnnounceTo`.
+      if (!canAnnounceTo(sessions.find((s) => s.terminalId === tab.id))) continue
       if (announcingRef.current) continue
 
       announcingRef.current = true
@@ -3405,12 +3402,25 @@ export function DashboardView() {
         .then(async (pending) => {
           if (pending?.length) refreshReports()
           for (const report of pending ?? []) {
-            // Mark FIRST. A crash between the write and the mark would re-announce; a crash
-            // between the mark and the write loses one announcement but leaves the report in the
-            // Inbox, which is where the text lives anyway. Losing the louder half is the right
-            // way round.
+            // RE-ASKED PER REPORT, off the REF rather than the closure's `sessions` — the first
+            // announcement is what wakes the lane, so by the second one the phase has usually
+            // flipped to `running` and this closure's snapshot still says `idle`. Without this the
+            // batch pasted lines 2 and 3 straight into a live composer, which is the exact race
+            // reports exist to avoid. Whatever is left stays undelivered and goes out on the next
+            // idle.
+            if (!canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))) break
+            if (!tab.id) break
+            // Mark AFTER the line has actually gone in. The other order marked a report delivered
+            // whether or not it ever reached the composer, so a failed or skipped announcement
+            // was silently swallowed — the report stayed in the Inbox but nothing ever said it
+            // had arrived. This way the worst case is one duplicate announcement after a crash
+            // between the two, and a duplicate is recoverable where a silent drop is not.
+            try {
+              await submitQueue.submit(tab.id, announcement(report))
+            } catch {
+              break  // leave it announceable; the next idle pass picks it up
+            }
             await window.operator.artifactMarkDelivered?.(report.id)
-            if (tab.id) void submitQueue.submit(tab.id, announcement(report))
           }
         })
         .catch(() => { /* best-effort: the Inbox still has everything */ })

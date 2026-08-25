@@ -159,6 +159,10 @@ export class ChatStore {
   close(): void { this.db.close() }
 }
 
+/** Bumped when a one-time data migration is added to `ArtifactStore`. Tracked in
+ *  `artifacts.db`'s own `PRAGMA user_version`, which is independent of `chat.db`'s. */
+const ARTIFACTS_SCHEMA_VERSION = 1
+
 /** THE ARTIFACT PLANE. Lanes write here from their own processes, through Operator's MCP
  *  server; the app reads. Phase 1 is lane→Operator only — nothing pushes into a lane. */
 /** One `reports` row → the shape the renderer is typed against.
@@ -181,10 +185,7 @@ function rowToReport(r: Record<string, unknown>): ArtifactReport {
 export class ArtifactStore {
   private readonly db: Database.Database
 
-  /** Reports written at or before this are NEVER announced — see `undeliveredFor`. */
-  private readonly announceCutoff: string
-
-  constructor(path = join(operatorDir(), 'artifacts.db'), launchedAt = new Date().toISOString()) {
+  constructor(path = join(operatorDir(), 'artifacts.db')) {
     this.db = openDb(path)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS reports (
@@ -211,24 +212,40 @@ export class ArtifactStore {
       CREATE INDEX IF NOT EXISTS task_status_applied ON task_status (applied, id);
     `)
     this.migrateReports()
-    this.announceCutoff = this.computeAnnounceCutoff(launchedAt)
+    this.backfillDelivered()
   }
 
-  /** THE LAUNCH CUTOFF, decided once per app launch.
+  /** THE BACKFILL, run exactly once per database.
    *
    *  `delivered_at` arrived long after the table did, so every row written before that migration
-   *  has it NULL — 310 of them, back to 2026-08-06. Without a cutoff each launch reads that
-   *  backlog as "never announced" and replays the whole thing at the coordinator, one line per
-   *  row. History is not news: a report the app was not running to announce has missed its
-   *  moment, and the Inbox is where it can still be read.
+   *  has it NULL — 310 of them, back to 2026-08-06 — and `undeliveredFor` read the whole backlog
+   *  as "never announced" and replayed it at the coordinator on every launch, one pty line per
+   *  row. Those rows are not undelivered; they are from before anything recorded delivery.
    *
-   *  Later of launch time and the newest `acked_at` — read ONCE here, not per query, so that a
-   *  human opening an old row mid-session cannot raise the bar under reports that are genuinely
-   *  waiting to be announced. */
-  private computeAnnounceCutoff(launchedAt: string): string {
-    const row = this.db.prepare('SELECT MAX(acked_at) AS newest FROM reports').get() as { newest: string | null }
-    const newestAck = row?.newest ?? null
-    return newestAck && newestAck > launchedAt ? newestAck : launchedAt
+   *  `delivered_at = at` rather than a timestamp of the migration: the claim being written is
+   *  "this one had its moment", and `at` is when that moment was. It also keeps the column
+   *  honest for the Inbox, which shows the value.
+   *
+   *  WHY NOT A TIME CUTOFF (this shipped as one first, and it was wrong): "ignore anything older
+   *  than app launch" also silences reports a lane files while the app is CLOSED, which is
+   *  exactly when a lane is most likely to be working unattended. A one-time backfill divides on
+   *  the migration, not on the clock, so history goes quiet and everything filed afterwards is
+   *  still announced whenever the app next opens.
+   *
+   *  NOT AN ACK. These rows stay `acked_at IS NULL`, so the Inbox still shows them unread and
+   *  still counts them — announced and read are different facts, and only a human opening one
+   *  writes the second.
+   *
+   *  Guarded by `PRAGMA user_version`, the same mechanism `ChatStore.purgeInjectedRows` uses. No
+   *  backup is taken here because nothing is destroyed: one NULL column becomes a timestamp that
+   *  was already in the row next to it. Any process that opens this database may be the one to
+   *  run it — the app, or a lane's MCP server — which is safe because it is idempotent and
+   *  ordered before that process's own writes. */
+  private backfillDelivered(): void {
+    const version = Number((this.db.pragma('user_version', { simple: true }) as number) ?? 0)
+    if (version >= ARTIFACTS_SCHEMA_VERSION) return
+    this.db.prepare('UPDATE reports SET delivered_at = at WHERE delivered_at IS NULL').run()
+    this.db.pragma(`user_version = ${ARTIFACTS_SCHEMA_VERSION}`)
   }
 
   /** THE LIFECYCLE COLUMNS, added rather than replacing anything.
@@ -257,22 +274,19 @@ export class ArtifactStore {
   }
 
   /** Mark a report as SHOWN to its recipient. Idempotent — the first delivery is the one that
-   *  counts, and a second announcement of the same report is the noise this timestamp prevents. */
+   *  counts, and a second announcement of the same report is the noise this timestamp prevents.
+   *
+   *  DELIVERY ONLY. It does not touch `acked_at` or `seen`: announcing a report to a lane is not
+   *  a human reading it, and writing the ack here would empty the Inbox's unread count for
+   *  messages nobody has opened. The caller writes this AFTER the announcement has actually gone
+   *  into the composer, so an announce that fails or is skipped leaves the row announceable.
+   *
+   *  `at` is an ISO-8601 UTC string, the same format `insertReport` is given for `at` (both come
+   *  from `new Date().toISOString()` — the MCP server's for the row, `ipc.ts`'s for this). The
+   *  column is only ever read back for display and for an IS NULL test, never compared against
+   *  another timestamp, so the format is a display contract rather than an ordering one. */
   markReportDelivered(id: number, at: string): void {
     this.db.prepare('UPDATE reports SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL').run(at, id)
-  }
-
-  /** The announce pass's one write: delivered AND acked in the same step.
-   *
-   *  Announcing IS the delivery to the coordinator, and the ack is what keeps a restart quiet —
-   *  `delivered_at` alone would, but the cutoff is computed from `acked_at`, so an announced
-   *  report has to raise that bar itself or the next launch starts below it. `COALESCE` keeps
-   *  the FIRST timestamp of each: the moment it reached someone is the fact worth storing.
-   *  `markReportUnread` puts the mark back if the announcement was never actually read. */
-  markReportAnnounced(id: number, at: string): void {
-    this.db.prepare(
-      'UPDATE reports SET delivered_at = COALESCE(delivered_at, ?), acked_at = COALESCE(acked_at, ?), seen = 1 WHERE id = ?',
-    ).run(at, at, id)
   }
 
   /** Mark a report as OPENED. This is the only signal in the system that a report was actually
@@ -281,8 +295,13 @@ export class ArtifactStore {
     this.db.prepare('UPDATE reports SET acked_at = ?, seen = 1 WHERE id = ?').run(at, id)
   }
 
-  /** Undo an ack. Ack-on-open is reachable by a stray click and is otherwise irreversible, and an
-   *  acked report loses the only mark saying nobody read it — so the mark can be put back. */
+  /** Undo an ack: clears `acked_at` AND `seen`, putting the row back exactly as
+   *  `markReportAcked` found it. Delivery is left alone — it was still announced, and claiming
+   *  otherwise would announce it again.
+   *
+   *  Reachable from the Inbox's own `mark unread` control (`InboxPanel`'s row footer, through
+   *  `artifactMarkUnread`), which is what makes ack-on-open safe to have: opening a row acks it,
+   *  and a row opened by a stray click can be put back. */
   markReportUnread(id: number): void {
     this.db.prepare('UPDATE reports SET acked_at = NULL, seen = 0 WHERE id = ?').run(id)
   }
@@ -293,9 +312,9 @@ export class ArtifactStore {
   undeliveredFor(role: string, limit: number): ArtifactReport[] {
     const rows = this.db.prepare(
       `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
-         FROM reports WHERE delivered_at IS NULL AND at > ? AND (to_role = ? OR to_role IS NULL)
+         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)
         ORDER BY id ASC LIMIT ?`,
-    ).all(this.announceCutoff, role, limit) as Array<Record<string, unknown>>
+    ).all(role, limit) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
   }
 

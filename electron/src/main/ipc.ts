@@ -169,9 +169,7 @@ export function registerIpc(d: Deps): void {
     // The lifecycle. `written → delivered → acked`, and each step is a separate call because each
     // is a separate fact: stored, shown, read.
     artifactUndelivered: async (role, limit) => d.artifacts.undeliveredFor(String(role), Number(limit) || 10),
-    // Announcing is both steps at once: the coordinator has been shown it, and the mark is what
-    // keeps the next launch from replaying it (see `computeAnnounceCutoff`).
-    artifactMarkDelivered: async (id) => { d.artifacts.markReportAnnounced(Number(id), new Date().toISOString()) },
+    artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
     artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
     artifactMarkUnread: async (id) => { d.artifacts.markReportUnread(Number(id)) },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),

@@ -101,70 +101,116 @@ describe('ArtifactStore', () => {
 })
 
 // The inbox replayed its whole history at the coordinator on every launch: `delivered_at` was
-// added long after the table, so every older row reads as "never announced".
-describe('ArtifactStore — the announce cutoff', () => {
-  const fresh = (name: string, launchedAt: string) => new ArtifactStore(join(SANDBOX, name), launchedAt)
+// added long after the table, so every older row read as "never announced".
+//
+// The FIRST fix here was a launch-time cutoff, and it was wrong in a way worth keeping written
+// down: "older than this launch" also silences a report a lane files while the app is CLOSED,
+// which is when a lane is most likely to be working unattended. The division belongs on the
+// migration, not on the clock.
+describe('ArtifactStore — the one-time delivered backfill', () => {
+  /** A database in the pre-fix state: the lifecycle columns exist (0.18.0 migrated them in) and
+   *  every row has `delivered_at` NULL, with no `user_version` marker. */
+  const legacy = (name: string, rows: Array<{ at: string; summary: string }>) => {
+    const path = join(SANDBOX, name)
+    const raw = new Database(path)
+    raw.exec(`CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+              terminal_id TEXT NOT NULL, project_id TEXT, role_id TEXT, task_id TEXT,
+              summary TEXT NOT NULL, artifacts TEXT NOT NULL DEFAULT '[]',
+              seen INTEGER NOT NULL DEFAULT 0, to_role TEXT, delivered_at TEXT, acked_at TEXT);`)
+    const stmt = raw.prepare('INSERT INTO reports (at, terminal_id, summary) VALUES (?,?,?)')
+    for (const r of rows) stmt.run(r.at, 't1', r.summary)
+    raw.close()
+    return path
+  }
 
-  it('never announces reports written before this launch', () => {
-    const path = 'cutoff.db'
-    const seed = fresh(path, '2026-08-06T00:00:00Z')
-    seed.insertReport('2026-08-06T09:00:00Z', 't1', 'p1', 'code', null, 'ancient history', '[]')
-    seed.close()
-
-    const store = fresh(path, '2026-08-25T10:00:00Z')
+  it('marks every pre-migration row delivered, so history is never announced again', () => {
+    const path = legacy('backfill.db', [
+      { at: '2026-08-06T09:00:00Z', summary: 'ancient history' },
+      { at: '2026-08-20T09:00:00Z', summary: 'less ancient' },
+    ])
+    const store = new ArtifactStore(path)
     expect(store.undeliveredFor('operator', 10)).toEqual([])
-    // …but the row is still there to read. Not announced is not deleted.
-    expect(store.listReports(10).map((r) => r.summary)).toEqual(['ancient history'])
+    // …and the rows are still there to read. Not announced is not deleted.
+    expect(store.listReports(10).map((r) => r.summary)).toEqual(['less ancient', 'ancient history'])
     store.close()
   })
 
-  it('announces a report written after launch', () => {
-    const store = fresh('cutoff-live.db', '2026-08-25T10:00:00Z')
-    store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'news', '[]')
-    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['news'])
+  it('backfills `delivered_at` from `at` — the moment it had, not the moment of the migration', () => {
+    const store = new ArtifactStore(legacy('backfill-value.db', [{ at: '2026-08-06T09:00:00Z', summary: 'x' }]))
+    expect(store.listReports(1)[0].deliveredAt).toBe('2026-08-06T09:00:00Z')
     store.close()
   })
 
-  it('takes the newest ack over launch time when the ack is later', () => {
-    // Clock skew or a future-dated row: the bar is whichever is higher, never the lower one.
-    const path = 'cutoff-ack.db'
-    const seed = fresh(path, '2026-08-25T10:00:00Z')
-    const id = seed.insertReport('2026-08-25T11:00:00Z', 't1', 'p1', 'code', null, 'already read', '[]')
-    seed.markReportAcked(id, '2026-08-25T12:00:00Z')
-    seed.insertReport('2026-08-25T11:30:00Z', 't1', 'p1', 'code', null, 'below the ack', '[]')
-    seed.close()
-
-    const store = fresh(path, '2026-08-25T10:30:00Z')
-    expect(store.undeliveredFor('operator', 10)).toEqual([])
+  it('does NOT ack them — the Inbox still shows history unread, it just stops shouting', () => {
+    const store = new ArtifactStore(legacy('backfill-ack.db', [{ at: '2026-08-06T09:00:00Z', summary: 'x' }]))
+    const [row] = store.listReports(1)
+    expect(row.ackedAt).toBeUndefined()
     store.close()
   })
 
-  it('acks on announce, so a restart does not re-announce', () => {
-    const path = 'announce-ack.db'
-    const store = fresh(path, '2026-08-25T10:00:00Z')
-    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'announce me', '[]')
-    store.markReportAnnounced(id, '2026-08-25T10:06:00Z')
+  it('RUNS ONCE: a report filed while the app was closed is still announced on the next launch', () => {
+    // The whole reason this is a migration and not a time cutoff. The lane writes through its own
+    // MCP process while nothing is watching; the next launch must still hear about it.
+    const path = legacy('backfill-once.db', [{ at: '2026-08-06T09:00:00Z', summary: 'history' }])
+    const first = new ArtifactStore(path)
+    first.close()
 
-    const [row] = store.listReports(10)
-    expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
-    expect(row.ackedAt).toBe('2026-08-25T10:06:00Z')
-    expect(store.undeliveredFor('operator', 10)).toEqual([])
-    store.close()
+    const offline = new ArtifactStore(path)
+    offline.insertReport('2026-08-25T02:00:00Z', 't9', 'p', 'code', null, 'filed while closed', '[]')
+    offline.close()
 
-    // Same rows, next launch — still quiet, and still readable.
-    const next = fresh(path, '2026-08-25T10:07:00Z')
-    expect(next.undeliveredFor('operator', 10)).toEqual([])
-    expect(next.listReports(10)).toHaveLength(1)
+    const next = new ArtifactStore(path)
+    expect(next.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed while closed'])
     next.close()
   })
 
-  it('keeps the FIRST announce timestamps if it is announced twice', () => {
-    const store = fresh('announce-twice.db', '2026-08-25T10:00:00Z')
-    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'once', '[]')
-    store.markReportAnnounced(id, '2026-08-25T10:06:00Z')
-    store.markReportAnnounced(id, '2026-08-25T10:09:00Z')
-    expect(store.listReports(10)[0].deliveredAt).toBe('2026-08-25T10:06:00Z')
-    expect(store.listReports(10)[0].ackedAt).toBe('2026-08-25T10:06:00Z')
+  it('an UNMARKED announce stays announceable — a failed or skipped one is not swallowed', () => {
+    // The renderer marks delivered only after the line has gone into the composer. This is the
+    // store half of that contract: read the queue, mark nothing, read it again.
+    const path = join(SANDBOX, 'announce-retry.db')
+    const store = new ArtifactStore(path)
+    store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'announce me', '[]')
+    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
+    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
+    store.close()
+
+    const next = new ArtifactStore(path)
+    expect(next.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
+    next.close()
+  })
+
+  it('marking delivered removes it from the queue and touches NOTHING else', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'delivered-only.db'))
+    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'announced', '[]')
+    store.markReportDelivered(id, '2026-08-25T10:06:00Z')
+    const [row] = store.listReports(1)
+    expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
+    // Announced is not read: the Inbox must still count this one unread.
+    expect(row.ackedAt).toBeUndefined()
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    store.close()
+  })
+
+  it('keeps the FIRST delivery timestamp if it is announced twice', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'delivered-twice.db'))
+    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'once', '[]')
+    store.markReportDelivered(id, '2026-08-25T10:06:00Z')
+    store.markReportDelivered(id, '2026-08-25T10:09:00Z')
+    expect(store.listReports(1)[0].deliveredAt).toBe('2026-08-25T10:06:00Z')
+    store.close()
+  })
+
+  it('mark-unread clears the ack and the seen flag, and leaves delivery alone', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'unread.db'))
+    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'read then not', '[]')
+    store.markReportDelivered(id, '2026-08-25T10:06:00Z')
+    store.markReportAcked(id, '2026-08-25T10:07:00Z')
+    store.markReportUnread(id)
+    const [row] = store.listReports(1)
+    expect(row.ackedAt).toBeUndefined()
+    // Still delivered — it WAS announced, and saying otherwise would announce it again.
+    expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
     store.close()
   })
 })

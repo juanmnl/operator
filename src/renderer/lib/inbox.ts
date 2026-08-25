@@ -1,4 +1,4 @@
-import type { ArtifactReport, DispatchRecord } from '../../shared/types'
+import type { AgentSession, ArtifactReport, DispatchRecord } from '../../shared/types'
 import { chipForOutcome, type OutcomeChip } from './dispatch-outcome'
 
 // The per-lane Inbox/Outbox model — pure, so what a lane has sent, received and had blocked is
@@ -184,4 +184,18 @@ export function unreadByRole(reports: readonly ArtifactReport[], coordinatorRole
 export function announcement(report: ArtifactReport): string {
   const from = report.roleId || report.terminalId
   return `[Operator] report #${report.id} from ${from}: ${headline(report.summary, 80)} — full text in Inbox`
+}
+
+/** Is this lane BETWEEN TURNS, i.e. safe to paste one announcement line into?
+ *
+ *  `running`/`compacting` means a turn is in flight and the line would land mid-thought; `ended`
+ *  means there is nobody to tell; no session at all means the tab is not a lane yet.
+ *
+ *  A function rather than an inline condition because it has to be asked TWICE — once before the
+ *  announce pass starts, and again before EVERY line in it. Announcing wakes the lane, so by the
+ *  second report of a batch the answer has usually changed: the first announcement is what put
+ *  the lane into `running`, and the batch used to keep typing into it anyway. */
+export function canAnnounceTo(session: Pick<AgentSession, 'status' | 'phase'> | undefined): boolean {
+  if (!session || session.status === 'ended') return false
+  return session.phase === 'idle' || session.phase === 'waiting'
 }
