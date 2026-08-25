@@ -61,25 +61,45 @@ export function stripOrnaments(s: string): string {
   return s.replace(ORNAMENT_RE, ornamentSpaces)
 }
 
-const DEV_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):(\d+)/i
+/** `0.0.0.0` IS a localhost banner for this purpose, and leaving it out was half a bug.
+ *  Rails, Django, anything in Docker and `vite --host` all print it; a lane serving there was
+ *  never attributed, so the panel fell back to the reserved port — the other half of the
+ *  wrong-server report. `[::]` is the v6 spelling of the same thing. */
+const DEV_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):(\d+)/gi
 
-/** Scan a rolling output tail for a localhost dev-server URL. Pure: takes the
- *  previous tail + the new chunk + the last reported port, returns the newly
- *  detected port (null if none or a duplicate) and the next 512-char tail. The
- *  tail keeps escapes intact so a sequence split across chunks still strips. */
+/** Scan a rolling output tail for localhost dev-server URLs. Pure: takes the
+ *  previous tail + the new chunk + the ports already reported, returns the newly
+ *  detected ones and the next 512-char tail. The tail keeps escapes intact so a
+ *  sequence split across chunks still strips.
+ *
+ *  ALL MATCHES, not the first. Vite prints `Local:` and `Network:` on adjacent lines and an app
+ *  with an API prints both on one — taking only the first match meant a lane that serves two
+ *  ports only ever announced one, which directly undercuts the picker's "several servers, pick
+ *  one" story. */
+export function detectDevServerPorts(
+  tail: string,
+  chunk: string,
+  known: readonly number[] = [],
+): { ports: number[]; tail: string } {
+  const hay = tail + chunk
+  const seen = new Set(known)
+  const ports: number[] = []
+  DEV_RE.lastIndex = 0
+  for (const m of stripAnsi(hay).matchAll(DEV_RE)) {
+    const p = parseInt(m[1], 10)
+    if (p && !seen.has(p)) { seen.add(p); ports.push(p) }
+  }
+  return { ports, tail: hay.length > 512 ? hay.slice(-512) : hay }
+}
+
+/** The single-port form the existing caller uses. Kept so this change is additive. */
 export function detectDevServerPort(
   tail: string,
   chunk: string,
   lastPort: number | null,
 ): { port: number | null; tail: string } {
-  const hay = tail + chunk
-  let port: number | null = null
-  const m = DEV_RE.exec(stripAnsi(hay))
-  if (m) {
-    const p = parseInt(m[1], 10)
-    if (p && p !== lastPort) port = p
-  }
-  return { port, tail: hay.length > 512 ? hay.slice(-512) : hay }
+  const { ports, tail: next } = detectDevServerPorts(tail, chunk, lastPort == null ? [] : [lastPort])
+  return { port: ports[0] ?? null, tail: next }
 }
 
 const URL_RE = /(https?:\/\/[^\s'"`<>()\[\]]+)/g

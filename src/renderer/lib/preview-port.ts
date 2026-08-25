@@ -112,17 +112,46 @@ export function formatTarget(t: PreviewTarget): string {
 export function pickPreviewPort(servers: readonly SessionPort[]): SessionPort | null {
   const byTier = (tier: SessionPort['attributed']) =>
     servers.filter((s) => s.attributed === tier).sort((a, b) => a.port - b.port)[0] ?? null
+  // ONLY these two tiers are auto-selectable. `shared`, `claimed` and `orphan` are offers in the
+  // dropdown with a warning, never an automatic pick — §2 rows 4, 5 and 6 all show NOTHING.
+  // Deliberately conservative: the cost of that is one extra click, and the cost of the old
+  // behaviour was silently reviewing a sibling's build and reporting on it.
   return byTier('sniffed') ?? byTier('reserved') ?? null
 }
+
+/** Can this candidate be chosen automatically? The other tiers require a deliberate pin. */
+export const isAutoSelectable = (s: SessionPort): boolean =>
+  s.attributed === 'sniffed' || s.attributed === 'reserved'
+
+/** The evidence, in words, for the picker's third column and the warning strip. Not jargon —
+ *  `this lane`, not `sniffed`. */
+export function evidenceLabel(s: SessionPort): string {
+  switch (s.attributed) {
+    case 'sniffed': return 'this lane'
+    case 'reserved': return 'reserved · unconfirmed'
+    case 'shared': return `⚠ shared with ${s.sharedWith ?? 2} lanes`
+    case 'claimed': return s.claimedBy ? `⚠ ${s.claimedBy}'s server` : '⚠ another lane'
+    case 'orphan': return '⚠ unclaimed'
+  }
+}
+
+/** Does this row need warning ink? Everything that is not attributable to this lane. */
+export const isWarnEvidence = (s: SessionPort): boolean => !isAutoSelectable(s)
 
 export interface PreviewPick {
   /** What to load. `null` when there is nothing we can honestly show. */
   url: string | null
-  /** Something IS answering on this lane's reserved port, but we cannot attribute it to this
-   *  lane. The panel says so instead of silently showing a stranger's app. */
+  /** Something IS answering that we cannot attribute to this lane. The panel names it rather
+   *  than silently showing a stranger's app — and rather than a blank pane, which reads as a
+   *  bug rather than as a decision. */
   foreign: boolean
-  /** The port actually chosen, for the address box's placeholder. */
+  /** The unattributable candidate, when there is one, so the empty state can NAME what it is
+   *  refusing to show and offer to pin it anyway. */
+  foreignServer: SessionPort | null
+  /** The port actually chosen, for the address bar. */
   port: number | null
+  /** Where the choice came from, for the badge. */
+  source: 'pinned' | 'sniffed' | 'reserved' | 'external' | 'none'
 }
 
 /** The whole decision: pinned target first, then the lane's own servers, then the "not serving
@@ -136,26 +165,57 @@ export function pickPreviewUrl(
   reservedUrl: string | null,
   target: PreviewTarget = EMPTY_TARGET,
 ): PreviewPick {
-  const foreign = servers.some((s) => s.attributed === 'foreign')
+  // The unattributable candidates, lowest first — the one the empty state names.
+  const unattributable = servers.filter((s) => !isAutoSelectable(s)).sort((a, b) => a.port - b.port)
+  const foreignServer = unattributable[0] ?? null
 
-  // An external target takes over completely — it is not one of this lane's servers and none of
-  // the attribution above applies to it.
-  if (target.url) return { url: target.url, foreign: false, port: null }
-
-  // A pinned port is the user overruling us, including overruling `foreign`: they may well know
-  // that the thing on 1422 IS what they want to look at.
-  if (target.port != null) {
-    return { url: `http://localhost:${target.port}${target.path}`, foreign: false, port: target.port }
+  // ROW 1 — an external target takes over completely. None of the attribution applies to it.
+  if (target.url) {
+    return { url: target.url, foreign: false, foreignServer: null, port: null, source: 'external' }
   }
 
+  // ROW 1 — a pin is the user overruling us, INCLUDING overruling the evidence: sometimes two
+  // lanes really are looking at one server and the user knows it. A decision wins, and because it
+  // is a decision it is durable rather than re-made on their behalf every poll.
+  if (target.port != null) {
+    const pinnedServer = servers.find((s) => s.port === target.port) ?? null
+    return {
+      url: `http://localhost:${target.port}${target.path}`,
+      // Still flagged, so the strip can say what they pinned — warned, not blocked.
+      foreign: pinnedServer != null && !isAutoSelectable(pinnedServer),
+      foreignServer: pinnedServer && !isAutoSelectable(pinnedServer) ? pinnedServer : null,
+      port: target.port,
+      source: 'pinned',
+    }
+  }
+
+  // ROWS 2 and 3 — sniffed, then reserved-and-unshared-and-unclaimed.
   const picked = pickPreviewPort(servers)
-  if (picked) return { url: `http://localhost:${picked.port}${target.path}`, foreign, port: picked.port }
+  if (picked) {
+    return {
+      url: `http://localhost:${picked.port}${target.path}`,
+      foreign: false,
+      foreignServer,
+      port: picked.port,
+      source: picked.attributed === 'sniffed' ? 'sniffed' : 'reserved',
+    }
+  }
 
-  // Nothing attributable. If something foreign is answering we must NOT fall back to the reserved
-  // url — that is precisely the port the stranger is on, and loading it is the original bug.
-  if (foreign) return { url: null, foreign: true, port: null }
+  // ROWS 4, 5, 6 — alive, but unattributable. SHOW NOTHING, and do NOT fall back to the reserved
+  // url: that is precisely the port the stranger (or the sibling) is on, and loading it is the
+  // original bug wearing a fallback's clothes. The panel names it instead.
+  if (foreignServer) {
+    return { url: null, foreign: true, foreignServer, port: null, source: 'none' }
+  }
 
+  // ROW 7 — nothing answering at all. The reserved url is still worth naming: "your server isn't
+  // up on 1423 yet" is a useful sentence and a blank panel is not.
   const reserved = portOf(reservedUrl)
-  if (reserved == null) return { url: reservedUrl, foreign: false, port: null }
-  return { url: `http://localhost:${reserved}${target.path}`, foreign: false, port: reserved }
+  if (reserved == null) {
+    return { url: reservedUrl, foreign: false, foreignServer: null, port: null, source: 'none' }
+  }
+  return {
+    url: `http://localhost:${reserved}${target.path}`,
+    foreign: false, foreignServer: null, port: reserved, source: 'reserved',
+  }
 }

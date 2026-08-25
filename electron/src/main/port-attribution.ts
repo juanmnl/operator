@@ -25,11 +25,28 @@
 // something the lane actually started, not the lane itself.
 import { descendantsOf, snapshotPs, sweepTagged, type PsRow, type TaggedRow } from './reap'
 
-export type PortAttribution = 'sniffed' | 'reserved' | 'foreign'
+/** The evidence tiers, from `dev/results/preview-address-bar-design.md` §1. Naming them is what
+ *  makes the selection rule writable — `session_ports` used to return bare numbers, so the
+ *  frontend had nothing better to reason with than "is the reserved one in the list".
+ *
+ *  - `sniffed`  a banner printed in THIS lane's pty. Proof.
+ *  - `reserved` Operator allocated it to this lane ALONE and something we started claims it.
+ *  - `shared`   the reservation is shared with a sibling in the same cwd. `alloc_port` does this
+ *               deliberately — "same cwd → same port" — so for N lanes in one root the reserved
+ *               value is IDENTICAL and cannot distinguish them. Actively ambiguous, and the root
+ *               of the wrong-server report: the old rule ranked exactly this signal highest.
+ *  - `claimed`  another live lane claims it. Evidence it is NOT ours.
+ *  - `orphan`   alive, and nobody claims it. A previous run's leftover, or an unrelated app. */
+export type PortAttribution = 'sniffed' | 'reserved' | 'shared' | 'claimed' | 'orphan'
 
 export interface SessionPort {
   port: number
   attributed: PortAttribution
+  /** How many lanes hold this reservation, when it is shared. Drives "shared with 2 lanes". */
+  sharedWith?: number
+  /** The lane that claims it, when another one does — so the UI can name it rather than saying
+   *  "another lane" and leaving the user to guess which. */
+  claimedBy?: string
 }
 
 export interface AttributionInput {
@@ -38,6 +55,8 @@ export interface AttributionInput {
   sniffed: boolean
   /** The port Operator reserved for this lane, if any. */
   reservedPort?: number
+  /** How many lanes hold that same reservation. >1 means `alloc_port` shared it across a cwd. */
+  reservationHolders?: number
   terminalId: string
   /** `ps -E` rows whose `OPERATOR_DEV_PORT` equals `port` — i.e. processes that were TOLD to
    *  serve it, whichever lane told them. */
@@ -53,20 +72,29 @@ export function attributePort(input: AttributionInput): PortAttribution {
   // Our own bytes said so. Nothing below can outrank that, and nothing needs to: no other
   // process can write into this pty.
   if (input.sniffed) return 'sniffed'
-  if (input.reservedPort == null || input.port !== input.reservedPort) return 'foreign'
 
-  const ours = input.claimants.filter((c) => input.ownDeepPids.has(c.pid))
   const theirs = input.claimants.filter((c) => c.terminalId != null && c.terminalId !== input.terminalId)
+
+  if (input.reservedPort == null || input.port !== input.reservedPort) {
+    // Not ours to begin with. Someone else's claim is worth reporting as such rather than
+    // flattening into "not ours" — the UI names the lane.
+    return theirs.length ? 'claimed' : 'orphan'
+  }
 
   // ANOTHER LANE WAS TOLD TO SERVE THIS PORT. Two processes cannot both hold it, and we cannot
   // see which one won — so the honest answer is that we do not know it is ours. Deciding this
   // BEFORE the positive check is the whole point: a contested port shown as this lane's app is
   // the original bug, and "we are not sure" must lose to nothing.
-  if (theirs.length) return 'foreign'
-  if (ours.length) return 'reserved'
+  if (theirs.length) return 'claimed'
+
+  // THE RESERVATION IS SHARED. `alloc_port` hands one port to every lane in a cwd on purpose, so
+  // this signal cannot tell those lanes apart — and the old rule ranked it highest, which is the
+  // wrong-server bug at its root. Ambiguous is its own answer, not a weaker kind of ours.
+  if ((input.reservationHolders ?? 1) > 1) return 'shared'
+
+  if (input.claimants.some((c) => input.ownDeepPids.has(c.pid))) return 'reserved'
   // Something is listening, our reservation is the port, and nothing we can see accounts for it.
-  // That is not evidence of ownership.
-  return 'foreign'
+  return 'orphan'
 }
 
 /** The pids that count as "something this lane started": its subtree, minus the pty shell and

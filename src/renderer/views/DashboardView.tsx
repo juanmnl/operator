@@ -390,7 +390,7 @@ export function DashboardView() {
         // mistake the preview used to make, in a smaller box.
         .then((ps) => {
           if (cancelled) return
-          setDetectedDevPort((ps ?? []).find((p) => p.attributed !== 'foreign')?.port)
+          setDetectedDevPort((ps ?? []).find((p) => p.attributed === 'sniffed' || p.attributed === 'reserved')?.port)
         })
         .catch(() => { /* best-effort */ })
     }
