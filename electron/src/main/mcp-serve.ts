@@ -69,7 +69,7 @@ const errorResult = (text: string) => ({ content: [{ type: 'text', text }], isEr
 
 const TOOLS = [
   {
-    name: 'operator__report',
+    name: 'report',
     description:
       'Hand your result to Operator directly. Use this INSTEAD OF (or as well as) writing a ' +
       '*-RESULT.md file: a file written inside your worktree is invisible to Operator and to ' +
@@ -90,7 +90,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'operator__task_status',
+    name: 'task_status',
     description: "Tell Operator a task's status changed. Call it when you START and when you FINISH.",
     inputSchema: {
       type: 'object',
@@ -103,6 +103,23 @@ const TOOLS = [
   },
 ]
 
+// THE TOOL NAMES ARE BARE ON PURPOSE — `report`, not `operator__report`.
+//
+// Claude Code namespaces every MCP tool as `mcp__<server>__<tool>`. With the server named
+// `operator` and the tools named `operator__report`, the name a lane actually sees was
+// `mcp__operator__operator__report` — doubled, and matching nothing any prompt tells a lane to
+// call. Verified by running a real lane against the packaged binary:
+//
+//   $ echo "list every tool starting with operator__" | claude -p --mcp-config '{"mcpServers":…}'
+//   mcp__operator__operator__report
+//   mcp__operator__operator__task_status
+//
+// So even with the `--mcp-config` flag finally wired, a lane told "call `operator__report`" would
+// have searched its tool list, found nothing under that name, and gone quiet — which is precisely
+// the symptom the audit was written about, reproduced one layer further in. Bare names make the
+// exposed pair `mcp__operator__report` / `mcp__operator__task_status`, and `roster.ts`'s prompts
+// name them that way.
+
 const VALID_STATUS = new Set(['queued', 'running', 'done', 'blocked'])
 
 function callTool(name: string, args: Record<string, unknown>): unknown {
@@ -114,7 +131,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
 
   const at = new Date().toISOString()
   try {
-    if (name === 'operator__report') {
+    if (name === 'report') {
       const summary = typeof args.summary === 'string' ? args.summary.trim() : ''
       if (!summary) {
         return errorResult('`summary` is required — a report with nothing in it is the silence this tool exists to remove.')
@@ -122,10 +139,18 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       const taskId = typeof args.taskId === 'string' ? args.taskId : null
       const artifactsJson = Array.isArray(args.artifacts) ? JSON.stringify(args.artifacts) : '[]'
       const id = store.insertReport(at, caller.terminalId, caller.projectId, caller.roleId, taskId, summary, artifactsJson)
-      return textResult(`Reported to Operator (#${id}). It is readable outside your worktree; you do not need to relay it.`)
+      // CLAIMS ONLY THE INSERT. The old wording — "you do not need to relay it" — asserted that
+      // someone would read this, and for the whole life of the Electron shell nobody could: there
+      // was no UI consumer at all, so a landed report was exactly as invisible as a lost one. A
+      // tool that overstates its own delivery teaches the model to stop saying things twice, and
+      // that is only safe once delivery is real. Say what happened; do not promise an audience.
+      return textResult(
+        `Saved as report #${id} in Operator's store. That is the write, not a read receipt — it is `
+        + `queued for the coordinator's Inbox and will be marked delivered when it is shown there.`,
+      )
     }
 
-    if (name === 'operator__task_status') {
+    if (name === 'task_status') {
       const id = typeof args.id === 'string' ? args.id.trim() : ''
       const status = typeof args.status === 'string' ? args.status.trim() : ''
       if (!id || !status) return errorResult('`id` and `status` are both required.')

@@ -14,7 +14,8 @@ import { spawn as ptySpawn, type IPty } from 'node-pty'
 import { randomUUID } from 'node:crypto'
 import { loginShell } from './login-shell'
 import { homedir } from 'node:os'
-import { buildArgs } from '../../../src/renderer/lib/launch-args'
+import { buildArgs, mcpConfigArg } from '../../../src/renderer/lib/launch-args'
+import { app } from 'electron'
 import { reapTree, snapshotPs, type PsRow } from './reap'
 import { claimLease, releaseLease } from './leases'
 import { isPortLive } from './port-probe'
@@ -150,10 +151,21 @@ export class TerminalManager {
     if (o.orchestrationNote?.trim()) notes.push(o.orchestrationNote.trim())
     if (notes.length) prefix.push('--append-system-prompt', notes.join('\n\n'))
 
-    // NOTE — the artifact plane (`--mcp-config` pointing at Operator's own `--mcp-serve`) is
-    // deliberately NOT wired here. It resolves `std::env::current_exe`, which in this shell is
-    // the Electron binary, and a lane talking to an MCP server that doesn't exist is worse than
-    // a lane without one. It is wired now — see mcp-serve.ts and the --mcp-serve branch in index.ts.
+    // THE ARTIFACT PLANE, wired for real this time.
+    //
+    // The comment that used to sit here said the `--mcp-config` flag "is wired now — see
+    // mcp-serve.ts and the --mcp-serve branch in index.ts". That was true about the SERVER and
+    // false about the client: nothing ever built the flag, so `operator__report` was in no lane's
+    // tool list from the day the Electron shell shipped. `dev/results/agent-comms-audit.md`
+    // measured it — 0 of 13 live lanes had the flag, 0 calls in any transcript, and the store's
+    // last write was the day the launch path changed hands.
+    //
+    // PACKAGED VS DEV is the whole subtlety. `process.execPath` in the packaged app is the
+    // Operator binary and `--mcp-serve` alone is enough. In dev it is the `electron` binary,
+    // which needs the app directory as argv[1] or it opens an empty shell and answers nothing.
+    // `app.isPackaged` is the only thing that can tell those apart, so the branch lives here
+    // rather than inside the pure arg builder.
+    prefix.push('--mcp-config', mcpConfigArg(process.execPath, app.isPackaged ? undefined : app.getAppPath()))
 
     const inner = [...prefix, ...o.args].map(shellQuote).join(' ')
     const shell = loginShell()

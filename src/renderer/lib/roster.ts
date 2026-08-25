@@ -136,7 +136,13 @@ const REPLY_PROTOCOL =
  *  from the roster at every launch, so it reaches every lane on the next spawn, customised charter
  *  or not, with nothing to migrate.
  *
- *  WHY IT NAMES THE FAILURE rather than just the tool: a lane told "call operator__report" weighs
+ *  THE NAME IS `mcp__operator__report`, and it is written out in full because it has to match.
+ *  Claude Code namespaces MCP tools as `mcp__<server>__<tool>`; a lane told to call something
+ *  under any other name searches its tool list, finds nothing, and goes quiet — which is exactly
+ *  what happened, twice over (see `dev/results/agent-comms-audit.md` and the note in
+ *  `mcp-serve.ts` about the name that used to double).
+ *
+ *  WHY IT NAMES THE FAILURE rather than just the tool: a lane told "call the report tool" weighs
  *  it against writing the file it was asked for and reasonably does the file. It has to know the
  *  file is UNREADABLE from anywhere else — that is the fact that makes the call worth a turn.
  *
@@ -146,7 +152,7 @@ const REPLY_PROTOCOL =
 /** WHERE A RESULT GOES. Worker lanes only — the coordinator IS Operator, so "call this to reach
  *  Operator" would be the wrong half of the plane for it (see its own paragraph below). */
 const REPORT_ARTIFACTS =
-  `\nWhen you finish a piece of work, call operator__report — summary, the taskId if it came from ` +
+  `\nWhen you finish a piece of work, call \`mcp__operator__report\` — summary, the taskId if it came from ` +
   `one, and the result in \`artifacts\` as CONTENT, never a path. A file you write lives in YOUR ` +
   `checkout and every other lane has a different one, so a path is unreadable to them. Still ` +
   `write the file when your brief names one: the file is for the human, the report is what makes ` +
@@ -156,7 +162,7 @@ const REPORT_ARTIFACTS =
  *  the same way — stated ONCE and composed into both notes rather than duplicated, which is what
  *  a first attempt at this did (it appended the sentence twice, run together mid-line). */
 const REPORT_TASK_STATUS =
-  `\nWhen a task you were given is finished, call operator__task_status(id, 'done') THEN — not at ` +
+  `\nWhen a task you were given is finished, call \`mcp__operator__task_status\`(id, 'done') THEN — not at ` +
   `the end of your session, which is the only other moment Operator can infer it. Use 'blocked' ` +
   `if you stopped and cannot continue.`
 
@@ -164,9 +170,10 @@ const REPORT_TASK_STATUS =
  *  habit is to go hunting for a lane's `*-RESULT.md`, which it cannot read and which is the
  *  behaviour this whole plane replaces. */
 const REPORT_INBOX =
-  `\nYour lanes hand results back by calling operator__report, so a finished lane's work reaches ` +
-  `you directly — don't go looking in its worktree, you cannot read one. Silence means no report, ` +
-  `not a result you missed.`
+  `\nYour lanes hand results back by calling \`mcp__operator__report\`, so a finished lane's work ` +
+  `reaches you directly — don't go looking in its worktree, you cannot read one. Reports arrive ` +
+  `in your Inbox and are announced on this line when you go idle; an unacked one is still ` +
+  `waiting. Silence means no report — but check the Inbox before concluding a lane did nothing.`
 
 /** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
  *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was

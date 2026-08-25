@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildArgs } from './launch-args'
+import { buildArgs, mcpConfigArg } from './launch-args'
 
 describe('buildArgs', () => {
   it('pins a new session id', () => {
@@ -41,5 +41,32 @@ describe('buildArgs', () => {
     expect(buildArgs({ model: 'opus', permissionMode: 'plan', initialPrompt: 'go' }, 'u')).toEqual([
       '--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', 'go',
     ])
+  })
+})
+
+describe('mcpConfigArg — the client half of the artifact plane', () => {
+  // The whole bug: this flag was never built, so `operator__report` was in no lane's tool list
+  // from the day the Electron shell shipped. 0 of 13 live lanes had it; 0 calls in any transcript.
+  it('names the operator server, pointed at the binary running us', () => {
+    expect(JSON.parse(mcpConfigArg('/Applications/Operator.app/Contents/MacOS/Operator')))
+      .toEqual({
+        mcpServers: {
+          operator: { command: '/Applications/Operator.app/Contents/MacOS/Operator', args: ['--mcp-serve'] },
+        },
+      })
+  })
+
+  // In dev `process.execPath` is the `electron` binary, which opens an empty shell and answers
+  // nothing unless it is given the app directory first. Getting this wrong fails silently — the
+  // lane launches fine and simply has no tool.
+  it('passes the app path first in DEV, where execPath is electron itself', () => {
+    const cfg = JSON.parse(mcpConfigArg('/repo/node_modules/.bin/electron', '/repo/electron'))
+    expect(cfg.mcpServers.operator.args).toEqual(['/repo/electron', '--mcp-serve'])
+  })
+
+  it('is valid JSON on one line — it is passed inline as a CLI argument', () => {
+    const s = mcpConfigArg('/x/Operator')
+    expect(s.includes('\n')).toBe(false)
+    expect(() => JSON.parse(s)).not.toThrow()
   })
 })

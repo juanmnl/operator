@@ -395,7 +395,7 @@ describe('orchestrationNote — the artifact plane is asked for', () => {
   it('a WORKER lane is told to report its result and to close its task', () => {
     const n = noteFor('code')
     expect(n).toContain('operator__report')
-    expect(n).toContain("operator__task_status(id, 'done')")
+    expect(n).toContain("`mcp__operator__task_status`(id, 'done')")
     // The REASON, not just the instruction: a lane weighing a tool call against writing the file
     // it was asked for needs to know the file is unreadable elsewhere.
     expect(n).toContain('unreadable to them')
@@ -412,9 +412,9 @@ describe('orchestrationNote — the artifact plane is asked for', () => {
     expect(n).toContain('Silence means no report')
     // It is Operator; "call this to reach Operator" is the wrong half for it.
     // It is Operator; it must not be told to file a report to reach itself.
-    expect(n).not.toContain('When you finish a piece of work, call operator__report')
+    expect(n).not.toContain('When you finish a piece of work, call `mcp__operator__report`')
     // …but it still closes its own tasks.
-    expect(n).toContain("operator__task_status(id, 'done')")
+    expect(n).toContain("`mcp__operator__task_status`(id, 'done')")
   })
 
   it('says each instruction EXACTLY once — a first version appended it twice, run together', () => {
@@ -422,6 +422,22 @@ describe('orchestrationNote — the artifact plane is asked for', () => {
       const n = noteFor(id)
       expect((n.match(/operator__task_status/g) ?? []).length).toBe(1)
       expect((n.match(/operator__report/g) ?? []).length).toBe(1)
+    }
+  })
+
+  // THE NAME HAS TO MATCH THE TOOL LIST. Claude Code namespaces MCP tools as
+  // `mcp__<server>__<tool>`; a lane told any other name searches, finds nothing, and goes quiet.
+  // Verified against the packaged binary — with the tools named `operator__report` inside a server
+  // named `operator`, the exposed name was `mcp__operator__operator__report`, matching nothing any
+  // prompt said. This test is what stops that drifting back.
+  it('names the tools EXACTLY as Claude Code will expose them', () => {
+    for (const id of ['operator', 'code', 'research', 'qa']) {
+      const n = noteFor(id)
+      expect(n).toContain('mcp__operator__report')
+      expect(n).toContain('mcp__operator__task_status')
+      // …and never the bare or doubled forms, which are the two ways this has already been wrong.
+      expect(n).not.toMatch(/(?<!mcp__)operator__operator__/)
+      expect(n).not.toMatch(/(?<!mcp__)\boperator__report\b/)
     }
   })
 
