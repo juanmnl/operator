@@ -383,7 +383,13 @@ export function DashboardView() {
     let cancelled = false
     const load = () => {
       window.operator.sessionPorts?.(activeTerminalId)
-        .then((ps) => { if (!cancelled) setDetectedDevPort(ps?.[0]) })
+        // Attributable ports only. The chip names "this session's dev server", and a `foreign`
+        // port is one we cannot tie to this session — pointing the chip at it is the same
+        // mistake the preview used to make, in a smaller box.
+        .then((ps) => {
+          if (cancelled) return
+          setDetectedDevPort((ps ?? []).find((p) => p.attributed !== 'foreign')?.port)
+        })
         .catch(() => { /* best-effort */ })
     }
     load()

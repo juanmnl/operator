@@ -147,7 +147,14 @@ export function installBridge(): void {
     // ones sniffed from its own output, filtered to those answering a loopback connect.
     // Attribution comes from that candidate set, so a sibling lane's server can never be
     // mistaken for this one's — and nothing inspects another process (see note below).
-    sessionPorts: (id: string) => invoke<number[]>('session_ports', { id }),
+    // The Rust command still answers with a bare `number[]` and has no attribution to give — it
+    // is the backend this bug was found in. Everything it reports is marked `reserved`, the
+    // middle confidence: calling it `sniffed` would claim proof this build cannot produce, and
+    // `foreign` would blank the preview on the shell that still ships it.
+    sessionPorts: async (id: string) => {
+      const ports = await invoke<number[]>('session_ports', { id })
+      return (ports ?? []).map((port) => ({ port, attributed: 'reserved' as const }))
+    },
     // Hand the backend a dev-server port sniffed from this session's terminal output.
     // This is what replaced the per-pid `lsof` walk, which fired a macOS TCC prompt
     // ("would like to access data from other apps") once per inspected process.

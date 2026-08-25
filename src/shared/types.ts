@@ -257,6 +257,21 @@ export interface SkillCatalogEntry {
   }
 }
 
+/** How confidently a live port can be tied to the lane asking about it.
+ *
+ *  - `sniffed`  — the port came out of the lane's OWN pty output. Proof.
+ *  - `reserved` — Operator's reservation for this lane, and a process the lane started claims it.
+ *  - `foreign`  — answering, but not attributable to this lane. Never shown as its app.
+ *
+ *  See `electron/src/main/port-attribution.ts` for what the inference can and cannot establish
+ *  without `lsof`. */
+export type PortAttribution = 'sniffed' | 'reserved' | 'foreign'
+
+export interface SessionPort {
+  port: number
+  attributed: PortAttribution
+}
+
 /** One entry in a lazily-read directory listing. */
 export interface TreeEntry {
   /** Repo-relative, `/`-separated. */

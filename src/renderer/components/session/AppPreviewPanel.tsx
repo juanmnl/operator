@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
-import { pickPreviewUrl, portOf } from '../../lib/preview-port'
+import { pickPreviewUrl, portOf, parseTarget, formatTarget, EMPTY_TARGET } from '../../lib/preview-port'
+import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
 // Live preview of the session's running app. The reserved/detected port is only a
@@ -26,11 +27,6 @@ const COMMON_PORTS = [5173, 5174, 3000, 3001, 4321, 4173, 8080, 8000, 5000, 4200
 
 // Is something answering at this origin? A no-cors fetch resolves (opaque) if a
 // server replies, throws on connection-refused (fast on localhost).
-// A pinned override is a full URL (has a scheme) or a bare port → localhost.
-function overrideUrl(o: string): string {
-  return /:\/\//.test(o) ? o : `http://localhost:${o}`
-}
-
 async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   try {
     await fetch(url, { mode: 'no-cors', signal })
@@ -54,8 +50,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   onAnnotateChange?: (annotate: boolean) => void
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
-  // A pinned target: a bare port ("5173") OR a full URL ("https://app.example.com") — so the
-  // preview (+ inspect/annotate) works for ANY web app, not just the session's dev server.
+  // A pinned target, stored as the STRING THE USER TYPED — a port, a port and a path
+  // ("5173/admin"), a bare path ("/admin"), or a full URL. Kept as text rather than as a record
+  // so the existing per-session storage keys keep working unchanged: every value ever written
+  // there parses correctly under `parseTarget`, and there is no migration to get wrong.
   const [override, setOverride] = useState<string | null>(() => {
     if (!overrideKey) return null
     try { return localStorage.getItem(overrideKey) || null } catch { return null }
@@ -78,7 +76,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // filtered to what answers. Unlike `found` (a blind localhost probe, user-initiated),
   // these are attributable — so we can act on them automatically without risking
   // showing a sibling lane's app.
-  const [servers, setServers] = useState<number[]>([])
+  // …and each carries HOW WELL it is attributed: a `foreign` port is answering but is not this
+  // lane's, and must never be previewed as its app. See lib/preview-port.
+  const [servers, setServers] = useState<SessionPort[]>([])
   const frameWrapRef = useRef<HTMLDivElement>(null)
   /** THE STAGE — the frame's VISIBLE box, and the one coordinate system everything drawn over
    *  the preview shares. See the derivation below `deviceLabel`. */
@@ -137,9 +137,15 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     return () => { cancelled = true; clearInterval(t) }
   }, [terminalId])
 
-  // Which of the session's servers to show when the user hasn't pinned one — reserved
-  // port if it's actually being served, else the lowest (see lib/preview-port).
-  const autoUrl = useMemo(() => pickPreviewUrl(servers, url), [servers, url])
+  /** The pinned target, parsed. A PATH SURVIVES A PORT CHANGE because the two are stored apart:
+   *  `/admin` with no port follows whichever server the lane is actually on. */
+  const target = useMemo(() => (override ? parseTarget(override) : EMPTY_TARGET), [override])
+
+  // Which server to show, and whether something unattributable is answering. `pick.url` is null
+  // when the only thing listening is FOREIGN — a stale orphan or a sibling lane on our reserved
+  // port — which is the case that used to show a stranger's app as this session's.
+  const pick = useMemo(() => pickPreviewUrl(servers, url, target), [servers, url, target])
+  const autoUrl = pick.url
 
   // Resolve a live port, but ONLY one we can attribute to THIS session: a manual
   // override, or a port from the session's own candidate set (`autoUrl`). We
@@ -151,7 +157,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     const ctrl = new AbortController()
     let timer = 0
     let stopped = false
-    const target = override ? overrideUrl(override) : autoUrl
+    // `pick` already resolved the pin, the attribution and the path into one URL — there is no
+    // second opinion to form here, and forming one is how the panel and the picker drifted apart
+    // in the first place (the panel re-derived the override URL with its own rules).
+    const target = autoUrl
 
     const tick = async () => {
       if (target && await ping(target, ctrl.signal)) {
@@ -189,11 +198,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
   const commitOverride = (raw: string) => {
     setEditing(false)
-    const v = raw.trim()
-    let next: string | null = null
-    if (/:\/\//.test(v)) next = v                                       // full URL
-    else if (/^\d{2,5}$/.test(v)) next = v                              // bare port
-    else if (/^localhost(:\d+)?$/.test(v) || /^[\w-]+(\.[\w-]+)+/.test(v)) next = `http://${v}` // host
+    // Normalised through the parser so what gets stored is what the box will show back, and so
+    // `5173/admin`, `/admin` and `localhost:5173` all land in the same shape.
+    const parsed = parseTarget(raw)
+    const next = raw.trim() ? formatTarget(parsed) || null : null
     setOverride(next)
     try {
       if (!overrideKey) return
@@ -202,7 +210,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     } catch { /* ignore */ }
   }
 
-  const display = resolved || (override ? overrideUrl(override) : autoUrl)
+  /** The servers we can actually attribute — what the picker offers and what "several ports"
+   *  counts. */
+  const ourServers = useMemo(() => servers.filter((sp) => sp.attributed !== 'foreign'), [servers])
+  const display = resolved || pick.url
   const host = display ? display.replace(/^https?:\/\//, '') : null
   // Which of the session's ports is on screen, so the picker can mark it.
   const displayPort = useMemo(() => portOf(display), [display])
@@ -357,14 +368,16 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           <input
             autoFocus
             defaultValue={override ?? ''}
-            placeholder="port or URL"
+            placeholder="port, /path, or URL"
             onBlur={(e) => commitOverride(e.currentTarget.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitOverride(e.currentTarget.value)
               if (e.key === 'Escape') setEditing(false)
             }}
             style={{
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, width: 90,
+              // Wider than the old port-only box: it now takes `5173/admin/users` too, and a
+              // field that visibly cannot hold what it accepts reads as not accepting it.
+              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, width: 200,
               background: 'var(--btn-bg)', color: 'var(--fg)', outline: 'none',
               border: '1px solid var(--accent)', borderRadius: 4, padding: '2px 6px',
             }}
@@ -372,7 +385,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         ) : (
           <button
             onClick={() => setEditing(true)}
-            title="Click to set the preview target — a port or any URL"
+            title="Click to set the preview target — a port, a path like /admin, or any URL"
             style={{
               fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, color: 'var(--fg-muted)',
               background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', outline: 'none',
@@ -389,23 +402,27 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
             (e.g. a web server + an API). One port needs no choice — the auto-pick above
             already landed on it. Picking PINS it, so an explicit choice survives a
             restart and won't be overridden the next time the port set shifts. */}
-        {servers.length > 1 && (
+        {/* Only the ports we can attribute to this session are offered. A `foreign` one is
+            answering, but showing it here would invite the user to pin someone else's app. */}
+        {ourServers.length > 1 && (
           <span
             title="This session is serving on several ports — pick which to preview"
             style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1, gap: 1 }}
           >
-            {servers.map((p) => (
+            {ourServers.map((sp) => (
               <button
-                key={p}
-                onClick={() => commitOverride(String(p))}
+                key={sp.port}
+                // Keeps whatever path is being viewed — pinning a port is not a reason to be
+                // thrown back to the site root.
+                onClick={() => commitOverride(`${sp.port}${target.path}`)}
                 style={{
                   height: 20, padding: '0 7px', border: 'none', borderRadius: 5, background: 'transparent',
                   cursor: 'pointer', outline: 'none',
                   fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 10,
-                  color: displayPort === p ? 'var(--accent)' : 'var(--fg-muted)',
+                  color: displayPort === sp.port ? 'var(--accent)' : 'var(--fg-muted)',
                 }}
               >
-                :{p}
+                :{sp.port}
               </button>
             ))}
           </span>
@@ -602,11 +619,28 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           </div>
         </div>
       ) : (
-        <Centered title={reach === 'checking' ? 'Looking for this session’s app…' : 'No app running for this session'}>
-          {reach === 'down' && (
+        <Centered title={
+          pick.foreign && !pick.url
+            ? 'Something else is on this session’s port'
+            : reach === 'checking' ? 'Looking for this session’s app…' : 'No app running for this session'
+        }>
+          {/* THE WARNING. Something answers on the port Operator reserved for this lane, but it
+              cannot be attributed to it — a stale dev server from a previous run, or a sibling
+              lane that got there first. Showing it would be showing a stranger's app as this
+              session's, which is the bug this whole path exists to stop. */}
+          {pick.foreign && !pick.url && (
+            <>
+              {`A server is answering on ${portOf(url) ?? 'this session’s reserved port'}, but it isn’t one this session started — so it isn’t being shown. If it IS the app you want, pin it.`}
+              <span style={{ display: 'block', marginTop: 12 }}>
+                <button onClick={() => setEditing(true)} style={retryBtn}>Pin it anyway…</button>
+                <button onClick={() => setNonce((n) => n + 1)} style={retryBtn}>Retry</button>
+              </span>
+            </>
+          )}
+          {reach === 'down' && !(pick.foreign && !pick.url) && (
             <>
               {override
-                ? `Nothing is answering on port ${override}.`
+                ? `Nothing is answering at ${override}.`
                 : host
                   ? `This session hasn’t started a server on ${host}. If its app runs on a different port, set it or scan for it.`
                   : 'This session hasn’t started a dev server. If you have one running elsewhere, set its port or scan for it.'}

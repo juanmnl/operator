@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, TreeEntry, FileContent } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, TreeEntry, FileContent, SessionPort } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -59,7 +59,9 @@ declare global {
       getDevPorts: () => Promise<Record<string, number>>
       /** TCP ports this session is serving on: its reserved + sniffed ports, filtered to
        *  those answering loopback. Attributed by candidate set, never by process inspection. */
-      sessionPorts: (id: string) => Promise<number[]>
+      /** The lane's live servers, each with how confidently it can be attributed to this lane.
+       *  A `foreign` port is answering but is NOT this lane's — never preview it. */
+      sessionPorts: (id: string) => Promise<SessionPort[]>
       /** Record a dev-server port sniffed from this session's own terminal output. */
       noteSessionPort: (id: string, port: number) => void
       onTerminalData: (callback: (id: string, data: string) => void) => () => void

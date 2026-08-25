@@ -18,6 +18,7 @@ import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { reapTree, snapshotPs, type PsRow } from './reap'
 import { claimLease, releaseLease } from './leases'
 import { isPortLive } from './port-probe'
+import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
 import { writeSessionSettings, type SkillMode } from './session-settings'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
@@ -359,15 +360,54 @@ export class TerminalManager {
     t.sniffedPorts.add(port)
   }
 
-  /** Ports this session is actually serving on: the one Operator reserved for it plus the ones
-   *  sniffed from its output, filtered to those answering a loopback connect. */
-  async sessionPorts(id: string): Promise<number[]> {
+  /** Ports this session is serving on, EACH WITH HOW WELL WE CAN ATTRIBUTE IT.
+   *
+   *  This used to return a bare `number[]` under a comment claiming "every port here belongs to
+   *  THIS session". It did not: the reserved port was included whenever anything at all was
+   *  listening on it, so a stale orphan or a sibling lane squatting 1422 was reported as this
+   *  lane's app and the preview showed someone else's server. That is the bug.
+   *
+   *  Attribution is decided in `port-attribution.ts` — sniffed from our own bytes is proof;
+   *  reserved-and-claimed-by-our-own-subtree is strong evidence; everything else answering is
+   *  `foreign` and the caller must not show it as ours. No `lsof` anywhere: the `ps -E` snapshot
+   *  the reaper already takes is the evidence, and the limits of that inference are written down
+   *  where the decision is made.
+   *
+   *  Sorted by port so the caller's pick cannot flip with the order the OS reports things. */
+  async sessionPorts(id: string): Promise<SessionPort[]> {
     const t = this.terminals.get(id)
     if (!t) return []
     const candidates = new Set<number>(t.sniffedPorts)
     if (t.devPort) candidates.add(t.devPort)
-    const live = await Promise.all([...candidates].map(async (p) => (await isPortLive(p)) ? p : null))
-    return live.filter((p): p is number => p != null).sort((a, b) => a - b)
+    if (!candidates.size) return []
+
+    const live = (await Promise.all([...candidates].map(async (p) => (await isPortLive(p)) ? p : null)))
+      .filter((p): p is number => p != null)
+    if (!live.length) return []
+
+    // The `ps` evidence is only needed when a LIVE port is not one of ours by sniffing — which is
+    // the only case attribution has to work for. A lane whose server announced itself pays
+    // nothing here, and the rest share a 3s-cached snapshot rather than each dumping the whole
+    // process table (this call is polled, twice per session).
+    const needsEvidence = live.some((p) => !t.sniffedPorts.has(p))
+    const { psRows, claimants } = needsEvidence
+      ? await evidenceSnapshot()
+      : { psRows: [], claimants: new Map<number, Array<{ pid: number; terminalId?: string }>>() }
+    const deep = ownDeepPids(psRows, t.pty?.pid)
+
+    return live
+      .map((port) => ({
+        port,
+        attributed: attributePort({
+          port,
+          sniffed: t.sniffedPorts.has(port),
+          reservedPort: t.devPort,
+          terminalId: id,
+          claimants: claimants.get(port) ?? [],
+          ownDeepPids: deep,
+        }),
+      }))
+      .sort((a, b) => a.port - b.port)
   }
 
   devPorts(): Record<string, number> {
