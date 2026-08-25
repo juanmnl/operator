@@ -128,6 +128,11 @@ declare global {
       fileUnwatch: (root: string) => Promise<void>
       /** Coalesced, ignore-filtered change notifications for a watched root. */
       onFileChange?: (cb: (root: string, paths: string[]) => void) => () => void
+      /** Download progress for an update in flight — percent, and the byte counts behind it. */
+      onUpdateProgress?: (cb: (percent: number, transferred: number, total: number) => void) => () => void
+      /** The REAL message when an update fails. Everything used to end at `console.error`, which
+       *  in a packaged app is nowhere the user can reach. */
+      onUpdateError?: (cb: (message: string) => void) => () => void
       /** Classify every directory under `~/.operator/worktrees`. READ-ONLY — computing the plan
        *  never removes anything. */
       worktreeReapPlan: () => Promise<ReapPlan>

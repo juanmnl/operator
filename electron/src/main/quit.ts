@@ -46,6 +46,40 @@ export class QuitGuard {
    *  other prefs. Main cannot read that, and must still be right when the renderer is gone. */
   setAsk(ask: boolean): void { this.ask = ask }
 
+  /** THE UPDATE'S QUESTION, asked ONCE and by the guard itself.
+   *
+   *  An update used to reach `quitAndInstall` without the guard knowing, so the guard asked its
+   *  own question on the way out and its veto CANCELLED the install. The user pressed "Install &
+   *  Restart" and stayed on the old version. So the guard asks first, in its own voice, with the
+   *  same busy-lane count it would have used — and `beginQuitting()` below then makes sure it
+   *  cannot ask a second time.
+   *
+   *  NATIVE, not the renderer's dialog, and deliberately: the renderer dialog exists for styling,
+   *  and the failure being fixed here is a prompt that got lost. An install prompt that a
+   *  mid-reload renderer can swallow would be the same bug with a nicer font. */
+  async askInstall(version: string): Promise<boolean> {
+    const lanes = this.busyLanes()
+    const detail = lanes.length
+      ? `${lanes.map((l) => `${l.project} (${l.phase})`).join(', ')}\n\nRestarting ends their terminals. The update is already downloaded — if you'd rather not now, it installs the next time you quit.`
+      : 'The update is already downloaded. Operator will restart once it is installed.'
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      buttons: ['Not now', 'Install and restart'],
+      defaultId: 1,
+      cancelId: 0,
+      message: lanes.length
+        ? `Install ${version} and restart? ${lanes.length} lane${lanes.length === 1 ? ' is' : 's are'} busy`
+        : `Install ${version} and restart?`,
+      detail,
+    })
+    return response === 1
+  }
+
+  /** DISARM THE VETO. Everything after this point treats the quit as already decided, which is
+   *  what stops `before-quit` asking a question the user has just answered — and cancelling the
+   *  installer's own quit with it. */
+  beginQuitting(): void { this.quitting = true }
+
   install(): void {
     app.on('before-quit', (e) => {
       if (this.quitting || !this.ask) { this.onTeardown(); return }

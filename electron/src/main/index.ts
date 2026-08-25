@@ -127,6 +127,17 @@ const TEARDOWN_DEADLINE_MS = 4000
  *  `will-quit`) waits on the SAME teardown rather than starting a second one. */
 let teardownPromise: Promise<void> | null = null
 
+/** Has teardown finished? `will-quit` holds the quit open for exactly ONE pass while teardown
+ *  runs, and reads this to know it must not hold again.
+ *
+ *  THE UPDATE PATH SETS IT DELIBERATELY. `quitAndInstall(false, true)` relaunches us after the
+ *  installer runs, and that hand-off wants an uninterrupted quit — a `preventDefault()` in the
+ *  middle of it is the same shape as the veto that broke the install in the first place. So the
+ *  install runs teardown to completion FIRST and then sets this, leaving `will-quit` nothing to
+ *  hold. */
+let tornDown = false
+
+
 function teardown(): Promise<void> {
   if (teardownPromise) return teardownPromise
   teardownPromise = (async () => {
@@ -237,7 +248,22 @@ function boot(): void {
   quit.install()
 
   installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
-  registerIpc({ terminals, transcript, chat, artifacts, quit, getWindow: () => mainWindow })
+  // THE INSTALL HOST — the ordering that makes "Install & Restart" actually install.
+  //
+  // `confirm` asks through the guard, once, up front. `prepareQuit` then disarms the guard AND
+  // runs teardown to completion before `quitAndInstall` is called, so nothing between the
+  // decision and the relaunch can veto: not the guard (disarmed), not `will-quit` (nothing left
+  // to hold). Both were cancelling the install before, and only the first was obvious.
+  const updateHost: import('./updater').InstallHost = {
+    confirm: (version) => quit.askInstall(version),
+    prepareQuit: async () => {
+      quit.beginQuitting()
+      await Promise.race([teardown(), new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS))])
+      tornDown = true
+    },
+  }
+
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, getWindow: () => mainWindow })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way
@@ -291,7 +317,6 @@ if (process.argv.includes('--mcp-serve')) {
   // the second pass finds `tornDown` set and lets the app go. Without the hold, `app.quit()`
   // tears the process down microseconds after the SIGTERM goes out and the dev servers survive
   // the very fix meant to end them.
-  let tornDown = false
   app.on('will-quit', (e) => {
     if (tornDown) return
     e.preventDefault()

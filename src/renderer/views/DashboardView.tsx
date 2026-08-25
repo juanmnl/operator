@@ -3300,6 +3300,25 @@ export function DashboardView() {
   const [availableUpdate, setAvailableUpdate] = useState<{ version: string } | null>(null)
   useEffect(() => { window.operator.getVersion?.().then(setAppVersion).catch(() => {}) }, [])
 
+  // THE UPDATE'S OWN VOICE. Both of these used to end at `console.error` in main, which in a
+  // packaged app is nowhere the user can reach — so "Install & Restart did nothing" was
+  // indistinguishable from "the button is broken". Subscribed ONCE on mount, not per check: the
+  // check runs on a timer and on demand, and re-subscribing there would stack listeners.
+  useEffect(() => {
+    const offProgress = window.operator.onUpdateProgress?.((percent) => {
+      // Coarse steps only. A toast per percent is a stream, not information.
+      if (percent > 0 && percent < 100 && percent % 25 !== 0) return
+      pushToast({
+        text: percent >= 100 ? 'Update downloaded' : `Downloading update… ${percent}%`,
+        kind: 'info',
+      })
+    })
+    const offError = window.operator.onUpdateError?.((message) => {
+      pushToast({ text: 'Update failed', detail: message, kind: 'error' })
+    })
+    return () => { offProgress?.(); offError?.() }
+  }, [pushToast])
+
   // Check the public releases feed; prompt to install + restart if an update is
   // available. `manual` adds feedback toasts for the no-update / error cases so
   // an explicit "Check for updates" never looks like it did nothing.

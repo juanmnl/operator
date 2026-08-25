@@ -13,6 +13,9 @@
 // plumbing to the user is worse than one that stays quiet.
 import { app } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 /** The packaged default feed.
  *
@@ -73,6 +76,49 @@ function currentVersion(): string | null {
 let pending: { version: string } | null = null
 let configuredUrl: string | null = null
 
+/** Set once a download has completed. From that moment `autoInstallOnAppQuit` is on, so a user
+ *  who dismisses the restart and quits later still gets the update — the download is not thrown
+ *  away because the moment passed. */
+let downloaded = false
+
+/** Where the update's own account of itself goes.
+ *
+ *  Every failure in this module used to end at `console.error`, which in a packaged app is
+ *  nowhere a user can reach — so "Install & Restart did nothing" arrived with no evidence at all.
+ *  electron-updater is verbose and its log is the difference between the next report being a
+ *  guess and being a diagnosis. */
+const LOG_PATH = () => join(process.env.OPERATOR_DIR || join(homedir(), '.operator'), 'updater.log')
+
+function log(level: string, ...args: unknown[]): void {
+  const line = `${new Date().toISOString()} [${level}] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a, replaceErrors))).join(' ')}\n`
+  try {
+    mkdirSync(join(process.env.OPERATOR_DIR || join(homedir(), '.operator')), { recursive: true })
+    appendFileSync(LOG_PATH(), line)
+  } catch { /* a log that cannot be written must not break the update */ }
+  console.error(line.trimEnd())
+}
+
+/** `JSON.stringify` renders an Error as `{}`, which is the least useful possible log line. */
+function replaceErrors(_k: string, v: unknown): unknown {
+  return v instanceof Error ? { name: v.name, message: v.message, stack: v.stack } : v
+}
+
+/** What the renderer is told while this runs. Wired in `index.ts`; absent under test. */
+type Sink = {
+  progress?: (percent: number, transferred: number, total: number) => void
+  error?: (message: string) => void
+}
+let sink: Sink = {}
+export function setUpdateSink(next: Sink): void { sink = next }
+
+/** THE REAL MESSAGE, not "install failed". A user who is told an update failed and nothing else
+ *  cannot act; the message names the signature check, the 404, or the disk. */
+function reportError(stage: string, e: unknown): void {
+  const message = e instanceof Error ? e.message : String(e)
+  log('error', `${stage}:`, e)
+  try { sink.error?.(`${stage}: ${message}`) } catch { /* the sink is best-effort */ }
+}
+
 function configure(): boolean {
   // Read the env on every call rather than at import: the module is imported at startup, and
   // caching the answer there made `OPERATOR_UPDATE_FEED` untestable without a module reset.
@@ -83,8 +129,19 @@ function configure(): boolean {
     // The renderer drives this: `checkUpdate` then `installUpdate`, both explicit. Downloading
     // on its own would spend the user's bandwidth on a decision they have not made.
     autoUpdater.autoDownload = false
+    // Off UNTIL a download completes — see `downloaded`. Leaving it on from the start would have
+    // an unrequested update install itself on the next quit.
     autoUpdater.autoInstallOnAppQuit = false
-    autoUpdater.logger = { info: console.error, warn: console.error, error: console.error, debug: () => {} }
+    autoUpdater.logger = {
+      info: (...a: unknown[]) => log('info', ...a),
+      warn: (...a: unknown[]) => log('warn', ...a),
+      error: (...a: unknown[]) => log('error', ...a),
+      debug: (...a: unknown[]) => log('debug', ...a),
+    }
+    autoUpdater.on('download-progress', (p: { percent?: number; transferred?: number; total?: number }) => {
+      try { sink.progress?.(Math.round(p.percent ?? 0), p.transferred ?? 0, p.total ?? 0) } catch { /* best-effort */ }
+    })
+    autoUpdater.on('error', (e: Error) => reportError('update', e))
     configuredUrl = url
   }
   return true
@@ -114,20 +171,82 @@ export async function checkUpdate(): Promise<{ version: string } | null> {
     pending = { version }
     return pending
   } catch (e) {
-    console.error('[updater] check failed:', e)
+    // The CHECK stays quiet on the surface — an update checker that surfaces its own plumbing is
+    // worse than one that says nothing — but it is no longer silent on disk.
+    log('error', 'check failed:', e)
     return null
   }
 }
 
-export async function installUpdate(): Promise<void> {
+/** What the install needs from the app around it, injected so the ordering is testable. */
+export interface InstallHost {
+  /** Ask the user ONCE, up front, through the quit guard — so the guard cannot ask again later
+   *  and cancel the updater's own quit. Resolves false to abandon the install. */
+  confirm: (version: string) => Promise<boolean>
+  /** Put the app into "we are quitting" state BEFORE `quitAndInstall`: disarm the guard's veto
+   *  and finish teardown, so nothing between here and the relaunch can cancel it. */
+  prepareQuit: () => Promise<void>
+}
+
+/** THE BUG THIS FUNCTION IS THE FIX FOR.
+ *
+ *  It used to download and then call `quitAndInstall` directly. That quit lands on `before-quit`,
+ *  where `QuitGuard` asks whether to quit while lanes are busy — and the guard's veto
+ *  (`e.preventDefault()`) cancels the updater's quit. So the user pressed "Install & Restart",
+ *  saw a toast, and stayed on 0.17.2 forever. Every error on the way was swallowed to
+ *  `console.error`, which in a packaged app is nowhere, so it looked like nothing happened at all.
+ *
+ *  The order now, and every step of it matters:
+ *
+ *    1. DOWNLOAD first, reporting progress. Asking before the bytes exist would put the dialog up
+ *       and then make the user wait behind it.
+ *    2. `autoInstallOnAppQuit = true` the moment the download lands — so even if everything below
+ *       is declined, a later ordinary quit still installs. The download is not wasted.
+ *    3. ASK ONCE, through the guard, naming the version and how many lanes are busy. One question,
+ *       at the point the user can answer it.
+ *    4. PREPARE THE QUIT — mark the guard `quitting` and run teardown to completion — so nothing
+ *       downstream vetoes, and so `will-quit`'s teardown hold has nothing left to hold.
+ *    5. Only then `quitAndInstall`.
+ *
+ *  `quitAndInstall(false, true)`: not silent, and FORCE RUN AFTER — the second argument is what
+ *  relaunches us once the installer finishes, and it is why step 4 must leave the quit
+ *  uninterrupted rather than merely uncancelled. */
+export async function installUpdate(host: InstallHost): Promise<void> {
   if (!pending) return
+  const version = pending.version
   try {
     if (!configure()) return
+    log('info', `downloading ${version}`)
     await autoUpdater.downloadUpdate()
-    // `true` = force even with other windows open; the renderer only calls this after asking.
+    downloaded = true
+    // STEP 2 — the download survives a "not now".
+    autoUpdater.autoInstallOnAppQuit = true
+    log('info', `downloaded ${version}; autoInstallOnAppQuit armed`)
+  } catch (e) {
+    reportError('Download failed', e)
+    return
+  }
+
+  try {
+    if (!(await host.confirm(version))) {
+      log('info', 'user declined the restart; the update will install on the next quit')
+      return
+    }
+    await host.prepareQuit()
+    log('info', `quitAndInstall(${version})`)
     autoUpdater.quitAndInstall(false, true)
   } catch (e) {
-    // Same reasoning as the check: the caller is a menu item, not an error reporter.
-    console.error('[updater] install failed:', e)
+    reportError('Install failed', e)
   }
+}
+
+/** Has a download completed this run? `index.ts` reads it so a plain quit can say so. */
+export const updateDownloaded = (): boolean => downloaded
+
+/** Test seam — the module holds process-wide state and vitest shares one module instance. */
+export function __resetUpdaterForTest(): void {
+  pending = null
+  configuredUrl = null
+  downloaded = false
+  sink = {}
 }
