@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
-import { PANEL_SUBHEAD_H } from '../../lib/chrome'
+import { SURFACE_FILL, PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { panelForm, pushRecent, type FilesNav, type PanelForm } from '../../lib/code-nav'
 
 // PLACEMENT B — the right-panel tab (§3). The SAME `FileViewer`; everything placement-specific is
@@ -69,7 +69,10 @@ export function FilesPanel({ laneRoot, projectRoot, nav, onNav, changed, onAsk }
     : shortenPath(nav.path ?? '', form === 'wide' ? 48 : 36)
 
   return (
-    <div ref={hostRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, position: 'relative' }}>
+    // Same `SURFACE_FILL` as the main-view placement, for the same reason: the panel body this
+    // lands in is a `flex: 1` BLOCK, so `flex: 1` here sized the column to its content and the
+    // viewer below the fold could not be scrolled to.
+    <div ref={hostRef} data-files-panel style={{ ...SURFACE_FILL, display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
         height: PANEL_SUBHEAD_H, padding: '0 10px', boxSizing: 'border-box',

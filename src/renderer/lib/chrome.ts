@@ -29,3 +29,20 @@ export const TOOLBAR_BAND_H = 44
  *  `30` independently, which is the identical setup — three numbers that agree until one of them
  *  is edited by someone who cannot see the other two. Nothing moved when this was introduced. */
 export const PANEL_SUBHEAD_H = 30
+
+/** THE FILL FOR A SURFACE DROPPED INTO A BLOCK SLOT — and both of this app's slots are blocks.
+ *
+ *  The main view mounts Chat / Files / Preview into a `position: absolute; inset: 0;
+ *  overflow: hidden` div that covers the still-mounted terminal without resizing it. The right
+ *  panel mounts its tab into a `flex: 1; minHeight: 0` div. Neither is `display: flex`, so a
+ *  surface that asks for its height with `flex: 1` alone gets NOTHING: it sizes to its content,
+ *  grows past the slot, and the slot clips it.
+ *
+ *  The Files view shipped that way in 0.18.0, in both placements. With no bounded height anywhere
+ *  down the chain, neither the tree nor the file viewer's scroller ever overflowed — so neither
+ *  could scroll, by wheel or by key, and everything below the fold was unreachable. It reads as
+ *  "scrolling is broken"; it is really "nothing knows how tall it is".
+ *
+ *  An EXPLICIT height is the fix. `flex: 1` stays alongside it, harmless and correct for any
+ *  parent that IS a flex column. `chrome.test.ts` holds every such surface to it. */
+export const SURFACE_FILL = { flex: 1, height: '100%', minHeight: 0, minWidth: 0 } as const

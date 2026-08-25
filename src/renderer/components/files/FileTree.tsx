@@ -80,6 +80,7 @@ export function FileTree({ root, expanded, onToggle, selected, onSelect, changed
             key={entry.path}
             onClick={() => (entry.dir ? onToggle(entry.path, !isOpen) : onSelect(entry.path))}
             title={entry.path}
+            data-file-row={entry.path}
             style={{
               display: 'flex', alignItems: 'center', gap: 4, width: '100%',
               height: ROW_H, padding: `0 8px 0 ${8 + depth * 12}px`, boxSizing: 'border-box',

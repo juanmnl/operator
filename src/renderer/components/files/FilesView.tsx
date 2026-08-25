@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
-import { PANEL_SUBHEAD_H } from '../../lib/chrome'
+import { SURFACE_FILL, PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { navigateTo, pushRecent, type FilesNav } from '../../lib/code-nav'
 
 // PLACEMENT A — the main view (§2). Tree at 240 on the left, viewer on the right, each scrolling
@@ -49,7 +49,10 @@ export function FilesView({ laneRoot, projectRoot, nav, onNav, changed, onAsk }:
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0 }}>
+    // An EXPLICIT height, because the main view's overlay is a plain block where `flex` means
+    // nothing. See `SURFACE_FILL` — sizing this by `flex: 1` alone is what made Files
+    // unscrollable in 0.18.0.
+    <div data-files-view style={{ ...SURFACE_FILL, display: 'flex', flexDirection: 'column' }}>
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10,
         height: PANEL_SUBHEAD_H, padding: '0 12px', boxSizing: 'border-box',
@@ -76,7 +79,15 @@ export function FilesView({ laneRoot, projectRoot, nav, onNav, changed, onAsk }:
       </div>
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0 }}>
-        <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto' }}>
+        {/* `tabIndex={-1}` so a click FOCUSES the column and PageDown/arrows scroll it — a plain
+            div takes no focus, so the tree could be wheeled but never scrolled from the keyboard.
+            -1 rather than 0 keeps it out of the tab order (CodeMirror's own scroller does exactly
+            this), and `outline: none` keeps the app's no-focus-ring rule. */}
+        <div
+          data-files-tree
+          tabIndex={-1}
+          style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto', outline: 'none' }}
+        >
           <FileTree
             root={root}
             expanded={nav.expanded}
