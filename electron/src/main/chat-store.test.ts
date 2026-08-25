@@ -200,6 +200,54 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     store.close()
   })
 
+  it('TWO PROCESSES, one WAL db: a report inserted between the backfills is still announceable', () => {
+    // The app and a lane's `mcp-serve` open this file independently and routinely at the same
+    // moment. Read-check / UPDATE / set-version as loose statements can interleave — both read
+    // version 0, the first stamps 1 and its caller files a report, and the second's UPDATE then
+    // marks that fresh report delivered and it is never announced. `BEGIN IMMEDIATE` is what
+    // makes the loser read the stamped version and do nothing.
+    const path = legacy('two-handles.db', [{ at: '2026-08-06T09:00:00Z', summary: 'history' }])
+
+    // Handle A — the app. Runs the migration.
+    const app = new ArtifactStore(path)
+    expect(app.undeliveredFor('operator', 10)).toEqual([])
+    // …and its caller files a report immediately afterwards, exactly in the window.
+    app.insertReport('2026-08-25T02:00:00Z', 't9', 'p', 'code', null, 'filed in the window', '[]')
+
+    // Handle B — a lane's MCP server, opening the SAME file while A is still open.
+    const lane = new ArtifactStore(path)
+    // B's constructor must have found the version stamped and left the new row alone.
+    expect(lane.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed in the window'])
+    // And A agrees, reading through its own handle.
+    expect(app.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed in the window'])
+
+    // History is still delivered, and still readable.
+    expect(app.listReports(10).map((r) => r.summary)).toEqual(['filed in the window', 'history'])
+    lane.close()
+    app.close()
+  })
+
+  it('a db already at user_version 1 is skipped SILENTLY — the migration never runs twice', () => {
+    // The skip is the half that protects every report filed after the migration. If a second
+    // open re-ran the UPDATE, every one of them would be marked delivered without ever being
+    // announced — the original bug, inverted and permanent.
+    const path = join(SANDBOX, 'already-migrated.db')
+    const raw = new Database(path)
+    raw.exec(`CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+              terminal_id TEXT NOT NULL, project_id TEXT, role_id TEXT, task_id TEXT,
+              summary TEXT NOT NULL, artifacts TEXT NOT NULL DEFAULT '[]',
+              seen INTEGER NOT NULL DEFAULT 0, to_role TEXT, delivered_at TEXT, acked_at TEXT);`)
+    raw.prepare('INSERT INTO reports (at, terminal_id, summary) VALUES (?,?,?)')
+      .run('2026-08-25T02:00:00Z', 't9', 'filed after the migration')
+    raw.pragma('user_version = 1')
+    raw.close()
+
+    const store = new ArtifactStore(path)
+    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed after the migration'])
+    expect(store.listReports(1)[0].deliveredAt).toBeUndefined()
+    store.close()
+  })
+
   it('mark-unread clears the ack and the seen flag, and leaves delivery alone', () => {
     const store = new ArtifactStore(join(SANDBOX, 'unread.db'))
     const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'read then not', '[]')

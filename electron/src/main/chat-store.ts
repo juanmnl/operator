@@ -238,14 +238,23 @@ export class ArtifactStore {
    *
    *  Guarded by `PRAGMA user_version`, the same mechanism `ChatStore.purgeInjectedRows` uses. No
    *  backup is taken here because nothing is destroyed: one NULL column becomes a timestamp that
-   *  was already in the row next to it. Any process that opens this database may be the one to
-   *  run it — the app, or a lane's MCP server — which is safe because it is idempotent and
-   *  ordered before that process's own writes. */
+   *  was already in the row next to it.
+   *
+   *  ONE TRANSACTION, AND IT MUST BE `immediate()`. Any process that opens this database may be
+   *  the one to run it — the app, or any lane's `mcp-serve` — and they routinely open it at the
+   *  same moment, on the same WAL file. Read-check, UPDATE and set-version as three loose
+   *  statements can interleave: both processes read version 0, one runs the UPDATE and stamps 1,
+   *  and the second's UPDATE — now running AFTER a report the first process's caller has already
+   *  inserted — marks that fresh report delivered and it is never announced. `BEGIN IMMEDIATE`
+   *  takes the write lock at the top, so the loser waits and then reads version 1 and does
+   *  nothing, which is the whole contract this migration rests on. */
   private backfillDelivered(): void {
-    const version = Number((this.db.pragma('user_version', { simple: true }) as number) ?? 0)
-    if (version >= ARTIFACTS_SCHEMA_VERSION) return
-    this.db.prepare('UPDATE reports SET delivered_at = at WHERE delivered_at IS NULL').run()
-    this.db.pragma(`user_version = ${ARTIFACTS_SCHEMA_VERSION}`)
+    this.db.transaction(() => {
+      const version = Number((this.db.pragma('user_version', { simple: true }) as number) ?? 0)
+      if (version >= ARTIFACTS_SCHEMA_VERSION) return
+      this.db.prepare('UPDATE reports SET delivered_at = at WHERE delivered_at IS NULL').run()
+      this.db.pragma(`user_version = ${ARTIFACTS_SCHEMA_VERSION}`)
+    }).immediate()
   }
 
   /** THE LIFECYCLE COLUMNS, added rather than replacing anything.

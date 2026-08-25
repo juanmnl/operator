@@ -19,13 +19,13 @@ const SOURCES = import.meta.glob('../**/*.tsx', { query: '?raw', import: 'defaul
 
 /** Every surface mounted into a slot that is a BLOCK rather than a flex column. A new main view
  *  or a new panel tab belongs on this list. */
-const BLOCK_SLOT_SURFACES = [
+const BLOCK_SLOT_SURFACES: Array<[file: string, component: string]> = [
   // the main view's absolute overlay, one per `mainView` value
-  'components/session/CanvasConversation.tsx',
-  'components/files/FilesView.tsx',
-  'components/session/AppPreviewPanel.tsx',
+  ['components/session/CanvasConversation.tsx', 'CanvasConversation'],
+  ['components/files/FilesView.tsx', 'FilesView'],
+  ['components/session/AppPreviewPanel.tsx', 'AppPreviewPanel'],
   // the right panel's body div — a `flex: 1` block, and the second half of the same bug
-  'components/files/FilesPanel.tsx',
+  ['components/files/FilesPanel.tsx', 'FilesPanel'],
 ]
 
 function sourceOf(suffix: string): string {
@@ -43,16 +43,53 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(Math.max(0, m.length - p1.length)))
 }
 
-/** The style object on the component's ROOT element — the last `return (` in the file, then the
- *  first `style={{ … }}` inside it. An inner pane saying `height: '100%'` proves nothing about
- *  the box the overlay actually measures, which is the one that shipped unsized. */
-function rootStyle(src: string): string {
+/** The style object on the EXPORTED component's root element.
+ *
+ *  Anchored on `export function <Name>(` and bounded by that function's own braces, NOT on the
+ *  file's last `return (` — every one of these files ends with a small helper (`Centered`,
+ *  `Empty`), so the naive anchor measured the helper's box and cheerfully passed
+ *  `AppPreviewPanel` on a centred placeholder. A guard that reads the wrong element is worse
+ *  than no guard: it reports green about code it never looked at.
+ *
+ *  Within that span: the LAST `return (` (the states above it are early returns — empty, error,
+ *  loading — and the real layout is the one at the bottom), then the first `style={{ … }}` in
+ *  it. */
+function rootStyle(src: string, componentName: string): string {
   const body = stripComments(src)
-  const ret = body.lastIndexOf('return (')
-  const at = body.indexOf('style={{', ret === -1 ? 0 : ret)
-  if (at === -1) throw new Error('no root style object found — has the component changed shape?')
-  const end = body.indexOf('}}', at)
-  return body.slice(at, end === -1 ? undefined : end)
+  const start = body.search(new RegExp(`export function ${componentName}\\s*[(<]`))
+  if (start === -1) throw new Error(`no exported ${componentName} — has it been renamed?`)
+
+  // Walk to where the component ends, so a helper defined below it can never be mistaken for
+  // its root. The body's opening brace is the first one OUTSIDE the parameter list — every one
+  // of these components destructures its props, and `({ url, … })` would otherwise close the
+  // span before the body began.
+  let parens = 0, open = -1
+  for (let i = start; i < body.length; i++) {
+    const c = body[i]
+    if (c === '(') parens++
+    else if (c === ')') parens--
+    else if (c === '{' && parens === 0) { open = i; break }
+  }
+  if (open === -1) throw new Error(`no body found for ${componentName}`)
+  let depth = 0, end = -1
+  for (let i = open; i < body.length; i++) {
+    if (body[i] === '{') depth++
+    else if (body[i] === '}' && --depth === 0) { end = i; break }
+  }
+  const span = body.slice(open, end === -1 ? undefined : end)
+
+  // The component's OWN returns, not a nested one: `\n  return (` at the exported function's own
+  // indentation. `AppPreviewPanel` renders a list through a callback whose `return (` is deeper
+  // in the file than the root's, so "the last return" picked a row inside a `.map`.
+  //
+  // The LAST of those, because the ones above it are early returns — empty, error, loading —
+  // and the real layout is always the one at the bottom.
+  const tops = [...span.matchAll(/\n {2}return \(/g)]
+  const ret = tops.length ? tops[tops.length - 1].index : -1
+  const at = span.indexOf('style={{', ret === -1 ? 0 : ret)
+  if (at === -1) throw new Error(`no root style object in ${componentName} — has it changed shape?`)
+  const close = span.indexOf('}}', at)
+  return span.slice(at, close === -1 ? undefined : close)
 }
 
 describe('SURFACE_FILL', () => {
@@ -71,8 +108,8 @@ describe('SURFACE_FILL', () => {
 })
 
 describe('every surface in a block slot sizes itself for a BLOCK parent', () => {
-  it.each(BLOCK_SLOT_SURFACES)('%s declares an explicit height', (suffix) => {
-    const root = rootStyle(sourceOf(suffix))
+  it.each(BLOCK_SLOT_SURFACES)('%s declares an explicit height', (suffix, component) => {
+    const root = rootStyle(sourceOf(suffix), component)
     // Either spelling counts: the shared constant, or the literal it standardises. What fails is
     // a root sized by `flex: 1` alone — the exact shape that shipped broken.
     const explicit = /SURFACE_FILL/.test(root) || /height:\s*'100%'/.test(root)

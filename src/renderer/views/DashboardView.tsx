@@ -3410,16 +3410,30 @@ export function DashboardView() {
             // idle.
             if (!canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))) break
             if (!tab.id) break
-            // Mark AFTER the line has actually gone in. The other order marked a report delivered
-            // whether or not it ever reached the composer, so a failed or skipped announcement
-            // was silently swallowed — the report stayed in the Inbox but nothing ever said it
-            // had arrived. This way the worst case is one duplicate announcement after a crash
-            // between the two, and a duplicate is recoverable where a silent drop is not.
-            try {
-              await submitQueue.submit(tab.id, announcement(report))
-            } catch {
-              break  // leave it announceable; the next idle pass picks it up
-            }
+            // Mark AFTER the line has actually gone in, and only if it did. The other order
+            // marked a report delivered whether or not it ever reached the composer, so a failed
+            // announcement was silently swallowed — the report sat in the Inbox with nothing ever
+            // saying it had arrived.
+            //
+            // THE OUTCOME IS READ FROM THE QUEUE, NOT FROM A THROW. `submit` never rejects: its
+            // chain ends in `.catch()` so one dropped write cannot break ordering for everything
+            // queued behind it, which means a `try/catch` here is dead code that only looks like
+            // a check. `pending(id)` is the real signal — it is cleared when the transcript
+            // confirms a user turn for that write, and still holds the text when the write went
+            // out unconfirmed (the rescue-CR path, or a lane nobody is tailing). Unconfirmed
+            // leaves the row announceable; the worst case is one duplicate line, which is
+            // recoverable where a silent drop is not.
+            //
+            // AND IT HOLDS THE BATCH. `submit` resolves on the write, but not before waiting out
+            // the confirmation deadline — up to RESCUE_AFTER_MS (30s) for a lane whose turn never
+            // appears, so a batch of three can occupy this pass for a minute and a half. That is
+            // acceptable here precisely because it is serialised and bounded: nothing else waits
+            // on this effect, `announcingRef` keeps a second pass from starting, and the
+            // alternative — firing all three and marking them — is the mid-turn paste this whole
+            // guard exists to prevent.
+            const line = announcement(report)
+            await submitQueue.submit(tab.id, line)
+            if (submitQueue.pending(tab.id)?.text === line) break
             await window.operator.artifactMarkDelivered?.(report.id)
           }
         })

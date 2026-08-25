@@ -74,6 +74,11 @@ for the row, `ipc.ts`'s for the mark), and the column is only ever read back for
 `IS NULL` — a display contract, not an ordering one. The backfill copies `at` verbatim, so it
 cannot introduce a second format.
 
+**Noted for whoever reads the column next:** `delivered_at` is now MIXED — backfilled rows carry
+their own `at` (when the report was written), new rows carry the moment of the announcement. Both
+are ISO-8601 UTC, and the mixture is safe only because the value is display-only and never
+compared or ordered against; anything that starts sorting on it has to reckon with that first.
+
 ## Tests
 
 **`electron/src/main/chat-store.test.ts`** — the cutoff block is replaced by
@@ -110,3 +115,85 @@ the real pre-fix state: lifecycle columns present, every `delivered_at` NULL, no
   Extracting the whole pass into `lib/` would make the submit-then-mark ordering testable too;
   that is a refactor beyond this rework and I did not start it.
 - No backfill of `acked_at` and no change to `seen`.
+
+
+---
+
+# Final fixes (review-2, #316)
+
+All four points, on top of the rework above.
+
+## 1 · The backfill is one `BEGIN IMMEDIATE` transaction — MUST
+
+`backfillDelivered` wraps read-version / UPDATE / set-version in a single
+`this.db.transaction(...).immediate()`. Any process may open this database — the app, or any
+lane's `mcp-serve` — and they routinely open it at the same moment on the same WAL file. As three
+loose statements the sequence interleaves: both read version 0, one runs the UPDATE and stamps 1,
+and the second's UPDATE — now running *after* a report the first process's caller has already
+inserted — marks that fresh report delivered, and it is never announced. `BEGIN IMMEDIATE` takes
+the write lock at the top, so the loser waits, reads version 1, and does nothing.
+
+Two tests:
+
+- **two `ArtifactStore` handles on one WAL db, both open at once.** A files the migration and then
+  inserts a report in the window; B opens the same file and must leave that row alone. Asserted
+  through *both* handles: the row is still in `undeliveredFor`, and history is still delivered and
+  still listed.
+- **a db already at `user_version = 1`** (built by hand, holding one NULL-`delivered_at` row) is
+  skipped silently: the row stays announceable and its `deliveredAt` stays undefined. This is the
+  half that protects every report filed after the migration — a re-run would mark them all
+  delivered without announcing them, which is the original bug inverted and permanent.
+
+**Honest limit:** better-sqlite3 is synchronous, so an in-process test cannot produce a true
+simultaneous interleave — these cover the sequential handoff and the skip, and the atomicity
+itself comes from `immediate()` rather than from a test that races it.
+
+## 2 · `submit()` never rejects, so the outcome is read from the queue
+
+The `try/catch` was dead code that only looked like a check: `submit`'s chain ends in `.catch()`
+so a dropped write cannot break ordering behind it. It is gone. The mark is now gated on the
+queue's own closed-loop state:
+
+```ts
+const line = announcement(report)
+await submitQueue.submit(tab.id, line)
+if (submitQueue.pending(tab.id)?.text === line) break   // unconfirmed → leave it announceable
+await window.operator.artifactMarkDelivered?.(report.id)
+```
+
+`pending(id)` is cleared when the transcript confirms a user turn for that write, and still holds
+the text when the write went out unconfirmed (the rescue-CR path, or a lane nobody is tailing).
+Comparing the text rather than mere presence keeps a newer submission on the same lane from being
+read as our failure.
+
+**And it holds the batch, which is now written down at the call site:** `submit` resolves on the
+write but not before waiting out the confirmation deadline — up to `RESCUE_AFTER_MS` (30s) for a
+lane whose turn never appears, so a batch of three can occupy the pass for ~90s. Acceptable
+because it is serialised and bounded — nothing else waits on that effect and `announcingRef`
+blocks a second pass — and the alternative is the mid-turn paste the guard exists to prevent.
+
+## 3 · `chrome.test.ts` was measuring the wrong element
+
+`rootStyle` anchored on the file's last `return (`, which is the helper at the bottom of these
+files — so `AppPreviewPanel` was being graded on `Centered`'s placeholder. A guard that reads the
+wrong element is worse than no guard: it reports green about code it never looked at.
+
+It now anchors on `export function <Name>(`, bounded by that function's own braces — the body's
+opening brace found *outside* the parameter list, since every one of these components destructures
+its props and `({ url, … })` closed the span before the body began — and then takes the last
+`return (` **at the component's own indentation**, which excludes the `.map` callback's return
+that `AppPreviewPanel` renders rows through.
+
+Proven both ways: dropping `height: '100%'` from `AppPreviewPanel`'s *real* root now fails the
+guard (it did not before), and reverting `FilesView` to `flex: 1` alone still fails it.
+
+## 4 · The mixed-format note
+
+Added above, in §5.
+
+## Verification
+
+- root `npx tsc --noEmit` exit 0; `electron/ npm run typecheck` clean.
+- `electron/ npx vitest run` → **377 pass** (chat-store: 32).
+- root `npm test` → **920 pass**, 33 fail — the same pre-existing jsdom failures
+  (`forgotten projects`, `ghost probe`, rail-fold `persistence`), untouched by these diffs.
