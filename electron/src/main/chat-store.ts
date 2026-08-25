@@ -181,7 +181,10 @@ function rowToReport(r: Record<string, unknown>): ArtifactReport {
 export class ArtifactStore {
   private readonly db: Database.Database
 
-  constructor(path = join(operatorDir(), 'artifacts.db')) {
+  /** Reports written at or before this are NEVER announced — see `undeliveredFor`. */
+  private readonly announceCutoff: string
+
+  constructor(path = join(operatorDir(), 'artifacts.db'), launchedAt = new Date().toISOString()) {
     this.db = openDb(path)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS reports (
@@ -208,6 +211,24 @@ export class ArtifactStore {
       CREATE INDEX IF NOT EXISTS task_status_applied ON task_status (applied, id);
     `)
     this.migrateReports()
+    this.announceCutoff = this.computeAnnounceCutoff(launchedAt)
+  }
+
+  /** THE LAUNCH CUTOFF, decided once per app launch.
+   *
+   *  `delivered_at` arrived long after the table did, so every row written before that migration
+   *  has it NULL — 310 of them, back to 2026-08-06. Without a cutoff each launch reads that
+   *  backlog as "never announced" and replays the whole thing at the coordinator, one line per
+   *  row. History is not news: a report the app was not running to announce has missed its
+   *  moment, and the Inbox is where it can still be read.
+   *
+   *  Later of launch time and the newest `acked_at` — read ONCE here, not per query, so that a
+   *  human opening an old row mid-session cannot raise the bar under reports that are genuinely
+   *  waiting to be announced. */
+  private computeAnnounceCutoff(launchedAt: string): string {
+    const row = this.db.prepare('SELECT MAX(acked_at) AS newest FROM reports').get() as { newest: string | null }
+    const newestAck = row?.newest ?? null
+    return newestAck && newestAck > launchedAt ? newestAck : launchedAt
   }
 
   /** THE LIFECYCLE COLUMNS, added rather than replacing anything.
@@ -241,6 +262,19 @@ export class ArtifactStore {
     this.db.prepare('UPDATE reports SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL').run(at, id)
   }
 
+  /** The announce pass's one write: delivered AND acked in the same step.
+   *
+   *  Announcing IS the delivery to the coordinator, and the ack is what keeps a restart quiet —
+   *  `delivered_at` alone would, but the cutoff is computed from `acked_at`, so an announced
+   *  report has to raise that bar itself or the next launch starts below it. `COALESCE` keeps
+   *  the FIRST timestamp of each: the moment it reached someone is the fact worth storing.
+   *  `markReportUnread` puts the mark back if the announcement was never actually read. */
+  markReportAnnounced(id: number, at: string): void {
+    this.db.prepare(
+      'UPDATE reports SET delivered_at = COALESCE(delivered_at, ?), acked_at = COALESCE(acked_at, ?), seen = 1 WHERE id = ?',
+    ).run(at, at, id)
+  }
+
   /** Mark a report as OPENED. This is the only signal in the system that a report was actually
    *  read, as opposed to written, stored, or announced. */
   markReportAcked(id: number, at: string): void {
@@ -259,9 +293,9 @@ export class ArtifactStore {
   undeliveredFor(role: string, limit: number): ArtifactReport[] {
     const rows = this.db.prepare(
       `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
-         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)
+         FROM reports WHERE delivered_at IS NULL AND at > ? AND (to_role = ? OR to_role IS NULL)
         ORDER BY id ASC LIMIT ?`,
-    ).all(role, limit) as Array<Record<string, unknown>>
+    ).all(this.announceCutoff, role, limit) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
   }
 

@@ -100,6 +100,75 @@ describe('ArtifactStore', () => {
   })
 })
 
+// The inbox replayed its whole history at the coordinator on every launch: `delivered_at` was
+// added long after the table, so every older row reads as "never announced".
+describe('ArtifactStore — the announce cutoff', () => {
+  const fresh = (name: string, launchedAt: string) => new ArtifactStore(join(SANDBOX, name), launchedAt)
+
+  it('never announces reports written before this launch', () => {
+    const path = 'cutoff.db'
+    const seed = fresh(path, '2026-08-06T00:00:00Z')
+    seed.insertReport('2026-08-06T09:00:00Z', 't1', 'p1', 'code', null, 'ancient history', '[]')
+    seed.close()
+
+    const store = fresh(path, '2026-08-25T10:00:00Z')
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    // …but the row is still there to read. Not announced is not deleted.
+    expect(store.listReports(10).map((r) => r.summary)).toEqual(['ancient history'])
+    store.close()
+  })
+
+  it('announces a report written after launch', () => {
+    const store = fresh('cutoff-live.db', '2026-08-25T10:00:00Z')
+    store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'news', '[]')
+    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['news'])
+    store.close()
+  })
+
+  it('takes the newest ack over launch time when the ack is later', () => {
+    // Clock skew or a future-dated row: the bar is whichever is higher, never the lower one.
+    const path = 'cutoff-ack.db'
+    const seed = fresh(path, '2026-08-25T10:00:00Z')
+    const id = seed.insertReport('2026-08-25T11:00:00Z', 't1', 'p1', 'code', null, 'already read', '[]')
+    seed.markReportAcked(id, '2026-08-25T12:00:00Z')
+    seed.insertReport('2026-08-25T11:30:00Z', 't1', 'p1', 'code', null, 'below the ack', '[]')
+    seed.close()
+
+    const store = fresh(path, '2026-08-25T10:30:00Z')
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    store.close()
+  })
+
+  it('acks on announce, so a restart does not re-announce', () => {
+    const path = 'announce-ack.db'
+    const store = fresh(path, '2026-08-25T10:00:00Z')
+    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'announce me', '[]')
+    store.markReportAnnounced(id, '2026-08-25T10:06:00Z')
+
+    const [row] = store.listReports(10)
+    expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
+    expect(row.ackedAt).toBe('2026-08-25T10:06:00Z')
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    store.close()
+
+    // Same rows, next launch — still quiet, and still readable.
+    const next = fresh(path, '2026-08-25T10:07:00Z')
+    expect(next.undeliveredFor('operator', 10)).toEqual([])
+    expect(next.listReports(10)).toHaveLength(1)
+    next.close()
+  })
+
+  it('keeps the FIRST announce timestamps if it is announced twice', () => {
+    const store = fresh('announce-twice.db', '2026-08-25T10:00:00Z')
+    const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p1', 'code', null, 'once', '[]')
+    store.markReportAnnounced(id, '2026-08-25T10:06:00Z')
+    store.markReportAnnounced(id, '2026-08-25T10:09:00Z')
+    expect(store.listReports(10)[0].deliveredAt).toBe('2026-08-25T10:06:00Z')
+    expect(store.listReports(10)[0].ackedAt).toBe('2026-08-25T10:06:00Z')
+    store.close()
+  })
+})
+
 // Scenario parity with `src-tauri/src/chatstore.rs`'s test module — the durability contract.
 describe('chatstore parity with the Rust store', () => {
   it('a row written BEFORE the tool column existed still loads', () => {
