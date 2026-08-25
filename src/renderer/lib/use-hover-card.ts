@@ -1,122 +1,128 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
+import {
+  HOVER_REST_MS, emptyHoverCard, hoverCardReducer, isOpen,
+  type HoverCardEvent, type HoverCardState,
+} from './hover-card-machine'
 
-// ONE implementation of the sidebar's fixed-position lane hover card, shared by SessionItem
-// and SidebarRail. They are the same widget; keeping two copies is how only one of them ended
-// up hardened, and the unhardened one kept drifting behind.
+// ONE CONTROLLER for the sidebar's fixed-position hover cards, shared by SessionItem, the rail's
+// project headers and the rail's lane orbs. They are the same widget.
 //
-// Two ways a card gets stranded, and this handles both:
+// THE REWRITE, and why the previous shape could not be patched. This file used to give every row
+// its own `useState` pair plus a module-level "owner" slot that a new card evicted by calling a
+// closure back into whoever held it. A screenshot with SEVEN cards open at once
+// (`rail-hover-cards-stuck-2026-08-24.png`) is what that guarantee was actually worth: the slot
+// only ever reached the holder through that one closure, so any path that left a row's state
+// `true` without going through it — a remount under the cursor, a re-render that recreated the
+// row, a module re-evaluation — stranded a card nothing afterwards could close.
 //
-//  1. THE ROW MOVES under a stationary cursor. The list is live (agents come and go, rows
-//     reorder), so a row can slide away with no mousemove and therefore no mouseleave. Fixed
-//     by re-verifying after every render and on scroll: hit-test the last known pointer with
-//     elementFromPoint — still inside the row → follow it, otherwise treat it as a leave.
-//     (elementFromPoint, not rect maths, so a row clipped by the scroller or covered by an
-//     overlay also counts as "not under the cursor".)
+// Now the state lives OUTSIDE the rows, in one store, with a single `openFor` field. At most one
+// card is not a lock that can be defeated; it is the shape of the data. A row renders a card iff
+// it is that id, so a stranded card has nowhere to exist.
 //
-//  2. THE CURSOR LEAVES THE WINDOW while the row stays put — ⌘Tab, focus lost, cursor flicked
-//     off-window. No further mousemove arrives, WKWebView doesn't reliably deliver mouseleave,
-//     and (1)'s hit-test happily re-confirms a stale in-window coordinate that is still over
-//     the row. That is the "two cards frozen over the transcript" report: hover A → leave the
-//     window → hover B → leave again.
-//
-// And one structural guarantee: AT MOST ONE CARD EXISTS APP-WIDE. Two at once is a state no
-// correct implementation should permit, so a new card evicts the previous holder rather than
-// every dismissal path having to fire. Any future leak self-heals on the next hover.
-//
-// Deliberately NOT a dismissal timeout: a card that vanishes while genuinely hovered is a new
-// bug, and a timer hides the state error instead of removing it.
+// The card's own styling is untouched — this file owns WHEN, never HOW.
 
-/** The single live card, app-wide. A claim evicts whoever held it. */
-let owner: { id: string; release: () => void } | null = null
+// --- the store ------------------------------------------------------------------------------
 
-function claim(id: string, release: () => void) {
-  if (owner && owner.id !== id) owner.release()
-  owner = { id, release }
+let state: HoverCardState = emptyHoverCard()
+const listeners = new Set<() => void>()
+
+function dispatch(event: HoverCardEvent): void {
+  const next = hoverCardReducer(state, event)
+  if (next === state) return
+  state = next
+  for (const l of listeners) l()
 }
-function releaseIfOwner(id: string) {
-  if (owner?.id === id) owner = null
+
+function subscribe(l: () => void): () => void {
+  listeners.add(l)
+  return () => { listeners.delete(l) }
+}
+
+/** Close everything. Exported so a surface that knows it is about to move the world — a menu
+ *  opening, a drag starting — can say so without reaching for a row. */
+export function closeHoverCards(): void {
+  dispatch({ type: 'close' })
+}
+
+// --- the global close listeners, installed once ----------------------------------------------
+//
+// EVERY WAY A POINTER STOPS BEING OVER A ROW. The old hook covered three of these; the rest are
+// why cards survived ⌘Tab, a scroll that slid the row out from under a stationary cursor, and the
+// rail re-rendering mid-hover. They are installed once at module scope rather than per hovered
+// row, because "close everything" is not a per-row concern and per-row listeners were themselves
+// a way for a stranded card to end up with none.
+if (typeof window !== 'undefined') {
+  const close = () => closeHoverCards()
+  window.addEventListener('blur', close)
+  window.addEventListener('resize', close)
+  document.addEventListener('visibilitychange', close)
+  // `mouseout` with a null relatedTarget is the reliable "pointer left the document" signal;
+  // `mouseleave` on documentElement covers the browsers that prefer it.
+  document.addEventListener('mouseout', (e) => { if (!(e as MouseEvent).relatedTarget) close() })
+  document.documentElement.addEventListener('mouseleave', close)
+  // Capture: the sidebar scroller's own scroll does not bubble, and a scroll is precisely the
+  // event that moves a row out from under a cursor that never moved.
+  document.addEventListener('scroll', close, true)
+  // Any keydown. Someone who has started typing is not reading a hover card, and this also
+  // catches ⌘Tab-adjacent chords that never produce a blur.
+  document.addEventListener('keydown', close, true)
 }
 
 export interface HoverCard {
-  /** Viewport coordinates for the fixed-position card, or null when nothing is hovered. */
+  /** Viewport coordinates for the fixed-position card, or null when this row's card is closed. */
   card: { top: number; left: number } | null
   hovered: boolean
-  /** Spread onto the row element (it also needs `ref`). */
   onMouseEnter: (e: ReactMouseEvent) => void
   onMouseLeave: () => void
-  /** Attach to the row so its position can be re-verified. */
+  /** Attach to the row so the card can follow it while open. */
   ref: React.RefObject<HTMLElement | null>
-  /** Dismiss from outside (e.g. a context menu opening over the row). */
+  /** Dismiss from outside (a context menu opening over the row, a drag starting). */
   dismiss: () => void
 }
 
 export function useHoverCard(id: string, offset = 8): HoverCard {
-  const [hovered, setHovered] = useState(false)
-  const [card, setCard] = useState<{ top: number; left: number } | null>(null)
+  const open = useSyncExternalStore(subscribe, () => isOpen(state, id), () => false)
   const ref = useRef<HTMLElement | null>(null)
-  const pointerRef = useRef<{ x: number; y: number } | null>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const timerRef = useRef<number | null>(null)
 
-  const dismiss = useCallback(() => {
-    setHovered(false)
-    setCard(null)
-    pointerRef.current = null
-    releaseIfOwner(id)
+  const dismiss = useCallback(() => { dispatch({ type: 'leave', id }) }, [id])
+
+  const onMouseEnter = useCallback((_e: ReactMouseEvent) => {
+    dispatch({ type: 'enter', id, now: Date.now() })
+    if (timerRef.current) window.clearTimeout(timerRef.current)
+    // The rest delay: flicking down a column of orbs to find one should show no cards at all.
+    // The timer is not cancelled on leave — a stale `rest` for a target that is no longer
+    // pending is a no-op in the reducer, which is cheaper than tracking cancellations.
+    timerRef.current = window.setTimeout(() => dispatch({ type: 'rest', id }), HOVER_REST_MS)
   }, [id])
 
-  const onMouseEnter = useCallback((e: ReactMouseEvent) => {
-    pointerRef.current = { x: e.clientX, y: e.clientY }
-    claim(id, () => { setHovered(false); setCard(null) })
-    setHovered(true)
-    const r = e.currentTarget.getBoundingClientRect()
-    setCard({ top: r.top, left: r.right + offset })
-  }, [id, offset])
-
-  const syncHover = useCallback(() => {
-    if (!hovered) return
-    const el = ref.current
-    if (!el) return
-    // An unfocused document means the cursor is not meaningfully over anything, whatever the
-    // last coordinate said. This is the complement of the hit-test below.
-    if (!document.hasFocus()) { dismiss(); return }
-    const p = pointerRef.current
-    if (p) {
-      const hit = document.elementFromPoint(p.x, p.y)
-      if (!hit || !el.contains(hit)) { dismiss(); return }
-    }
-    const r = el.getBoundingClientRect()
-    setCard((prev) => (prev && prev.top === r.top && prev.left === r.right + offset
-      ? prev
-      : { top: r.top, left: r.right + offset }))
-  }, [hovered, dismiss, offset])
-
-  // No dep array on purpose — this must run after EVERY render, because the trigger is the
-  // list re-rendering around us, not any state of our own.
-  useEffect(syncHover)
-
+  // Position is measured when the card OPENS and re-measured while it stays open, so a row that
+  // moves under a resting cursor takes its card with it rather than leaving it behind.
   useEffect(() => {
-    if (!hovered) return
-    const onMove = (e: MouseEvent) => { pointerRef.current = { x: e.clientX, y: e.clientY } }
-    // `mouseout` with a null relatedTarget is the reliable "pointer left the document" signal;
-    // blur and visibilitychange cover app switches where no mouse event arrives at all.
-    const onOut = (e: MouseEvent) => { if (!e.relatedTarget) dismiss() }
-    window.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseout', onOut)
-    window.addEventListener('blur', dismiss)
-    document.addEventListener('visibilitychange', dismiss)
-    // Capture: the sidebar scroller's own scroll doesn't bubble.
-    document.addEventListener('scroll', syncHover, true)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseout', onOut)
-      window.removeEventListener('blur', dismiss)
-      document.removeEventListener('visibilitychange', dismiss)
-      document.removeEventListener('scroll', syncHover, true)
+    if (!open) { setPos(null); return }
+    const measure = () => {
+      const el = ref.current
+      if (!el) { dispatch({ type: 'close' }); return }
+      const r = el.getBoundingClientRect()
+      setPos((prev) => (prev && prev.top === r.top && prev.left === r.right + offset
+        ? prev
+        : { top: r.top, left: r.right + offset }))
     }
-  }, [hovered, dismiss, syncHover])
+    measure()
+    // Re-measure on the animation frame rather than on every render: the rail re-renders on
+    // every transcript tick, and this must not turn that into a layout read per row.
+    const raf = window.setInterval(measure, 200)
+    return () => window.clearInterval(raf)
+  }, [open, offset])
 
-  // Unmounting while holding the card must not leave the slot claimed.
-  useEffect(() => () => releaseIfOwner(id), [id])
+  // A row that unmounts while holding the card must not leave it open — the exact stranding this
+  // rewrite exists for, and the one the old owner-slot could not reach.
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current)
+    if (isOpen(state, id)) dispatch({ type: 'close' })
+  }, [id])
 
-  return { card, hovered, onMouseEnter, onMouseLeave: dismiss, ref, dismiss }
+  return { card: open ? pos : null, hovered: open, onMouseEnter, onMouseLeave: dismiss, ref, dismiss }
 }

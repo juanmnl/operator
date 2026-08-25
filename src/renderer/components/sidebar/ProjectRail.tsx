@@ -8,7 +8,7 @@ import { byRailOrder, isOnRail } from '../../lib/project-shelf'
 import { orderByRoster } from '../../lib/roster'
 import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
-import { useHoverCard } from '../../lib/use-hover-card'
+import { useHoverCard, closeHoverCards } from '../../lib/use-hover-card'
 import { sessionLabel } from '../../lib/session-label'
 import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
@@ -321,7 +321,14 @@ export function ProjectRail({
   }, [activeProjectId, collapsed, sessions.length])
 
   return (
-    <div data-rail data-rail-collapsed={collapsed ? '' : undefined} style={{
+    <div
+      data-rail
+      data-rail-collapsed={collapsed ? '' : undefined}
+      // The rail's own boundary. `pointerleave` fires once for the whole strip whatever row the
+      // pointer was over, so it catches the case a per-row `mouseleave` misses: leaving sideways
+      // into the content card fast enough that the row never sees its own leave.
+      onPointerLeave={closeHoverCards}
+      style={{
       width: collapsed ? RAIL_W : RAIL_W_OPEN,
       flexShrink: 0, height: '100%',
       display: 'flex', flexDirection: 'column',
