@@ -31,6 +31,9 @@ const PRODUCT = 'Operator'
 // changing it would orphan any permission the user has already granted. Rename later, once the
 // Electron build is the only one.
 const BUNDLE_ID = 'com.operator.app.tauri'
+/** The feed baked into `app-update.yml`. Same URL `updater.ts` sets at runtime — kept here so a
+ *  bundle is self-describing, and asserted equal to it by `updater.test.ts`. */
+const UPDATE_FEED_URL = 'https://github.com/juanmnl/operator-releases/releases/latest/download'
 const ARCH = 'arm64'
 const OUT = join(root, 'release')
 const ICON = join(repo, 'src-tauri', 'icons', 'icon.icns')
@@ -104,6 +107,34 @@ const [built] = await packager({
         .split('\n').filter(Boolean)
       for (const h of helpers) chmodSync(h, 0o755)
       console.log(`  spawn-helper: ${helpers.length} made 0755 before asar`)
+    },
+    // `app-update.yml` — THE FILE WHOSE ABSENCE BROKE EVERY UPDATE.
+    //
+    // We package with `@electron/packager` and hand-write `latest-mac.yml`, so `electron-builder`
+    // — the thing that normally emits this — never runs. But the CLIENT is `electron-updater`,
+    // and `AppUpdater.getOrCreateDownloadHelper()` reads
+    // `<Resources>/app-update.yml` for `updaterCacheDirName` on the DOWNLOAD path. Missing, that
+    // read throws ENOENT and `downloadUpdate()` rejects.
+    //
+    // `checkForUpdates()` never touches it — we call `setFeedURL()` explicitly, which sets the
+    // client without consulting the file. So the check succeeded, the toast appeared, and the
+    // download died: exactly "Install & Restart does nothing, with no dialog and no quit".
+    // Verified on the shipped 0.17.2 AND on 0.18.0 — neither bundle contains this file.
+    //
+    // It goes in during `afterCopy` because signing happens DURING packaging (`osxSign` below);
+    // a file added afterwards would be outside the sealed resources and fail `codesign --verify`.
+    async ({ buildPath }) => {
+      const resources = resolve(buildPath, '..')
+      const yml = [
+        // The one key electron-updater actually requires. Named after the bundle id so two
+        // Operator builds cannot share a pending-update cache.
+        `updaterCacheDirName: ${BUNDLE_ID}-updater`,
+        'provider: generic',
+        `url: ${UPDATE_FEED_URL}`,
+        '',
+      ].join('\n')
+      writeFileSync(join(resources, 'app-update.yml'), yml)
+      console.log('  app-update.yml written into Resources (before signing)')
     },
   ],
   ...(SKIP_SIGN ? {} : {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolveFeedUrl } from './updater'
 
 const DEFAULT_FEED = 'https://github.com/juanmnl/operator-releases/releases/latest/download'
@@ -154,6 +155,14 @@ function fakeUpdater(over: Partial<{ downloadRejects: Error }> = {}) {
         if (over.downloadRejects) throw over.downloadRejects
         return []
       },
+      set updateConfigPath(v: string) {
+        // Recorded as a CALL, so the order against `setFeedURL` is observable in one list. That
+        // ordering is load-bearing — the real setter clears the client — and silently wrong is
+        // the worst way for it to be wrong.
+        calls.push('updateConfigPath')
+        ;(this as unknown as { _path: string })._path = v
+      },
+      get updateConfigPath(): string { return (this as unknown as { _path: string })._path },
       quitAndInstall: (isSilent: boolean, isForceRunAfter: boolean) => {
         calls.push(`quitAndInstall(${isSilent},${isForceRunAfter})`)
       },
@@ -186,7 +195,7 @@ describe('installUpdate — the order that makes it actually install', () => {
     // The guard is disarmed and teardown is done BEFORE the quit, which is the whole fix: the
     // veto that cancelled the install cannot run after `prepareQuit`.
     expect(order).toEqual(['confirm', 'prepareQuit'])
-    expect(fake.calls).toEqual(['setFeedURL', 'downloadUpdate', 'quitAndInstall(false,true)'])
+    expect(fake.calls).toEqual(['updateConfigPath', 'setFeedURL', 'downloadUpdate', 'quitAndInstall(false,true)'])
   })
 
   it('asks ONCE — never a second question the guard could veto on', async () => {
@@ -262,5 +271,48 @@ describe('installUpdate — the order that makes it actually install', () => {
     setUpdateSink({ error: (m) => errors.push(m) })
     fake.emit('error', new Error('ENOSPC: no space left on device'))
     expect(errors[0]).toContain('ENOSPC')
+  })
+})
+
+
+// ── THE ACTUAL CAUSE, pinned ─────────────────────────────────────────────────────────────────
+//
+// Reproduced against the live feed on 2026-08-25: the feed is sound (sha512 of the published
+// 136,354,476-byte zip matches `latest-mac.yml` exactly, both assets resolve), the app is signed
+// TeamID UJS4C5GUCW, and the check works — the user got the "0.18.0 available" toast.
+//
+// What is MISSING is `<Resources>/app-update.yml`, in the shipped 0.17.2 AND in 0.18.0. This app
+// is packaged with `@electron/packager` and its feed metadata is hand-written, so
+// `electron-builder` — which normally emits that file — never runs.
+//
+// `AppUpdater.getOrCreateDownloadHelper()` reads it for `updaterCacheDirName` on the DOWNLOAD
+// path only; `checkForUpdates()` never touches it because `setFeedURL()` sets the client
+// directly. So: check passes, toast appears, `downloadUpdate()` rejects with ENOENT, and the old
+// code swallowed that to `console.error`. No dialog, no quit — exactly what was reported.
+describe('the missing app-update.yml — why the download died with no dialog', () => {
+  afterEach(() => { vi.resetModules(); vi.doUnmock('electron-updater'); vi.doUnmock('electron'); delete process.env.OPERATOR_UPDATE_FEED })
+
+  it('writes a config and points the updater at it when the bundle has none', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    const configured = (fake.mock as unknown as { updateConfigPath?: string }).updateConfigPath
+    expect(configured, 'updateConfigPath was never set').toBeTruthy()
+    expect(existsSync(configured!)).toBe(true)
+    const written = readFileSync(configured!, 'utf8')
+    // `updaterCacheDirName` is the ONE key the download path needs; without it the read throws
+    // before the download starts.
+    expect(written).toContain('updaterCacheDirName:')
+    expect(written).toContain('provider: generic')
+  })
+
+  it('sets the config BEFORE the feed — the setter clears the client', async () => {
+    // `set updateConfigPath` does `this.clientPromise = null`. Setting it after `setFeedURL`
+    // would discard the feed we just chose and send the check somewhere else entirely.
+    const fake = fakeUpdater()
+    const { checkUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    expect(fake.calls.indexOf('updateConfigPath')).toBeGreaterThanOrEqual(0)
+    expect(fake.calls.indexOf('updateConfigPath')).toBeLessThan(fake.calls.indexOf('setFeedURL'))
   })
 })

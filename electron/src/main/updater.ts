@@ -13,7 +13,7 @@
 // plumbing to the user is worse than one that stays quiet.
 import { app } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -119,12 +119,48 @@ function reportError(stage: string, e: unknown): void {
   try { sink.error?.(`${stage}: ${message}`) } catch { /* the sink is best-effort */ }
 }
 
+/** THE FILE THAT BROKE EVERY UPDATE, and the belt to the release script's braces.
+ *
+ *  `AppUpdater.getOrCreateDownloadHelper()` reads `<Resources>/app-update.yml` for
+ *  `updaterCacheDirName` — on the DOWNLOAD path only. `checkForUpdates()` never touches it,
+ *  because `setFeedURL()` sets the client directly. So a bundle without that file passes the
+ *  check, shows "0.18.0 available", and then `downloadUpdate()` rejects with ENOENT.
+ *
+ *  It was missing because this app is packaged with `@electron/packager` and its feed metadata is
+ *  hand-written — `electron-builder`, which normally emits `app-update.yml`, never runs.
+ *  `release.mjs` writes it now. This function is what rescues a bundle that shipped WITHOUT it:
+ *  0.17.2 and 0.18.0 both lack the file, so without a runtime fallback every installed copy would
+ *  be permanently unable to update itself, and the only way forward would be a manual download —
+ *  forever, for every future version.
+ *
+ *  Writing our own and pointing `updateConfigPath` at it is equivalent: the packaged file is data,
+ *  not code, and every value in it is one this module already knows. */
+function ensureUpdateConfig(url: string): void {
+  try {
+    const packagedPath = process.resourcesPath ? join(process.resourcesPath, 'app-update.yml') : null
+    if (packagedPath && existsSync(packagedPath)) return
+    const dir = process.env.OPERATOR_DIR || join(homedir(), '.operator')
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, 'app-update.yml')
+    writeFileSync(path, `updaterCacheDirName: com.operator.app.tauri-updater\nprovider: generic\nurl: ${url}\n`)
+    // `updateConfigPath` also resets the client, so it must be set BEFORE `setFeedURL` below or
+    // the feed we just chose is discarded.
+    ;(autoUpdater as unknown as { updateConfigPath: string }).updateConfigPath = path
+    log('info', `app-update.yml missing from the bundle; using ${path}`)
+  } catch (e) {
+    // Non-fatal: the download may still fail, but it will now say why rather than vanishing.
+    log('warn', 'could not provide an update config:', e)
+  }
+}
+
 function configure(): boolean {
   // Read the env on every call rather than at import: the module is imported at startup, and
   // caching the answer there made `OPERATOR_UPDATE_FEED` untestable without a module reset.
   const url = resolveFeedUrl(process.env.OPERATOR_UPDATE_FEED, packaged())
   if (!url) return false
   if (configuredUrl !== url) {
+    // BEFORE `setFeedURL` — see the note in `ensureUpdateConfig`: the setter clears the client.
+    ensureUpdateConfig(url)
     autoUpdater.setFeedURL({ provider: 'generic', url })
     // The renderer drives this: `checkUpdate` then `installUpdate`, both explicit. Downloading
     // on its own would spend the user's bandwidth on a decision they have not made.

@@ -3,9 +3,72 @@
 **Branch:** `operator/a30080` · 2026-08-25 · Code lane
 **Symptom:** user on 0.17.2, 0.18.0 available, button shows a toast and nothing happens. Forever.
 
-## The cause, confirmed
+## CORRECTION — the actual cause, found by reproducing it (2026-08-25)
 
-Three separate things, and each one alone would have been enough to lose the install.
+**My first diagnosis was wrong about which step failed.** I wrote up the quit-guard veto as the
+cause; the user's own report ruled it out and I should have caught that: *no dialog appeared*. If
+`quitAndInstall` had ever been reached with lanes busy, the guard's dialog is exactly what would
+have appeared. It didn't, so the failure was **before** `quitAndInstall` — in `downloadUpdate()`.
+
+The veto is a real bug and the fix for it stands. It was not what the user hit.
+
+### What I checked against the live feed
+
+| | |
+|---|---|
+| `latest-mac.yml` | resolves; 0.18.0, one file, 136,354,476 bytes |
+| the `.zip` asset | resolves through both 302s; 136,354,476 bytes downloaded |
+| **sha512** | **matches the yml exactly** — the feed is sound |
+| new bundle signature | `Developer ID Application: Juan Cornejo (UJS4C5GUCW)`, hardened runtime |
+| installed bundle | 0.17.2, same TeamID, same bundle id `com.operator.app.tauri` |
+| **`Contents/Resources/app-update.yml`** | **ABSENT — in the installed 0.17.2 *and* in the published 0.18.0** |
+
+### The cause
+
+`electron-updater`'s `AppUpdater.getOrCreateDownloadHelper()` reads
+`<Resources>/app-update.yml` for `updaterCacheDirName` — **on the download path only**:
+
+```js
+const dirName = (await this.configOnDisk.value).updaterCacheDirName   // AppUpdater.js:545
+```
+
+`configOnDisk` is `readFile(app-update.yml)`. Missing, it throws **ENOENT**, and
+`downloadUpdate()` rejects. `checkForUpdates()` never touches it, because we call `setFeedURL()`
+explicitly, which sets the client without consulting the file.
+
+So: **check passes → "0.18.0 available" toast → `downloadUpdate()` rejects → the old code
+swallowed it to `console.error` → nothing.** No dialog, no quit. Exactly the report.
+
+**Why it was missing:** this app is packaged with `@electron/packager`, and `latest-mac.yml` is
+hand-written by `release.mjs`. `electron-builder` — the thing that normally emits
+`app-update.yml` — never runs here. The client is `electron-updater` all the same, so it expects
+a file nothing was producing.
+
+### Both halves of the fix
+
+1. **`release.mjs` writes it**, in packager's `afterCopy` hook — before `osxSign`, because signing
+   happens *during* packaging and a file added afterwards falls outside the sealed resources and
+   fails `codesign --verify`.
+2. **`updater.ts` writes its own at runtime** when the bundle has none, and points
+   `updateConfigPath` at it. This is not belt-and-braces decoration: **0.17.2 and 0.18.0 both
+   shipped without the file**, so without a runtime fallback every installed copy would be
+   permanently unable to update itself — the fix would only reach people who had already
+   installed manually. Set *before* `setFeedURL`, because the setter clears the client; a test
+   asserts that order.
+
+### What this means for you, concretely
+
+- **0.17.2 → 0.18.0 cannot self-update.** 0.17.2's code is already shipped and does not contain
+  the fallback. **Install 0.18.0 by hand from the DMG once.**
+- **0.18.0 → 0.18.1 also cannot**, for the same reason — 0.18.0 shipped without the file *and*
+  without the fallback. So the manual install should be of a build that contains this commit.
+- **From that build onward, updates work**, by both mechanisms independently.
+
+---
+
+## The three things that were ALSO wrong
+
+Found before the reproduction above, all real, none of them what the user hit.
 
 **1. The guard vetoed the updater's own quit.** `installUpdate` downloaded and then called
 `autoUpdater.quitAndInstall` directly. That quit lands on `before-quit`, which is exactly where
