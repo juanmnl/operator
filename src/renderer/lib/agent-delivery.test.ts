@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   HOP_LIMIT, PAIR_WINDOW_MS, PAIR_MAX_IN_WINDOW, PAIR_SUSPEND_MS, DELIVER_MAX_CHARS,
   emptyDeliveryState, evaluateDelivery, truncateForDelivery, deliveryPrefix, resetChainFor,
-  chatterPausedFrom,
+  chatterPausedFrom, LANE_SEND_LIMIT,
   type DeliveryState,
 } from './agent-delivery'
 
@@ -46,23 +46,25 @@ describe('hop budget', () => {
 
   it('makes the recipient inherit the hop, so its own reply continues the chain', () => {
     const { state } = evaluateDelivery(base({ from: 'research', to: 'code' }))
-    expect(state.inheritedHop.code).toBe(1)
+    expect(state.chainHop['research>code']).toBe(1)
     // Code now replies to research: hop 2, not a fresh 1.
     const { decision } = evaluateDelivery(base({ from: 'code', to: 'research', state }))
     expect(decision).toMatchObject({ kind: 'deliver', hop: 2 })
   })
 
   it(`STOPS at hop ${HOP_LIMIT}`, () => {
-    const state: DeliveryState = { ...emptyDeliveryState(), inheritedHop: { research: HOP_LIMIT - 1 } }
+    // `code` last said something to `research` at hop LIMIT-1, so research's reply is the one
+    // that tips it — keyed on the REVERSE pair, which is what makes it this thread's depth.
+    const state: DeliveryState = { ...emptyDeliveryState(), chainHop: { 'code>research': HOP_LIMIT - 1 } }
     const { decision } = evaluateDelivery(base({ state }))
     expect(decision.kind === 'block' && decision.reason).toBe('hop-limit')
     expect(decision.kind === 'block' && decision.note).toContain('without a human in it')
   })
 
   it('a human message resets the chain, so the budget recovers with no timer', () => {
-    const deep: DeliveryState = { ...emptyDeliveryState(), inheritedHop: { code: 5 } }
+    const deep: DeliveryState = { ...emptyDeliveryState(), chainHop: { 'research>code': 5 } }
     const reset = resetChainFor(deep, 'code')
-    expect(reset.inheritedHop.code).toBeUndefined()
+    expect(reset.chainHop['research>code']).toBeUndefined()
     expect(evaluateDelivery(base({ from: 'code', to: 'research', state: reset })).decision)
       .toMatchObject({ kind: 'deliver', hop: 1 })
   })
@@ -74,7 +76,7 @@ describe('cycle brake', () => {
     const decisions = []
     for (let i = 0; i < n; i++) {
       // Fresh chain each time, so this isolates the PAIR brake from the hop budget.
-      state = { ...state, inheritedHop: {} }
+      state = { ...state, chainHop: {} }
       const r = evaluateDelivery(base({ from, to, now: T0 + i * 1000, state }))
       decisions.push(r.decision)
       state = r.state
@@ -111,7 +113,7 @@ describe('cycle brake', () => {
   it('does not trip on the same volume spread outside the window', () => {
     let state = emptyDeliveryState()
     for (let i = 0; i < 10; i++) {
-      state = { ...state, inheritedHop: {} }
+      state = { ...state, chainHop: {} }
       const r = evaluateDelivery(base({ from: 'a', to: 'b', now: T0 + i * (PAIR_WINDOW_MS + 1000), state }))
       expect(r.decision.kind).toBe('deliver')
       state = r.state
@@ -190,24 +192,42 @@ describe('the loop test — two lanes answering each other MUST terminate', () =
   })
 
   it('stops even when the pair brake cannot help — a ring of many lanes', () => {
-    // A → B → C → D → E → F: every pair is distinct, so ONLY the hop budget can stop this.
+    // A → B → C → … → A: every pair is distinct, so neither the pair brake NOR the per-thread hop
+    // budget can see it — each step looks like a brand-new hop-1 conversation.
+    //
+    // THIS IS THE COST OF THE CASCADE FIX, and it is asserted rather than hidden. When the hop
+    // counter was per LANE, a ring tripped it in HOP_LIMIT steps; per thread, it cannot. What
+    // stops the ring now is `LANE_SEND_LIMIT` — how much one lane has said with no human in the
+    // loop — so a ring terminates after roughly that many messages per participant instead of
+    // once. Slower, and the trade bought back ordinary fan-out, which was deadlocking.
     const ring = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
-    let state = emptyDeliveryState()
-    let delivered = 0
-    for (let i = 0; i < 100; i++) {
-      const r = evaluateDelivery({
-        from: ring[i % ring.length], to: ring[(i + 1) % ring.length],
-        text: 'passing it on', targetLive: true, paused: false, now: T0 + i * 1000, state,
-      })
-      state = r.state
-      if (r.decision.kind === 'block') {
-        expect(r.decision.reason).toBe('hop-limit')
-        break
+    const run = (stepMs: number) => {
+      let state = emptyDeliveryState()
+      let delivered = 0
+      for (let i = 0; i < 2000; i++) {
+        const r = evaluateDelivery({
+          from: ring[i % ring.length], to: ring[(i + 1) % ring.length],
+          text: 'passing it on', targetLive: true, paused: false, now: T0 + i * stepMs, state,
+        })
+        state = r.state
+        if (r.decision.kind === 'block') return { delivered, reason: r.decision.reason, note: r.decision.note }
+        delivered++
       }
-      delivered++
-      expect(delivered).toBeLessThan(HOP_LIMIT + 1) // fails loudly instead of spinning
+      return { delivered, reason: null as string | null, note: '' }
     }
-    expect(delivered).toBeLessThanOrEqual(HOP_LIMIT)
+
+    // FAST ring — each pair comes round every 8 steps, so at 1s apart the pair brake sees four
+    // in its window and stops it long before anything else does. The old test's premise that
+    // "the pair brake cannot help" was simply untrue at this timing.
+    const fast = run(1000)
+    expect(fast.reason).toBe('pair-brake')
+
+    // SLOW ring — spaced so no pair ever has two messages in the same window. Now nothing but
+    // the lane budget can see it, and it still terminates.
+    const slow = run(PAIR_WINDOW_MS)
+    expect(slow.reason).toBe('hop-limit')
+    expect(slow.note).toContain('no human in the loop')
+    expect(slow.delivered).toBeLessThanOrEqual(LANE_SEND_LIMIT * ring.length)
   })
 })
 
@@ -269,34 +289,83 @@ describe('a chain that hits the limit STOPS, in both directions', () => {
     expect(out.filter((o) => o === 'sent').length).toBe(HOP_LIMIT - 1)
   })
 
-  it('marks BOTH ends — the addressee is the one that leaked', () => {
-    // Only the sender is over budget by its own count; the addressee's count never moved,
-    // because nothing was delivered into it. Marking one leaves the chain running at half rate.
+  it('marks BOTH DIRECTIONS of the thread — the addressee is the one that leaked', () => {
+    // Only the sender is over budget by this thread's count; the addressee's side never moved,
+    // because nothing was delivered into it here. Marking one leaves the chain at half rate.
     const { state } = runChain(10)
-    expect(state.exhausted.code).toBe(true)
-    expect(state.exhausted.research).toBe(true)
+    expect(state.exhausted['code>research']).toBe(true)
+    expect(state.exhausted['research>code']).toBe(true)
   })
 
-  it('blocks an exhausted lane from sending to a THIRD, uninvolved lane', () => {
-    // The chain is what is exhausted, not the pair — otherwise a stopped lane simply turns to
-    // whoever else is listening and carries on burning tokens.
+  // CHANGED DELIBERATELY, and this is the cascade fix. This test used to assert the opposite —
+  // that an exhausted lane could not send to a third, uninvolved lane — on the reasoning that
+  // "the chain is what is exhausted, not the pair". That reasoning is sound about a runaway and
+  // wrong about everything else: with the budget keyed per LANE, ordinary hub-and-spoke fan-out
+  // exhausted a shared counter and then silenced every lane talking to it
+  // (`project_delivery_brakes_stall.md`; audit §4). The escape it protected against is now
+  // bounded by FANOUT_EXHAUSTED_LIMIT below rather than paid for by everyone.
+  it('lets an exhausted lane start a DIFFERENT conversation — one dead thread is not a gag', () => {
     const { state } = runChain(10)
     const r = evaluateDelivery({ from: 'code', to: 'design', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state })
+    expect(r.decision).toMatchObject({ kind: 'deliver', hop: 1 })
+  })
+
+  // THE CASCADE, as its own test — the deadlock in `project_delivery_brakes_stall.md`. One
+  // exhausted thread used to mark the LANE, and a hub is in every thread, so the moment any one
+  // conversation ran out the coordinator could not speak to anybody.
+  it('a dead thread does not silence the hub — the cascade this fix exists for', () => {
+    const { state } = runChain(10)              // code ↔ research, run to exhaustion
+    for (const partner of ['design', 'qa']) {
+      const r = evaluateDelivery({ from: 'code', to: partner, text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state })
+      expect(r.decision, partner).toMatchObject({ kind: 'deliver', hop: 1 })
+    }
+  })
+
+  // …and ordinary fan-out never exhausts anything at all: four lanes, two exchanges each, well
+  // inside every budget. Under the per-lane counter this shape was what filled it.
+  it('ordinary hub-and-spoke fan-out exhausts nothing', () => {
+    let state = emptyDeliveryState()
+    for (let round = 0; round < 2; round++) {
+      for (const lane of ['code', 'research', 'qa', 'design']) {
+        const a = evaluateDelivery({ from: lane, to: 'operator', text: 'x', targetLive: true, paused: false, now: T0 + round * 120_000 + 1, state })
+        expect(a.decision.kind, `${lane} r${round}`).toBe('deliver')
+        const b = evaluateDelivery({ from: 'operator', to: lane, text: 'x', targetLive: true, paused: false, now: T0 + round * 120_000 + 2, state: a.state })
+        expect(b.decision.kind, `operator→${lane} r${round}`).toBe('deliver')
+        state = b.state
+      }
+    }
+    expect(Object.keys(state.exhausted)).toEqual([])
+  })
+
+  it('stops a lane that has said too much with no human in the loop', () => {
+    let state = emptyDeliveryState()
+    for (let i = 0; i < LANE_SEND_LIMIT; i++) {
+      // A different partner every time, so no thread and no pair can be what stops it.
+      state = evaluateDelivery({ from: 'code', to: `p${i}`, text: 'x', targetLive: true, paused: false, now: T0 + i * 120_000, state }).state
+    }
+    const r = evaluateDelivery({ from: 'code', to: 'fresh', text: 'x', targetLive: true, paused: false, now: T0 + 9_000_000, state })
     expect(r.decision.kind).toBe('block')
-    expect(r.decision.kind === 'block' && r.decision.reason).toBe('hop-limit')
+    expect(r.decision.kind === 'block' && r.decision.note).toContain('no human in the loop')
+    // …and a human speaking to it restores the budget.
+    const after = resetChainFor(r.state, 'code')
+    expect(evaluateDelivery({ from: 'code', to: 'fresh', text: 'x', targetLive: true, paused: false, now: T0 + 9_000_000, state: after }).decision.kind)
+      .toBe('deliver')
   })
 
   it('says WHY in a way that names the chain, not the message', () => {
     const { state } = runChain(10)
-    const r = evaluateDelivery({ from: 'code', to: 'design', text: 'x', targetLive: true, paused: false, now: T0, state })
+    const r = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0, state })
     expect(r.decision.kind === 'block' && r.decision.note).toMatch(/already reached \d+ hops/)
   })
 
-  it('a HUMAN message frees the lane it addresses, and only that lane', () => {
+  it('a HUMAN message frees every thread the lane it addresses is in', () => {
     const { state } = runChain(10)
     const after = resetChainFor(state, 'research')
-    expect(after.exhausted.research).toBeUndefined()
-    expect(after.exhausted.code).toBe(true) // untouched — the human spoke to one lane
+    // Both directions of research's threads go: the human is now in the loop for that lane,
+    // which is exactly what the budget measures the absence of. Doing less would leave a lane a
+    // human just addressed still unable to answer its other partners.
+    expect(after.exhausted['research>code']).toBeUndefined()
+    expect(after.exhausted['code>research']).toBeUndefined()
     const ok = evaluateDelivery({ from: 'research', to: 'code', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state: after })
     expect(ok.decision.kind).toBe('deliver')
   })
@@ -319,7 +388,7 @@ describe('a chain that hits the limit STOPS, in both directions', () => {
     const { state } = runChain(10)
     const r = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0 + 200_000, state })
     expect(r.decision.kind).toBe('block')
-    expect(r.state.exhausted.research).toBe(true) // still marked
+    expect(r.state.exhausted['research>code']).toBe(true) // still marked
   })
 
   it('does not count a blocked message toward the pair window', () => {
@@ -331,7 +400,7 @@ describe('a chain that hits the limit STOPS, in both directions', () => {
   it('tolerates a state object from before `exhausted` existed', () => {
     // The ref is not persisted, but a stale shape must degrade to the old behaviour rather than
     // throwing on `undefined[from]`.
-    const legacy = { inheritedHop: {}, pairHistory: {}, suspendedUntil: {} } as DeliveryState
+    const legacy = { pairHistory: {}, suspendedUntil: {} } as unknown as DeliveryState
     const r = evaluateDelivery({ from: 'code', to: 'research', text: 'x', targetLive: true, paused: false, now: T0, state: legacy })
     expect(r.decision.kind).toBe('deliver')
   })

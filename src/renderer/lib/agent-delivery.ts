@@ -51,14 +51,21 @@ export function chatterPausedFrom(stored: string | null | undefined): boolean {
 export type BlockReason = 'paused' | 'hop-limit' | 'pair-brake' | 'queued'
 
 export interface DeliveryState {
-  /** roleId → the hop count of the last message delivered INTO that lane.
+  /** `"from>to"` → the hop of the last message delivered ON THAT ORDERED PAIR.
    *
-   *  This is how a chain is reconstructed without message ids: a reply from lane X is treated as
-   *  a response to whatever was last delivered to X, so it inherits that hop + 1. It is a
-   *  HEURISTIC, and deliberately the conservative kind — a lane that speaks spontaneously long
-   *  after being addressed inherits a stale hop and so stops sooner, never later. A human message
-   *  resets the lane to 0, which is what makes the budget recover without a timer. */
-  inheritedHop: Record<string, number>
+   *  PER THREAD, NOT PER LANE, and that change is the fix for a measured cascade. This used to be
+   *  `Record<roleId, number>`: one scalar per lane, meaning "the hop of the last message delivered
+   *  INTO that lane, whoever sent it". Two unrelated senders talking to the same lane shared one
+   *  counter, so ordinary hub-and-spoke fan-out — a coordinator addressing four lanes that each
+   *  reply — could exhaust that lane's budget from unrelated volume and then, because exhaustion
+   *  marks both ends, stop everyone talking to it. `project_delivery_brakes_stall.md` documents
+   *  the deadlock; `dev/results/agent-comms-audit.md` §4 traces it to this field.
+   *
+   *  A conversation between A and B is now its own thread: a reply A→B inherits from what B last
+   *  said to A (`chainHop["B>A"]`), so the depth that bounds it is the depth of THAT exchange and
+   *  nothing else. Still a heuristic — there are no message ids — but a heuristic about the right
+   *  pair instead of the right lane. */
+  chainHop: Record<string, number>
   /** "from>to" → epoch ms of recent deliveries, pruned to the window. */
   pairHistory: Record<string, number[]>
   /** "from>to" → epoch ms until which that pair is suspended. */
@@ -73,11 +80,37 @@ export interface DeliveryState {
    *
    *  Cleared by exactly two things, both of which mean the chain legitimately restarted:
    *  a human message (`resetChainFor`), or a delivery INTO the lane that itself passed the budget
-   *  check — which cannot resurrect a dead chain, because passing the check is the whole point. */
+   *  check — which cannot resurrect a dead chain, because passing the check is the whole point.
+   *
+   *  KEYED PER THREAD too (`"from>to"`), for the same reason as `chainHop`. Exhausting A↔B no
+   *  longer silences A↔C — which is the cascade — but see `FANOUT_EXHAUSTED_LIMIT` for the
+   *  property that had to be kept by other means. */
   exhausted: Record<string, true>
+  /** roleId → agent-to-agent messages SENT since a human last addressed that lane. The ring
+   *  backstop; see `LANE_SEND_LIMIT`. */
+  laneSends: Record<string, number>
 }
 
-export const emptyDeliveryState = (): DeliveryState => ({ inheritedHop: {}, pairHistory: {}, suspendedUntil: {}, exhausted: {} })
+/** Total agent-to-agent messages ONE LANE may send before a human has to speak to it.
+ *
+ *  THE PROPERTY PER-THREAD ACCOUNTING LOSES, and it has to be replaced rather than dropped. The
+ *  per-lane hop counter had one real virtue: it bounded runaway shapes that are not a PAIR. A ring
+ *  — a→b→c→d→…→a — has a distinct pair at every step, so a per-thread budget sees a fresh hop-1
+ *  conversation each time and never stops it. The old rule caught that; keyed per pair, nothing
+ *  does.
+ *
+ *  So the ring is caught by a different measurement, one that cannot cascade: how much a single
+ *  lane has said with no human in the loop, regardless of who it said it to. It is deliberately
+ *  GENEROUS — a coordinator fanning out to five lanes and reading five replies is nowhere near it,
+ *  which is the whole reason the old shared counter had to go — and it resets the moment a human
+ *  speaks to that lane, exactly like the chain budget.
+ *
+ *  The trade, stated plainly: a ring now costs more messages before it stops than it used to
+ *  (roughly this number times the ring's size, rather than HOP_LIMIT once). That is the price of
+ *  not deadlocking ordinary fan-out, and ordinary fan-out is what actually happens. */
+export const LANE_SEND_LIMIT = 24
+
+export const emptyDeliveryState = (): DeliveryState => ({ chainHop: {}, laneSends: {}, pairHistory: {}, suspendedUntil: {}, exhausted: {} })
 
 const pairKey = (from: string, to: string) => `${from}>${to}`
 
@@ -137,8 +170,12 @@ export function deliveryPrefix(fromLabel: string): string {
  *  message was over budget, the conversation it belongs to is over, in both directions. */
 export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDecision; state: DeliveryState } {
   const { from, to, text, targetLive, paused, now, state } = input
-  const hop = (state.inheritedHop[from] ?? 0) + 1
   const key = pairKey(from, to)
+  const back = pairKey(to, from)
+  // INHERIT FROM THE REVERSE DIRECTION — what `to` last said to `from` is what this message is a
+  // reply to. That is the thread; anything else that happened to reach `from` is a different
+  // conversation and does not deepen this one.
+  const hop = (state.chainHop?.[back] ?? 0) + 1
 
   const block = (reason: BlockReason, note: string): { decision: DeliveryDecision; state: DeliveryState } =>
     ({ decision: { kind: 'block', reason, hop, note }, state })
@@ -154,19 +191,23 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
   // The chain budget. `exhausted` is checked alongside the count rather than after it, because a
   // lane that was marked when its partner hit the limit has a STALE count of its own — that gap is
   // exactly the leak, and reading the count alone is what let a message through it.
-  if (state.exhausted?.[from] || hop >= HOP_LIMIT) {
-    const already = !!state.exhausted?.[from]
+  const threadDead = !!(state.exhausted?.[key] || state.exhausted?.[back])
+  const runaway = (state.laneSends?.[from] ?? 0) >= LANE_SEND_LIMIT
+  if (threadDead || runaway || hop >= HOP_LIMIT) {
     return {
       decision: {
         kind: 'block', reason: 'hop-limit', hop,
-        note: already
-          ? `"${from}" is in a chain that already reached ${HOP_LIMIT} hops. Send it a task to let it speak again.`
-          : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; send "${to}" a task to restart the chain.`,
+        note: runaway
+          ? `"${from}" has sent ${LANE_SEND_LIMIT} agent-to-agent messages with no human in the loop. It is stopped until you send it a task.`
+          : threadDead
+            ? `"${from}" and "${to}" are in a chain that already reached ${HOP_LIMIT} hops. Send one of them a task to let it speak again.`
+            : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; send "${to}" a task to restart the chain.`,
       },
-      // BOTH ends. The sender is already over budget by its own count; the addressee is the one
-      // that leaked, because nothing was delivered into it so its count never moved. Marking only
-      // the sender would leave the chain running at half rate.
-      state: { ...state, exhausted: { ...state.exhausted, [from]: true, [to]: true } },
+      // BOTH DIRECTIONS OF THIS THREAD, and no others. The sender is over budget by this thread's
+      // count; the addressee is the one that leaked, because nothing was delivered into it on this
+      // pair so its side never moved. Marking one leaves the chain running at half rate — marking
+      // every lane, which is what the per-lane version effectively did, is the cascade.
+      state: { ...state, exhausted: { ...state.exhausted, [key]: true, [back]: true } },
     }
   }
 
@@ -193,24 +234,26 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
   return {
     decision: { kind: 'deliver', hop, text: wire, truncated },
     state: {
-      // The recipient inherits this hop, so ITS next reply continues the chain rather than
-      // restarting it. This single line is what makes the budget bound a conversation.
-      inheritedHop: { ...state.inheritedHop, [to]: hop },
+      // Recorded on THIS pair, so the addressee's reply back continues this thread rather than
+      // restarting it — and so a message it sends to somebody else does not inherit this depth.
+      chainHop: { ...state.chainHop, [key]: hop },
+      laneSends: { ...state.laneSends, [from]: (state.laneSends?.[from] ?? 0) + 1 },
       pairHistory: { ...state.pairHistory, [key]: [...recent, now] },
       suspendedUntil: state.suspendedUntil,
-      // …and this delivery PASSED the budget, so whatever exhaustion the addressee carried is
-      // spent: the chain restarted legitimately. It cannot revive a dead one — reaching here at
-      // all means the check above let it through.
-      exhausted: clearExhausted(state.exhausted, to),
+      // …and this delivery PASSED the budget, so whatever exhaustion this THREAD carried is
+      // spent. It cannot revive a dead one — reaching here at all means the check above let it
+      // through.
+      exhausted: clearThread(state.exhausted, key, back),
     },
   }
 }
 
-/** Drop a lane's exhaustion mark, returning the same object when there is nothing to drop. */
-function clearExhausted(exhausted: DeliveryState['exhausted'], lane: string): DeliveryState['exhausted'] {
-  if (!exhausted?.[lane]) return exhausted ?? {}
+/** Drop both directions of one thread, returning the same object when there is nothing to drop. */
+function clearThread(exhausted: DeliveryState['exhausted'], a: string, b: string): DeliveryState['exhausted'] {
+  if (!exhausted?.[a] && !exhausted?.[b]) return exhausted ?? {}
   const next = { ...exhausted }
-  delete next[lane]
+  delete next[a]
+  delete next[b]
   return next
 }
 
@@ -220,9 +263,19 @@ function clearExhausted(exhausted: DeliveryState['exhausted'], lane: string): De
  *  It clears the exhaustion mark for the same reason and by the same authority — otherwise a lane
  *  stopped by the budget could never speak again, since the mark has no timer of its own. */
 export function resetChainFor(state: DeliveryState, to: string): DeliveryState {
-  const exhausted = clearExhausted(state.exhausted, to)
-  if (!(to in state.inheritedHop) && exhausted === state.exhausted) return state
-  const inheritedHop = { ...state.inheritedHop }
-  delete inheritedHop[to]
-  return { ...state, inheritedHop, exhausted }
+  // EVERY THREAD THIS LANE IS IN. The human is now in the loop for this lane, which is exactly
+  // what the budget measures the absence of — so all of its conversations restart, not just one.
+  // Under the old per-lane keying this was a single delete; per-thread it is a sweep, and doing
+  // less would leave a lane a human just addressed still unable to answer its other partners.
+  const involves = (key: string) => { const [a, b] = key.split('>'); return a === to || b === to }
+  const chainHop: Record<string, number> = {}
+  for (const [k, v] of Object.entries(state.chainHop ?? {})) if (!involves(k)) chainHop[k] = v
+  const exhausted: Record<string, true> = {}
+  for (const k of Object.keys(state.exhausted ?? {})) if (!involves(k)) exhausted[k] = true
+  const laneSends = { ...state.laneSends }
+  delete laneSends[to]
+  const unchanged = Object.keys(chainHop).length === Object.keys(state.chainHop ?? {}).length
+    && Object.keys(exhausted).length === Object.keys(state.exhausted ?? {}).length
+    && Object.keys(laneSends).length === Object.keys(state.laneSends ?? {}).length
+  return unchanged ? state : { ...state, chainHop, exhausted, laneSends }
 }

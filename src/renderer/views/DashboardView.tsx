@@ -1528,7 +1528,32 @@ export function DashboardView() {
       const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === terminalId)
       const project = projs.find((p) => p.id === projectId)
-      if (!project) return
+      // NEVER A SILENT RETURN. This line used to be `if (!project) return` with nothing before
+      // it: no log row, no toast, no trace anywhere. It is the "2/9 dispatches vanished
+      // traceless" in the standing handoff — and grepping the lane jsonls, which is the right
+      // instinct, finds nothing, because the drop happens in the RENDERER on the sending lane's
+      // own mis-tracked tab state, before the sentinel's target is ever consulted.
+      //
+      // A dispatch that cannot be routed is still a thing that HAPPENED. It gets a toast so a
+      // human sees it now, and a dispatch-log row so it is still there tomorrow.
+      if (!project) {
+        toast({
+          text: 'A dispatch could not be routed',
+          detail: srcTab
+            ? `The lane that sent it isn't attached to a project, so there is no roster to route "${roleToken}" against.`
+            : 'The lane that sent it is no longer open.',
+          kind: 'error',
+        })
+        // Logged against the project id the event CARRIED, even though nothing matched it: an
+        // orphan row under a stale id is recoverable, a dropped dispatch is not.
+        if (projectId) {
+          log(projectId, {
+            id, at: new Date().toISOString(), fromRoleId: srcTab?.roleId,
+            toRoleId: undefined, task, outcome: 'unassigned',
+          })
+        }
+        return
+      }
       const roster = project.roster ?? []
       const d = { id, role: roleToken, task }
       const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
@@ -1632,7 +1657,25 @@ export function DashboardView() {
       const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
       const srcTab = tabs.find((t) => t.id === d.terminalId)
       const project = srcTab?.projectId ? projs.find((p) => p.id === srcTab.projectId) : undefined
-      if (!project) return
+      // The same traceless drop, on the subscription side. `orphanTabs` documents the shape: a
+      // live tab missing `projectId` is invisible to routing, and six el-encanto lanes sat in
+      // that state with "the only signal was the user noticing they had gone quiet".
+      if (!project) {
+        toast({
+          text: 'A dispatch could not be routed',
+          detail: srcTab
+            ? `"${srcTab.roleId ?? 'A lane'}" isn't attached to a project, so its dispatch has no roster to route against.`
+            : 'The lane that sent it is no longer open.',
+          kind: 'error',
+        })
+        if (srcTab?.projectId) {
+          log(srcTab.projectId, {
+            id: d.id, at: new Date().toISOString(), fromRoleId: srcTab.roleId,
+            toRoleId: undefined, task: d.task, outcome: 'unassigned',
+          })
+        }
+        return
+      }
 
       // AUTHORITY GATE. Only the coordinator commissions work unsupervised. Any other lane's
       // dispatch is recorded `pending-approval` and NOT delivered — lanes still talk, they just
