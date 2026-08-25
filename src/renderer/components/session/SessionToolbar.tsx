@@ -62,8 +62,8 @@ interface SessionToolbarProps {
   lastToolName?: string | null
   branch?: string | null
   /** Main-view segmented toggle: Console (terminal) · Chat · Preview. */
-  mainView?: 'terminal' | 'chat' | 'preview'
-  onSelectMainView?: (v: 'terminal' | 'chat' | 'preview') => void
+  mainView?: 'terminal' | 'chat' | 'preview' | 'files'
+  onSelectMainView?: (v: 'terminal' | 'chat' | 'preview' | 'files') => void
   /** Right side panel (Plan / Diff) open state + toggle. */
   panelOpen?: boolean
   onTogglePanel?: () => void
@@ -211,7 +211,9 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'no-drag',
           }}>
-            {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview']] as const).map(([v, label]) => {
+            {/* The fourth segment, in the style the control already has — transparent track,
+                `--overlay-subtle` on the active one, `--accent` ink, no fill. */}
+            {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview'], ['files', 'Files']] as const).map(([v, label]) => {
               const activeSeg = v === mainView
               return (
                 <button

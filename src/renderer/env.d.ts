@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, TreeEntry, FileContent } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -107,6 +107,17 @@ declare global {
       /** Every skill Claude Code would load for this project, walked off disk (three roots).
        *  Read-only: nothing here writes a skill's state. Pass '' for the global view. */
       skillsCatalog: (projectPath: string) => Promise<SkillsCatalog>
+      /** One directory's immediate children. Lazy — call again per expand. READ-ONLY, and every
+       *  path is rejected if it escapes `root` after canonicalisation. */
+      fileTree: (root: string, dir: string, showIgnored?: boolean) => Promise<TreeEntry[]>
+      /** Read a file for display. Same path guard. */
+      fileRead: (root: string, path: string) => Promise<FileContent>
+      /** Start/stop the recursive watcher on a root. Refcounted in main — both placements read
+       *  the same worktree and must not open two FSEvents streams over it. */
+      fileWatch: (root: string) => Promise<void>
+      fileUnwatch: (root: string) => Promise<void>
+      /** Coalesced, ignore-filtered change notifications for a watched root. */
+      onFileChange?: (cb: (root: string, paths: string[]) => void) => () => void
       /** Classify every directory under `~/.operator/worktrees`. READ-ONLY — computing the plan
        *  never removes anything. */
       worktreeReapPlan: () => Promise<ReapPlan>

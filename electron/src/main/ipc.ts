@@ -27,6 +27,7 @@ import { checkUpdate, installUpdate } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
+import * as files from './files'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -146,6 +147,18 @@ export function registerIpc(d: Deps): void {
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
     skillsCatalog: (projectPath) => skillsCatalog(String(projectPath ?? '')),
+    // The read-only code navigator's seam. EVERY one of these rejects a path that escapes its
+    // root after canonicalisation — the only new attack surface the feature opens, and the check
+    // lives in `files.ts` next to the walk it guards rather than here.
+    fileTree: (root, dir, showIgnored) => files.fileTree(String(root), String(dir ?? ''), showIgnored === true),
+    fileRead: (root, path) => files.fileRead(String(root), String(path)),
+    fileWatch: async (root) => {
+      const w = d.getWindow()
+      files.beginWatching(String(root), (changedRoot, paths) => {
+        if (w && !w.isDestroyed()) broadcast(w, 'onFileChange', changedRoot, paths)
+      })
+    },
+    fileUnwatch: async (root) => { files.endWatching(String(root)) },
     sessionPorts: async (id) => d.terminals.sessionPorts(id),
 
     // --- sessions, chat, artifacts -----------------------------------------------------

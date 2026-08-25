@@ -34,6 +34,9 @@ import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
+import { FilesView } from '../components/files/FilesView'
+import { FilesPanel } from '../components/files/FilesPanel'
+import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -112,11 +115,11 @@ const CONVERSATION_PANEL_W = 460
 // which surface it shows. Keyed by session id, persisted across reloads.
 // Main content area shows ONE of these (Console = the raw terminal). Chat + Preview can
 // fill the main window; Console is the live agent terminal (always mounted underneath).
-type MainView = 'terminal' | 'chat' | 'preview'
+type MainView = 'terminal' | 'chat' | 'preview' | 'files'
 // The right side panel's tabs. Contextual to the main view: Chat is offered here when the
 // main view is Console or Preview (so you can watch the terminal / preview AND read the
 // conversation), but dropped in Chat view where it's already the main surface.
-type PanelTab = 'plan' | 'diff' | 'chat'
+type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
@@ -254,9 +257,14 @@ export function DashboardView() {
   // Contextual panel tabs: Chat appears after Diff in Console/Preview, not in Chat view.
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
+  // Files is offered in the panel EXCEPT when it is already the main view — the two placements
+  // are one reader, and a tab that duplicates the surface beside it is the thing §4's rule A
+  // exists to prevent, expressed in the tab set rather than only in the routing.
   const panelTabs: PanelTab[] = mainView === 'chat'
-    ? ['plan', 'diff']
-    : ['plan', 'diff', 'chat']
+    ? ['plan', 'diff', 'files']
+    : mainView === 'files'
+      ? ['plan', 'diff', 'chat']
+      : ['plan', 'diff', 'chat', 'files']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
@@ -267,6 +275,15 @@ export function DashboardView() {
       return next
     })
   }, [])
+  // FILES NAV — per session, mirroring `sessionLayouts` (§9), and shared by BOTH placements.
+  // One reader, two windows onto it: the main view and the panel must agree about which file is
+  // open, or following a link in one and glancing at the other shows two different files.
+  const [filesNavs, setFilesNavs] = useState<Record<string, FilesNav>>({})
+  const filesNav = (activeSessionId && filesNavs[activeSessionId]) || EMPTY_NAV
+  const setFilesNav = useCallback((next: FilesNav) => {
+    setFilesNavs((prev) => (activeSessionIdRef.current ? { ...prev, [activeSessionIdRef.current]: next } : prev))
+  }, [])
+
   const selectMainView = useCallback((v: MainView) => patchLayout({ mainView: v }), [patchLayout])
   const selectPanelTab = useCallback((t: PanelTab) => patchLayout({ panelTab: t }), [patchLayout])
   // User-adjustable right side-panel width (drag handle on its left edge), persisted.
@@ -4380,6 +4397,24 @@ export function DashboardView() {
                     onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
                   />
                 )}
+                {/* PLACEMENT A (§2). The lane's worktree is `tab.cwd`; `tab.sourceCwd` is the
+                    project checkout the root switch offers. `onAsk` is the app's own answer to
+                    "I want to change this" — it hands the line to the lane through the same
+                    `submitQueue` the Plan tab's "Send to agent" uses. */}
+                {mainView === 'files' && (() => {
+                  const tab = terminals.find((t) => t.id === activeTerminalId)
+                  return (
+                    <FilesView
+                      laneRoot={tab?.cwd ?? ''}
+                      projectRoot={tab?.sourceCwd}
+                      nav={filesNav}
+                      onNav={setFilesNav}
+                      onAsk={activeSession.terminalId
+                        ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
+                        : undefined}
+                    />
+                  )
+                })()}
                 {mainView === 'preview' && (() => {
                   // The reserved port is only the starting hint — AppPreviewPanel asks the
                   // backend which ports this session is ACTUALLY serving on and picks (or
@@ -4514,6 +4549,20 @@ export function DashboardView() {
             customName={activeSession ? customNames[activeSession.id] : undefined}
             accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
+            filesTab={(() => {
+              const tab = terminals.find((t) => t.id === activeTerminalId)
+              return (
+                <FilesPanel
+                  laneRoot={tab?.cwd ?? ''}
+                  projectRoot={tab?.sourceCwd}
+                  nav={filesNav}
+                  onNav={setFilesNav}
+                  onAsk={activeSession?.terminalId
+                    ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
+                    : undefined}
+                />
+              )
+            })()}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
             onHumanSend={handleHumanSend}

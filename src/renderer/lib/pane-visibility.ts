@@ -14,7 +14,7 @@
 // `visibility: hidden` and NOT `display: none`, deliberately — a hidden box still has layout, so
 // the pane keeps its size and xterm is never told the viewport changed.
 
-export type MainView = 'terminal' | 'chat' | 'preview'
+export type MainView = 'terminal' | 'chat' | 'preview' | 'files'
 
 /** `visibility` for one lane's pane. `mainView` is the overlay state: anything but `terminal`
  *  means Chat or Preview is covering the area. */

@@ -259,6 +259,15 @@ export function installBridge(): void {
     // exist; the reap itself refuses outright rather than reporting a silent success.
     worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
+    // NOT IMPLEMENTED on the Tauri backend. The code navigator's filesystem seam is an
+    // Electron-main module (`electron/src/main/files.ts`) and there is no Rust command behind it.
+    // These REJECT rather than answering emptily: an empty tree and an empty file are both
+    // plausible-looking lies, and a viewer that shows "no files here" is worse than one that says
+    // it cannot read them.
+    fileTree: async () => { throw new Error('The Tauri build has no file browser.') },
+    fileRead: async () => { throw new Error('The Tauri build has no file browser.') },
+    fileWatch: async () => {},
+    fileUnwatch: async () => {},
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
     // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two
