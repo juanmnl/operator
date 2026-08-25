@@ -20,6 +20,7 @@ import { installPreviewInspect } from './preview-inspect'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
+import { reconcileAtBoot, reapOnQuit } from './worktree-reap'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 
@@ -141,6 +142,21 @@ function teardown(): Promise<void> {
     } catch (e) {
       console.error('[shell] teardown reap failed:', e)
     }
+    // DEFECT #1 of the worktree lifecycle audit: `teardown` never touched worktrees, so every
+    // worktree-backed lane still open at quit — a routine way to stop the app, given hours-long
+    // agent runs — permanently orphaned its directory. 71 of 107 directories (28.4 GB) were
+    // already in that state.
+    //
+    // AWAITED, and in MAIN. Both halves matter: awaited so the app does not exit out from under
+    // the removal, and in main so a renderer respawn cannot take the continuation with it (the
+    // other half of defect #2). Bounded by the same teardown deadline as the pty reap above —
+    // an app that cannot be quit is worse than a directory that survives one more launch, and
+    // boot finds it again anyway.
+    try {
+      await Promise.race([reapOnQuit(), new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS))])
+    } catch (e) {
+      console.error('[shell] worktree reap on quit failed:', e)
+    }
     chat?.close()
     artifacts?.close()
     stopTrayAnim?.()
@@ -161,6 +177,16 @@ function boot(): void {
   // depends on it. It never throws, and it never signals anything it cannot prove is orphaned —
   // see `reapOrphanedDevServers`.
   void reapOrphanedDevServers(loadSessions)
+
+  // DEFECT #5: nothing at launch ever cross-referenced `~/.operator/worktrees` against
+  // `sessions.json`, provenance and `git worktree list`, so a directory orphaned by any of the
+  // close-path gaps was never revisited by anything, ever. This is that pass — it also retries
+  // removals that were requested and interrupted, and queues the ended sessions whose only
+  // remaining removal trigger was a renderer-only tab the user never dismissed (defect #3).
+  //
+  // Not awaited: it shells out to git once per source repo and nothing about opening the window
+  // depends on it. It never throws, and while `AUTO_REAP_ON_TRIGGERS` is false it only reports.
+  void reconcileAtBoot()
 
   terminals = new TerminalManager(
     (id, data) => { const w = win(); if (w) broadcast(w, 'onTerminalData', id, data) },

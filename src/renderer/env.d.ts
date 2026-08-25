@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -107,6 +107,12 @@ declare global {
       /** Every skill Claude Code would load for this project, walked off disk (three roots).
        *  Read-only: nothing here writes a skill's state. Pass '' for the global view. */
       skillsCatalog: (projectPath: string) => Promise<SkillsCatalog>
+      /** Classify every directory under `~/.operator/worktrees`. READ-ONLY — computing the plan
+       *  never removes anything. */
+      worktreeReapPlan: () => Promise<ReapPlan>
+      /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a
+       *  deliberate user action. */
+      worktreeReap: (dryRun?: boolean) => Promise<ReapRunResult>
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
       folderPrefsLoadGlobal: () => Promise<FolderPreferences>
       folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings) => Promise<void>

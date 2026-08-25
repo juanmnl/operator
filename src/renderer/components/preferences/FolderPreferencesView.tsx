@@ -7,6 +7,7 @@ import { HooksSection } from './HooksSection'
 import { PluginsSection } from './PluginsSection'
 import { EnvironmentSection } from './EnvironmentSection'
 import { SkillsSection } from './SkillsSection'
+import { WorktreesSection } from './WorktreesSection'
 import { PageShell } from '../settings/PageShell'
 
 interface FolderPreferencesViewProps {
@@ -21,7 +22,7 @@ interface FolderPreferencesViewProps {
   onPatchProject?: (patch: Partial<Project>) => void
 }
 
-const TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins', 'Environment', 'Skills'] as const
+const TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins', 'Environment', 'Skills', 'Worktrees'] as const
 type Tab = (typeof TABS)[number]
 
 export function FolderPreferencesView({ projectPath, projectName, globalOnly = false, project = null, onPatchProject }: FolderPreferencesViewProps) {
@@ -114,6 +115,10 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
             settingsFiles={prefs.settingsFiles}
           />
         )}
+        {/* Machine-wide, not project-scoped — `~/.operator/worktrees` holds every project's
+            lanes. It sits here because this is where the app's file-level settings live, and a
+            second full-page view for one list would be a worse trade. */}
+        {activeTab === 'Worktrees' && <WorktreesSection />}
         {activeTab === 'Skills' && (
           <SkillsSection
             projectPath={globalOnly ? '' : projectPath}

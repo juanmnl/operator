@@ -257,6 +257,44 @@ export interface SkillCatalogEntry {
   }
 }
 
+/** How a worktree directory was classified by the reaper. See
+ *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
+export type ReapClass =
+  | 'live-claimed' | 'merged-clean' | 'merged-dirty' | 'unmerged'
+  | 'unattributed' | 'debris' | 'dead-source-repo' | 'corrupt'
+
+export interface ReapEntry {
+  path: string
+  cls: ReapClass
+  sizeBytes: number
+  branch?: string
+  sourceRepo?: string
+  /** In the automatic tier: merged (clean, or dirty and committable first) or pure debris,
+   *  attributable, not live-claimed, and accepted by the removal guard. */
+  auto: boolean
+  /** One sentence saying what will happen, or what is blocking. */
+  reason: string
+  needsCommit: boolean
+}
+
+export interface ReapPlan {
+  entries: ReapEntry[]
+  auto: ReapEntry[]
+  asks: ReapEntry[]
+  totalBytes: number
+  autoBytes: number
+  /** Sizes were not collected — render no size rather than "0 GB". */
+  sizesOmitted: boolean
+}
+
+export interface ReapRunResult {
+  removed: string[]
+  failed: Array<{ path: string; error: string }>
+  bytesFreed: number
+  dryRun: boolean
+  plan: ReapPlan
+}
+
 export interface SkillsCatalog {
   entries: SkillCatalogEntry[]
   /** Roots that could not be READ — so the UI can say so rather than render an empty group

@@ -95,6 +95,8 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   quitDecision:           { delivery: 'send',   impl: 'native', rust: 'quit.rs' },
   quitSetAsk:             { delivery: 'send',   impl: 'native', rust: 'quit.rs' },
   skillsCatalog:          { delivery: 'invoke', impl: 'native' },
+  worktreeReapPlan:       { delivery: 'invoke', impl: 'native' },
+  worktreeReap:           { delivery: 'invoke', impl: 'native' },
   folderPrefsLoad:        { delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },
   folderPrefsLoadGlobal:  { delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },
   folderPrefsSaveSettings:{ delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },

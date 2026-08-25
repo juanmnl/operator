@@ -323,6 +323,15 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
   return walk(root, 0)
 }
 
+/** Remove the DIRECTORY. The branch always survives — that is what lets a suspended lane's
+ *  reattach path put a directory back on it later.
+ *
+ *  THE GUARD BELOW IS UNTOUCHED. Every rule in it exists because some path shape would otherwise
+ *  have taken something that was not a worktree, and the lifecycle audit named it the one piece
+ *  of this system that is already solid. The reaper reuses it rather than reimplementing it.
+ *
+ *  The durable half of a lane close lives in `worktree-reap.ts`, not here — see
+ *  `removeWorktreeDurably` below for why this function is not the one the renderer should call. */
 export async function removeWorktree(path: string, sourceRoot: string): Promise<void> {
   const reason = dangerousRemovalReason(path, sourceRoot)
   if (reason) throw new Error(`Refusing to remove worktree ${path}: ${reason}`)

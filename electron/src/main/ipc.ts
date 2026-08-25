@@ -26,6 +26,7 @@ import { computeUsage, computeInsights } from './usage'
 import { checkUpdate, installUpdate } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
+import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -173,8 +174,23 @@ export function registerIpc(d: Deps): void {
     },
     worktreeStatus: (path) => wt.worktreeStatus(path),
     pathExists: (path) => wt.pathExists(path),
+    // DURABLE now, and the renderer did not have to change for it. The lifecycle audit's defect
+    // #2: this removal lived in an un-awaited promise chain in renderer JS, and a renderer
+    // respawn (measured roughly hourly on this machine) between the close and the `.then()` left
+    // the directory orphaned with nothing anywhere that could resume it. The intent is written to
+    // `worktree-pending.json` before the attempt, so boot and quit retry what never finished.
     worktreeRemove: async (path, sourceRoot) => {
-      try { await wt.removeWorktree(path, sourceRoot); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+      try { await removeWorktreeDurably(String(path), String(sourceRoot)); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+    },
+    // Read-only. Returns the classification of every directory under `~/.operator/worktrees`
+    // with sizes, for the Settings list. Sizes are one `du` over the root's children — skipped
+    // by the boot/quit sweeps, which do not need them.
+    worktreeReapPlan: () => reapPlan({ withSizes: true }),
+    // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
+    // the only caller that ever passes false, and only on a press.
+    worktreeReap: async (dryRun) => {
+      const result = await reap({ dryRun: dryRun !== false, withSizes: true })
+      return { removed: result.removed, failed: result.failed, bytesFreed: result.bytesFreed, dryRun: result.dryRun, plan: result.plan }
     },
     worktreeDiff: (path, base) => wt.worktreeDiff(path, base),
     branchDiff: (sourceRoot, branch, baseBranch) => wt.branchDiff(sourceRoot, branch, baseBranch),

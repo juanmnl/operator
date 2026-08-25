@@ -253,6 +253,12 @@ export function installBridge(): void {
       errors: [{ label: 'skills', path: '', message: 'The Tauri build has no skills catalog.' }],
       installedPlugins: [],
     }),
+    // NOT IMPLEMENTED on the Tauri backend — the reaper is an Electron-main module
+    // (`electron/src/main/worktree-reap.ts`) and there is no Rust command behind it. An EMPTY
+    // plan, so the Settings section says "nothing to show" rather than claiming zero worktrees
+    // exist; the reap itself refuses outright rather than reporting a silent success.
+    worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
+    worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
     // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two
