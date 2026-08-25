@@ -38,7 +38,7 @@ import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { InboxPanel } from '../components/session/InboxPanel'
-import { announcement, unreadByRole } from '../lib/inbox'
+import { announcement, canAnnounceTo, unreadByRole } from '../lib/inbox'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -3393,11 +3393,8 @@ export function DashboardView() {
     for (const tab of terminals) {
       const role = (tab.roleId ?? '').toLowerCase()
       if (!COORDINATOR_ROLE_IDS.includes(role)) continue
-      const session = sessions.find((s) => s.terminalId === tab.id)
-      // BETWEEN TURNS ONLY. `running`/`compacting` means a turn is in flight and typing into the
-      // composer would land mid-thought; `ended` means there is nobody to tell.
-      if (!session || session.status === 'ended') continue
-      if (session.phase !== 'idle' && session.phase !== 'waiting') continue
+      // BETWEEN TURNS ONLY — see `canAnnounceTo`.
+      if (!canAnnounceTo(sessions.find((s) => s.terminalId === tab.id))) continue
       if (announcingRef.current) continue
 
       announcingRef.current = true
@@ -3405,12 +3402,39 @@ export function DashboardView() {
         .then(async (pending) => {
           if (pending?.length) refreshReports()
           for (const report of pending ?? []) {
-            // Mark FIRST. A crash between the write and the mark would re-announce; a crash
-            // between the mark and the write loses one announcement but leaves the report in the
-            // Inbox, which is where the text lives anyway. Losing the louder half is the right
-            // way round.
+            // RE-ASKED PER REPORT, off the REF rather than the closure's `sessions` — the first
+            // announcement is what wakes the lane, so by the second one the phase has usually
+            // flipped to `running` and this closure's snapshot still says `idle`. Without this the
+            // batch pasted lines 2 and 3 straight into a live composer, which is the exact race
+            // reports exist to avoid. Whatever is left stays undelivered and goes out on the next
+            // idle.
+            if (!canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))) break
+            if (!tab.id) break
+            // Mark AFTER the line has actually gone in, and only if it did. The other order
+            // marked a report delivered whether or not it ever reached the composer, so a failed
+            // announcement was silently swallowed — the report sat in the Inbox with nothing ever
+            // saying it had arrived.
+            //
+            // THE OUTCOME IS READ FROM THE QUEUE, NOT FROM A THROW. `submit` never rejects: its
+            // chain ends in `.catch()` so one dropped write cannot break ordering for everything
+            // queued behind it, which means a `try/catch` here is dead code that only looks like
+            // a check. `pending(id)` is the real signal — it is cleared when the transcript
+            // confirms a user turn for that write, and still holds the text when the write went
+            // out unconfirmed (the rescue-CR path, or a lane nobody is tailing). Unconfirmed
+            // leaves the row announceable; the worst case is one duplicate line, which is
+            // recoverable where a silent drop is not.
+            //
+            // AND IT HOLDS THE BATCH. `submit` resolves on the write, but not before waiting out
+            // the confirmation deadline — up to RESCUE_AFTER_MS (30s) for a lane whose turn never
+            // appears, so a batch of three can occupy this pass for a minute and a half. That is
+            // acceptable here precisely because it is serialised and bounded: nothing else waits
+            // on this effect, `announcingRef` keeps a second pass from starting, and the
+            // alternative — firing all three and marking them — is the mid-turn paste this whole
+            // guard exists to prevent.
+            const line = announcement(report)
+            await submitQueue.submit(tab.id, line)
+            if (submitQueue.pending(tab.id)?.text === line) break
             await window.operator.artifactMarkDelivered?.(report.id)
-            if (tab.id) void submitQueue.submit(tab.id, announcement(report))
           }
         })
         .catch(() => { /* best-effort: the Inbox still has everything */ })

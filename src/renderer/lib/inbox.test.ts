@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { ArtifactReport, DispatchRecord } from '../../shared/types'
-import { headline, inboxFor, outboxFor, laneComms, unreadCount, unreadByRole, reportState, announcement } from './inbox'
+import type { AgentSession, ArtifactReport, DispatchRecord } from '../../shared/types'
+import { headline, inboxFor, outboxFor, laneComms, unreadCount, unreadByRole, reportState, announcement, canAnnounceTo } from './inbox'
 
 const report = (over: Partial<ArtifactReport> = {}): ArtifactReport => ({
   id: 1, at: '2026-08-24T10:00:00Z', terminalId: 't3', projectId: 'p', roleId: 'code',
@@ -158,5 +158,26 @@ describe('announcement — the one pty line, and it is NOT the report', () => {
 
   it('is a single line — it is typed into a pty', () => {
     expect(announcement(report({ summary: 'a\nb\nc' })).includes('\n')).toBe(false)
+  })
+})
+
+describe('canAnnounceTo — the guard that has to be asked twice', () => {
+  const at = (over: Partial<AgentSession> = {}) => ({ status: 'active', phase: 'idle', ...over } as AgentSession)
+
+  it('allows a lane that is between turns', () => {
+    expect(canAnnounceTo(at({ phase: 'idle' }))).toBe(true)
+    expect(canAnnounceTo(at({ phase: 'waiting' }))).toBe(true)
+  })
+
+  it('refuses a lane mid-turn — the announcement would land in a live composer', () => {
+    // This is the one the batch used to get wrong: announcement #1 wakes the lane, and #2 and #3
+    // were pasted into it while it was still thinking.
+    expect(canAnnounceTo(at({ phase: 'running' }))).toBe(false)
+    expect(canAnnounceTo(at({ phase: 'compacting' }))).toBe(false)
+  })
+
+  it('refuses an ended lane and a tab with no session — there is nobody to tell', () => {
+    expect(canAnnounceTo(at({ status: 'ended' }))).toBe(false)
+    expect(canAnnounceTo(undefined)).toBe(false)
   })
 })

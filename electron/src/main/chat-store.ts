@@ -159,6 +159,10 @@ export class ChatStore {
   close(): void { this.db.close() }
 }
 
+/** Bumped when a one-time data migration is added to `ArtifactStore`. Tracked in
+ *  `artifacts.db`'s own `PRAGMA user_version`, which is independent of `chat.db`'s. */
+const ARTIFACTS_SCHEMA_VERSION = 1
+
 /** THE ARTIFACT PLANE. Lanes write here from their own processes, through Operator's MCP
  *  server; the app reads. Phase 1 is lane→Operator only — nothing pushes into a lane. */
 /** One `reports` row → the shape the renderer is typed against.
@@ -208,6 +212,49 @@ export class ArtifactStore {
       CREATE INDEX IF NOT EXISTS task_status_applied ON task_status (applied, id);
     `)
     this.migrateReports()
+    this.backfillDelivered()
+  }
+
+  /** THE BACKFILL, run exactly once per database.
+   *
+   *  `delivered_at` arrived long after the table did, so every row written before that migration
+   *  has it NULL — 310 of them, back to 2026-08-06 — and `undeliveredFor` read the whole backlog
+   *  as "never announced" and replayed it at the coordinator on every launch, one pty line per
+   *  row. Those rows are not undelivered; they are from before anything recorded delivery.
+   *
+   *  `delivered_at = at` rather than a timestamp of the migration: the claim being written is
+   *  "this one had its moment", and `at` is when that moment was. It also keeps the column
+   *  honest for the Inbox, which shows the value.
+   *
+   *  WHY NOT A TIME CUTOFF (this shipped as one first, and it was wrong): "ignore anything older
+   *  than app launch" also silences reports a lane files while the app is CLOSED, which is
+   *  exactly when a lane is most likely to be working unattended. A one-time backfill divides on
+   *  the migration, not on the clock, so history goes quiet and everything filed afterwards is
+   *  still announced whenever the app next opens.
+   *
+   *  NOT AN ACK. These rows stay `acked_at IS NULL`, so the Inbox still shows them unread and
+   *  still counts them — announced and read are different facts, and only a human opening one
+   *  writes the second.
+   *
+   *  Guarded by `PRAGMA user_version`, the same mechanism `ChatStore.purgeInjectedRows` uses. No
+   *  backup is taken here because nothing is destroyed: one NULL column becomes a timestamp that
+   *  was already in the row next to it.
+   *
+   *  ONE TRANSACTION, AND IT MUST BE `immediate()`. Any process that opens this database may be
+   *  the one to run it — the app, or any lane's `mcp-serve` — and they routinely open it at the
+   *  same moment, on the same WAL file. Read-check, UPDATE and set-version as three loose
+   *  statements can interleave: both processes read version 0, one runs the UPDATE and stamps 1,
+   *  and the second's UPDATE — now running AFTER a report the first process's caller has already
+   *  inserted — marks that fresh report delivered and it is never announced. `BEGIN IMMEDIATE`
+   *  takes the write lock at the top, so the loser waits and then reads version 1 and does
+   *  nothing, which is the whole contract this migration rests on. */
+  private backfillDelivered(): void {
+    this.db.transaction(() => {
+      const version = Number((this.db.pragma('user_version', { simple: true }) as number) ?? 0)
+      if (version >= ARTIFACTS_SCHEMA_VERSION) return
+      this.db.prepare('UPDATE reports SET delivered_at = at WHERE delivered_at IS NULL').run()
+      this.db.pragma(`user_version = ${ARTIFACTS_SCHEMA_VERSION}`)
+    }).immediate()
   }
 
   /** THE LIFECYCLE COLUMNS, added rather than replacing anything.
@@ -236,7 +283,17 @@ export class ArtifactStore {
   }
 
   /** Mark a report as SHOWN to its recipient. Idempotent — the first delivery is the one that
-   *  counts, and a second announcement of the same report is the noise this timestamp prevents. */
+   *  counts, and a second announcement of the same report is the noise this timestamp prevents.
+   *
+   *  DELIVERY ONLY. It does not touch `acked_at` or `seen`: announcing a report to a lane is not
+   *  a human reading it, and writing the ack here would empty the Inbox's unread count for
+   *  messages nobody has opened. The caller writes this AFTER the announcement has actually gone
+   *  into the composer, so an announce that fails or is skipped leaves the row announceable.
+   *
+   *  `at` is an ISO-8601 UTC string, the same format `insertReport` is given for `at` (both come
+   *  from `new Date().toISOString()` — the MCP server's for the row, `ipc.ts`'s for this). The
+   *  column is only ever read back for display and for an IS NULL test, never compared against
+   *  another timestamp, so the format is a display contract rather than an ordering one. */
   markReportDelivered(id: number, at: string): void {
     this.db.prepare('UPDATE reports SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL').run(at, id)
   }
@@ -247,8 +304,13 @@ export class ArtifactStore {
     this.db.prepare('UPDATE reports SET acked_at = ?, seen = 1 WHERE id = ?').run(at, id)
   }
 
-  /** Undo an ack. Ack-on-open is reachable by a stray click and is otherwise irreversible, and an
-   *  acked report loses the only mark saying nobody read it — so the mark can be put back. */
+  /** Undo an ack: clears `acked_at` AND `seen`, putting the row back exactly as
+   *  `markReportAcked` found it. Delivery is left alone — it was still announced, and claiming
+   *  otherwise would announce it again.
+   *
+   *  Reachable from the Inbox's own `mark unread` control (`InboxPanel`'s row footer, through
+   *  `artifactMarkUnread`), which is what makes ack-on-open safe to have: opening a row acks it,
+   *  and a row opened by a stray click can be put back. */
   markReportUnread(id: number): void {
     this.db.prepare('UPDATE reports SET acked_at = NULL, seen = 0 WHERE id = ?').run(id)
   }
