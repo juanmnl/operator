@@ -81,7 +81,7 @@ try {
   step('tools/list', names.length > 0, `tools=${JSON.stringify(names)}`)
 
   // 4. tools/call — the happy path.
-  send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'operator__report', arguments: { summary: 'probe run from a plain shell', artifacts: [{ name: 'a', content: 'b' }] } } })
+  send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'report', arguments: { summary: 'probe run from a plain shell', artifacts: [{ name: 'a', content: 'b' }] } } })
   const call = JSON.parse(await nextLine())
   step('tools/call', call?.result?.isError !== true, JSON.stringify(call?.result?.content?.[0]?.text ?? call))
 

@@ -46,7 +46,7 @@ function resolveCaller() {
 
 const toolDefs = () => ([
   {
-    name: 'operator__report',
+    name: 'report',
     description:
       'Hand your result to Operator directly. Use this INSTEAD OF (or as well as) writing a ' +
       '*-RESULT.md file: a file written inside your worktree is invisible to Operator and to ' +
@@ -73,7 +73,7 @@ const toolDefs = () => ([
 ])
 
 function callTool(name, args) {
-  if (name !== 'operator__report') {
+  if (name !== 'report') {
     return { content: [{ type: 'text', text: `unknown tool: ${name}` }], isError: true }
   }
   let caller
