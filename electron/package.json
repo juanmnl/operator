@@ -1,7 +1,7 @@
 {
   "name": "operator-electron-shell",
   "private": true,
-  "version": "0.17.2",
+  "version": "0.18.0",
   "description": "Operator — mission control for working agents. Electron shell.",
   "type": "module",
   "main": "out/main/index.cjs",

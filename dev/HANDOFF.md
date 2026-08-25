@@ -33,6 +33,20 @@ source by Operator, released as one tag:
    `stopPropagation` in `handleDrop`; paste hardened (`stopImmediatePropagation`); images
    dropped ANYWHERE now become `[Image #N]` via `paste-image.ts`.
 
+## 0.18.0 — 2026-08-25 (tag `electron-v0.18.0`)
+
+Everything merged 2026-08-24 on `main` (`08b5e1d`), QA-verified headlessly (`dev/results/qa-*.md`):
+- Title-bar drag (Electron `-webkit-app-region`), tray icon 20→18pt, rail hover cards (one controller).
+- Dev-server reaper (pgid tree kill, `~/.operator/dev-leases.json`, boot sweep — legacy orphans NOT reaped).
+- Worktree reaper: classifier + dry-run plan + Settings → Worktrees; `AUTO_REAP_ON_TRIGGERS=false`.
+- Agent comms reconnected: `--mcp-config` wired, tools are `mcp__operator__report`/`task_status`
+  (were doubled), report lifecycle + Inbox/Outbox panel, dispatch drop leaves a trace, per-thread hops.
+- Session env + skills S0–S3 (per-session settings FILE, Environment + read-only Skills pages).
+- Code navigator S1–S4 (Files in main view + right panel, CodeMirror 6; search/deep links pending).
+- Preview: server attribution tiers + path survives port change (minimal address bar).
+- Syntax ink tokens per palette with a 4.5:1 test.
+⚠ Nothing above has been seen in a real window — see the eyeball list in the Obsidian hub note.
+
 ## 0.17.2 — SHIPPED 2026-08-24 (tag `electron-v0.17.2`, both branches merged; feeds verified)
 
 - **`operator/26b80` @ `607979d` — Preview bleed.** The active terminal painted THROUGH the
