@@ -35,10 +35,11 @@ const common = {
 mkdirSync(resolve(root, 'out'), { recursive: true })
 copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
 
-// The tray icon, for the same reason: `src-tauri/icons/tray.png` is the one copy in the repo
-// (the Rust `include_bytes!`s it), and the packaged app has no repo above it. `out/` is not in
-// the packager's `ignore` list, so this lands inside `app.asar` next to the bundles and
-// `tray.ts` reads it back with `fs` — see the note there about `createFromPath` and asar.
+// The tray icon. NOTHING READS THIS ANY MORE: `tray.ts` now rasterizes its first frame from
+// `tray-anim.ts` like every later frame, so the PNG and the animator can no longer disagree about
+// the mark's size (they did — 40px vs the 36px a menu-bar template icon should be). The copy is
+// kept because it costs nothing and the packaged bundle having its own icon beside it is cheap
+// insurance, but if you are looking for what draws the menu bar, it is `tray-anim.ts`.
 copyFileSync(resolve(root, '..', 'src-tauri', 'icons', 'tray.png'), resolve(root, 'out', 'tray.png'))
 
 const targets = [

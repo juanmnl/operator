@@ -27,15 +27,22 @@ export function aggregateState(lanes: Array<{ phase: string }>): TrayPhase {
   return waiting ? 'your-turn' : 'idle'
 }
 
-const SIZE = 44 // matches icons/tray.png (22pt @2x)
+const SIZE = 44 // the canvas: 22pt @2x, the size a macOS tray image is handed in
 const CENTER = 3.5 // grid centre in dot-centre coords: (7-1)/2 + 0.5
 const DISC = 3.4 // disc radius in cell units (StatusWave RADIUS)
 const DOT_R = 0.5 // dot radius in cell units
-// Fit the 7-cell mark into a 40px disc with 2px padding so the rendered icon matches the visible
-// size of the static tray.png (whose opaque box is 40×40 in the 44×44 canvas). Without the inset
-// the disc filled the whole canvas and read slightly larger than the old icon.
-const MARK = 40.0 // visible mark diameter in px
-const INSET = (SIZE - MARK) / 2 // px padding on each side
+
+/** THE VISIBLE MARK — 36px at scaleFactor 2, i.e. **18pt**.
+ *
+ *  18pt is what a macOS menu-bar template icon is: the system's own status items draw at roughly
+ *  that, and anything larger reads as an app that did not measure. This was 40px (20pt), matched
+ *  to the opaque box inside `tray.png` — which was itself the thing that was too big. Measured
+ *  before the change: ink spanned x 2..41 in every phase, 40px across, 20.0pt.
+ *
+ *  The CANVAS stays 44. Shrinking the canvas instead would have been the same pixels with a
+ *  different container and would have moved the problem to whatever else assumed 44. */
+const MARK = 36.0 // visible mark diameter in px → 18pt at scaleFactor 2
+const INSET = (SIZE - MARK) / 2 // 4px padding on each side
 const PX = MARK / 7 // pixels per cell (7 cells across the mark)
 const TAU = Math.PI * 2
 

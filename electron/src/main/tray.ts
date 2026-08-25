@@ -12,9 +12,8 @@
 //  2. The icon is a TEMPLATE image: black + alpha, tinted by macOS for the active menu bar and
 //     inverted with the appearance. A coloured icon looks wrong in a light menu bar and
 //     invisible in a dark one.
-import { Menu, nativeImage, Tray, type MenuItemConstructorOptions } from 'electron'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { Menu, Tray, type MenuItemConstructorOptions } from 'electron'
+import { buildDots, frameImage } from './tray-anim'
 
 /** What the menu needs to know about a lane — the shape `Transcript.liveLanes()` already
  *  returns, narrowed so the label builder can be tested without a tailer. */
@@ -53,19 +52,18 @@ export interface OperatorTray {
   destroy: () => void
 }
 
-/** The tray icon's source PNG.
+/** The tray icon's first frame — from the SAME rasterizer every later frame comes from.
  *
- *  `src-tauri/icons/tray.png` (44×44 @2x, black + alpha) is the ONE copy in the repo; the Rust
- *  `include_bytes!`s it and `scripts/build-main.mjs` copies it beside the bundles, exactly as it
- *  already does for `preview-inspector.js`. Read as BYTES, not `createFromPath`: in the packaged
- *  app this path is inside `app.asar`, which Electron's patched `fs` can read and native file
- *  loaders cannot be relied on to. */
+ *  It used to read `src-tauri/icons/tray.png`, and that was one geometry too many: the PNG's
+ *  opaque box is 40×40 inside its 44×44 canvas, `tray-anim.ts` had a `MARK` constant matched to
+ *  it by hand, and the two could only agree for as long as nobody changed either. They are now
+ *  one number, in one file, and the icon cannot change size between its first paint and its
+ *  second.
+ *
+ *  `frameImage(…, 'idle', 0)` is exactly what the animation settles back to, so the static icon
+ *  IS the rest state rather than a lookalike of it. */
 function trayImage(): Electron.NativeImage {
-  // `__dirname` is `out/main` in both dev and the packaged bundle (the main bundle is CJS).
-  const buf = readFileSync(join(__dirname, '..', 'tray.png'))
-  const img = nativeImage.createFromBuffer(buf, { scaleFactor: 2 })
-  img.setTemplateImage(true)
-  return img
+  return frameImage(buildDots(), 'idle', 0)
 }
 
 /** Build the tray and return the handle the tailer refreshes.

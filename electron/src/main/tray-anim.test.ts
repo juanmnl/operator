@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { aggregateState, buildDots, frame, rand, startTrayAnimation } from './tray-anim'
 
 const SIZE = 44
+/** The visible mark and its padding — the numbers this file exists to pin. Kept as literals
+ *  rather than imported from `tray-anim`, so a test cannot agree with a constant that changed. */
+const MARK = 36
+const INSET = (SIZE - MARK) / 2
 const alpha = (buf: Buffer) => { let n = 0; for (let i = 3; i < buf.length; i += 4) n += buf[i]; return n }
 
 // Ported from the `#[cfg(test)]` block in tray_anim.rs — the pseudo-random is FROZEN on purpose:
@@ -51,7 +55,35 @@ describe('frame', () => {
     expect(alpha(buf)).toBeGreaterThan(0) // …and something is actually drawn
   })
 
-  it('paints inside the 2px inset — the rendered mark matches tray.png\'s 40×40 opaque box', () => {
+  // THE SIZE TEST. A macOS menu-bar template icon is ~18pt; at scaleFactor 2 that is a 36px mark
+  // inside the 44px canvas, leaving a 4px inset on every side. It was 40px (20.0pt), matched by
+  // hand to the opaque box inside `tray.png`, and read visibly larger than the Tauri build's.
+  //
+  // Asserted as MEASURED EXTENT across a full cycle rather than as "the border is empty": the dot
+  // scale varies with time, so a single frame can sit well inside the mark and pass a border
+  // check while the mark itself is the wrong size.
+  it('draws a 36px (18pt) mark inside the 44px canvas — a 4px inset on every side', () => {
+    let minX = SIZE, maxX = -1, minY = SIZE, maxY = -1
+    for (const state of ['idle', 'busy', 'your-turn'] as const) {
+      for (let i = 0; i < 60; i++) {
+        const buf = frame(dots, state, i * 0.05)
+        for (let y = 0; y < SIZE; y++) {
+          for (let x = 0; x < SIZE; x++) {
+            if (buf[(y * SIZE + x) * 4 + 3] === 0) continue
+            if (x < minX) minX = x
+            if (x > maxX) maxX = x
+            if (y < minY) minY = y
+            if (y > maxY) maxY = y
+          }
+        }
+      }
+    }
+    expect({ minX, maxX, minY, maxY }).toEqual({ minX: INSET, maxX: SIZE - INSET - 1, minY: INSET, maxY: SIZE - INSET - 1 })
+    expect(maxX - minX + 1).toBe(MARK)
+    expect((maxX - minX + 1) / 2).toBe(18) // points, at scaleFactor 2
+  })
+
+  it('never paints outside the canvas edge, in any phase', () => {
     const buf = frame(dots, 'busy', 0.4)
     const at = (x: number, y: number) => buf[(y * SIZE + x) * 4 + 3]
     for (let i = 0; i < SIZE; i++) {
