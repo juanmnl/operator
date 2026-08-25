@@ -455,6 +455,12 @@ export interface DispatchRecord {
     // no turn ever appeared in the target's transcript, so the task is sitting in its composer.
     // The one outcome that is a MEASUREMENT rather than a decision — see lib/delivery-confirm.
     | 'undelivered'
+  /** THE BRAKE'S OWN SENTENCE, when one stopped this. `evaluateDelivery`'s `block()` already
+   *  writes these as prose to a human — "…so that pair is suspended for 5 minutes. Other lanes
+   *  are unaffected." — and until now they were shown NOWHERE. Persisted rather than regenerated:
+   *  the note names counts and durations that were true at block time, and recomputing it later
+   *  would quietly change what it said. */
+  note?: string
 }
 
 /** A lane's `OPERATOR-REPLY`, as the tailer emits it live. The return path's event shape —

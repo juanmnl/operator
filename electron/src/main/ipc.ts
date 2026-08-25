@@ -171,6 +171,7 @@ export function registerIpc(d: Deps): void {
     artifactUndelivered: async (role, limit) => d.artifacts.undeliveredFor(String(role), Number(limit) || 10),
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
     artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
+    artifactMarkUnread: async (id) => { d.artifacts.markReportUnread(Number(id)) },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

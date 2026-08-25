@@ -203,6 +203,7 @@ export function installBridge(): void {
     artifactUndelivered: async () => [],
     artifactMarkDelivered: async () => {},
     artifactMarkAcked: async () => {},
+    artifactMarkUnread: async () => {},
     artifactPendingStatus: () => invoke('artifacts_pending_status'),
     artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
 

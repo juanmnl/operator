@@ -247,6 +247,12 @@ export class ArtifactStore {
     this.db.prepare('UPDATE reports SET acked_at = ?, seen = 1 WHERE id = ?').run(at, id)
   }
 
+  /** Undo an ack. Ack-on-open is reachable by a stray click and is otherwise irreversible, and an
+   *  acked report loses the only mark saying nobody read it — so the mark can be put back. */
+  markReportUnread(id: number): void {
+    this.db.prepare('UPDATE reports SET acked_at = NULL, seen = 0 WHERE id = ?').run(id)
+  }
+
   /** Reports written for `role` that have never been delivered, oldest first — the queue the
    *  idle announcement drains. Oldest first because a backlog should be read in the order it
    *  happened, not newest-first like a browsing list. */

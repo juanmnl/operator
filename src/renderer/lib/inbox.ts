@@ -1,4 +1,5 @@
 import type { ArtifactReport, DispatchRecord } from '../../shared/types'
+import { chipForOutcome, type OutcomeChip } from './dispatch-outcome'
 
 // The per-lane Inbox/Outbox model — pure, so what a lane has sent, received and had blocked is
 // one tested function rather than three filters spread across a component.
@@ -11,29 +12,55 @@ import type { ArtifactReport, DispatchRecord } from '../../shared/types'
 //
 //   > a durable list per lane … is what turns "silence means no report" from a claim the system
 //   > can't back up into one it actually can.
+//
+// ONE CHRONOLOGICAL LIST, settled with Design in `dev/results/inbox-outbox-reconcile.md` (A2):
+// the question a user has is "what happened with this lane", and the answer is chronological.
+// That also dodges the tab-row width problem the two-segment design was working around.
+//
+// EVERY OUTCOME LABEL COMES FROM `chipForOutcome`, imported, never rewritten here (D1). A first
+// version of this module had a seven-entry copy that DISAGREED with the shared one — it put
+// `undelivered` in the blocked set, so a row read "Not delivered — the bytes went out…", which
+// contradicts itself in one sentence; and it inked `rejected`/`unassigned` as warnings, so a
+// declined dispatch shouted as loudly as a hop limit. `dispatch-outcome.ts`'s own header records
+// this exact failure happening once before.
 
-export type InboxItemKind = 'report' | 'sent' | 'blocked'
+/** The three states a report can honestly be in — §2's table.
+ *
+ *  `written` should be RARE and short-lived: a row sitting there while the panel is open means
+ *  the reader is broken, and the surface says so rather than smoothing it over. That is the
+ *  difference between a list and an audit trail. */
+export type ReportState = 'written' | 'delivered' | 'acked'
 
-export interface InboxItem {
-  kind: InboxItemKind
-  /** Stable within a kind — report id, or the dispatch record's own id. */
+export interface ReceivedRow {
+  id: number
+  at: string
+  /** The lane that reported. */
+  from: string
+  title: string
+  summary: string
+  /** `[{name, content}]` — CONTENT, never a path. */
+  artifacts: Array<{ name?: string; content?: string }>
+  state: ReportState
+}
+
+export interface SentRow {
   id: string
   at: string
-  /** Who it came from (a report) or went to (a dispatch). */
-  who: string
-  /** The one-line headline. */
+  to: string
+  task: string
   title: string
-  /** The rest, when there is more than the headline. */
-  body?: string
-  /** Reports only. */
-  delivered?: boolean
-  acked?: boolean
-  /** Blocked replies only — WHICH brake, named. "It was blocked" without the reason is the
-   *  thing this panel exists to stop. */
-  blockedBy?: string
-  /** Dispatches only: what actually happened to it. */
-  outcome?: string
+  chip: OutcomeChip
+  /** The brake's OWN sentence, persisted at block time. Shown as the `ⓘ` line. */
+  note?: string
 }
+
+/** One row in the merged list. `kind` selects which half of the union is populated. */
+export type CommsRow =
+  | ({ kind: 'received'; at: string } & ReceivedRow)
+  | ({ kind: 'sent'; at: string } & SentRow)
+  /** This lane's OWN report, and whether anyone opened it — the other half of an ack being worth
+   *  having (A3). */
+  | { kind: 'reported'; id: number; at: string; to: string; title: string; summary: string; state: ReportState }
 
 /** The first line of a summary, which is what a list row shows. Reports are written as prose and
  *  routinely open with a heading or a sentence; the rest belongs in the expanded body. */
@@ -45,105 +72,107 @@ export function headline(summary: string, max = 120): string {
 
 /** Everything addressed TO this lane: reports whose `toRole` names it, plus the legacy rows that
  *  predate the column and therefore meant the coordinator. */
-export function inboxFor(role: string, isCoordinator: boolean, reports: readonly ArtifactReport[]): InboxItem[] {
+export function reportState(r: ArtifactReport): ReportState {
+  if (r.ackedAt) return 'acked'
+  if (r.deliveredAt) return 'delivered'
+  return 'written'
+}
+
+/** Parse the artifacts blob defensively — it is a JSON string written by another process. */
+function parseArtifacts(raw: string): Array<{ name?: string; content?: string }> {
+  try {
+    const v = JSON.parse(raw || '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}
+
+export function inboxFor(role: string, isCoordinator: boolean, reports: readonly ArtifactReport[]): ReceivedRow[] {
   return reports
     .filter((r) => (r.toRole ? r.toRole === role : isCoordinator))
     .map((r) => ({
-      kind: 'report' as const,
-      id: `report:${r.id}`,
+      id: r.id,
       at: r.at,
-      who: r.roleId || r.terminalId,
+      from: r.roleId || r.terminalId,
       title: headline(r.summary),
-      body: r.summary,
-      delivered: !!r.deliveredAt,
-      acked: !!r.ackedAt,
+      summary: r.summary,
+      artifacts: parseArtifacts(r.artifacts),
+      state: reportState(r),
     }))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
 }
 
-/** Everything this lane SENT — its own reports, so a worker can see that its result actually
- *  landed and whether anyone has opened it. That is the other half of an ack being worth having. */
-export function outboxFor(role: string, reports: readonly ArtifactReport[]): InboxItem[] {
+/** What this lane SENT — dispatches and replies, with the brake named. §3.
+ *
+ *  Every label comes from `chipForOutcome`; this function adds no strings of its own. The `ⓘ`
+ *  line is the brake's own persisted `note`, which is prose written to a human at block time and
+ *  has never been rendered anywhere. */
+export function outboxFor(role: string, records: readonly DispatchRecord[]): SentRow[] {
+  return records
+    .filter((d) => d.fromRoleId === role)
+    .map((d) => ({
+      id: d.id,
+      at: d.at,
+      to: d.toRoleId ?? '—',
+      task: d.task ?? '',
+      title: headline(d.task ?? ''),
+      chip: chipForOutcome(d.outcome),
+      note: d.note,
+    }))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+}
+
+/** This lane's own reports out, with whether anyone opened them. */
+export function reportedBy(role: string, reports: readonly ArtifactReport[]): CommsRow[] {
   return reports
     .filter((r) => r.roleId === role)
     .map((r) => ({
-      kind: 'sent' as const,
-      id: `sent:${r.id}`,
+      kind: 'reported' as const,
+      id: r.id,
       at: r.at,
-      who: r.toRole || 'operator',
+      to: r.toRole || 'operator',
       title: headline(r.summary),
-      body: r.summary,
-      delivered: !!r.deliveredAt,
-      acked: !!r.ackedAt,
+      summary: r.summary,
+      state: reportState(r),
     }))
 }
 
-/** Dispatches and replies involving this lane, with their outcome — including the blocked ones
- *  and WHICH brake stopped them. */
-export function trafficFor(role: string, records: readonly DispatchRecord[]): InboxItem[] {
-  return records
-    .filter((d) => d.fromRoleId === role || d.toRoleId === role)
-    .map((d) => {
-      const blocked = BLOCKED_OUTCOMES.has(d.outcome)
-      const mine = d.fromRoleId === role
-      return {
-        kind: (blocked ? 'blocked' : 'sent') as InboxItemKind,
-        id: `dispatch:${d.id}`,
-        at: d.at,
-        who: mine ? `→ ${d.toRoleId ?? 'unassigned'}` : `← ${d.fromRoleId ?? 'human'}`,
-        title: headline(d.task ?? ''),
-        body: d.task,
-        outcome: d.outcome,
-        blockedBy: blocked ? BLOCK_REASON[d.outcome] : undefined,
-      }
-    })
-}
-
-/** The outcomes that mean NOTHING WAS TYPED ANYWHERE. Named as a set rather than tested with a
- *  string match so a new outcome has to be classified deliberately rather than defaulting to
- *  "delivered". */
-const BLOCKED_OUTCOMES = new Set<DispatchRecord['outcome']>([
-  'unassigned', 'pending-approval', 'rejected', 'hop-limit', 'pair-brake', 'paused', 'undelivered',
-])
-
-/** WHICH BRAKE, in words. "It was blocked" without the reason is precisely what this panel
- *  exists to stop — the audit's whole complaint about the delivery brakes is that they are
- *  silent, so a row that says only "blocked" would reproduce the problem in a new place. */
-const BLOCK_REASON: Record<string, string> = {
-  'unassigned': 'no lane matched that role',
-  'pending-approval': 'a non-coordinator asked for this — it waits for you',
-  'rejected': 'declined; terminal, never delivered',
-  'hop-limit': 'the chain hit its hop budget with no human in it',
-  'pair-brake': 'that pair was sending too fast and is suspended',
-  'paused': 'the kill switch was on',
-  'undelivered': 'the bytes went out but no turn followed — it is sitting in the composer',
-}
-
-/** The whole panel's contents, newest first.
- *
- *  ONE SORTED LIST rather than three columns: the question a user has when they open this is
- *  "what happened with this lane", and the answer is chronological. The kind is a mark on the
- *  row, not a separate place to look. */
-export function laneTraffic(args: {
+/** THE MERGED LIST, newest first. */
+export function laneComms(args: {
   role: string
   isCoordinator: boolean
   reports: readonly ArtifactReport[]
   records: readonly DispatchRecord[]
-}): InboxItem[] {
+}): CommsRow[] {
   const { role, isCoordinator, reports, records } = args
   return [
-    ...inboxFor(role, isCoordinator, reports),
-    ...outboxFor(role, reports),
-    ...trafficFor(role, records),
-  ]
-    // Dedupe: a coordinator's own report to itself would otherwise appear in both halves.
-    .filter((item, i, all) => all.findIndex((o) => o.id === item.id) === i)
-    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    ...inboxFor(role, isCoordinator, reports).map((r) => ({ kind: 'received' as const, ...r })),
+    ...reportedBy(role, reports),
+    ...outboxFor(role, records).map((r) => ({ kind: 'sent' as const, ...r })),
+  ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
 }
 
-/** How many reports are waiting for this lane and have not been opened. Drives the tab's badge —
- *  the number that makes "silence means no report" checkable instead of assumed. */
-export function unackedCount(role: string, isCoordinator: boolean, reports: readonly ArtifactReport[]): number {
-  return inboxFor(role, isCoordinator, reports).filter((i) => !i.acked).length
+/** The count that makes you look at the panel at all: reports for this lane that nobody has
+ *  acked. `written` + `delivered`, never `acked`, and never this lane's own outbox — nothing
+ *  about what you sent is news to you (§4). */
+export function unreadCount(role: string, isCoordinator: boolean, reports: readonly ArtifactReport[]): number {
+  return inboxFor(role, isCoordinator, reports).filter((r) => r.state !== 'acked').length
+}
+
+/** Unread counts for every lane at once, from ONE report fetch.
+ *
+ *  D3: `unreadCount` had zero production callers, so the number existed only inside the surface
+ *  it was meant to point you toward. The rail marker, the tab badge and the coordinator's toolbar
+ *  chip all read this. */
+export function unreadByRole(reports: readonly ArtifactReport[], coordinatorRole: string): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const r of reports) {
+    if (r.ackedAt) continue
+    const to = r.toRole || coordinatorRole
+    out[to] = (out[to] ?? 0) + 1
+  }
+  return out
 }
 
 /** The one pty line an idle coordinator gets when a report lands.

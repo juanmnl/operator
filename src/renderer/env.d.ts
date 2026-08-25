@@ -54,6 +54,8 @@ declare global {
       artifactMarkDelivered: (id: number) => Promise<void>
       /** Someone opened it — the only read receipt in the system. */
       artifactMarkAcked: (id: number) => Promise<void>
+      /** Undo an ack — ack-on-open is reachable by a stray click. */
+      artifactMarkUnread: (id: number) => Promise<void>
       /** `operator__task_status` signals not yet applied to projects.json. */
       artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
       /** Ack AFTER the task is written through, so a crash replays rather than drops. */

@@ -23,7 +23,7 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange, filesTab, inboxTab }: {
+export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange, filesTab, inboxTab, unreadCount = 0 }: {
   session?: AgentSession
   /** Lane identity for the Chat tab — the same name and colour the sidebar gives it. */
   role?: Role
@@ -43,6 +43,9 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
   /** The lane's Inbox/Outbox. Rendered by the caller because it reads the PROJECT's dispatch log
    *  as well as the report store, and this component knows about neither. */
   inboxTab?: ReactNode
+  /** Reports addressed to this lane that nobody has acked. Rides the TAB, not a segment — it is
+   *  what makes you look at the panel at all. */
+  unreadCount?: number
 }) {
   const select = onSelectMode
 
@@ -86,6 +89,7 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
             }}
           >
             {LABELS[id]}
+            {id === 'inbox' && unreadCount > 0 ? ` ${unreadCount > 9 ? '9+' : unreadCount}` : ''}
             {id === 'plan' && (session?.todos?.length ?? 0) > 0
               ? ` ${session!.todos!.filter((t) => t.status === 'completed').length}/${session!.todos!.length}`
               : ''}

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
@@ -38,7 +38,7 @@ import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { InboxPanel } from '../components/session/InboxPanel'
-import { announcement } from '../lib/inbox'
+import { announcement, unreadByRole } from '../lib/inbox'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -1479,13 +1479,15 @@ export function DashboardView() {
       // against the pair instead of looking like the addressee ignored it. (The board deliberately
       // does not: a `replyId` record is chat about work, never work — see TaskBoard's
       // WAITING_OUTCOMES — which is exactly why the dispatch log had to survive this move.)
-      const record = (outcome: DispatchRecord['outcome']) => log(project.id, {
+      const record = (outcome: DispatchRecord['outcome'], note?: string) => log(project.id, {
         id: crypto.randomUUID(), at: new Date().toISOString(),
-        fromRoleId: from.id, toRoleId: to.id, task: r.text, outcome, replyId: r.id,
+        fromRoleId: from.id, toRoleId: to.id, task: r.text, outcome, replyId: r.id, note,
       })
 
       if (decision.kind === 'block') {
-        record(decision.reason === 'queued' ? 'queued' : decision.reason)
+        // The brake's own sentence rides along, so the Inbox can show WHY without inventing a
+        // second vocabulary for it. These notes have existed and been displayed nowhere.
+        record(decision.reason === 'queued' ? 'queued' : decision.reason, decision.note)
         // Surface WHY. A message that silently fails to arrive is indistinguishable from an agent
         // that ignored you, and that ambiguity is what makes people stop trusting the feature.
         // `queued` is the ordinary case (nobody home) so the chip alone carries it; a brake means
@@ -3368,6 +3370,24 @@ export function DashboardView() {
   // `delivered_at` is written by the same pass, which is what stops a report being announced on
   // every subsequent idle. The mark is the memory; there is no in-renderer seen-set to lose on a
   // respawn (which is how the delivery brakes lost theirs — see the audit's loss #5).
+  // THE REPORT FETCH, hoisted (reconcile D3). It used to live inside `InboxPanel`, which mounts
+  // only when its tab is open — so the unread count existed solely inside the surface it was
+  // meant to point you toward. One poll here feeds the panel, the tab badge, and (next) the rail
+  // marker and the coordinator's toolbar chip.
+  const [reports, setReports] = useState<ArtifactReport[]>([])
+  const refreshReports = useCallback(() => {
+    window.operator.artifactReports?.(200)
+      .then((rs) => setReports(rs ?? []))
+      .catch(() => { /* best-effort; an empty list reads as "nothing yet", which is honest */ })
+  }, [])
+  useEffect(() => {
+    refreshReports()
+    const t = window.setInterval(refreshReports, 4000)
+    return () => clearInterval(t)
+  }, [refreshReports])
+  /** roleId → reports addressed to it that nobody has acked. */
+  const unreadCounts = useMemo(() => unreadByRole(reports, 'operator'), [reports])
+
   const announcingRef = useRef(false)
   useEffect(() => {
     for (const tab of terminals) {
@@ -3383,6 +3403,7 @@ export function DashboardView() {
       announcingRef.current = true
       void window.operator.artifactUndelivered?.(role, 3)
         .then(async (pending) => {
+          if (pending?.length) refreshReports()
           for (const report of pending ?? []) {
             // Mark FIRST. A crash between the write and the mark would re-announce; a crash
             // between the mark and the write loses one announcement but leaves the report in the
@@ -4638,6 +4659,7 @@ export function DashboardView() {
             customName={activeSession ? customNames[activeSession.id] : undefined}
             accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
+            unreadCount={unreadCounts[terminals.find((t) => t.id === activeTerminalId)?.roleId ?? ''] ?? 0}
             inboxTab={(() => {
               const tab = terminals.find((t) => t.id === activeTerminalId)
               const role = tab?.roleId ?? ''
@@ -4647,6 +4669,9 @@ export function DashboardView() {
                   role={role}
                   isCoordinator={COORDINATOR_ROLE_IDS.includes(role.toLowerCase())}
                   records={proj?.dispatches ?? []}
+                  accent={accentOf(activeSession)}
+                  reports={reports}
+                  onRefresh={refreshReports}
                 />
               )
             })()}
