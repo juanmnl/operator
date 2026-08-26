@@ -1,84 +1,90 @@
 import { describe, it, expect } from 'vitest'
-import { TWINKLE_TROUGH_OP, TWINKLE_PEAK_OP } from './StatusWave'
+import { TWINKLE_TROUGH_OP, TWINKLE_PEAK_OP, twinkleProgress } from './StatusWave'
 
-// THE KEYFRAMES AND THE COMPONENT ARE ONE MECHANISM, and they live in two files.
+// THE ANIMATION IS CODE NOW, so it can be held to its own definition.
 //
-// The twinkle's tint used to be animated (`fill` in the keyframe), which Blink cannot composite:
-// 7 busy orbs cost 34.7% renderer + 6.0% GPU. It is now COMPOSITED from two stacked circles whose
-// opacities animate — and the eleven sampled stops in `@keyframes twinkle-base` / `twinkle-peak`
-// are derived from a 0.3 trough and a 0.95 peak. Change either anchor and the stops are wrong,
-// silently and only on screen. These tests are the tripwire.
+// Pass 1 sampled the twinkle into eleven CSS keyframe stops and these tests checked the numbers in
+// the stylesheet against the closed form that produced them. Pass 2 deleted the stops: a busy orb
+// is painted by `OrbCanvas`, which evaluates the curve directly. What is left to guard is the
+// curve itself — the two anchors every measurement in StatusWave.tsx is stated against, and the
+// shape of the breath between them.
 
-const STOPS_CSS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-/** What styles.css actually declares, copied here so a drift shows up as a diff in a test. */
-const BASE = [0.3, 0.309, 0.334, 0.372, 0.416, 0.455, 0.478, 0.475, 0.415, 0.227, 0]
-const PEAK = [0, 0.006, 0.029, 0.079, 0.171, 0.313, 0.491, 0.673, 0.824, 0.919, 0.95]
-
-/** CSS `ease-in-out`, so a stop's CSS percentage can be turned back into the eased progress the
- *  old single-circle keyframe was at when it got there. */
-function easeInOut(t: number): number {
-  const bx = (u: number) => 3 * (1 - u) ** 2 * u * 0.42 + 3 * (1 - u) * u * u * 0.58 + u ** 3
-  const by = (u: number) => 3 * (1 - u) * u * u * 1 + u ** 3
-  let lo = 0, hi = 1, u = t
-  for (let i = 0; i < 60; i++) { u = (lo + hi) / 2; bx(u) < t ? lo = u : hi = u }
-  return by(u)
-}
+const O = (p: number) => TWINKLE_TROUGH_OP + (TWINKLE_PEAK_OP - TWINKLE_TROUGH_OP) * p
 
 describe('the twinkle anchors', () => {
-  it('are the numbers the keyframes were generated for', () => {
-    // If this fails, `dev/tmp` is not where the fix is — regenerate the stops in styles.css for
-    // the new anchors, or the dots will bloom to the wrong ceiling.
+  it('are the trough and peak every measurement in this file is written against', () => {
+    // `--fg-muted` at 0.3 is what `REST_OP` was derived against; 0.95 is the peak the ink average
+    // of ~0.51 falls out of. Moving either silently re-opens both.
     expect(TWINKLE_TROUGH_OP).toBe(0.3)
     expect(TWINKLE_PEAK_OP).toBe(0.95)
   })
 })
 
-describe('the two stacked layers paint what one animated circle used to', () => {
-  // THE ALGEBRA. A single circle painted `lerp(muted, peak, p)` at alpha `O(p)`. Two stacked
-  // circles paint peak at `Ot` over muted at `Ob`; composited over a background BG the pair is
-  // identical to the single circle exactly when `Ot = O·p` and `Ob = O(1-p)/(1-O·p)`. This
-  // asserts that on the ACTUAL numbers in the stylesheet, not on the formula that produced them.
-  const O = (p: number) => TWINKLE_TROUGH_OP + (TWINKLE_PEAK_OP - TWINKLE_TROUGH_OP) * p
+describe('twinkleProgress — one dot, one breath', () => {
+  const DUR = 2, DELAY = 0
 
-  it.each(STOPS_CSS.map((pct, i) => [pct, BASE[i], PEAK[i]]))(
-    'at %i%% of the cycle', (pct, base, peak) => {
-      const p = easeInOut((pct as number) / 50)
-      const o = O(p)
-      const wantPeak = o * p
-      const wantBase = o * (1 - p) / (1 - wantPeak)
-      // The stylesheet carries 3 decimals, so half a unit in the last place is the whole
-      // tolerance — an explicit bound rather than `toBeCloseTo`, whose 3-digit precision
-      // rejects a value that rounded exactly onto the boundary (0.3125 → 0.313).
-      expect(Math.abs((peak as number) - wantPeak)).toBeLessThanOrEqual(0.0005 + 1e-9)
-      expect(Math.abs((base as number) - wantBase)).toBeLessThanOrEqual(0.0005 + 1e-9)
-    })
-
-  it('starts at the muted trough alone and ends at the status hue alone', () => {
-    // The two anchors every measurement in StatusWave.tsx is stated against: `--fg-muted` at 0.3,
-    // and the peak at 0.95 with no trough ink left under it.
-    expect(BASE[0]).toBe(TWINKLE_TROUGH_OP)
-    expect(PEAK[0]).toBe(0)
-    expect(BASE[BASE.length - 1]).toBe(0)
-    expect(PEAK[PEAK.length - 1]).toBe(TWINKLE_PEAK_OP)
+  it('sits at the trough at the start of a cycle and the peak at its middle', () => {
+    expect(twinkleProgress(0, DUR, DELAY)).toBeCloseTo(0, 6)
+    expect(twinkleProgress(DUR / 2, DUR, DELAY)).toBeCloseTo(1, 6)
+    expect(twinkleProgress(DUR, DUR, DELAY)).toBeCloseTo(0, 6)
   })
 
-  it('composites to the same colour the single circle did, at every stop', () => {
-    // Straight sRGB compositing, which is what the compositor does. Mission Control dark's
-    // sidebar and muted ink, blooming into the Code lane's accent.
-    const BG = [7, 9, 11], MUT = [138, 148, 160], ACC = [126, 231, 135]
-    for (let i = 0; i < STOPS_CSS.length; i++) {
-      const p = easeInOut(STOPS_CSS[i] / 50)
-      const single = MUT.map((m, k) => {
-        const f = m + (ACC[k] - m) * p
-        return BG[k] + (f - BG[k]) * O(p)
-      })
-      // base over BG, then peak over that — the DOM's stacking order.
-      const under = BG.map((b, k) => b + (MUT[k] - b) * BASE[i])
-      const stacked = under.map((u, k) => u + (ACC[k] - u) * PEAK[i])
-      // Within a quarter of an 8-bit level — the stops are rounded to 3 decimals, and 0.0005 of
-      // alpha against a 255-wide channel is worth about 0.13 at the widest. Nothing here is
-      // approximating the SHAPE of the old animation; this is the rounding in the stylesheet.
-      for (let k = 0; k < 3; k++) expect(Math.abs(stacked[k] - single[k])).toBeLessThan(0.25)
+  it('is a TRIANGLE, not a sawtooth — the dot breathes back down rather than snapping', () => {
+    // The keyframe said this with `0%, 100%` against `50%`. It is the fold in the cycle, and
+    // getting it wrong is a dot that goes dark instantly at the top of every breath.
+    for (const f of [0.1, 0.2, 0.35, 0.49]) {
+      expect(twinkleProgress(f * DUR, DUR, DELAY)).toBeCloseTo(twinkleProgress((1 - f) * DUR, DUR, DELAY), 6)
     }
+  })
+
+  it('eases in and out, so nothing moves at constant speed', () => {
+    // `ease-in-out` is symmetric about its midpoint and flat at both ends — a linear ramp would
+    // pass the endpoint tests above and read as a blink rather than a breath.
+    expect(twinkleProgress(0.125 * DUR, DUR, DELAY)).toBeLessThan(0.25)
+    expect(twinkleProgress(0.375 * DUR, DUR, DELAY)).toBeGreaterThan(0.75)
+    expect(twinkleProgress(0.25 * DUR, DUR, DELAY)).toBeCloseTo(0.5, 2)
+  })
+
+  it('repeats forever, and a negative delay starts it mid-breath', () => {
+    // Every dot gets `-rand() * dur`, which is what desyncs the disc. A cycle later must land on
+    // the same value or the shimmer would drift out of its own seed.
+    expect(twinkleProgress(5.5, DUR, -0.7)).toBeCloseTo(twinkleProgress(5.5 + DUR * 3, DUR, -0.7), 6)
+    expect(twinkleProgress(0, DUR, -DUR / 2)).toBeCloseTo(1, 6)
+  })
+
+  it('never leaves [0,1], so alpha and radius cannot go out of range', () => {
+    // The draw call multiplies this into an opacity and a radius with no clamping of its own.
+    for (let t = -3; t < 12; t += 0.037) {
+      const p = twinkleProgress(t, 1.73, -1.1)
+      expect(p).toBeGreaterThanOrEqual(0)
+      expect(p).toBeLessThanOrEqual(1)
+    }
+  })
+})
+
+describe('the paint law', () => {
+  it('carries the ≈0.51 of ink over a cycle that REST_OP was derived against', () => {
+    // The number in `REST_OP`'s doc comment: "its ink over a cycle averages ≈0.51 of a
+    // full-strength dot". Alpha times SCALE — the dot's linear size, not its area — which is the
+    // weighting that reproduces 0.51 and therefore the one that derivation used.
+    //
+    // This is the load-bearing one. `REST_OP` is 0.25 because a busy orb should carry at least
+    // twice a quiet one's ink, and a quiet dot is full size at a flat 0.25. Change the easing,
+    // the fold or either anchor and this moves, which means the rest level is no longer where it
+    // was measured to belong — silently, and only on screen.
+    let ink = 0, n = 0
+    for (let t = 0; t < 2; t += 0.0005) {
+      const p = twinkleProgress(t, 2, 0)
+      ink += O(p) * (0.5 + 0.5 * p)
+      n++
+    }
+    expect(ink / n).toBeCloseTo(0.51, 2)
+    expect(ink / n / 0.25).toBeGreaterThanOrEqual(2)
+  })
+
+  it('never dips below the trough a resting orb was measured against', () => {
+    // "A resting orb must never out-shine the running one at ANY point in its cycle." The floor
+    // of the busy dot's alpha is the number `REST_OP` had to clear.
+    for (let t = 0; t < 4; t += 0.01) expect(O(twinkleProgress(t, 1.9, -0.4))).toBeGreaterThanOrEqual(TWINKLE_TROUGH_OP)
   })
 })

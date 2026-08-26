@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { rand, hashSeed, gridPointsInDisc } from '../../lib/random'
 import { isWideGrapheme } from '../../lib/lane-initial'
 
@@ -62,14 +62,12 @@ const ENDED_OP = 0.12
 /** THE TWINKLE'S TWO ANCHORS, and the reason they are constants rather than config.
  *
  *  Every measurement in this file is stated against them — the trough is `--fg-muted` at 0.3, the
- *  peak is the status hue at 0.95, and "ink over a cycle ≈ 0.51" falls out of that pair. They are
- *  now also baked into `@keyframes twinkle-base` / `twinkle-peak`, whose eleven sampled stops are
- *  DERIVED from them (see styles.css): the tint is composited from two stacked circles instead of
- *  animated on one, because animating `fill` cost 34.7% renderer + 6.0% GPU on seven busy orbs.
+ *  peak is the status hue at 0.95, and "ink over a cycle ≈ 0.51" falls out of that pair.
  *
- *  So a state that wanted a different ceiling would need its own regenerated keyframes, and the
- *  old `--tw-max` variable — which every animated state set to the same 0.95 — hid exactly that.
- *  `the animated states agree with the keyframes` in StatusWave.test.ts fails if they drift. */
+ *  A busy orb is now PAINTED, not animated (see `OrbCanvas`), so these two numbers are read
+ *  directly by the draw call rather than sampled into a stylesheet. That is the whole reason the
+ *  canvas is worth the machinery: the colour law is written once, in one place, in the units the
+ *  measurements are stated in. */
 export const TWINKLE_TROUGH_OP = 0.3
 export const TWINKLE_PEAK_OP = 0.95
 
@@ -139,7 +137,7 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
         const restFill = accent
           ? `color-mix(in srgb, ${accent} 82%, var(--fg-muted))`
           : 'var(--fg-muted)'
-        return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties, layers: null }
+        return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties, timing: null }
       }
       // Unison (your-turn pulse): every dot shares one period and phase so the
       // disc breathes as a single beacon. Otherwise each dot gets its own period
@@ -148,21 +146,11 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
         ? cfg.durMin * tempo
         : (cfg.durMin + rand(i + 1 + s) * (cfg.durMax - cfg.durMin)) * tempo
       const delay = cfg.unison ? 0 : -rand(i + 7 + s * 1.7) * dur
-      // TWO CIRCLES, ONE DOT. The trough ink and the status hue are separate elements stacked in
-      // the same place, so the bloom between them is COMPOSITED rather than animated through
-      // `fill` — see the keyframes in styles.css for the algebra and the measurement.
-      //
-      // The scale is its own animation, sharing this dot's duration and delay, so both layers
-      // breathe as one object and the motion is bit-for-bit what it always was. `linear` on the
-      // opacity tracks is not a style choice: the easing already lives in the sampled stops, and
-      // easing them a second time would bend a curve that is already the right shape.
-      const layer = (kind: 'base' | 'peak'): React.CSSProperties => ({
-        transformBox: 'fill-box',
-        transformOrigin: 'center',
-        fill: kind === 'base' ? 'var(--tw-fill, var(--fg-muted))' : 'var(--tw-fill-peak, var(--fg))',
-        animation: `twinkle-${kind} ${dur.toFixed(2)}s linear ${delay.toFixed(2)}s infinite`,
-      })
-      return { ...d, layers: { base: layer('base'), peak: layer('peak') } }
+      // A busy dot carries TIMING, not style: `OrbCanvas` paints it. The rhythm — a per-session
+      // tempo, a per-dot period, a negative offset so nothing pulses in lockstep — is unchanged,
+      // and it has to be: it is the seeded signature that makes two running lanes distinguishable
+      // at a glance.
+      return { ...d, style: null, timing: { dur, delay } }
     })
   }, [effective, seed, accent]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -170,34 +158,198 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
     <span style={{
       // `relative` so the letter can sit ON the disc. Harmless when there is no letter.
       position: 'relative', flexShrink: 0, display: 'inline-flex', lineHeight: 0,
-
-      // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
-      // (scaled-up). Only the animated (busy) states set these; `accent` (an
-      // orchestration lane's colour) re-tints the moving half so a collapsed rail
-      // reads as "which agent" at a glance. The resting/static states (waiting,
-      // idle, error, ended) don't animate — they carry the lane accent directly on
-      // each dot's fill (dimmed by staticOp, see the memo above), so a quiet lane
-      // keeps its colour while still receding.
-      ...(cfg.fill ? { ['--tw-fill' as string]: (cfg.animate && accent) || cfg.fill } : null),
-      ...(cfg.fillPeak ? { ['--tw-fill-peak' as string]: (cfg.animate && accent) || cfg.fillPeak } : null),
+      // `--tw-fill` / `--tw-fill-peak` used to live here, for a keyframe to read. Nothing reads
+      // them now: a busy orb is painted and takes its bloom colour as a prop, and a resting one
+      // carries the accent directly on each dot's own fill. The lane accent still re-tints the
+      // moving half — that is what makes a collapsed rail say WHICH agent — it just travels as
+      // an argument instead of as a custom property.
     }}>
-      <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
-        <g fill="var(--fg)">
-          {dots.map((d, i) => (d.layers
-            ? (
-              // Base UNDER peak: the stacking order is the compositing order the derivation
-              // assumes, and swapping them paints the trough ink over the status hue.
-              <g key={i}>
-                <circle cx={d.cx} cy={d.cy} r={R} style={d.layers.base} />
-                <circle cx={d.cx} cy={d.cy} r={R} style={d.layers.peak} />
-              </g>
-            )
-            : <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style} />))}
-        </g>
-      </svg>
+      {cfg.animate
+        ? <OrbCanvas size={size} dots={dots} peak={(accent || cfg.fillPeak) ?? 'var(--fg)'} />
+        : (
+          // THE RESTING PATH IS UNTOUCHED, deliberately. Rest is most of the rail most of the
+          // time and it costs nothing — it does not animate — so there is no reason to move it,
+          // and every reason not to: its ink levels carry measured receipts (see `REST_OP`) that
+          // a change of rasteriser would put back in question. `dev/drive-orb-rest.mjs` holds
+          // these four states to byte-identical renders.
+          <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
+            <g fill="var(--fg)">
+              {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style ?? undefined} />)}
+            </g>
+          </svg>
+        )}
       {initial && <OrbInitial initial={initial} size={size} />}
     </span>
   )
+}
+
+/** A BUSY ORB IS PAINTED, NOT ANIMATED — pass 2, `dev/results/perf-pass-2-orbs.md`.
+ *
+ *  Pass 1 got the twinkle off `fill` and stopped there, because it had found the floor: Blink
+ *  never composites SVG element animations, so 37 dots x 7 busy lanes is 518 elements whose style
+ *  is recalculated every frame no matter what is animated on them. Measured, seven busy orbs:
+ *  **33.2% renderer, 8.5% GPU**.
+ *
+ *  Both ways out were measured. HTML dots ARE promoted — Blink reports
+ *  `ActiveTransformAnimation, ActiveOpacityAnimation` on them — and it changes nothing: 33.8%,
+ *  because 518 compositor layers of three-and-a-half pixels each cost in bookkeeping what they
+ *  save in style. One canvas per orb, drawn by a single shared rAF, measures **9.5% / 2.2%** — and
+ *  8.1% at devicePixelRatio 2, where the SVG orb costs 39.6%.
+ *
+ *  IT IS ALSO MORE FAITHFUL THAN WHAT IT REPLACES, which was the surprise. Against the orb's own
+ *  static geometry the canvas measures ΔE*ab 0.57 mean / 1.72 max, while both the shipped SVG and
+ *  the pre-pass-1 original sit ~5.7 away from that same geometry: an animated SVG transform is
+ *  rasterised and then scaled, which softens every dot's edge. Total ink lands 1.6% off the
+ *  original against the shipped orb's 3.8%. The dots are the same size, colour, phase and
+ *  rhythm — they are simply drawn at the size they are meant to be.
+ *
+ *  The trade this makes is that colours must be RESOLVED rather than referenced: a canvas cannot
+ *  read `var(--fg-muted)`. `resolveColor` does it through the browser, once per value, and the
+ *  cache is dropped when the theme changes. */
+function OrbCanvas({ size, dots, peak }: {
+  size: number
+  dots: Array<{ cx: number; cy: number; timing: { dur: number; delay: number } | null }>
+  peak: string
+}) {
+  const ref = useRef<HTMLCanvasElement | null>(null)
+  const theme = useThemeEpoch()
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    const unit = size / CELLS
+    const trough = rgbOf(resolveColor('var(--fg-muted)'))
+    const bloom = rgbOf(resolveColor(peak))
+    let dpr = 0
+    const t0 = performance.now()
+    const draw = () => {
+      // Re-read the ratio each frame rather than at mount: dragging the window to a second
+      // display changes it, and a canvas sized for the old one is visibly soft afterwards. It is
+      // a number comparison, and the resize only happens when it actually changed.
+      const next = window.devicePixelRatio || 1
+      if (next !== dpr) {
+        dpr = next
+        cv.width = Math.round(size * dpr)
+        cv.height = Math.round(size * dpr)
+      }
+      const elapsed = (performance.now() - t0) / 1000
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, size, size)
+      for (const d of dots) {
+        if (!d.timing) continue
+        const p = twinkleProgress(elapsed, d.timing.dur, d.timing.delay)
+        ctx.globalAlpha = TWINKLE_TROUGH_OP + (TWINKLE_PEAK_OP - TWINKLE_TROUGH_OP) * p
+        ctx.fillStyle = `rgb(${trough[0] + (bloom[0] - trough[0]) * p | 0},${trough[1] + (bloom[1] - trough[1]) * p | 0},${trough[2] + (bloom[2] - trough[2]) * p | 0})`
+        ctx.beginPath()
+        ctx.arc(d.cx * unit, d.cy * unit, R * unit * (0.5 + 0.5 * p), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+    draw()
+    return joinFrameLoop(draw)
+  }, [dots, size, peak, theme])
+  return <canvas ref={ref} width={size} height={size} style={{ width: size, height: size, display: 'block' }} />
+}
+
+/** Where one dot is in its own breath: 0 at the trough, 1 at the peak, eased exactly as the
+ *  keyframe's `ease-in-out` eased it. Pure, and exported because it IS the animation now — the
+ *  thing a test can hold. */
+export function twinkleProgress(elapsed: number, dur: number, delay: number): number {
+  const cyc = ((((elapsed - delay) / dur) % 1) + 1) % 1
+  // The cycle is a triangle: out to the peak by the halfway mark, back by the end. The keyframe
+  // spelled that as `0%, 100%` against `50%`; here it is the fold.
+  return easeInOut(cyc < 0.5 ? cyc / 0.5 : (1 - cyc) / 0.5)
+}
+
+/** CSS `ease-in-out` — `cubic-bezier(0.42, 0, 0.58, 1)`, solved for y at x. Bisection rather than
+ *  Newton: 24 halvings is exact to 1e-7 and cannot diverge, and this runs 259 times a frame. */
+function easeInOut(t: number): number {
+  const bx = (u: number) => 3 * (1 - u) ** 2 * u * 0.42 + 3 * (1 - u) * u * u * 0.58 + u ** 3
+  let lo = 0, hi = 1, u = t
+  for (let i = 0; i < 24; i++) { u = (lo + hi) / 2; bx(u) < t ? lo = u : hi = u }
+  return 3 * (1 - u) * u * u + u ** 3
+}
+
+/** ONE rAF FOR THE WHOLE RAIL. Seven busy lanes are seven canvases and ONE callback; a loop per
+ *  orb would put the scheduler back in the position the 518 elements were in. Also stops itself
+ *  when the last orb unmounts, so a rail with nothing running costs nothing. */
+const frameClients = new Set<() => void>()
+let frameHandle = 0
+function joinFrameLoop(draw: () => void): () => void {
+  frameClients.add(draw)
+  if (!frameHandle) {
+    const tick = () => {
+      for (const c of frameClients) c()
+      frameHandle = frameClients.size ? requestAnimationFrame(tick) : 0
+    }
+    frameHandle = requestAnimationFrame(tick)
+  }
+  return () => {
+    frameClients.delete(draw)
+    if (!frameClients.size && frameHandle) { cancelAnimationFrame(frameHandle); frameHandle = 0 }
+  }
+}
+
+/** CSS says `var(--fg-muted)`; a canvas needs `rgb(138, 148, 160)`.
+ *
+ *  Resolved by the browser rather than by a colour parser here — the value can be a var chain, a
+ *  `color-mix`, or anything else CSS grows next, and only the engine knows what those mean. A
+ *  detached element would compute nothing, so the probe is in the document; it is one node for
+ *  the whole app, `aria-hidden`, and never painted. */
+let probe: HTMLSpanElement | null = null
+const colorCache = new Map<string, string>()
+function resolveColor(expr: string): string {
+  const hit = colorCache.get(expr)
+  if (hit) return hit
+  if (typeof document === 'undefined') return expr
+  if (!probe) {
+    probe = document.createElement('span')
+    probe.setAttribute('aria-hidden', 'true')
+    probe.style.cssText = 'position:absolute;width:0;height:0;visibility:hidden;pointer-events:none'
+    document.body.appendChild(probe)
+  }
+  probe.style.color = ''
+  probe.style.color = expr
+  const out = getComputedStyle(probe).color || expr
+  colorCache.set(expr, out)
+  return out
+}
+
+/** `rgb(r, g, b)` / `rgba(...)` → three numbers. Only ever fed `getComputedStyle().color`, which
+ *  is why this can be a regex and not a parser. */
+function rgbOf(css: string): [number, number, number] {
+  const m = css.match(/-?[\d.]+/g)
+  if (!m || m.length < 3) return [128, 128, 128]
+  return [Number(m[0]), Number(m[1]), Number(m[2])]
+}
+
+/** A number that changes when the palette does, so every canvas re-resolves its colours.
+ *
+ *  Themes are applied by rewriting custom properties on `<html>`, and a canvas holds RESOLVED
+ *  colours — so without this an orb keeps painting the old palette until it happens to remount.
+ *  A CSS-var-based orb got this for free; a painted one has to ask. */
+let themeEpoch = 0
+let watchingTheme = false
+const themeSubs = new Set<(n: number) => void>()
+function useThemeEpoch(): number {
+  const [epoch, setEpoch] = useState(themeEpoch)
+  useEffect(() => {
+    // ONE observer for the life of the app, and the flag is what makes that true. Keying it on
+    // `themeSubs.size` instead would install a second one every time the rail emptied and
+    // refilled — which is every project switch — and each survivor would keep firing.
+    if (!watchingTheme && typeof MutationObserver !== 'undefined') {
+      watchingTheme = true
+      new MutationObserver(() => {
+        colorCache.clear()
+        themeEpoch += 1
+        for (const s of themeSubs) s(themeEpoch)
+      }).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme'] })
+    }
+    themeSubs.add(setEpoch)
+    return () => { themeSubs.delete(setEpoch) }
+  }, [])
+  return epoch
 }
 
 /** WHICH LANE, in the disc that already says how it is doing. Static — the dots twinkle beneath it

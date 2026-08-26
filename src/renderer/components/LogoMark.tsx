@@ -48,13 +48,15 @@ export function LogoMark({ size = 64, animated = true, cells = 7 }: { size?: num
       style: {
         transformBox: 'fill-box',
         transformOrigin: 'center',
-        animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
+        animation: `twinkle-logo ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
       } as React.CSSProperties,
     }
   }), [animated, cells])
 
   return (
-    <span style={{ display: 'inline-flex', lineHeight: 0, ['--tw-max' as string]: 0.85 }}>
+    // `--tw-max` used to ride here for the shared keyframe to read. `twinkle-logo` is this
+    // component's own rule and carries the 0.85 ceiling itself, so there is nothing to pass.
+    <span style={{ display: 'inline-flex', lineHeight: 0 }}>
       <svg width={size} height={size} viewBox={`0 0 ${cells} ${cells}`} fill="none">
         <g fill="var(--fg)">
           {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={d.r} style={d.style} />)}
