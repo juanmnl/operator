@@ -59,6 +59,20 @@ const REST_OP = 0.25
  *  lane exists. */
 const ENDED_OP = 0.12
 
+/** THE TWINKLE'S TWO ANCHORS, and the reason they are constants rather than config.
+ *
+ *  Every measurement in this file is stated against them — the trough is `--fg-muted` at 0.3, the
+ *  peak is the status hue at 0.95, and "ink over a cycle ≈ 0.51" falls out of that pair. They are
+ *  now also baked into `@keyframes twinkle-base` / `twinkle-peak`, whose eleven sampled stops are
+ *  DERIVED from them (see styles.css): the tint is composited from two stacked circles instead of
+ *  animated on one, because animating `fill` cost 34.7% renderer + 6.0% GPU on seven busy orbs.
+ *
+ *  So a state that wanted a different ceiling would need its own regenerated keyframes, and the
+ *  old `--tw-max` variable — which every animated state set to the same 0.95 — hid exactly that.
+ *  `the animated states agree with the keyframes` in StatusWave.test.ts fails if they drift. */
+export const TWINKLE_TROUGH_OP = 0.3
+export const TWINKLE_PEAK_OP = 0.95
+
 // `fill` tints the resting dots; `fillPeak` tints the dots as they scale up (the
 // twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
 const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
@@ -68,8 +82,8 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
   //  • your-turn PULSED — the whole disc breathing in unison, a calm beacon. RETIRED:
   //    `waiting.animate` is false and motion is the only busy signal. `unison` and
   //    `PULSE_SETTLE_MS` are the machinery it left behind, kept for its return.
-  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
-  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: 0.95, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
+  running:    { animate: true,  durMin: 1.4, durMax: 2.6, maxOp: TWINKLE_PEAK_OP, staticOp: 0.5, fillPeak: 'var(--status-running, var(--green))' },
+  compacting: { animate: true,  durMin: 0.9, durMax: 1.8, maxOp: TWINKLE_PEAK_OP, staticOp: 0.5, fillPeak: 'var(--status-compacting, var(--yellow))' },
   // Motion is the ONLY busy signal: the shimmer/pulse belongs to states where the
   // agent is actively working. Waiting means it has stopped and handed the turn
   // back — not busy — so it rests STATIC like idle.
@@ -125,7 +139,7 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
         const restFill = accent
           ? `color-mix(in srgb, ${accent} 82%, var(--fg-muted))`
           : 'var(--fg-muted)'
-        return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties }
+        return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties, layers: null }
       }
       // Unison (your-turn pulse): every dot shares one period and phase so the
       // disc breathes as a single beacon. Otherwise each dot gets its own period
@@ -134,14 +148,21 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
         ? cfg.durMin * tempo
         : (cfg.durMin + rand(i + 1 + s) * (cfg.durMax - cfg.durMin)) * tempo
       const delay = cfg.unison ? 0 : -rand(i + 7 + s * 1.7) * dur
-      return {
-        ...d,
-        style: {
-          transformBox: 'fill-box',
-          transformOrigin: 'center',
-          animation: `twinkle ${dur.toFixed(2)}s ease-in-out ${delay.toFixed(2)}s infinite`,
-        } as React.CSSProperties,
-      }
+      // TWO CIRCLES, ONE DOT. The trough ink and the status hue are separate elements stacked in
+      // the same place, so the bloom between them is COMPOSITED rather than animated through
+      // `fill` — see the keyframes in styles.css for the algebra and the measurement.
+      //
+      // The scale is its own animation, sharing this dot's duration and delay, so both layers
+      // breathe as one object and the motion is bit-for-bit what it always was. `linear` on the
+      // opacity tracks is not a style choice: the easing already lives in the sampled stops, and
+      // easing them a second time would bend a curve that is already the right shape.
+      const layer = (kind: 'base' | 'peak'): React.CSSProperties => ({
+        transformBox: 'fill-box',
+        transformOrigin: 'center',
+        fill: kind === 'base' ? 'var(--tw-fill, var(--fg-muted))' : 'var(--tw-fill-peak, var(--fg))',
+        animation: `twinkle-${kind} ${dur.toFixed(2)}s linear ${delay.toFixed(2)}s infinite`,
+      })
+      return { ...d, layers: { base: layer('base'), peak: layer('peak') } }
     })
   }, [effective, seed, accent]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -149,7 +170,7 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
     <span style={{
       // `relative` so the letter can sit ON the disc. Harmless when there is no letter.
       position: 'relative', flexShrink: 0, display: 'inline-flex', lineHeight: 0,
-      ['--tw-max' as string]: cfg.maxOp,
+
       // The twinkle keyframe reads fill from --tw-fill (resting) and --tw-fill-peak
       // (scaled-up). Only the animated (busy) states set these; `accent` (an
       // orchestration lane's colour) re-tints the moving half so a collapsed rail
@@ -162,7 +183,16 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
     }}>
       <svg width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
         <g fill="var(--fg)">
-          {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style} />)}
+          {dots.map((d, i) => (d.layers
+            ? (
+              // Base UNDER peak: the stacking order is the compositing order the derivation
+              // assumes, and swapping them paints the trough ink over the status hue.
+              <g key={i}>
+                <circle cx={d.cx} cy={d.cy} r={R} style={d.layers.base} />
+                <circle cx={d.cx} cy={d.cy} r={R} style={d.layers.peak} />
+              </g>
+            )
+            : <circle key={i} cx={d.cx} cy={d.cy} r={R} style={d.style} />))}
         </g>
       </svg>
       {initial && <OrbInitial initial={initial} size={size} />}

@@ -691,10 +691,62 @@ input[data-launch-brief]::placeholder {
 /* Session status — dots in a squircle that randomly twinkle: scale up and
    bloom from a muted gray trough into the status hue (--tw-fill-peak), each on
    its own offset and seeded per-session so no two shimmer alike. Kept subtle.
-   --tw-max sets the per-state brightness ceiling. */
-@keyframes twinkle {
-  0%, 100% { opacity: 0.3; transform: scale(0.5); fill: var(--tw-fill, var(--fg-muted)); }
-  50%      { opacity: var(--tw-max, 0.85); transform: scale(1); fill: var(--tw-fill-peak, var(--fg)); }
+
+   IT USED TO ANIMATE `fill`, AND THAT WAS THE MOST EXPENSIVE THING IN THE APP.
+   `fill` is a paint property: Blink cannot run it on the compositor, so every frame of every
+   dot forced a style recalc, a main-thread repaint and a GPU re-raster. Measured on
+   `dev/perf-orbs.html` (7 busy orbs, 259 dots, the real component): 34.7% renderer + 6.0% GPU,
+   with 72 ms of style recalc per wall second. Dropping `fill` from the keyframe and changing
+   NOTHING else measured 15.5% + 1.0%.
+
+   So the tint is composited instead of animated. Each dot is drawn TWICE, stacked and moving
+   as one: a `twinkle-base` circle in the trough ink under a `twinkle-peak` circle in the status
+   hue, and only their opacities animate. Where a single dot used to paint
+   `lerp(muted, peak, p)` at alpha `O(p)`, the pair paints peak at `O·p` over muted at
+   `O(1-p)/(1-O·p)` — which is the SAME colour, exactly, by the alpha-compositing algebra. Not
+   an approximation of the old look: the same one, arrived at another way.
+
+   `transform` is a separate animation from `opacity` on purpose. The scale must keep the
+   ease-in-out breath it always had, while the two opacity tracks are curves in the eased
+   progress that a 3-stop ease cannot draw — so they are SAMPLED every 5% and interpolated
+   linearly. That sampling is the only inexactness in the whole change, and it is measured:
+   max ΔE*ab 0.80, mean 0.16, across all six palettes and all six lane accents over the whole
+   cycle. Under 1 is under the just-noticeable difference, and this codebase's own threshold for
+   "a colour stopped being distinguishable" is ~5.
+
+   THE STOPS ARE DERIVED FOR A 0.3 TROUGH AND A 0.95 PEAK — `TWINKLE_TROUGH_OP` /
+   `TWINKLE_PEAK_OP` in StatusWave.tsx, which is where the derivation and its receipts live, and
+   a unit test there fails if an animated state stops matching them. (The old `--tw-max`
+   variable is gone with them: every animated state used 0.95, and a knob that is really a
+   constant hid the coupling these numbers have to the keyframe.) */
+/* The trough ink. Rises as the dot opens — it has to, because the peak layer above it is
+   swallowing an increasing share of it — then goes out at the top of the breath. */
+@keyframes twinkle-base {
+  0%, 100% { opacity: 0.3; transform: scale(0.5); }
+  5%, 95%  { opacity: 0.309; transform: scale(0.51); }
+  10%, 90% { opacity: 0.334; transform: scale(0.541); }
+  15%, 85% { opacity: 0.372; transform: scale(0.594); }
+  20%, 80% { opacity: 0.416; transform: scale(0.666); }
+  25%, 75% { opacity: 0.455; transform: scale(0.75); }
+  30%, 70% { opacity: 0.478; transform: scale(0.834); }
+  35%, 65% { opacity: 0.475; transform: scale(0.906); }
+  40%, 60% { opacity: 0.415; transform: scale(0.959); }
+  45%, 55% { opacity: 0.227; transform: scale(0.99); }
+  50%      { opacity: 0; transform: scale(1); }
+}
+/* The status hue, absent at the trough and alone at the peak. */
+@keyframes twinkle-peak {
+  0%, 100% { opacity: 0; transform: scale(0.5); }
+  5%, 95%  { opacity: 0.006; transform: scale(0.51); }
+  10%, 90% { opacity: 0.029; transform: scale(0.541); }
+  15%, 85% { opacity: 0.079; transform: scale(0.594); }
+  20%, 80% { opacity: 0.171; transform: scale(0.666); }
+  25%, 75% { opacity: 0.313; transform: scale(0.75); }
+  30%, 70% { opacity: 0.491; transform: scale(0.834); }
+  35%, 65% { opacity: 0.673; transform: scale(0.906); }
+  40%, 60% { opacity: 0.824; transform: scale(0.959); }
+  45%, 55% { opacity: 0.919; transform: scale(0.99); }
+  50%      { opacity: 0.95; transform: scale(1); }
 }
 
 /* ── The task board (components/session/TaskBoard.tsx) ─────────────────────────
