@@ -38,13 +38,26 @@ const at = q.has('at') ? Number(q.get('at')) : undefined
 // `?initial=1` puts the lane letter back on the disc — it is drawn over the orb, so a change of
 // what the orb IS (svg element, canvas) is exactly the change that could knock it off.
 const withInitial = q.get('initial') === '1'
+// `?visible=k` puts the orbs in a scroller tall enough for k of them, so the rest are below the
+// fold — a rail with more lanes than fit, which is the case pass 3 exists for. Without it every
+// orb is on screen and the IntersectionObserver has nothing to do.
+const visible = q.has('visible') ? Number(q.get('visible')) : undefined
 
 // The default lane accents, so the peak half is tinted exactly as a real rail's is.
 const ACCENTS = ['#7dd3a0', '#8ab4f8', '#f7a8c4', '#f6c177', '#b39ddb', '#79d0d8', '#e5989b']
 
 function Bench() {
+  // A COLUMN when clipping, a row otherwise: the rail is a column, and orbs have to leave the
+  // viewport along the axis it scrolls on.
+  const clip = visible != null
+  const row = size + 12
   return (
-    <div style={{ display: 'flex', gap: 12, padding: 16, background: 'var(--bg-sidebar, #111)' }}>
+    <div
+      data-orb-scroller
+      style={clip
+        ? { display: 'flex', flexDirection: 'column', gap: 12, padding: 16, background: 'var(--bg-sidebar, #111)', height: visible * row, overflowY: 'auto' }
+        : { display: 'flex', gap: 12, padding: 16, background: 'var(--bg-sidebar, #111)' }}
+    >
       {Array.from({ length: n }, (_, i) => {
         const props = { size, seed: `lane-${i}`, accent: ACCENTS[i % ACCENTS.length] }
         // ONE WRAPPER FOR EVERY CANDIDATE, or the comparison measures layout. An `inline-block`

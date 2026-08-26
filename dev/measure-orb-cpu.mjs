@@ -15,19 +15,46 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
+
+/** Every pid currently running as a Chromium helper of `type`, whoever owns it. */
+async function pidsByTypeRaw(type) {
+  const { stdout } = await run('/bin/sh', ['-c', `ps -eo pid,command | grep -- '--type=${type}' | grep -v grep || true`])
+  return new Set(stdout.trim().split('\n').filter(Boolean).map((l) => Number(l.trim().split(/\s+/)[0])))
+}
 const PORT = process.env.MOCK_PORT || 1461
 const N = process.env.N || 7
 const STATUS = process.env.STATUS || 'running'
 const SIZE = process.env.SIZE || 24
 const IMPL = process.env.IMPL || 'svg'
 const DPR = Number(process.env.DPR || 1)
+// How many orbs are allowed on screen; the rest are scrolled out. Unset = all of them.
+const VISIBLE = process.env.VISIBLE
 const SAMPLES = Number(process.env.SAMPLES || 14)
 const WARMUP = Number(process.env.WARMUP || 2)
 const label = process.argv[2] ?? 'run'
 
+// Snapshot the field BEFORE anything of ours exists. See `pidsByType` — the first version of
+// this sampler matched every Chromium on the machine and, on a run with somebody else's browser
+// open, reported 3 renderer pids and 142% CPU next to an identical run's 2 pids and 7.8%. A
+// sampler that quietly includes a stranger's process gives a confident wrong number, not a noisy
+// one, so the exclusion happens here where it cannot be forgotten.
+const preexisting = {
+  renderer: await pidsByTypeRaw('renderer'),
+  gpu: await pidsByTypeRaw('gpu-process'),
+}
+
 const b = await chromium.launch()
-const p = await b.newPage({ viewport: { width: 1200, height: 200 }, colorScheme: 'dark', deviceScaleFactor: DPR })
-await p.goto(`http://localhost:${PORT}/dev/perf-orbs.html?n=${N}&status=${STATUS}&size=${SIZE}&impl=${IMPL}`, { waitUntil: 'load' })
+// THE WINDOW MUST NOT BE THE THING DOING THE CLIPPING. An IntersectionObserver's default root is
+// the viewport, so a 200px-tall window hides most of a 20-orb column no matter what the scroller
+// is set to — and a "20 visible vs 5 visible" comparison then measures the same ~5 orbs twice.
+// (It did: 18.8 against 15.9 ms/s of script, which read as "the gate barely helps".) When a case
+// asks for k orbs on screen, the window is made tall enough to hold exactly that many.
+const ROW = Number(SIZE) + 12
+const viewport = VISIBLE
+  ? { width: 1200, height: Number(VISIBLE) * ROW + 40 }
+  : { width: 1200, height: 200 }
+const p = await b.newPage({ viewport, colorScheme: 'dark', deviceScaleFactor: DPR })
+await p.goto(`http://localhost:${PORT}/dev/perf-orbs.html?n=${N}&status=${STATUS}&size=${SIZE}&impl=${IMPL}${VISIBLE ? `&visible=${VISIBLE}` : ''}`, { waitUntil: 'load' })
 // PROVE IT IS MOVING, BY LOOKING AT IT. `getAnimations()` was the pass-1 guard and it only
 // covers CSS animations — a canvas orb driven by rAF has none, and would be waved through as
 // "still" while a broken CSS orb with a missing @keyframes rule computes an `animation-name` and
@@ -55,14 +82,24 @@ const client = await p.context().newCDPSession(p)
 await client.send('Performance.enable')
 const metricsAt = async () => Object.fromEntries((await client.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]))
 
-// Chromium's own processes, found by command line rather than by name: the helper binaries are
-// all called the same thing and only `--type=` tells them apart.
-async function pidsByType(type) {
-  const { stdout } = await run('/bin/sh', ['-c', `ps -eo pid,command | grep -- '--type=${type}' | grep -i chromium | grep -v grep`])
-  return stdout.trim().split('\n').filter(Boolean).map((l) => Number(l.trim().split(/\s+/)[0]))
-}
-const renderers = await pidsByType('renderer')
-const gpus = await pidsByType('gpu-process')
+// THE PROCESSES OF *THIS* BROWSER, and only this one.
+//
+// Matching `--type=renderer` against every Chromium on the machine is what the first version did,
+// and it is wrong on a machine that has any other Chromium open — a Playwright browser from a
+// concurrent run, the Chrome extension's, anything. Caught in the act: a run reported
+// `rendererPids: 3` and 142% CPU next to an otherwise identical run's 2 pids and 7.8%. A sampler
+// that silently includes a stranger's process does not produce a noisy number, it produces a
+// confident wrong one.
+//
+// Chromium's helpers are direct children of the browser process Playwright launched, so the
+// parent pid is the filter.
+// `browser.process()` is not on the Browser this Playwright build hands back, so the browser is
+// identified by SUBTRACTION instead: whatever `--type=renderer` / `--type=gpu-process` processes
+// exist before the launch are somebody else's, and are excluded by pid.
+const pidsByType = pidsByTypeRaw
+const mine = (before, after) => [...after].filter((pid) => !before.has(pid))
+const renderers = mine(preexisting.renderer, await pidsByType('renderer'))
+const gpus = mine(preexisting.gpu, await pidsByType('gpu-process'))
 if (!renderers.length) { console.error('no renderer process found'); await b.close(); process.exit(1) }
 
 const before = await metricsAt()
@@ -112,10 +149,11 @@ try {
 
 const out = {
   label,
-  orbs: Number(N), impl: IMPL, dpr: DPR, status: STATUS, size: Number(SIZE), ...shape, layers,
+  orbs: Number(N), impl: IMPL, dpr: DPR, visible: VISIBLE ? Number(VISIBLE) : Number(N), status: STATUS, size: Number(SIZE), ...shape, layers,
   samples: (perPid.get(renderers[0]) ?? []).length,
   rendererCpuPct: Number(rendererCpu(renderers).toFixed(1)),
   gpuCpuPct: Number(rendererCpu(gpus).toFixed(1)),
+  rendererPids: renderers.length, gpuPids: gpus.length,
   rendererMemMB: Number(peakMem(renderers).toFixed(0)),
   gpuMemMB: Number(peakMem(gpus).toFixed(0)),
   // Blink's own totals, as a rate per wall second — the mechanism behind the CPU number.

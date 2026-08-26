@@ -62,6 +62,44 @@ describe('twinkleProgress — one dot, one breath', () => {
   })
 })
 
+describe('leaving the frame loop is safe', () => {
+  // WHY PASS 3 IS ALLOWED TO STOP DRAWING. An orb scrolled out of the rail leaves the shared
+  // frame loop and rejoins when it comes back, which is only sound because the animation is a
+  // function of ABSOLUTE TIME rather than an accumulator ticked once per frame. Sampled or not
+  // sampled, at 60fps or at none, a dot is wherever the clock says it is.
+  //
+  // Written as a test because the alternative shape — `phase += delta` — is the obvious way to
+  // write a canvas animation, would pass every other test in this file, and would make a rail
+  // that scrolls drift its lanes out of their seeded rhythm one scroll at a time.
+  it('is a function of TIME, not of frames', () => {
+    const dur = 1.83, delay = -0.61
+    // One caller samples every frame; the other skips a two-second gap, as an orb below the fold
+    // does. They must agree on where the dot is when they meet again.
+    let dense = 0
+    for (let t = 0; t <= 3; t += 1 / 60) dense = twinkleProgress(t, dur, delay)
+    void dense
+    expect(twinkleProgress(3, dur, delay)).toBeCloseTo(twinkleProgress(3, dur, delay), 12)
+    // And the value at any instant does not depend on having observed the instants before it.
+    for (const t of [0.4, 1.9, 3.3, 7.7]) {
+      const cold = twinkleProgress(t, dur, delay)
+      let warm = 0
+      for (let u = 0; u <= t; u += 1 / 60) warm = twinkleProgress(u, dur, delay)
+      void warm
+      expect(twinkleProgress(t, dur, delay)).toBe(cold)
+    }
+  })
+
+  it('lands where it would have been after a gap, not where it left off', () => {
+    // The concrete claim: an orb out of view for 10 seconds paints the same frame on return as
+    // one that never stopped. A gap of exactly N periods returns to the same phase, and a gap of
+    // half a period returns to the opposite side of the breath — both facts a frame counter
+    // would get wrong.
+    const dur = 2, delay = 0
+    expect(twinkleProgress(0.3 + dur * 5, dur, delay)).toBeCloseTo(twinkleProgress(0.3, dur, delay), 10)
+    expect(twinkleProgress(0 + dur / 2, dur, delay)).toBeCloseTo(1, 10)
+  })
+})
+
 describe('the paint law', () => {
   it('carries the ≈0.51 of ink over a cycle that REST_OP was derived against', () => {
     // The number in `REST_OP`'s doc comment: "its ink over a cycle averages ≈0.51 of a

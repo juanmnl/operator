@@ -246,8 +246,38 @@ function OrbCanvas({ size, dots, peak }: {
         ctx.fill()
       }
     }
+    // OFF SCREEN, OFF THE LOOP. A rail scrolls, and a lane below the fold was still painting 37
+    // dots sixty times a second at nobody. This is the cheap half of pass 2's win and it was
+    // impossible before it: a CSS animation runs wherever it is declared, and there is no way to
+    // tell one to stop because the element scrolled out. A paint loop can simply be left.
+    //
+    // `rootMargin` starts an orb a little before it arrives, so the first visible frame is
+    // already the current phase rather than a stale one.
+    //
+    // THE PHASE CANNOT DRIFT while an orb is out, and that is what makes leaving safe: progress
+    // is a pure function of elapsed time since mount (`twinkleProgress`), not an accumulator, so
+    // an orb that stops for a minute and rejoins paints exactly where it would have been had it
+    // never stopped. `the animation is a function of TIME, not of frames` in the tests holds that.
+    let leave: (() => void) | null = null
+    const run = () => { if (!leave) leave = joinFrameLoop(draw) }
+    const halt = () => { leave?.(); leave = null }
+
+    // One frame now regardless: an orb that is never observed to intersect (no observer, or a
+    // parent that reveals it some way this cannot see) must still show the right pixels.
     draw()
-    return joinFrameLoop(draw)
+    if (typeof IntersectionObserver === 'undefined') {
+      run()
+      return () => halt()
+    }
+    const io = new IntersectionObserver((entries) => {
+      // The LAST entry wins: a burst of scroll can deliver several for one element and only the
+      // most recent describes where it is now.
+      const latest = entries[entries.length - 1]
+      if (latest?.isIntersecting) run()
+      else halt()
+    }, { rootMargin: '48px' })
+    io.observe(cv)
+    return () => { io.disconnect(); halt() }
   }, [dots, size, peak, theme])
   return <canvas ref={ref} width={size} height={size} style={{ width: size, height: size, display: 'block' }} />
 }
