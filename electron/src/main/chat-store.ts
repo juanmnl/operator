@@ -308,9 +308,11 @@ export class ArtifactStore {
    *  `markReportAcked` found it. Delivery is left alone — it was still announced, and claiming
    *  otherwise would announce it again.
    *
-   *  Reachable from the Inbox's own `mark unread` control (`InboxPanel`'s row footer, through
-   *  `artifactMarkUnread`), which is what makes ack-on-open safe to have: opening a row acks it,
-   *  and a row opened by a stray click can be put back. */
+   *  NO LONGER REACHABLE. It existed for the Inbox's `mark unread` control, which made
+   *  ack-on-open safe to have; the mailbox — the ack, the unread dot and that control — was cut
+   *  on 2026-08-29, and `artifactMarkUnread` went with it from the IPC surface. Kept because the
+   *  column and its historical values are still in the store, so the write that undoes an ack
+   *  should not have to be rewritten if anything ever reads them again. */
   markReportUnread(id: number): void {
     this.db.prepare('UPDATE reports SET acked_at = NULL, seen = 0 WHERE id = ?').run(id)
   }

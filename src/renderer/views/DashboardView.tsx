@@ -37,8 +37,7 @@ import { FolderPreferencesView } from '../components/preferences/FolderPreferenc
 import { FilesView } from '../components/files/FilesView'
 import { FilesPanel } from '../components/files/FilesPanel'
 import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
-import { InboxPanel } from '../components/session/InboxPanel'
-import { announcement, canAnnounceTo, forProject, unreadByRole } from '../lib/inbox'
+import { announcement, canAnnounceTo } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { CanvasConversation } from '../components/session/CanvasConversation'
@@ -121,7 +120,7 @@ type MainView = 'terminal' | 'chat' | 'preview' | 'files'
 // The right side panel's tabs. Contextual to the main view: Chat is offered here when the
 // main view is Console or Preview (so you can watch the terminal / preview AND read the
 // conversation), but dropped in Chat view where it's already the main surface.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files' | 'inbox'
+type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
@@ -263,10 +262,10 @@ export function DashboardView() {
   // are one reader, and a tab that duplicates the surface beside it is the thing §4's rule A
   // exists to prevent, expressed in the tab set rather than only in the routing.
   const panelTabs: PanelTab[] = mainView === 'chat'
-    ? ['plan', 'diff', 'files', 'inbox']
+    ? ['plan', 'diff', 'files']
     : mainView === 'files'
-      ? ['plan', 'diff', 'chat', 'inbox']
-      : ['plan', 'diff', 'chat', 'files', 'inbox']
+      ? ['plan', 'diff', 'chat']
+      : ['plan', 'diff', 'chat', 'files']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
@@ -1485,7 +1484,7 @@ export function DashboardView() {
       })
 
       if (decision.kind === 'block') {
-        // The brake's own sentence rides along, so the Inbox can show WHY without inventing a
+        // The brake's own sentence rides along, so the Comms log can show WHY without inventing a
         // second vocabulary for it. These notes have existed and been displayed nowhere.
         record(decision.reason === 'queued' ? 'queued' : decision.reason, decision.note)
         // Surface WHY. A message that silently fails to arrive is indistinguishable from an agent
@@ -3394,10 +3393,10 @@ export function DashboardView() {
   // `delivered_at` is written by the same pass, which is what stops a report being announced on
   // every subsequent idle. The mark is the memory; there is no in-renderer seen-set to lose on a
   // respawn (which is how the delivery brakes lost theirs — see the audit's loss #5).
-  // THE REPORT FETCH, hoisted (reconcile D3). It used to live inside `InboxPanel`, which mounts
-  // only when its tab is open — so the unread count existed solely inside the surface it was
-  // meant to point you toward. One poll here feeds the panel, the tab badge, and (next) the rail
-  // marker and the coordinator's toolbar chip.
+  // THE REPORT FETCH. One poll, app-wide, feeding both surfaces that read a report: the board
+  // (a result on its own task card) and the project's Comms log. It is hoisted because it used
+  // to live inside the panel that showed it, so nothing outside that panel could know a report
+  // had landed — the mount was the fetch.
   const [reports, setReports] = useState<ArtifactReport[]>([])
   const refreshReports = useCallback(() => {
     window.operator.artifactReports?.(200)
@@ -3409,21 +3408,7 @@ export function DashboardView() {
     const t = window.setInterval(refreshReports, 4000)
     return () => clearInterval(t)
   }, [refreshReports])
-  /** The active LANE's project — distinct from `activeProjectId`, which is where you have
-   *  navigated to. Every report surface below is scoped to it. The fetch stays
-   *  global (one poll, and the store itself is global), and the scoping happens here where the
-   *  receiving lane is known. */
-  const activeLaneProjectId = useMemo(
-    () => terminals.find((t) => t.id === activeTerminalId)?.projectId,
-    [terminals, activeTerminalId],
-  )
-  /** roleId → reports addressed to it that nobody has acked, IN THIS PROJECT. Role ids repeat
-   *  across projects — every project has an `operator`, a `code` — so an unscoped count badged
-   *  this lane with another repo's unread work. */
-  const unreadCounts = useMemo(
-    () => unreadByRole(forProject(reports, activeLaneProjectId), 'operator'),
-    [reports, activeLaneProjectId],
-  )
+
 
   const announcingRef = useRef(false)
   useEffect(() => {
@@ -3453,8 +3438,8 @@ export function DashboardView() {
             if (!tab.id) break
             // Mark AFTER the line has actually gone in, and only if it did. The other order
             // marked a report delivered whether or not it ever reached the composer, so a failed
-            // announcement was silently swallowed — the report sat in the Inbox with nothing ever
-            // saying it had arrived.
+            // announcement was silently swallowed — the report sat on its task and in the project
+            // Comms log with nothing ever saying it had arrived.
             //
             // THE OUTCOME IS READ FROM THE QUEUE, NOT FROM A THROW. `submit` never rejects: its
             // chain ends in `.catch()` so one dropped write cannot break ordering for everything
@@ -3478,7 +3463,7 @@ export function DashboardView() {
             await window.operator.artifactMarkDelivered?.(report.id)
           }
         })
-        .catch(() => { /* best-effort: the Inbox still has everything */ })
+        .catch(() => { /* best-effort: the Comms log still has everything */ })
         .finally(() => { announcingRef.current = false })
       break
     }
@@ -4365,6 +4350,7 @@ export function DashboardView() {
           return (
             <ProjectView
               project={proj}
+              reports={reports}
               tab={projectTab}
               onSelectTab={setProjectTab}
               onBack={handleShowGallery}
@@ -4396,7 +4382,7 @@ export function DashboardView() {
               onSetTaskStatus={(taskId, status) => setTaskStatus(proj.id, taskId, status)}
               // A dispatch from a non-coordinator lane is HELD (`pending-approval`) and can only
               // be delivered from here. Without these two wires the hold is a silent drop:
-              // DispatchLog would render the pending row with nothing able to act on it.
+              // The Comms log would render the pending row with nothing able to act on it.
               onApproveDispatch={approveDispatch}
               onRejectDispatch={rejectDispatch}
               onRetryDispatch={retryDispatch}
@@ -4729,22 +4715,7 @@ export function DashboardView() {
             customName={activeSession ? customNames[activeSession.id] : undefined}
             accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
-            unreadCount={unreadCounts[terminals.find((t) => t.id === activeTerminalId)?.roleId ?? ''] ?? 0}
-            inboxTab={(() => {
-              const tab = terminals.find((t) => t.id === activeTerminalId)
-              const role = tab?.roleId ?? ''
-              const proj = projects.find((p) => p.id === tab?.projectId)
-              return (
-                <InboxPanel
-                  role={role}
-                  isCoordinator={COORDINATOR_ROLE_IDS.includes(role.toLowerCase())}
-                  records={proj?.dispatches ?? []}
-                  accent={accentOf(activeSession)}
-                  reports={forProject(reports, tab?.projectId)}
-                  onRefresh={refreshReports}
-                />
-              )
-            })()}
+
             filesTab={(() => {
               const tab = terminals.find((t) => t.id === activeTerminalId)
               return (

@@ -12,9 +12,9 @@ import { TOOLBAR_BAND_H } from '../../lib/chrome'
 // main view is Console or Preview (so you can watch the terminal/preview AND read the
 // conversation). Project-level surfaces (Agents roster, Moodboard) live in the ProjectView, not
 // here. The active tab is owned per session by DashboardView.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files' | 'inbox'
+type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
 
-const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff', chat: 'Chat', files: 'Files', inbox: 'Inbox' }
+const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff', chat: 'Chat', files: 'Files' }
 
 // The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
 // action can sit in the shared actions footer below. Persisted per session.
@@ -23,7 +23,7 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange, filesTab, inboxTab, unreadCount = 0 }: {
+export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange, filesTab }: {
   session?: AgentSession
   /** Lane identity for the Chat tab — the same name and colour the sidebar gives it. */
   role?: Role
@@ -40,12 +40,6 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
    *  SESSION and shared with the main-view placement — lives in one place rather than being
    *  duplicated on both sides of the layout. */
   filesTab?: ReactNode
-  /** The lane's Inbox/Outbox. Rendered by the caller because it reads the PROJECT's dispatch log
-   *  as well as the report store, and this component knows about neither. */
-  inboxTab?: ReactNode
-  /** Reports addressed to this lane that nobody has acked. Rides the TAB, not a segment — it is
-   *  what makes you look at the panel at all. */
-  unreadCount?: number
 }) {
   const select = onSelectMode
 
@@ -89,7 +83,6 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
             }}
           >
             {LABELS[id]}
-            {id === 'inbox' && unreadCount > 0 ? ` ${unreadCount > 9 ? '9+' : unreadCount}` : ''}
             {id === 'plan' && (session?.todos?.length ?? 0) > 0
               ? ` ${session!.todos!.filter((t) => t.status === 'completed').length}/${session!.todos!.length}`
               : ''}
@@ -114,7 +107,6 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
         {mode === 'chat' && <CanvasConversation session={session} role={role} customName={customName} accent={accent} onHumanSend={onHumanSend} onModelChange={onModelChange} onEffortChange={onEffortChange} />}
         {mode === 'files' && filesTab}
-        {mode === 'inbox' && inboxTab}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the

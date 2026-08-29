@@ -336,7 +336,7 @@ for (const [key, label] of THEMES) {
   await p.locator('[data-toolbar-header="project"] button', { hasText: 'Team' }).click().catch(() => {})
   await p.waitForTimeout(800)
   // The dispatch log's own outcome ink is NOT probed here, and that is deliberate rather than an
-  // omission: this fixture's projects carry zero dispatch records, so `DispatchLog` renders null
+  // omission: this fixture's projects carry zero dispatch records, so `CommsLog` renders only its header
   // and the probe would report a silent dash forever. Its warn ink is the SAME expression as the
   // paused chatter switch measured just below (`color-mix(--color-warning 50%, --fg)`), so the
   // value is covered across all six palettes here, and the delivered-vs-held DISTINCTION is

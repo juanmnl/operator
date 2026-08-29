@@ -175,17 +175,18 @@ export function registerIpc(d: Deps): void {
     chatHistory: async (sessionId) => d.chat.load(sessionId),
     projectReplies: async (projectId) => d.chat.replies(projectId),
     artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
-    // The lifecycle. `written → delivered → acked`, and each step is a separate call because each
-    // is a separate fact: stored, shown, read.
-    // `projectId` is the receiving session's, not the report's: the store is global across every
-    // project on the machine, so an unscoped queue announces another repo's work into this
-    // coordinator's composer. Undefined = unscoped, the pre-scoping behaviour.
+    // The lifecycle: `written → delivered`. Two facts, two calls — stored, and shown. There was a
+    // third (`acked`, "read"), and it was cut with the mailbox on 2026-08-29; the store still
+    // holds the column and its historical values, nothing writes it any more.
+    //
+    // `projectId` is the RECEIVING session's, not the report's: `artifacts.db` is one store for
+    // every project on this machine, so an unscoped queue announces another repo's work into
+    // this coordinator's composer — and because `markReportDelivered` stamps exclusively, the
+    // real owner is then never told at all. Undefined = unscoped, the pre-scoping behaviour.
     artifactUndelivered: async (role, limit, projectId) => d.artifacts.undeliveredFor(
       String(role), Number(limit) || 10, projectId ? String(projectId) : null,
     ),
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
-    artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
-    artifactMarkUnread: async (id) => { d.artifacts.markReportUnread(Number(id)) },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

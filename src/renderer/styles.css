@@ -706,6 +706,15 @@ input[data-launch-brief]::placeholder {
   50%      { opacity: 0.85; transform: scale(1); fill: var(--fg); }
 }
 
+/* ── The comms log (components/session/CommsLog.tsx) ───────────────────────────
+   One rule: the report row's expand control. Everything else on that surface is a
+   token-driven inline style. */
+
+/* A designed focus indicator, not the browser's ring — inset so a dense row can't clip
+   it, and a box-shadow rather than a border so no element ever changes border colour
+   (the WKWebView re-rasterize freeze). Matches `.tb-btn:focus-visible`. */
+.comms-expand:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); border-radius: 3px; }
+
 /* ── The task board (components/session/TaskBoard.tsx) ─────────────────────────
    Only what inline styles can't express: hover/focus states, the title clamp, and
    the hover-revealed delete. Everything with a colour goes through a token. */

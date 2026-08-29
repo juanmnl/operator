@@ -73,7 +73,7 @@ describe('chipForOutcome — derived, never invented', () => {
   })
 
   it('never returns an empty label, and only ever a tone the renderer handles', () => {
-    // `DispatchLog` renders one branch per tone. A tone outside this set renders as muted, which
+    // `CommsLog` renders one branch per tone. A tone outside this set renders as muted, which
     // is how `queued` spent a release drawn identically to `declined`.
     const TONES: ChipTone[] = ['accent', 'warn', 'muted', 'progress']
     const every: DispatchRecord['outcome'][] = [

@@ -48,14 +48,20 @@ declare global {
       terminalKill: (id: string) => Promise<void>
       /** Reports lanes handed to Operator via `operator__report` — newest first. */
       artifactReports: (limit?: number) => Promise<ArtifactReport[]>
-      /** Reports written FOR `role` that have never been shown to it, oldest first. */
+      /** Reports written FOR `role` that have never been shown to it, oldest first.
+       *
+       *  `projectId` is the RECEIVING lane's. The store is global across every project on the
+       *  machine, so an unscoped queue lets the first idle coordinator drain another repo's
+       *  reports — and the mark is exclusive, so the real owner is never told. Omit for the
+       *  unscoped, pre-scoping behaviour. */
       artifactUndelivered: (role: string, limit?: number, projectId?: string) => Promise<ArtifactReport[]>
-      /** The recipient has now been shown it. Idempotent. */
+      /** The recipient has now been shown it. Idempotent.
+       *
+       *  THE LIFECYCLE ENDS HERE. There was a third step — `acked`, written when someone expanded
+       *  a report — and it went with the mailbox on 2026-08-29: the reader is usually an AGENT,
+       *  so the receipt measured an automated read while looking authoritative. `written` vs
+       *  `delivered` stays, because a `written` row means the announcer is broken. */
       artifactMarkDelivered: (id: number) => Promise<void>
-      /** Someone opened it — the only read receipt in the system. */
-      artifactMarkAcked: (id: number) => Promise<void>
-      /** Undo an ack — ack-on-open is reachable by a stray click. */
-      artifactMarkUnread: (id: number) => Promise<void>
       /** `operator__task_status` signals not yet applied to projects.json. */
       artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
       /** Ack AFTER the task is written through, so a crash replays rather than drops. */
