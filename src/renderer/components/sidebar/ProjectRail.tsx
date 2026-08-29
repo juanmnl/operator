@@ -10,6 +10,7 @@ import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard, closeHoverCards } from '../../lib/use-hover-card'
 import { sessionLabel } from '../../lib/session-label'
+import { IDLE, installBusy, installTitle, type InstallState } from '../../lib/update-install'
 import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
@@ -243,6 +244,9 @@ export interface ProjectRailProps {
   onToggleTheme?: () => void
   version?: string
   update?: { version: string } | null
+  /** What the install is doing, so the arrow can be the thing you watch rather than a button
+   *  that stays pressable through its own download. Absent = idle. */
+  installState?: InstallState
   onInstallUpdate?: () => void
 }
 
@@ -256,7 +260,7 @@ export function ProjectRail({
   onRenameSession, onCloseSession, onAgentMenu, onAddLane, onReorderSession, onReorderLane,
   activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark,
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme,
-  version, update, onInstallUpdate,
+  version, update, installState, onInstallUpdate,
 }: ProjectRailProps) {
   const planLimits = usePlanLimits()
   const [drag, setDrag] = useState<string | null>(null)
@@ -618,6 +622,7 @@ export function ProjectRail({
         onToggleTheme={onToggleTheme}
         version={version}
         update={update}
+        installState={installState}
         onInstallUpdate={onInstallUpdate}
       />
     </div>
@@ -1084,7 +1089,7 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
  *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
  *  unmount `Sidebar.tsx`, and with it the theme toggle, Preferences and both `.claude` shortcuts
  *  simply stopped existing. */
-function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, onInstallUpdate }: {
+function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
   collapsed: boolean
   planLimits: ReturnType<typeof usePlanLimits>
   agentsActive?: boolean
@@ -1102,6 +1107,9 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
   onToggleTheme?: () => void
   version?: string
   update?: { version: string } | null
+  /** What the install is doing, so the arrow can be the thing you watch rather than a button
+   *  that stays pressable through its own download. Absent = idle. */
+  installState?: InstallState
   onInstallUpdate?: () => void
 }) {
   /** A divider has to out-space the things it divides: 9px either side against a 24px row. */
@@ -1256,16 +1264,39 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
           }}
         >{version ? `v${version}` : 'Operator'}</span>
         {update && (
+          // DOWNLOADING IS A STATE OF THIS BUTTON, not a second control and not a new row. The
+          // ring is already here and already the accent, so the download FILLS it: a conic sweep
+          // to `percent` inside the same 14px circle, with the arrow held exactly where it was.
+          // Nothing moves and nothing is added to the foot, which is the only way progress fits
+          // in a strip whose whole budget is 14px (see the fold's note above).
+          //
+          // A FAILURE STAYS PRESSABLE. It turns the ring to the error colour and says why in the
+          // tooltip, but the verb is still "install" — most causes are transient and the
+          // alternative to retrying here is quitting the app.
           <button
-            onClick={onInstallUpdate}
-            title={`Update ${update.version} available — install & restart`}
-            aria-label={`Install update ${update.version}`}
+            onClick={installBusy(installState) ? undefined : onInstallUpdate}
+            disabled={installBusy(installState)}
+            title={installTitle(installState, update.version)}
+            aria-label={installTitle(installState, update.version)}
+            // Percent as a live region value, so the state is available to a screen reader
+            // without it having to re-read the tooltip.
+            role={installState.kind === 'downloading' ? 'progressbar' : undefined}
+            aria-valuenow={installState.kind === 'downloading' ? installState.percent : undefined}
+            aria-valuemin={installState.kind === 'downloading' ? 0 : undefined}
+            aria-valuemax={installState.kind === 'downloading' ? 100 : undefined}
             style={{
               flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               width: 14, height: 14, padding: 0,
-              background: 'transparent', color: 'var(--accent)',
-              border: '1px solid var(--accent)', borderRadius: 999,
-              cursor: 'pointer', outline: 'none',
+              // The unfilled remainder is the accent at 20% via `color-mix`, NOT opacity on the
+              // element — dimming the element would take the arrow and the ring down with it.
+              background: installState.kind === 'downloading'
+                ? `conic-gradient(var(--accent) ${installState.percent * 3.6}deg, color-mix(in srgb, var(--accent) 20%, transparent) 0deg)`
+                : 'transparent',
+              color: installState.kind === 'failed' ? 'var(--color-error)' : 'var(--accent)',
+              border: `1px solid ${installState.kind === 'failed' ? 'var(--color-error)' : 'var(--accent)'}`,
+              borderRadius: 999,
+              cursor: installBusy(installState) ? 'default' : 'pointer', outline: 'none',
+              transition: 'background 120ms linear',
             }}
           >
             {/* Arrow centred in the viewBox + a 0.5px optical nudge (a chevron reads high). */}

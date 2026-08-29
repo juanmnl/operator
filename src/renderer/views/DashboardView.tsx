@@ -15,6 +15,7 @@ import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '
 import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason } from '../lib/lane-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
+import { IDLE, installPressed, installProgressed, installFailed, type InstallState } from '../lib/update-install'
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
@@ -3302,6 +3303,10 @@ export function DashboardView() {
   // in the sidebar, in addition to the toast).
   const [appVersion, setAppVersion] = useState('')
   const [availableUpdate, setAvailableUpdate] = useState<{ version: string } | null>(null)
+  // …and what the install is DOING, which the toasts alone could not carry: a toast is a moment
+  // and a download is a duration. The sidebar's arrow renders this (see ProjectRail's RailFoot),
+  // so there is a live thing to look at after the toast has faded.
+  const [installState, setInstallState] = useState<InstallState>(IDLE)
   useEffect(() => { window.operator.getVersion?.().then(setAppVersion).catch(() => {}) }, [])
 
   // THE UPDATE'S OWN VOICE. Both of these used to end at `console.error` in main, which in a
@@ -3309,7 +3314,9 @@ export function DashboardView() {
   // indistinguishable from "the button is broken". Subscribed ONCE on mount, not per check: the
   // check runs on a timer and on demand, and re-subscribing there would stack listeners.
   useEffect(() => {
-    const offProgress = window.operator.onUpdateProgress?.((percent) => {
+    const offProgress = window.operator.onUpdateProgress?.((percent, transferred, total) => {
+      // The arrow gets EVERY tick — it is a live affordance and can afford to move.
+      setInstallState((prev) => installProgressed(prev, percent, transferred, total))
       // Coarse steps only. A toast per percent is a stream, not information.
       if (percent > 0 && percent < 100 && percent % 25 !== 0) return
       pushToast({
@@ -3318,10 +3325,18 @@ export function DashboardView() {
       })
     })
     const offError = window.operator.onUpdateError?.((message) => {
+      setInstallState(installFailed(message))
       pushToast({ text: 'Update failed', detail: message, kind: 'error' })
     })
     return () => { offProgress?.(); offError?.() }
   }, [pushToast])
+
+  // One press, whichever control was pressed — the toast's action and the sidebar's arrow both
+  // land here, so both see the same state move.
+  const startInstall = useCallback(() => {
+    setInstallState(installPressed())
+    void window.operator.installUpdate?.()
+  }, [])
 
   // Check the public releases feed; prompt to install + restart if an update is
   // available. `manual` adds feedback toasts for the no-update / error cases so
@@ -3337,12 +3352,12 @@ export function DashboardView() {
       pushToast({
         text: `Update ${u.version} available`,
         detail: 'Install and restart Operator.',
-        action: { label: 'Install & Restart', run: () => { void window.operator.installUpdate() } },
+        action: { label: 'Install & Restart', run: startInstall },
       })
     }).catch(() => {
       if (manual) pushToast({ text: 'Update check failed', detail: 'Could not reach the releases feed.', kind: 'error' })
     })
-  }, [pushToast])
+  }, [pushToast, startInstall])
 
   // Check on launch, then re-check every 3h so a long-running instance still
   // notices releases published after it started (the launch-only check missed
@@ -4224,7 +4239,8 @@ export function DashboardView() {
         onToggleTheme={handleToggleTheme}
         version={appVersion}
         update={availableUpdate}
-        onInstallUpdate={() => { void window.operator.installUpdate() }}
+        installState={installState}
+        onInstallUpdate={startInstall}
       />
 
       <div data-term-focus-zone style={{
