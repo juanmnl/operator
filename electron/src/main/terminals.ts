@@ -16,7 +16,10 @@ import { loginShell } from './login-shell'
 import { homedir } from 'node:os'
 import { buildArgs, mcpConfigArg } from '../../../src/renderer/lib/launch-args'
 import { app } from 'electron'
-import { reapTree, snapshotPs, type PsRow } from './reap'
+import {
+  reapTree, snapshotPs, sweepTagged, descendantsOf, selfPgidFrom, laneStrays, expandStrays,
+  type PsRow, type TaggedRow,
+} from './reap'
 import { claimLease, releaseLease } from './leases'
 import { isPortLive } from './port-probe'
 import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
@@ -301,33 +304,65 @@ export class TerminalManager {
    *  map/port bookkeeping. See `reap.ts` for why groups rather than sessions, and why never
    *  `lsof`.
    *
-   *  `rows` lets `killAll` reap the whole fleet from a single snapshot rather than one per lane.
+   *  THE TREE IS NOT THE WHOLE LANE. A dev server the agent backgrounded reparented to launchd
+   *  the moment its intermediate shell exited, so it is not under the pty any more and the walk
+   *  cannot reach it — that hole is what left 24 orphans live on this machine, the oldest 11
+   *  days. The second half of the reap is therefore a `ps -E` sweep matched on the lane's own
+   *  env tag, which survives reparenting; see `laneStrays` for why the tag alone is not enough
+   *  and what is refused.
+   *
+   *  `snapshot` lets `killAll` reap the whole fleet from ONE `ps` pair rather than a pair per
+   *  lane — the tagged sweep dumps every process's environment, so taking it per lane on quit
+   *  would be the most expensive thing quitting does.
    *
    *  AWAITING THIS IS THE POINT at the call sites that remove a worktree afterwards: the tree
    *  holding files open in that directory is gone before `git worktree remove` runs, which the
    *  old fire-and-forget kill could not promise. */
-  async kill(id: string, rows?: PsRow[]): Promise<void> {
+  async kill(id: string, snapshot?: ReapSnapshot): Promise<void> {
     const t = this.terminals.get(id)
     if (!t) return
     if (t.killing) return t.killing
-    const done = this.reapAndForget(t, rows)
+    const done = this.reapAndForget(t, snapshot)
     t.killing = done
     return done
   }
 
-  private async reapAndForget(t: Managed, rows?: PsRow[]): Promise<void> {
+  private async reapAndForget(t: Managed, shared?: ReapSnapshot): Promise<void> {
     if (t.pending) { clearTimeout(t.pending.timer); t.pending = null }
     const pid = t.pty?.pid
-    if (pid) {
-      try {
-        const snapshot = rows ?? await snapshotPs()
-        const { found, pgids, escalated } = await reapTree(pid, snapshot)
+    // NO `pid` GUARD around this any more, and that is a fix in itself: a pty that already
+    // exited on its own (the agent quit `claude`) leaves `t.pty` null, and the old shape then
+    // skipped the reap entirely — while the dev server that lane started was still up. The
+    // strays are attributable with or without a live pty, so the sweep runs either way.
+    try {
+      const { ps, tagged } = shared ?? await freshReapSnapshot()
+      const selfPgid = selfPgidFrom(ps, process.pid)
+      // What the walk will reach on its own, so a process already in the tree is not counted
+      // twice or reported as a stray.
+      const treePids = pid ? descendantsOf(ps, pid) : new Set<number>()
+      const { reap: strayRows, refused } = laneStrays(
+        tagged,
+        { terminalId: t.id, devPort: t.devPort, appPid: process.pid },
+        { treePids, selfPid: process.pid, selfPgid },
+      )
+      // The refusals are the interesting half when something is left behind: a stray carrying
+      // this lane's id but another run's app pid is the cross-project collision the tag guards
+      // against, and it should be visible rather than silent.
+      for (const r of refused) console.error(`[reap] ${t.id}: left pid ${r.pid} alone — ${r.why}`)
+      const strays = expandStrays(ps, strayRows)
+      if (strays.size) {
+        console.error(`[reap] ${t.id}: ${strays.size} reparented stray(s) the tree could not reach: ${[...strays].join(', ')}`)
+      }
+      if (pid || strays.size) {
+        // `rootPid` 0 when the pty is already gone: `reapTree` walks nothing and signals only
+        // the strays, which is exactly the intent.
+        const { found, pgids, escalated } = await reapTree(pid ?? 0, ps, { alsoReap: strays })
         if (escalated.length) {
           console.error(`[reap] ${t.id}: SIGKILLed ${escalated.length} of ${found.length} (groups ${pgids.join(', ')})`)
         }
-      } catch (e) {
-        console.error(`[reap] ${t.id}: tree reap failed, falling back to the pty:`, e)
       }
+    } catch (e) {
+      console.error(`[reap] ${t.id}: tree reap failed, falling back to the pty:`, e)
     }
     // Belt and braces, and the ONLY path when there is no pty yet (a deferred launch cancelled
     // before it exec'd) or when the snapshot came back empty: node-pty's own single-pid SIGHUP,
@@ -470,8 +505,8 @@ export class TerminalManager {
   async killAll(): Promise<void> {
     const ids = [...this.terminals.keys()]
     if (!ids.length) return
-    const rows = await snapshotPs()
-    await Promise.all(ids.map((id) => this.kill(id, rows)))
+    const snapshot = await freshReapSnapshot()
+    await Promise.all(ids.map((id) => this.kill(id, snapshot)))
   }
 
   private pushHistory(t: Managed, buf: Buffer): void {
@@ -484,6 +519,27 @@ export class TerminalManager {
       t.historyBytes -= t.history.shift()!.length
     }
   }
+}
+
+/** The two process tables a reap reads: the `ppid` tree, and the env tags that survive a
+ *  process leaving that tree. Taken together so `killAll` can share ONE pair across the fleet. */
+export interface ReapSnapshot {
+  ps: PsRow[]
+  tagged: TaggedRow[]
+}
+
+/** Both tables, taken FRESH at kill time.
+ *
+ *  Deliberately not `evidenceSnapshot()` from `port-attribution.ts`, which caches the identical
+ *  pair for 3s to serve the preview's polling. Cheap there, wrong here: a pid that died inside
+ *  that window can have been recycled by an unrelated process, and this code sends SIGTERM to
+ *  what it reads. The polling can afford to be 3s stale; a kill list cannot.
+ *
+ *  Both halves fail soft to an empty table — `snapshotPs` and `sweepTagged` swallow their own
+ *  errors — so this cannot be what makes a quit hang. */
+async function freshReapSnapshot(): Promise<ReapSnapshot> {
+  const [ps, tagged] = await Promise.all([snapshotPs(), sweepTagged()])
+  return { ps, tagged }
 }
 
 /** Single-quote for a POSIX shell, mirroring `shell_quote` in lib.rs. */
