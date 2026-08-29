@@ -418,18 +418,32 @@ export class TerminalManager {
       : { psRows: [], claimants: new Map<number, Array<{ pid: number; terminalId?: string }>>() }
     const deep = ownDeepPids(psRows, t.pty?.pid)
 
+    // HOW MANY LANES HOLD THIS RESERVATION. `allocPort` hands one port to every lane in a cwd
+    // deliberately ("a sibling lane serving the same code is not a collision"), so for N lanes in
+    // one root the reserved value is identical and cannot tell them apart. Counting the holders
+    // is what lets the frontend say `shared with 2 lanes` instead of showing one of them.
+    const holders = (port: number) =>
+      [...this.terminals.values()].filter((o) => o.devPort === port && !o.exited).length
+
     return live
-      .map((port) => ({
-        port,
-        attributed: attributePort({
+      .map((port) => {
+        const others = (claimants.get(port) ?? []).filter((c) => c.terminalId && c.terminalId !== id)
+        const attributed = attributePort({
           port,
           sniffed: t.sniffedPorts.has(port),
           reservedPort: t.devPort,
+          reservationHolders: holders(port),
           terminalId: id,
           claimants: claimants.get(port) ?? [],
           ownDeepPids: deep,
-        }),
-      }))
+        })
+        return {
+          port,
+          attributed,
+          sharedWith: attributed === 'shared' ? holders(port) : undefined,
+          claimedBy: attributed === 'claimed' ? others[0]?.terminalId : undefined,
+        }
+      })
       .sort((a, b) => a.port - b.port)
   }
 

@@ -20,9 +20,16 @@ describe('attributePort', () => {
     expect(attributePort(base({ sniffed: true, claimants: [{ pid: 9, terminalId: 't9' }] }))).toBe('sniffed')
   })
 
-  it('a port that is neither sniffed nor our reservation is foreign', () => {
-    expect(attributePort(base({ port: 3000, reservedPort: 1422 }))).toBe('foreign')
-    expect(attributePort(base({ reservedPort: undefined }))).toBe('foreign')
+  // The tiers split here: `foreign` used to flatten "somebody else's" and "nobody's" into one
+  // answer, and the UI needs to tell them apart — one names a lane, the other says `unclaimed`.
+  it('a port that is neither sniffed nor our reservation is UNCLAIMED when nobody claims it', () => {
+    expect(attributePort(base({ port: 3000, reservedPort: 1422 }))).toBe('orphan')
+    expect(attributePort(base({ reservedPort: undefined }))).toBe('orphan')
+  })
+
+  it('…and CLAIMED when another lane does, so the row can name which', () => {
+    expect(attributePort(base({ port: 3000, reservedPort: 1422, claimants: [{ pid: 9, terminalId: 't9' }] })))
+      .toBe('claimed')
   })
 
   it('the reserved port is OURS when a process we started claims it', () => {
@@ -35,31 +42,53 @@ describe('attributePort', () => {
   // THE BUG, stated as a test. Something is answering on our reservation and nothing we can see
   // accounts for it — a stale orphan from a previous run, or the user's own server. That is not
   // evidence of ownership, and treating it as such is what showed a stranger's app as this lane's.
-  it('is FOREIGN when something answers our reserved port and nothing of ours claims it', () => {
-    expect(attributePort(base({ claimants: [] }))).toBe('foreign')
+  it('is UNCLAIMED when something answers our reserved port and nothing of ours claims it', () => {
+    expect(attributePort(base({ claimants: [] }))).toBe('orphan')
   })
 
-  it('is FOREIGN when ANOTHER LANE was told to serve the same port', () => {
-    expect(attributePort(base({ claimants: [{ pid: 800, terminalId: 't9' }] }))).toBe('foreign')
+  it('is CLAIMED when ANOTHER LANE was told to serve the same port', () => {
+    expect(attributePort(base({ claimants: [{ pid: 800, terminalId: 't9' }] }))).toBe('claimed')
+  })
+
+  // THE ROOT OF THE WRONG-SERVER REPORT. `allocPort` shares one reservation across a cwd on
+  // purpose, so with two lanes in one root the signal cannot distinguish them — and the old rule
+  // ranked it highest. Ambiguous is its own answer, not a weaker kind of ours.
+  it('is SHARED when the reservation is held by more than one lane', () => {
+    expect(attributePort(base({
+      reservationHolders: 2,
+      claimants: [{ pid: 600, terminalId: 't3' }],
+      ownDeepPids: new Set([600]),
+    }))).toBe('shared')
+  })
+
+  it('a shared reservation is shared even when our own tree claims it', () => {
+    // Our tree claiming it proves we were ASKED to serve there, which every sibling was too.
+    expect(attributePort(base({ reservationHolders: 3, claimants: [{ pid: 600, terminalId: 't3' }], ownDeepPids: new Set([600]) })))
+      .toBe('shared')
+  })
+
+  it('a sole holder is not shared', () => {
+    expect(attributePort(base({ reservationHolders: 1, claimants: [{ pid: 600, terminalId: 't3' }], ownDeepPids: new Set([600]) })))
+      .toBe('reserved')
   })
 
   // Two processes cannot both hold a port and we cannot see which won, so "we are not sure" has
   // to lose to nothing. Ordering the contested check BEFORE the positive one is what enforces it.
-  it('is FOREIGN on a CONTESTED port, even though one of the claimants is ours', () => {
+  it('is CLAIMED on a CONTESTED port, even though one of the claimants is ours', () => {
     expect(attributePort(base({
       claimants: [{ pid: 600, terminalId: 't3' }, { pid: 800, terminalId: 't9' }],
       ownDeepPids: new Set([600]),
-    }))).toBe('foreign')
+    }))).toBe('claimed')
   })
 
   // The trap a naive env check falls into: OPERATOR_DEV_PORT is set on the PTY, so the lane's
   // shell and its `claude` child carry it forever — including long after the dev server died.
   // `ownDeepPids` excludes them, so a claimant that is only the shell proves nothing.
-  it('is FOREIGN when the only claimant is the lane\'s own shell or claude', () => {
+  it('is UNCLAIMED when the only claimant is the lane\'s own shell or claude', () => {
     expect(attributePort(base({
       claimants: [{ pid: 500, terminalId: 't3' }],   // the shell
       ownDeepPids: new Set([600, 601]),               // …which is not in the deep set
-    }))).toBe('foreign')
+    }))).toBe('orphan')
   })
 })
 
@@ -126,7 +155,7 @@ describe('end to end, over the fixtures', () => {
 
   it('refuses the same port once the lane\'s tree is gone — only the shell would be left', () => {
     expect(attributePort(base({ claimants: claimants.get(1422) ?? [], ownDeepPids: new Set() })))
-      .toBe('foreign')
+      .toBe('orphan')
   })
 })
 

@@ -23,7 +23,7 @@ import * as wt from './worktree'
 import * as moodboard from './moodboard'
 import { fetchPlanLimits } from './plan-limits'
 import { computeUsage, computeInsights } from './usage'
-import { checkUpdate, installUpdate } from './updater'
+import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
@@ -51,6 +51,10 @@ export interface Deps {
   artifacts: ArtifactStore
   quit: QuitGuard
   getWindow: () => BrowserWindow | null
+  /** The ONE question and the quit preparation the install needs — see `index.ts`. Passed in
+   *  rather than imported, because `index.ts` already imports this module and a cycle between
+   *  the two bundles badly. */
+  updateHost?: InstallHost
 }
 
 /** The project altitude of the env/skills cascade, read straight out of `projects.json`.
@@ -279,7 +283,12 @@ export function registerIpc(d: Deps): void {
     getUsageStats: (days) => computeUsage(days ?? 0),
     getUsageInsights: (days) => computeInsights(days ?? 0),
     checkUpdate: () => checkUpdate(),
-    installUpdate: () => installUpdate(),
+    // The host carries the ONE question and the quit preparation — see `index.ts`. Without it
+    // (no window, so nothing to ask in) the install is declined rather than attempted blind.
+    installUpdate: async () => {
+      if (!d.updateHost) return
+      await installUpdate(d.updateHost)
+    },
     getVersion: async () => {
       try {
         const pkg = JSON.parse(await readFile(join(__dirname, '..', '..', 'package.json'), 'utf8'))

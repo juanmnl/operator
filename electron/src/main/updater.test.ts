@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolveFeedUrl } from './updater'
 
 const DEFAULT_FEED = 'https://github.com/juanmnl/operator-releases/releases/latest/download'
@@ -46,7 +47,8 @@ describe('the updater never surfaces its own plumbing', () => {
     vi.resetModules()
     delete process.env.OPERATOR_UPDATE_FEED
     const { installUpdate } = await import('./updater')
-    await expect(installUpdate()).resolves.toBeUndefined()
+    const host = { confirm: async () => true, prepareQuit: async () => {} }
+    await expect(installUpdate(host)).resolves.toBeUndefined()
   })
 
   it('a failing check resolves null rather than surfacing plumbing to the user', async () => {
@@ -82,6 +84,10 @@ describe('an up-to-date app is never offered itself', () => {
         autoDownload: true,
         autoInstallOnAppQuit: true,
         logger: null,
+        // `configure()` subscribes to `download-progress` and `error` now, so the fake needs the
+        // emitter surface — without it the subscribe throws and `checkUpdate` catches it into
+        // the same `null` a real failure produces, which is a very quiet way to break a test.
+        on: () => {},
       },
     }))
     if (version) vi.doMock('electron', () => ({ app: { isPackaged: true, getVersion: () => version } }))
@@ -115,5 +121,198 @@ describe('an up-to-date app is never offered itself', () => {
 
   it('an available update with no version in it is still no update', async () => {
     await expect(checkAgainst({ isUpdateAvailable: true, updateInfo: {} })).resolves.toBeNull()
+  })
+})
+
+
+// ── THE INSTALL ORDERING ─────────────────────────────────────────────────────────────────────
+//
+// THE BUG. `installUpdate` downloaded and then called `quitAndInstall` directly. That quit lands
+// on `before-quit`, where `QuitGuard` asks whether to quit while lanes are busy — and the guard's
+// `preventDefault()` CANCELLED the updater's quit. The user pressed "Install & Restart", saw a
+// toast, and stayed on 0.17.2. Every error on the way was swallowed to `console.error`, which in
+// a packaged app is nowhere, so it presented as a button that did nothing.
+//
+// The fix is an ORDER, so the tests are about order. A fake autoUpdater records the calls.
+
+type Call = string
+
+function fakeUpdater(over: Partial<{ downloadRejects: Error }> = {}) {
+  const calls: Call[] = []
+  const handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
+  return {
+    calls,
+    emit(event: string, ...args: unknown[]) { for (const h of handlers[event] ?? []) h(...args) },
+    mock: {
+      autoDownload: true,
+      autoInstallOnAppQuit: false,
+      logger: null as unknown,
+      setFeedURL: () => { calls.push('setFeedURL') },
+      on(event: string, h: (...a: unknown[]) => void) { (handlers[event] ??= []).push(h) },
+      checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: '0.18.0' } }),
+      downloadUpdate: async () => {
+        calls.push('downloadUpdate')
+        if (over.downloadRejects) throw over.downloadRejects
+        return []
+      },
+      set updateConfigPath(v: string) {
+        // Recorded as a CALL, so the order against `setFeedURL` is observable in one list. That
+        // ordering is load-bearing — the real setter clears the client — and silently wrong is
+        // the worst way for it to be wrong.
+        calls.push('updateConfigPath')
+        ;(this as unknown as { _path: string })._path = v
+      },
+      get updateConfigPath(): string { return (this as unknown as { _path: string })._path },
+      quitAndInstall: (isSilent: boolean, isForceRunAfter: boolean) => {
+        calls.push(`quitAndInstall(${isSilent},${isForceRunAfter})`)
+      },
+    },
+  }
+}
+
+async function loadWithFake(fake: ReturnType<typeof fakeUpdater>) {
+  vi.resetModules()
+  process.env.OPERATOR_UPDATE_FEED = 'http://127.0.0.1:1462/'
+  vi.doMock('electron-updater', () => ({ autoUpdater: fake.mock }))
+  vi.doMock('electron', () => ({ app: { isPackaged: true, getVersion: () => '0.17.2' } }))
+  return import('./updater')
+}
+
+describe('installUpdate — the order that makes it actually install', () => {
+  afterEach(() => { vi.resetModules(); vi.doUnmock('electron-updater'); vi.doUnmock('electron'); delete process.env.OPERATOR_UPDATE_FEED })
+
+  it('downloads, then ASKS, then prepares the quit, THEN quits — in that order', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+
+    const order: string[] = []
+    await installUpdate({
+      confirm: async () => { order.push('confirm'); return true },
+      prepareQuit: async () => { order.push('prepareQuit') },
+    })
+
+    // The guard is disarmed and teardown is done BEFORE the quit, which is the whole fix: the
+    // veto that cancelled the install cannot run after `prepareQuit`.
+    expect(order).toEqual(['confirm', 'prepareQuit'])
+    expect(fake.calls).toEqual(['updateConfigPath', 'setFeedURL', 'downloadUpdate', 'quitAndInstall(false,true)'])
+  })
+
+  it('asks ONCE — never a second question the guard could veto on', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    let asked = 0
+    await installUpdate({ confirm: async () => { asked++; return true }, prepareQuit: async () => {} })
+    expect(asked).toBe(1)
+  })
+
+  // `isForceRunAfter` is what relaunches us once the installer finishes. Passing false here would
+  // install the update and leave the user staring at a closed app.
+  it('calls quitAndInstall with FORCE RUN AFTER, so it relaunches', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    await installUpdate({ confirm: async () => true, prepareQuit: async () => {} })
+    expect(fake.calls).toContain('quitAndInstall(false,true)')
+  })
+
+  it('DECLINING leaves the app running and never quits', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    let prepared = false
+    await installUpdate({ confirm: async () => false, prepareQuit: async () => { prepared = true } })
+    expect(prepared).toBe(false)
+    expect(fake.calls.some((c) => c.startsWith('quitAndInstall'))).toBe(false)
+  })
+
+  // …but the download is not thrown away. A user who says "not now" and quits an hour later
+  // still gets the update, which is the point of arming this the moment the bytes land.
+  it('arms autoInstallOnAppQuit once the download completes, even if the restart is declined', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, installUpdate, updateDownloaded } = await loadWithFake(fake)
+    await checkUpdate()
+    expect(fake.mock.autoInstallOnAppQuit).toBe(false)  // not before
+    await installUpdate({ confirm: async () => false, prepareQuit: async () => {} })
+    expect(fake.mock.autoInstallOnAppQuit).toBe(true)
+    expect(updateDownloaded()).toBe(true)
+  })
+
+  it('a failed DOWNLOAD reports the real message and never asks', async () => {
+    const fake = fakeUpdater({ downloadRejects: new Error('sha512 mismatch') })
+    const { checkUpdate, installUpdate, setUpdateSink } = await loadWithFake(fake)
+    await checkUpdate()
+    const errors: string[] = []
+    setUpdateSink({ error: (m) => errors.push(m) })
+    let asked = false
+    await installUpdate({ confirm: async () => { asked = true; return true }, prepareQuit: async () => {} })
+    expect(asked).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('sha512 mismatch')     // the REAL message, not "install failed"
+    expect(fake.calls.some((c) => c.startsWith('quitAndInstall'))).toBe(false)
+  })
+
+  it('forwards download progress rather than swallowing it', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, setUpdateSink } = await loadWithFake(fake)
+    await checkUpdate()
+    const seen: number[] = []
+    setUpdateSink({ progress: (percent) => seen.push(percent) })
+    fake.emit('download-progress', { percent: 42.7, transferred: 1, total: 2 })
+    expect(seen).toEqual([43])
+  })
+
+  it('an autoUpdater error reaches the sink with its message', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate, setUpdateSink } = await loadWithFake(fake)
+    await checkUpdate()
+    const errors: string[] = []
+    setUpdateSink({ error: (m) => errors.push(m) })
+    fake.emit('error', new Error('ENOSPC: no space left on device'))
+    expect(errors[0]).toContain('ENOSPC')
+  })
+})
+
+
+// ── THE ACTUAL CAUSE, pinned ─────────────────────────────────────────────────────────────────
+//
+// Reproduced against the live feed on 2026-08-25: the feed is sound (sha512 of the published
+// 136,354,476-byte zip matches `latest-mac.yml` exactly, both assets resolve), the app is signed
+// TeamID UJS4C5GUCW, and the check works — the user got the "0.18.0 available" toast.
+//
+// What is MISSING is `<Resources>/app-update.yml`, in the shipped 0.17.2 AND in 0.18.0. This app
+// is packaged with `@electron/packager` and its feed metadata is hand-written, so
+// `electron-builder` — which normally emits that file — never runs.
+//
+// `AppUpdater.getOrCreateDownloadHelper()` reads it for `updaterCacheDirName` on the DOWNLOAD
+// path only; `checkForUpdates()` never touches it because `setFeedURL()` sets the client
+// directly. So: check passes, toast appears, `downloadUpdate()` rejects with ENOENT, and the old
+// code swallowed that to `console.error`. No dialog, no quit — exactly what was reported.
+describe('the missing app-update.yml — why the download died with no dialog', () => {
+  afterEach(() => { vi.resetModules(); vi.doUnmock('electron-updater'); vi.doUnmock('electron'); delete process.env.OPERATOR_UPDATE_FEED })
+
+  it('writes a config and points the updater at it when the bundle has none', async () => {
+    const fake = fakeUpdater()
+    const { checkUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    const configured = (fake.mock as unknown as { updateConfigPath?: string }).updateConfigPath
+    expect(configured, 'updateConfigPath was never set').toBeTruthy()
+    expect(existsSync(configured!)).toBe(true)
+    const written = readFileSync(configured!, 'utf8')
+    // `updaterCacheDirName` is the ONE key the download path needs; without it the read throws
+    // before the download starts.
+    expect(written).toContain('updaterCacheDirName:')
+    expect(written).toContain('provider: generic')
+  })
+
+  it('sets the config BEFORE the feed — the setter clears the client', async () => {
+    // `set updateConfigPath` does `this.clientPromise = null`. Setting it after `setFeedURL`
+    // would discard the feed we just chose and send the check somewhere else entirely.
+    const fake = fakeUpdater()
+    const { checkUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    expect(fake.calls.indexOf('updateConfigPath')).toBeGreaterThanOrEqual(0)
+    expect(fake.calls.indexOf('updateConfigPath')).toBeLessThan(fake.calls.indexOf('setFeedURL'))
   })
 })

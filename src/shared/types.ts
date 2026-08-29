@@ -265,11 +265,15 @@ export interface SkillCatalogEntry {
  *
  *  See `electron/src/main/port-attribution.ts` for what the inference can and cannot establish
  *  without `lsof`. */
-export type PortAttribution = 'sniffed' | 'reserved' | 'foreign'
+export type PortAttribution = 'sniffed' | 'reserved' | 'shared' | 'claimed' | 'orphan'
 
 export interface SessionPort {
   port: number
   attributed: PortAttribution
+  /** How many lanes hold this reservation, when it is shared across a cwd. */
+  sharedWith?: number
+  /** The lane that claims it, when another one does — so the UI can name it. */
+  claimedBy?: string
 }
 
 /** One entry in a lazily-read directory listing. */

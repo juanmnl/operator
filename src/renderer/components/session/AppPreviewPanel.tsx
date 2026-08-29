@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
-import { pickPreviewUrl, portOf, parseTarget, formatTarget, EMPTY_TARGET } from '../../lib/preview-port'
+import { pickPreviewUrl, pickPreviewPort, portOf, parseTarget, formatTarget, evidenceLabel, isWarnEvidence, EMPTY_TARGET } from '../../lib/preview-port'
+import {
+  emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
+  type PreviewHistory,
+} from '../../lib/preview-history'
 import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 
@@ -65,6 +69,33 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   useEffect(() => {
     try { setOverride(overrideKey ? localStorage.getItem(overrideKey) || null : null) } catch { setOverride(null) }
   }, [overrideKey])
+  /** THE PATH, stored apart from the port — which is what makes "preserved across a server
+   *  change" structural rather than a promise. The target URL is composed as origin + path at
+   *  render time from two independently-persisted pieces, so switching :5173 → :1423 recomposes
+   *  with the same path. If the new server has no such route it shows its own 404, which is the
+   *  truthful outcome and better than silently resetting to `/` and hiding that they differ. */
+  const pathKey = storageKey ? `operator.preview.path.${storageKey}` : null
+  const [pathInput, setPathInput] = useState('')
+  useEffect(() => {
+    // Re-read on session switch. The panel is NOT remounted per session — the same trap
+    // `overrideKey` already documents above.
+    try { setPathInput(pathKey ? localStorage.getItem(pathKey) || '' : '') } catch { setPathInput('') }
+  }, [pathKey])
+  const commitPath = useCallback((raw: string) => {
+    const next = raw.trim() && !raw.trim().startsWith('/') ? `/${raw.trim()}` : raw.trim()
+    setPathInput(next)
+    try { if (pathKey) { if (next) localStorage.setItem(pathKey, next); else localStorage.removeItem(pathKey) } } catch { /* quota */ }
+  }, [pathKey])
+
+  /** Operator's OWN address history — see lib/preview-history. It cannot be the iframe's: the
+   *  preview is cross-origin, so `contentWindow.history` throws. */
+  const [history, setHistory] = useState<PreviewHistory>(emptyHistory)
+  useEffect(() => { setHistory(emptyHistory()) }, [storageKey])
+  const [pickerOpen, setPickerOpen] = useState(false)
+  /** Per session + port, so dismissing one stranger does not silence the next. */
+  const [dismissedWarn, setDismissedWarn] = useState<number | null>(null)
+  useEffect(() => { setDismissedWarn(null) }, [storageKey])
+
   const [nonce, setNonce] = useState(0)
   const [resolved, setResolved] = useState<string | null>(null) // the live URL we landed on
   const [reach, setReach] = useState<Reach>('checking')
@@ -139,7 +170,12 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
   /** The pinned target, parsed. A PATH SURVIVES A PORT CHANGE because the two are stored apart:
    *  `/admin` with no port follows whichever server the lane is actually on. */
-  const target = useMemo(() => (override ? parseTarget(override) : EMPTY_TARGET), [override])
+  // The pin supplies the ORIGIN (and an external URL); the path field supplies the path. A pin
+  // that carried its own path still wins for the origin, but the field is what the user edits.
+  const target = useMemo(() => {
+    const pinned = override ? parseTarget(override) : EMPTY_TARGET
+    return { ...pinned, path: pinned.url ? pinned.path : pathInput }
+  }, [override, pathInput])
 
   // Which server to show, and whether something unattributable is answering. `pick.url` is null
   // when the only thing listening is FOREIGN — a stale orphan or a sibling lane on our reserved
@@ -210,13 +246,36 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     } catch { /* ignore */ }
   }
 
-  /** The servers we can actually attribute — what the picker offers and what "several ports"
-   *  counts. */
-  const ourServers = useMemo(() => servers.filter((sp) => sp.attributed !== 'foreign'), [servers])
+
+  /** The best server we CAN attribute, for the strip's "use this lane's" offer. */
+  const ourBest = useMemo(() => pickPreviewPort(servers), [servers])
+
+  /** What the origin chip says. Narrow drops `localhost` but NEVER the port — the port is the
+   *  identity. An external target shows its host. */
+  const originLabel = useMemo(() => {
+    if (target.url) { try { return new URL(target.url).host } catch { return target.url } }
+    return pick.port != null ? `localhost:${pick.port}` : 'no server'
+  }, [target.url, pick.port])
+
+  /** Load a history entry — the one place back/forward turn into an address. */
+  const applyEntry = useCallback((h: PreviewHistory) => {
+    const e = currentEntry(h)
+    if (!e) return
+    setPathInput(e.path)
+    try { if (pathKey) { if (e.path) localStorage.setItem(pathKey, e.path); else localStorage.removeItem(pathKey) } } catch { /* quota */ }
+    if (e.url) setOverride(e.url)
+    else if (e.port != null) setOverride(String(e.port))
+  }, [pathKey])
+
+  // RECORD WHAT WAS ACTUALLY LOADED, not what was asked for — a pick that resolved to nothing is
+  // not an address anyone can go back to. `pushEntry` drops a repeat of the current entry, so the
+  // 3s re-ping does not fill the stack.
+  useEffect(() => {
+    if (!pick.url) return
+    setHistory((h) => pushEntry(h, { port: pick.port, path: target.path, url: target.url }))
+  }, [pick.url, pick.port, target.path, target.url])
   const display = resolved || pick.url
   const host = display ? display.replace(/^https?:\/\//, '') : null
-  // Which of the session's ports is on screen, so the picker can mark it.
-  const displayPort = useMemo(() => portOf(display), [display])
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
   const route = useMemo(() => { try { return display ? new URL(display).pathname : '/' } catch { return '/' } }, [display])
@@ -364,7 +423,141 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
         height: PANEL_SUBHEAD_H, padding: '0 8px 0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
       }}>
-        {editing ? (
+        {/* ◀ ▶ ⟳ — and the two arrows walk OPERATOR'S OWN address history, not the app's.
+            The preview is cross-origin so the iframe's history is unreadable, and the tooltip
+            says so rather than looking like a browser control that silently behaves differently.
+            They disable by ABSENCE OF INK, never by grey chrome or a `disabled` attribute. */}
+        <span style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+          <button
+            onClick={() => { const h = goBack(history); setHistory(h); applyEntry(h) }}
+            title="Back to the last address you opened here (not the app's own history)"
+            style={{ ...navBtn, color: canGoBack(history) ? 'var(--fg-muted)' : 'var(--border)' }}
+          >◀</button>
+          <button
+            onClick={() => { const h = goForward(history); setHistory(h); applyEntry(h) }}
+            title="Forward to the next address you opened here (not the app's own history)"
+            style={{ ...navBtn, color: canGoForward(history) ? 'var(--fg-muted)' : 'var(--border)' }}
+          >▶</button>
+          <button onClick={() => setNonce((n) => n + 1)} title="Reload" style={navBtn}>⟳</button>
+        </span>
+
+        {/* THE ORIGIN CHIP. Opens the picker; never editable inline. That split is what makes
+            "changing the server never touches the path" structural. */}
+        <button
+          onClick={() => setPickerOpen((v) => !v)}
+          title="Choose which server to preview"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11,
+            color: 'var(--fg)', background: 'transparent',
+            border: '1px solid var(--border)', borderRadius: 5, padding: '1px 7px',
+            cursor: 'pointer', outline: 'none', maxWidth: 190,
+          }}
+        >
+          {/* The reach dot lives INSIDE the chip: reach is a property of the server, not of the
+              address. Muted while checking — never a spinner, and never blanking the frame. */}
+          <span style={{ fontSize: 8, color: reach === 'up' ? 'var(--color-success)' : reach === 'down' ? 'var(--color-error)' : 'var(--fg-muted)' }}>●</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {originLabel}
+          </span>
+          <span style={{ color: 'var(--fg-muted)', fontSize: 9 }}>▾</span>
+        </button>
+
+        {/* THE PATH — the editable half. A plain field, no focus ring (house rule); focus is an
+            edge change on a 4px radius, the one place this repo already accepts it. */}
+        <input
+          value={pathInput}
+          onChange={(e) => setPathInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { commitPath(e.currentTarget.value); setNonce((n) => n + 1) }
+            // Esc reverts to the loaded path rather than clearing — a field that empties on Esc
+            // loses the address instead of abandoning the edit.
+            if (e.key === 'Escape') { try { setPathInput(pathKey ? localStorage.getItem(pathKey) || '' : '') } catch { setPathInput('') } }
+          }}
+          onBlur={(e) => commitPath(e.currentTarget.value)}
+          placeholder="/"
+          spellCheck={false}
+          style={{
+            flex: 1, minWidth: 40,
+            fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11,
+            color: 'var(--fg)', background: 'var(--overlay-subtle)',
+            border: '1px solid transparent', borderRadius: 4, padding: '2px 6px', outline: 'none',
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--accent) 45%, var(--border))' }}
+        />
+        {/* Back to the site root, without clearing the field by hand. Only when there is
+            somewhere to go back to. */}
+        {pathInput && (
+          <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" style={navBtn}>↩</button>
+        )}
+
+        {pickerOpen && (
+          <>
+            {/* Click-away. Marked no-drag: it sits inside the panel's DragRegion band. */}
+            <div
+              data-no-drag
+              onClick={() => setPickerOpen(false)}
+              style={{ position: 'fixed', inset: 0, zIndex: 99 }}
+            />
+            <div data-no-drag style={{
+              position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: 60, zIndex: 100, width: 320,
+              background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 8,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)', overflow: 'hidden',
+            }}>
+              <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg-muted)' }}>
+                Servers for this lane
+              </div>
+              {servers.length === 0 && (
+                <div style={{ padding: '8px 10px', fontSize: 11, color: 'var(--fg-muted)' }}>
+                  Nothing is answering yet.
+                </div>
+              )}
+              {servers.map((sp) => {
+                const warn = isWarnEvidence(sp)
+                const isCurrent = pick.port === sp.port
+                return (
+                  <button
+                    key={sp.port}
+                    // Picking PINS it, so an explicit choice survives the port set shifting.
+                    // Picking the row that is already lit UNPINS — the same click-the-lit-option
+                    // gesture `Segmented` uses everywhere else in the app.
+                    onClick={() => {
+                      commitOverride(isCurrent && override ? '' : String(sp.port))
+                      setPickerOpen(false)
+                    }}
+                    style={{
+                      display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left',
+                      padding: '6px 10px', background: 'transparent', border: 'none',
+                      borderBottom: '1px solid var(--border)', cursor: 'pointer', outline: 'none',
+                    }}
+                  >
+                    {/* ● vs ○ is alive vs not. A dead candidate is still LISTED — "the port
+                        Operator reserved, which nothing is answering on" is information, and
+                        hiding it is what makes the empty state feel like a bug. */}
+                    <span style={{ fontSize: 8, color: 'var(--color-success)' }}>●</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: isCurrent ? 'var(--accent)' : 'var(--fg)' }}>
+                      :{sp.port}
+                    </span>
+                    {/* The evidence, in WORDS. Warning ink is the roster's existing mix, already
+                        contrast-checked across all six palettes — never raw --yellow at 9px. */}
+                    <span style={{
+                      marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 9,
+                      color: warn ? WARN_INK : 'var(--fg-muted)',
+                    }}>{evidenceLabel(sp)}</span>
+                  </button>
+                )
+              })}
+              <button onClick={() => { setPickerOpen(false); setEditing(true) }} style={pickerAction}>Other port or URL…</button>
+              <button onClick={() => { setPickerOpen(false); void scan() }} style={pickerAction}>Scan localhost for servers</button>
+            </div>
+          </>
+        )}
+
+        {editing && (
+        <div data-no-drag style={{
+          position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: 60, zIndex: 101,
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 6,
+        }}>
           <input
             autoFocus
             defaultValue={override ?? ''}
@@ -375,59 +568,14 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               if (e.key === 'Escape') setEditing(false)
             }}
             style={{
-              // Wider than the old port-only box: it now takes `5173/admin/users` too, and a
-              // field that visibly cannot hold what it accepts reads as not accepting it.
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, width: 200,
+              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, width: 240,
               background: 'var(--btn-bg)', color: 'var(--fg)', outline: 'none',
-              border: '1px solid var(--accent)', borderRadius: 4, padding: '2px 6px',
+              border: '1px solid var(--accent)', borderRadius: 4, padding: '3px 6px',
             }}
           />
-        ) : (
-          <button
-            onClick={() => setEditing(true)}
-            title="Click to set the preview target — a port, a path like /admin, or any URL"
-            style={{
-              fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 11, color: 'var(--fg-muted)',
-              background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', outline: 'none',
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220, textAlign: 'left',
-            }}
-          >
-            {host || 'set URL / port…'}
-            {/* Live dot only when something is actually answering. */}
-            {reach === 'up' && <span style={{ color: 'var(--color-success, #3fb950)' }}> ●</span>}
-            {override && <span style={{ color: 'var(--accent)' }}> ·pinned</span>}
-          </button>
-        )}
-        {/* Multi-server picker: only when this session is serving on more than one port
-            (e.g. a web server + an API). One port needs no choice — the auto-pick above
-            already landed on it. Picking PINS it, so an explicit choice survives a
-            restart and won't be overridden the next time the port set shifts. */}
-        {/* Only the ports we can attribute to this session are offered. A `foreign` one is
-            answering, but showing it here would invite the user to pin someone else's app. */}
-        {ourServers.length > 1 && (
-          <span
-            title="This session is serving on several ports — pick which to preview"
-            style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1, gap: 1 }}
-          >
-            {ourServers.map((sp) => (
-              <button
-                key={sp.port}
-                // Keeps whatever path is being viewed — pinning a port is not a reason to be
-                // thrown back to the site root.
-                onClick={() => commitOverride(`${sp.port}${target.path}`)}
-                style={{
-                  height: 20, padding: '0 7px', border: 'none', borderRadius: 5, background: 'transparent',
-                  cursor: 'pointer', outline: 'none',
-                  fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace", fontSize: 10,
-                  color: displayPort === sp.port ? 'var(--accent)' : 'var(--fg-muted)',
-                }}
-              >
-                :{sp.port}
-              </button>
-            ))}
-          </span>
-        )}
-        {/* Device-width presets */}
+        </div>
+      )}
+      {/* Device-width presets */}
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 1 }}>
           {PRESETS.map((p) => (
             <button
@@ -482,6 +630,30 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         <button onClick={() => setNonce((n) => n + 1)} title="Reload preview" style={previewBtn}>⟳</button>
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
       </div>
+
+        {/* THE PERSISTENT STRIP, only ever reachable by an explicit pin. Not a toast, because
+          the condition PERSISTS — a toast is gone by the time you wonder why the app looks
+          wrong. Hairline warn border, transparent ground, no fill. `Dismiss` is per session +
+          port, so it does not re-nag; pinning a different foreign port raises it again. */}
+      {pick.foreign && pick.url && pick.foreignServer && dismissedWarn !== pick.foreignServer.port && (
+        <div data-no-drag style={{
+          flexShrink: 0, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap',
+          padding: '6px 12px', borderBottom: `1px solid ${WARN_INK}`, background: 'transparent',
+          fontSize: 11, color: WARN_INK, lineHeight: 1.5,
+        }}>
+          <span style={{ flex: 1, minWidth: 220 }}>
+            ⚠ :{pick.foreignServer.port} is held by a process this lane didn’t start — {evidenceLabel(pick.foreignServer).replace(/^⚠ /, '')}.
+          </span>
+          {ourBest && (
+            <button onClick={() => commitOverride(String(ourBest.port))} style={{ ...linkBtn, color: 'var(--accent)' }}>
+              Use this lane’s :{ourBest.port} →
+            </button>
+          )}
+          <button onClick={() => setDismissedWarn(pick.foreignServer!.port)} style={{ ...linkBtn, color: 'var(--fg-muted)' }}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {reach === 'up' && display ? (
         <div ref={frameWrapRef} style={{
@@ -620,24 +792,42 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         </div>
       ) : (
         <Centered title={
-          pick.foreign && !pick.url
-            ? 'Something else is on this session’s port'
+          pick.foreignServer && !pick.url
+            ? 'No server for this lane yet'
             : reach === 'checking' ? 'Looking for this session’s app…' : 'No app running for this session'
         }>
-          {/* THE WARNING. Something answers on the port Operator reserved for this lane, but it
-              cannot be attributed to it — a stale dev server from a previous run, or a sibling
-              lane that got there first. Showing it would be showing a stranger's app as this
-              session's, which is the bug this whole path exists to stop. */}
-          {pick.foreign && !pick.url && (
+          {/* IT NAMES WHAT IT IS REFUSING TO SHOW. Something answers on the reserved port but
+              cannot be attributed to this lane — a stale dev server from a previous run, a
+              sibling sharing the reservation (`allocPort` shares one port per cwd on purpose),
+              or another lane that got there first. Showing it would be showing a stranger's app
+              as this lane's, which is the whole bug; showing a blank pane instead would read as
+              the feature being broken. So it says which, and offers the escape hatch. */}
+          {pick.foreignServer && !pick.url && (
             <>
-              {`A server is answering on ${portOf(url) ?? 'this session’s reserved port'}, but it isn’t one this session started — so it isn’t being shown. If it IS the app you want, pin it.`}
+              {portOf(url)
+                ? `Operator reserved :${portOf(url)} for this lane, but nothing it started is answering there.`
+                : 'Operator didn’t reserve a port for this lane.'}
+              <span style={{ display: 'block', marginTop: 10, color: WARN_INK, lineHeight: 1.6 }}>
+                ⚠ Something else is answering on :{pick.foreignServer.port} — {evidenceLabel(pick.foreignServer).replace(/^⚠ /, '')}.
+                It isn’t shown here, because it isn’t this lane’s app.
+              </span>
               <span style={{ display: 'block', marginTop: 12 }}>
-                <button onClick={() => setEditing(true)} style={retryBtn}>Pin it anyway…</button>
                 <button onClick={() => setNonce((n) => n + 1)} style={retryBtn}>Retry</button>
+                <button onClick={() => setEditing(true)} style={retryBtn}>Other port or URL…</button>
+                <button onClick={scan} disabled={scanning} style={retryBtn}>{scanning ? 'Scanning…' : 'Scan localhost'}</button>
+              </span>
+              {/* The escape hatch, and deliberately the quietest thing on the screen: sometimes
+                  two lanes really are looking at one server and the user knows it. It PINS, so
+                  the choice is explicit and durable — never decided on their behalf. */}
+              <span style={{ display: 'block', marginTop: 8 }}>
+                <button
+                  onClick={() => commitOverride(String(pick.foreignServer!.port))}
+                  style={{ ...retryBtn, marginRight: 0, color: 'var(--fg-muted)', borderColor: 'var(--border)' }}
+                >Show :{pick.foreignServer.port} anyway</button>
               </span>
             </>
           )}
-          {reach === 'down' && !(pick.foreign && !pick.url) && (
+          {reach === 'down' && !(pick.foreignServer && !pick.url) && (
             <>
               {override
                 ? `Nothing is answering at ${override}.`
@@ -705,4 +895,29 @@ const sendBtn: React.CSSProperties = {
   fontFamily: 'var(--font-body)', fontSize: 10.5, fontWeight: 600, cursor: 'pointer',
   outline: 'none', borderRadius: 5, background: 'transparent', color: 'var(--accent)',
   border: '1px solid color-mix(in srgb, var(--accent) 45%, var(--border))',
+}
+
+/** The bar's icon buttons. Transparent, hairline-free, and they signal disabled state by INK
+ *  alone — a `disabled` attribute or a half-opacity button is the greyed chrome the house rule
+ *  refuses. */
+/** The roster's warning ink — `--color-warning` at 50% into `--fg`. The raw token measured
+ *  1.86–3.05:1 as small text on the light palettes, which is why every warn label in this app
+ *  uses the mix and not the token. */
+const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
+
+const linkBtn: React.CSSProperties = {
+  background: 'none', border: 'none', outline: 'none', cursor: 'pointer',
+  font: 'inherit', padding: 0, flexShrink: 0,
+}
+
+const pickerAction: React.CSSProperties = {
+  display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px',
+  background: 'transparent', border: 'none', borderBottom: '1px solid var(--border)',
+  color: 'var(--accent)', fontSize: 11, fontFamily: 'inherit', cursor: 'pointer', outline: 'none',
+}
+
+const navBtn: React.CSSProperties = {
+  width: 18, height: 18, display: 'grid', placeItems: 'center', flexShrink: 0,
+  background: 'transparent', border: 'none', borderRadius: 4, padding: 0,
+  color: 'var(--fg-muted)', fontSize: 10, cursor: 'pointer', outline: 'none',
 }

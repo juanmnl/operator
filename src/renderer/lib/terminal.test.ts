@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn, stripOrnaments } from './terminal'
+import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn, stripOrnaments, detectDevServerPorts } from './terminal'
 
 describe('isLightBackground', () => {
   it('classifies by perceived luma', () => {
@@ -107,5 +107,59 @@ describe('stripOrnaments', () => {
 
   it('is a no-op for plain text', () => {
     expect(stripOrnaments('auto mode on (shift+tab to cycle)')).toBe('auto mode on (shift+tab to cycle)')
+  })
+})
+
+const ESCAPE = String.fromCharCode(27)
+
+describe('detectDevServerPorts — every banner, not just the first', () => {
+  // Vite prints Local: and Network: on adjacent lines; an app with an API prints both on one.
+  // Taking only the first match meant a lane serving two ports announced one, which undercuts
+  // the picker's whole "several servers, pick one" story.
+  it('finds EVERY port in the tail, in order', () => {
+    const { ports } = detectDevServerPorts('', 'Local: http://localhost:5173/  API: http://localhost:4000/')
+    expect(ports).toEqual([5173, 4000])
+  })
+
+  // Rails, Django, anything in Docker and `vite --host` all print 0.0.0.0. A lane serving there
+  // was never attributed, so the panel fell back to the reserved port — the other half of the
+  // wrong-server report.
+  it('accepts 0.0.0.0 and [::] as localhost banners', () => {
+    expect(detectDevServerPorts('', 'http://0.0.0.0:3000').ports).toEqual([3000])
+    expect(detectDevServerPorts('', 'http://[::]:8080').ports).toEqual([8080])
+  })
+
+  it('still accepts the forms it always did', () => {
+    expect(detectDevServerPorts('', 'http://127.0.0.1:1234 http://[::1]:4321').ports).toEqual([1234, 4321])
+  })
+
+  it('drops ports already known, and duplicates within one chunk', () => {
+    expect(detectDevServerPorts('', 'http://localhost:5173 http://localhost:5173').ports).toEqual([5173])
+    expect(detectDevServerPorts('', 'http://localhost:5173', [5173]).ports).toEqual([])
+  })
+
+  it('sees through ANSI colour, which is how these banners are actually printed', () => {
+    const line = ESCAPE + '[36mhttp://localhost:5173/' + ESCAPE + '[0m'
+    expect(detectDevServerPorts('', line).ports).toEqual([5173])
+  })
+
+  it('joins a URL split across two chunks via the tail', () => {
+    const first = detectDevServerPorts('', 'listening on http://local')
+    expect(first.ports).toEqual([])
+    expect(detectDevServerPorts(first.tail, 'host:7777/').ports).toEqual([7777])
+  })
+
+  it('keeps the tail bounded at 512 chars', () => {
+    expect(detectDevServerPorts('', 'x'.repeat(900)).tail).toHaveLength(512)
+  })
+
+  it('ignores a non-localhost host', () => {
+    expect(detectDevServerPorts('', 'http://example.com:5173').ports).toEqual([])
+  })
+
+  // The single-port form the existing caller still uses is the same scan, first result.
+  it('the legacy single-port form agrees with it', () => {
+    expect(detectDevServerPort('', 'http://localhost:5173 http://localhost:4000', null).port).toBe(5173)
+    expect(detectDevServerPort('', 'http://localhost:5173', 5173).port).toBeNull()
   })
 })
