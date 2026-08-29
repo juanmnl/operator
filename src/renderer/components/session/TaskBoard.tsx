@@ -1,14 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AgentSession, DispatchRecord, ProjectTask, Role } from '../../../shared/types'
+import type { AgentSession, ArtifactReport, DispatchRecord, ProjectTask, Role } from '../../../shared/types'
 import { isClosed, statusOf } from '../../lib/task-lifecycle'
 import { taskHasDiffSource } from '../../lib/task-diff'
 import { chipForOutcome } from '../../lib/dispatch-outcome'
+import { reportsForTask, reportStateLabel, type ReportRow } from '../../lib/comms'
 import { toolVerb } from '../../lib/chat-signal'
 import { fmtDuration, relativeTime } from '../../lib/format'
 import { laneTextColor } from '../../lib/lane-color'
 import { headlineOf } from '../../lib/task-headline'
 import { StatusWave } from '../sidebar/StatusWave'
 import { TaskDiffCard } from './TaskDiffCard'
+import { ReportBody } from './ReportBody'
 import { isStaleTask, taskAgeDays } from '../../lib/task-staleness'
 
 // THE BOARD. Project home as a board of WORK — Backlog · Running · Waiting · Done — where the
@@ -81,6 +83,12 @@ export interface TaskBoardProps {
   /** roleId → what that lane is doing right now. Drives the running card's activity line and its
    *  child-threads row. Absent lanes simply render without one. */
   laneSignals?: Record<string, LaneSignal>
+  /** Every report the app knows about. THE RESULT LIVES ON THE TASK: a closed card whose
+   *  `taskId` a lane named carries what that lane handed back, so the outcome is read where you
+   *  were already looking rather than in a second list that can disagree with this one. Joined
+   *  by `reportsForTask`, on the id ONLY — see its own note on why the tempting time-window
+   *  fallback is a lie. */
+  reports?: readonly ArtifactReport[]
 
   onAddTask: (text: string, roleId?: string) => void
   onAssignTask: (taskId: string, roleId?: string) => void
@@ -191,11 +199,12 @@ const DONE_PAGE = 20
 const LANDED_MS = 1400
 
 export function TaskBoard(props: TaskBoardProps) {
-  const { tasks, roles, liveRoles, dispatches, laneSignals } = props
+  const { tasks, roles, liveRoles, dispatches, laneSignals, reports } = props
   const shellRef = useRef<HTMLDivElement>(null)
   const cols = useResponsiveColumns(shellRef)
   const [composing, setComposing] = useState(false)
   const [openDiff, setOpenDiff] = useState<Set<string>>(new Set())
+  const [openResult, setOpenResult] = useState<Set<string>>(new Set())
   const [doneShown, setDoneShown] = useState(DONE_PAGE)
   const [clearing, setClearing] = useState(false)
 
@@ -211,6 +220,8 @@ export function TaskBoard(props: TaskBoardProps) {
   const laneLive = (t: ProjectTask) => !!(t.roleId && liveRoles?.[t.roleId])
   const toggleDiff = (id: string) =>
     setOpenDiff((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const toggleResult = (id: string) =>
+    setOpenResult((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
 
   // Only tasks assigned to a lane the roster still holds are dispatchable — Start all skips a
   // stale roleId, so offering it for one would promise something that silently does nothing.
@@ -343,6 +354,9 @@ export function TaskBoard(props: TaskBoardProps) {
                 task={task}
                 role={roleOf(task.roleId)}
                 laneLive={laneLive(task)}
+                results={reportsForTask(task.id, reports ?? [])}
+                resultOpen={openResult.has(task.id)}
+                onToggleResult={() => toggleResult(task.id)}
                 diffOpen={openDiff.has(task.id)}
                 onToggleDiff={() => toggleDiff(task.id)}
                 onRequeue={() => props.onSetTaskStatus(task.id, 'queued')}
@@ -506,6 +520,10 @@ const SHELL: React.CSSProperties = {
  *  exactly that (mix `--lane-ink-blend` of `--fg` in; 0% on dark, 70% on light), and it takes any
  *  CSS colour, not only a lane's. Use this for accent ink; dots, borders and tints stay unmixed. */
 const ACCENT_INK = laneTextColor('var(--accent)')
+/** See RosterPanel's WARN_INK: `--color-warning` raw is a dark-field signal colour and measured
+ *  3.05 / 3.03 / 1.86:1 as small text on the three light palettes. Half way to `--fg` keeps the
+ *  hue — which is what makes the mark legible AS a warning — and clears the floor. */
+const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
 
 const LABEL: React.CSSProperties = {
   fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em',
@@ -846,10 +864,16 @@ function WaitingCard({ record, from, to, onApprove, onReject, onOpenLane, onRetr
   )
 }
 
-function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onRemove }: {
+function DoneCard({ task, role, laneLive, results, resultOpen, onToggleResult, diffOpen, onToggleDiff, onRequeue, onRemove }: {
   task: ProjectTask
   role?: Role
   laneLive: boolean
+  /** What the lane handed back for THIS task, oldest first. Empty is the common case and draws
+   *  nothing: 214 closed cards each printing "no result" would be noise, and the reports that
+   *  named no task are still in the project's Comms log. */
+  results: ReportRow[]
+  resultOpen: boolean
+  onToggleResult: () => void
   diffOpen: boolean
   onToggleDiff: () => void
   onRequeue: () => void
@@ -882,7 +906,11 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
         >
           {headlineOf(task.text).title}
         </p>
-        <div style={META_ROW}>
+        {/* WRAPS, unlike the other cards' meta rows. A closed card can carry three verbs — Result,
+            Diff, Requeue — and in a four-column board that leaves the agent chip a few pixels
+            wide. Wrapping only changes what happens at overflow, where today the row silently
+            crushes everything to the left of the buttons. */}
+        <div style={{ ...META_ROW, flexWrap: 'wrap', rowGap: 4 }}>
           <AgentChip role={role} live={false} lostRoleId={role ? undefined : task.roleId} />
           <span data-card-time style={TIME}>{relativeTime(closedAt)}</span>
           {/* One word, not two shapes. `abandoned` on every card in a column where every card is
@@ -895,12 +923,73 @@ function DoneCard({ task, role, laneLive, diffOpen, onToggleDiff, onRequeue, onR
           )}
           <CheckChip task={task} />
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+            {/* WHAT THE LANE SAID, beside WHAT IT CHANGED. Two readings of one finished task, in
+                the order you want them: the prose first, the diff second. */}
+            <ResultToggle results={results} open={resultOpen} onToggle={onToggleResult} />
             <DiffToggle task={task} open={diffOpen} onToggle={onToggleDiff} />
             <button className="tb-btn tb-btn-icon" data-card-requeue onClick={onRequeue} title="Put this back in the backlog">↩</button>
           </span>
         </div>
       </article>
+      {resultOpen && results.length > 0 && <TaskResultCard results={results} />}
       {diffOpen && <TaskDiffCard task={task} laneLive={laneLive} />}
+    </div>
+  )
+}
+
+/** THE RESULT, ON THE TASK. A closed card only offers this when a lane actually named the task
+ *  in its `mcp__operator__report` call — absence is a true statement (nothing was reported for
+ *  this task), never a rendering gap, and the unattached reports remain in the Comms log.
+ *
+ *  Accent ink for the same reason `DiffToggle` uses it when open: this is the one control on a
+ *  closed card that reveals something the card is not otherwise saying. */
+function ResultToggle({ results, open, onToggle }: { results: ReportRow[]; open: boolean; onToggle: () => void }) {
+  if (results.length === 0) return null
+  return (
+    <button
+      className="tb-btn"
+      data-card-result={results.length}
+      onClick={onToggle}
+      title={results.length === 1 ? "Read the lane's result for this task" : `Read ${results.length} reports filed against this task`}
+      style={{ color: open ? ACCENT_INK : 'var(--fg-muted)' }}
+    >
+      Result{results.length > 1 ? ` ${results.length}` : ''} {open ? '▾' : '▸'}
+    </button>
+  )
+}
+
+/** The report bodies, expanded under the card — the same container `TaskDiffCard` uses, because
+ *  they are the same gesture on the same card and two shapes for that would read as two features.
+ *
+ *  A lane can file MORE THAN ONE report against a task, and the second is not a correction of the
+ *  first: it is the next instalment. So they are listed oldest-first and all of them are shown,
+ *  rather than the surface picking a winner. */
+function TaskResultCard({ results }: { results: ReportRow[] }) {
+  return (
+    // BOUNDED, and it scrolls itself — the same 300-ish ceiling `TaskDiffCard` puts on a diff, for
+    // the same reason `.tb-title` clamps to three lines: one expanded card must not push the rest
+    // of the Done column off the screen. A report runs to hundreds of lines.
+    <div style={{
+      marginTop: 6, border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+      background: 'var(--bg-terminal)', maxHeight: 340, overflow: 'auto',
+    }}>
+      {results.map((r, i) => (
+        <div key={r.id} style={{ padding: '8px 10px', borderTop: i === 0 ? 'none' : '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 5 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+              {r.from} · {relativeTime(r.at)}
+            </span>
+            {/* A report nobody was ever shown is the one thing here that means something is broken
+                right now, and the card says so instead of smoothing it over. */}
+            {r.state === 'written' && (
+              <span data-card-result-unshown title="Stored, but the recipient was never told — the announcer may be broken" style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.06em', textTransform: 'uppercase', color: WARN_INK }}>
+                {reportStateLabel(r.state)}
+              </span>
+            )}
+          </div>
+          <ReportBody summary={r.summary} artifacts={r.artifacts} />
+        </div>
+      ))}
     </div>
   )
 }

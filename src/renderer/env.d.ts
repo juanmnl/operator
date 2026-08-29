@@ -50,12 +50,13 @@ declare global {
       artifactReports: (limit?: number) => Promise<ArtifactReport[]>
       /** Reports written FOR `role` that have never been shown to it, oldest first. */
       artifactUndelivered: (role: string, limit?: number) => Promise<ArtifactReport[]>
-      /** The recipient has now been shown it. Idempotent. */
+      /** The recipient has now been shown it. Idempotent.
+       *
+       *  THE LIFECYCLE ENDS HERE. There was a third step — `acked`, written when someone expanded
+       *  a report — and it went with the mailbox on 2026-08-29: the reader is usually an AGENT,
+       *  so the receipt measured an automated read while looking authoritative. `written` vs
+       *  `delivered` stays, because a `written` row means the announcer is broken. */
       artifactMarkDelivered: (id: number) => Promise<void>
-      /** Someone opened it — the only read receipt in the system. */
-      artifactMarkAcked: (id: number) => Promise<void>
-      /** Undo an ack — ack-on-open is reachable by a stray click. */
-      artifactMarkUnread: (id: number) => Promise<void>
       /** `operator__task_status` signals not yet applied to projects.json. */
       artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
       /** Ack AFTER the task is written through, so a crash replays rather than drops. */

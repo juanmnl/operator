@@ -1,4 +1,4 @@
-import type { Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
+import type { ArtifactReport, Project, ProjectPatch, Role, ProjectTask } from '../../../shared/types'
 import { useEffect, useState } from 'react'
 import type { ProjectIdentity } from '../../../shared/types'
 import { describeProject } from '../../lib/project-description'
@@ -8,7 +8,7 @@ import { SidebarToggle } from '../SidebarToggle'
 import { RosterPanel, type LaneSession } from './RosterPanel'
 import { MoodboardPanel } from './MoodboardPanel'
 import { TaskBoard, type LaneSignal } from './TaskBoard'
-import { DispatchLog } from './DispatchLog'
+import { CommsLog } from './CommsLog'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
 
 // The project-level workspace. Home for the things that belong to the PROJECT (not a single
@@ -31,7 +31,7 @@ export function ProjectView({
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch, onAssignDispatch, onRetryDispatch, onOpenLaneTerminal,
   resumableCount, onResumeProject, chatterPaused, onToggleChatter,
-  addLaneRequest, onAddLaneRequestHandled,
+  addLaneRequest, onAddLaneRequestHandled, reports,
 }: {
   project: Project
   tab: ProjectTab
@@ -54,6 +54,10 @@ export function ProjectView({
    *  object as `laneSessions` — two narrower views of one map, so the two surfaces can't
    *  disagree about which lane is busy. */
   laneSignals?: Record<string, LaneSignal>
+  /** Every report the app knows about, scoped to this project by the surfaces that read it.
+   *  Two consumers, one fetch: the board joins them onto their tasks, and the Comms log lists
+   *  the rest — so a result never appears in two places that can disagree. */
+  reports?: readonly ArtifactReport[]
   onFocusTerminal?: (terminalId: string) => void
   onCloseTerminal?: (terminalId: string) => void
   onAddTask: (text: string, roleId?: string) => void
@@ -182,6 +186,7 @@ export function ProjectView({
               liveRoles={liveRoles}
               dispatches={project.dispatches}
               laneSignals={laneSignals}
+              reports={reports}
               onAddTask={onAddTask}
               onAssignTask={onAssignTask}
               onRemoveTask={onRemoveTask}
@@ -227,12 +232,19 @@ export function ProjectView({
               addLaneRequest={addLaneRequest}
               onAddLaneRequestHandled={onAddLaneRequestHandled}
             />
-            {/* The dispatch LOG, not the board's Waiting column: the board deliberately shows
-                only the records a human can act on, and this is the history — who routed what
-                to whom, and how it landed. It is also the only surviving surface for the
-                agent↔agent brake outcomes once the channel is gone (they carry a `replyId`, so
-                the board excludes every one of them by rule). */}
-            <DispatchLog project={project} onApprove={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))} onReject={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))} />
+            {/* The COMMS LOG, not the board's Waiting column: the board shows only the records a
+                human can act on, and this is the record — who routed what to whom, how it landed,
+                and what came back. It is also the only surviving surface for the agent↔agent
+                brake outcomes once the channel is gone (they carry a `replyId`, so the board
+                excludes every one of them by rule), and for a report whose lane named no task.
+                A diagnostic you consult when something looks wrong; it counts nothing that
+                clears by being looked at. */}
+            <CommsLog
+              project={project}
+              reports={reports}
+              onApprove={onApproveDispatch && ((id) => onApproveDispatch(project.id, id))}
+              onReject={onRejectDispatch && ((id) => onRejectDispatch(project.id, id))}
+            />
           </div>
         )}
         {tab === 'moodboard' && (

@@ -84,8 +84,6 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   artifactReports:        { delivery: 'invoke', impl: 'native', rust: 'artifacts.rs' },
   artifactUndelivered:    { delivery: 'invoke', impl: 'native' },
   artifactMarkDelivered:  { delivery: 'invoke', impl: 'native' },
-  artifactMarkAcked:      { delivery: 'invoke', impl: 'native' },
-  artifactMarkUnread:     { delivery: 'invoke', impl: 'native' },
   artifactPendingStatus:  { delivery: 'invoke', impl: 'native', rust: 'artifacts.rs' },
   artifactAckStatus:      { delivery: 'invoke', impl: 'native', rust: 'artifacts.rs' },
   gridtermAttach:         { delivery: 'send',   impl: 'mock', rust: 'gridterm.rs' },

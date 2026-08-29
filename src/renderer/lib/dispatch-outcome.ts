@@ -4,14 +4,14 @@ import type { DispatchRecord } from '../../shared/types'
 //
 // This lived in `lib/project-channel.ts` and moved out whole when the channel was deleted — the
 // mapping was never channel-specific, it just happened to be born there. `TaskBoard` already
-// imported it across that boundary, and `DispatchLog` had its own six-entry copy that was missing
+// imported it across that boundary, and the dispatch log had its own six-entry copy that was missing
 // the four outcomes that matter most (`hop-limit`, `pair-brake`, `paused`, `undelivered`), so it
 // printed raw enum strings for exactly the records the channel's death made it the sole surface
 // for. Two half-vocabularies for one concept is how a `pair-brake` ends up rendering as
 // "pair-brake" on the only screen that will ever show it.
 
 /** `progress` currently has NO user — `queued` moved to `warn` (see below). It is kept because
- *  `DispatchLog` renders every member of this union explicitly, and a tone with a branch and no
+ *  `CommsLog` renders every member of this union explicitly, and a tone with a branch and no
  *  user is harmless where a tone with a user and no branch is not: that is the defect that put
  *  `queued` in the same ink as `declined` for a whole release. */
 export type ChipTone = 'accent' | 'warn' | 'muted' | 'progress'
@@ -35,7 +35,7 @@ export interface OutcomeChip {
  *  reclassifies a `sent` record and stops. Without it, seven of them piled up in Waiting since
  *  08-01 with no control that could clear one, and the only fix was hand-editing projects.json.
  *  Dismissing means `rejected`, never deletion: a dispatch that went out and stranded is evidence
- *  about a delivery bug, and `DispatchLog` still shows it as `declined`. */
+ *  about a delivery bug, and `CommsLog` still shows it as `declined`. */
 export function canDismissDispatch(outcome: DispatchRecord['outcome']): boolean {
   return outcome === 'pending-approval' || outcome === 'unassigned' || outcome === 'undelivered'
 }

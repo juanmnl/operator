@@ -170,12 +170,11 @@ export function registerIpc(d: Deps): void {
     chatHistory: async (sessionId) => d.chat.load(sessionId),
     projectReplies: async (projectId) => d.chat.replies(projectId),
     artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
-    // The lifecycle. `written → delivered → acked`, and each step is a separate call because each
-    // is a separate fact: stored, shown, read.
+    // The lifecycle: `written → delivered`. Two facts, two calls — stored, and shown. There was a
+    // third (`acked`, "read"), and it was cut with the mailbox on 2026-08-29; the store still
+    // holds the column and its historical values, nothing writes it any more.
     artifactUndelivered: async (role, limit) => d.artifacts.undeliveredFor(String(role), Number(limit) || 10),
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
-    artifactMarkAcked: async (id) => { d.artifacts.markReportAcked(Number(id), new Date().toISOString()) },
-    artifactMarkUnread: async (id) => { d.artifacts.markReportUnread(Number(id)) },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

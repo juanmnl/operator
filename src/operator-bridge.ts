@@ -198,12 +198,10 @@ export function installBridge(): void {
     artifactReports: (limit?: number) => invoke('artifacts_reports', { limit: limit ?? null }),
     // The lifecycle columns are an Electron-side migration; the Rust store has no such columns
     // and no commands for them. Answering emptily is right here — a Tauri build simply has no
-    // undelivered queue — and the two marks are no-ops rather than throws so the Inbox renders
+    // undelivered queue — and the mark is a no-op rather than a throw so the Comms log renders
     // read-only instead of erroring on open.
     artifactUndelivered: async () => [],
     artifactMarkDelivered: async () => {},
-    artifactMarkAcked: async () => {},
-    artifactMarkUnread: async () => {},
     artifactPendingStatus: () => invoke('artifacts_pending_status'),
     artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
 

@@ -171,9 +171,10 @@ const REPORT_TASK_STATUS =
  *  behaviour this whole plane replaces. */
 const REPORT_INBOX =
   `\nYour lanes hand results back by calling \`mcp__operator__report\`, so a finished lane's work ` +
-  `reaches you directly — don't go looking in its worktree, you cannot read one. Reports arrive ` +
-  `in your Inbox and are announced on this line when you go idle; an unacked one is still ` +
-  `waiting. Silence means no report — but check the Inbox before concluding a lane did nothing.`
+  `reaches you directly — don't go looking in its worktree, you cannot read one. A report is ` +
+  `announced on this line when you go idle, and its full text stays on the task it names (and in ` +
+  `the project's Comms log either way). Silence means no report — but check there before ` +
+  `concluding a lane did nothing.`
 
 /** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
  *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was
