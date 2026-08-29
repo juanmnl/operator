@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   parsePsTable, descendantsOf, pgidsFor, selfPgidFrom,
   parseTaggedTable, envTag, staleTaggedRows,
+  laneStrays, expandStrays, reapTree,
 } from './reap'
 
 // A fake `ps -axo pid,ppid,pgid,command` table modelled on the real orphan snapshot in
@@ -208,5 +209,199 @@ describe('staleTaggedRows — the guard that decides what may be signalled at al
   it('refuses pid/pgid 0 and 1 outright', () => {
     const edge = parseTaggedTable('  1 1 launchd OPERATOR_TERMINAL_ID=t9 OPERATOR_APP_PID=400\n')
     expect(staleTaggedRows(edge, { selfPid: 111, isAppAlive })).toEqual([])
+  })
+})
+
+
+// ── Strays: the reparented dev servers the tree walk cannot reach ───────────────────────────
+//
+// Modelled on the real 2026-08-29 snapshot, which is the only reason the shapes below look
+// arbitrary. Lane `t0` of THIS run (app pid 400) reserved port 1420. Also live on the machine:
+//
+//   - a `t0` from an eleven-day-old run of a DIFFERENT project (`mantel`). Same terminal id,
+//     because ids are `t0`, `t1`, … per app run — this is the collision the app-pid gate is for.
+//   - a `t0` with no app tag at all, from a build that predates the field.
+//   - lane `t1`'s server, which is nobody else's business.
+//
+// `ppid 1` on all of them: they reparented to launchd when the shell that started them exited,
+// which is what put them out of reach of `descendantsOf`.
+const STRAY_PS = parsePsTable(`  PID  PPID  PGID COMMAND
+  400   399   400 /Applications/Operator.app/Contents/MacOS/Operator
+  500     1   500 -zsh
+  501   500   500 claude --settings {"tui":"default"}
+  900     1   900 npm exec vite --port 1420 --strictPort
+  901   900   900 node /w/node_modules/.bin/vite --port 1420 --strictPort
+  902   901   900 esbuild --service=0.21.5 --ping
+`)
+
+const STRAY_TAGGED = parseTaggedTable(`  PID  PGID COMMAND
+  900   900 npm exec vite --port 1420 OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=400
+  901   900 node vite --port 1420 OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=400
+  910   910 npm exec vite --port 1420 OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=28793
+  920   920 npm exec vite --port 1420 OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420
+  930   930 node vite --port 1421 OPERATOR_TERMINAL_ID=t1 OPERATOR_DEV_PORT=1421 OPERATOR_APP_PID=400
+  501   500 claude OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=400
+`)
+
+const LANE = { terminalId: 't0', devPort: 1420, appPid: 400 }
+const OPTS = { treePids: new Set([500, 501]), selfPid: 400, selfPgid: 400 }
+
+describe('laneStrays', () => {
+  it('reaps a reparented server that carries THIS lane and THIS Operator run', () => {
+    const { reap } = laneStrays(STRAY_TAGGED, LANE, OPTS)
+    expect(reap.map((r) => r.pid)).toEqual([900, 901])
+  })
+
+  it('REFUSES the same terminal id from another Operator run — the cross-project accident', () => {
+    // pid 910 is `t0` too, and it is an eleven-day-old stray of a different project. Killing it
+    // because this lane happens to share a per-run id is the one mistake that must not happen.
+    const { reap, refused } = laneStrays(STRAY_TAGGED, LANE, OPTS)
+    expect(reap.map((r) => r.pid)).not.toContain(910)
+    expect(refused.find((r) => r.pid === 910)?.why).toMatch(/another Operator run/)
+  })
+
+  it('REFUSES a row with no OPERATOR_APP_PID — its owner is unprovable', () => {
+    const { reap, refused } = laneStrays(STRAY_TAGGED, LANE, OPTS)
+    expect(reap.map((r) => r.pid)).not.toContain(920)
+    expect(refused.find((r) => r.pid === 920)?.why).toMatch(/no OPERATOR_APP_PID/)
+  })
+
+  it('ignores another lane entirely — not reaped, and not even reported as a near miss', () => {
+    const { reap, refused } = laneStrays(STRAY_TAGGED, LANE, OPTS)
+    expect(reap.map((r) => r.pid)).not.toContain(930)
+    expect(refused.map((r) => r.pid)).not.toContain(930)
+  })
+
+  it('drops rows the tree walk already reaches, so nothing is counted twice', () => {
+    // 501 is `claude`, tagged like everything else and squarely inside the tree.
+    const { reap, refused } = laneStrays(STRAY_TAGGED, LANE, OPTS)
+    expect(reap.map((r) => r.pid)).not.toContain(501)
+    expect(refused.map((r) => r.pid)).not.toContain(501)
+  })
+
+  it('refuses a port that is not this lane’s reservation', () => {
+    const other = laneStrays(STRAY_TAGGED, { ...LANE, devPort: 1499 }, OPTS)
+    expect(other.reap).toEqual([])
+    expect(other.refused.find((r) => r.pid === 900)?.why).toMatch(/is not this lane's 1499/)
+  })
+
+  it('never returns Operator itself, however it is tagged', () => {
+    // The live sweep that informed this found the running Operator.app carrying
+    // OPERATOR_TERMINAL_ID, because it had been launched from a tagged shell.
+    const us = parseTaggedTable('  400 400 Operator OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=400\n')
+    const { reap, refused } = laneStrays(us, LANE, { ...OPTS, treePids: new Set() })
+    expect(reap).toEqual([])
+    expect(refused[0].why).toMatch(/Operator itself/)
+  })
+
+  it('accepts any port when the lane never reserved one', () => {
+    const { reap } = laneStrays(STRAY_TAGGED, { terminalId: 't0', appPid: 400 }, OPTS)
+    expect(reap.map((r) => r.pid)).toEqual([900, 901])
+  })
+})
+
+describe('expandStrays', () => {
+  it('takes the stray’s own children too — they may have re-grouped since', () => {
+    const rows = parseTaggedTable('  900 900 npm exec vite OPERATOR_TERMINAL_ID=t0 OPERATOR_APP_PID=400\n')
+    expect([...expandStrays(STRAY_PS, rows)].sort((a, b) => a - b)).toEqual([900, 901, 902])
+  })
+
+  it('never walks from launchd', () => {
+    const rows = parseTaggedTable('  1 1 launchd OPERATOR_TERMINAL_ID=t0 OPERATOR_APP_PID=400\n')
+    expect(expandStrays(STRAY_PS, rows).size).toBe(0)
+  })
+})
+
+// ── Escalation: SIGTERM, wait out the grace period, SIGKILL the survivors ────────────────────
+//
+// `process.kill` is the seam. Signal 0 is `isPidAlive`'s existence probe, so the fake answers
+// that from a set the test controls; every other signal is recorded. Fake timers because the
+// grace period is 1.5s of real polling and a test suite should not pay it.
+
+/** Record every signal `reapTree` sends, and decide liveness from `alive`. */
+function stubKill(alive: Set<number>) {
+  const sent: Array<{ target: number; sig: string }> = []
+  vi.spyOn(process, 'kill').mockImplementation(((target: number, sig: string | number) => {
+    if (sig === 0) {
+      if (!alive.has(target)) {
+        const e = new Error('ESRCH') as NodeJS.ErrnoException
+        e.code = 'ESRCH'
+        throw e
+      }
+      return true
+    }
+    sent.push({ target, sig: String(sig) })
+    return true
+  }) as typeof process.kill)
+  return sent
+}
+
+describe('reapTree escalation', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
+
+  it('SIGTERMs the groups and stops there when the tree dies inside the grace period', async () => {
+    vi.useFakeTimers()
+    const sent = stubKill(new Set()) // nothing survives the first poll
+    const p = reapTree(500, STRAY_PS, { selfPid: 400 })
+    await vi.advanceTimersByTimeAsync(2000)
+    const res = await p
+    expect(sent.every((s) => s.sig === 'SIGTERM')).toBe(true)
+    expect(res.escalated).toEqual([])
+  })
+
+  it('escalates to SIGKILL — BY GROUP — once the grace period is spent', async () => {
+    vi.useFakeTimers()
+    // 501 refuses to die. Escalating it alone would leave a supervisor free to respawn its
+    // worker, so the second round is addressed to the group, exactly like the first.
+    const sent = stubKill(new Set([501]))
+    const p = reapTree(500, STRAY_PS, { selfPid: 400 })
+    await vi.advanceTimersByTimeAsync(2000)
+    const res = await p
+    expect(res.escalated).toEqual([501])
+    expect(sent.filter((s) => s.sig === 'SIGKILL')).toEqual([{ target: -500, sig: 'SIGKILL' }])
+  })
+
+  it('never signals our own group, even when Operator is INSIDE the tree being reaped', async () => {
+    vi.useFakeTimers()
+    // Not hypothetical: the live sweep found `Operator.app` itself carrying a lane's env tag,
+    // because the user had launched it from a tagged shell. Here it is worse — pid 400 is a
+    // descendant of the very shell being reaped, so `descendantsOf` hands it over and only the
+    // self-guard stands between this and the app SIGKILLing itself mid-quit.
+    const nested = parsePsTable(`  PID  PPID  PGID COMMAND
+  500     1   500 -zsh
+  501   500   500 claude
+  400   501   400 /Applications/Operator.app/Contents/MacOS/Operator
+`)
+    const sent = stubKill(new Set([400, 500, 501]))
+    const p = reapTree(500, nested, { selfPid: 400 })
+    await vi.advanceTimersByTimeAsync(2000)
+    const res = await p
+    expect(res.found).toContain(400) // it really is in the blast radius…
+    expect(res.pgids).toEqual([500]) // …and its group is still never signalled
+    expect(sent.map((s) => s.target)).not.toContain(-400)
+  })
+
+  it('reaps the strays alongside the tree, in ONE grace period', async () => {
+    vi.useFakeTimers()
+    const sent = stubKill(new Set())
+    const p = reapTree(500, STRAY_PS, { selfPid: 400, alsoReap: new Set([900, 901, 902]) })
+    await vi.advanceTimersByTimeAsync(2000)
+    const res = await p
+    // Group 900 is the reparented server's, and it is signalled in the same pass as the tree's.
+    expect(res.pgids).toEqual([500, 900])
+    expect(sent).toContainEqual({ target: -900, sig: 'SIGTERM' })
+    expect(res.found).toContain(902)
+  })
+
+  it('reaps strays with NO tree at all — the pty had already exited', async () => {
+    vi.useFakeTimers()
+    const sent = stubKill(new Set())
+    const p = reapTree(0, STRAY_PS, { selfPid: 400, alsoReap: new Set([900, 901, 902]) })
+    await vi.advanceTimersByTimeAsync(2000)
+    const res = await p
+    expect(res.pgids).toEqual([900])
+    expect(sent).toEqual([{ target: -900, sig: 'SIGTERM' }])
+    // rootPid 0 is never itself signalled — kill(0, …) means "my own process group".
+    expect(sent.map((s) => s.target)).not.toContain(0)
   })
 })

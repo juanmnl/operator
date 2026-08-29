@@ -159,12 +159,20 @@ function signal(target: number, sig: NodeJS.Signals): void {
 }
 
 export interface ReapResult {
-  /** Pids found under the root at snapshot time, including the root. */
+  /** Pids found under the root at snapshot time, including the root and any `alsoReap` strays. */
   found: number[]
   /** Groups signalled. */
   pgids: number[]
   /** Pids still alive after the grace period — these got SIGKILL. */
   escalated: number[]
+}
+
+export interface ReapOptions {
+  selfPid?: number
+  /** Pids to reap ALONGSIDE the tree — reparented strays that `ppid` can no longer reach (see
+   *  `laneStrays`). Their groups are signalled together with the tree's in the SAME pass, so a
+   *  lane close still costs one grace period rather than two. */
+  alsoReap?: ReadonlySet<number>
 }
 
 /** TERM the tree, wait out the grace period, KILL what is left.
@@ -175,9 +183,13 @@ export interface ReapResult {
  *  Survivors are re-checked with `kill(pid, 0)` against the ORIGINAL pid set rather than with a
  *  second `ps`. It is the same answer for a fraction of the cost, and it cannot accidentally
  *  widen the blast radius to a pid that appeared after the snapshot. */
-export async function reapTree(rootPid: number, rows: PsRow[], selfPid = process.pid): Promise<ReapResult> {
+export async function reapTree(rootPid: number, rows: PsRow[], opts: ReapOptions = {}): Promise<ReapResult> {
+  const selfPid = opts.selfPid ?? process.pid
   const selfPgid = selfPgidFrom(rows, selfPid)
   const found = descendantsOf(rows, rootPid)
+  // The strays join the tree BEFORE the groups are collected, so one `pgidsFor` pass covers
+  // both and a stray sharing a group with the tree is signalled once, not twice.
+  for (const pid of opts.alsoReap ?? []) if (pid > 1) found.add(pid)
   const pgids = pgidsFor(rows, found, selfPgid)
   const result: ReapResult = { found: [...found].sort((a, b) => a - b), pgids, escalated: [] }
   if (!found.size && !Number.isInteger(rootPid)) return result
@@ -300,6 +312,109 @@ export function staleTaggedRows(
     if (r.terminalId && opts.liveTerminalIds?.has(r.terminalId)) return false
     return true
   })
+}
+
+// ── Strays the tree walk cannot reach ────────────────────────────────────────────────────────
+//
+// THE TREE WALK HAS A HOLE, and it is the one that produced the 24 orphans measured on this
+// machine on 2026-08-29 (oldest 11 days; one had squatted port 1420 since Aug 20 and blocked a
+// new lane from taking its own reservation). `reapTree` walks DOWN from the pty shell, which is
+// complete only for processes still attached to it. A dev server the AGENT starts — `npm run
+// dev &`, `nohup`, a backgrounded Bash tool call — outlives the intermediate shell that launched
+// it, and at THAT moment, not at close time, it reparents to launchd. By the time the lane
+// closes there is no longer any `ppid` path from the shell to it, so the walk cannot see it and
+// the SIGTERM never arrives. One measured orphan, `ps -eww -E`:
+//
+//   29977  ppid=1  pgid=29958  OPERATOR_TERMINAL_ID=t0 OPERATOR_DEV_PORT=1420 OPERATOR_APP_PID=28793
+//
+// ppid 1 — and 28793 was the RUNNING Operator. So this is not a crash leftover that the boot
+// sweep would eventually collect: it is a live app leaking while it is still up, which nothing
+// in the lifecycle ever revisited. The env tag is the only handle that still points home. It
+// rides on every descendant and SURVIVES reparenting, which is exactly what `ppid` does not.
+//
+// WHY `OPERATOR_APP_PID` IS NOT OPTIONAL HERE. Terminal ids are `t0`, `t1`, … from `nextId()`,
+// assigned per app RUN — so `t0` in this run and `t0` from a run eleven days ago are the same
+// string and a different lane. In the measured snapshot they were a different PROJECT as well
+// (`operator` now, `mantel` then). Matching on the terminal id alone would make closing a lane
+// here kill a stranger's server over there, which is the cross-project accident this must never
+// cause. The app pid is what disambiguates the id, so a row that carries none is REFUSED rather
+// than guessed at — the same inversion `staleTaggedRows` makes, for the same reason.
+//
+// The cost of that refusal is that the pre-tag orphans already on this machine are never reaped
+// by a lifecycle close; they carry no app pid, so nothing can prove whose they are. Clearing
+// those is a deliberate user action, not something to infer during a close.
+
+/** What a lane stamps on everything it starts, as the reaper needs to match it. */
+export interface LaneTag {
+  terminalId: string
+  /** The lane's reservation, when it has one. */
+  devPort?: number
+  /** THIS Operator's pid — `process.pid`. See the header for why it is required. */
+  appPid: number
+}
+
+export interface StraySelection {
+  /** Attributable to this lane, and not already reachable through the tree. */
+  reap: TaggedRow[]
+  /** Rows that named this lane's terminal id and were still refused, with the reason, so the
+   *  close can say what it left alone and why. Only NEAR MISSES are collected: a row belonging
+   *  to another lane is not evidence of anything, and logging every tagged process on the
+   *  machine would bury the one line that matters. */
+  refused: Array<{ pid: number; why: string }>
+}
+
+/** Why this row is not this lane's to kill, or `null` when it is. Ordered cheapest-first, and
+ *  every branch returns a sentence rather than a boolean so the caller can log it verbatim. */
+function refuseStray(r: TaggedRow, lane: LaneTag, selfPid: number, selfPgid?: number): string | null {
+  if (r.pid <= 1 || r.pgid <= 1) return 'pid or pgid is launchd — never signallable'
+  if (r.pid === selfPid || r.pgid === selfPgid) return 'that is Operator itself'
+  if (r.appPid == null) return 'no OPERATOR_APP_PID — predates the tag, so its owner is unprovable'
+  if (r.appPid !== lane.appPid) return `OPERATOR_APP_PID=${r.appPid} belongs to another Operator run`
+  if (lane.devPort != null && r.devPort !== lane.devPort) {
+    return `OPERATOR_DEV_PORT=${r.devPort ?? 'unset'} is not this lane's ${lane.devPort}`
+  }
+  return null
+}
+
+/** The tagged survivors this lane may reap, and the near misses it must not.
+ *
+ *  Pure over a `ps -E` sweep, so every branch of the attribution is exercised against a
+ *  fabricated table rather than against whatever happens to be running — which matters more
+ *  here than usual, because the failure mode of a wrong answer is killing someone else's
+ *  server.
+ *
+ *  `treePids` are the pids `reapTree` will reach on its own; a row already in the tree is not a
+ *  stray and is dropped silently rather than reported as refused. */
+export function laneStrays(
+  tagged: readonly TaggedRow[],
+  lane: LaneTag,
+  opts: { treePids: ReadonlySet<number>; selfPid: number; selfPgid?: number },
+): StraySelection {
+  const reap: TaggedRow[] = []
+  const refused: Array<{ pid: number; why: string }> = []
+  for (const r of tagged) {
+    if (r.terminalId !== lane.terminalId) continue // another lane's, or not a lane's at all
+    if (opts.treePids.has(r.pid)) continue // the tree walk already has it
+    const why = refuseStray(r, lane, opts.selfPid, opts.selfPgid)
+    if (why) refused.push({ pid: r.pid, why })
+    else reap.push(r)
+  }
+  return { reap, refused }
+}
+
+/** A stray plus its own descendants.
+ *
+ *  A reparented `npm exec vite` still has its `node vite` and `esbuild` children under it, and
+ *  those may have re-grouped since. Expanding here means `reapTree` collects THEIR groups too,
+ *  from the same snapshot, instead of trusting that one group covers the family. */
+export function expandStrays(rows: PsRow[], strays: readonly TaggedRow[]): Set<number> {
+  const out = new Set<number>()
+  for (const s of strays) {
+    if (s.pid <= 1) continue
+    out.add(s.pid)
+    for (const d of descendantsOf(rows, s.pid)) out.add(d)
+  }
+  return out
 }
 
 /** One `ps -eww -o pid,pgid,command -E | grep OPERATOR_TERMINAL_ID=` sweep.
