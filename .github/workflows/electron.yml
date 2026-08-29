@@ -231,21 +231,22 @@ jobs:
           spctl -a -vvv -t exec "$VERIFY/Operator.app"
           rm -rf "$VERIFY" "$STAGE"
 
-          # 6. The notes the swap release carries. Short on purpose: this text is the release body
-          #    on operator-releases and the `notes` field of latest.json.
-          cat > "$RUNNER_TEMP/swap-notes.md" <<EOF
-          **Operator ${VERSION} — the app moves from Tauri to Electron.** Same app, same
-          \`~/.operator\`: your projects, sessions, chat history and artifact reports are all
-          still there, and \`--mcp-serve\` is unchanged.
-
-          - **No more hourly renderer restart.** WebKit was killing and respawning the renderer at
-            ~1.2 GB; Chromium's ceiling is far higher and the fleet rests flat under it.
-          - **The download is much bigger** — ~143 MB, ~313 MB installed. Electron ships its own
-            Chromium where the Tauri build used the system WebView.
-          - **\`gridterm\` sessions end here.** That experiment is not ported.
-          - **Updates come from the Electron updater from now on.** This is the last release the
-            Tauri updater installs.
-          EOF
+          # 6. The notes the swap release carries — the release body on operator-releases and the
+          #    `notes` field of latest.json.
+          #
+          #    READ FROM THE TAG, NOT WRITTEN HERE. This used to be a heredoc hardcoded to the
+          #    0.17.0 swap story ("the app moves from Tauri to Electron", "the last release the
+          #    Tauri updater installs"). Only ${VERSION} interpolated, so every release after
+          #    0.17.0 would have described 0.17.0 to every updater that polled — and the same
+          #    text was duplicated in the release-body step below, which is what let the two
+          #    drift out of sync in the first place. One file per version, carried by the tag,
+          #    is now the single source for both.
+          NOTES_FILE="electron/release-notes/${VERSION}.md"
+          if [ ! -s "$GITHUB_WORKSPACE/$NOTES_FILE" ]; then
+            echo "::error::$NOTES_FILE is missing or empty. Write this release's notes before tagging — shipping the previous release's notes to every updater is the failure this check exists to stop."
+            exit 1
+          fi
+          cp "$GITHUB_WORKSPACE/$NOTES_FILE" "$RUNNER_TEMP/swap-notes.md"
 
           # 7. latest.json — the feed every installed Tauri copy polls. Same shape build.yml
           #    writes. The url points at the operator-releases release this run publishes, NOT at
@@ -274,50 +275,28 @@ jobs:
           STABLE: ${{ steps.gate.outputs.stable }}
         run: |
           set -euo pipefail
-          if [ "$STABLE" = "true" ]; then
-            HEADLINE="**Operator $VERSION — the swap release.** The app moves from Tauri to Electron, and this is the release the Tauri updater installs."
-            SHELL_NOTE=$'### Auto-update\nThis release publishes BOTH feeds to [operator-releases](https://github.com/juanmnl/operator-releases/releases/latest): `latest.json` for the copies still running Tauri, and `latest-mac.yml` + the `.zip` for the ones that have crossed over. **It is a one-way door** — after it, the Tauri updater is gone and `electron-updater` takes over.'
-          else
-            HEADLINE="**Electron preview of Operator $VERSION.** Same app, different shell."
-            SHELL_NOTE=$'### Auto-update is NOT wired for this build\nThis is a pre-release: the swap assets below (`Operator.app.tar.gz`, its `.sig`, `latest.json`) were built exactly as a stable tag would build them, but nothing was published to operator-releases. Installed copies see nothing.'
+          # THE SAME PER-VERSION FILE the swap notes come from. This step used to carry its own
+          # copy of the release story in a second heredoc — also frozen at 0.17.0, and free to
+          # disagree with the first. What genuinely varies per RELEASE TYPE (whether the updater
+          # feeds were published) is still generated here; what varies per VERSION is written by
+          # a human, once, in the file the tag carries.
+          NOTES_FILE="electron/release-notes/${VERSION}.md"
+          if [ ! -s "$GITHUB_WORKSPACE/$NOTES_FILE" ]; then
+            echo "::error::$NOTES_FILE is missing or empty. Write this release's notes before tagging."
+            exit 1
           fi
-          cat > "$RUNNER_TEMP/notes.md" <<EOF
-          $HEADLINE
-
-          ### Why
-          The renderer used to be killed and respawned by WebKit at ~1.2 GB — what you experienced
-          as *"the app restarts"*. Chromium's ceiling is 3586 MB, and at our measured fleet shape
-          (27 lanes, production scrollback) it rests at 230 MB and stays flat. That symptom should
-          be gone.
-
-          ### What changed for you
-          - No hourly renderer restart.
-          - Terminal renders on the DOM renderer, as before. WebGL is **not** switched on — it was
-            clean for 60 minutes under test, which is not yet the 2-hour soak that would settle it.
-          - **The download is much bigger: ~143 MB DMG, ~313 MB installed** (Electron ships its own
-            Chromium; the Tauri build used the system WebView at ~15 MB).
-
-          ### Installing
-          Open the DMG and drag **Operator** onto **Applications**, replacing the existing one. It
-          keeps the same bundle id, so it replaces the Tauri build cleanly and your macOS
-          permissions carry over. It reads the same \`~/.operator\` state — your projects, sessions,
-          chat history and artifact reports are all still there.
-
-          **Quit the running Operator first.** Its lanes are child processes and replacing the app
-          under them is not something to find out about mid-task.
-
-          $SHELL_NOTE
-
-          ### Going back
-          Re-download 0.16.0 from
-          [operator-releases](https://github.com/juanmnl/operator-releases/releases/tag/v0.16.0) and
-          drag it over. Your \`~/.operator\` state is untouched by either direction.
-
-          ### Known gaps
-          - The custom title bar is not draggable yet (Electron has no programmatic window drag).
-          - The grid terminal (an unused experiment) is not ported.
-          - \`gridterm\`-based sessions are inert.
-          EOF
+          if [ "$STABLE" = "true" ]; then
+            SHELL_NOTE=$'### Auto-update\nThis release publishes both feeds to [operator-releases](https://github.com/juanmnl/operator-releases/releases/latest): `latest.json` for any copy still running the Tauri build, and `latest-mac.yml` + the `.zip` for everything since. Installed copies are offered it on their next check.'
+          else
+            SHELL_NOTE=$'### Auto-update is NOT wired for this build\nThis is a pre-release: the updater assets below (`Operator.app.tar.gz`, its `.sig`, `latest.json`) were built exactly as a stable tag would build them, but nothing was published to operator-releases. Installed copies see nothing.'
+          fi
+          {
+            cat "$GITHUB_WORKSPACE/$NOTES_FILE"
+            printf '\n\n### Installing\n'
+            printf 'Open the DMG and drag **Operator** onto **Applications**, replacing the existing one. It keeps the same bundle id, so your macOS permissions carry over, and it reads the same `~/.operator` state — projects, sessions, chat history and artifact reports are all still there.\n\n'
+            printf '**Quit the running Operator first.** Its lanes are child processes and replacing the app under them is not something to find out about mid-task.\n\n'
+            printf '%s\n' "$SHELL_NOTE"
+          } > "$RUNNER_TEMP/notes.md"
           echo "notes=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
 
       # The release on THIS repo. It carries the swap assets whether or not they are published,
