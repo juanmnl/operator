@@ -16,6 +16,8 @@ const turn = (o: {
   id: string; model?: string; input?: number; output?: number; cacheRead?: number
   cache5m?: number; cache1h?: number; ccTotal?: number; ts?: string
   requestId?: string; sidechain?: boolean; skill?: string; durationMs?: number
+  /** `usage.speed` exactly as Claude Code persists it — 'standard' on every real record today. */
+  speed?: string
 }) => JSON.stringify({
   type: 'assistant',
   timestamp: o.ts ?? '2026-08-20T10:00:00.000Z',
@@ -27,6 +29,7 @@ const turn = (o: {
     id: o.id,
     model: o.model ?? 'claude-opus-4',
     usage: {
+      ...(o.speed !== undefined ? { speed: o.speed } : {}),
       input_tokens: o.input ?? 0,
       output_tokens: o.output ?? 0,
       cache_read_input_tokens: o.cacheRead ?? 0,
@@ -93,8 +96,9 @@ describe('cost — the cache tiers are billed at different rates', () => {
 
 describe('rates by model family', () => {
   const cases: Array<[string, number]> = [
-    ['claude-fable-5', 10], ['mythos-mini', 10],
-    ['claude-opus-4-8', 5], ['claude-sonnet-4-6', 3], ['claude-haiku-4-5', 1],
+    ['claude-fable-5-1', 10], ['claude-fable-5', 10], ['mythos-mini', 10],
+    ['claude-opus-5', 5], ['claude-opus-4-8', 5],
+    ['claude-sonnet-5', 2], ['claude-sonnet-4-6', 3], ['claude-haiku-4-5', 1],
     ['gpt-4o', 5], // unknown falls back to opus pricing — never to zero, which would read as free
   ]
   for (const [model, perM] of cases) {
@@ -103,6 +107,72 @@ describe('rates by model family', () => {
       expect(stats.totalCost).toBeCloseTo(perM, 9)
     })
   }
+
+  // Sonnet stopped being one rate. A substring match on `sonnet` alone cannot separate Sonnet 5
+  // (2/10) from Sonnet 4.6 (3/15), so the version is matched first.
+  it('a dated id and a point release both inherit the Sonnet 5 tier', async () => {
+    for (const model of ['claude-sonnet-5-20260101', 'claude-sonnet-5-1']) {
+      const { stats } = await usageOf(turn({ id: model, model, input: M }))
+      expect(stats.totalCost).toBeCloseTo(2, 9)
+    }
+  })
+
+  // The ambiguous case, answered deliberately: an unversioned alias takes the HIGHER rate.
+  // Over-reporting is recoverable; a cost view that quietly under-reports is not.
+  it('a bare `sonnet` alias takes the higher 3/15, not the newer 2/10', async () => {
+    const { stats } = await usageOf(turn({ id: 'bare', model: 'sonnet', input: M }))
+    expect(stats.totalCost).toBeCloseTo(3, 9)
+  })
+})
+
+describe('cache reads are a per-model rate, not a flat 0.1×', () => {
+  // The largest distortion the old flat multiplier produced: 1M cache-read tokens on Fable 5.1
+  // cost $0.25, not the $1.00 that 0.1 × $10 claimed — a 4× over-report on the traffic an agent
+  // session is mostly made of.
+  it('Fable 5.1 reads cache at a flat $0.25/Mtok', async () => {
+    const { stats } = await usageOf(turn({ id: 'f51', model: 'claude-fable-5-1', cacheRead: M }))
+    expect(stats.totalCost).toBeCloseTo(0.25, 9)
+  })
+
+  // $0.25 is documented for 5.1 specifically, as something it ADDS over Fable 5; whether Mythos
+  // 5.1 shares it is open. Neither takes the discount on assumption.
+  it('Fable 5 and Mythos keep the 0.1× default', async () => {
+    const five = await usageOf(turn({ id: 'f5', model: 'claude-fable-5', cacheRead: M }))
+    const mythos = await usageOf(turn({ id: 'm51', model: 'claude-mythos-5-1', cacheRead: M }))
+    expect(five.stats.totalCost).toBeCloseTo(1, 9)
+    expect(mythos.stats.totalCost).toBeCloseTo(1, 9)
+  })
+
+  it('every other model reads cache at a tenth of its own input rate', async () => {
+    for (const [model, expected] of [['claude-opus-5', 0.5], ['claude-sonnet-5', 0.2], ['claude-haiku-4-5', 0.1]] as const) {
+      const { stats } = await usageOf(turn({ id: `cr-${model}`, model, cacheRead: M }))
+      expect(stats.totalCost).toBeCloseTo(expected, 9)
+    }
+  })
+})
+
+describe('fast mode', () => {
+  // `usage.speed` is real and persisted — 132,245 of 451,480 transcript lines carry it, all
+  // reading 'standard'. Nothing infers fast mode from timing; only the field decides.
+  it('a fast Opus turn bills 10/50 instead of 5/25', async () => {
+    const std = await usageOf(turn({ id: 'std', model: 'claude-opus-5', input: M, output: M, speed: 'standard' }))
+    const fast = await usageOf(turn({ id: 'fast', model: 'claude-opus-5', input: M, output: M, speed: 'fast' }))
+    expect(std.stats.totalCost).toBeCloseTo(30, 9)
+    expect(fast.stats.totalCost).toBeCloseTo(60, 9)
+  })
+
+  it('a missing or standard speed is the standard rate', async () => {
+    const absent = await usageOf(turn({ id: 'a', model: 'claude-opus-5', input: M }))
+    const standard = await usageOf(turn({ id: 'b', model: 'claude-opus-5', input: M, speed: 'standard' }))
+    expect(absent.stats.totalCost).toBeCloseTo(5, 9)
+    expect(standard.stats.totalCost).toBeCloseTo(5, 9)
+  })
+
+  // Fast mode is an Opus-only research preview, so the flag must not move any other family's bill.
+  it('does not change a non-Opus model, which has no fast mode to bill', async () => {
+    const { stats } = await usageOf(turn({ id: 's', model: 'claude-sonnet-5', input: M, speed: 'fast' }))
+    expect(stats.totalCost).toBeCloseTo(2, 9)
+  })
 })
 
 describe('de-duplication', () => {

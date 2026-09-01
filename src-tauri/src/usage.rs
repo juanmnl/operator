@@ -11,12 +11,38 @@ use serde_json::Value;
 
 use crate::backend::{iso_from_ms, now_iso};
 
-fn rates(model: &str) -> (f64, f64) {
-    if model.contains("fable") || model.contains("mythos") { (10.0, 50.0) }
-    else if model.contains("opus") { (5.0, 25.0) }
-    else if model.contains("sonnet") { (3.0, 15.0) }
-    else if model.contains("haiku") { (1.0, 5.0) }
-    else { (5.0, 25.0) }
+// $/1M tokens, (input, output, cache-read). Substring-matched so a dated model id
+// (`claude-opus-5-20260101`) resolves without a table entry per release, and so a point release
+// inherits its tier — `sonnet-5` is written to catch a future `sonnet-5-1` too.
+//
+// PESSIMISTIC WHERE THE ID IS AMBIGUOUS. An unknown model bills at the Opus rate rather than at
+// zero, because a silent 0 reads as "this cost nothing". The same rule decides the bare aliases:
+// a version-less `sonnet` (rare — transcripts carry full ids, but `<synthetic>` rows and
+// hand-written fixtures exist) takes the HIGHER 3/15 of Sonnet 4.6, and only a confident
+// `sonnet-5` match takes 2/10. Under-reporting is the failure this module refuses.
+//
+// CACHE-READ IS A RATE, NOT A MULTIPLIER. It is 0.1× input on every model here except Fable 5.1,
+// which reads cache at a flat $0.25/Mtok — a quarter of what 0.1 × $10 would say, on the traffic
+// an agent session is mostly made of. Scoped to `fable-5-1` deliberately: $0.25 is documented as
+// something 5.1 ADDS over Fable 5, and whether Mythos 5.1 shares it is open, so `claude-fable-5`
+// and the mythos ids keep the 0.1× default rather than take a discount nobody has confirmed.
+//
+// `fast` is Opus fast mode (`usage.speed == "fast"`), which bills 10/50 instead of 5/25 — the
+// same model, 2.5× the output speed, at a premium. It is a research preview on Opus 5 and 4.8
+// only, so no other family consults the flag; 4.8's fast rate is not separately published, and
+// pricing it with Opus 5's is the pessimistic reading.
+//
+// Kept in step with `rates()` in electron/src/main/usage.ts — same table, same order, same rule.
+fn rates(model: &str, fast: bool) -> (f64, f64, f64) {
+    // Cache-read defaults to a tenth of input — derived, never hand-copied, so the two can't drift.
+    let tier = |input: f64, output: f64| (input, output, input * 0.1);
+    if model.contains("fable-5-1") { (10.0, 50.0, 0.25) }
+    else if model.contains("fable") || model.contains("mythos") { tier(10.0, 50.0) }
+    else if model.contains("opus") { if fast { tier(10.0, 50.0) } else { tier(5.0, 25.0) } }
+    else if model.contains("sonnet-5") { tier(2.0, 10.0) }
+    else if model.contains("sonnet") { tier(3.0, 15.0) }
+    else if model.contains("haiku") { tier(1.0, 5.0) }
+    else { tier(5.0, 25.0) }
 }
 
 // One assistant message's usage, pre-parsed and cached.
@@ -30,6 +56,8 @@ struct Record {
     context: u64, // total prompt size = input + cache_read + cache_creation
     sidechain: bool,
     skill: Option<String>,
+    /// `usage.speed == "fast"` — Opus fast mode, billed at the premium rate. See `rates`.
+    fast: bool,
     input: u64,
     output: u64,
     cache_read: u64,
@@ -67,12 +95,14 @@ fn parse_iso_ms(s: &str) -> i64 {
 }
 
 impl Record {
+    // Cache-write is billed ABOVE the input rate (1.25× for 5-minute, 2× for 1-hour); cache-read
+    // is its own rate from the table, not a multiplier applied here.
     fn cost(&self) -> f64 {
-        let (ri, ro) = rates(&self.model);
+        let (ri, ro, rcr) = rates(&self.model, self.fast);
         let per_in = ri / 1e6;
         self.input as f64 * per_in
             + self.output as f64 * (ro / 1e6)
-            + self.cache_read as f64 * per_in * 0.1
+            + self.cache_read as f64 * (rcr / 1e6)
             + self.cache5m as f64 * per_in * 1.25
             + self.cache1h as f64 * per_in * 2.0
     }
@@ -156,6 +186,9 @@ fn load_records() -> Vec<Record> {
                     duration_ms: obj.get("durationMs").and_then(|v| v.as_i64()).unwrap_or(0),
                     context: input + cache_read + cache5m + cache1h,
                     sidechain: obj.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false),
+                    // Claude Code persists the API's own `usage.speed` verbatim; anything but the
+                    // literal "fast" (including the null `<synthetic>` rows carry) is standard.
+                    fast: usage.get("speed").and_then(|v| v.as_str()) == Some("fast"),
                     skill: obj.get("attributionSkill").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
                     input,
                     output: g(usage, "output_tokens"),
@@ -366,6 +399,7 @@ mod tests {
             context: 0,
             sidechain: false,
             skill: None,
+            fast: false,
             input,
             output,
             cache_read,
@@ -376,17 +410,62 @@ mod tests {
 
     #[test]
     fn rates_match_model_family() {
-        assert_eq!(rates("claude-fable-5"), (10.0, 50.0));
-        assert_eq!(rates("mythos-mini"), (10.0, 50.0));
-        assert_eq!(rates("claude-opus-4-8"), (5.0, 25.0));
-        assert_eq!(rates("claude-sonnet-4-6"), (3.0, 15.0));
-        assert_eq!(rates("claude-haiku-4-5"), (1.0, 5.0));
+        assert_eq!(rates("claude-fable-5-1", false), (10.0, 50.0, 0.25));
+        assert_eq!(rates("claude-fable-5", false), (10.0, 50.0, 1.0));
+        assert_eq!(rates("mythos-mini", false), (10.0, 50.0, 1.0));
+        assert_eq!(rates("claude-opus-5", false), (5.0, 25.0, 0.5));
+        assert_eq!(rates("claude-opus-4-8", false), (5.0, 25.0, 0.5));
+        assert_eq!(rates("claude-sonnet-5", false), (2.0, 10.0, 0.2));
+        assert_eq!(rates("claude-sonnet-4-6", false), (3.0, 15.0, 3.0 * 0.1));
+        assert_eq!(rates("claude-haiku-4-5", false), (1.0, 5.0, 0.1));
+    }
+
+    // Sonnet stopped being one rate: Sonnet 5 bills 2/10, Sonnet 4.6 still bills 3/15, and a
+    // substring match on `sonnet` alone cannot tell them apart.
+    #[test]
+    fn rates_split_sonnet_by_version_and_carry_point_releases() {
+        assert_eq!(rates("claude-sonnet-5", false).0, 2.0);
+        assert_eq!(rates("claude-sonnet-4-6", false).0, 3.0);
+        // A dated id and a future point release both inherit the Sonnet 5 tier without a new row.
+        assert_eq!(rates("claude-sonnet-5-20260101", false).0, 2.0);
+        assert_eq!(rates("claude-sonnet-5-1", false).0, 2.0);
+    }
+
+    // The ambiguous case, answered deliberately: an unversioned alias takes the HIGHER rate.
+    // Over-reporting is recoverable; a cost view that quietly under-reports is not.
+    #[test]
+    fn rates_bare_sonnet_alias_takes_the_higher_rate() {
+        assert_eq!(rates("sonnet", false), (3.0, 15.0, 3.0 * 0.1));
+    }
+
+    // $0.25/Mtok is documented for Fable 5.1 specifically — as something it ADDS over Fable 5 —
+    // so the older id and the mythos ids keep the 0.1x default rather than take it on assumption.
+    #[test]
+    fn rates_cache_read_is_flat_only_for_fable_5_1() {
+        assert_eq!(rates("claude-fable-5-1", false).2, 0.25);
+        assert_eq!(rates("claude-fable-5", false).2, 1.0);
+        assert_eq!(rates("claude-mythos-5-1", false).2, 1.0);
+        // Everything else is exactly a tenth of its own input rate, never a hand-copied constant.
+        for m in ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4o"] {
+            let (input, _, cache_read) = rates(m, false);
+            assert!((cache_read - input * 0.1).abs() < 1e-12, "{m}: {cache_read} != {input} * 0.1");
+        }
+    }
+
+    // Fast mode is the same model at up to 2.5x output speed, billed at a premium. Only Opus has
+    // it, so no other family consults the flag.
+    #[test]
+    fn rates_opus_fast_mode_bills_at_the_premium() {
+        assert_eq!(rates("claude-opus-5", true), (10.0, 50.0, 1.0));
+        assert_eq!(rates("claude-opus-4-8", true), (10.0, 50.0, 1.0));
+        assert_eq!(rates("claude-sonnet-5", true), rates("claude-sonnet-5", false));
+        assert_eq!(rates("claude-haiku-4-5", true), rates("claude-haiku-4-5", false));
     }
 
     #[test]
     fn rates_unknown_model_falls_back_to_opus_pricing() {
-        assert_eq!(rates("gpt-4o"), (5.0, 25.0));
-        assert_eq!(rates(""), (5.0, 25.0));
+        assert_eq!(rates("gpt-4o", false), (5.0, 25.0, 0.5));
+        assert_eq!(rates("", false), (5.0, 25.0, 0.5));
     }
 
     #[test]
@@ -395,6 +474,24 @@ mod tests {
         let r = rec("claude-opus-4", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000);
         // 5 + 25 + 0.5(cache_read .1x) + 6.25(cache5m 1.25x) + 10(cache1h 2x)
         assert!((r.cost() - 46.75).abs() < 1e-9, "got {}", r.cost());
+    }
+
+    // The largest distortion the old flat 0.1x produced: 1M cache-read tokens on Fable 5.1 cost
+    // $0.25, not the $1.00 that 0.1 x $10 claimed. A 4x over-report on an agent session's bulk.
+    #[test]
+    fn cost_uses_the_per_model_cache_read_rate() {
+        assert!((rec("claude-fable-5-1", 0, 0, 1_000_000, 0, 0).cost() - 0.25).abs() < 1e-9);
+        assert!((rec("claude-fable-5", 0, 0, 1_000_000, 0, 0).cost() - 1.0).abs() < 1e-9);
+        assert!((rec("claude-opus-5", 0, 0, 1_000_000, 0, 0).cost() - 0.5).abs() < 1e-9);
+        assert!((rec("claude-sonnet-5", 0, 0, 1_000_000, 0, 0).cost() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_bills_a_fast_opus_turn_at_double() {
+        let mut r = rec("claude-opus-5", 1_000_000, 1_000_000, 0, 0, 0);
+        assert!((r.cost() - 30.0).abs() < 1e-9, "standard: {}", r.cost());
+        r.fast = true;
+        assert!((r.cost() - 60.0).abs() < 1e-9, "fast: {}", r.cost());
     }
 
     #[test]

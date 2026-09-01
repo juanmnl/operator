@@ -9,16 +9,36 @@ import { homedir } from 'node:os'
 import { extname, join, basename } from 'node:path'
 import type { UsageStats, UsageInsights } from '../../../src/shared/types'
 
-/** $/1M tokens, (input, output). Substring-matched so a dated model id
- *  (`claude-opus-5-20260101`) resolves without a table entry per release — and an unknown
- *  model bills at the Opus rate rather than at zero, because a silent 0 reads as "this cost
- *  nothing". */
-function rates(model: string): [number, number] {
-  if (model.includes('fable') || model.includes('mythos')) return [10, 50]
-  if (model.includes('opus')) return [5, 25]
-  if (model.includes('sonnet')) return [3, 15]
-  if (model.includes('haiku')) return [1, 5]
-  return [5, 25]
+/** $/1M tokens, (input, output, cache-read). Substring-matched so a dated model id
+ *  (`claude-opus-5-20260101`) resolves without a table entry per release, and so a point release
+ *  inherits its tier — `sonnet-5` is written to catch a future `sonnet-5-1` too.
+ *
+ *  PESSIMISTIC WHERE THE ID IS AMBIGUOUS. An unknown model bills at the Opus rate rather than at
+ *  zero, because a silent 0 reads as "this cost nothing". The same rule decides the bare aliases:
+ *  a version-less `sonnet` (rare — transcripts carry full ids, but `<synthetic>` rows and
+ *  hand-written fixtures exist) takes the HIGHER 3/15 of Sonnet 4.6, and only a confident
+ *  `sonnet-5` match takes 2/10. Under-reporting is the failure this module refuses.
+ *
+ *  CACHE-READ IS A RATE, NOT A MULTIPLIER. It is 0.1× input on every model here except Fable 5.1,
+ *  which reads cache at a flat $0.25/Mtok — a quarter of what 0.1 × $10 would say, on the traffic
+ *  an agent session is mostly made of. Scoped to `fable-5-1` deliberately: $0.25 is documented as
+ *  something 5.1 ADDS over Fable 5, and whether Mythos 5.1 shares it is open, so `claude-fable-5`
+ *  and the mythos ids keep the 0.1× default rather than take a discount nobody has confirmed.
+ *
+ *  `fast` is Opus fast mode (`usage.speed === 'fast'`), which bills 10/50 instead of 5/25 — the
+ *  same model, 2.5× the output speed, at a premium. It is a research preview on Opus 5 and 4.8
+ *  only, so no other family consults the flag; 4.8's fast rate is not separately published, and
+ *  pricing it with Opus 5's is the pessimistic reading. */
+function rates(model: string, fast = false): [number, number, number] {
+  /** Cache-read defaults to a tenth of input — derived, never hand-copied, so the two can't drift. */
+  const tier = (input: number, output: number): [number, number, number] => [input, output, input * 0.1]
+  if (model.includes('fable-5-1')) return [10, 50, 0.25]
+  if (model.includes('fable') || model.includes('mythos')) return tier(10, 50)
+  if (model.includes('opus')) return fast ? tier(10, 50) : tier(5, 25)
+  if (model.includes('sonnet-5')) return tier(2, 10)
+  if (model.includes('sonnet')) return tier(3, 15)
+  if (model.includes('haiku')) return tier(1, 5)
+  return tier(5, 25)
 }
 
 /** Named `UsageRecord`, not `Record` — a local `Record` shadows TypeScript's built-in
@@ -27,16 +47,18 @@ interface UsageRecord {
   day: string; model: string; slug: string; session: string
   tsMs: number; durationMs: number
   context: number; sidechain: boolean; skill?: string
+  /** `usage.speed === 'fast'` — Opus fast mode, billed at the premium rate. See `rates`. */
+  fast: boolean
   input: number; output: number; cacheRead: number; cache5m: number; cache1h: number
 }
 
-/** Cache-write is billed ABOVE the input rate (1.25× for 5-minute, 2× for 1-hour) and
- *  cache-read well below it (0.1×). Flattening those to one number would misreport this app's
- *  usage badly — a long agent session is mostly cache traffic. */
+/** Cache-write is billed ABOVE the input rate (1.25× for 5-minute, 2× for 1-hour); cache-read is
+ *  its own rate from the table, not a multiplier applied here. Flattening any of it to one number
+ *  would misreport this app's usage badly — a long agent session is mostly cache traffic. */
 function cost(r: UsageRecord): number {
-  const [ri, ro] = rates(r.model)
+  const [ri, ro, rcr] = rates(r.model, r.fast)
   const perIn = ri / 1e6
-  return r.input * perIn + r.output * (ro / 1e6) + r.cacheRead * perIn * 0.1 + r.cache5m * perIn * 1.25 + r.cache1h * perIn * 2
+  return r.input * perIn + r.output * (ro / 1e6) + r.cacheRead * (rcr / 1e6) + r.cache5m * perIn * 1.25 + r.cache1h * perIn * 2
 }
 const tokensOf = (r: UsageRecord) => r.input + r.output + r.cacheRead + r.cache5m + r.cache1h
 
@@ -95,6 +117,9 @@ async function loadRecords(): Promise<UsageRecord[]> {
           durationMs: typeof obj.durationMs === 'number' ? obj.durationMs : 0,
           context: input + cacheRead + cache5m + cache1h,
           sidechain: obj.isSidechain === true,
+          // Claude Code persists the API's own `usage.speed` verbatim; anything but the literal
+          // 'fast' (including the `null` that `<synthetic>` rows carry) is the standard rate.
+          fast: usage.speed === 'fast',
           skill: typeof obj.attributionSkill === 'string' && obj.attributionSkill ? obj.attributionSkill : undefined,
           input, output: g(usage, 'output_tokens'), cacheRead, cache5m, cache1h,
         })
