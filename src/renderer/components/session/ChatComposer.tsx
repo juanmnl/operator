@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode, ClipboardEvent as ReactClipboardEvent } from 'react'
-import type { AgentSession } from '../../../shared/types'
+import type { AgentSession, EffortLevel } from '../../../shared/types'
 import { persistFiles, imageFilesFrom } from '../../lib/paste-image'
 import { modelFamilyLabel as displayModel } from '../../lib/roster'
+import { EFFORT_OPTIONS } from '../../lib/effort'
 import { PopMenu } from '../PopMenu'
 import { submitQueue } from '../../lib/submit-queue'
 import { chatSignal } from '../../lib/chat-signal'
@@ -20,7 +21,7 @@ import { interruptSession } from '../../lib/interrupt'
 //     to the prompt so Claude Code shortens it to a native `[Image #N]` (same mechanism as
 //     the terminal's drop handler). Chips preview them before send.
 //   • Model        — switch the live model via Claude Code's `/model` slash command.
-//   • Effort       — write the reasoning effort to global settings (applies to new turns).
+//   • Effort       — `/effort <level>` to this lane's pty (applies to the next turn).
 //   • Slash menu   — one-tap common commands (/clear, /compact, /context, …) to the pty.
 // Colours follow the app's transparent-tint aesthetic (no solid accent fills, no focus ring).
 
@@ -33,12 +34,6 @@ const MODELS = [
   { id: 'sonnet', label: 'Sonnet' },
   { id: 'haiku', label: 'Haiku' },
   { id: 'fable', label: 'Fable' },
-] as const
-
-const EFFORTS = [
-  { id: 'high', label: 'High' },
-  { id: 'normal', label: 'Normal' },
-  { id: 'low', label: 'Low' },
 ] as const
 
 // Commands sent verbatim to the pty (a bare line + CR, NOT a bracketed paste — Claude Code
@@ -67,7 +62,7 @@ export function ChatComposer({ session, laneAccent, onSend, onHumanSend, onModel
   onHumanSend?: (roleId?: string) => void
   /** Persist a `/model` switch back onto the session so the pill survives a tab switch. */
   onModelChange?: (model: string) => void
-  onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
+  onEffortChange?: (effort: EffortLevel) => void
 }) {
   const [draft, setDraft] = useState('')
   const [focused, setFocused] = useState(false)
@@ -188,18 +183,16 @@ export function ChatComposer({ session, laneAccent, onSend, onHumanSend, onModel
     if (id) pickModel(id)
   }
 
-  // Effort lives in global settings (Claude Code reads it there); applies to new turns.
-  const pickEffort = async (id: string) => {
+  // `/effort <level>` TO THIS LANE'S PTY, exactly like `/model` above — a bare line + CR, not a
+  // bracketed paste (see SLASH). It used to write `~/.claude/settings.json` instead, which was
+  // wrong twice over: that file is app-wide, so one lane's pill moved every lane's default, and a
+  // settings change cannot reach a session that is already running anyway. The pill updates
+  // optimistically because the pty has no reply to wait for.
+  const pickEffort = (id: EffortLevel) => {
     setEffort(id)
     setMenu(null)
-    onEffortChange?.(id as 'high' | 'normal' | 'low')
-    const cwd = session?.workingDirectory
-    if (!cwd) return
-    try {
-      const prefs = await window.operator.folderPrefsLoad(cwd)
-      const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
-      if (globalFile) await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: id as 'high' | 'normal' | 'low' })
-    } catch { /* settings unavailable */ }
+    if (session?.terminalId) window.operator.terminalWrite(session.terminalId, `/effort ${id}\r`)
+    onEffortChange?.(id)
   }
 
   const onPaste = (e: ReactClipboardEvent) => {
@@ -209,7 +202,7 @@ export function ChatComposer({ session, laneAccent, onSend, onHumanSend, onModel
 
   // Handles both the alias set (opus/sonnet/…) and a full transcript model id (claude-opus-…).
   const modelLabel = model ? displayModel(model) : undefined
-  const effortLabel = EFFORTS.find((m) => m.id === effort)?.label
+  const effortLabel = EFFORT_OPTIONS.find((m) => m.id === effort)?.label
 
   return (
     <div
@@ -243,7 +236,7 @@ export function ChatComposer({ session, laneAccent, onSend, onHumanSend, onModel
           )}
         />
       )}
-      {menu === 'effort' && <PopMenu title="Reasoning effort" onClose={() => setMenu(null)} items={EFFORTS.map((m) => ({ key: m.id, label: m.label, active: m.id === effort, onClick: () => pickEffort(m.id) }))} />}
+      {menu === 'effort' && <PopMenu title="Reasoning effort" onClose={() => setMenu(null)} items={EFFORT_OPTIONS.map((m) => ({ key: m.id, label: m.label, active: m.id === effort, onClick: () => pickEffort(m.id) }))} />}
       {menu === 'slash' && <PopMenu title="Commands" onClose={() => setMenu(null)} items={SLASH.map((c) => ({ key: c.cmd, label: c.label, hint: c.hint, onClick: () => runSlash(c.cmd) }))} />}
 
       <div style={{

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import type { AgentDefinition, AgentScope } from '../../../shared/types'
 import { pageTitle, pageSubtitle, fieldLabel, MEASURE_FORM, MEASURE_GRID } from '../settings/PageShell'
 import { SplitPane } from '../SplitPane'
+import { EFFORT_OPTIONS as EFFORT_LADDER } from '../../lib/effort'
 
 // Model choices surfaced as a dropdown — the headline of the whole view.
 // Empty value = omit the field (inherit the parent session's model).
@@ -10,7 +11,7 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: 'haiku', label: 'Haiku — fast & cheap' },
   { value: 'sonnet', label: 'Sonnet — balanced' },
   { value: 'opus', label: 'Opus — most capable' },
-  { value: 'fable', label: 'Fable 5 — frontier' },
+  { value: 'fable', label: 'Fable — frontier' },
   { value: 'opusplan', label: 'Opus in plan, Sonnet in execution' },
   { value: 'default', label: 'Account default' },
 ]
@@ -19,13 +20,12 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
 // id — see the Model field in Editor.
 const CUSTOM_MODEL = '__custom'
 
+// Derived from the one ladder (lib/effort) rather than re-spelled — this list happened to be
+// right while the rest of the app was wrong, and that is exactly the drift a second copy invites.
+// The empty value is this screen's own: an agent definition with no `effort` inherits the session's.
 const EFFORT_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Default' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra high' },
-  { value: 'max', label: 'Max' },
+  ...EFFORT_LADDER.map((e) => ({ value: e.id as string, label: e.label })),
 ]
 
 // Per-model hint shown at the point of choosing — routing intelligence: what each

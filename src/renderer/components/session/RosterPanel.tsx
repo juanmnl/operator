@@ -7,6 +7,7 @@ import {
   resolveAgentConfig, worktreeStateOf,
 } from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
+import { EFFORT_OPTIONS } from '../../lib/effort'
 
 /** How long the add-lane control is highlighted when a request from OUTSIDE this panel can't
  *  be answered by opening something — long enough to catch the eye, short enough not to read
@@ -57,12 +58,6 @@ export function formatTokens(n: number): string {
  *  floor everywhere. Same technique, and the same reason, as Segmented's `inkTint`. The DOT keeps
  *  the raw token: there is no text there to fail a contrast floor. */
 const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
-
-const EFFORTS: Array<{ id: Role['effort']; label: string }> = [
-  { id: 'high', label: 'High' },
-  { id: 'normal', label: 'Normal' },
-  { id: 'low', label: 'Low' },
-]
 
 export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter, addLaneRequest, onAddLaneRequestHandled }: {
   project?: Project
@@ -968,7 +963,7 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
           {/* Effort has the SAME weight as the model — it is the other spend dial, and the one
               users forget. Never tucked behind a disclosure. */}
           <Segmented
-            options={EFFORTS.map((e) => ({ id: e.id as string, label: e.label }))}
+            options={EFFORT_OPTIONS.map((e) => ({ id: e.id as string, label: e.label }))}
             value={resolved.effort}
             name="effort"
             origin={pinnedField(role.effort)}
@@ -1061,7 +1056,7 @@ function PresetCard({ preset, onClick }: { preset: Role; onClick: () => void }) 
   const [hover, setHover] = useState(false)
   const accent = preset.accent || 'var(--accent)'
   const model = ROSTER_MODELS.find((m) => m.id === preset.model)?.label ?? preset.model
-  const effort = EFFORTS.find((e) => e.id === (preset.effort ?? 'high'))?.label ?? 'High'
+  const effort = EFFORT_OPTIONS.find((e) => e.id === (preset.effort ?? 'high'))?.label ?? 'High'
   const gist = (preset.prompt ?? '').split(/(?<=[.!?])\s/)[0] ?? ''
   return (
     <button
@@ -1246,7 +1241,7 @@ function LaneRow({
 }) {
   const [hover, setHover] = useState(false)
   const accent = role.accent || 'var(--accent)'
-  const effort = EFFORTS.find((e) => e.id === (role.effort ?? 'high'))?.label ?? 'High'
+  const effort = EFFORT_OPTIONS.find((e) => e.id === (role.effort ?? 'high'))?.label ?? 'High'
   const model = ROSTER_MODELS.find((m) => m.id === role.model)?.label ?? role.model
 
   return (

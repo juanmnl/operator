@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { AgentSession, NarrationEntry, Role } from '../../../shared/types'
+import type { AgentSession, EffortLevel, NarrationEntry, Role } from '../../../shared/types'
 import { parseBlocks, type Block, type Span } from '../../lib/canvas-md'
 import { MEASURE_FORM } from '../settings/PageShell'
 import { stripDispatchLines } from '../../lib/roster'
@@ -477,7 +477,7 @@ export function CanvasConversation({ session, role, customName, accent, onHumanS
   /** A human addressed this lane — resets its delivery hop budget. See ChatComposer. */
   onHumanSend?: (roleId?: string) => void
   onModelChange?: (model: string) => void
-  onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
+  onEffortChange?: (effort: EffortLevel) => void
 }) {
   // WHO is talking, by the one shared ladder (lib/session-label): a rename, then the lane,
   // then its own first prompt, then the model. This surface used to hardcode 'Agent', which

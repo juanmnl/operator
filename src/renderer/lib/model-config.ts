@@ -1,5 +1,6 @@
-import type { Project, Role } from '../../shared/types'
+import type { EffortLevel, Project, Role } from '../../shared/types'
 import { rolePresets, isCoordinator } from './roster'
+import { migrateEffort, type StoredEffort } from './effort'
 
 // A LANE'S LAUNCH CONFIG, and the one cascade that resolves it.
 //
@@ -29,7 +30,7 @@ import { rolePresets, isCoordinator } from './roster'
 /** The fields a launch needs, all of them resolved — the launch path can't take `undefined`. */
 export interface ResolvedAgentConfig {
   model: string
-  effort: 'high' | 'normal' | 'low'
+  effort: EffortLevel
   permissionMode: string
   useWorktree: boolean
 }
@@ -80,7 +81,10 @@ const setBool = (v: boolean | undefined | null): v is boolean => v !== undefined
 export function resolveAgentConfig(role: Role, projectDefaults?: Project['defaults']): ResolvedAgentConfig {
   const preset = rolePresets().find((p) => p.id === role.id)
   const model = [role.model, preset?.model].find(set) ?? HARD_FALLBACK.model
-  const effort = [role.effort, preset?.effort].find(set) ?? HARD_FALLBACK.effort
+  // `migrateEffort` here as well as at hydrate: this is THE resolver, so a stored `normal` that
+  // reached memory ahead of the migration (the localStorage seed paints before hydrate) still
+  // launches at `medium` rather than falling through to the fallback's `high`.
+  const effort = migrateEffort([role.effort, preset?.effort].find(set)) ?? HARD_FALLBACK.effort
   const permissionMode = [role.permissionMode, projectDefaults?.permissionMode].find(set) ?? HARD_FALLBACK.permissionMode
   // Tri-state, and deliberately NOT `.find(set)`: `false` is a pin, not an absence.
   //
@@ -120,7 +124,9 @@ export function worktreeStateOf(role: Role): WorktreeState {
  *  migration, and never again — the file is left on disk as the record of what was there. */
 export type LegacyGlobalDefaults = Record<string, {
   model?: string
-  effort?: 'high' | 'normal' | 'low'
+  /** `StoredEffort`, not `EffortLevel`: this file was written when Operator still had a `normal`,
+   *  so `legacyResolve` runs it through `migrateEffort` before it can become a pin. */
+  effort?: StoredEffort
   permissionMode?: string
   useWorktree?: boolean
 }>
@@ -138,7 +144,7 @@ function legacyResolve(
   const preset = rolePresets().find((p) => p.id === role.id)
   return {
     model: [role.model, g?.model, preset?.model].find(set) ?? HARD_FALLBACK.model,
-    effort: [role.effort, g?.effort, projectDefaults?.effortLevel, preset?.effort].find(set) ?? HARD_FALLBACK.effort,
+    effort: migrateEffort([role.effort, g?.effort, projectDefaults?.effortLevel, preset?.effort].find(set)) ?? HARD_FALLBACK.effort,
     permissionMode: [role.permissionMode, g?.permissionMode, projectDefaults?.permissionMode, preset?.permissionMode]
       .find(set) ?? HARD_FALLBACK.permissionMode,
     useWorktree: [role.useWorktree, g?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree,

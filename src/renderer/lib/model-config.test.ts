@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project, Role } from '../../shared/types'
 import { rolePresets } from './roster'
+import { EFFORT_LEVELS } from './effort'
 import {
   resolveAgentConfig, worktreeStateOf, clearSeededRoleFields, clearCoordinatorWorktree,
   migrateGlobalsToLanePins, HARD_FALLBACK,
@@ -13,7 +14,7 @@ const project = (roster: Role[], defaults?: Project['defaults']): Project =>
 
 describe('resolveAgentConfig — two altitudes', () => {
   it('falls through to the built-in preset when the lane pins nothing', () => {
-    expect(resolveAgentConfig(role({ id: 'operator' }))).toMatchObject({ model: 'fable', effort: 'normal' })
+    expect(resolveAgentConfig(role({ id: 'operator' }))).toMatchObject({ model: 'fable', effort: 'medium' })
     expect(resolveAgentConfig(role({ id: 'code' }))).toMatchObject({ model: 'opus', effort: 'high' })
   })
 
@@ -42,7 +43,7 @@ describe('resolveAgentConfig — two altitudes', () => {
       const c = resolveAgentConfig(r)
       expect(typeof c.model).toBe('string')
       expect(c.model.length).toBeGreaterThan(0)
-      expect(['high', 'normal', 'low']).toContain(c.effort)
+      expect(EFFORT_LEVELS).toContain(c.effort)
       expect(typeof c.permissionMode).toBe('string')
       expect(typeof c.useWorktree).toBe('boolean')
     }
@@ -178,7 +179,7 @@ describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () =>
       [],
     ]
     const defaultsList: Array<Project['defaults']> = [
-      undefined, { model: '', effortLevel: 'low' }, { permissionMode: 'auto', effortLevel: 'normal' },
+      undefined, { model: '', effortLevel: 'low' }, { permissionMode: 'auto', effortLevel: 'medium' },
     ]
 
     for (const globals of stores) {

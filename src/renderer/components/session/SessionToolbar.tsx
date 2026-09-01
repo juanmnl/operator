@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { McpServerInfo } from '../../../shared/types'
+import type { EffortLevel, McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
@@ -57,7 +57,7 @@ interface SessionToolbarProps {
   /** Port sniffed from the session's actual dev-server banner; wins over the
    *  allocated port since the project often ignores OPERATOR_DEV_PORT. */
   detectedDevPort?: number
-  effortLevel?: 'high' | 'normal' | 'low' | null
+  effortLevel?: EffortLevel | null
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null

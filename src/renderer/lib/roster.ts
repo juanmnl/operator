@@ -245,11 +245,11 @@ export function rolePresets(): Role[] {
     // the HEAD it hands to every lane it launches all come from a checkout that is not the one
     // anybody looks at. Measured 2026-08-05: 33 worktrees, 9 unmerged commits across 6 branches,
     // most 30–137 commits behind main.
-    { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal', useWorktree: false, accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
+    { id: 'operator', name: 'Operator', model: 'fable', effort: 'medium', useWorktree: false, accent: '#c98bff', prompt: DEFAULT_ROLE_PROMPTS.operator },
     { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', useWorktree: true, accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
     { id: 'code', name: 'Code', model: 'opus', effort: 'high', useWorktree: true, accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
     { id: 'review', name: 'Review', model: 'opus', effort: 'high', useWorktree: false, accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
-    { id: 'design', name: 'Design', model: 'opus', effort: 'normal', useWorktree: true, accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
+    { id: 'design', name: 'Design', model: 'opus', effort: 'medium', useWorktree: true, accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
     { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', useWorktree: false, accent: '#ffd43b', prompt: DEFAULT_ROLE_PROMPTS.qa },
   ]
 }

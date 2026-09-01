@@ -2,6 +2,7 @@ import type { SettingsFile, ClaudeSettings } from '../../../shared/types'
 import { SettingsFileTabBar } from './SettingsFileTabBar'
 import { useSettingsScope } from './useSettingsScope'
 import { ListEditor } from './ListEditor'
+import { SETTINGS_EFFORT_LEVELS, settingsEffort } from '../../lib/effort'
 
 interface GeneralSectionProps {
   settingsFiles: SettingsFile[]
@@ -9,7 +10,11 @@ interface GeneralSectionProps {
   onCreate: (path: string) => void
 }
 
-const EFFORT_LEVELS = ['high', 'normal', 'low'] as const
+// THE FILE'S OWN ENUM, not the full ladder. This screen edits `~/.claude/settings.json` directly —
+// the app-wide default for sessions started OUTSIDE Operator, and the one place that still writes
+// it now that a lane's effort rides its `--effort` flag. The field accepts four values; `max` is
+// flag-only, so offering it here would write something the file silently discards. See lib/effort.
+const EFFORT_LEVELS = SETTINGS_EFFORT_LEVELS
 
 export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSectionProps) {
   const { activeScope, setActiveScope, activeFile, handleCreateFile } = useSettingsScope(settingsFiles, onCreate)
@@ -86,7 +91,7 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
               <button
                 key={level}
                 disabled={isReadOnly}
-                onClick={() => handleUpdate({ effortLevel: level })}
+                onClick={() => handleUpdate({ effortLevel: settingsEffort(level) })}
                 style={{
                   flex: 1,
                   padding: '7px 0',

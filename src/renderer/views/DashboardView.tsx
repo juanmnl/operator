@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
+import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
@@ -76,7 +77,7 @@ interface TerminalTab {
   key: string
   cwd: string
   model?: string
-  effortLevel?: 'high' | 'normal' | 'low'
+  effortLevel?: EffortLevel
   permissionMode?: string
   worktreeBranch?: string
   worktreeBase?: string
@@ -776,7 +777,9 @@ export function DashboardView() {
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => {
     try {
       const raw = localStorage.getItem('operator.savedSessions')
-      return raw ? JSON.parse(raw) : []
+      // Effort migration on the seed too, so the pre-hydrate paint never shows a lane badged with
+      // an effort level Claude Code does not have (see lib/effort).
+      return raw ? migrateSavedEfforts(JSON.parse(raw) as SavedSession[]).sessions : []
     } catch { return [] }
   })
 
@@ -788,7 +791,7 @@ export function DashboardView() {
       const raw = localStorage.getItem('operator.projects')
       // Legacy-coordinator migration on the seed too, so the pre-hydrate first paint
       // never flashes the old "Orchestrator" lane.
-      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator) : []
+      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator).map(migrateProjectEfforts) : []
     } catch { return [] }
   })
 
@@ -1880,6 +1883,9 @@ export function DashboardView() {
       let nextSaved: SavedSession[] = saved.some((s) => s.roleId === 'orchestrator')
         ? saved.map((s) => (s.roleId === 'orchestrator' ? { ...s, roleId: 'operator' } : s))
         : saved
+      // …and the effort ladder: a row saying `normal` names a level Claude Code never had, so it
+      // becomes `medium` (lib/effort). Returns the same array when there is nothing to migrate.
+      nextSaved = migrateSavedEfforts(nextSaved).sessions
       if (Array.isArray(pList) && pList.length) {
         // projects.json exists → no path backfill, but rosters saved before the
         // Orchestrator→Operator rename still migrate (persisted by the effect below).
@@ -1899,7 +1905,10 @@ export function DashboardView() {
         // own pass rather than folded into `clearSeededRoleFields` because the test is different —
         // that one clears what EQUALS the preset, this clears any value at all on a role that is
         // no longer offered the choice.
-        const reconciled = renamed.map(clearSeededRoleFields).map(clearCoordinatorWorktree)
+        // …the effort-ladder migration runs FIRST of the three, so `clearSeededRoleFields` compares a
+        // migrated `medium` against the migrated preset rather than a stale `normal` against it —
+        // otherwise every operator/design lane keeps a pin that is now identical to its preset.
+        const reconciled = renamed.map(migrateProjectEfforts).map(clearSeededRoleFields).map(clearCoordinatorWorktree)
         const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
         // …and then, ONCE per install, the seeded-lane PRUNE: projects created before seeding was
         // removed still carry six lanes nobody asked for, so drop the ones that were never used and
@@ -2274,17 +2283,38 @@ export function DashboardView() {
     })
   }, [savedHydrated, reattachDone, terminals])
 
+  // THE USER'S OWN `~/.claude/settings.json`, migrated once. Operator wrote `effortLevel: "normal"`
+  // there on every launch, and the file's schema drops an out-of-enum value SILENTLY — so the
+  // setting has been inert for as long as it has been there. Nothing else will fix it: the launch
+  // path no longer writes the file at all, and Preferences only rewrites it if the user goes and
+  // clicks something.
+  //
+  // Narrow on purpose. It rewrites ONLY the exact legacy value, on the two files Operator was ever
+  // the author of (global user + global local), so it is idempotent, needs no one-shot flag, and
+  // cannot touch a level the user chose in Claude Code itself.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const prefs = await window.operator.folderPrefsLoadGlobal?.()
+        for (const f of prefs?.settingsFiles ?? []) {
+          if (f.scope !== 'global' && f.scope !== 'global-local') continue
+          if (f.readOnly || !f.exists || !isLegacyEffort(f.settings.effortLevel)) continue
+          await window.operator.folderPrefsSaveSettings(f.path, { effortLevel: settingsEffort('medium') })
+        }
+      } catch { /* the settings file is the user's, not ours — a failure here is not the app's problem */ }
+    })()
+  }, [])
+
   /** `resume` continues a SUSPENDED lane instead of starting a cold one: the same Claude thread
    *  (`--resume`), the same worktree branch reattached, and the same saved-session key so the
    *  record is updated in place rather than duplicated. Single-session launches only — fan-out
    *  spawns siblings, and there is one thread to resume. */
   const handleLaunchSession = useCallback(async (cwd: string, config: SessionConfig, opts?: { roleId?: string; orchestrationNote?: string; focus?: boolean; resume?: { key: string; claudeSessionId: string; worktreeBranch?: string; worktreeBase?: string } }): Promise<TerminalTab[]> => {
-    // Write effort level to global settings (Claude Code reads it from there)
-    const prefs = await window.operator.folderPrefsLoad(cwd)
-    const globalFile = prefs.settingsFiles.find((f) => f.scope === 'global')
-    if (globalFile) {
-      await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: config.effortLevel })
-    }
+    // NO GLOBAL SETTINGS WRITE. This used to load the folder prefs and put `config.effortLevel`
+    // into `~/.claude/settings.json` before spawning — one app-wide file standing in for a per-lane
+    // choice, so launching six lanes at six efforts was last-write-wins across all of them (and the
+    // value it wrote, `normal`, was not even in the file's enum). The effort rides the lane's own
+    // `--effort` flag now; see lib/launch-args.
 
     // Resolve the project once (canonical repo root) — all fan-out agents of this launch,
     // worktrees included, belong to the same source project.
@@ -2321,6 +2351,7 @@ export function DashboardView() {
       const launchOptions: Record<string, unknown> = {}
       if (config.permissionMode !== 'default') launchOptions.permissionMode = config.permissionMode
       if (config.model) launchOptions.model = config.model
+      if (config.effortLevel) launchOptions.effort = config.effortLevel
       if (config.allowedTools) launchOptions.allowedTools = config.allowedTools
       // "Launch dev server" → ask the agent (single session only; fan-out worktrees would
       // collide on ports) to start it in the background on its reserved port, before any task.
@@ -2699,15 +2730,14 @@ export function DashboardView() {
         worktreeBase = undefined
       }
     }
-    if (saved.effortLevel) {
-      const fp = await window.operator.folderPrefsLoad(cwd)
-      const globalFile = fp.settingsFiles.find((f) => f.scope === 'global')
-      if (globalFile) await window.operator.folderPrefsSaveSettings(globalFile.path, { effortLevel: saved.effortLevel })
-    }
 
     const launchOptions: Record<string, unknown> = {}
     if (saved.permissionMode && saved.permissionMode !== 'default') launchOptions.permissionMode = saved.permissionMode
     if (saved.model) launchOptions.model = saved.model
+    // Same rule as the launch path: the lane's effort is its own flag, never a global settings
+    // write. `migrateEffort` because a saved row can predate the ladder fix.
+    const restoredEffort = migrateEffort(saved.effortLevel)
+    if (restoredEffort) launchOptions.effort = restoredEffort
     if (resume && saved.claudeSessionId) launchOptions.resumeSessionId = saved.claudeSessionId
 
     // Resolve the project (canonical repo root) — always, so an old saved session with no

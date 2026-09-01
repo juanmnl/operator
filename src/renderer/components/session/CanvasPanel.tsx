@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AgentSession, Role } from '../../../shared/types'
+import type { AgentSession, EffortLevel, Role } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
@@ -35,7 +35,7 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
   /** A human addressed this lane — resets its delivery hop budget. See ChatComposer. */
   onHumanSend?: (roleId?: string) => void
   onModelChange?: (model: string) => void
-  onEffortChange?: (effort: 'high' | 'normal' | 'low') => void
+  onEffortChange?: (effort: EffortLevel) => void
   /** PLACEMENT B of the code navigator. Rendered by the caller so the nav state — which is per
    *  SESSION and shared with the main-view placement — lives in one place rather than being
    *  duplicated on both sides of the layout. */

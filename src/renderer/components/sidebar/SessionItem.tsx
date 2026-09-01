@@ -5,6 +5,7 @@ import { StatusWave } from './StatusWave'
 import { sessionWaveStatus } from '../../lib/session-status'
 import { laneTextColor } from '../../lib/lane-color'
 import { ROW_INSET_L } from './rail-metrics'
+import { effortCode } from '../../lib/effort'
 
 interface SessionItemProps {
   session: AgentSession
@@ -290,7 +291,9 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         </span>
       )}
       {/* Effort only when it DEVIATES from the default (high) — an "H" on every row was noise;
-          a lone "N"/"L" flags the exception worth noticing. Also in the composer + roster. */}
+          a lone "L"/"M"/"XH" flags the exception worth noticing. Also in the composer + roster.
+          `effortCode`, not `effortLevel[0]`: the ladder has both `medium` and `max` on it, so the
+          first letter stopped identifying a level. */}
       {!editing && effortLevel && effortLevel !== 'high' && !(hovered && closable) && (
         <span
           title={`Effort: ${effortLevel}`}
@@ -303,7 +306,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
             textTransform: 'uppercase',
           }}
         >
-          {effortLevel[0]}
+          {effortCode(effortLevel)}
         </span>
       )}
       {!editing && shortcutIndex != null && !(hovered && closable) && (

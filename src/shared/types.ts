@@ -18,6 +18,20 @@ export interface GridUpdate {
   offset: number
 }
 
+/** Claude Code's reasoning-effort ladder, ascending. Two things about it are load-bearing:
+ *
+ *  1. `normal` IS NOT ON IT and never was. Operator used to write it, and `settings.json`'s
+ *     schema is `enum(["low","medium","high","xhigh"]).catch(undefined)` — an out-of-enum value
+ *     is dropped SILENTLY, so every lane that said "normal" ran at the CLI default instead.
+ *     `migrateEffort` in lib/effort maps the stored value to `medium`.
+ *  2. `max` is valid for the `--effort` FLAG and the `/effort` command, but NOT for the
+ *     settings.json enum — hence `SettingsEffortLevel` below and `settingsEffort()`'s clamp.
+ *
+ *  Verified against the installed CLI (2.1.257), not against the docs. */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** The subset `settings.json` accepts. Anything else is discarded on read, without an error. */
+export type SettingsEffortLevel = Exclude<EffortLevel, 'max'>
+
 export type SessionPhase = 'idle' | 'running' | 'compacting' | 'waiting'
 export type SessionStatus = 'active' | 'ended'
 
@@ -81,7 +95,7 @@ export interface AgentSession {
   /** Model alias this session was launched with (Operator-side; the transcript omits it). */
   model?: string
   /** Reasoning effort this session was launched with (Operator-side). */
-  effortLevel?: 'high' | 'normal' | 'low'
+  effortLevel?: EffortLevel
   /** Short summary derived from the first user prompt, shown as the default label. */
   summary?: string
   status: SessionStatus
@@ -127,7 +141,7 @@ export interface Role {
    *  nothing to override. Never read it directly for a launch; go through the resolver. */
   model?: string
   /** Absent = inherit, exactly as with `model`. */
-  effort?: 'high' | 'normal' | 'low'
+  effort?: EffortLevel
   permissionMode?: string
   /** Optional `.claude/agents` definition name to launch this lane as. */
   agentName?: string
@@ -195,7 +209,7 @@ export interface ProjectTask {
 /** Launch-time config for a single Claude Code session (model/effort/permissions/etc.) —
  *  built from a Role when launching a roster lane, or from a project's saved defaults. */
 export interface SessionConfig {
-  effortLevel: 'high' | 'normal' | 'low'
+  effortLevel: EffortLevel
   permissionMode: 'default' | 'auto' | 'bypassPermissions'
   model: string
   allowedTools: string
@@ -357,7 +371,7 @@ export interface Project {
    *  restore sites bump it; browsing into a project leaves it alone. Read it as "when this
    *  project last did work", never as "when you last looked at it". */
   lastActiveAt: string
-  defaults?: { model?: string; effortLevel?: 'high' | 'normal' | 'low'; permissionMode?: string }
+  defaults?: { model?: string; effortLevel?: EffortLevel; permissionMode?: string }
   /** Verification gate: shell command (e.g. "npm test") run in a lane's dir when its
    *  task completes. Empty/absent = gates off. */
   checkCommand?: string
@@ -515,7 +529,7 @@ export interface SavedSession {
   roleId?: string
   customName?: string
   model?: string
-  effortLevel?: 'high' | 'normal' | 'low'
+  effortLevel?: EffortLevel
   permissionMode?: string
   worktreeBranch?: string
   worktreeBase?: string
@@ -619,7 +633,7 @@ export interface ClaudeSandboxConfig {
 export interface ClaudeSettings {
   permissions?: ClaudePermissionRules
   hooks?: Record<string, ClaudeHookEntry[]>
-  effortLevel?: 'high' | 'normal' | 'low'
+  effortLevel?: SettingsEffortLevel
   sandbox?: ClaudeSandboxConfig
   enabledPlugins?: Record<string, boolean>
   deniedMcpServers?: string[]

@@ -232,7 +232,7 @@ describe('removeRoleFrom — what a lane deletion actually costs', () => {
   const project = (): Project => ({
     id: 'p', name: 'P', path: '/p', createdAt: 't', lastActiveAt: 't',
     roster: [
-      { id: 'operator', name: 'Operator', model: 'fable', effort: 'normal' },
+      { id: 'operator', name: 'Operator', model: 'fable', effort: 'medium' },
       { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', accent: '#5ac8fa', prompt: 'Investigate and report.' },
     ],
     tasks: [

@@ -37,9 +37,26 @@ describe('buildArgs', () => {
     expect(buildArgs({ initialPrompt: '   ' }, 'u')).toEqual(['--session-id', 'u'])
   })
 
+  // A LANE'S EFFORT IS A FLAG, not a global settings write. Before this, `buildArgs` never emitted
+  // `--effort` at all and the launch path put the level into `~/.claude/settings.json` instead —
+  // one app-wide file for a per-lane choice, so six lanes at six efforts were last-write-wins.
+  it('emits --effort when the launch resolves one', () => {
+    expect(buildArgs({ effort: 'xhigh' }, 'u')).toEqual(['--session-id', 'u', '--effort', 'xhigh'])
+  })
+
+  it('omits --effort when nothing resolved one', () => {
+    expect(buildArgs({}, 'u')).toEqual(['--session-id', 'u'])
+  })
+
+  // `max` is valid for the FLAG and invalid in settings.json's enum, which is exactly why the
+  // effort travels this way — nothing clamps it here.
+  it('passes max through untouched', () => {
+    expect(buildArgs({ effort: 'max' }, 'u')).toEqual(['--session-id', 'u', '--effort', 'max'])
+  })
+
   it('composes every option in order', () => {
-    expect(buildArgs({ model: 'opus', permissionMode: 'plan', initialPrompt: 'go' }, 'u')).toEqual([
-      '--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', 'go',
+    expect(buildArgs({ model: 'opus', effort: 'medium', permissionMode: 'plan', initialPrompt: 'go' }, 'u')).toEqual([
+      '--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', '--effort', 'medium', 'go',
     ])
   })
 })

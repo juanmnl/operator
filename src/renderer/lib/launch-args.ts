@@ -35,6 +35,11 @@ export function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): 
     else args.push('--permission-mode', String(o.permissionMode))
   }
   if (o.model) args.push('--model', String(o.model))
+  // A LANE'S EFFORT TRAVELS HERE, not in `~/.claude/settings.json`. The launch path used to write
+  // the level into the GLOBAL settings file before spawning, which made six lanes at six efforts
+  // last-write-wins across all of them — the global file is an app-wide default, not a per-lane
+  // channel. The flag takes the full ladder, `max` included (see lib/effort).
+  if (o.effort) args.push('--effort', String(o.effort))
   if (o.allowedTools) args.push('--allowedTools', ...String(o.allowedTools).split(/\s+/).filter(Boolean))
   if (o.initialPrompt && String(o.initialPrompt).trim()) args.push(String(o.initialPrompt).trim())
   return args
