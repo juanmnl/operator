@@ -2,6 +2,8 @@ import { Fragment, useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentSession, Project, Role } from '../../../shared/types'
 import { StatusWave, type WaveStatus } from './StatusWave'
 import { SessionItem } from './SessionItem'
+import { LaneMeta, LaneMetaSeam } from './LaneMeta'
+import { laneMetaRows } from '../../lib/lane-meta'
 import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
 import { byRailOrder, isOnRail } from '../../lib/project-shelf'
@@ -523,6 +525,7 @@ export function ProjectRail({
                     active={s.id === activeSessionId}
                     accent={accentOf?.(s)}
                     initial={initialFor(s)}
+                    effortLevel={s.terminalId ? effortLevels[s.terminalId] : null}
                     // The SAME drag the expanded row gets — one surface at two widths, so a
                     // gesture that worked at 264 and not at 70 would be two surfaces again.
                     drag={dragFor(s)}
@@ -863,10 +866,13 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
 
 /** One live agent, COLLAPSED. A 24px disc in the 36px member box, centred on the axis — the same
  *  disc, at the same x, that the expanded row carries. */
-function RailOrb({ session, active, accent, initial, drag, onSelect, onPickAccent }: {
+function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect, onPickAccent }: {
   session: AgentSession
   active: boolean
   accent?: string
+  /** Launch effort, from the same terminal-keyed map the expanded row reads — so the two widths
+   *  cannot disagree about a value neither of them observes. */
+  effortLevel?: string | null
   /** WHICH lane, in the disc. The collapsed strip has no other channel for it — and it is the
    *  same letter the expanded row draws, because the orb does not change meaning with the width. */
   initial?: string
@@ -882,6 +888,7 @@ function RailOrb({ session, active, accent, initial, drag, onSelect, onPickAccen
   const hoverCard = useHoverCard(`orb:${session.id}`)
   const [edge, setEdge] = useState<'before' | 'after' | null>(null)
   const label = sessionLabel({ session })
+  const meta = laneMetaRows(session, effortLevel)
   const status = waveStatusOf(session)
   return (
     <Fragment>
@@ -979,7 +986,14 @@ function RailOrb({ session, active, accent, initial, drag, onSelect, onPickAccen
           boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
           pointerEvents: 'none', fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1.35,
           color: 'var(--fg)', whiteSpace: 'nowrap',
-        }}>{label}</div>
+        }}>
+          {/* THIS is the width the ask was really about: collapsed, the disc is the whole lane,
+              and model/effort were unreachable without expanding. Same block, same data, same
+              provenance rules as the expanded row's card. */}
+          <div>{label}</div>
+          {meta.length > 0 && <LaneMetaSeam />}
+          <LaneMeta session={session} effortLevel={effortLevel} />
+        </div>
       )}
     </Fragment>
   )

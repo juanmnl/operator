@@ -207,21 +207,39 @@ const session = (o: Partial<AgentSession> & { id: string; terminalId: string }):
   ...o,
 } as AgentSession)
 
+// TWO MODELS PER LANE, and the fixture used to conflate them. `getSessions` is the TRANSCRIPT
+// observer: its `model` is read off the latest assistant message (`transcript.rs`), so it is a full
+// id — `claude-opus-5`, never the alias `opus`. The launch config is the alias, and it lives on the
+// SAVED session below. Spelling both as the same alias made the two indistinguishable, so the one
+// case worth showing — a lane answering as something other than what it was launched with — could
+// not be staged at all.
+//
+// `t1` is that case, and it is not invented: this fixture's own transcript carries `/model sonnet`
+// and "Set model to Sonnet 5" (see MOCK_TRANSCRIPT). A lane launched on `opus` that has been
+// switched in the terminal is exactly what the orb hover exists to reveal.
+const LAUNCH_MODEL: Record<string, string> = {
+  t0: 'fable',
+  t1: 'opus',
+  t2: 'sonnet',
+  // t3 launched on the account default — no Operator-side model at all, so the transcript's
+  // reading is the ONLY one there is.
+}
+
 export const MOCK_SESSIONS: AgentSession[] = [
-  session({ id: 's-op', terminalId: 't0', roleId: 'operator', model: 'fable', phase: 'waiting', summary: 'Coordinate the mobile fixes' }),
+  session({ id: 's-op', terminalId: 't0', roleId: 'operator', model: 'claude-fable-5-1', phase: 'waiting', summary: 'Coordinate the mobile fixes' }),
   // Carries effortLevel + permissionMode so the SessionToolbar's right cluster renders in
   // full (MCP badge · effort · permission · panel toggle) — the alignment of those four is
   // otherwise unverifiable in the harness.
-  session({ id: 's-code', terminalId: 't1', roleId: 'code', model: 'opus', phase: 'running', summary: 'Extract the dispatch router',
+  session({ id: 's-code', terminalId: 't1', roleId: 'code', model: 'claude-sonnet-5', phase: 'running', summary: 'Extract the dispatch router',
     effortLevel: 'high', permissionMode: 'bypassPermissions',
     todos: [{ content: 'Extract routeDispatch into lib/dispatch', status: 'in_progress' }, { content: 'Add unit tests', status: 'pending' }],
     usage: { input: 41200, output: 8300, cacheRead: 120400 } }),
-  session({ id: 's-res', terminalId: 't2', roleId: 'research', model: 'sonnet', phase: 'compacting', summary: 'Profile the settings list' }),
+  session({ id: 's-res', terminalId: 't2', roleId: 'research', model: 'claude-sonnet-5', phase: 'compacting', summary: 'Profile the settings list' }),
   // Second project, no lane (so the label ladder falls through to the summary) and a
   // summary that opens with the dev-server preamble — the row must read "Wire up the
   // booking form", never the instruction.
   session({
-    id: 's-enc', terminalId: 't3', model: 'sonnet', phase: 'running',
+    id: 's-enc', terminalId: 't3', model: 'claude-sonnet-5', phase: 'running',
     workingDirectory: SECOND_PATH, projectName: 'el-encanto', projectId: SECOND_ID,
     summary: `${DEV_PREAMBLE}\n\nWire up the booking form`,
   }),
@@ -234,7 +252,7 @@ const MOCK_TERMINALS = MOCK_SESSIONS.map((s) => ({
 
 // The solo project's ONE lane, actually running — the only shape that lands on a session.
 const SOLO_SESSIONS: AgentSession[] = [
-  session({ id: 's-solo', terminalId: 'ts0', roleId: 'operator', model: 'fable', phase: 'waiting',
+  session({ id: 's-solo', terminalId: 'ts0', roleId: 'operator', model: 'claude-fable-5-1', phase: 'waiting',
     workingDirectory: '/tmp/solo-demo', projectName: 'solo-demo', projectId: 'solo-demo-1',
     summary: 'Operating solo-demo' }),
 ]
@@ -242,6 +260,7 @@ const SOLO_TERMINALS = SOLO_SESSIONS.map((s) => ({ id: s.terminalId!, pid: 0, cw
 const SOLO_SAVED = SOLO_SESSIONS.map((s) => ({
   key: `key-${s.terminalId}`, cwd: s.workingDirectory, projectName: s.projectName,
   projectId: s.projectId, roleId: s.roleId, claudeSessionId: s.id, terminalId: s.terminalId,
+  model: 'fable', effortLevel: 'medium' as const,
   lastActiveAt: now,
 }))
 
@@ -258,7 +277,9 @@ const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
   projectName: s.projectName,
   projectId: s.projectId,
   roleId: s.roleId,
-  model: s.model,
+  // The ALIAS we launched with — see LAUNCH_MODEL. `s.model` is the transcript's reading and
+  // belongs on the observed side only.
+  model: LAUNCH_MODEL[s.terminalId!],
   effortLevel: s.effortLevel,
   claudeSessionId: s.id,
   terminalId: s.terminalId,

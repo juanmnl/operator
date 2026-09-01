@@ -6,6 +6,8 @@ import { sessionWaveStatus } from '../../lib/session-status'
 import { laneTextColor } from '../../lib/lane-color'
 import { ROW_INSET_L } from './rail-metrics'
 import { effortCode } from '../../lib/effort'
+import { LaneMeta, LaneMetaSeam } from './LaneMeta'
+import { laneMetaRows } from '../../lib/lane-meta'
 
 interface SessionItemProps {
   session: AgentSession
@@ -69,6 +71,10 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
   // cursor-leaves-the-window, plus the one-card-app-wide guarantee.
   const hover = useHoverCard(session.id)
   const { card, hovered } = hover
+  // Whether the card has anything BESIDES the task line to show. Computed here (not inside
+  // `LaneMeta`) because it also decides whether the card renders at all: a lane with no task and
+  // no known model would otherwise open an empty box.
+  const meta = laneMetaRows(session, effortLevel)
   const endHover = () => { hover.dismiss(); setConfirmingClose(false) }
 
   const commitRename = () => {
@@ -343,21 +349,31 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         </button>
       )}
       </div>
-      {/* Hover card — the lane's current/last task. Suppressed while renaming (the input
-          owns the row) and when there's nothing to say. */}
-      {card && currentTask && !editing && (
+      {/* Hover card — the lane's current/last task, and what it is running on. Suppressed while
+          renaming (the input owns the row) and when there's nothing to say at all.
+          THE TRIGGER IS THE ROW, not the orb alone. The user asked for the blob, and the blob is
+          inside the row: hovering it opens this card, so the ask is met. Narrowing the trigger to
+          the 24px disc would have BOUGHT nothing and COST the task line, which has been a
+          row-wide hover since it shipped — and a 24px target on a 36px row is a worse one. The
+          collapsed strip, where the orb IS the row, gets the same card from the same data. */}
+      {card && !editing && (currentTask || meta.length > 0) && (
         <div style={{
           position: 'fixed', top: card.top, left: card.left, zIndex: 60, maxWidth: 260,
           padding: '7px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-surface)',
           boxShadow: '0 4px 16px rgba(0,0,0,0.35), inset 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent)',
           pointerEvents: 'none', fontFamily: 'var(--font-mono)', lineHeight: 1.35,
         }}>
-          <div style={{
-            fontSize: 10.5, color: 'var(--fg-muted)',
-            display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          }}>
-            {currentTask}
-          </div>
+          {currentTask && (
+            <div style={{
+              fontSize: 10.5, color: 'var(--fg-muted)',
+              display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}>
+              {currentTask}
+            </div>
+          )}
+          {/* The seam only exists when it has something on both sides of it. */}
+          {currentTask && meta.length > 0 && <LaneMetaSeam />}
+          <LaneMeta session={session} effortLevel={effortLevel} />
         </div>
       )}
     </div>

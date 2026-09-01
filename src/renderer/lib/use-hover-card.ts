@@ -52,21 +52,38 @@ export function closeHoverCards(): void {
 // rail re-rendering mid-hover. They are installed once at module scope rather than per hovered
 // row, because "close everything" is not a per-row concern and per-row listeners were themselves
 // a way for a stranded card to end up with none.
-if (typeof window !== 'undefined') {
-  const close = () => closeHoverCards()
-  window.addEventListener('blur', close)
-  window.addEventListener('resize', close)
-  document.addEventListener('visibilitychange', close)
+/** The minimum of a `window`/`document` this needs, so a test can hand it recorders instead of
+ *  the real DOM. */
+export interface HoverCloseTargets {
+  win: Pick<Window, 'addEventListener'>
+  doc: Pick<Document, 'addEventListener'> & { documentElement: Pick<HTMLElement, 'addEventListener'> }
+}
+
+/** Install every "the pointer is no longer over a row" listener. EXPORTED so the wiring itself is
+ *  testable rather than only the reducer it feeds: the stuck-card screenshots were never a reducer
+ *  bug, they were a path that reached no listener, and a test that can only see `hoverCardReducer`
+ *  cannot tell that a path is missing. `close` is a parameter for the same reason. */
+export function installHoverCloseListeners(
+  { win, doc }: HoverCloseTargets,
+  close: () => void = closeHoverCards,
+): void {
+  win.addEventListener('blur', close)
+  win.addEventListener('resize', close)
+  doc.addEventListener('visibilitychange', close)
   // `mouseout` with a null relatedTarget is the reliable "pointer left the document" signal;
   // `mouseleave` on documentElement covers the browsers that prefer it.
-  document.addEventListener('mouseout', (e) => { if (!(e as MouseEvent).relatedTarget) close() })
-  document.documentElement.addEventListener('mouseleave', close)
+  doc.addEventListener('mouseout', (e) => { if (!(e as MouseEvent).relatedTarget) close() })
+  doc.documentElement.addEventListener('mouseleave', close)
   // Capture: the sidebar scroller's own scroll does not bubble, and a scroll is precisely the
   // event that moves a row out from under a cursor that never moved.
-  document.addEventListener('scroll', close, true)
+  doc.addEventListener('scroll', close, true)
   // Any keydown. Someone who has started typing is not reading a hover card, and this also
   // catches ⌘Tab-adjacent chords that never produce a blur.
-  document.addEventListener('keydown', close, true)
+  doc.addEventListener('keydown', close, true)
+}
+
+if (typeof window !== 'undefined') {
+  installHoverCloseListeners({ win: window, doc: document })
 }
 
 export interface HoverCard {

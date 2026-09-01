@@ -3025,7 +3025,16 @@ export function DashboardView() {
     // instant they act) wins over the transcript, which lags an assistant turn behind and
     // would otherwise revert a fresh /model switch. The transcript fills the blank for
     // account-default launches, and transcript CHANGES are synced into the tab below.
-    if (hookSession) return { ...hookSession, ...operatorFields, model: t.model ?? hookSession.model }
+    // `runningModel` is the transcript's OWN reading (latest assistant message) and is carried
+    // separately on purpose: the `model` merge below prefers the tab, so the observation would
+    // otherwise be erased by the very launch config it is worth comparing against. `<synthetic>`
+    // is the observer's placeholder, not a model — the same value the adopt-changes effect skips.
+    if (hookSession) return {
+      ...hookSession,
+      ...operatorFields,
+      model: t.model ?? hookSession.model,
+      runningModel: hookSession.model && !hookSession.model.startsWith('<') ? hookSession.model : undefined,
+    }
     return {
       id: `local-${t.id}`,
       agentId: 'claude-code',

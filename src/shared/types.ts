@@ -92,8 +92,15 @@ export interface AgentSession {
    *  a per-run `local-<terminalId>` for untracked sessions). Keys the per-session accent
    *  override, so a colour picked on a lane-less agent survives a relaunch. */
   savedKey?: string
-  /** Model alias this session was launched with (Operator-side; the transcript omits it). */
+  /** Model alias this session was launched with (Operator-side; the transcript omits it).
+   *  MERGED, not observed: the launch config wins here, so a lane launched on `opus` reads
+   *  "opus" whatever it is actually answering with. See `runningModel` for the observation. */
   model?: string
+  /** The model on the LATEST ASSISTANT MESSAGE, read off the transcript (`transcript.rs`'s
+   *  own `model` field) — the only reading of what this lane is actually running. Absent
+   *  until the first assistant turn, and kept BESIDE `model` rather than folded into it so a
+   *  readout can tell "running" apart from "what we asked for" instead of guessing. */
+  runningModel?: string
   /** Reasoning effort this session was launched with (Operator-side). */
   effortLevel?: EffortLevel
   /** Short summary derived from the first user prompt, shown as the default label. */
