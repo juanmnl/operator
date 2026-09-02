@@ -1,3 +1,111 @@
+# Handoff — 2026-09-01
+
+**`main` = `2a7157a`, pushed. 0.20.0 is PUBLISHED and LIVE** (tag `electron-v0.20.0`, run
+33571557155 green 5m30s). Verified past the green check: `operator-releases` `v0.20.0` is
+`draft:false`; `latest-mac.yml` serves **0.20.0** with sha512 (the Electron feed); swap
+`latest.json` serves **0.20.0** with a darwin-aarch64 **signature** (408 B); both updater assets
+return **HTTP 200** at full content-length. Every 0.19.x install will be offered it.
+
+Final gates on `main`: renderer **1042 pass / 33 pre-existing fail**, electron **426 / 0**,
+cargo **179 / 0**, root `tsc` + electron typecheck + `npm run build` all clean.
+
+**⚠ THE ONE THING TO DO FIRST: nothing in 0.20.0 has been GUI-verified.** No human has hovered a
+real orb or watched a lane launch with `--effort` in a real window. It is published anyway, on the
+user's explicit go-ahead. The effort change decides **how every agent starts** — exercise that
+first. Clean path back is `git revert 2a7157a` + a `0.20.1` tag.
+
+## What 0.20.0 was: Operator's model/effort handling had drifted from the CLI
+
+Audit trigger: "models have been updated from Claude, how is Operator handling this?"
+
+**Model handling was already right and needed nothing.** Launch passes an ALIAS
+(`launch-args.ts` → `--model fable|opus|sonnet|haiku`), so the CLI resolves the newest point
+release itself; labels and rates are family substring matches, so `claude-opus-5` /
+`claude-fable-5-1` resolve with no table entry; the transcript's dated id is display-only and is
+never fed back into a relaunch. **Do not "fix" this into a dated table.**
+
+Three commits, each verified by re-running the gates rather than reading the lane's report:
+
+1. **`ffb9253` — effort ladder.** Operator offered `high|normal|low`. Claude Code's settings schema
+   is `effortLevel: enum(["low","medium","high","xhigh"]).catch(undefined)` — **an out-of-enum value
+   is silently dropped**, no error. `normal` was never a level, so the `operator` and `design`
+   lanes (both shipped `effort:'normal'`) never ran at the effort the UI claimed. New
+   `src/renderer/lib/effort.ts` owns the ladder: `migrateEffort` (`normal`→`medium`, migrate not
+   re-default), `settingsEffort` (**the ONE** `max`→`xhigh` clamp), `effortCode` (L/M/H/XH/MAX —
+   `effortLevel[0]` stopped identifying once `medium` and `max` coexist). `ClaudeSettings.effortLevel`
+   is typed `SettingsEffortLevel`, so **the type system now refuses a `max` write to a settings file**.
+   Migration touched 26 stored values (6 roster pins, 5 project defaults, 15/53 saved sessions).
+   ⚠ **`--effort` accepts `max`; the settings.json enum does NOT.** That asymmetry is the trap.
+2. **`70da6a8` — orb hover.** Hovering a lane shows MODEL and EFFORT in both rail states, each row
+   labelled `RUNNING` or `AT LAUNCH`. `lib/lane-meta.ts` owns the provenance rules;
+   `LaneMeta.tsx` renders both widths from one component.
+3. **`1ed9af2` — usage rates.** `rates()` returns a **triple** (input, output, cacheRead) in
+   `electron/src/main/usage.ts` **and** `src-tauri/src/usage.rs` — keep them in step.
+   `sonnet-5` → 2/10 matched before bare `sonnet` → 3/15; `fable-5-1` cache reads 0.25 flat;
+   fast-mode Opus → 10/50. Bare-alias ambiguity resolves **pessimistically** (higher rate) on
+   purpose: under-reporting is the failure this module refuses.
+
+## Findings worth not re-deriving
+
+- **`usage.speed` IS persisted** by Claude Code on every real assistant record (confirmed
+  independently: 128,956 `standard`, 22 null = `<synthetic>`, **zero `fast`**, across 7,029 files).
+  Fast-mode billing is implemented and correct; it changes no number today.
+- **The money was in Sonnet, not Fable.** Replaying the whole corpus: −$538.83 of a $20,157.89
+  all-time total (−2.67%), all from 26,417 `claude-sonnet-5` rows. The Fable cache-read fix moves
+  **$0.00** today — every Fable row on disk is `claude-fable-5`, not `5.1`. It becomes worth
+  ~$7,825 the day 5.1 traffic appears (10.4B cache-read tokens on Fable).
+- **CI log line "Swap feed NOT published (dry run)" is NOT a failure.** It is a skipped step. The
+  swap feed still reads the new version because `releases/latest/download/` resolves to the newest
+  non-draft release. Don't chase it next release. Likewise `Operator.app.tar.gz.sig` is absent as a
+  *file* on operator-releases and should be — the signature lives inside `latest.json`.
+- **The user's `~/.claude/settings.json` now sticks.** The launch path no longer writes it at all.
+  It currently reads `effortLevel: "medium"` (set deliberately). Before this release, every lane
+  launch overwrote it — observed happening live mid-session.
+
+## Two things this session proved WRONG that were previously believed
+
+- **`session.model` is NOT the transcript's ground truth in the UI.** `DashboardView:3028` merges
+  `model: t.model ?? hookSession.model` — the **launch config wins**, deliberately (it stops a fresh
+  `/model` switch being reverted by a lagging transcript). The observation is carried separately as
+  `AgentSession.runningModel`. A brief asserted the opposite and would have shipped the launch
+  config labelled "RUNNING"; the lane checked and pushed back. **A brief's stated ground truth is a
+  hypothesis.**
+- **`project_hover_card_stuck`'s "the sidebar rail has none of it" is now stale.**
+  `lib/use-hover-card.ts` was rewritten around one `openFor` field; `installHoverCloseListeners()`
+  installs every dismiss path at module scope (`blur`, `resize`, `visibilitychange`, `mouseout`
+  guarded on null `relatedTarget`, `documentElement` `mouseleave`, capture `scroll`/`keydown`).
+  The untested gap was the **wiring**, not the reducer — a `close` event was proven to close a card,
+  but nothing proved a pointer leaving the window ever produced one.
+- **`MOCK_SESSIONS[].model` was lying** — it fed both the observer and the launch config with the
+  same alias, so the divergence case could not be staged and the mock asserted a reality that does
+  not exist (observer models are full ids, never aliases). Now split.
+
+## Open, non-blocking
+
+- **GUI verification of 0.20.0** (above) — the only real item.
+- **`HARD_FALLBACK.effort` deliberately left at `'high'`** (`model-config.ts`). It is reached only
+  by preset-less custom lanes; `xhigh` is Anthropic's *coding-specific* recommendation and this
+  fallback covers every lane type. One line to change if the user disagrees.
+- **Version drift, intentional:** root `package.json` + `src-tauri/*` are still **0.16.0** while the
+  app ships 0.20.0. The Electron workflow reads **only** `electron/package.json`; the Tauri
+  `build.yml` (`v*` tags) is the legacy path. Harmless; don't fix it inside a release commit.
+- **33 pre-existing renderer failures** in 5 files (`forgotten-projects`, `ghost-probe`,
+  `lane-accents`, `rail-foot`, `terminal-options`) — all jsdom/`localStorage` environment errors,
+  unrelated to any of this work. They were the baseline before and after.
+- CI Node-20 deprecation warnings on `actions/checkout@v4` / `setup-node@v4` (still green).
+
+## Where things are
+
+Briefs `dev/briefs/{effort-ladder-update,orb-hover-model-effort,usage-rates-refresh}.md`;
+results `dev/results/` same names. Lane branches `operator/101200` and
+`design/orb-hover-model-effort` are **merged and fast-forwarded into `main`** — linear history,
+no merge commits. Release notes live at `electron/release-notes/<VERSION>.md`; **CI hard-fails if
+the file is missing**, and the tag version must equal `electron/package.json`.
+
+---
+
+# Previous handoffs
+
 # Handoff — 2026-08-24
 
 **`main` = `d26dfce`, pushed. 0.17.1 is PUBLISHED and LIVE** (tag `electron-v0.17.1`, run
