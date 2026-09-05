@@ -10,7 +10,9 @@
 // from the start on every launch, reproducing the same (session_id, seq) pairs, so
 // `INSERT OR IGNORE` makes re-persisting a no-op — no duplicates.
 
-use crate::backend::{NarrationEntry, ToolBlock};
+use crate::backend::NarrationEntry;
+#[cfg(test)]
+use crate::backend::ToolBlock;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::path::Path;
@@ -195,6 +197,11 @@ impl ChatStore {
 
     /// All persisted entries for a session, in transcript order. Untouched by the reply path:
     /// replies live in their own table, so nothing has to be filtered back out here.
+    ///
+    /// TEST-ONLY since the reading panel was removed — nothing in the app reads a session's
+    /// history back. It stays as the read-back the append/purge/migration tests below assert
+    /// through, which is the only way to check what the write path actually stored.
+    #[cfg(test)]
     pub fn load(&self, session_id: &str) -> Vec<NarrationEntry> {
         let Ok(conn) = self.conn.lock() else { return Vec::new() };
         let Ok(mut stmt) = conn.prepare_cached(
@@ -238,7 +245,7 @@ const INJECTED_PREFIXES: [&str; 7] = [
 /// ONE-TIME cleanup of Claude Code's plumbing turns that were persisted before the parser
 /// learned to drop them (measured on a real store: 191 rows across 33 sessions).
 ///
-/// The renderer filters these anyway — `lib/chat-turns.isRenderableTurn` — so this is about the
+/// Nothing renders these anyway now that the reading panel is gone — so this is about the
 /// store, not about correctness on screen; both guards stay. Deleting them here means the rows
 /// stop being loaded, searched and shipped to the renderer on every session open.
 ///

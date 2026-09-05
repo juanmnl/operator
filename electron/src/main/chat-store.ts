@@ -71,7 +71,7 @@ export class ChatStore {
   /** ONE-TIME cleanup of Claude Code's plumbing turns that were persisted before the parser
    *  learned to drop them (measured on a real store: 191 rows across 33 sessions).
    *
-   *  The renderer filters these anyway (`lib/chat-turns.isRenderableTurn`), so this is about the
+   *  Nothing renders these anyway now that the reading panel is gone, so this is about the
    *  store rather than about correctness on screen — both guards stay. Deleting them here means
    *  the rows stop being loaded, searched and shipped to the renderer on every session open.
    *

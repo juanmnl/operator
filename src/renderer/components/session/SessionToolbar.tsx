@@ -20,7 +20,7 @@ function typeColor(type?: string): string {
 // `flexShrink: 0` or `nowrap`. Under width pressure (measured: ≤ ~780px) that squeezed the
 // badges until their text WRAPPED to two lines (a 36px-tall "2 MCP" beside a 20px "High")
 // and squashed the icon button to 17px wide, while the row's own space-between let the
-// localhost chip ride over the Console/Chat/Preview control.
+// localhost chip ride over the Console/Preview control.
 //
 // So: same height, contents centred by flex (not by line-height), nothing shrinks, nothing
 // wraps. The transparent 1px border keeps the bordered localhost chip exactly the same box
@@ -61,9 +61,9 @@ interface SessionToolbarProps {
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
-  /** Main-view segmented toggle: Console (terminal) · Chat · Preview. */
-  mainView?: 'terminal' | 'chat' | 'preview' | 'files'
-  onSelectMainView?: (v: 'terminal' | 'chat' | 'preview' | 'files') => void
+  /** Main-view segmented toggle: Console (terminal) · Preview. */
+  mainView?: 'terminal' | 'preview'
+  onSelectMainView?: (v: 'terminal' | 'preview') => void
   /** Right side panel (Plan / Diff) open state + toggle. */
   panelOpen?: boolean
   onTogglePanel?: () => void
@@ -133,7 +133,7 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
         borderBottom: '1px solid var(--border)',
         fontFamily: "var(--font-body)",
       }}>
-        {/* Left cluster: sidebar toggle · title · Console·Chat·Preview main-view toggle.
+        {/* Left cluster: sidebar toggle · title · Console·Preview main-view toggle.
             `overflow: hidden` is the second half of the collision fix: the right cluster
             never shrinks, so this side is the one that must give — and when even the
             ellipsised title has run out of room it clips instead of riding over the badges. */}
@@ -211,9 +211,9 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'no-drag',
           }}>
-            {/* The fourth segment, in the style the control already has — transparent track,
-                `--overlay-subtle` on the active one, `--accent` ink, no fill. */}
-            {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview'], ['files', 'Files']] as const).map(([v, label]) => {
+            {/* Transparent track, `--overlay-subtle` on the active segment, `--accent` ink,
+                no fill. */}
+            {([['terminal', 'Console'], ['preview', 'Preview']] as const).map(([v, label]) => {
               const activeSeg = v === mainView
               return (
                 <button
@@ -271,7 +271,7 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
 
           {/* MCP indicator — dropdown anchors to THIS badge (relative wrapper) so it drops
               directly beneath it, not the toolbar's far-right edge (which now holds the
-              Console/Chat/Preview segmented control). */}
+              Console/Preview segmented control). */}
           {mcpServers.length > 0 && (
             // `display: flex`, not the default block: an inline-flex chip inside a block
             // wrapper sits on that wrapper's text baseline, which added ~2px of descender

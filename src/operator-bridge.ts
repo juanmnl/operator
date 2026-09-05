@@ -19,7 +19,7 @@ import { isLightBackground } from './renderer/lib/terminal'
 import { spawnTerminalMode } from './renderer/lib/terminal-options'
 import { createWriteQueue, type WriteQueue } from './renderer/lib/write-queue'
 import type { QuitLane } from './renderer/lib/quit-guard'
-import type { GridUpdate, NarrationEntry, ProjectReply } from './shared/types'
+import type { GridUpdate, ProjectReply } from './shared/types'
 
 type Unsub = () => void
 
@@ -238,15 +238,10 @@ export function installBridge(): void {
       return () => { void p.then((f) => f()) }
     },
     getSessions: () => invoke('get_sessions'),
-    // Full durable chat history for a session (reading-panel answers) from the SQLite
-    // store — the whole conversation, not just the bounded tail in session:update.
-    chatHistory: (sessionId: string) => invoke<NarrationEntry[]>('chat_history', { id: sessionId }),
     // Every OPERATOR-REPLY posted to a project, oldest first. Read-only by design: replies are
     // written by the tailer alone (a lane posts one by emitting the sentinel into its own
     // transcript), so there is no write counterpart here.
     projectReplies: (projectId: string) => invoke<ProjectReply[]>('project_replies', { projectId }),
-    // Load a cached dropped-image (from NarrationEntry.images) as a data: URL for <img>.
-    imageDataUrl: (path: string) => invoke<string>('image_data_url', { path }),
     // Liveness ping for the backend stall watchdog: while the main thread runs, this
     // fires ~1/s; when it hangs, the pings stop and the backend recovers the webview.
     rendererHeartbeat: () => { void invoke('renderer_heartbeat') },
@@ -272,15 +267,6 @@ export function installBridge(): void {
     // exist; the reap itself refuses outright rather than reporting a silent success.
     worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
-    // NOT IMPLEMENTED on the Tauri backend. The code navigator's filesystem seam is an
-    // Electron-main module (`electron/src/main/files.ts`) and there is no Rust command behind it.
-    // These REJECT rather than answering emptily: an empty tree and an empty file are both
-    // plausible-looking lies, and a viewer that shows "no files here" is worse than one that says
-    // it cannot read them.
-    fileTree: async () => { throw new Error('The Tauri build has no file browser.') },
-    fileRead: async () => { throw new Error('The Tauri build has no file browser.') },
-    fileWatch: async () => {},
-    fileUnwatch: async () => {},
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
     // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two

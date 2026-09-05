@@ -36,13 +36,9 @@ import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
-import { FilesView } from '../components/files/FilesView'
-import { FilesPanel } from '../components/files/FilesPanel'
-import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { announcement, canAnnounceTo } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { CanvasPanel } from '../components/session/CanvasPanel'
-import { CanvasConversation } from '../components/session/CanvasConversation'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
@@ -116,13 +112,11 @@ const CONVERSATION_PANEL_W = 460
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
 // which surface it shows. Keyed by session id, persisted across reloads.
-// Main content area shows ONE of these (Console = the raw terminal). Chat + Preview can
-// fill the main window; Console is the live agent terminal (always mounted underneath).
-type MainView = 'terminal' | 'chat' | 'preview' | 'files'
-// The right side panel's tabs. Contextual to the main view: Chat is offered here when the
-// main view is Console or Preview (so you can watch the terminal / preview AND read the
-// conversation), but dropped in Chat view where it's already the main surface.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
+// Main content area shows ONE of these (Console = the raw terminal). Preview can fill the
+// main window; Console is the live agent terminal (always mounted underneath).
+type MainView = 'terminal' | 'preview'
+// The right side panel's tabs.
+type PanelTab = 'plan' | 'diff'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
@@ -257,17 +251,9 @@ export function DashboardView() {
   const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
   const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
-  // Contextual panel tabs: Chat appears after Diff in Console/Preview, not in Chat view.
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
-  // Files is offered in the panel EXCEPT when it is already the main view — the two placements
-  // are one reader, and a tab that duplicates the surface beside it is the thing §4's rule A
-  // exists to prevent, expressed in the tab set rather than only in the routing.
-  const panelTabs: PanelTab[] = mainView === 'chat'
-    ? ['plan', 'diff', 'files']
-    : mainView === 'files'
-      ? ['plan', 'diff', 'chat']
-      : ['plan', 'diff', 'chat', 'files']
+  const panelTabs: PanelTab[] = ['plan', 'diff']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
@@ -278,15 +264,6 @@ export function DashboardView() {
       return next
     })
   }, [])
-  // FILES NAV — per session, mirroring `sessionLayouts` (§9), and shared by BOTH placements.
-  // One reader, two windows onto it: the main view and the panel must agree about which file is
-  // open, or following a link in one and glancing at the other shows two different files.
-  const [filesNavs, setFilesNavs] = useState<Record<string, FilesNav>>({})
-  const filesNav = (activeSessionId && filesNavs[activeSessionId]) || EMPTY_NAV
-  const setFilesNav = useCallback((next: FilesNav) => {
-    setFilesNavs((prev) => (activeSessionIdRef.current ? { ...prev, [activeSessionIdRef.current]: next } : prev))
-  }, [])
-
   const selectMainView = useCallback((v: MainView) => patchLayout({ mainView: v }), [patchLayout])
   const selectPanelTab = useCallback((t: PanelTab) => patchLayout({ panelTab: t }), [patchLayout])
   // User-adjustable right side-panel width (drag handle on its left edge), persisted.
@@ -315,12 +292,6 @@ export function DashboardView() {
   const togglePanel = useCallback(() => {
     patchLayout({ panelOpen: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.panelOpen : false) })
   }, [patchLayout, sessionLayouts])
-  // ⌘J flips the main view between Console (terminal) and Chat.
-  const toggleChat = useCallback(() => {
-    const cur = activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.mainView : undefined
-    patchLayout({ mainView: cur === 'chat' ? 'terminal' : 'chat' })
-  }, [patchLayout, sessionLayouts])
-
   // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
   // footer. `shellStarted` keeps it MOUNTED after first open (so the shell +
   // scrollback survive close→reopen); `shellOpen` slides it up/down.
@@ -2509,19 +2480,6 @@ export function DashboardView() {
   }, [handleLaunchSession, markTasksRunning])
   launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
 
-  /** A HUMAN just addressed a lane from the chat composer. The delivery brakes' hop budget is
-   *  restored by a human message and by nothing else — `exhausted` has no timer, and a lane that
-   *  hit the chain limit is barred from SENDING as well as receiving, so without this a lane you
-   *  are actively talking to stays silently unable to answer anyone until the app restarts.
-   *
-   *  `dispatchToRole` was the only caller, and it is reached only from the board's Send → and
-   *  Start all. That is the right home for the reset; it was never a sufficient SET of callers —
-   *  the chat composer is where a human actually talks to a lane. */
-  const handleHumanSend = useCallback((roleId?: string) => {
-    if (!roleId) return
-    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, roleId)
-  }, [])
-
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
     const tab = terminals.find((t) => t.id === terminalId)
@@ -3590,9 +3548,6 @@ export function DashboardView() {
       } else if (e.key === 'b' || e.key === 'B') {
         e.preventDefault()
         toggleSidebar()
-      } else if (e.key === 'j' || e.key === 'J') {
-        e.preventDefault()
-        toggleChat()
       } else if (e.key === 'e' || e.key === 'E') {
         // Quick-switch the Preview between Interact and Annotate.
         e.preventDefault()
@@ -3628,7 +3583,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
 
   // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
   // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise
@@ -3738,14 +3693,6 @@ export function DashboardView() {
       }))
     }
   }, [sessions])
-
-  // Persist a chat-driven model/effort change onto the active session's tab (so it survives a
-  // tab switch and is written into the durable SavedSession). Keyed by the active terminalId.
-  const patchActiveTerminal = useCallback((patch: Partial<TerminalTab>) => {
-    const tid = activeSession?.terminalId
-    if (!tid) return
-    setTerminals((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
-  }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
   const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
@@ -3977,8 +3924,7 @@ export function DashboardView() {
         hint,
         run: () => selectMainView(v),
       })
-      view('terminal', 'Show Console', '⌘J')
-      view('chat', 'Show Chat', '⌘J')
+      view('terminal', 'Show Console')
       view('preview', 'Show Preview')
       actions.push(
         { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff)', run: togglePanel },
@@ -4594,48 +4540,18 @@ export function DashboardView() {
               </div>
             ))}
 
-            {/* Main-view overlays — Chat / Preview cover the (still-mounted, still-sized)
-                terminal in the SAME area. OVERLAYING it (rather than display:none-ing) means
-                the terminal never resizes on a Console⇄Chat⇄Preview switch, so it can't trip
-                the ghostty resize/render hang. Hidden while reviewing a diff / viewing activity. */}
+            {/* Main-view overlay — Preview covers the (still-mounted, still-sized) terminal in
+                the SAME area. OVERLAYING it (rather than display:none-ing) means the terminal
+                never resizes on a Console⇄Preview switch, so it can't trip the ghostty
+                resize/render hang. Hidden while reviewing a diff / viewing activity. */}
             {mainView !== 'terminal' && activeSession
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId && (
               // A FLEX COLUMN, for the same reason the panel body is one: the surfaces mounted
               // here ask for their height with `flex: 1`, and a plain block gives them nothing —
-              // they size to their content, overflow this box, and get clipped, which is what
-              // made Files unscrollable in 0.18.0. Column keeps full-width stretch, so Chat and
-              // Preview lay out exactly as they did.
+              // they size to their content, overflow this box, and get clipped. Column keeps
+              // full-width stretch, so Preview lays out exactly as it did.
               <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
-                {mainView === 'chat' && (
-                  <CanvasConversation
-                    session={activeSession}
-                    role={roleOf(activeSession)}
-                    customName={customNames[activeSession.id]}
-                    accent={accentOf(activeSession)}
-                    onHumanSend={handleHumanSend}
-                    onModelChange={(m) => patchActiveTerminal({ model: m })}
-                    onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
-                  />
-                )}
-                {/* PLACEMENT A (§2). The lane's worktree is `tab.cwd`; `tab.sourceCwd` is the
-                    project checkout the root switch offers. `onAsk` is the app's own answer to
-                    "I want to change this" — it hands the line to the lane through the same
-                    `submitQueue` the Plan tab's "Send to agent" uses. */}
-                {mainView === 'files' && (() => {
-                  const tab = terminals.find((t) => t.id === activeTerminalId)
-                  return (
-                    <FilesView
-                      laneRoot={tab?.cwd ?? ''}
-                      projectRoot={tab?.sourceCwd}
-                      nav={filesNav}
-                      onNav={setFilesNav}
-                      onAsk={activeSession.terminalId
-                        ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
-                        : undefined}
-                    />
-                  )
-                })()}
                 {mainView === 'preview' && (() => {
                   // The reserved port is only the starting hint — AppPreviewPanel asks the
                   // backend which ports this session is ACTUALLY serving on and picks (or
@@ -4766,30 +4682,9 @@ export function DashboardView() {
           />
           <CanvasPanel
             session={activeSession}
-            role={activeSession ? roleOf(activeSession) : undefined}
-            customName={activeSession ? customNames[activeSession.id] : undefined}
-            accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
-
-            filesTab={(() => {
-              const tab = terminals.find((t) => t.id === activeTerminalId)
-              return (
-                <FilesPanel
-                  laneRoot={tab?.cwd ?? ''}
-                  projectRoot={tab?.sourceCwd}
-                  nav={filesNav}
-                  onNav={setFilesNav}
-                  onAsk={activeSession?.terminalId
-                    ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
-                    : undefined}
-                />
-              )
-            })()}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
-            onHumanSend={handleHumanSend}
-            onModelChange={(m) => patchActiveTerminal({ model: m })}
-            onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
           />
         </div>
       )}

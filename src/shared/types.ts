@@ -297,29 +297,6 @@ export interface SessionPort {
   claimedBy?: string
 }
 
-/** One entry in a lazily-read directory listing. */
-export interface TreeEntry {
-  /** Repo-relative, `/`-separated. */
-  path: string
-  name: string
-  dir: boolean
-  /** Bytes, for files only. */
-  size?: number
-}
-
-/** A file read for display. Never a refusal: too big truncates, binary reports itself. */
-export interface FileContent {
-  path: string
-  text: string
-  /** The TRUE line count, even when `text` is truncated. */
-  lines: number
-  bytes: number
-  truncated: boolean
-  binary: boolean
-  /** A `@codemirror/language-data` language NAME, or null for plain text. */
-  language: string | null
-}
-
 /** How a worktree directory was classified by the reaper. See
  *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
 export type ReapClass =
@@ -584,7 +561,7 @@ export interface NarrationEntry {
   kind: 'text' | 'thinking' | 'user' | 'tool' | 'queued'
   text: string
   timestamp: string
-  /** Cache-file paths for images the user dropped into this turn (load via imageDataUrl). */
+  /** Cache-file paths for images the user dropped into this turn. */
   images?: string[]
   /** Set only on `kind: 'tool'`. Absent on every entry written before this existed. */
   tool?: ToolBlock

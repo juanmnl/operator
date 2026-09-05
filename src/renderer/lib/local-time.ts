@@ -21,9 +21,9 @@
  *  midnight, where `hour12: false` renders `24:00` under some ICU versions. Same platform
  *  conversion, same DST handling, one fewer edge case.
  *
- *  This is a deliberate small divergence from `SessionInfoBar` / `SessionActivityView` /
- *  `CanvasConversation`, which pass only `{hour, minute}` and therefore follow the locale into
- *  12-hour time ("05:12 PM"). Those surfaces are prose-adjacent and can afford it; the channel and
+ *  This is a deliberate small divergence from `SessionInfoBar` / `SessionActivityView`,
+ *  which pass only `{hour, minute}` and therefore follow the locale into 12-hour time
+ *  ("05:12 PM"). Those surfaces are prose-adjacent and can afford it; the channel and
  *  the dispatch log are dense mono columns whose current look is 24h, and the brief keeps it. */
 export function localTime(iso: string, timeZone?: string): string {
   const d = new Date(iso)

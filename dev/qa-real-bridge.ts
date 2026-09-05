@@ -69,10 +69,6 @@ const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
   lastActiveAt: now,
 }))
 
-const CHAT_BY_ID: Record<string, unknown[]> = Object.fromEntries(
-  realFixture.sessions.map((s) => [s.id, s.messages]),
-)
-
 export function installRealBridge() {
   try {
     localStorage.setItem('operator.projects', JSON.stringify([REAL_PROJECT]))
@@ -95,8 +91,6 @@ export function installRealBridge() {
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     getSessions: async () => MOCK_SESSIONS,
-    chatHistory: async (id: string) => CHAT_BY_ID[id] ?? [],
-    imageDataUrl: async () => '',
     terminalList: async () => MOCK_TERMINALS,
     terminalHistory: async () => '',
     getDevPorts: async () => ({}),

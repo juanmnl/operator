@@ -21,7 +21,6 @@ import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
 import { reconcileAtBoot, reapOnQuit } from './worktree-reap'
-import { stopAllWatching } from './files'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 
@@ -171,8 +170,6 @@ function teardown(): Promise<void> {
     }
     chat?.close()
     artifacts?.close()
-    // An FSEvents stream is a real OS resource, and the code navigator opens one per root.
-    stopAllWatching()
     stopTrayAnim?.()
     stopTrayAnim = null
     tray?.destroy()

@@ -94,7 +94,7 @@ describe('the five existing drop targets keep working unchanged', () => {
     root.appendChild(target)
     let sawDragOver = 0
     let sawDrop = 0
-    // What ChatComposer/TerminalPane/MoodboardPanel do: claim the drag on dragover.
+    // What TerminalPane/MoodboardPanel do: claim the drag on dragover.
     target.addEventListener('dragover', (e) => {
       sawDragOver++
       e.preventDefault()

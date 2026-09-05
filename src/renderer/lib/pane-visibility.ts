@@ -1,6 +1,6 @@
 // WHICH TERMINAL PANE PAINTS, and why "the active one, always" was wrong under Chromium.
 //
-// The panes stay mounted and full-size across a Console⇄Chat⇄Preview switch — overlaying them
+// The panes stay mounted and full-size across a Console⇄Preview switch — overlaying them
 // rather than unmounting is what keeps the terminal from ever resizing, which is the invariant
 // that avoids the ghostty resize/render hang. The overlay was assumed to HIDE what it covers.
 //
@@ -14,10 +14,10 @@
 // `visibility: hidden` and NOT `display: none`, deliberately — a hidden box still has layout, so
 // the pane keeps its size and xterm is never told the viewport changed.
 
-export type MainView = 'terminal' | 'chat' | 'preview' | 'files'
+export type MainView = 'terminal' | 'preview'
 
 /** `visibility` for one lane's pane. `mainView` is the overlay state: anything but `terminal`
- *  means Chat or Preview is covering the area. */
+ *  means Preview is covering the area. */
 export function paneVisibility(paneId: string, activePaneId: string | null, mainView: MainView): 'visible' | 'hidden' {
   if (paneId !== activePaneId) return 'hidden'
   return mainView === 'terminal' ? 'visible' : 'hidden'

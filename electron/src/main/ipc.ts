@@ -8,7 +8,7 @@ import { BrowserWindow, dialog, ipcMain, shell, app, nativeImage } from 'electro
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-api'
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
@@ -27,7 +27,6 @@ import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
-import * as files from './files'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -37,11 +36,6 @@ import type { Project } from '../../../src/shared/types'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
-}
-
-const IMAGE_MIME: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
 }
 
 export interface Deps {
@@ -156,23 +150,10 @@ export function registerIpc(d: Deps): void {
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
     skillsCatalog: (projectPath) => skillsCatalog(String(projectPath ?? '')),
-    // The read-only code navigator's seam. EVERY one of these rejects a path that escapes its
-    // root after canonicalisation — the only new attack surface the feature opens, and the check
-    // lives in `files.ts` next to the walk it guards rather than here.
-    fileTree: (root, dir, showIgnored) => files.fileTree(String(root), String(dir ?? ''), showIgnored === true),
-    fileRead: (root, path) => files.fileRead(String(root), String(path)),
-    fileWatch: async (root) => {
-      const w = d.getWindow()
-      files.beginWatching(String(root), (changedRoot, paths) => {
-        if (w && !w.isDestroyed()) broadcast(w, 'onFileChange', changedRoot, paths)
-      })
-    },
-    fileUnwatch: async (root) => { files.endWatching(String(root)) },
     sessionPorts: async (id) => d.terminals.sessionPorts(id),
 
     // --- sessions, chat, artifacts -----------------------------------------------------
     getSessions: async () => d.transcript.sessions(),
-    chatHistory: async (sessionId) => d.chat.load(sessionId),
     projectReplies: async (projectId) => d.chat.replies(projectId),
     artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
     // The lifecycle: `written → delivered`. Two facts, two calls — stored, and shown. There was a
@@ -270,11 +251,6 @@ export function registerIpc(d: Deps): void {
       const file = join(dir, `pasted-${Date.now()}.${ext.replace(/^\./, '')}`)
       await writeFile(file, Buffer.from(dataB64, 'base64'))
       return file
-    },
-    imageDataUrl: async (path) => {
-      const mime = IMAGE_MIME[extname(path).toLowerCase()]
-      if (!mime) return ''
-      try { return `data:${mime};base64,${(await readFile(path)).toString('base64')}` } catch { return '' }
     },
     // THE APP'S version, not Electron's. `app.getVersion()` reads the running bundle's
     // Info.plist — right when packaged, but under `electron .` it is Electron's own and the

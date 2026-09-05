@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import type { ReactNode } from 'react'
 import { useDismiss } from '../lib/use-dismiss'
 
-// ONE popover menu, shared. It was private to ChatComposer; the channel composer needs the same
+// ONE popover menu, shared. It was private to a session composer; the channel composer needs the same
 // "pick one of these" affordance for its send target, and a second implementation of a menu is how
 // an app ends up with two menus that drift. Positioned `absolute` against the nearest positioned
 // ancestor and opening UPWARD (`bottom: calc(100% - 6px)`), because both callers sit at the foot

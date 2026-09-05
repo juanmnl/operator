@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, TreeEntry, FileContent, SessionPort } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -29,11 +29,8 @@ declare global {
       /** A lane posted `OPERATOR-REPLY [to] text`. Already persisted by the tailer when this fires. */
       onOrchestratorReply?: (callback: (r: OperatorReply) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
-      /** Full durable chat history (reading-panel answers) for a session, from SQLite. */
-      chatHistory: (sessionId: string) => Promise<NarrationEntry[]>
       /** Every reply posted to a project, oldest first. Read-only — see the bridge. */
       projectReplies?: (projectId: string) => Promise<ProjectReply[]>
-      imageDataUrl: (path: string) => Promise<string>
       rendererHeartbeat: () => void
       /** `grid` echoes back which renderer this session was actually spawned with, so the
        *  caller records what was SENT rather than re-reading the pref a second time (which a
@@ -123,17 +120,6 @@ declare global {
       /** Every skill Claude Code would load for this project, walked off disk (three roots).
        *  Read-only: nothing here writes a skill's state. Pass '' for the global view. */
       skillsCatalog: (projectPath: string) => Promise<SkillsCatalog>
-      /** One directory's immediate children. Lazy — call again per expand. READ-ONLY, and every
-       *  path is rejected if it escapes `root` after canonicalisation. */
-      fileTree: (root: string, dir: string, showIgnored?: boolean) => Promise<TreeEntry[]>
-      /** Read a file for display. Same path guard. */
-      fileRead: (root: string, path: string) => Promise<FileContent>
-      /** Start/stop the recursive watcher on a root. Refcounted in main — both placements read
-       *  the same worktree and must not open two FSEvents streams over it. */
-      fileWatch: (root: string) => Promise<void>
-      fileUnwatch: (root: string) => Promise<void>
-      /** Coalesced, ignore-filtered change notifications for a watched root. */
-      onFileChange?: (cb: (root: string, paths: string[]) => void) => () => void
       /** Download progress for an update in flight — percent, and the byte counts behind it. */
       onUpdateProgress?: (cb: (percent: number, transferred: number, total: number) => void) => () => void
       /** The REAL message when an update fails. Everything used to end at `console.error`, which

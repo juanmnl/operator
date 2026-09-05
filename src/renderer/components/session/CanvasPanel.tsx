@@ -1,20 +1,17 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import type { AgentSession, EffortLevel, Role } from '../../../shared/types'
+import { useEffect, useState } from 'react'
+import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
-import { CanvasConversation } from './CanvasConversation'
 import { submitQueue } from '../../lib/submit-queue'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
 
 // The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
-// is CONTEXTUAL to the main view (passed in as `tabs`): Plan + Diff always, plus Chat when the
-// main view is Console or Preview (so you can watch the terminal/preview AND read the
-// conversation). Project-level surfaces (Agents roster, Moodboard) live in the ProjectView, not
-// here. The active tab is owned per session by DashboardView.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
+// is passed in as `tabs`. Project-level surfaces (Agents roster, Moodboard) live in the
+// ProjectView, not here. The active tab is owned per session by DashboardView.
+type PanelTab = 'plan' | 'diff'
 
-const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff', chat: 'Chat', files: 'Files' }
+const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff' }
 
 // The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
 // action can sit in the shared actions footer below. Persisted per session.
@@ -23,23 +20,11 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, role, customName, accent, tabs, mode, onSelectMode, onHumanSend, onModelChange, onEffortChange, filesTab }: {
+export function CanvasPanel({ session, tabs, mode, onSelectMode }: {
   session?: AgentSession
-  /** Lane identity for the Chat tab — the same name and colour the sidebar gives it. */
-  role?: Role
-  customName?: string
-  accent?: string
   tabs: PanelTab[]
   mode: PanelTab
   onSelectMode: (m: PanelTab) => void
-  /** A human addressed this lane — resets its delivery hop budget. See ChatComposer. */
-  onHumanSend?: (roleId?: string) => void
-  onModelChange?: (model: string) => void
-  onEffortChange?: (effort: EffortLevel) => void
-  /** PLACEMENT B of the code navigator. Rendered by the caller so the nav state — which is per
-   *  SESSION and shared with the main-view placement — lives in one place rather than being
-   *  duplicated on both sides of the layout. */
-  filesTab?: ReactNode
 }) {
   const select = onSelectMode
 
@@ -105,8 +90,6 @@ export function CanvasPanel({ session, role, customName, accent, tabs, mode, onS
           />
         )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
-        {mode === 'chat' && <CanvasConversation session={session} role={role} customName={customName} accent={accent} onHumanSend={onHumanSend} onModelChange={onModelChange} onEffortChange={onEffortChange} />}
-        {mode === 'files' && filesTab}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the
