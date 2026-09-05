@@ -27,3 +27,34 @@ export async function isPortLive(port: number): Promise<boolean> {
   })
   return (await probe('127.0.0.1')) || (await probe('::1'))
 }
+
+/** Can WE bind this port, on both loopbacks?
+ *
+ *  The other half of the pair, and not the same question as `isPortLive`. A connect() answers
+ *  "is something accepting connections here"; a bind() answers "could I take this port", which is
+ *  what an allocator has to know. They disagree in the case that matters: a socket bound and
+ *  listening with no accept loop, or bound to one loopback only, answers no to a connect on the
+ *  other while still making the port unusable.
+ *
+ *  BOTH families, mirroring `port_free` in lib.rs, and for the reason recorded there: an orphan
+ *  holding only `[::1]` leaves the v4 bind succeeding, Operator calls the port free, and the
+ *  Preview — which resolves `localhost` to `[::1]` — then loads the orphan's server. IPv6
+ *  loopback is always present on macOS, this app's only target, so a failure there is a busy
+ *  port and not a missing stack.
+ *
+ *  Each listener is closed immediately. The window between this returning true and the lane's
+ *  own server binding is real and unavoidable — the same race the Rust side has always had — but
+ *  it is milliseconds against a port that has been held for days, which is the actual failure. */
+export async function isPortFree(port: number): Promise<boolean> {
+  const { createServer } = await import('node:net')
+  const canBind = (host: string) => new Promise<boolean>((resolve) => {
+    const srv = createServer()
+    // A failed listen never bound, so there is nothing to close — `close()` on a server that is
+    // not running emits its own error and would take the answer with it.
+    srv.once('error', () => resolve(false))
+    // `exclusive` so this cannot succeed by SHARING the port with a listener in another process
+    // via SO_REUSEPORT, which would report an occupied port as free.
+    srv.listen({ port, host, exclusive: true }, () => srv.close(() => resolve(true)))
+  })
+  return (await canBind('127.0.0.1')) && (await canBind('::1'))
+}

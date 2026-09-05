@@ -116,7 +116,7 @@ export function registerIpc(d: Deps): void {
       // surface or a renderer change. That is what makes S3 the first step where the feature
       // does something while adding no UI at all.
       const layers = await projectConfig(String(o.projectId ?? ''))
-      const spawned = d.terminals.spawn({
+      const spawned = await d.terminals.spawn({
         cwd: target,
         args: buildArgs(o, sessionId),
         sessionId,
