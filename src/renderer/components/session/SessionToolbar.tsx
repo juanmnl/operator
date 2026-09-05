@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 import type { EffortLevel, McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
+import { PopMenu } from '../PopMenu'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
+import { EFFORT_OPTIONS } from '../../lib/effort'
+import { ROSTER_MODELS, modelFamilyLabel } from '../../lib/roster'
+import { effortCommand, modelCommand, normalizeModelId } from '../../lib/lane-tuning'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -57,7 +61,17 @@ interface SessionToolbarProps {
   /** Port sniffed from the session's actual dev-server banner; wins over the
    *  allocated port since the project often ignores OPERATOR_DEV_PORT. */
   detectedDevPort?: number
+  /** THE TUNING PAIR. Per-lane model + effort is the job this app exists for — approach the
+   *  plan's limits without hitting them — so the two chips that set them are live controls here,
+   *  not read-outs. They were the composer's pills until the Chat view was removed; the toolbar
+   *  is where they went, because it is the one surface every session always has. */
   effortLevel?: EffortLevel | null
+  /** Alias or full transcript id; the chip renders the family label either way. */
+  model?: string | null
+  /** Persist the pick back onto the session so the chip survives a tab switch. Absent = the
+   *  chips render as static badges, which is what a lane with no live pty gets. */
+  onModelChange?: (model: string) => void
+  onEffortChange?: (effort: EffortLevel) => void
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
@@ -72,11 +86,24 @@ interface SessionToolbarProps {
   onToggleSidebar?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
+  // Seeded from the lane's launch config, then tracking the user's own picks. Local state and
+  // not the prop alone, because the pty write and the transcript that confirms it are a turn
+  // apart — a chip that waited for the round trip would sit on the old value while you looked
+  // at it.
+  const [model, setModel] = useState<string | null>(modelProp ?? null)
+  const [menu, setMenu] = useState<'model' | 'effort' | null>(null)
+  // "Other…" — a free-typed id for a tier the CLI accepts before Operator has a preset for it.
+  // The listed aliases never need it: Claude Code resolves `opus`/`sonnet`/… to the current
+  // point release on its own, so a routine version bump costs us nothing.
+  const [customModel, setCustomModel] = useState(false)
+  const [customModelId, setCustomModelId] = useState('')
+  // Tuning writes to a pty. Without one there is nothing to tune, and the chips stay read-outs.
+  const tunable = !!terminalId && !!onEffortChange
 
   useEffect(() => {
     // Only read from disk if no prop was provided
@@ -102,6 +129,40 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
   useEffect(() => {
     if (effortLevelProp) setEffortLevel(effortLevelProp)
   }, [effortLevelProp])
+
+  // Follow the session's model as it settles: the first transcript report backfills a launch
+  // that took the account default, and a `/model` typed straight into the terminal arrives the
+  // same way. A chip pick round-trips through this same prop, so following it never fights the
+  // user's own choice.
+  useEffect(() => {
+    if (modelProp) setModel(modelProp)
+  }, [modelProp])
+
+  // Drop the custom-id draft whenever the model menu is not the open one — covers every close
+  // path (pick, outside click, chip toggle, Escape) in one place instead of four.
+  useEffect(() => {
+    if (menu !== 'model') { setCustomModel(false); setCustomModelId('') }
+  }, [menu])
+
+  const pickEffort = (level: EffortLevel) => {
+    setEffortLevel(level)
+    if (terminalId) window.operator.terminalWrite(terminalId, effortCommand(level))
+    onEffortChange?.(level)
+  }
+
+  const pickModel = (id: string) => {
+    setModel(id)
+    if (terminalId) window.operator.terminalWrite(terminalId, modelCommand(id))
+    onModelChange?.(id)
+  }
+
+  // A hand-typed id goes out exactly like a preset, once it survives the guard. A refusal
+  // closes the menu without sending — see lib/lane-tuning for what it refuses and why.
+  const commitCustomModel = () => {
+    const id = normalizeModelId(customModelId)
+    setMenu(null)
+    if (id) pickModel(id)
+  }
 
   // A worktree's folder is named after its branch (operator-990540 ↔
   // operator/990540), so showing both the project name and the branch reads as
@@ -298,8 +359,89 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             </div>
           )}
 
-          {/* Effort level badge */}
-          {effortLevel && (
+          {/* THE TUNING PAIR — model, then effort, in the order you reach for them: the model
+              is the big lever (a different rate per token) and the effort is the trim. Both are
+              per LANE, so five lanes can sit at five different points against one plan.
+
+              A chip with no live pty behind it stays a badge, exactly as it rendered before —
+              nothing to write to, so nothing to click. */}
+          {tunable ? (
+            <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+              <button
+                onClick={() => setMenu(menu === 'model' ? null : 'model')}
+                title="Model for this lane — sends /model to its terminal"
+                style={{
+                  ...chipBase,
+                  background: menu === 'model' ? 'var(--overlay-subtle)' : 'transparent',
+                  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                }}
+              >
+                {model ? modelFamilyLabel(model) : 'Model'}
+              </button>
+              {menu === 'model' && (
+                <PopMenu
+                  title="Model"
+                  placement="down"
+                  onClose={() => setMenu(null)}
+                  items={[
+                    ...ROSTER_MODELS.map((m) => ({
+                      key: m.id, label: m.label, active: m.id === model,
+                      onClick: () => pickModel(m.id),
+                    })),
+                    { key: 'other', label: 'Other…', keepOpen: true, onClick: () => setCustomModel(true) },
+                  ]}
+                  footer={customModel && (
+                    <div style={{ padding: '4px 12px 10px' }}>
+                      <input
+                        autoFocus
+                        value={customModelId}
+                        onChange={(e) => setCustomModelId(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') commitCustomModel() }}
+                        onBlur={commitCustomModel}
+                        placeholder="model id or alias"
+                        style={{
+                          width: '100%', boxSizing: 'border-box', padding: '5px 7px',
+                          borderRadius: 6, border: '1px solid var(--border)',
+                          background: 'transparent', color: 'var(--fg)', outline: 'none',
+                          fontFamily: 'var(--font-mono)', fontSize: 11,
+                        }}
+                      />
+                    </div>
+                  )}
+                />
+              )}
+            </div>
+          ) : model && (
+            <span style={{ ...chipBase, color: 'var(--fg-muted)' }}>{modelFamilyLabel(model)}</span>
+          )}
+
+          {tunable ? (
+            <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+              <button
+                onClick={() => setMenu(menu === 'effort' ? null : 'effort')}
+                title="Reasoning effort for this lane — sends /effort to its terminal"
+                style={{
+                  ...chipBase,
+                  background: menu === 'effort' ? 'var(--overlay-subtle)' : 'transparent',
+                  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                  textTransform: effortLevel ? 'capitalize' : 'none',
+                }}
+              >
+                {effortLevel ?? 'Effort'}
+              </button>
+              {menu === 'effort' && (
+                <PopMenu
+                  title="Reasoning effort"
+                  placement="down"
+                  onClose={() => setMenu(null)}
+                  items={EFFORT_OPTIONS.map((o) => ({
+                    key: o.id, label: o.label, active: o.id === effortLevel,
+                    onClick: () => pickEffort(o.id),
+                  }))}
+                />
+              )}
+            </div>
+          ) : effortLevel && (
             <span style={{ ...chipBase, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>
               {effortLevel}
             </span>

@@ -3694,6 +3694,14 @@ export function DashboardView() {
     }
   }, [sessions])
 
+  // Persist a tuning change onto the active session's tab, so the toolbar chip survives a tab
+  // switch and the new value is written into the durable SavedSession. Keyed by terminalId.
+  const patchActiveTerminal = useCallback((patch: Partial<TerminalTab>) => {
+    const tid = activeSession?.terminalId
+    if (!tid) return
+    setTerminals((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)))
+  }, [activeSession?.terminalId])
+
   // Single source of truth for content area routing. Order = priority.
   const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
@@ -4417,6 +4425,9 @@ export function DashboardView() {
               terminalId={activeTerminalId}
               detectedDevPort={detectedDevPort}
               effortLevel={tab?.effortLevel}
+              model={tab?.model ?? activeSession.model}
+              onModelChange={(m) => patchActiveTerminal({ model: m })}
+              onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
