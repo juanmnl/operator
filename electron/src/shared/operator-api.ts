@@ -97,6 +97,8 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   skillsCatalog:          { delivery: 'invoke', impl: 'native' },
   onUpdateProgress:       { delivery: 'event',  impl: 'native' },
   onUpdateError:          { delivery: 'event',  impl: 'native' },
+  devServerList:          { delivery: 'invoke', impl: 'native' },
+  devServerKill:          { delivery: 'invoke', impl: 'native' },
   worktreeReapPlan:       { delivery: 'invoke', impl: 'native' },
   worktreeReap:           { delivery: 'invoke', impl: 'native' },
   folderPrefsLoad:        { delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createServer, type Server } from 'node:net'
-import { allocatePort, PORT_BASE, type PortAllocDeps } from './port-alloc'
+import { allocatePort, shouldReleaseCwdPort, PORT_BASE, type PortAllocDeps } from './port-alloc'
 import { isPortFree } from './port-probe'
 
 /** Deps that say yes to everything — each test overrides only the probe it is about, so the
@@ -196,5 +196,37 @@ describe('concurrent allocation', () => {
       allocatePort('/b', map, slow),
     ])
     expect(a.port).toBe(b.port)
+  })
+})
+
+// THE DOUBLE-ALLOCATION, measured on the dev machine 2026-09-05: lanes t8 (uwazi) and t25
+// (operator) both alive, both spawned by the same Operator, both carrying OPERATOR_DEV_PORT=1425,
+// with t8's vite actually serving it. Same-cwd sharing gives N lanes one port; releasing it when
+// the FIRST of them closes is what let the next scan hand a live server's port to another project.
+describe('shouldReleaseCwdPort', () => {
+  it('releases when the closing lane was the last holder', () => {
+    expect(shouldReleaseCwdPort([], '/a', 1425)).toBe(true)
+  })
+
+  it('KEEPS the reservation while a sibling in the same cwd still holds it', () => {
+    expect(shouldReleaseCwdPort([{ cwd: '/a', devPort: 1425 }], '/a', 1425)).toBe(false)
+  })
+
+  it('ignores a sibling that has already exited', () => {
+    expect(shouldReleaseCwdPort([{ cwd: '/a', devPort: 1425, exited: true }], '/a', 1425)).toBe(true)
+  })
+
+  it('ignores a lane in a different cwd that happens to hold the same number', () => {
+    // If this ever happens the allocator has already failed; the release must not paper over it
+    // by pinning another directory's reservation.
+    expect(shouldReleaseCwdPort([{ cwd: '/b', devPort: 1425 }], '/a', 1425)).toBe(true)
+  })
+
+  it('ignores a sibling in the same cwd holding a different port', () => {
+    expect(shouldReleaseCwdPort([{ cwd: '/a', devPort: 1499 }], '/a', 1425)).toBe(true)
+  })
+
+  it('releases nothing when the lane never had a reservation', () => {
+    expect(shouldReleaseCwdPort([], '/a', undefined)).toBe(false)
   })
 })

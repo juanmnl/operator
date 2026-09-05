@@ -279,10 +279,18 @@ describe('laneStrays', () => {
     expect(refused.map((r) => r.pid)).not.toContain(501)
   })
 
-  it('refuses a port that is not this lane’s reservation', () => {
+  // REPLACES `refuses a port that is not this lane's reservation`, which pinned a rule that was
+  // the leak rather than a guard. `OPERATOR_DEV_PORT` is the RESERVATION inherited from the pty,
+  // not the port a process bound, so it never separated a restarted server from the current one
+  // — it only refused a row whose reservation had drifted, permanently, since nothing else in
+  // the lifecycle revisits what a close declined. `terminalId` + `appPid` already identify a
+  // lane uniquely. See `dev-servers.test.ts` for the measured t18 rows behind this.
+  it('reaps this lane’s rows whatever port they carry — the id pair already scopes it', () => {
     const other = laneStrays(STRAY_TAGGED, { ...LANE, devPort: 1499 }, OPTS)
-    expect(other.reap).toEqual([])
-    expect(other.refused.find((r) => r.pid === 900)?.why).toMatch(/is not this lane's 1499/)
+    expect(other.reap.map((r) => r.pid)).toEqual([900, 901])
+    // The other two refusals in this fixture are untouched and must stay: 910 belongs to another
+    // Operator run, 920 carries no app pid at all. Only the PORT reason is gone.
+    expect(other.refused.map((r) => r.why).join(' ')).not.toMatch(/is not this lane's/)
   })
 
   it('never returns Operator itself, however it is tagged', () => {
@@ -294,7 +302,7 @@ describe('laneStrays', () => {
     expect(refused[0].why).toMatch(/Operator itself/)
   })
 
-  it('accepts any port when the lane never reserved one', () => {
+  it('accepts any port when the lane never reserved one either', () => {
     const { reap } = laneStrays(STRAY_TAGGED, { terminalId: 't0', appPid: 400 }, OPTS)
     expect(reap.map((r) => r.pid)).toEqual([900, 901])
   })

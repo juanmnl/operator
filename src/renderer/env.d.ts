@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -127,6 +127,12 @@ declare global {
       onUpdateError?: (cb: (message: string) => void) => () => void
       /** Classify every directory under `~/.operator/worktrees`. READ-ONLY — computing the plan
        *  never removes anything. */
+      /** Every dev-server-shaped process attributable to a project or worktree, with how it was
+       *  attributed. Read-only — killing is a separate, explicitly confirmed call. */
+      devServerList: () => Promise<DevServerProc[]>
+      /** Kill exactly these pids and their descendants. Only ever called after the user has seen
+       *  the list and confirmed; returns how many processes were signalled. */
+      devServerKill: (pids: number[]) => Promise<number>
       worktreeReapPlan: () => Promise<ReapPlan>
       /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a
        *  deliberate user action. */

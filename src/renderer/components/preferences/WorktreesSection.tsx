@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
+import type { DevServerProc, ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
 
 // The worktree reap plan, read-only except for one button.
@@ -179,6 +179,195 @@ export function WorktreesSection() {
               )}
             </div>
           )}
+        </>
+      )}
+
+      <DevServers />
+    </div>
+  )
+}
+
+// ── Dev servers ──────────────────────────────────────────────────────────────────────────────
+//
+// THE HALF THE REAPER IS NOT ALLOWED TO DO. Everything on this list is a process the automatic
+// path deliberately refuses: a row with no `OPERATOR_APP_PID` could be this run's lane, an
+// eleven-day-old lane from another project, or something that merely inherited the variable from
+// a shell — a Homebrew `postgres` and an Xcode `Python3` were both carrying lane tags on the dev
+// machine when this was written. Killing on that evidence is how a reaper takes down a database,
+// so the code refuses forever and defers to a person. This is the person's surface.
+//
+// Same shape as the worktree reaper above on purpose: list first, say how each row is attributed,
+// confirm, then act. Nothing here runs on a timer.
+
+const OWNER_LABEL: Record<DevServerProc['owner'], string> = {
+  'dead-app': 'Operator no longer running',
+  'abandoned-lane': 'Lane closed',
+  'untagged': 'No Operator tag',
+  'live-lane': 'Lane open now',
+}
+
+/** What selecting this row actually means. The owner alone is a category; this is the
+ *  consequence, which is what someone needs before pressing a kill button. */
+const OWNER_NOTE: Record<DevServerProc['owner'], string> = {
+  'dead-app': 'Left by an Operator that has exited. Safe to stop.',
+  'abandoned-lane': 'Its lane is closed but the server outlived it. Safe to stop.',
+  'untagged': 'Under one of your projects, but nothing proves Operator started it — it may be a server you started yourself.',
+  'live-lane': 'A lane is open and using this. Stopping it will break that lane\u2019s preview.',
+}
+
+function age(seconds?: number): string {
+  if (seconds == null) return ''
+  if (seconds < 90) return `${seconds}s`
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h`
+  return `${Math.round(seconds / 86400)}d`
+}
+
+function DevServers() {
+  const [rows, setRows] = useState<DevServerProc[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [picked, setPicked] = useState<Set<number>>(new Set())
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    setError(null)
+    setConfirming(false)
+    window.operator.devServerList()
+      .then((r) => {
+        setRows(r)
+        // Drop selections for pids that are gone, so a confirm can never act on a stale pick.
+        setPicked((prev) => new Set([...prev].filter((pid) => r.some((x) => x.pid === pid))))
+      })
+      .catch((e) => setError(String(e)))
+  }, [])
+
+  useEffect(load, [load])
+
+  const toggle = (pid: number) => setPicked((prev) => {
+    const next = new Set(prev)
+    if (next.has(pid)) next.delete(pid)
+    else next.add(pid)
+    return next
+  })
+
+  const kill = useCallback(async () => {
+    setBusy(true)
+    setConfirming(false)
+    try {
+      const n = await window.operator.devServerKill([...picked])
+      setOutcome(`Stopped ${n} process${n === 1 ? '' : 'es'}.`)
+      setPicked(new Set())
+      load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [picked, load])
+
+  // Only ever selected rows, never "everything" — this list contains live lanes' servers, and a
+  // select-all button next to a kill button is how someone takes their own work down by reflex.
+  const chosen = (rows ?? []).filter((r) => picked.has(r.pid))
+  const risky = chosen.filter((r) => r.owner === 'live-lane').length
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <h3 style={sectionHeader}>Dev servers</h3>
+      <p style={sectionDesc}>
+        Every dev server Operator can see under your projects and worktrees. These are the
+        processes the automatic cleanup refuses to touch, because a tag alone cannot prove who
+        started something — so nothing here is stopped unless you pick it and confirm.
+      </p>
+
+      {error && (
+        <div style={{ ...boxStyle, padding: '8px 12px', marginBottom: 12, fontSize: 11, color: 'var(--fg)' }}>
+          Couldn't read the process list. {error}{' '}
+          <button onClick={load} style={linkBtn}>retry</button>
+        </div>
+      )}
+
+      {rows && rows.length === 0 && !error && (
+        <div style={{ ...boxStyle, padding: '10px 12px', fontSize: 11, color: 'var(--fg-muted)' }}>
+          No dev servers running. Nothing to clean up.
+        </div>
+      )}
+
+      {rows && rows.length > 0 && (
+        <>
+          <div style={boxStyle}>
+            {rows.map((r, i) => (
+              <label
+                key={r.pid}
+                style={{
+                  display: 'flex', alignItems: 'baseline', gap: 10, padding: '7px 12px', cursor: 'pointer',
+                  borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none',
+                }}
+                title={`${r.command}${r.cwd ? `\n${r.cwd}` : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={picked.has(r.pid)}
+                  onChange={() => toggle(r.pid)}
+                  style={{ margin: 0, flexShrink: 0 }}
+                />
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0, width: 52 }}>
+                  {r.pid}
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)',
+                  flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {r.cwd ?? r.command}
+                </span>
+                {/* RESERVATION, not an observed binding — finding the real holder of a port needs
+                    per-pid lsof, which fires a TCC prompt. The label says so rather than
+                    implying this process was seen holding it. */}
+                {r.reservedPort != null && (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0 }}
+                        title={`Reserved port ${r.reservedPort} — not confirmed as the port this process bound`}>
+                    :{r.reservedPort}
+                  </span>
+                )}
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0, width: 34, textAlign: 'right' }}>
+                  {age(r.ageSeconds)}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0, width: 150, textAlign: 'right' }}>
+                  {OWNER_LABEL[r.owner]}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <p style={{ ...sectionDesc, margin: '10px 0 0' }}>
+            {[...new Set(rows.map((r) => r.owner))].map((o) => `${OWNER_LABEL[o]} — ${OWNER_NOTE[o]}`).join(' ')}
+          </p>
+
+          {outcome && <p style={{ ...sectionDesc, margin: '8px 0 0' }}>{outcome}</p>}
+
+          <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {confirming ? (
+              <>
+                <span style={{ fontSize: 11, color: 'var(--fg)', flex: '1 1 100%' }}>
+                  {chosen.length} process{chosen.length === 1 ? '' : 'es'} and everything under
+                  {chosen.length === 1 ? ' it' : ' them'} will be stopped.
+                  {risky > 0 && ` ${risky} belong${risky === 1 ? 's' : ''} to a lane that is open right now — its preview will stop working.`}
+                </span>
+                <button onClick={kill} disabled={busy} style={primaryBtn}>
+                  {busy ? 'Stopping…' : 'Stop them'}
+                </button>
+                <button onClick={() => setConfirming(false)} style={linkBtn}>Cancel</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => setConfirming(true)} disabled={busy || chosen.length === 0} style={primaryBtn}>
+                  Stop {chosen.length || ''} selected
+                </button>
+                <button onClick={load} disabled={busy} style={linkBtn}>Refresh</button>
+              </>
+            )}
+          </div>
         </>
       )}
     </div>

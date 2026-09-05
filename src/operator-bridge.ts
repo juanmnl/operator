@@ -265,6 +265,11 @@ export function installBridge(): void {
     // (`electron/src/main/worktree-reap.ts`) and there is no Rust command behind it. An EMPTY
     // plan, so the Settings section says "nothing to show" rather than claiming zero worktrees
     // exist; the reap itself refuses outright rather than reporting a silent success.
+    // NOT IMPLEMENTED on the Tauri backend, and empty rather than throwing: an empty list reads
+    // correctly as "nothing to show", where the worktree reaper below has to refuse loudly
+    // because a silent no-op there looks like a successful cleanup.
+    devServerList: async () => [],
+    devServerKill: async () => 0,
     worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     setActiveSession: () => {},

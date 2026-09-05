@@ -27,6 +27,8 @@ import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
+import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
+import { devServerInventory, ageSnapshot } from './dev-servers'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -200,6 +202,42 @@ export function registerIpc(d: Deps): void {
     // Read-only. Returns the classification of every directory under `~/.operator/worktrees`
     // with sizes, for the Settings list. Sizes are one `du` over the root's children — skipped
     // by the boot/quit sweeps, which do not need them.
+    // THE LIST IS READ-ONLY and the kill is a separate call, because the whole point of this
+    // surface is that these processes are the ones the automatic reaper refuses to touch. One
+    // `ps` pair per refresh; no per-pid `lsof` (TCC).
+    devServerList: async () => {
+      const [ps, tagged, ages] = await Promise.all([snapshotPs(), sweepTagged(), ageSnapshot()])
+      const projects = await store.loadProjects()
+      const roots = [
+        ...projects.map((p) => (p as { path?: string }).path).filter((p): p is string => !!p),
+        join(store.operatorDir(), 'worktrees'),
+      ]
+      return devServerInventory({
+        tagged, ps, roots,
+        openTerminalIds: d.terminals.openTerminalIds(),
+        appPid: process.pid,
+        selfPid: process.pid,
+        isAppAlive: isPidAlive,
+        ages,
+      })
+    },
+    // EXPLICITLY CONFIRMED, always. Reached only from the Dev servers list after the user has
+    // seen what each row is and pressed through a confirmation — never from a timer, never as a
+    // side effect of anything else. The pids are re-expanded to their descendants from a FRESH
+    // snapshot rather than trusting ones the renderer has been holding: a pid the user saw a
+    // minute ago may have exited and been recycled, and this signals what it is handed.
+    devServerKill: async (pids) => {
+      const wanted = (Array.isArray(pids) ? pids : []).map(Number).filter((n) => Number.isInteger(n) && n > 1)
+      if (!wanted.length) return 0
+      const ps = await snapshotPs()
+      const live = new Set(wanted.filter((pid) => ps.some((r) => r.pid === pid)))
+      if (!live.size) return 0
+      const all = new Set(live)
+      for (const pid of live) for (const kid of descendantsOf(ps, pid)) all.add(kid)
+      const { found } = await reapTree(0, ps, { alsoReap: all })
+      console.error(`[ports] user-confirmed kill of ${found.length} process(es): ${[...all].join(', ')}`)
+      return found.length
+    },
     worktreeReapPlan: () => reapPlan({ withSizes: true }),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.

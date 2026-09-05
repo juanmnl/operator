@@ -103,3 +103,30 @@ async function scan(portsByCwd: Map<string, number>, deps: PortAllocDeps): Promi
   }
   return undefined
 }
+
+/** Should the cwd's reservation be dropped when this lane closes?
+ *
+ *  THE DOUBLE-ALLOCATION BUG, measured 2026-09-05: lane t8 (`…/huridocs/uwazi_app/app`) and lane
+ *  t25 (the operator checkout) were both alive, both spawned by the same Operator, and both
+ *  carrying `OPERATOR_DEV_PORT=1425` — with t8's vite actually serving it. The lane that was told
+ *  the port was reserved for it attached to another project's server.
+ *
+ *  The cause is here rather than in the scan. Same-cwd sharing hands ONE port to every lane in a
+ *  directory, so the reservation is shared by N lanes while the map that records it has room for
+ *  one entry and no notion of how many hold it. Close released it unconditionally, so the FIRST
+ *  lane out of a shared directory dropped the entry while its siblings kept serving — and the
+ *  next scan, seeing that port in neither `portsByCwd` nor any lease it recognised, handed it to
+ *  a lane in a different project.
+ *
+ *  So: release only when nobody is left holding it. `stillOpen` is every OTHER live lane; the
+ *  closing lane must already be out of the set, because a lane never keeps its own reservation
+ *  alive. The bind-check in `allocatePort` would now catch the symptom, but a reservation map
+ *  that lies is worth fixing at the source — the check is a backstop, not a bookkeeping system. */
+export function shouldReleaseCwdPort(
+  stillOpen: ReadonlyArray<{ cwd: string; devPort?: number; exited?: boolean }>,
+  cwd: string,
+  devPort: number | undefined,
+): boolean {
+  if (devPort == null) return false
+  return !stillOpen.some((o) => !o.exited && o.cwd === cwd && o.devPort === devPort)
+}

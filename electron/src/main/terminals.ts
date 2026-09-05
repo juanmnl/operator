@@ -18,12 +18,13 @@ import { buildArgs, mcpConfigArg } from '../../../src/renderer/lib/launch-args'
 import { app } from 'electron'
 import {
   reapTree, snapshotPs, sweepTagged, descendantsOf, selfPgidFrom, laneStrays, expandStrays,
+  abandonedLaneRows,
   type PsRow, type TaggedRow,
 } from './reap'
 import { claimLease, releaseLease, loadLeases } from './leases'
 import { isPortLive, isPortFree } from './port-probe'
 import { attributePort, claimantsByPort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
-import { allocatePort } from './port-alloc'
+import { allocatePort, shouldReleaseCwdPort } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
@@ -448,7 +449,12 @@ export class TerminalManager {
     // Same as the Rust path: removing the entry is what makes a second `terminal:exit`
     // impossible, and the frontend's exit path must not run twice.
     this.terminals.delete(t.id)
-    if (t.devPort && this.portsByCwd.get(t.cwd) === t.devPort) this.portsByCwd.delete(t.cwd)
+    // The lane is already out of `this.terminals` (line above), so what remains is every OTHER
+    // live lane — see `shouldReleaseCwdPort` for the double-allocation this guards.
+    if (this.portsByCwd.get(t.cwd) === t.devPort
+        && shouldReleaseCwdPort([...this.terminals.values()], t.cwd, t.devPort)) {
+      this.portsByCwd.delete(t.cwd)
+    }
     // A CLEAN kill — so there is nothing left here for the next boot to hunt for.
     if (t.sessionId) await releaseLease(t.sessionId)
     // DID THE REAP ACTUALLY FREE THE PORT? Everything above signals a process tree; nothing
@@ -616,6 +622,54 @@ export class TerminalManager {
     if (!ids.length) return
     const snapshot = await freshReapSnapshot()
     await Promise.all(ids.map((id) => this.kill(id, snapshot)))
+  }
+
+  /** THE LIVE-APP SWEEP. Every lane close already reaps that lane's strays; this is for the
+   *  closes that never ran — a close that raced or threw, and the app being force-quit and
+   *  relaunched with servers still tagged to lane ids this run has never issued.
+   *
+   *  reap.ts's own header names this case ("a live app leaking while it is still up, which
+   *  nothing in the lifecycle ever revisits") and nothing acted on it, because the boot sweep
+   *  refuses any row whose `appPid` is alive — which, for the running app, is every row of its
+   *  own. The fact only a running app has is which terminal ids are actually open in it.
+   *
+   *  The open set is read HERE, at fire time, and not captured when the timer was armed: a lane
+   *  opened during the interval would otherwise be reaped as abandoned. */
+  async sweepAbandoned(): Promise<number> {
+    try {
+      const { ps, tagged } = await freshReapSnapshot()
+      const open = new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
+      const rows = abandonedLaneRows(tagged, {
+        appPid: process.pid,
+        openTerminalIds: open,
+        selfPid: process.pid,
+        selfPgid: selfPgidFrom(ps, process.pid),
+      })
+      if (!rows.length) return 0
+      const pids = expandStrays(ps, rows)
+      const byLane = new Map<string, number[]>()
+      for (const r of rows) {
+        const list = byLane.get(r.terminalId!) ?? []
+        list.push(r.pid)
+        byLane.set(r.terminalId!, list)
+      }
+      for (const [id, list] of byLane) {
+        console.error(`[reap] sweep: ${id} is not open here but left ${list.length} process(es): ${list.join(', ')}`)
+      }
+      const { escalated, found } = await reapTree(0, ps, { alsoReap: pids })
+      if (escalated.length) {
+        console.error(`[reap] sweep: SIGKILLed ${escalated.length} of ${found.length}`)
+      }
+      return pids.size
+    } catch (e) {
+      console.error('[reap] sweep failed:', e)
+      return 0
+    }
+  }
+
+  /** Terminal ids open right now — the fact the inventory needs and only this object has. */
+  openTerminalIds(): Set<string> {
+    return new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
   }
 
   private pushHistory(t: Managed, buf: Buffer): void {

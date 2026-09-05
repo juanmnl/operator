@@ -297,6 +297,22 @@ export interface SessionPort {
   claimedBy?: string
 }
 
+/** One process on the Dev servers list. Every row is a kill button, so each field says what it
+ *  is EVIDENCE of rather than what it is assumed to mean. */
+export interface DevServerProc {
+  pid: number
+  /** The lane's RESERVATION (`OPERATOR_DEV_PORT`), not a port anything was observed holding —
+   *  finding the true holder needs per-pid `lsof`, which fires a macOS TCC prompt. */
+  reservedPort?: number
+  terminalId?: string
+  appPid?: number
+  cwd?: string
+  command: string
+  ageSeconds?: number
+  /** `dead-app` is the safest to kill, `live-lane` the one to think about. */
+  owner: 'live-lane' | 'dead-app' | 'abandoned-lane' | 'untagged'
+}
+
 /** How a worktree directory was classified by the reaper. See
  *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
 export type ReapClass =

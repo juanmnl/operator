@@ -40,6 +40,10 @@ let artifacts: ArtifactStore | null = null
 let tray: OperatorTray | null = null
 let trayPhase: TrayPhase = 'idle'
 let stopTrayAnim: (() => void) | null = null
+let sweepTimer: ReturnType<typeof setInterval> | null = null
+
+/** How often the live app re-checks for its own leaked lanes. See the call site. */
+const ABANDONED_SWEEP_MS = 10 * 60 * 1000
 
 /** The ONLY origins this app may navigate to. Anything else — a dropped file, a link the
  *  renderer mishandled, a redirect — is refused and, if it looks like a real web URL, handed to
@@ -170,6 +174,7 @@ function teardown(): Promise<void> {
     }
     chat?.close()
     artifacts?.close()
+    if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null }
     stopTrayAnim?.()
     stopTrayAnim = null
     tray?.destroy()
@@ -188,6 +193,18 @@ function boot(): void {
   // depends on it. It never throws, and it never signals anything it cannot prove is orphaned —
   // see `reapOrphanedDevServers`.
   void reapOrphanedDevServers(loadSessions)
+
+  // AND THEN EVERY TEN MINUTES, because the boot sweep can only ever collect what a PREVIOUS
+  // run left. A close that raced or threw, or a lane whose server outlived it while this same
+  // app kept running, produces rows the boot sweep will refuse for as long as this process
+  // lives — their `OPERATOR_APP_PID` is alive, which is the boot sweep's strongest reason to
+  // leave a row alone. See `TerminalManager.sweepAbandoned`.
+  //
+  // Ten minutes because the cost is one `ps -E` pair (the expensive form — it dumps every
+  // process's environment) and the thing being caught is a leak measured in hours and days, not
+  // seconds. `unref` so a pending timer can never be what keeps the app from exiting.
+  sweepTimer = setInterval(() => { void terminals?.sweepAbandoned() }, ABANDONED_SWEEP_MS)
+  sweepTimer.unref?.()
 
   // DEFECT #5: nothing at launch ever cross-referenced `~/.operator/worktrees` against
   // `sessions.json`, provenance and `git worktree list`, so a directory orphaned by any of the
