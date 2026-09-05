@@ -33,3 +33,14 @@ Done means: electron tests + tsc + build green; `dev/results/port-allocation-fix
 new contract in one paragraph and the tests added; call `mcp__operator__report`. Commit on your
 branch; do not merge. If you are mid-way through the Chat/Files removal, finish that first and
 take this second, on the same branch or a new one, your call.
+
+## Correction (2026-09-05 14:40, one `ps -E` snapshot)
+The 1425 holder is NOT a stranger: pid 93480 carries `OPERATOR_APP_PID=55647 OPERATOR_TERMINAL_ID=t8
+OPERATOR_DEV_PORT=1425`, and t8 (cwd `~/Developer/huridocs/uwazi_app`, session f3f25561…) is
+still in sessions.json and in dev-leases.json with devPort 1425. So the SAME app instance handed
+1425 to two live lanes in different cwds. Find how: `portsByCwd` is per-process and should have
+refused; candidates are a resume/relaunch path that restores a session's saved devPort without
+re-registering it in the map, or the map entry being dropped when a lane in that cwd closed while
+a sibling lane in the same cwd stayed. The lease file is the durable truth; allocPort must check
+it first. Also in the snapshot: t18 (el-encanto-8c5180) has TWO vite servers (1432 and 1434), and
+t0/t1/t13/t18/t19 servers all have ppid 1 while tagged with the live app pid.
