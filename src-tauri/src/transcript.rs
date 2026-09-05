@@ -167,6 +167,8 @@ struct Track {
     pending_replies: Vec<ReplyEvent>,
     last_stop_reason: Option<String>,
     last_was_user_prompt: bool,
+    /// Between a `compact_boundary` record and the next assistant record. See `apply_system`.
+    compacting: bool,
     started_at: Option<String>,
     last_activity_at: String,
     last_phase: String,
@@ -204,6 +206,7 @@ impl Track {
             pending_replies: vec![],
             last_stop_reason: None,
             last_was_user_prompt: false,
+            compacting: false,
             started_at: None,
             last_activity_at: now_iso(),
             last_phase: String::new(),
@@ -324,6 +327,7 @@ impl Track {
             "user" => self.apply_user(v),
             "assistant" => self.apply_assistant(v, &ts),
             "queue-operation" => self.apply_queue_op(v, &ts),
+            "system" => self.apply_system(v),
             _ => {}
         }
     }
@@ -464,8 +468,31 @@ impl Track {
         }
     }
 
+    /// Claude Code's own machinery records. The only one that changes a session's PHASE is the
+    /// compaction boundary.
+    ///
+    /// WHEN IT IS WRITTEN matters for reading this correctly: the record carries `durationMs`,
+    /// `preTokens` and `postTokens`, so it is written when the compaction has already FINISHED —
+    /// it closes the compaction rather than opening it. What follows it in a real transcript
+    /// (measured, not assumed) is a `user` record re-priming the compacted context, then
+    /// attachments, and only then the assistant. So the window this flag covers is the model
+    /// coming back from a compaction with a rebuilt context, which is the part the user is
+    /// actually sitting through and the part that looked like an ordinary `running` before.
+    fn apply_system(&mut self, v: &Value) {
+        if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
+            self.compacting = true;
+            self.dirty = true;
+        }
+    }
+
     fn apply_assistant(&mut self, v: &Value, ts: &str) {
         self.last_was_user_prompt = false;
+        // THE COMPACTION IS OVER once the model speaks again. Guarded on sidechain because a
+        // subagent's message says nothing about the main thread's state — the same reason the
+        // model field below refuses to be relabelled by a Haiku subagent.
+        if !v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) {
+            self.compacting = false;
+        }
         let msg = match v.get("message") {
             Some(m) => m,
             None => return,
@@ -636,6 +663,7 @@ impl Track {
             !self.open_tools.is_empty(),
             self.last_stop_reason.as_deref(),
             self.last_was_user_prompt,
+            self.compacting,
         )
     }
 
@@ -681,7 +709,22 @@ fn find_transcript(session_id: &str) -> Option<PathBuf> {
 /// can be unit-tested without constructing a whole `Track`. "running" wins if a
 /// tool is open, the last assistant stop was a tool_use, or a user prompt was just
 /// sent (response not started); otherwise the turn has ended → "waiting".
-fn derive_phase(running_tools: bool, last_stop_reason: Option<&str>, last_was_user_prompt: bool) -> &'static str {
+fn derive_phase(
+    running_tools: bool,
+    last_stop_reason: Option<&str>,
+    last_was_user_prompt: bool,
+    compacting: bool,
+) -> &'static str {
+    // FIRST, ahead of the tool check, and deliberately. Inside the boundary→assistant window the
+    // one thing known for certain is that the context was just rebuilt; an `open_tools` entry
+    // surviving from BEFORE the boundary is a tool whose result compaction has already dropped,
+    // so reporting it as `running` is reporting a signal that has stopped being true. Same
+    // judgment as `last_tool_name` being cleared rather than left stale — a signal that lies is
+    // worse than no signal. The UI has rendered this phase everywhere since it was defined; this
+    // is the first thing that ever emits it.
+    if compacting {
+        return "compacting";
+    }
     if running_tools {
         return "running";
     }
@@ -1080,7 +1123,15 @@ pub fn start_tailer(app: tauri::AppHandle) {
                 // real-time signal that the agent is working; the transcript
                 // phase covers quiet stretches (e.g. a long-running tool).
                 let pty_active = !t.ended && mgr.active_within(&t.terminal_id, Duration::from_millis(1500));
-                let phase = if pty_active { "running" } else { t.phase() };
+                // EXCEPT `compacting`, and without that exception the phase could still never be
+                // seen. Coming back from a compaction is exactly when Claude Code streams
+                // hardest, so the pty is hot for the whole window and this line would relabel
+                // every tick as the generic `running`. The override exists to stop a busy lane
+                // reading as IDLE; `compacting` is not an idle state, it is a more specific busy
+                // one, so replacing it buys no flicker protection and throws away the only thing
+                // that explains why the wait is long.
+                let derived = t.phase();
+                let phase = if pty_active && derived != "compacting" { "running" } else { derived };
                 let phase_changed = t.last_phase != phase;
                 if t.dirty || phase_changed {
                     t.last_phase = phase.to_string();
@@ -1404,7 +1455,7 @@ mod tests {
 
     #[test]
     fn derive_phase_running_when_tool_open() {
-        assert_eq!(derive_phase(true, None, false), "running");
+        assert_eq!(derive_phase(true, None, false, false), "running");
     }
 
     #[test]
@@ -1592,18 +1643,86 @@ mod tests {
 
     #[test]
     fn derive_phase_running_on_tool_use_stop() {
-        assert_eq!(derive_phase(false, Some("tool_use"), false), "running");
+        assert_eq!(derive_phase(false, Some("tool_use"), false, false), "running");
     }
 
     #[test]
     fn derive_phase_running_after_user_prompt() {
-        assert_eq!(derive_phase(false, Some("end_turn"), true), "running");
+        assert_eq!(derive_phase(false, Some("end_turn"), true, false), "running");
+    }
+
+    /// COMPACTION, end to end through `apply`, not just the pure function.
+    ///
+    /// The record shape is copied from a real transcript
+    /// (`~/.claude/projects/…/981a9e3b…jsonl`): `type: "system"`, `subtype: "compact_boundary"`,
+    /// with `compactMetadata` — and, in that file, a `user` record immediately after it, which
+    /// is what makes the ordering in `derive_phase` matter. Without `compacting` ranked above
+    /// the user-prompt rule this test would read `running`, which is what shipped for as long as
+    /// the phase existed.
+    #[test]
+    fn compact_boundary_puts_the_session_in_the_compacting_phase() {
+        let mut t = track();
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-08-22T17:40:00.000Z",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.phase(), "waiting");
+
+        t.apply(&json!({
+            "type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
+            "level": "info", "timestamp": "2026-08-22T17:42:03.729Z",
+            "compactMetadata": { "trigger": "auto", "preTokens": 998698, "postTokens": 21681,
+                "durationMs": 133798 },
+        }));
+        assert_eq!(t.phase(), "compacting");
+
+        // The re-prime that really follows a boundary. It sets `last_was_user_prompt`, so this
+        // is the assertion that pins the precedence.
+        t.apply(&json!({ "type": "user", "timestamp": "2026-08-22T17:42:03.368Z",
+            "message": { "role": "user", "content": "continue" } }));
+        assert_eq!(t.phase(), "compacting", "a re-prime after the boundary is still the compaction");
+
+        // The model speaks: the compaction is over.
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-08-22T17:44:10.000Z",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.phase(), "waiting");
+    }
+
+    /// A SUBAGENT talking must not end the main thread's compaction — the same rule that stops a
+    /// Haiku subagent relabelling an Opus session's model.
+    #[test]
+    fn a_sidechain_assistant_does_not_end_the_compaction() {
+        let mut t = track();
+        t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
+            "timestamp": "2026-08-22T17:42:03.729Z" }));
+        t.apply(&json!({ "type": "assistant", "isSidechain": true,
+            "timestamp": "2026-08-22T17:42:30.000Z",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.phase(), "compacting");
+    }
+
+    /// Any other `system` record is not a compaction. `subtype` is what distinguishes them, and
+    /// matching on `type: "system"` alone would put every session into a phase it never leaves.
+    #[test]
+    fn other_system_records_leave_the_phase_alone() {
+        let mut t = track();
+        t.apply(&json!({ "type": "system", "subtype": "hook_result",
+            "timestamp": "2026-08-22T17:42:03.729Z" }));
+        assert_eq!(t.phase(), "waiting");
+        t.apply(&json!({ "type": "system", "timestamp": "2026-08-22T17:42:04.729Z" }));
+        assert_eq!(t.phase(), "waiting");
+    }
+
+    #[test]
+    fn derive_phase_compacting_outranks_a_stale_open_tool() {
+        // A tool left open from before the boundary is a tool whose result compaction has
+        // already dropped. Reporting `running` off it is reporting a fact that stopped being one.
+        assert_eq!(derive_phase(true, Some("tool_use"), true, true), "compacting");
+        assert_eq!(derive_phase(false, None, false, true), "compacting");
     }
 
     #[test]
     fn derive_phase_waiting_when_turn_ended() {
-        assert_eq!(derive_phase(false, Some("end_turn"), false), "waiting");
-        assert_eq!(derive_phase(false, None, false), "waiting");
+        assert_eq!(derive_phase(false, Some("end_turn"), false, false), "waiting");
+        assert_eq!(derive_phase(false, None, false, false), "waiting");
     }
 
     #[test]

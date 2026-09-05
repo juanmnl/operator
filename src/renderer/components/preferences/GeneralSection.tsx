@@ -2,7 +2,6 @@ import type { SettingsFile, ClaudeSettings } from '../../../shared/types'
 import { SettingsFileTabBar } from './SettingsFileTabBar'
 import { useSettingsScope } from './useSettingsScope'
 import { ListEditor } from './ListEditor'
-import { SETTINGS_EFFORT_LEVELS, settingsEffort } from '../../lib/effort'
 
 interface GeneralSectionProps {
   settingsFiles: SettingsFile[]
@@ -10,11 +9,12 @@ interface GeneralSectionProps {
   onCreate: (path: string) => void
 }
 
-// THE FILE'S OWN ENUM, not the full ladder. This screen edits `~/.claude/settings.json` directly —
-// the app-wide default for sessions started OUTSIDE Operator, and the one place that still writes
-// it now that a lane's effort rides its `--effort` flag. The field accepts four values; `max` is
-// flag-only, so offering it here would write something the file silently discards. See lib/effort.
-const EFFORT_LEVELS = SETTINGS_EFFORT_LEVELS
+// NO EFFORT FIELD HERE, deliberately. It used to write `settings.json`'s `effortLevel`, which
+// governs only Claude Code sessions started OUTSIDE Operator — a lane launched from the app gets
+// its effort from the `--effort` flag and never reads this. So the control edited a value that
+// could not affect anything the user was looking at, while sitting beside two settings that do —
+// and while a roster pin and the session toolbar's chip both really set a lane's effort. Three
+// controls for one word, two of them real. See lib/effort for the flag-vs-file split.
 
 export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSectionProps) {
   const { activeScope, setActiveScope, activeFile, handleCreateFile } = useSettingsScope(settingsFiles, onCreate)
@@ -78,41 +78,6 @@ export function GeneralSection({ settingsFiles, onSave, onCreate }: GeneralSecti
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {/* Effort Level */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg)', display: 'block', marginBottom: 8 }}>
-            Effort Level
-          </label>
-          <p style={{ fontSize: 10, color: 'var(--fg-muted)', margin: '0 0 8px' }}>
-            Controls how much reasoning effort Claude puts into responses.
-          </p>
-          <div style={{ display: 'flex', gap: 0, background: 'var(--bg-surface)', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
-            {EFFORT_LEVELS.map((level) => (
-              <button
-                key={level}
-                disabled={isReadOnly}
-                onClick={() => handleUpdate({ effortLevel: settingsEffort(level) })}
-                style={{
-                  flex: 1,
-                  padding: '7px 0',
-                  fontSize: 11,
-                  fontWeight: 500,
-                  fontFamily: 'inherit',
-                  textTransform: 'capitalize',
-                  background: settings.effortLevel === level ? 'var(--accent)' : 'transparent',
-                  color: settings.effortLevel === level ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
-                  border: 'none',
-                  cursor: isReadOnly ? 'default' : 'pointer',
-                  borderRight: level !== 'low' ? '1px solid var(--border)' : 'none',
-                  
-                }}
-              >
-                {level}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* Sandbox */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>

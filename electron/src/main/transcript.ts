@@ -57,10 +57,24 @@ async function findTranscript(sessionId: string): Promise<string | null> {
   return null
 }
 
-/** The session phase, from the three signals the tailer tracks. Pure so it can be tested
- *  without a Track. Called only while the pty is QUIET — that is what makes "waiting" mean
- *  "the turn ended and nobody is typing" rather than "nothing happened this instant". */
-export function derivePhase(runningTools: boolean, lastStopReason: string | null, lastWasUserPrompt: boolean): string {
+/** The session phase, from the signals the tailer tracks. Pure so it can be tested without a
+ *  Track. Called only while the pty is QUIET — that is what makes "waiting" mean "the turn ended
+ *  and nobody is typing" rather than "nothing happened this instant".
+ *
+ *  Mirrors `derive_phase` in src-tauri/src/transcript.rs, argument for argument. */
+export function derivePhase(
+  runningTools: boolean,
+  lastStopReason: string | null,
+  lastWasUserPrompt: boolean,
+  compacting: boolean,
+): string {
+  // FIRST, ahead of the tool check, and deliberately. Inside the boundary→assistant window the
+  // one thing known for certain is that the context was just rebuilt; an `openTools` entry
+  // surviving from BEFORE the boundary is a tool whose result compaction has already dropped, so
+  // reporting it as `running` is reporting a signal that has stopped being true. Same judgment as
+  // `lastToolName` being cleared rather than left stale. The UI has rendered this phase since it
+  // was defined; this is the first thing that ever emits it.
+  if (compacting) return 'compacting'
   if (runningTools) return 'running'
   if (lastStopReason === 'tool_use') return 'running'
   if (lastWasUserPrompt) return 'running' // prompt sent, response not started yet
@@ -126,6 +140,8 @@ class Track {
   lastUsageMsgId: string | null = null
   lastStopReason: string | null = null
   lastWasUserPrompt = false
+  /** Between a `compact_boundary` record and the next assistant record. See `applySystem`. */
+  compacting = false
   lastToolName: string | null = null
   openTools = new Set<string>()
   inSidechain = false
@@ -150,7 +166,7 @@ class Track {
 
   get sessionId(): string { return this.track.claudeSessionId }
 
-  phase(): string { return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt) }
+  phase(): string { return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting) }
 
   /** Drop everything DERIVED from the transcript, keeping the track's identity. Called when the
    *  file is re-read from the start, so the rebuilt state describes the file that exists now. */
@@ -162,6 +178,7 @@ class Track {
     this.lastUsageMsgId = null
     this.lastStopReason = null
     this.lastWasUserPrompt = false
+    this.compacting = false
     this.lastToolName = null
     this.openTools.clear()
     this.inSidechain = false
@@ -274,6 +291,7 @@ class Track {
       case 'user': this.applyUser(v); break
       case 'assistant': this.applyAssistant(v, ts); break
       case 'queue-operation': this.applyQueueOp(v, ts); break
+      case 'system': this.applySystem(v); break
       default: break
     }
   }
@@ -348,8 +366,28 @@ class Track {
     })
   }
 
+  /** Claude Code's own machinery records. The only one that changes a session's PHASE is the
+   *  compaction boundary.
+   *
+   *  WHEN IT IS WRITTEN matters for reading this correctly: the record carries `durationMs`,
+   *  `preTokens` and `postTokens`, so it is written once the compaction has already FINISHED — it
+   *  closes the compaction rather than opening it. What follows it in a real transcript
+   *  (measured, not assumed) is a `user` record re-priming the compacted context, then
+   *  attachments, and only then the assistant. So the window this flag covers is the model coming
+   *  back with a rebuilt context, which is the part the user actually sits through. */
+  private applySystem(v: Record<string, unknown>): void {
+    if (v.subtype === 'compact_boundary') {
+      this.compacting = true
+      this.dirty = true
+    }
+  }
+
   private applyAssistant(v: Record<string, unknown>, ts: string): void {
     this.lastWasUserPrompt = false
+    // THE COMPACTION IS OVER once the model speaks again. Guarded on sidechain because a
+    // subagent's message says nothing about the main thread's state — the same reason the model
+    // below refuses to be relabelled by a subagent.
+    if (v.isSidechain !== true) this.compacting = false
     const msg = v.message as Record<string, unknown> | undefined
     if (!msg) return
     this.lastStopReason = typeof msg.stop_reason === 'string' ? msg.stop_reason : null
@@ -549,8 +587,16 @@ export class Transcript extends EventEmitter {
       // PTY ACTIVITY OUTRANKS THE TRANSCRIPT. Bytes are moving now; the transcript is written
       // after the fact, so deriving "waiting" from it while output streams would flicker every
       // lane between running and waiting once a second.
+      //
+      // EXCEPT `compacting`, and without that exception the phase could still never be seen.
+      // Coming back from a compaction is exactly when Claude Code is streaming hardest, so the
+      // pty is hot for the whole window and this line would relabel every tick as the generic
+      // `running`. The override exists to stop a busy lane reading as IDLE; `compacting` is not
+      // an idle state, it is a more specific busy one, so replacing it buys no flicker
+      // protection and throws away the only thing that explains why the wait is long.
       const ptyActive = !t.ended && opts.isActive(t.terminalId)
-      const phase = ptyActive ? 'running' : t.phase()
+      const derived = t.phase()
+      const phase = ptyActive && derived !== 'compacting' ? 'running' : derived
       if (t.dirty || t.lastPhase !== phase) {
         t.lastPhase = phase
         t.dirty = false

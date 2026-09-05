@@ -3,16 +3,24 @@ import { derivePhase, isInjectedTurn, toolResultText, userPromptText } from './t
 
 describe('derivePhase', () => {
   it('is running while a tool is open', () => {
-    expect(derivePhase(true, null, false)).toBe('running')
+    expect(derivePhase(true, null, false, false)).toBe('running')
   })
   it('is running when the last stop was a tool_use — the turn has more to do', () => {
-    expect(derivePhase(false, 'tool_use', false)).toBe('running')
+    expect(derivePhase(false, 'tool_use', false, false)).toBe('running')
   })
   it('is running right after a user prompt, before the response starts', () => {
-    expect(derivePhase(false, null, true)).toBe('running')
+    expect(derivePhase(false, null, true, false)).toBe('running')
   })
   it('is waiting once the turn ended and nothing is open', () => {
-    expect(derivePhase(false, 'end_turn', false)).toBe('waiting')
+    expect(derivePhase(false, 'end_turn', false, false)).toBe('waiting')
+  })
+  it('is COMPACTING between the boundary and the next assistant record', () => {
+    expect(derivePhase(false, 'end_turn', false, true)).toBe('compacting')
+  })
+  it('lets compacting outrank a tool left open from before the boundary', () => {
+    // Compaction has already dropped that tool's result, so `running` off it is a signal that
+    // stopped being true. Matches `derive_phase_compacting_outranks_a_stale_open_tool` in Rust.
+    expect(derivePhase(true, 'tool_use', true, true)).toBe('compacting')
   })
 })
 

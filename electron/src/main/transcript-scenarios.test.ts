@@ -198,6 +198,52 @@ describe('phase, end to end', () => {
     const { t } = await run(assistant([{ type: 'text', text: 'done' }]), { isActive: true })
     expect(t.liveLanes(() => true)[0].phase).toBe('running')
   })
+
+  // The record shape is copied from a real transcript, not invented: `type: "system"`,
+  // `subtype: "compact_boundary"`, `compactMetadata` with `durationMs`/`preTokens`/`postTokens`
+  // — which is what tells you it is written when the compaction has FINISHED. In that same file
+  // the very next record is a `user` re-prime, which is why the ordering inside `derivePhase`
+  // matters: without `compacting` ranked above the user-prompt rule, this reads `running`.
+  it('is COMPACTING from the boundary until the model speaks again', async () => {
+    const boundary = L({
+      type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted',
+      level: 'info', timestamp: TS,
+      compactMetadata: { trigger: 'auto', preTokens: 998698, postTokens: 21681, durationMs: 133798 },
+    })
+    const during = await run(assistant([{ type: 'text', text: 'before' }]) + boundary + user('continue'))
+    expect(during.t.liveLanes(() => true)[0].phase).toBe('compacting')
+
+    const after = await run(
+      assistant([{ type: 'text', text: 'before' }]) + boundary + user('continue')
+      + assistant([{ type: 'text', text: 'back' }]),
+    )
+    expect(after.t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
+
+  // THE ASSERTION THAT MAKES THE PHASE REAL. `compacting` is derived correctly and would still
+  // never be seen without this: coming back from a compaction is exactly when Claude Code streams
+  // hardest, so `isActive` is true for the whole window and the pty override would relabel every
+  // tick `running` — which is how the phase came to be rendered everywhere and emitted nowhere.
+  it('survives the pty-activity override, which the generic busy states do not', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(assistant([{ type: 'text', text: 'before' }]) + boundary, { isActive: true })
+    expect(t.liveLanes(() => true)[0].phase).toBe('compacting')
+  })
+
+  it('a subagent talking does not end the compaction', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(
+      boundary + assistant([{ type: 'text', text: 'sub' }], { isSidechain: true }),
+    )
+    expect(t.liveLanes(() => true)[0].phase).toBe('compacting')
+  })
+
+  it('another system record is not a compaction — `subtype` is what decides', async () => {
+    const { t } = await run(
+      assistant([{ type: 'text', text: 'done' }]) + L({ type: 'system', subtype: 'hook_result', timestamp: TS }),
+    )
+    expect(t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
 })
 
 describe('subagents', () => {
