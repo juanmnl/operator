@@ -2339,6 +2339,18 @@ export function DashboardView() {
       // lane's environment, which is what lets its MCP server stamp a report with who filed it
       // rather than looking up a terminal id that several sessions share.
       if (opts?.roleId) launchOptions.roleId = opts.roleId
+      // REMOTE CONTROL, resolved through the same cascade as model and effort. The boolean drives
+      // the settings file (which is what turns the bridge on, and must be written explicitly
+      // `false` — absent inherits an org default that is currently ON, which is why the phone
+      // started listing every lane). The name is what the phone shows, and it names the PROJECT
+      // because "operator" alone is indistinguishable across six of them.
+      // Resolved HERE rather than trusted from the dialog: a lane launched by a dispatch never
+      // passes through that dialog, and the roster is the source either way.
+      const rcProject = projectsRef.current.find((p) => p.id === proj.id)
+      const rcRole = opts?.roleId ? rcProject?.roster?.find((r) => r.id === opts.roleId) : undefined
+      const rcOn = config.remoteControl ?? (rcRole ? resolveAgentConfig(rcRole, rcProject?.defaults).remoteControl : false)
+      launchOptions.remoteControl = rcOn
+      if (rcOn) launchOptions.remoteControlName = `${proj.name} · ${rcRole?.name ?? opts?.roleId ?? 'operator'}`
       // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
       // back with its thread, so a re-dispatch costs a process start and not a cold context.
       if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId

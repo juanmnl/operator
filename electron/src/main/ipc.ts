@@ -130,6 +130,7 @@ export function registerIpc(d: Deps): void {
         // `sessions.json` and taking the first row that matched.
         projectId: (o.projectId as string) ?? null,
         roleId: (o.roleId as string) ?? null,
+        remoteControl: o.remoteControl === true,
         ...layers,
       })
       // Register BEFORE returning: the tailer must be watching before Claude's first line

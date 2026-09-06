@@ -160,6 +160,13 @@ export interface Role {
   /** The lane's standing charter, appended to its system prompt at launch (how this
    *  role works — scope, method, output shape). Defaults per role; editable. */
   prompt?: string
+  /** Expose this lane to Claude Code's Remote Control, i.e. the Claude phone app.
+   *
+   *  Absent = inherit the preset, exactly as with `model` and `effort` — and the preset says ON
+   *  for the coordinator and OFF for everyone else. Since Claude Code changed Remote Control the
+   *  default is auto-on, so every open lane appeared on the phone; one project's coordinator is
+   *  the thing worth reaching from there, and a fleet of six is not. */
+  remoteControl?: boolean
 }
 
 /** Compact summary of a task's code change, captured when the task completes. */
@@ -227,6 +234,9 @@ export interface SessionConfig {
   count: number
   /** Initial task submitted to every agent on launch (required when count > 1). */
   prompt: string
+  /** Expose this lane to the Claude phone app. Resolved from the role through the same cascade
+   *  as `model` and `useWorktree` — see `Role.remoteControl`. */
+  remoteControl?: boolean
 }
 
 /** A project = a folder/repo (its canonical git root) that owns many sessions over time.

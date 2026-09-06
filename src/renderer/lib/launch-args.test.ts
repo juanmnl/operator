@@ -87,3 +87,45 @@ describe('mcpConfigArg — the client half of the artifact plane', () => {
     expect(() => JSON.parse(s)).not.toThrow()
   })
 })
+
+// REMOTE CONTROL'S NAME — what the Claude phone app lists a session as. The flag only NAMES the
+// session; the settings file is what turns the bridge on (see `buildSessionSettings`).
+describe('buildArgs — remote control', () => {
+  it('adds the flag with the name when one is given', () => {
+    expect(buildArgs({ remoteControlName: 'operator · operator' }))
+      .toEqual(['--remote-control', 'operator · operator'])
+  })
+
+  it('adds nothing at all for a lane with remote control off', () => {
+    expect(buildArgs({})).toEqual([])
+    expect(buildArgs({ remoteControlName: '' })).toEqual([])
+    expect(buildArgs({ remoteControlName: '   ' })).toEqual([])
+  })
+
+  // THE ORDERING HAZARD. `--remote-control [name]` takes an OPTIONAL argument, so if it were ever
+  // the last flag before the positional prompt it would swallow the prompt as its name: the lane
+  // would start with no instruction and the phone would list it under the first line of a task.
+  it('puts the name before the prompt, so the prompt is never swallowed', () => {
+    const args = buildArgs({ remoteControlName: 'proj · operator', initialPrompt: 'do the thing' })
+    expect(args).toEqual(['--remote-control', 'proj · operator', 'do the thing'])
+    expect(args.indexOf('--remote-control')).toBeLessThan(args.indexOf('do the thing'))
+    // The token straight after the flag is its name and not the prompt.
+    expect(args[args.indexOf('--remote-control') + 1]).toBe('proj · operator')
+  })
+
+  it('coexists with the flags a real launch carries', () => {
+    const args = buildArgs(
+      { model: 'fable', effort: 'medium', remoteControlName: 'proj · operator', initialPrompt: 'go' },
+      'aaaa-bbbb',
+    )
+    expect(args).toEqual([
+      '--session-id', 'aaaa-bbbb', '--model', 'fable', '--effort', 'medium',
+      '--remote-control', 'proj · operator', 'go',
+    ])
+  })
+
+  it('trims a padded name rather than passing whitespace to the phone', () => {
+    expect(buildArgs({ remoteControlName: '  proj · operator  ' }))
+      .toEqual(['--remote-control', 'proj · operator'])
+  })
+})

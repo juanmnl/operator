@@ -69,3 +69,32 @@ describe('writeSessionSettings', () => {
     process.env.OPERATOR_DIR = prev
   })
 })
+
+// REMOTE CONTROL — the one key written even when false.
+//
+// Read out of the installed binary (2.1.261), not the help text: `remoteControlAtStartup`
+// resolves as project/local `false` first, then the first of
+// `["policySettings","flagSettings","userSettings"]`, then the legacy global config, then the org
+// default — which is currently auto-ON. A `--settings` file is `flagSettings`, so it outranks the
+// user's own settings and only an org policy beats it.
+describe('remoteControlAtStartup', () => {
+  it('is written as true for a lane that has it on', () => {
+    expect(s.buildSessionSettings({ tui: 'default', remoteControlAtStartup: true }).remoteControlAtStartup).toBe(true)
+  })
+
+  it('IS WRITTEN when false — the whole point, because absent inherits an org default of ON', () => {
+    const out = s.buildSessionSettings({ tui: 'default', remoteControlAtStartup: false })
+    expect(out).toHaveProperty('remoteControlAtStartup', false)
+    // Not merely falsy: the KEY has to be present in the serialised file.
+    expect(JSON.parse(JSON.stringify(out))).toHaveProperty('remoteControlAtStartup')
+  })
+
+  it('is left out entirely when the caller says nothing, so a merge stays minimal', () => {
+    expect(s.buildSessionSettings({ tui: 'default' })).not.toHaveProperty('remoteControlAtStartup')
+  })
+
+  it('does not disturb the other keys', () => {
+    const out = s.buildSessionSettings({ tui: 'fullscreen', env: { A: '1' }, remoteControlAtStartup: false })
+    expect(out).toEqual({ tui: 'fullscreen', env: { A: '1' }, remoteControlAtStartup: false })
+  })
+})

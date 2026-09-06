@@ -956,6 +956,21 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
                 accent={accent}
               />
             )}
+            {/* REMOTE CONTROL — whether this lane appears in the Claude phone app. Beside the
+                worktree toggle because it is the same kind of choice: a per-lane switch with a
+                preset behind it, on for the coordinator and off for everyone else. Since Claude
+                Code made Remote Control auto-on, every open lane was listed; one coordinator per
+                project is what is worth reaching from a phone. */}
+            <Segmented
+              name="remote-control"
+              label="remote"
+              options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
+              value={resolved.remoteControl ? 'on' : 'off'}
+              origin={role.remoteControl === undefined ? 'inherited' : 'pinned'}
+              onChange={(id) => onPatch({ remoteControl: id === 'on' })}
+              onClear={() => onPatch({ remoteControl: undefined })}
+              accent={accent}
+            />
           </div>
         </div>
         {/* Effort + primary action. */}

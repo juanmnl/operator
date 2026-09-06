@@ -64,6 +64,9 @@ export interface SpawnOptions {
    *  they used to be resolved through picked the wrong row — see `resolveCaller`. */
   projectId?: string | null
   roleId?: string | null
+  /** Expose this lane to Claude Code's Remote Control (the Claude phone app). Written into the
+   *  session settings file EXPLICITLY, false included — see `buildSessionSettings`. */
+  remoteControl?: boolean
 }
 
 interface Managed {
@@ -194,6 +197,9 @@ export class TerminalManager {
       env: o.env,
       skillOverrides: o.skillOverrides,
       enabledPlugins: o.enabledPlugins,
+      // `?? false` and not `|| undefined`: leaving the key out inherits Claude Code's org
+      // default, which is currently auto-ON, and that is exactly the behaviour being fixed.
+      remoteControlAtStartup: o.remoteControl ?? false,
     })
     const prefix = ['claude', '--settings', settingsPath ?? JSON.stringify({ tui: o.tuiMode })]
     const notes: string[] = []
