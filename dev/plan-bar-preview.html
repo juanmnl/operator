@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — plan reading in the session bottom bar</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+    <!-- DEV-ONLY, STATIC: a hand-built mock of the session bottom bar carrying the session's
+         context, its model · effort, and the plan reading (dev/results/plan-meter-bottom-bar.md).
+         No React, no bridge — every number is fixture. The footer geometry mirrors the real
+         `.actions-footer` (34px, border-top, 10.5px buttons) from src/renderer/styles.css:405.
+         Open it directly: `open dev/plan-bar-preview.html`. Never bundled. -->
+    <style>
+      /* ── Palettes, copied verbatim from src/renderer/themes/*.ts ─────────────────── */
+      :root {
+        --radius-lg: 12px; --radius-md: 8px; --radius-sm: 6px;
+        --font-disp: 'Sora', 'Archivo', system-ui, -apple-system, sans-serif;
+        --font-body: 'Archivo', system-ui, -apple-system, sans-serif;
+        --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+        /* A control's LABEL is body ink, not meta ink — one value, per feedback_muted_opacity_rule. */
+        --fg-control: color-mix(in srgb, var(--fg) 72%, transparent);
+      }
+      [data-theme="mission-control-dark"] {
+        --bg-terminal:#0b0d10; --bg-sidebar:#07090b; --bg-surface:#161b21; --fg:#eef1f3;
+        --fg-muted:#8a94a0; --accent:#2fe39a; --btn-bg:#161b21; --border:#21272f;
+        --color-success:#2fe39a; --color-error:#ff5f56; --color-warning:#ffb454;
+        --status-running:#58b2ff; --status-compacting:#ffb454; --status-waiting:#2fe39a;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#58b2ff; --magenta:#c98bff; --cyan:#3fd9c9; --yellow:#ffb454; --red:#ff5f56;
+      }
+      [data-theme="mission-control-light"] {
+        --bg-terminal:#F6F8F7; --bg-sidebar:#ECEFED; --bg-surface:#E2E6E4; --fg:#1f2937;
+        --fg-muted:#6b7280; --accent:#0ca678; --btn-bg:#DEE2E0; --border:#cdd2cf;
+        --color-success:#0ca678; --color-error:#c0392b; --color-warning:#b8860b;
+        --status-running:#2563eb; --status-compacting:#b8860b; --status-waiting:#0ca678;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#2563eb; --magenta:#8e44ad; --cyan:#0e7490; --yellow:#b8860b; --red:#c0392b;
+      }
+      [data-theme="mr-pink-dark"] {
+        --bg-terminal:#22222A; --bg-sidebar:#1E1E25; --bg-surface:#2b2b37; --fg:#F6F8F7;
+        --fg-muted:#adadad; --accent:#D58FDB; --btn-bg:#1E1E25; --border:#2a2a35;
+        --color-success:#84eea7; --color-error:#ff6057; --color-warning:#FAD481;
+        --status-running:#84eea7; --status-compacting:#FAD481; --status-waiting:#D58FDB;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#4095ff; --magenta:#F859CA; --cyan:#8FC8FF; --yellow:#FAD481; --red:#ff6057;
+      }
+      [data-theme="mr-pink-light"] {
+        --bg-terminal:#F8F6F8; --bg-sidebar:#EFEBEF; --bg-surface:#E7E1E7; --fg:#2c2c2c;
+        --fg-muted:#777777; --accent:#a21caf; --btn-bg:#E1DBE1; --border:#d3ccd3;
+        --color-success:#27ae60; --color-error:#c0392b; --color-warning:#b8860b;
+        --status-running:#27ae60; --status-compacting:#b8860b; --status-waiting:#a21caf;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#2563eb; --magenta:#be185d; --cyan:#0e7490; --yellow:#b8860b; --red:#c0392b;
+      }
+      [data-theme="1984-dark"] {
+        --bg-terminal:#0d0f31; --bg-sidebar:#070825; --bg-surface:#12143f; --fg:#f1f1f1;
+        --fg-muted:#8888aa; --accent:#46BDFF; --btn-bg:#1c1f54; --border:#1a1c50;
+        --color-success:#B3F361; --color-error:#FF16B0; --color-warning:#FFEA16;
+        --status-running:#B3F361; --status-compacting:#FFEA16; --status-waiting:#46BDFF;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#46BDFF; --magenta:#F806FA; --cyan:#59E1E3; --yellow:#FFEA16; --red:#FF16B0;
+      }
+      [data-theme="1984-light"] {
+        --bg-terminal:#e4e5f5; --bg-sidebar:#dadbef; --bg-surface:#d0d1e8; --fg:#19152c;
+        --fg-muted:#6b6786; --accent:#0098fd; --btn-bg:#d0d1e8; --border:#c4c5dd;
+        --color-success:#00af4f; --color-error:#FF16B0; --color-warning:#FF8D01;
+        --status-running:#0a7333; --status-compacting:#FF8D01; --status-waiting:#0098fd;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#0098fd; --magenta:#F806FA; --cyan:#00b2be; --yellow:#FF8D01; --red:#FF16B0;
+      }
+
+      /* ── Page scaffold (dev chrome, not the design) ───────────────────────────────── */
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        background: var(--bg-sidebar); color: var(--fg);
+        font-family: var(--font-body); font-size: 13px; -webkit-font-smoothing: antialiased;
+        padding: 26px 26px 90px;
+      }
+      h1 { font-family: var(--font-disp); font-size: 16px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 3px; }
+      p.lede { font-size: 11.5px; color: var(--fg-muted); line-height: 1.6; margin: 0 0 22px; max-width: 74ch; }
+      h2.case {
+        font-family: var(--font-mono); font-size: 9.5px; font-weight: 500;
+        text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-muted);
+        margin: 26px 0 7px;
+      }
+      p.case-note { font-size: 11px; color: var(--fg-muted); line-height: 1.55; margin: 6px 0 0; max-width: 82ch; }
+
+      /* The content card the footer belongs to — same radius and ground as the real one. */
+      .card {
+        background: var(--bg-terminal); border-radius: var(--radius-lg);
+        overflow: hidden; max-width: 1040px;
+      }
+      .card.narrow { max-width: 560px; }
+      .stage {
+        height: 62px; padding: 12px 14px;
+        font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-muted);
+        display: flex; align-items: flex-end;
+      }
+
+      /* ── THE BAR — geometry from styles.css:405 `.actions-footer` ─────────────────── */
+      .actions-footer {
+        flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+        height: 34px; padding: 0 10px; box-sizing: border-box;
+        border-top: 1px solid var(--border); font-family: var(--font-body);
+      }
+      .actions-footer-btn {
+        display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px;
+        font-size: 10.5px; font-weight: 600; font-family: inherit;
+        color: var(--fg-muted); background: transparent;
+        border: 1px solid var(--border); border-radius: 6px; cursor: pointer; outline: none;
+        transition: color 0.12s, border-color 0.12s; white-space: nowrap;
+      }
+      .actions-footer-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
+      .actions-footer-label {
+        font-size: 10.5px; color: var(--fg-muted);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        min-width: 0; margin-left: auto;
+      }
+
+      /* ── The readout group ────────────────────────────────────────────────────────── */
+      .readouts { display: flex; align-items: center; flex-shrink: 0; }
+      /* A hairline between cells. It out-spaces what it divides: 10px either side. */
+      .readouts > .seam { width: 1px; height: 15px; background: var(--border); margin: 0 10px; flex-shrink: 0; }
+
+      /* A cell. Buttons carry no border at rest — the bar already has enough boxes; hover
+         brings the same overlay the rail cells use, so the target is discoverable without
+         drawing a fourth outline in a 34px strip. */
+      .cell {
+        display: inline-flex; align-items: center; gap: 7px;
+        height: 22px; padding: 0 7px; border-radius: 6px;
+        background: transparent; border: none; outline: none;
+        font-family: inherit; color: inherit; flex-shrink: 0;
+      }
+      button.cell { cursor: pointer; }
+      button.cell:hover { background: var(--overlay-subtle); }
+      button.cell:focus-visible { background: var(--overlay-subtle); }
+
+      .k { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--fg-muted); }
+      .v { font-family: var(--font-mono); font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--fg); }
+      .v.dim { color: var(--fg-muted); }
+      /* A control's label is body ink, not meta ink — one value, never a stacked opacity. */
+      .lbl { font-size: 10.5px; color: color-mix(in srgb, var(--fg) 72%, transparent); white-space: nowrap; }
+
+      /* Bars carry a background and no border: a colour-changing border on a radiused element
+         re-rasterizes in WKWebView. No animation — a bar that moves reads as loading. */
+      .bar { width: 34px; height: 3px; border-radius: 2px; background: var(--overlay-medium); overflow: hidden; flex-shrink: 0; }
+      .bar > i { display: block; height: 100%; }
+
+      /* The plan trio. Each limit is NAMED — a one-glyph ring is what made 66% (Fable) read as
+         "it only shows Fable". The binding one takes --fg ink, a toned bar and a 1px rule under
+         it; the others stay muted. Colour for meaning on the ink, never a fill. */
+      .trio { display: inline-flex; align-items: center; gap: 12px; }
+      .limit { display: inline-flex; flex-direction: column; gap: 3px; }
+      .limit-top { display: inline-flex; align-items: baseline; gap: 5px; }
+      .limit .bar { width: 40px; }
+      .limit.binding .rule { height: 1px; background: currentColor; }
+
+      /* Transparent chips, bordered, colour on the text. */
+      /* A value we only know from the launch pin, never reported back by a turn. A dotted
+         rule is straight, so it never lands on a radiused edge, and the ink does not change:
+         this cell is a control, and a control's label stays body ink. */
+      .pin { border-bottom: 1px dotted var(--fg-muted); }
+
+      .chip {
+        display: inline-flex; align-items: center; font-family: var(--font-mono);
+        font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+        padding: 1px 5px; border-radius: 5px; border: 1px solid var(--border);
+        background: transparent; color: var(--fg-muted); white-space: nowrap;
+      }
+      .chip.warn { color: var(--status-compacting); border-color: color-mix(in srgb, var(--status-compacting) 45%, transparent); }
+
+      .devbar {
+        position: fixed; right: 14px; bottom: 14px; z-index: 50; display: flex; gap: 4px;
+        padding: 5px; border-radius: var(--radius-md);
+        background: var(--bg-sidebar); border: 1px dashed var(--border);
+      }
+      .devbar button {
+        border: 1px solid var(--border); background: transparent;
+        color: color-mix(in srgb, var(--fg) 72%, transparent);
+        font-family: var(--font-mono); font-size: 9.5px; padding: 3px 6px; border-radius: 4px; cursor: pointer;
+      }
+      .devbar button[aria-pressed="true"] { background: var(--btn-bg); color: var(--fg); }
+    </style>
+  </head>
+  <body data-theme="mission-control-dark">
+    <div class="devbar" id="devbar">
+      <button data-t="mission-control-dark" aria-pressed="true">MC dark</button>
+      <button data-t="mission-control-light">MC light</button>
+      <button data-t="mr-pink-dark">Pink dark</button>
+      <button data-t="mr-pink-light">Pink light</button>
+      <button data-t="1984-dark">1984 dark</button>
+      <button data-t="1984-light">1984 light</button>
+    </div>
+
+    <h1>The session bottom bar, carrying the reading</h1>
+    <p class="lede">
+      Three cells on the right of the existing actions footer: this session's context against its
+      window, the model and effort it is actually running, and all three plan limits named at once
+      with the binding one marked. The rail foot's ring goes away — the number lives in one place.
+    </p>
+
+    <!-- ── 1. The full bar ───────────────────────────────────────────────────────────── -->
+    <h2 class="case">1 · At rest</h2>
+    <div class="card">
+      <div class="stage">operator · Review — waiting for your turn</div>
+      <div class="actions-footer">
+        <button class="actions-footer-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.1" />
+            <path d="M4 6l2.4 2L4 10M8.6 10.5H12" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Terminal
+        </button>
+        <button class="actions-footer-btn">Review</button>
+        <button class="actions-footer-btn">Activity</button>
+
+        <span class="actions-footer-label">~/.operator/worktrees/operator-3f9880</span>
+
+        <div class="readouts">
+          <span class="seam"></span>
+
+          <!-- Context. Not a button: it describes this session, and there is nothing to open. -->
+          <span class="cell" title="Context on the last turn: 84,200 of 200,000. Compacted twice this session.">
+            <span class="k">ctx</span>
+            <span class="v">84k<span class="v dim"> / 200k</span></span>
+            <span class="bar"><i style="width:42%; background:var(--accent)"></i></span>
+            <span class="v dim" title="compacted twice this session">↺2</span>
+          </span>
+
+          <span class="seam"></span>
+
+          <!-- Model · effort. Opens this lane's roster entry — the knob these two values name. -->
+          <button class="cell" title="Running Opus at High. Open Review in the roster.">
+            <span class="lbl">Opus · High</span>
+          </button>
+
+          <span class="seam"></span>
+
+          <!-- The plan reading. Every limit named; the binding one marked. Opens Tuning. -->
+          <button class="cell" title="Plan usage — opens Tuning">
+            <span class="trio">
+              <span class="limit">
+                <span class="limit-top"><span class="k">Session</span><span class="v dim">17%</span></span>
+                <span class="bar"><i style="width:17%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit">
+                <span class="limit-top"><span class="k">Week</span><span class="v dim">42%</span></span>
+                <span class="bar"><i style="width:42%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit binding" style="color:var(--accent)" title="resets Sep 8 at 12:59am (America/Guayaquil)">
+                <span class="limit-top"><span class="k" style="color:var(--fg)">Fable</span><span class="v">66%</span></span>
+                <span class="bar"><i style="width:66%; background:var(--accent)"></i></span>
+                <span class="rule"></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="case-note">
+      All three limits are named and drawn at once, so the reading can no longer be misread as being
+      about one model. The binding one — whichever is closest to stopping you — takes full ink, a
+      toned bar and a 1px rule; the other two stay muted. That is colour for meaning on the text,
+      not a fill.
+    </p>
+
+    <!-- ── 2. Thresholds ─────────────────────────────────────────────────────────────── -->
+    <h2 class="case">2 · Amber past 75, red past 90</h2>
+    <div class="card">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <span class="actions-footer-label">~/.operator/worktrees/operator-3f9880</span>
+        <div class="readouts">
+          <span class="seam"></span>
+          <span class="cell" title="Context on the last turn: 168,400 of 200,000.">
+            <span class="k">ctx</span>
+            <span class="v">168k<span class="v dim"> / 200k</span></span>
+            <span class="bar"><i style="width:84%; background:var(--status-compacting)"></i></span>
+            <span class="v dim" title="compacted five times this session">↺5</span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell"><span class="lbl">Opus · Extra high</span></button>
+          <span class="seam"></span>
+          <button class="cell" title="Plan usage — opens Tuning">
+            <span class="trio">
+              <span class="limit">
+                <span class="limit-top"><span class="k">Session</span><span class="v dim">31%</span></span>
+                <span class="bar"><i style="width:31%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit binding" style="color:var(--color-error)" title="resets Sep 8 at 12:59am (America/Guayaquil)">
+                <span class="limit-top"><span class="k" style="color:var(--fg)">Week</span><span class="v">93%</span></span>
+                <span class="bar"><i style="width:93%; background:var(--color-error)"></i></span>
+                <span class="rule"></span>
+              </span>
+              <span class="limit">
+                <span class="limit-top"><span class="k">Opus</span><span class="v dim">78%</span></span>
+                <span class="bar"><i style="width:78%; background:var(--fg-muted)"></i></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="case-note">
+      The same `TONE_FILL` thresholds the plan meter already uses, now spoken by the context bar too,
+      so one language covers both. A&nbsp;non-binding row at 78% still draws muted: only the binding one is
+      coloured, or three amber bars would say three separate alarms are ringing.
+    </p>
+
+    <!-- ── 3. Compacting ─────────────────────────────────────────────────────────────── -->
+    <h2 class="case">3 · Compacting, and no reading yet</h2>
+    <div class="card">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <span class="actions-footer-label">~/.operator/worktrees/operator-a41f22</span>
+        <div class="readouts">
+          <span class="seam"></span>
+          <span class="cell" title="Compacting — the context is being rebuilt.">
+            <span class="k">ctx</span>
+            <span class="lbl" style="color:var(--status-compacting)">compacting…</span>
+            <span class="bar"></span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell"><span class="lbl">Sonnet · Medium</span></button>
+          <span class="seam"></span>
+          <button class="cell" title="Plan usage — opens Tuning">
+            <span class="trio">
+              <span class="limit">
+                <span class="limit-top"><span class="k">Session</span><span class="v dim">17%</span></span>
+                <span class="bar"><i style="width:17%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit">
+                <span class="limit-top"><span class="k">Week</span><span class="v dim">42%</span></span>
+                <span class="bar"><i style="width:42%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit binding" style="color:var(--accent)">
+                <span class="limit-top"><span class="k" style="color:var(--fg)">Fable</span><span class="v">66%</span></span>
+                <span class="bar"><i style="width:66%; background:var(--accent)"></i></span>
+                <span class="rule"></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div style="height:10px"></div>
+    <div class="card">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <span class="actions-footer-label">~/Developer/mantel</span>
+        <div class="readouts">
+          <span class="seam"></span>
+          <!-- Before the first assistant turn there is no context to report. A dash, never 0. -->
+          <span class="cell" title="No turn yet — nothing to measure.">
+            <span class="k">ctx</span>
+            <span class="v dim">—<span class="v dim"> / 200k</span></span>
+            <span class="bar"></span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell"><span class="lbl">Opus · <span class="pin" title="the launch pin — no turn has reported an effort back yet">High</span></span></button>
+          <span class="seam"></span>
+          <button class="cell" title="Plan usage — opens Tuning">
+            <span class="trio">
+              <span class="limit">
+                <span class="limit-top"><span class="k">Session</span><span class="v dim">17%</span></span>
+                <span class="bar"><i style="width:17%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit">
+                <span class="limit-top"><span class="k">Week</span><span class="v dim">42%</span></span>
+                <span class="bar"><i style="width:42%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit binding" style="color:var(--accent)">
+                <span class="limit-top"><span class="k" style="color:var(--fg)">Fable</span><span class="v">66%</span></span>
+                <span class="bar"><i style="width:66%; background:var(--accent)"></i></span>
+                <span class="rule"></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="case-note">
+      Compacting is the one moment this bar changes while you watch, and it is a text swap, not an
+      animation — motion in this app means busy, and a moving bar reads as loading. Below it: a lane
+      before its first turn. The&nbsp;context is a dash against a known window, never a zero, and the
+      effort is marked as the launch pin because no turn has reported one back.
+    </p>
+
+    <!-- ── 4. Plan reading absent / expired ──────────────────────────────────────────── -->
+    <h2 class="case">4 · No plan reading, and one too old to stand behind</h2>
+    <div class="card">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <span class="actions-footer-label">~/.operator/worktrees/operator-3f9880</span>
+        <div class="readouts">
+          <span class="seam"></span>
+          <span class="cell">
+            <span class="k">ctx</span>
+            <span class="v">84k<span class="v dim"> / 200k</span></span>
+            <span class="bar"><i style="width:42%; background:var(--accent)"></i></span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell"><span class="lbl">Opus · High</span></button>
+          <span class="seam"></span>
+          <!-- Absent is not zero: no bars, no percentages, one chip. The sentence that used to
+               explain this lives on the Tuning page now, one click away. -->
+          <button class="cell" title="Operator reads this from the Claude CLI. Open Tuning.">
+            <span class="k">plan</span>
+            <span class="chip">no reading</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div style="height:10px"></div>
+    <div class="card">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <span class="actions-footer-label">~/.operator/worktrees/operator-3f9880</span>
+        <div class="readouts">
+          <span class="seam"></span>
+          <span class="cell">
+            <span class="k">ctx</span>
+            <span class="v">84k<span class="v dim"> / 200k</span></span>
+            <span class="bar"><i style="width:42%; background:var(--accent)"></i></span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell"><span class="lbl">Opus · High</span></button>
+          <span class="seam"></span>
+          <button class="cell" title="That window closed. Re-reading — open Tuning.">
+            <span class="k">plan</span>
+            <span class="chip warn">window closed</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="case-note">
+      Absent and expired keep their own words and never render as 0%. An&nbsp;aging reading — past the
+      five-minute cache but inside the hour — keeps its numbers and adds one amber dot before them,
+      because those numbers are still the best thing available and the dot is the only warning
+      there is room for.
+    </p>
+
+    <!-- ── 5. Narrow ─────────────────────────────────────────────────────────────────── -->
+    <h2 class="case">5 · Narrow, with the panel open</h2>
+    <div class="card narrow">
+      <div class="actions-footer">
+        <button class="actions-footer-btn">Terminal</button>
+        <button class="actions-footer-btn">Review</button>
+        <div class="readouts" style="margin-left:auto">
+          <span class="cell">
+            <span class="k">ctx</span>
+            <span class="v">84k<span class="v dim"> / 200k</span></span>
+            <span class="bar"><i style="width:42%; background:var(--accent)"></i></span>
+            <span class="v dim" title="compacted twice this session">↺2</span>
+          </span>
+          <span class="seam"></span>
+          <button class="cell" title="Plan usage — opens Tuning">
+            <span class="trio">
+              <span class="limit">
+                <span class="limit-top"><span class="k">S</span><span class="v dim">17%</span></span>
+                <span class="bar" style="width:26px"><i style="width:17%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit">
+                <span class="limit-top"><span class="k">W</span><span class="v dim">42%</span></span>
+                <span class="bar" style="width:26px"><i style="width:42%; background:var(--fg-muted)"></i></span>
+              </span>
+              <span class="limit binding" style="color:var(--accent)">
+                <span class="limit-top"><span class="k" style="color:var(--fg)">Fable</span><span class="v">66%</span></span>
+                <span class="bar" style="width:26px"><i style="width:66%; background:var(--accent)"></i></span>
+                <span class="rule"></span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="case-note">
+      What goes first as the bar narrows, in order: the working directory, then the model · effort
+      cell (which the lane's hover card and its orb both also carry), then the two non-binding limits
+      shorten to initials. The&nbsp;binding limit keeps its full name at every width, because naming it is
+      the whole fix. Context&nbsp;and the binding limit never drop.
+    </p>
+
+    <script>
+      document.getElementById('devbar').addEventListener('click', function (e) {
+        var t = e.target.getAttribute && e.target.getAttribute('data-t')
+        if (!t) return
+        document.body.setAttribute('data-theme', t)
+        Array.prototype.forEach.call(this.querySelectorAll('button'), function (b) {
+          if (b.getAttribute('data-t') === t) b.setAttribute('aria-pressed', 'true')
+          else b.removeAttribute('aria-pressed')
+        })
+      })
+    </script>
+  </body>
+</html>
