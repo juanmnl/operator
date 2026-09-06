@@ -16,7 +16,6 @@ import { IDLE, installBusy, installTitle, type InstallState } from '../../lib/up
 import { currentTaskOf } from '../../lib/session-task'
 import { tildePath } from '../../lib/format'
 import { resolveLaneInitials } from '../../lib/lane-initial'
-import { PlanMeter, usePlanLimits } from './PlanMeter'
 import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
 import { ROW_INSET_L } from './rail-metrics'
 import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../lib/rail-foot'
@@ -269,7 +268,6 @@ export function ProjectRail({
   onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme,
   version, update, installState, onInstallUpdate,
 }: ProjectRailProps) {
-  const planLimits = usePlanLimits()
   const [drag, setDrag] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
   // `onDragOver` fires on a DIFFERENT element than the one that started the drag, and reading
@@ -615,7 +613,6 @@ export function ProjectRail({
 
       <RailFoot
         collapsed={collapsed}
-        planLimits={planLimits}
         agentsActive={agentsActive}
         onOpenAgents={onOpenAgents}
         tuningActive={tuningActive}
@@ -1178,9 +1175,8 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
  *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
  *  unmount `Sidebar.tsx`, and with it the theme toggle, Preferences and both `.claude` shortcuts
  *  simply stopped existing. */
-function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, tuningActive, onOpenTuning, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
+function RailFoot({ collapsed, agentsActive, onOpenAgents, tuningActive, onOpenTuning, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
   collapsed: boolean
-  planLimits: ReturnType<typeof usePlanLimits>
   agentsActive?: boolean
   onOpenAgents: () => void
   tuningActive?: boolean
@@ -1259,16 +1255,19 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, tuningAct
             are deciding what to start.
             It renders its OWN button, so it takes the cell treatment rather than being wrapped in
             one: a button inside a button passes a click test and is still wrong for the keyboard. */}
-        <PlanMeter
-          collapsed={collapsed}
-          label="Plan usage"
-          limits={planLimits.limits}
-          loading={planLimits.loading}
-          now={planLimits.now}
-          onRefresh={planLimits.refresh}
-          onRevalidate={planLimits.revalidate}
-          onOpenTuning={onOpenTuning}
-        />
+        {/* THE PLAN CELL IS GONE FROM HERE, and the reading now lives in the session footer
+            (`FooterReading`) where every limit is named and the binding one is marked. A 12px
+            unlabelled arc could not say which of the three it had drawn, which is the whole
+            reason that design exists.
+
+            REMOVED STATICALLY, never conditionally: `lib/rail-foot` and
+            `dev/drive-rail-invariant.mjs` assert which items are present AT REST, and the fold
+            work exists precisely because items used to appear and disappear. Tuning took the
+            freed slot, so the resting tier stays four items — two rows of two, which is what
+            keeps the fold's cut on a group seam.
+
+            The cost, stated: there is no plan reading outside a session until the same component
+            renders in the gallery/project header (the design's S3). */}
       </FootRow>
       {hairline}
       {/* Navigation BETWEEN projects. */}

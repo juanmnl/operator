@@ -151,6 +151,19 @@ pub struct AgentSession {
     /// silently leaves behind.
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<String>,
+    /// The LATEST prompt size, not a running total — `usage` above is cumulative and cannot
+    /// answer "how full is the context right now". Absent before the first assistant turn, which
+    /// the footer renders as `—` rather than as `0k`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_tokens: Option<u64>,
+    /// `compact_boundary` records seen on this session. Zero is the ordinary case, so it is
+    /// skipped rather than shipped on every payload.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    compactions: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 pub fn now_iso() -> String {
@@ -324,6 +337,8 @@ impl AgentSession {
             model,
             usage,
             effort: None,
+            context_tokens: None,
+            compactions: 0,
         }
     }
 
@@ -331,8 +346,13 @@ impl AgentSession {
     /// the live value with the launch pin as its fallback. A builder for the same reason
     /// `with_queued` is one: only the tailer sets it, and the constructor already takes sixteen
     /// arguments.
-    pub fn with_tuning(mut self, effort: Option<String>) -> AgentSession {
+    pub fn with_tuning(mut self, effort: Option<String>, context_tokens: u64, compactions: u32) -> AgentSession {
         self.effort = effort;
+        // ZERO IS ABSENT, not empty. Before the first assistant turn there is nothing to measure,
+        // and the footer must draw `—` with a bare track rather than `0k` with a full-looking bar
+        // — the same "absent is not zero" rule the plan meter already keeps.
+        self.context_tokens = if context_tokens > 0 { Some(context_tokens) } else { None };
+        self.compactions = compactions;
         self
     }
 

@@ -297,3 +297,27 @@ export function remoteControlLaunch(
     ? { remoteControl: true, remoteControlName: `${project?.name ?? 'Operator'} · ${role.name}` }
     : { remoteControl: false }
 }
+
+
+// ── The context window ───────────────────────────────────────────────────────────────────────
+
+/** Claude's standard context window. */
+export const CONTEXT_WINDOW = 200_000
+
+/** …and the long variant's. */
+export const CONTEXT_WINDOW_1M = 1_000_000
+
+/** How much context this model can hold.
+ *
+ *  It lives beside the rest of model identity rather than as a literal at the render site, which
+ *  is where a second, disagreeing `200000` would eventually appear. Nothing in the repo carried a
+ *  context-window constant before this — grepping `200_000` and `contextWindow` returned only
+ *  unrelated test timings.
+ *
+ *  THE `[1m]` MARKER is Claude Code's own: a long-context model id carries it as a suffix tag.
+ *  Matched case-insensitively and anywhere in the id, because it rides on the id rather than being
+ *  a field of its own, and an unrecognised id gets the standard window rather than a guess — a
+ *  200k denominator on a 1M model reads as "nearly full" and is wrong in the safe direction. */
+export function contextWindowOf(model: string | null | undefined): number {
+  return model && /\[1m\]/i.test(model) ? CONTEXT_WINDOW_1M : CONTEXT_WINDOW
+}

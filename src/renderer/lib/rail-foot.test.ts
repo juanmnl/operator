@@ -21,9 +21,11 @@ describe('the two tiers', () => {
     expect(FOLDED_FOOT_ITEMS).toHaveLength(4)
   })
 
-  it('keeps the ambient meter at rest — its value is being seen, not clicked', () => {
-    expect(RESTING_FOOT_ITEMS).toContain<FootItemId>('usage')
-    expect(FOLDED_FOOT_ITEMS).not.toContain<FootItemId>('usage')
+  it('keeps Tuning at rest, where the ambient meter used to be', () => {
+    // The plan reading moved to the session footer, and Tuning took the freed slot — which is
+    // what keeps the resting tier at four and the fold's cut on a group seam.
+    expect(RESTING_FOOT_ITEMS).toContain<FootItemId>('tuning')
+    expect(FOLDED_FOOT_ITEMS).not.toContain<FootItemId>('tuning')
   })
 
   it('keeps the constant navigation at rest', () => {
@@ -44,7 +46,7 @@ describe('the two tiers', () => {
     expect(RESTING_FOOT_ITEMS.length % 2).toBe(0)
     expect(FOLDED_FOOT_ITEMS.length % 2).toBe(0)
     // The resting tier is rows 1-2 in order; the folded tier is rows 3-4 in order.
-    expect([...RESTING_FOOT_ITEMS]).toEqual(['agents', 'usage', 'gallery', 'open-folder'])
+    expect([...RESTING_FOOT_ITEMS]).toEqual(['agents', 'tuning', 'gallery', 'open-folder'])
     expect([...FOLDED_FOOT_ITEMS]).toEqual(['folder-prefs', 'global-prefs', 'prefs', 'theme'])
   })
 })

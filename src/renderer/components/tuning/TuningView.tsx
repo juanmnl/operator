@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Project, SavedSession, TuningData } from '../../../shared/types'
 import { PageShell, sectionHeader, sectionDesc, SECTION_GAP } from '../settings/PageShell'
-import { usePlanLimits } from '../sidebar/PlanMeter'
-import { TONE_FILL, toneFor, readable, hasData } from '../../lib/plan-limits'
+import { TONE_FILL, toneFor, readable, hasData, usePlanLimits } from '../../lib/plan-limits'
 import { modelFamilyLabel } from '../../lib/roster'
 import {
   joinLanes, biggestChange, cacheHealth, formatTokens, formatCost, formatChars,

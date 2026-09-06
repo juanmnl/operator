@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
 // Plan limits — the pure half. Everything the meter needs to decide, with no DOM and no bridge,
 // so every rule below is testable without a subprocess.
 //
@@ -303,4 +304,113 @@ export function ringDash(pct: number | null, r: number): { dash: number; gap: nu
   // a full ring — an empty track is the honest picture of "we don't know".
   const dash = value === null ? 0 : (circumference * value) / 100
   return { dash, gap: circumference - dash, circumference }
+}
+
+/** How often the hook re-examines its own reading. This tick spawns NOTHING — it moves `now`, so
+ *  a rendered age counts up instead of freezing at whatever it said when React last rendered, and
+ *  so `needsRevalidate` gets asked at all. A fetch happens only when that predicate says so. */
+const TICK_MS = 30_000
+
+// ── The hook ─────────────────────────────────────────────────────────────────────────────────
+//
+// IT LIVES HERE NOW, not in a component. It was `PlanMeter.tsx`'s export back when that
+// component was the only thing that read a plan limit; the reading has since moved to the
+// session footer and the Tuning page, and a data hook exported from a deleted component is
+// how an import graph ends up pointing at a file for a reason nobody can state.
+
+/** Load plan limits, keep them honest, and expose a manual refresh.
+ *
+ *  It used to read ONCE at mount and never again, which is how a session percentage from a window
+ *  that closed hours ago stayed on the ring all day. The backend still owns the cache and the
+ *  one-process-at-a-time guard, so the fix is about WHEN to ask, not about asking harder:
+ *
+ *   - at the moments attention lands — the window regaining focus or visibility, and the popover
+ *     being opened (`revalidate`, called from the meter). These are free when the reading is
+ *     already current, because they go through `needsRevalidate` first;
+ *   - on a slow tick, but ONLY while the document is visible. This is the case the attention
+ *     hooks miss: an app left open and focused all day, where nothing ever re-enters. A meter
+ *     nobody can see must not spawn a subprocess, so a hidden window ticks not at all.
+ *
+ *  Which is why this is still not "polling a subprocess per render": the interval moves a clock,
+ *  and `FRESH_MS` — the backend's own TTL — decides whether that clock is worth acting on. */
+export function usePlanLimits(): {
+  limits: PlanLimits | null
+  loading: boolean
+  now: number
+  refresh: () => void
+  revalidate: () => void
+} {
+  const [limits, setLimits] = useState<PlanLimits | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const inFlight = useRef(false)
+  // The revalidate path has to read the CURRENT reading without re-subscribing its listeners on
+  // every fetch — the same reason the launch path reads role defaults through a ref.
+  const limitsRef = useRef<PlanLimits | null>(null)
+  limitsRef.current = limits
+
+  const read = useCallback((force: boolean) => {
+    if (inFlight.current) return // the backend guards this too; this stops the UI flickering
+    const p = window.operator.planLimits?.(force)
+    if (!p) return
+    inFlight.current = true
+    setLoading(true)
+    void p
+      .then((l) => setLimits(l as PlanLimits))
+      .catch(() => { /* the command doesn't reject; a missing bridge just leaves it empty */ })
+      .finally(() => { inFlight.current = false; setLoading(false) })
+  }, [])
+
+  /** Ask again only if the reading has aged out. Safe to call on every focus and every popover
+   *  open — that is the point of it existing separately from `refresh`, which is the user saying
+   *  "no, actually go now" and skips both this check and the backend's TTL. */
+  const revalidate = useCallback(() => {
+    const at = Date.now()
+    setNow(at)
+    // A window whose own reset time has passed is not merely due a re-check: the cached value is
+    // provably describing a window that no longer exists, and the backend would happily serve it
+    // again for the rest of its 5-minute TTL. That is the one case worth forcing.
+    if (windowEnded(limitsRef.current, at)) read(true)
+    else if (needsRevalidate(limitsRef.current, at)) read(false)
+  }, [read])
+
+  // Deferred past first paint: app start must never wait on a subprocess. The meter renders
+  // empty and fills in.
+  useEffect(() => {
+    const t = setTimeout(() => read(false), 1200)
+    return () => clearTimeout(t)
+  }, [read])
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined
+    const stop = () => { if (timer) { clearInterval(timer); timer = undefined } }
+    const start = () => {
+      stop()
+      // Never leave an interval armed on a hidden window: a backgrounded app should cost nothing,
+      // and the visibility handler below re-arms it (and revalidates) the moment it comes back.
+      if (document.visibilityState === 'hidden') return
+      timer = setInterval(() => {
+        const at = Date.now()
+        setNow(at)
+        if (windowEnded(limitsRef.current, at)) read(true)
+        else if (needsRevalidate(limitsRef.current, at)) read(false)
+      }, TICK_MS)
+    }
+    const onVisible = () => {
+      start()
+      if (document.visibilityState === 'visible') revalidate()
+    }
+    start()
+    document.addEventListener('visibilitychange', onVisible)
+    // Focus as well as visibility: a window can be fully visible and simply not the front app,
+    // which is most of what "came back after a while" actually looks like on a desktop.
+    window.addEventListener('focus', revalidate)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', revalidate)
+    }
+  }, [read, revalidate])
+
+  return { limits, loading, now, refresh: useCallback(() => read(true), [read]), revalidate }
 }
