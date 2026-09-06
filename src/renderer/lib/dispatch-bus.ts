@@ -37,6 +37,13 @@ export interface DispatchVerdict {
   taskId?: string
   /** Why, for `refused` — and for `launching`, what Operator is doing instead. */
   reason?: string
+  /** Who the dispatch was routed to, on a `send`. Returned rather than left to the caller to
+   *  reverse-engineer from the address: the router already resolved this lane, and re-deriving it
+   *  by matching `to` back against the address map was a second, weaker resolution that silently
+   *  produced nothing on a miss — costing the board entry AND, once delivery confirmation existed,
+   *  the confirmation too. Internal, like `held`; the wire fields are named explicitly in
+   *  `mcp-serve`. */
+  target?: { roleId: string; terminalId: string }
   /** Set when the refusal is the AUTHORITY GATE rather than a brake or a bad lane name: the
    *  dispatch was recorded for the user to approve, and Operator delivers it itself if they do.
    *  The caller writes the `pending-approval` record from this; it never reaches the wire, which
@@ -200,7 +207,10 @@ export function resolveDispatch(
     : truncateForDelivery(req.task).text
   return {
     brakes: evaluated.state,
-    verdict: { outcome: 'send', to, text: `${deliveryPrefix(req.fromLabel)}${text}` },
+    verdict: {
+      outcome: 'send', to, text: `${deliveryPrefix(req.fromLabel)}${text}`,
+      target: { roleId: targetRoleId, terminalId: lane.id },
+    },
   }
 }
 

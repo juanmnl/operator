@@ -307,3 +307,31 @@ board asserting things that did not happen.
 
 Seven tests, one per named failure. Gates: renderer 1103, electron 519, cargo 192 passed / 3
 ignored, tsc clean in both projects, both builds clean.
+
+### Finding 8, closed — the target comes back with the verdict
+
+Review pointed out that the send book made this one worse: `trackSend` sits inside the same
+`if (target?.roleId)` as `addRunningTask`, so the reverse-derived lookup had quietly come to gate
+the delivery confirmation as well as the board entry. A miss meant no task **and** no tracking —
+and a dispatch with no tracking can never be judged undelivered, which is precisely the silence the
+confirmation half was added to end.
+
+The lookup should not have existed. `resolveDispatch` had already resolved the lane through
+`routeDispatch` and then dropped that answer, leaving the caller to recover it by matching
+`verdict.to` back against the address map — a second, weaker resolution of a question already
+answered, and one that failed silently.
+
+`DispatchVerdict` now carries `target: { roleId, terminalId }` on a `send`, and the caller uses it
+directly. The lane lookup that remains is only for worktree provenance (`cwd`, branch, base), so a
+lane that disappeared between the verdict and the board write now costs a diff link at worst rather
+than the whole record. `target` is internal like `held` and never reaches the wire, which the
+explicit field mapping in `mcp-serve` guarantees.
+
+Three tests: the target is named, a name-matched dispatch resolves to the same lane its address
+points at, and no outcome other than `send` carries one — a target on a refusal or a launch would
+invite a board row for work that is not going anywhere.
+
+Gates: renderer 1106, electron 519, cargo 192 passed / 3 ignored, tsc clean in both projects, both
+builds clean.
+
+Findings **4** and **7** remain open.

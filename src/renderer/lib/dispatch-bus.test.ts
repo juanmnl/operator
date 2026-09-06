@@ -102,6 +102,32 @@ describe('resolveDispatch — an UNKNOWN lane', () => {
   })
 })
 
+describe('resolveDispatch — the routed target comes back with the verdict', () => {
+  // Open finding 8: the caller used to re-derive the target by matching `to` back against the
+  // address map — a second, weaker resolution of what the router had already decided, which
+  // produced nothing on a miss and silently skipped the board entry. Once delivery confirmation
+  // existed the same miss skipped the tracking too, so one lookup gated both.
+  it('names the lane and its terminal, so nothing has to be reverse-engineered', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx())
+    expect(verdict.target).toEqual({ roleId: 'code', terminalId: 't-code' })
+  })
+
+  it('resolves the target of a NAME-matched dispatch to the same lane the address points at', () => {
+    const { verdict } = resolveDispatch(req('Review'), ctx())
+    expect(verdict.target?.roleId).toBe('review')
+    expect(verdict.target?.terminalId).toBe('t-review')
+    expect(verdict.to).toBe(ADDRESSES.get('uuid-review'))
+  })
+
+  it('names no target on any outcome that is not a send', () => {
+    // A target on a refusal or a launch would invite the caller to file a board row for work
+    // that is not going anywhere.
+    expect(resolveDispatch(req('cod'), ctx()).verdict.target).toBeUndefined()
+    expect(resolveDispatch(req('code'), ctx({ lanes: [lane('review')] })).verdict.target).toBeUndefined()
+    expect(resolveDispatch(req('code', { fromRoleId: 'code' }), ctx()).verdict.target).toBeUndefined()
+  })
+})
+
 describe('resolveDispatch — the AUTHORITY GATE', () => {
   // The hole this closes: `mcp__operator__dispatch` is offered to every lane regardless of role,
   // and the gate had exactly one call site — the sentinel subscription. So the bus path let any

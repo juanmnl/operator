@@ -1658,20 +1658,26 @@ export function DashboardView() {
           // The task and its board entry are Operator's to create even though the lane carries
           // the message: the board is how a human sees what was asked of whom, and it must not
           // depend on the sender remembering to say so afterwards.
-          const target = lanes.find((l) => l.roleId && verdict.to === addresses.get(l.claudeSessionId ?? ''))
-          if (target?.roleId) {
-            taskId = dispatchRef.current.addRunningTask(projectId, r.body, target.roleId, target.id, {
-              cwd: target.cwd, sourceCwd: target.sourceCwd,
-              worktreeBranch: target.worktreeBranch, worktreeBase: target.worktreeBase,
+          //
+          // TAKEN FROM THE VERDICT, not re-derived. This used to match `verdict.to` back against
+          // the address map to find the lane, which was a second resolution of something the
+          // router had already decided — and it failed SILENTLY, producing no task at all on a
+          // miss. Once delivery confirmation was added the same miss also skipped the tracking,
+          // so one lookup quietly gated both. The router knows the target; it returns it now.
+          const tgt = verdict.target
+          if (tgt) {
+            // Only for the worktree provenance the board shows. The task itself no longer needs
+            // this to exist, so a lane that has gone since the verdict costs a diff link at worst.
+            const tab = lanes.find((l) => l.id === tgt.terminalId)
+            taskId = dispatchRef.current.addRunningTask(projectId, r.body, tgt.roleId, tgt.terminalId, {
+              cwd: tab?.cwd, sourceCwd: tab?.sourceCwd,
+              worktreeBranch: tab?.worktreeBranch, worktreeBase: tab?.worktreeBase,
             })
             // THE CONFIRMATION HALF. The task is marked running here, but Operator does not carry
             // the message — the lane does — so until its `SendMessage` result comes back through
-            // the tailer this row is a claim, not a fact. Parked by the address the lane was
-            // handed, which is the only key both ends share: the lane echoes nothing back, and
-            // the tool result carries just the tool_use id and the `to` it was called with.
-            // Tracked against the SENDER's terminal, not just the address: the result carries
-            // only a tool_use id and the `to` it was called with, so without the sender any
-            // lane's send to that address would claim this one.
+            // the tailer this row is a claim, not a fact. Tracked against the SENDER's terminal
+            // as well as the address: the result carries only a tool_use id and the `to` it was
+            // called with, so without the sender any lane's send there would claim this one.
             if (taskId) trackSend(pendingSendsRef.current, r.terminalId, verdict.to!, { taskId, projectId, at: Date.now() })
           }
           // WHICH PATH EACH DISPATCH USED, logged while both exist. The sentinel keeps working
