@@ -674,6 +674,9 @@ function ProjectCard({
             // shelf write there is no longer anything to undo.
             ...(showClose
               ? [{
+                  // `id` and not the label: the label counts agents, and an agent exiting between the two
+                  // clicks of the confirm would otherwise re-arm instead of firing.
+                  id: 'close-project',
                   label: liveCount > 0 ? `Close project · end ${liveCount} agent${liveCount === 1 ? '' : 's'}` : 'Close project',
                   onClick: onCloseProject,
                   separator: true,

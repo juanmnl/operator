@@ -107,6 +107,10 @@ export interface AgentSession {
   summary?: string
   status: SessionStatus
   phase: SessionPhase
+  /** Effort as the TRANSCRIPT reports it — the value actually running, which a mid-session
+   *  `/effort` changes and the roster's launch pin does not know about. Distinct from
+   *  `SavedSession.effortLevel`, which is the pin. */
+  effort?: string
   activity: ActivityEntry[]
   /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
   messages?: NarrationEntry[]
@@ -160,6 +164,13 @@ export interface Role {
   /** The lane's standing charter, appended to its system prompt at launch (how this
    *  role works — scope, method, output shape). Defaults per role; editable. */
   prompt?: string
+  /** Expose this lane to Claude Code's Remote Control, i.e. the Claude phone app.
+   *
+   *  Absent = inherit the preset, exactly as with `model` and `effort` — and the preset says ON
+   *  for the coordinator and OFF for everyone else. Since Claude Code changed Remote Control the
+   *  default is auto-on, so every open lane appeared on the phone; one project's coordinator is
+   *  the thing worth reaching from there, and a fleet of six is not. */
+  remoteControl?: boolean
 }
 
 /** Compact summary of a task's code change, captured when the task completes. */
@@ -227,6 +238,9 @@ export interface SessionConfig {
   count: number
   /** Initial task submitted to every agent on launch (required when count > 1). */
   prompt: string
+  /** Expose this lane to the Claude phone app. Resolved from the role through the same cascade
+   *  as `model` and `useWorktree` — see `Role.remoteControl`. */
+  remoteControl?: boolean
 }
 
 /** A project = a folder/repo (its canonical git root) that owns many sessions over time.
@@ -297,27 +311,20 @@ export interface SessionPort {
   claimedBy?: string
 }
 
-/** One entry in a lazily-read directory listing. */
-export interface TreeEntry {
-  /** Repo-relative, `/`-separated. */
-  path: string
-  name: string
-  dir: boolean
-  /** Bytes, for files only. */
-  size?: number
-}
-
-/** A file read for display. Never a refusal: too big truncates, binary reports itself. */
-export interface FileContent {
-  path: string
-  text: string
-  /** The TRUE line count, even when `text` is truncated. */
-  lines: number
-  bytes: number
-  truncated: boolean
-  binary: boolean
-  /** A `@codemirror/language-data` language NAME, or null for plain text. */
-  language: string | null
+/** One process on the Dev servers list. Every row is a kill button, so each field says what it
+ *  is EVIDENCE of rather than what it is assumed to mean. */
+export interface DevServerProc {
+  pid: number
+  /** The lane's RESERVATION (`OPERATOR_DEV_PORT`), not a port anything was observed holding —
+   *  finding the true holder needs per-pid `lsof`, which fires a macOS TCC prompt. */
+  reservedPort?: number
+  terminalId?: string
+  appPid?: number
+  cwd?: string
+  command: string
+  ageSeconds?: number
+  /** `dead-app` is the safest to kill, `live-lane` the one to think about. */
+  owner: 'live-lane' | 'dead-app' | 'abandoned-lane' | 'untagged'
 }
 
 /** How a worktree directory was classified by the reaper. See
@@ -584,7 +591,7 @@ export interface NarrationEntry {
   kind: 'text' | 'thinking' | 'user' | 'tool' | 'queued'
   text: string
   timestamp: string
-  /** Cache-file paths for images the user dropped into this turn (load via imageDataUrl). */
+  /** Cache-file paths for images the user dropped into this turn. */
   images?: string[]
   /** Set only on `kind: 'tool'`. Absent on every entry written before this existed. */
   tool?: ToolBlock
@@ -783,6 +790,93 @@ export interface UsageStats {
   byDay: DayUsage[]
   /** ISO start of the window, if filtered. */
   since?: string
+  generatedAt: string
+}
+
+// ── Tuning ───────────────────────────────────────────────────────────────────────────────────
+//
+// What the Tuning page reads. Design: `dev/results/usage-view-design.md`.
+//
+// The rule the shapes obey: every field is next to a change it argues for, or it admits it has no
+// knob. The two knobs the app actually owns are a role's model and effort (RosterPanel) and its
+// charter (`Role.prompt`) — so the page reports per LANE, and a number that cannot reach one of
+// those is either omitted or explicitly labelled as having no control behind it.
+//
+// TOKENS ARE THE HEADLINE. `cost` rides along once per row for a sanity check and is rendered
+// muted; nothing ranks or decides on it.
+
+/** One transcript session's usage, keyed by the Claude session uuid — which is exactly
+ *  `SavedSession.claudeSessionId`, so the lane join is a lookup and not new capture. */
+export interface SessionUsage {
+  /** Claude session uuid (the transcript filename stem). */
+  session: string
+  /** The `~/.claude/projects` directory name — a path slug, the fallback join when the uuid has
+   *  rolled on a resumed lane. */
+  slug: string
+  /** Latest model seen on this session's records. */
+  model: string
+  /** Effort as the TRANSCRIPT reports it, per record — the real running value, including a
+   *  mid-session `/effort`. Distinct from the roster's launch pin, and the reason the two can be
+   *  shown disagreeing rather than the page quietly trusting the pin. */
+  effort?: string
+  tokens: number
+  cost: number
+  /** Assistant records counted (deduped by message id, like every other total here). */
+  turns: number
+  /** Turns whose context exceeded 150k. */
+  highContextTurns: number
+  /** Median per-turn context. A median and not a mean: one 900k turn should not describe a lane. */
+  medianContext: number
+  /** `compact_boundary` records in the window. */
+  compactions: number
+  /** Context rebuilt after those boundaries — the sum of `postTokens`, i.e. what the model has to
+   *  read again. Its sibling `droppedTokens` is what was thrown away. */
+  reReadTokens: number
+  droppedTokens: number
+  firstTsMs: number
+  lastTsMs: number
+}
+
+/** Tokens for one (session, model, effort) triple — the grouping the page's lane table needs to
+ *  show a lane that changed effort mid-window as two rows rather than one averaged lie. */
+export interface EffortUsage {
+  session: string
+  model: string
+  effort: string
+  tokens: number
+  cost: number
+  turns: number
+}
+
+/** Tool-output distribution for one session, from `chat.db`'s persisted `tool` blocks.
+ *
+ *  p50 AND p90, never a mean: the distribution is the finding. A lane at p50 2.1k and p90 96k is
+ *  not "a bit chatty" — it is one turn in ten swallowing half a context window, and a mean of 12k
+ *  would have described neither turn. */
+export interface ToolOutputStats {
+  session: string
+  p50: number
+  p90: number
+  /** Total characters of tool output recorded for the session. */
+  totalChars: number
+  calls: number
+  /** The tool responsible for the most characters, and how many. */
+  topTool?: string
+  topToolChars: number
+}
+
+/** Everything the Tuning page reads, in one call. One IPC rather than four, because the page
+ *  renders as a whole and four round trips would let it paint four inconsistent windows. */
+export interface TuningData {
+  /** Days in the window: 1, 7 or 30. */
+  days: number
+  totalTokens: number
+  totalCost: number
+  bySession: SessionUsage[]
+  byEffort: EffortUsage[]
+  byProject: ProjectUsage[]
+  byModel: ModelUsage[]
+  toolOutput: ToolOutputStats[]
   generatedAt: string
 }
 

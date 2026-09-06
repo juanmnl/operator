@@ -57,10 +57,27 @@ async function findTranscript(sessionId: string): Promise<string | null> {
   return null
 }
 
-/** The session phase, from the three signals the tailer tracks. Pure so it can be tested
- *  without a Track. Called only while the pty is QUIET — that is what makes "waiting" mean
- *  "the turn ended and nobody is typing" rather than "nothing happened this instant". */
-export function derivePhase(runningTools: boolean, lastStopReason: string | null, lastWasUserPrompt: boolean): string {
+/** The session phase, from the signals the tailer tracks. Pure so it can be tested without a
+ *  Track. Called only while the pty is QUIET — that is what makes "waiting" mean "the turn ended
+ *  and nobody is typing" rather than "nothing happened this instant".
+ *
+ *  Mirrors `derive_phase` in src-tauri/src/transcript.rs, argument for argument. */
+/** How long a lane may claim to be compacting before the claim is dropped. See `phase`. */
+export const COMPACTING_CEILING_MS = 5 * 60_000
+
+export function derivePhase(
+  runningTools: boolean,
+  lastStopReason: string | null,
+  lastWasUserPrompt: boolean,
+  compacting: boolean,
+): string {
+  // FIRST, ahead of the tool check, and deliberately. Inside the boundary→assistant window the
+  // one thing known for certain is that the context was just rebuilt; an `openTools` entry
+  // surviving from BEFORE the boundary is a tool whose result compaction has already dropped, so
+  // reporting it as `running` is reporting a signal that has stopped being true. Same judgment as
+  // `lastToolName` being cleared rather than left stale. The UI has rendered this phase since it
+  // was defined; this is the first thing that ever emits it.
+  if (compacting) return 'compacting'
   if (runningTools) return 'running'
   if (lastStopReason === 'tool_use') return 'running'
   if (lastWasUserPrompt) return 'running' // prompt sent, response not started yet
@@ -126,6 +143,12 @@ class Track {
   lastUsageMsgId: string | null = null
   lastStopReason: string | null = null
   lastWasUserPrompt = false
+  /** Between a `compact_boundary` record and the next REAL record. See `applySystem`. */
+  compacting = false
+  /** When the boundary landed, for the ceiling below. */
+  compactingSinceMs = 0
+  /** Effort as the transcript reports it, latest wins — present on every assistant record. */
+  effort: string | null = null
   lastToolName: string | null = null
   openTools = new Set<string>()
   inSidechain = false
@@ -150,7 +173,18 @@ class Track {
 
   get sessionId(): string { return this.track.claudeSessionId }
 
-  phase(): string { return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt) }
+  /** A CEILING on the compacting phase, because the record that ends it may never arrive.
+   *
+   *  A compaction takes seconds to a couple of minutes (the longest measured in a real transcript
+   *  was 134s of `durationMs`). Five minutes is comfortably past that, so a lane still claiming
+   *  to compact after it is a lane whose closing record never came — and reporting `compacting`
+   *  forever is worse than falling back to what the transcript otherwise says, because the rest
+   *  of the app refuses to talk to a compacting lane. */
+  phase(): string {
+    const stuck = this.compacting && this.compactingSinceMs > 0
+      && Date.now() - this.compactingSinceMs > COMPACTING_CEILING_MS
+    return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting && !stuck)
+  }
 
   /** Drop everything DERIVED from the transcript, keeping the track's identity. Called when the
    *  file is re-read from the start, so the rebuilt state describes the file that exists now. */
@@ -162,6 +196,9 @@ class Track {
     this.lastUsageMsgId = null
     this.lastStopReason = null
     this.lastWasUserPrompt = false
+    this.compacting = false
+    this.compactingSinceMs = 0
+    this.effort = null
     this.lastToolName = null
     this.openTools.clear()
     this.inSidechain = false
@@ -274,6 +311,7 @@ class Track {
       case 'user': this.applyUser(v); break
       case 'assistant': this.applyAssistant(v, ts); break
       case 'queue-operation': this.applyQueueOp(v, ts); break
+      case 'system': this.applySystem(v); break
       default: break
     }
   }
@@ -332,6 +370,8 @@ class Track {
     if (text == null) return
     this.lastWasUserPrompt = true
     this.lastStopReason = null
+    // A REAL prompt ends the compaction. The re-prime does not — see `endCompaction`.
+    if (v.isSidechain !== true) this.endCompaction(v)
     const injected = isInjectedTurn(text)
     // The summary is the FIRST real prompt. An injected turn must not claim it, or every
     // session is titled with Operator's own dev-server preamble.
@@ -348,8 +388,61 @@ class Track {
     })
   }
 
+  /** Claude Code's own machinery records. The only one that changes a session's PHASE is the
+   *  compaction boundary.
+   *
+   *  WHEN IT IS WRITTEN matters for reading this correctly: the record carries `durationMs`,
+   *  `preTokens` and `postTokens`, so it is written once the compaction has already FINISHED — it
+   *  closes the compaction rather than opening it. What follows it in a real transcript
+   *  (measured, not assumed) is a `user` record re-priming the compacted context, then
+   *  attachments, and only then the assistant. So the window this flag covers is the model coming
+   *  back with a rebuilt context, which is the part the user actually sits through. */
+  /** THE COMPACTION IS OVER once a real main-thread record follows the boundary.
+   *
+   *  It used to be cleared by exactly one thing — a non-sidechain assistant record — and nothing
+   *  else: not a user prompt, not the end of the turn, not the pty going quiet, not the session
+   *  ending. Type `/compact` at the end of a turn and walk away and Claude Code writes the
+   *  boundary and waits, so no assistant record ever follows and the lane sits in `compacting`
+   *  indefinitely. That is not cosmetic: `canAnnounceTo` refuses a compacting lane, so it
+   *  silently stops receiving dispatches, and `BUSY` includes it, so closing it prompts.
+   *
+   *  The re-prime is EXCLUDED because it is part of the compaction, not the end of it: Claude
+   *  Code writes `type:"user", isCompactSummary:true` immediately after the boundary (verified in
+   *  a real transcript), followed by `attachment` records, and only then the assistant. Clearing
+   *  on the re-prime would make the phase last one record and never be seen. */
+  private endCompaction(v: Record<string, unknown>): void {
+    if (!this.compacting) return
+    if (v.isCompactSummary === true) return
+    this.compacting = false
+    this.compactingSinceMs = 0
+    this.dirty = true
+  }
+
+  private applySystem(v: Record<string, unknown>): void {
+    if (v.subtype === 'compact_boundary') {
+      this.compacting = true
+      this.compactingSinceMs = Date.now()
+      this.dirty = true
+    }
+  }
+
   private applyAssistant(v: Record<string, unknown>, ts: string): void {
     this.lastWasUserPrompt = false
+    // THE COMPACTION IS OVER once the model speaks again. Guarded on sidechain because a
+    // subagent's message says nothing about the main thread's state — the same reason the model
+    // below refuses to be relabelled by a subagent.
+    if (v.isSidechain !== true) {
+      this.endCompaction(v)
+      // EFFORT AS THE TRANSCRIPT REPORTS IT — a top-level sibling of `timestamp`, not something
+      // inside `message`. Measured across 300 real transcripts: present on 68,972 of 69,022
+      // assistant records. The value actually running, so it catches a mid-session `/effort` the
+      // launch pin never hears about. Sidechain-guarded for the same reason the model is: a
+      // subagent's effort is not the lane's.
+      if (typeof v.effort === 'string' && v.effort && this.effort !== v.effort) {
+        this.effort = v.effort
+        this.dirty = true
+      }
+    }
     const msg = v.message as Record<string, unknown> | undefined
     if (!msg) return
     this.lastStopReason = typeof msg.stop_reason === 'string' ? msg.stop_reason : null
@@ -493,6 +586,7 @@ class Track {
       permissionMode: this.track.permissionMode ?? undefined,
       model: this.model ?? undefined,
       usage: this.usage,
+      effort: this.effort ?? undefined,
     }
   }
 }
@@ -549,8 +643,16 @@ export class Transcript extends EventEmitter {
       // PTY ACTIVITY OUTRANKS THE TRANSCRIPT. Bytes are moving now; the transcript is written
       // after the fact, so deriving "waiting" from it while output streams would flicker every
       // lane between running and waiting once a second.
+      //
+      // EXCEPT `compacting`, and without that exception the phase could still never be seen.
+      // Coming back from a compaction is exactly when Claude Code is streaming hardest, so the
+      // pty is hot for the whole window and this line would relabel every tick as the generic
+      // `running`. The override exists to stop a busy lane reading as IDLE; `compacting` is not
+      // an idle state, it is a more specific busy one, so replacing it buys no flicker
+      // protection and throws away the only thing that explains why the wait is long.
       const ptyActive = !t.ended && opts.isActive(t.terminalId)
-      const phase = ptyActive ? 'running' : t.phase()
+      const derived = t.phase()
+      const phase = ptyActive && derived !== 'compacting' ? 'running' : derived
       if (t.dirty || t.lastPhase !== phase) {
         t.lastPhase = phase
         t.dirty = false

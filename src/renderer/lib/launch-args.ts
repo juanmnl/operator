@@ -41,6 +41,19 @@ export function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): 
   // channel. The flag takes the full ladder, `max` included (see lib/effort).
   if (o.effort) args.push('--effort', String(o.effort))
   if (o.allowedTools) args.push('--allowedTools', ...String(o.allowedTools).split(/\s+/).filter(Boolean))
+  // REMOTE CONTROL'S NAME — what the Claude phone app lists this session as. Only for a lane
+  // whose role has it on; the settings file is what actually turns the bridge on or off (see
+  // `buildSessionSettings`), and this only decides what it is called.
+  //
+  // ORDER MATTERS, and this is the one place it does. `--remote-control [name]` takes an
+  // OPTIONAL argument, and it IS the last flag before the positional prompt below — which is safe
+  // for exactly one reason: a name is always supplied, so the prompt is never the token the flag
+  // reaches for. Push it here without a name and the flag would swallow the prompt as its name,
+  // leaving the lane with no instruction and the phone with an absurd label. That is what the
+  // `rcName` guard above is protecting, not the position. Verified against the installed binary
+  // (2.1.261): given a name, the flag binds it and leaves the following argument alone.
+  const rcName = typeof o.remoteControlName === 'string' ? o.remoteControlName.trim() : ''
+  if (rcName) args.push('--remote-control', rcName)
   if (o.initialPrompt && String(o.initialPrompt).trim()) args.push(String(o.initialPrompt).trim())
   return args
 }

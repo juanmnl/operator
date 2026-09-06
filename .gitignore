@@ -16,3 +16,9 @@ scripts/width-audit/claude-stream.bin
 
 # Claude Code local config (never commit — repo is public)
 .claude/
+
+# QA fixtures captured from REAL sessions — never commit, the repo is public.
+# `dev/qa-real-fixture.json` is 431KB of a real chat history (862 messages) and was swept into a
+# commit by a `git add -A`, which is how a private transcript nearly reached a public remote.
+# Ignored by shape rather than by name so the next capture is covered too.
+dev/*fixture*.json

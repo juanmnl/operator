@@ -89,7 +89,7 @@ If you quit Operator tomorrow, your projects, agents and settings are exactly wh
 ### Watching the work
 
 - **A live operations timeline.** Tool calls and subagent delegations as they happen, nested by who-spawned-whom, with live-ticking durations. Reconstructed from Claude Code's own transcripts, so it needs nothing installed.
-- **Three ways to watch one session.** **Console** (the real terminal), **Chat** (a document-style read with its own composer), and **Preview** — a live view of the app the session is building, on a port that's *attributed* rather than guessed.
+- **Two ways to watch one session.** **Console** (the real terminal) and **Preview** — a live view of the app the session is building, on a port that's *attributed* rather than guessed.
 - **Annotate what you see.** Pins and boxes on the preview, or inspect a real element down to `component@file:line`, and send either to the agent or the task queue.
 - **A side panel that follows the work.** **Plan** and **Diff** beside any session, resizable.
 
@@ -116,7 +116,6 @@ If you quit Operator tomorrow, your projects, agents and settings are exactly wh
 | `Cmd+N` | New session |
 | `Cmd+W` | Close active session |
 | `Cmd+B` | Collapse ⇄ expand the sidebar |
-| `Cmd+J` | Console ⇄ Chat |
 | `Cmd+E` | Preview: Interact ⇄ Annotate |
 | `Cmd+Shift+O` | All projects (the gallery) — `Cmd+Shift+P` does the same |
 | `Cmd+1`–`9` | Switch session |

@@ -198,6 +198,97 @@ describe('phase, end to end', () => {
     const { t } = await run(assistant([{ type: 'text', text: 'done' }]), { isActive: true })
     expect(t.liveLanes(() => true)[0].phase).toBe('running')
   })
+
+  // The record shape is copied from a real transcript, not invented: `type: "system"`,
+  // `subtype: "compact_boundary"`, `compactMetadata` with `durationMs`/`preTokens`/`postTokens`
+  // — which is what tells you it is written when the compaction has FINISHED. In that same file
+  // the very next record is a `user` re-prime, which is why the ordering inside `derivePhase`
+  // matters: without `compacting` ranked above the user-prompt rule, this reads `running`.
+  it('is COMPACTING from the boundary until the model speaks again', async () => {
+    const boundary = L({
+      type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted',
+      level: 'info', timestamp: TS,
+      compactMetadata: { trigger: 'auto', preTokens: 998698, postTokens: 21681, durationMs: 133798 },
+    })
+    // THE RE-PRIME in its real shape — `isCompactSummary: true`. It is part of the compaction,
+    // so the phase survives it.
+    const reprime = L({ type: 'user', timestamp: TS, isCompactSummary: true, message: { content: 'continue' } })
+    const during = await run(assistant([{ type: 'text', text: 'before' }]) + boundary + reprime)
+    expect(during.t.liveLanes(() => true)[0].phase).toBe('compacting')
+
+    const after = await run(
+      assistant([{ type: 'text', text: 'before' }]) + boundary + reprime
+      + assistant([{ type: 'text', text: 'back' }]),
+    )
+    expect(after.t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
+
+  // THE WEDGE. `/compact` at the end of a turn writes a boundary and waits for the next prompt,
+  // so no assistant record ever follows. Clearing only on an assistant record left the lane in
+  // `compacting` indefinitely — and `canAnnounceTo` refuses a compacting lane, so it silently
+  // stopped receiving dispatches.
+  it('a REAL user prompt ends the compaction, unlike the re-prime', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(boundary + user('now do the next thing'))
+    expect(t.liveLanes(() => true)[0].phase).not.toBe('compacting')
+  })
+
+  // THE ASSERTION THAT MAKES THE PHASE REAL. `compacting` is derived correctly and would still
+  // never be seen without this: coming back from a compaction is exactly when Claude Code streams
+  // hardest, so `isActive` is true for the whole window and the pty override would relabel every
+  // tick `running` — which is how the phase came to be rendered everywhere and emitted nowhere.
+  it('survives the pty-activity override, which the generic busy states do not', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(assistant([{ type: 'text', text: 'before' }]) + boundary, { isActive: true })
+    expect(t.liveLanes(() => true)[0].phase).toBe('compacting')
+  })
+
+  // EFFORT AND THE COMPACTION COUNT — the capture the Tuning page reads, and the Rust tailer
+  // carries the identical rules (see `effort_is_read_from_the_records_top_level` and friends).
+  it('reads effort from the record’s TOP level, and follows a mid-session change', async () => {
+    // Top-level, a sibling of `timestamp` — not inside `message`, which is where a reader would
+    // look first and find nothing. Present on 68,972 of 69,022 real assistant records.
+    const { session } = await run(
+      assistant([{ type: 'text', text: 'a' }], { effort: 'high' })
+      + assistant([{ type: 'text', text: 'b' }], { effort: 'low' }),
+    )
+    expect(session.effort).toBe('low')
+  })
+
+  it('ignores a subagent’s effort — it is not the lane’s', async () => {
+    const { session } = await run(
+      assistant([{ type: 'text', text: 'a' }], { effort: 'high' })
+      + assistant([{ type: 'text', text: 'sub' }], { effort: 'low', isSidechain: true }),
+    )
+    expect(session.effort).toBe('high')
+  })
+
+  it('recovers from repeated boundaries rather than latching', async () => {
+    // The COUNT moved to the usage engine, which is what the Tuning page reads and which spans
+    // the whole window rather than one live session; the tailer's duplicate had no consumer.
+    // What the tailer still owes is the phase, and that it comes back each time.
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(
+      boundary + assistant([{ type: 'text', text: 'a' }])
+      + boundary + assistant([{ type: 'text', text: 'b' }]),
+    )
+    expect(t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
+
+  it('a subagent talking does not end the compaction', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(
+      boundary + assistant([{ type: 'text', text: 'sub' }], { isSidechain: true }),
+    )
+    expect(t.liveLanes(() => true)[0].phase).toBe('compacting')
+  })
+
+  it('another system record is not a compaction — `subtype` is what decides', async () => {
+    const { t } = await run(
+      assistant([{ type: 'text', text: 'done' }]) + L({ type: 'system', subtype: 'hook_result', timestamp: TS }),
+    )
+    expect(t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
 })
 
 describe('subagents', () => {

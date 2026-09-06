@@ -9,13 +9,12 @@ describe('paneVisibility', () => {
     expect(paneVisibility('t1', 't1', 'terminal')).toBe('visible')
   })
 
-  it('HIDES the active pane while Chat or Preview covers it — the fix', () => {
+  it('HIDES the active pane while Preview covers it — the fix', () => {
     expect(paneVisibility('t1', 't1', 'preview')).toBe('hidden')
-    expect(paneVisibility('t1', 't1', 'chat')).toBe('hidden')
   })
 
   it('never paints an inactive pane, whatever the main view', () => {
-    for (const v of ['terminal', 'chat', 'preview'] as const) {
+    for (const v of ['terminal', 'preview'] as const) {
       expect(paneVisibility('t2', 't1', v)).toBe('hidden')
     }
   })
@@ -28,7 +27,7 @@ describe('paneVisibility', () => {
     // The invariant this fix had to respect: a hidden box still has layout, so xterm is never
     // told the viewport changed and the ghostty resize/render hang stays unreachable.
     const answers = new Set(
-      (['terminal', 'chat', 'preview'] as const).flatMap((v) => [
+      (['terminal', 'preview'] as const).flatMap((v) => [
         paneVisibility('t1', 't1', v), paneVisibility('t2', 't1', v),
       ]),
     )

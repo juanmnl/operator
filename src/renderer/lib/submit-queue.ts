@@ -20,6 +20,15 @@ export function submitSequence(text: string): string {
   return `\x1b[200~${text}\x1b[201~\r`
 }
 
+/** A TYPED line — what a slash command needs, and the opposite of the paste above.
+ *
+ *  Claude Code treats a line as a slash command only when it was typed. Wrapped in the
+ *  bracketed-paste sequence, `/effort high` arrives as a message that reads "/effort high" and
+ *  the lane's effort silently never changes. See `lib/lane-tuning`, which owns the commands. */
+export function typedSequence(text: string): string {
+  return `${text}\r`
+}
+
 /** Clear a lane's composer — the bytes, as a pure function so they can be asserted.
  *
  *  WHY IT EXISTS: `retryDispatch` re-delivers a whole message, and if the original paste is still
@@ -178,6 +187,18 @@ export interface SubmitQueueDeps {
 export interface SubmitQueue {
   /** Enqueue a message for `id`; resolves once it has been written. */
   submit(id: string, text: string): Promise<void>
+  /** A TYPED line, in the SAME per-terminal chain as `submit`.
+   *
+   *  Same chain because that is the whole point: the toolbar's `/model` and `/effort` writes used
+   *  to go straight to `terminalWrite`, so a chip pressed while a dispatch paste was mid-flight
+   *  could interleave a bare CR into it — which submits the half-pasted prompt. Chaining makes
+   *  the two orderable.
+   *
+   *  NO NUDGE AND NO RESCUE, unlike `submit`. Those exist because a long paste can fail to
+   *  commit, and the rescue is itself a keystroke; a slash command is one short line that either
+   *  lands or does not, and a rescue CR fired after it would be a bare Return into whatever the
+   *  lane shows next. */
+  submitTyped(id: string, text: string): Promise<void>
   /** Clear a lane's composer, in the SAME per-terminal chain as `submit`. Chained rather than
    *  written directly so a clear can never overtake — or be overtaken by — a submission already
    *  queued for that lane, which would clear the wrong text. */
@@ -289,6 +310,21 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       chains.set(id, next.catch(() => {}))
       return next
     },
+    submitTyped(id, text) {
+      const prev = chains.get(id) ?? Promise.resolve()
+      const next = prev.then(async () => {
+        const last = lastAt.get(id)
+        if (last !== undefined) {
+          const since = now() - last
+          if (since < gapMs) await sleep(gapMs - since)
+        }
+        deps.write(id, typedSequence(text))
+        lastAt.set(id, now())
+      })
+      chains.set(id, next.catch(() => {}))
+      return next
+    },
+
     submit(id, text) {
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev

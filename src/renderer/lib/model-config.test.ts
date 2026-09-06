@@ -5,6 +5,7 @@ import { EFFORT_LEVELS } from './effort'
 import {
   resolveAgentConfig, worktreeStateOf, clearSeededRoleFields, clearCoordinatorWorktree,
   migrateGlobalsToLanePins, HARD_FALLBACK,
+  remoteControlLaunch,
   type LegacyGlobalDefaults,
 } from './model-config'
 
@@ -189,7 +190,14 @@ describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () =>
           const before = (p.roster ?? []).map((r) => legacyResolveForTest(r, globals, defaults))
           const out = migrateGlobalsToLanePins([p], globals)
           const after = (out.projects[0].roster ?? []).map((r) => resolveAgentConfig(r, defaults))
-          expect(after).toEqual(before)
+          // `remoteControl` is excluded, and it is the only field that may be: it did not exist
+          // when the legacy cascade did, so there is no "before" for it to be unchanged from —
+          // `legacyResolve` reports the fallback precisely because nothing used to write it.
+          // Comparing it would assert that a NEW feature changed nothing, which is backwards.
+          // Every field the migration is actually about is still compared exactly.
+          const drop = (c: Record<string, unknown>) => { const { remoteControl: _rc, ...rest } = c; return rest }
+          expect(after.map((c) => drop(c as unknown as Record<string, unknown>)))
+            .toEqual(before.map((c) => drop(c as unknown as Record<string, unknown>)))
         }
       }
     }
@@ -328,5 +336,77 @@ describe('clearSeededRoleFields — the hydrate migration', () => {
   it('does not touch useWorktree — a lane\'s opt-out is never "seeded"', () => {
     const p = project([role({ id: 'code', model: 'opus', useWorktree: false })])
     expect(clearSeededRoleFields(p).roster![0].useWorktree).toBe(false)
+  })
+})
+
+// REMOTE CONTROL — a tri-state pin like `useWorktree`, resolving preset → fallback.
+describe('resolveAgentConfig — remoteControl', () => {
+  it('is ON for the coordinator by default, and off for every other preset', () => {
+    for (const preset of rolePresets()) {
+      expect(resolveAgentConfig({ ...preset, remoteControl: undefined }).remoteControl)
+        .toBe(preset.id === 'operator')
+    }
+  })
+
+  it('honours an explicit pin in both directions', () => {
+    expect(resolveAgentConfig({ id: 'operator', name: 'Operator', remoteControl: false }).remoteControl).toBe(false)
+    expect(resolveAgentConfig({ id: 'code', name: 'Code', remoteControl: true }).remoteControl).toBe(true)
+  })
+
+  it('treats `false` as a pin and not as an absence — the tri-state', () => {
+    // The bug this shape prevents: `.find(set)` would skip a pinned `false` and fall through to
+    // the preset, so turning the coordinator OFF would silently do nothing.
+    expect(resolveAgentConfig({ id: 'operator', name: 'Operator', remoteControl: false }).remoteControl)
+      .not.toBe(resolveAgentConfig({ id: 'operator', name: 'Operator' }).remoteControl)
+  })
+
+  it('falls back to off for a custom lane with no preset', () => {
+    expect(resolveAgentConfig({ id: 'custom-lane', name: 'Custom' }).remoteControl).toBe(false)
+  })
+
+  it('is not overridden by the coordinator rule that forces useWorktree off', () => {
+    // `useWorktree` ignores its pin for a coordinator; `remoteControl` deliberately does not —
+    // a coordinator you have turned off stays off.
+    const off = resolveAgentConfig({ id: 'operator', name: 'Operator', useWorktree: true, remoteControl: false })
+    expect(off.useWorktree).toBe(false)
+    expect(off.remoteControl).toBe(false)
+  })
+})
+
+// The review's blocker 2: the launch path resolved this and the restore path did not, so every
+// RESTORED lane wrote `remoteControlAtStartup: false` — including the coordinator, which is the
+// one lane the feature exists for and the one a restore ordinarily brings back.
+describe('remoteControlLaunch — one resolution, both call sites', () => {
+  const proj = (roster: Role[]): Project => ({
+    id: 'p1', name: 'operator', path: '/p', createdAt: '', roster,
+  } as Project)
+  const roster: Role[] = [
+    { id: 'operator', name: 'Operator' },
+    { id: 'code', name: 'Code' },
+  ]
+
+  it('turns it ON for the coordinator and names the session for the project', () => {
+    expect(remoteControlLaunch(proj(roster), 'operator'))
+      .toEqual({ remoteControl: true, remoteControlName: 'operator · Operator' })
+  })
+
+  it('leaves every other role off, with no name to pass', () => {
+    expect(remoteControlLaunch(proj(roster), 'code')).toEqual({ remoteControl: false })
+  })
+
+  it('honours an explicit OFF pin on the coordinator', () => {
+    const off = proj([{ id: 'operator', name: 'Operator', remoteControl: false }])
+    expect(remoteControlLaunch(off, 'operator')).toEqual({ remoteControl: false })
+  })
+
+  it('honours an explicit ON pin on another role', () => {
+    const on = proj([{ id: 'code', name: 'Code', remoteControl: true }])
+    expect(remoteControlLaunch(on, 'code').remoteControl).toBe(true)
+  })
+
+  it('is off for a lane with no role and for a missing project — never a guess', () => {
+    expect(remoteControlLaunch(proj(roster), undefined)).toEqual({ remoteControl: false })
+    expect(remoteControlLaunch(undefined, 'operator')).toEqual({ remoteControl: false })
+    expect(remoteControlLaunch(proj(roster), 'nobody')).toEqual({ remoteControl: false })
   })
 })

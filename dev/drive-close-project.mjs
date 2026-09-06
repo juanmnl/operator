@@ -21,16 +21,35 @@ const store = () => p.evaluate(() => ({
   saved: JSON.parse(localStorage.getItem('operator.savedSessions') || '[]').map((s) => s.projectName),
   kills: window.__calls.filter((c) => c.fn === 'terminalKill').map((c) => c.args?.[0]),
 }))
+// REWRITTEN AGAINST THE RAIL. It used to drive the gallery card's `⋯`, which is the one surface
+// that already had the verb; the rail — where you actually are when you decide to close a project
+// — had no control at all and only a right-click. Driving the rail is the only way this covers the
+// affordance that was missing.
+const railRow = (name) => p.locator('[data-rail-project-header]').filter({ hasText: name }).first()
+
 const openMenu = async (name) => {
-  await p.locator('[data-rail-gallery]').click()
-  await p.waitForTimeout(700)
-  const card = p.locator('[data-project-card]').filter({ hasText: name }).first()
-  await card.hover(); await p.waitForTimeout(200)
-  await card.locator('button', { hasText: '⋯' }).first().click()
+  const row = railRow(name)
+  await row.hover()
+  await p.waitForTimeout(250)
+  // THE TRIGGER IS REVEALED BY HOVER and takes no layout space at rest, so it is `display: none`
+  // until the row is hovered — a click without the hover finds nothing, which is the assertion
+  // below rather than a flake.
+  const trigger = p.locator('[data-rail-project-menu]').first()
+  await trigger.click()
   await p.waitForTimeout(500)
   return p.evaluate(() => Array.from(document.querySelectorAll('[role="menuitem"], button'))
     .map((e) => e.textContent?.trim()).filter((t) => t && /Close project|Archive project|Forget project|Restore to active/.test(t)))
 }
+
+// ---- 0. The affordance itself: hidden at rest, revealed on hover, and it opens the menu ------
+const atRest = await p.locator('[data-rail-project-menu]').first().isVisible().catch(() => false)
+console.log('0 ⋯ takes no space at rest        :', !atRest)
+await railRow('operator').hover(); await p.waitForTimeout(250)
+console.log('0 …and is revealed on row hover   :', await p.locator('[data-rail-project-menu]').first().isVisible())
+console.log('0 carries the dismissal hooks     :', await p.evaluate(() => {
+  const t = document.querySelector('[data-rail-project-menu]')
+  return !!t?.getAttribute('data-popmenu-trigger') && t?.getAttribute('aria-expanded') === 'false'
+}))
 
 // ---- 1. The menu offers CLOSE only where there is something to close --------------------
 const busy = await openMenu('operator')     // 3 live lanes in the fixture
@@ -63,7 +82,17 @@ const before = await store()
 console.log('\n3 before — projects:', JSON.stringify(before.projects))
 console.log('3 before — saved sessions:', JSON.stringify(before.saved))
 await openMenu('operator')
+// THE CONFIRM IS KEYED ON ACTION IDENTITY, not the label — the label counts live agents, so an
+// agent exiting between the two clicks used to re-arm instead of firing. Two clicks, one action.
 await p.locator('button', { hasText: /^Close project/ }).first().click()
+await p.waitForTimeout(250)
+const armed = await p.locator('button', { hasText: /click again/ }).count()
+console.log('3 first click ARMS the confirm  :', armed === 1)
+await p.locator('button', { hasText: /^Close project/ }).first().click()
+// The chip must be on screen BEFORE the ptys die — that is the whole point of it.
+await p.waitForTimeout(250)
+console.log('3 rail says "closing…" immediately:',
+  (await p.locator('[data-rail-closing]').count()) > 0)
 await p.waitForTimeout(2500)
 const after = await store()
 console.log('3 after  — projects:', JSON.stringify(after.projects))

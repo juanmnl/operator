@@ -314,6 +314,48 @@ export function staleTaggedRows(
   })
 }
 
+/** Rows belonging to a lane of OURS that is no longer open — the live-app leak.
+ *
+ *  `staleTaggedRows` cannot answer this and should not be made to: it exists for the BOOT sweep,
+ *  where `r.appPid === selfPid` means "ours, right now" and is the strongest possible reason to
+ *  leave a row alone. Ten minutes into a session that same condition means the opposite. The
+ *  distinguishing fact is the one only a running app has: which terminal ids are open in it.
+ *
+ *  This is the case reap.ts's own header names and nothing ever acted on — "a live app leaking
+ *  while it is still up, which nothing in the lifecycle ever revisits". Lane close reaps a lane's
+ *  strays, but only if close runs; a close that failed, raced, or was skipped when the app was
+ *  force-quit and relaunched leaves rows that are ours, unreachable by the tree, and passed over
+ *  by the boot sweep because their `appPid` is alive.
+ *
+ *  Measured on this machine while writing this: `OPERATOR_TERMINAL_ID=t28` processes carrying the
+ *  live app pid with no `t28` lane open anywhere in it.
+ *
+ *  `openTerminalIds` must be the CURRENT set at call time, not a snapshot from when the timer was
+ *  armed — a lane opened during the interval would otherwise be reaped as abandoned. */
+export function abandonedLaneRows(
+  tagged: readonly TaggedRow[],
+  opts: {
+    appPid: number
+    openTerminalIds: ReadonlySet<string>
+    selfPid: number
+    selfPgid?: number
+  },
+): TaggedRow[] {
+  return tagged.filter((r) => {
+    if (r.pid <= 1 || r.pgid <= 1) return false
+    if (r.pid === opts.selfPid || (opts.selfPgid != null && r.pgid === opts.selfPgid)) return false
+    // Untagged owner: refused here for exactly the reason the boot sweep refuses it. The user's
+    // explicit action is the only thing that may kill these — see `devServerInventory`.
+    if (r.appPid == null) return false
+    // NOT OURS. Another Operator's lane, live or dead, is that Operator's business; the boot
+    // sweep is where a dead one's leftovers are collected.
+    if (r.appPid !== opts.appPid) return false
+    if (!r.terminalId) return false
+    // The whole question.
+    return !opts.openTerminalIds.has(r.terminalId)
+  })
+}
+
 // ── Strays the tree walk cannot reach ────────────────────────────────────────────────────────
 //
 // THE TREE WALK HAS A HOLE, and it is the one that produced the 24 orphans measured on this
@@ -370,9 +412,21 @@ function refuseStray(r: TaggedRow, lane: LaneTag, selfPid: number, selfPgid?: nu
   if (r.pid === selfPid || r.pgid === selfPgid) return 'that is Operator itself'
   if (r.appPid == null) return 'no OPERATOR_APP_PID — predates the tag, so its owner is unprovable'
   if (r.appPid !== lane.appPid) return `OPERATOR_APP_PID=${r.appPid} belongs to another Operator run`
-  if (lane.devPort != null && r.devPort !== lane.devPort) {
-    return `OPERATOR_DEV_PORT=${r.devPort ?? 'unset'} is not this lane's ${lane.devPort}`
-  }
+  // NO PORT CHECK. There used to be one — a row whose `OPERATOR_DEV_PORT` differed from the
+  // lane's reservation was refused — and it was the leak, not a guard.
+  //
+  // Two facts kill it. First, `terminalId` + `appPid` already identify a lane UNIQUELY: ids come
+  // from a monotonic counter per app run and are never reused, so within one `appPid` there is
+  // exactly one t18 and anything carrying both tags descends from that lane's pty. There is
+  // nothing left for a third check to disambiguate.
+  //
+  // Second, the check could not do the job it was written for anyway. `OPERATOR_DEV_PORT` is the
+  // RESERVATION, inherited from the pty env — not the port the process actually bound. A lane
+  // that restarts its dev server three times produces three trees all carrying the identical
+  // value, whatever each one binds (measured on this machine: t18 had three server trees, every
+  // row `OPERATOR_DEV_PORT=1432`). So the rule never separated a restarted server from the
+  // current one; what it did separate was a row whose reservation had since changed, and it
+  // refused that one forever.
   return null
 }
 

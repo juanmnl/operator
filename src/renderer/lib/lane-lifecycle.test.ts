@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   laneCloseDecision, planLaneCloses, type LaneSnapshot, type LaneClosePolicy,
   DEFAULT_KEEP_WARM_MINUTES, DEFAULT_QUIET_MINUTES,
+  doneStampsFrom, DONE_SIGNAL_MAX_AGE_MS,
 } from './lane-lifecycle'
 
 const MIN = 60_000
@@ -126,5 +127,87 @@ describe('the per-tick plan', () => {
       ['b', 'went-quiet'],
       ['a', 'reported-done'],
     ])
+  })
+})
+
+// THE DECISION: a `report` counts as done. Over a month the fleet called `report` 643 times and
+// `task_status` 5 times, so keying the lifecycle on the latter meant no lane was ever closable by
+// having FINISHED — only by the went-quiet timer.
+describe('doneStampsFrom — what counts as "this lane said it finished"', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z')
+  const ago = (ms: number) => new Date(NOW - ms).toISOString()
+  const lanes = [{ id: 't1', projectId: 'p1' }, { id: 't2', projectId: 'p2' }]
+
+  it('stamps a lane from a REPORT alone — the report-only lane', () => {
+    const out = doneStampsFrom([{ terminalId: 't1', projectId: 'p1', at: ago(1000) }], lanes, NOW)
+    expect(out).toEqual({ t1: ago(1000) })
+  })
+
+  it('keeps the NEWEST signal when a lane reports several times', () => {
+    const out = doneStampsFrom([
+      { terminalId: 't1', at: ago(9000) },
+      { terminalId: 't1', at: ago(1000) },
+      { terminalId: 't1', at: ago(5000) },
+    ], lanes, NOW)
+    expect(out.t1).toBe(ago(1000))
+  })
+
+  it('IGNORES a signal older than an hour — terminal ids collide across runs', () => {
+    // `t1` in this run and `t1` from a run yesterday are the same string and a different lane.
+    expect(doneStampsFrom([{ terminalId: 't1', at: ago(DONE_SIGNAL_MAX_AGE_MS + 1) }], lanes, NOW)).toEqual({})
+  })
+
+  it('ignores a signal from the future, which is a clock problem and not a completion', () => {
+    expect(doneStampsFrom([{ terminalId: 't1', at: new Date(NOW + 60_000).toISOString() }], lanes, NOW)).toEqual({})
+  })
+
+  it('refuses a signal whose project disagrees with the lane’s', () => {
+    expect(doneStampsFrom([{ terminalId: 't1', projectId: 'p2', at: ago(1000) }], lanes, NOW)).toEqual({})
+  })
+
+  it('accepts a signal with NO project — a lane that reported before sessions.json caught up', () => {
+    expect(doneStampsFrom([{ terminalId: 't1', at: ago(1000) }], lanes, NOW)).toEqual({ t1: ago(1000) })
+  })
+
+  it('ignores a signal for a lane that is not open here', () => {
+    expect(doneStampsFrom([{ terminalId: 't99', at: ago(1000) }], lanes, NOW)).toEqual({})
+  })
+
+  it('ignores a signal with no terminal id and an unparseable timestamp', () => {
+    expect(doneStampsFrom([{ at: ago(1000) }, { terminalId: 't1', at: 'nonsense' }], lanes, NOW)).toEqual({})
+  })
+
+  it('keeps lanes apart', () => {
+    const out = doneStampsFrom([
+      { terminalId: 't1', at: ago(1000) }, { terminalId: 't2', at: ago(2000) },
+    ], lanes, NOW)
+    expect(out).toEqual({ t1: ago(1000), t2: ago(2000) })
+  })
+})
+
+describe('a report-only lane, end to end through the close policy', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z')
+  const ago = (ms: number) => new Date(NOW - ms).toISOString()
+
+  it('becomes closable on a report, once the keep-warm window passes', () => {
+    const stamps = doneStampsFrom([{ terminalId: 't1', at: ago(20 * 60_000) }], [{ id: 't1' }], NOW)
+    const lane = {
+      terminalId: 't1', phase: 'idle' as const, openWork: 0,
+      lastActivityAt: ago(20 * 60_000), reportedDoneAt: stamps.t1,
+    }
+    expect(laneCloseDecision(lane, NOW, { keepWarmMs: 10 * 60_000, quietMs: 6 * 60 * 60_000 }).close).toBe(true)
+  })
+
+  it('does NOT close while the same lane still has open work', () => {
+    // The guard the decision does not weaken: a report is a statement about a message, not a
+    // promise that the queue is empty.
+    const stamps = doneStampsFrom([{ terminalId: 't1', at: ago(20 * 60_000) }], [{ id: 't1' }], NOW)
+    const lane = {
+      terminalId: 't1', phase: 'idle' as const, openWork: 2,
+      lastActivityAt: ago(20 * 60_000), reportedDoneAt: stamps.t1,
+    }
+    const v = laneCloseDecision(lane, NOW, { keepWarmMs: 10 * 60_000, quietMs: 6 * 60 * 60_000 })
+    expect(v.close).toBe(false)
+    expect(v.why).toContain('still open')
   })
 })

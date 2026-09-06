@@ -7,7 +7,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, join, basename } from 'node:path'
-import type { UsageStats, UsageInsights } from '../../../src/shared/types'
+import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../../src/shared/types'
 
 /** $/1M tokens, (input, output, cache-read). Substring-matched so a dated model id
  *  (`claude-opus-5-20260101`) resolves without a table entry per release, and so a point release
@@ -47,6 +47,11 @@ interface UsageRecord {
   day: string; model: string; slug: string; session: string
   tsMs: number; durationMs: number
   context: number; sidechain: boolean; skill?: string
+  /** Effort as the TRANSCRIPT reports it — a top-level sibling of `timestamp`, present on 100%
+   *  of assistant records (measured: 68,972 of 69,022 across 300 real transcripts, values
+   *  `high` / `medium` / `low`). This is the RUNNING value, so it catches a mid-session
+   *  `/effort` that the roster's launch pin cannot. */
+  effort?: string
   /** `usage.speed === 'fast'` — Opus fast mode, billed at the premium rate. See `rates`. */
   fast: boolean
   input: number; output: number; cacheRead: number; cache5m: number; cache1h: number
@@ -62,19 +67,24 @@ function cost(r: UsageRecord): number {
 }
 const tokensOf = (r: UsageRecord) => r.input + r.output + r.cacheRead + r.cache5m + r.cache1h
 
-let cache: { at: number; recs: UsageRecord[] } | null = null
+let cache: { at: number; recs: UsageRecord[]; compactions: CompactionRecord[] } | null = null
 const CACHE_TTL_MS = 30_000
 
-async function loadRecords(): Promise<UsageRecord[]> {
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.recs
+/** Drop the cache. For tests, which write transcripts into a sandbox between calls and would
+ *  otherwise read the previous test's answer for 30 seconds. */
+export function resetUsageCache(): void { cache = null }
+
+async function load(): Promise<{ recs: UsageRecord[]; compactions: CompactionRecord[] }> {
+  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache
   const projectsDir = join(homedir(), '.claude', 'projects')
   const out: UsageRecord[] = []
+  const compactions: CompactionRecord[] = []
   // A message is re-emitted as a turn streams, so the same (id, requestId) appears many times.
   // Without this the totals are several times the truth.
   const seen = new Set<string>()
 
   let dirs
-  try { dirs = await readdir(projectsDir, { withFileTypes: true }) } catch { return [] }
+  try { dirs = await readdir(projectsDir, { withFileTypes: true }) } catch { return { recs: [], compactions: [] } }
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue
     const slug = dir.name
@@ -89,6 +99,20 @@ async function loadRecords(): Promise<UsageRecord[]> {
         if (!line) continue
         let obj: RawLine
         try { obj = JSON.parse(line) } catch { continue }
+        // COMPACTION BOUNDARIES ride the same pass. They carry no `usage`, so the guard below
+        // would drop them — and a second walk over every transcript to find them would double
+        // the cost of the most expensive thing this module does.
+        if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
+          const cm = obj.compactMetadata
+          const cts = typeof obj.timestamp === 'string' ? obj.timestamp : ''
+          compactions.push({
+            day: cts.slice(0, 10), slug, session,
+            tsMs: cts ? Date.parse(cts) || 0 : 0,
+            preTokens: typeof cm?.preTokens === 'number' ? cm.preTokens : 0,
+            postTokens: typeof cm?.postTokens === 'number' ? cm.postTokens : 0,
+          })
+          continue
+        }
         const msg = obj.message
         const usage = msg?.usage
         if (!msg || !usage) continue
@@ -121,19 +145,38 @@ async function loadRecords(): Promise<UsageRecord[]> {
           // 'fast' (including the `null` that `<synthetic>` rows carry) is the standard rate.
           fast: usage.speed === 'fast',
           skill: typeof obj.attributionSkill === 'string' && obj.attributionSkill ? obj.attributionSkill : undefined,
+          effort: typeof obj.effort === 'string' && obj.effort ? obj.effort : undefined,
           input, output: g(usage, 'output_tokens'), cacheRead, cache5m, cache1h,
         })
       }
     }
   }
-  cache = { at: Date.now(), recs: out }
-  return out
+  cache = { at: Date.now(), recs: out, compactions }
+  return cache
+}
+
+/** Back-compat for the two existing callers, which only ever wanted the usage records. */
+async function loadRecords(): Promise<UsageRecord[]> {
+  return (await load()).recs
 }
 
 interface RawLine {
   message?: { usage?: Record<string, unknown>; model?: unknown; id?: unknown }
   requestId?: unknown; timestamp?: unknown; durationMs?: unknown
-  isSidechain?: unknown; attributionSkill?: unknown
+  isSidechain?: unknown; attributionSkill?: unknown; effort?: unknown
+  type?: unknown; subtype?: unknown
+  compactMetadata?: { preTokens?: unknown; postTokens?: unknown }
+}
+
+/** One compaction, as the transcript records it.
+ *
+ *  The record is written when the compaction has FINISHED — it carries `durationMs`, `preTokens`
+ *  and `postTokens` — so it closes a compaction rather than opening one. `postTokens` is the
+ *  context the model must read again on the next turn, which is the cost this page reports;
+ *  `preTokens - postTokens` is what was thrown away. */
+interface CompactionRecord {
+  day: string; slug: string; session: string; tsMs: number
+  preTokens: number; postTokens: number
 }
 
 /** Claude Code slugifies a cwd into the directory name; turn it back into something readable. */
@@ -226,5 +269,131 @@ export async function computeInsights(days: number): Promise<UsageInsights> {
     longSessionPct: pct(sessions.filter((s) => s.min !== Number.MAX_SAFE_INTEGER && s.max - s.min >= 8 * 3_600_000).reduce((n, s) => n + s.tokens, 0)),
     skills: [...bySkill].map(([name, t]) => ({ name, pct: pct(t) })).sort((a, b) => b.pct - a.pct).slice(0, 8),
     since, generatedAt,
+  }
+}
+
+// ── Tuning ───────────────────────────────────────────────────────────────────────────────────
+
+/** The p-th percentile of a sorted array, nearest-rank. Returns 0 for an empty set rather than
+ *  NaN — a lane with no tool calls has no p90, and NaN renders as a number that is not one. */
+export function percentile(sorted: readonly number[], p: number): number {
+  if (!sorted.length) return 0
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))
+  return sorted[i]
+}
+
+/** Median of an UNSORTED array. Copies before sorting — the caller accumulates in record order
+ *  and other stats still read that order. */
+export function median(values: readonly number[]): number {
+  if (!values.length) return 0
+  const s = [...values].sort((a, b) => a - b)
+  const mid = s.length >> 1
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2)
+}
+
+/** Everything the Tuning page reads, from one pass over the window.
+ *
+ *  ONE CALL rather than four, because the page renders as a whole: four round trips over a 30-day
+ *  window would let the lane table, the project split and the tool stats each paint a different
+ *  window as transcripts landed between them.
+ *
+ *  `toolOutput` is injected by the caller rather than read here — it comes from `chat.db`, which
+ *  this module deliberately knows nothing about; it reads `~/.claude/projects` and nothing else.
+ */
+export async function computeTuning(days: number, sinceMs?: number): Promise<Omit<TuningData, 'toolOutput'>> {
+  const generatedAt = new Date().toISOString()
+  // `sinceMs` is passed by the IPC handler so BOTH halves of the payload share one window; see
+  // `getTuning`. Absent (tests, direct callers) it falls back to deriving its own, as before.
+  const cutoffDay = sinceMs !== undefined
+    ? new Date(sinceMs).toISOString().slice(0, 10)
+    : cutoffFor(days).cutoffDay
+  const { recs, compactions } = await load()
+
+  interface SessAcc {
+    slug: string; model: string; effort?: string
+    tokens: number; cost: number; turns: number
+    highContextTurns: number; contexts: number[]
+    compactions: number; reReadTokens: number; droppedTokens: number
+    firstTsMs: number; lastTsMs: number
+  }
+  const bySession = new Map<string, SessAcc>()
+  const byEffort = new Map<string, EffortUsage>()
+  const byModel = new Map<string, { input: number; output: number; cacheWrite: number; cacheRead: number; cost: number; messages: number }>()
+  const byProject = new Map<string, { cost: number; tokens: number; messages: number }>()
+  let totalTokens = 0, totalCost = 0
+
+  for (const r of recs) {
+    if (cutoffDay && r.day && r.day < cutoffDay) continue
+    const c = cost(r), t = tokensOf(r), cacheWrite = r.cache5m + r.cache1h
+    totalTokens += t; totalCost += c
+
+    let a = bySession.get(r.session)
+    if (!a) {
+      a = { slug: r.slug, model: r.model, tokens: 0, cost: 0, turns: 0, highContextTurns: 0, contexts: [],
+        compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 0 }
+      bySession.set(r.session, a)
+    }
+    a.tokens += t; a.cost += c; a.turns += 1
+    // LATEST WINS for model and effort: a session that switched mid-window is described by what
+    // it is running now, and the per-(model, effort) split below is where the change stays visible.
+    if (r.tsMs >= a.lastTsMs) { a.model = r.model; if (r.effort) a.effort = r.effort }
+    if (r.context > 150_000) a.highContextTurns += 1
+    a.contexts.push(r.context)
+    if (r.tsMs > 0) {
+      a.firstTsMs = a.firstTsMs ? Math.min(a.firstTsMs, r.tsMs) : r.tsMs
+      a.lastTsMs = Math.max(a.lastTsMs, r.tsMs)
+    }
+
+    // The triple. A lane that ran half a window on High and half on Medium becomes two rows, not
+    // one averaged row that describes neither half.
+    if (r.effort) {
+      const key = r.session + ' ' + r.model + ' ' + r.effort
+      const e = byEffort.get(key) ?? { session: r.session, model: r.model, effort: r.effort, tokens: 0, cost: 0, turns: 0 }
+      e.tokens += t; e.cost += c; e.turns += 1
+      byEffort.set(key, e)
+    }
+
+    const m = byModel.get(r.model) ?? { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cost: 0, messages: 0 }
+    m.input += r.input; m.output += r.output; m.cacheWrite += cacheWrite; m.cacheRead += r.cacheRead; m.cost += c; m.messages += 1
+    byModel.set(r.model, m)
+
+    const p = byProject.get(r.slug) ?? { cost: 0, tokens: 0, messages: 0 }
+    p.cost += c; p.tokens += t; p.messages += 1
+    byProject.set(r.slug, p)
+  }
+
+  // Compactions fold in after the usage records, against the same window. A session whose ONLY
+  // record in the window is a boundary still gets a row: it compacted, which is exactly what this
+  // page exists to show, and dropping it would make the column lie by omission.
+  for (const cb of compactions) {
+    if (cutoffDay && cb.day && cb.day < cutoffDay) continue
+    let a = bySession.get(cb.session)
+    if (!a) {
+      a = { slug: cb.slug, model: '', tokens: 0, cost: 0, turns: 0, highContextTurns: 0, contexts: [],
+        compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 0 }
+      bySession.set(cb.session, a)
+    }
+    a.compactions += 1
+    a.reReadTokens += cb.postTokens
+    a.droppedTokens += Math.max(0, cb.preTokens - cb.postTokens)
+  }
+
+  return {
+    days, totalTokens, totalCost, generatedAt,
+    bySession: [...bySession].map(([session, a]) => ({
+      session, slug: a.slug, model: a.model, effort: a.effort,
+      tokens: a.tokens, cost: a.cost, turns: a.turns,
+      highContextTurns: a.highContextTurns, medianContext: median(a.contexts),
+      compactions: a.compactions, reReadTokens: a.reReadTokens, droppedTokens: a.droppedTokens,
+      firstTsMs: a.firstTsMs, lastTsMs: a.lastTsMs,
+    })).sort((x, y) => y.tokens - x.tokens),
+    byEffort: [...byEffort.values()].sort((x, y) => y.tokens - x.tokens),
+    byModel: [...byModel].map(([model, a]) => ({
+      model, inputTokens: a.input, outputTokens: a.output,
+      cacheWriteTokens: a.cacheWrite, cacheReadTokens: a.cacheRead, cost: a.cost, messages: a.messages,
+    })).sort((x, y) => y.cost - x.cost),
+    byProject: [...byProject].map(([slug, a]) => ({
+      slug, name: projectName(slug), cost: a.cost, tokens: a.tokens, messages: a.messages,
+    })).sort((x, y) => y.tokens - x.tokens),
   }
 }

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — Tuning page harness</title>
+    <style>
+      html, body { margin: 0; }
+      /* The harness div carries the app background ITSELF. Screenshotting an element composites
+         only what that element paints, so a transparent root gave a dark top (PageShell's own
+         surface) and a white tail below it — which reads as "the page stops rendering" and is
+         only the frame. */
+      #tuning { background: var(--bg-app, #0b0d10); min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <!-- Renders the REAL TuningView against the mock bridge's fixture window, so a headless
+         WebKit screenshot shows what the page actually draws. Serves the one check `tsc` cannot:
+         that every section renders, in the production palette, from the real component.
+         Driven by scripts/visual/capture.mjs --page tuning --sel "#tuning". -->
+    <div id="tuning"></div>
+    <script type="module" src="./tuning-harness.tsx"></script>
+  </body>
+</html>

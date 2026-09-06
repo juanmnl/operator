@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Operator — QA Tuning-page harness</title></head>
+  <body>
+    <!-- DEV-ONLY, QA-only, throwaway: boots the real renderer (dev/qa-tuning-bridge.ts, fully
+         synthetic data — no real ~/.operator content) for dev/drive-tuning-page.mjs. Pass
+         ?case=a|b|c|d to pick a getTuning/planLimits fixture. Never bundled into the app. -->
+    <div id="root"></div>
+    <script type="module" src="./qa-tuning-main.tsx"></script>
+  </body>
+</html>

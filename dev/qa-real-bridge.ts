@@ -31,7 +31,11 @@ const session = (o: Partial<AgentSession> & { id: string; terminalId: string }):
   projectName: 'operator',
   projectId: PROJECT_ID,
   status: 'active',
-  phase: 'idle',
+  // `waiting`, not `idle`: NO TRACKED LANE IS EVER `idle` — `derive_phase` returns only
+  // running / compacting / waiting. A fixture that says otherwise validated a chip gate
+  // (`phase === 'idle'`) that could never fire against a real session, which is exactly the
+  // failure `feedback_fixtures_must_match_reality` names.
+  phase: 'waiting',
   activity: [],
   activeSubagents: 0,
   lastToolName: null,
@@ -44,11 +48,11 @@ const session = (o: Partial<AgentSession> & { id: string; terminalId: string }):
 // LIVE one for orb/interrupt driving since it has a real roleId/model/effort).
 const [LONG, BIG] = realFixture.sessions
 export const MOCK_SESSIONS: AgentSession[] = [
-  session({ id: LONG.id, terminalId: LONG.terminalId, phase: 'idle', summary: LONG.summary }),
+  session({ id: LONG.id, terminalId: LONG.terminalId, phase: 'waiting', summary: LONG.summary }),
   session({
     id: BIG.id, terminalId: BIG.terminalId, roleId: BIG.roleId, model: BIG.model,
     effortLevel: BIG.effortLevel as 'high' | 'normal' | 'low' | undefined,
-    phase: 'idle', summary: BIG.summary,
+    phase: 'waiting', summary: BIG.summary,
   }),
 ]
 
@@ -68,10 +72,6 @@ const MOCK_SAVED = MOCK_SESSIONS.map((s) => ({
   terminalId: s.terminalId,
   lastActiveAt: now,
 }))
-
-const CHAT_BY_ID: Record<string, unknown[]> = Object.fromEntries(
-  realFixture.sessions.map((s) => [s.id, s.messages]),
-)
 
 export function installRealBridge() {
   try {
@@ -95,8 +95,6 @@ export function installRealBridge() {
     onGridUpdate: sub, onWindowResize: sub, onFileDrop: sub, onPreviewPick: sub,
 
     getSessions: async () => MOCK_SESSIONS,
-    chatHistory: async (id: string) => CHAT_BY_ID[id] ?? [],
-    imageDataUrl: async () => '',
     terminalList: async () => MOCK_TERMINALS,
     terminalHistory: async () => '',
     getDevPorts: async () => ({}),

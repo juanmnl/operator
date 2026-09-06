@@ -27,3 +27,91 @@ export async function isPortLive(port: number): Promise<boolean> {
   })
   return (await probe('127.0.0.1')) || (await probe('::1'))
 }
+
+/** Can WE bind this port, on both loopbacks?
+ *
+ *  The other half of the pair, and not the same question as `isPortLive`. A connect() answers
+ *  "is something accepting connections here"; a bind() answers "could I take this port", which is
+ *  what an allocator has to know. They disagree in the case that matters: a socket bound and
+ *  listening with no accept loop, or bound to one loopback only, answers no to a connect on the
+ *  other while still making the port unusable.
+ *
+ *  BOTH families, mirroring `port_free` in lib.rs, and for the reason recorded there: an orphan
+ *  holding only `[::1]` leaves the v4 bind succeeding, Operator calls the port free, and the
+ *  Preview — which resolves `localhost` to `[::1]` — then loads the orphan's server. IPv6
+ *  loopback is always present on macOS, this app's only target, so a failure there is a busy
+ *  port and not a missing stack.
+ *
+ *  Each listener is closed immediately. The window between this returning true and the lane's
+ *  own server binding is real and unavoidable — the same race the Rust side has always had — but
+ *  it is milliseconds against a port that has been held for days, which is the actual failure. */
+export async function isPortFree(port: number): Promise<boolean> {
+  const { createServer } = await import('node:net')
+  const canBind = (host: string) => new Promise<boolean>((resolve) => {
+    const srv = createServer()
+    // A failed listen never bound, so there is nothing to close — `close()` on a server that is
+    // not running emits its own error and would take the answer with it.
+    srv.once('error', () => resolve(false))
+    // `exclusive` so this cannot succeed by SHARING the port with a listener in another process
+    // via SO_REUSEPORT, which would report an occupied port as free.
+    srv.listen({ port, host, exclusive: true }, () => srv.close(() => resolve(true)))
+  })
+  const v4 = await canBind('127.0.0.1')
+  if (!v4) return false
+  const v6 = await canBind('::1')
+  if (v6) { v6Failures = 0; return true }
+  // THE v6 BIND FAILED WHILE v4 SUCCEEDED. Usually that means an orphan holds `[::1]` only, which
+  // is the case this pair exists to catch, and refusing the port is right.
+  //
+  // But if IPv6 loopback is unavailable ENTIRELY — a machine with it disabled, a container — then
+  // every port in the window fails this check, `allocatePort` scans 1420..1520 and returns
+  // undefined, and every lane launches with no dev port at all. Silently. So the allocator tells
+  // us when a whole scan came back empty and we say why once, then fall back to the v4 answer:
+  // a port that is v4-free on a host with no v6 is free.
+  v6Failures += 1
+  return false
+}
+
+/** v6 bind failures IN THE CURRENT SCAN. Reset when a scan starts, not only on a success —
+ *  a process-lifetime tally would accumulate ordinary orphan refusals across hours of launches
+ *  and eventually cross any threshold, declaring a healthy host v6-less. The question is only
+ *  ever "did EVERY port in THIS scan fail v6", so the counter has to be scoped to a scan. */
+let v6Failures = 0
+let v6WarningShown = false
+
+/** Called when a whole port scan came back empty. Distinguishes the two causes and, for the
+ *  second, re-probes on v4 alone so a host without IPv6 still gets dev ports.
+ *
+ *  Separate from `isPortFree` because a single port cannot tell the difference: one refusal is
+ *  evidence of an orphan, a hundred consecutive refusals is evidence about the host. */
+export async function retryScanWithoutV6(
+  ports: readonly number[],
+  isLeased: (port: number) => boolean = () => false,
+): Promise<number | undefined> {
+  if (v6Failures < ports.length || !ports.length) return undefined
+  if (!v6WarningShown) {
+    v6WarningShown = true
+    console.error(
+      '[ports] every port in the window failed its ::1 bind while 127.0.0.1 succeeded — '
+      + 'IPv6 loopback looks unavailable on this host, so dev ports are being allocated on v4 alone',
+    )
+  }
+  const { createServer } = await import('node:net')
+  for (const port of ports) {
+    // THE LEASE CHECK COMES TOO, and leaving it out was the bug: this path is a fallback for the
+    // same scan, so it has to apply the same exclusions. Without it a v6-less host would hand out
+    // a port another Operator instance — or an unreaped orphan — already holds, which is the
+    // original failure with the bind-check bypassed.
+    if (isLeased(port)) continue
+    const free = await new Promise<boolean>((resolve) => {
+      const srv = createServer()
+      srv.once('error', () => resolve(false))
+      srv.listen({ port, host: '127.0.0.1', exclusive: true }, () => srv.close(() => resolve(true)))
+    })
+    if (free) return port
+  }
+  return undefined
+}
+
+/** Start a scan's v6 tally. Called by `allocatePort` before it walks the window. */
+export function beginPortScan(): void { v6Failures = 0 }

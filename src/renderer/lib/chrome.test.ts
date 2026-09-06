@@ -1,33 +1,26 @@
 import { describe, it, expect } from 'vitest'
 import { SURFACE_FILL, PANEL_SUBHEAD_H, TOOLBAR_BAND_H } from './chrome'
 
-// THE GUARD BEHIND `SURFACE_FILL`. Files shipped in 0.18.0 unable to scroll vertically, and
-// the cause was not an overflow rule anywhere near a scroller: `FilesView`'s root asked for its
-// height with `flex: 1`, the main-view overlay it lands in is a plain block, so the root sized to
-// its content and the overlay's `overflow: hidden` clipped the rest. Nothing below the fold was
+// THE GUARD BEHIND `SURFACE_FILL`. The Files view shipped in 0.18.0 unable to scroll vertically,
+// and the cause was not an overflow rule anywhere near a scroller: its root asked for its height
+// with `flex: 1`, the main-view overlay it lands in is a plain block, so the root sized to its
+// content and the overlay's `overflow: hidden` clipped the rest. Nothing below the fold was
 // reachable by wheel or by key, because nothing in the chain had a bounded height to scroll
 // within.
 //
-// A layout bug cannot be measured here — jsdom has no layout engine, and the real proof is
-// `dev/drive-files-scroll.mjs`, which measures the rendered boxes in a browser. What CAN be held
-// here, on every `npm test`, is the rule that would have prevented it: a surface mounted into that
-// overlay must state an EXPLICIT height, because `flex` is inert in a block parent.
+// A layout bug cannot be measured here — jsdom has no layout engine. What CAN be held here, on
+// every `npm test`, is the rule that would have prevented it: a surface mounted into that overlay
+// must state an EXPLICIT height, because `flex` is inert in a block parent.
 //
 // Same shape as `muted-opacity.guard.test.ts` — a rule enforced only by review is not enforced.
 
-// `.ts` as well as `.tsx`: the wrapping rule lives in `cm-theme.ts`, which is a theme object and
-// not a component.
 const SOURCES = import.meta.glob('../**/*.{ts,tsx}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 
 /** Every surface mounted into a slot that is a BLOCK rather than a flex column. A new main view
  *  or a new panel tab belongs on this list. */
 const BLOCK_SLOT_SURFACES: Array<[file: string, component: string]> = [
   // the main view's absolute overlay, one per `mainView` value
-  ['components/session/CanvasConversation.tsx', 'CanvasConversation'],
-  ['components/files/FilesView.tsx', 'FilesView'],
   ['components/session/AppPreviewPanel.tsx', 'AppPreviewPanel'],
-  // the right panel's body div — a `flex: 1` block, and the second half of the same bug
-  ['components/files/FilesPanel.tsx', 'FilesPanel'],
 ]
 
 function sourceOf(suffix: string): string {
@@ -142,18 +135,6 @@ describe('the two mount slots are flex columns, not blocks', () => {
   })
 })
 
-describe('the file viewer reads down, not sideways', () => {
-  // The other axis. The viewer was configured never to wrap, so a 912px pane held 2337px of
-  // content and a long line had to be dragged into view. CM6 wraps a LOGICAL line across visual
-  // rows and still prints one gutter number for it, so nothing a deep link addresses moves.
-  it('turns line wrapping on', () => {
-    expect(stripComments(sourceOf('components/files/FileViewer.tsx'))).toMatch(/EditorView\.lineWrapping/)
-  })
-
-  it('breaks a token with no break opportunity, or a base64 blob overflows anyway', () => {
-    expect(stripComments(sourceOf('components/files/cm-theme.ts'))).toMatch(/overflowWrap: 'anywhere'/)
-  })
-})
 
 describe('the header bands stay single-sourced', () => {
   it('are the two numbers the components import, not literals typed per file', () => {

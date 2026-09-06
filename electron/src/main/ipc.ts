@@ -8,7 +8,7 @@ import { BrowserWindow, dialog, ipcMain, shell, app, nativeImage } from 'electro
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-api'
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
@@ -22,12 +22,13 @@ import * as agents from './agents'
 import * as wt from './worktree'
 import * as moodboard from './moodboard'
 import { fetchPlanLimits } from './plan-limits'
-import { computeUsage, computeInsights } from './usage'
+import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
-import * as files from './files'
+import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
+import { devServerInventory, ageSnapshot } from './dev-servers'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -37,11 +38,6 @@ import type { Project } from '../../../src/shared/types'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
-}
-
-const IMAGE_MIME: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
 }
 
 export interface Deps {
@@ -122,7 +118,7 @@ export function registerIpc(d: Deps): void {
       // surface or a renderer change. That is what makes S3 the first step where the feature
       // does something while adding no UI at all.
       const layers = await projectConfig(String(o.projectId ?? ''))
-      const spawned = d.terminals.spawn({
+      const spawned = await d.terminals.spawn({
         cwd: target,
         args: buildArgs(o, sessionId),
         sessionId,
@@ -134,6 +130,7 @@ export function registerIpc(d: Deps): void {
         // `sessions.json` and taking the first row that matched.
         projectId: (o.projectId as string) ?? null,
         roleId: (o.roleId as string) ?? null,
+        remoteControl: o.remoteControl === true,
         ...layers,
       })
       // Register BEFORE returning: the tailer must be watching before Claude's first line
@@ -156,23 +153,10 @@ export function registerIpc(d: Deps): void {
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
     skillsCatalog: (projectPath) => skillsCatalog(String(projectPath ?? '')),
-    // The read-only code navigator's seam. EVERY one of these rejects a path that escapes its
-    // root after canonicalisation — the only new attack surface the feature opens, and the check
-    // lives in `files.ts` next to the walk it guards rather than here.
-    fileTree: (root, dir, showIgnored) => files.fileTree(String(root), String(dir ?? ''), showIgnored === true),
-    fileRead: (root, path) => files.fileRead(String(root), String(path)),
-    fileWatch: async (root) => {
-      const w = d.getWindow()
-      files.beginWatching(String(root), (changedRoot, paths) => {
-        if (w && !w.isDestroyed()) broadcast(w, 'onFileChange', changedRoot, paths)
-      })
-    },
-    fileUnwatch: async (root) => { files.endWatching(String(root)) },
     sessionPorts: async (id) => d.terminals.sessionPorts(id),
 
     // --- sessions, chat, artifacts -----------------------------------------------------
     getSessions: async () => d.transcript.sessions(),
-    chatHistory: async (sessionId) => d.chat.load(sessionId),
     projectReplies: async (projectId) => d.chat.replies(projectId),
     artifactReports: async (limit) => d.artifacts.listReports(Number(limit) || 50),
     // The lifecycle: `written → delivered`. Two facts, two calls — stored, and shown. There was a
@@ -219,6 +203,42 @@ export function registerIpc(d: Deps): void {
     // Read-only. Returns the classification of every directory under `~/.operator/worktrees`
     // with sizes, for the Settings list. Sizes are one `du` over the root's children — skipped
     // by the boot/quit sweeps, which do not need them.
+    // THE LIST IS READ-ONLY and the kill is a separate call, because the whole point of this
+    // surface is that these processes are the ones the automatic reaper refuses to touch. One
+    // `ps` pair per refresh; no per-pid `lsof` (TCC).
+    devServerList: async () => {
+      const [ps, tagged, ages] = await Promise.all([snapshotPs(), sweepTagged(), ageSnapshot()])
+      const projects = await store.loadProjects()
+      const roots = [
+        ...projects.map((p) => (p as { path?: string }).path).filter((p): p is string => !!p),
+        join(store.operatorDir(), 'worktrees'),
+      ]
+      return devServerInventory({
+        tagged, ps, roots,
+        openTerminalIds: d.terminals.openTerminalIds(),
+        appPid: process.pid,
+        selfPid: process.pid,
+        isAppAlive: isPidAlive,
+        ages,
+      })
+    },
+    // EXPLICITLY CONFIRMED, always. Reached only from the Dev servers list after the user has
+    // seen what each row is and pressed through a confirmation — never from a timer, never as a
+    // side effect of anything else. The pids are re-expanded to their descendants from a FRESH
+    // snapshot rather than trusting ones the renderer has been holding: a pid the user saw a
+    // minute ago may have exited and been recycled, and this signals what it is handed.
+    devServerKill: async (pids) => {
+      const wanted = (Array.isArray(pids) ? pids : []).map(Number).filter((n) => Number.isInteger(n) && n > 1)
+      if (!wanted.length) return 0
+      const ps = await snapshotPs()
+      const live = new Set(wanted.filter((pid) => ps.some((r) => r.pid === pid)))
+      if (!live.size) return 0
+      const all = new Set(live)
+      for (const pid of live) for (const kid of descendantsOf(ps, pid)) all.add(kid)
+      const { found } = await reapTree(0, ps, { alsoReap: all })
+      console.error(`[ports] user-confirmed kill of ${found.length} process(es): ${[...all].join(', ')}`)
+      return found.length
+    },
     worktreeReapPlan: () => reapPlan({ withSizes: true }),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.
@@ -271,16 +291,29 @@ export function registerIpc(d: Deps): void {
       await writeFile(file, Buffer.from(dataB64, 'base64'))
       return file
     },
-    imageDataUrl: async (path) => {
-      const mime = IMAGE_MIME[extname(path).toLowerCase()]
-      if (!mime) return ''
-      try { return `data:${mime};base64,${(await readFile(path)).toString('base64')}` } catch { return '' }
-    },
     // THE APP'S version, not Electron's. `app.getVersion()` reads the running bundle's
     // Info.plist — right when packaged, but under `electron .` it is Electron's own and the
     // gallery showed "v43.4.1". The SHELL's package.json is the source, and it is what the
     // packager stamps into Info.plist, so dev and packaged agree. (Reading the repo root
     // instead would report the Tauri app's version, which is a different number.)
+    // ONE CALL for the whole Tuning page. The transcript scan and the chat.db query are joined
+    // HERE rather than in the renderer so both halves describe the same window — two round trips
+    // over a 30-day window would let transcripts land between them and the page paint two.
+    getTuning: async (days) => {
+      const n = Number(days) || 7
+      // ONE WINDOW FOR BOTH HALVES, computed once here.
+      //
+      // `computeTuning` derives its own cutoff from `Date.now()` and the chat query used to
+      // derive a second one a few milliseconds later, so the two halves described windows that
+      // differed by however long the transcript scan took — seconds, on a 30-day window over
+      // every project directory. A tool row could then belong to a session the lane table had
+      // already excluded, and the page would render a lane whose p90 came from a turn outside
+      // its own window.
+      const sinceMs = n > 0 ? Date.now() - n * 86_400_000 : 0
+      const since = sinceMs ? new Date(sinceMs).toISOString() : undefined
+      const core = await computeTuning(n, sinceMs || undefined)
+      return { ...core, toolOutput: d.chat.toolOutputStats(since) }
+    },
     getUsageStats: (days) => computeUsage(days ?? 0),
     getUsageInsights: (days) => computeInsights(days ?? 0),
     checkUpdate: () => checkUpdate(),

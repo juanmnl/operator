@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import type { EffortLevel, McpServerInfo } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { SidebarToggle } from '../SidebarToggle'
+import { PopMenu } from '../PopMenu'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
+import { EFFORT_OPTIONS } from '../../lib/effort'
+import { ROSTER_MODELS, modelFamilyLabel } from '../../lib/roster'
+import { effortCommand, modelCommand, normalizeModelId } from '../../lib/lane-tuning'
+import { submitQueue } from '../../lib/submit-queue'
+import { isBetweenTurns } from '../../lib/comms'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -20,7 +26,7 @@ function typeColor(type?: string): string {
 // `flexShrink: 0` or `nowrap`. Under width pressure (measured: ≤ ~780px) that squeezed the
 // badges until their text WRAPPED to two lines (a 36px-tall "2 MCP" beside a 20px "High")
 // and squashed the icon button to 17px wide, while the row's own space-between let the
-// localhost chip ride over the Console/Chat/Preview control.
+// localhost chip ride over the Console/Preview control.
 //
 // So: same height, contents centred by flex (not by line-height), nothing shrinks, nothing
 // wraps. The transparent 1px border keeps the bordered localhost chip exactly the same box
@@ -57,13 +63,25 @@ interface SessionToolbarProps {
   /** Port sniffed from the session's actual dev-server banner; wins over the
    *  allocated port since the project often ignores OPERATOR_DEV_PORT. */
   detectedDevPort?: number
+  /** THE TUNING PAIR. Per-lane model + effort is the job this app exists for — approach the
+   *  plan's limits without hitting them — so the two chips that set them are live controls here,
+   *  not read-outs. They were the composer's pills until the Chat view was removed; the toolbar
+   *  is where they went, because it is the one surface every session always has. */
   effortLevel?: EffortLevel | null
+  /** Alias or full transcript id; the chip renders the family label either way. */
+  model?: string | null
+  /** The lane's phase. The chips are live only at `idle` — see `tunable`. */
+  phase?: string | null
+  /** Persist the pick back onto the session so the chip survives a tab switch. Absent = the
+   *  chips render as static badges, which is what a lane with no live pty gets. */
+  onModelChange?: (model: string) => void
+  onEffortChange?: (effort: EffortLevel) => void
   permissionMode?: string | null
   lastToolName?: string | null
   branch?: string | null
-  /** Main-view segmented toggle: Console (terminal) · Chat · Preview. */
-  mainView?: 'terminal' | 'chat' | 'preview' | 'files'
-  onSelectMainView?: (v: 'terminal' | 'chat' | 'preview' | 'files') => void
+  /** Main-view segmented toggle: Console (terminal) · Preview. */
+  mainView?: 'terminal' | 'preview'
+  onSelectMainView?: (v: 'terminal' | 'preview') => void
   /** Right side panel (Plan / Diff) open state + toggle. */
   panelOpen?: boolean
   onTogglePanel?: () => void
@@ -72,11 +90,39 @@ interface SessionToolbarProps {
   onToggleSidebar?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, detectedDevPort, effortLevel: effortLevelProp, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
   const mcpActive = !!(lastToolName && lastToolName.startsWith('mcp__'))
+  // Seeded from the lane's launch config, then tracking the user's own picks. Local state and
+  // not the prop alone, because the pty write and the transcript that confirms it are a turn
+  // apart — a chip that waited for the round trip would sit on the old value while you looked
+  // at it.
+  const [model, setModel] = useState<string | null>(modelProp ?? null)
+  const [menu, setMenu] = useState<'model' | 'effort' | null>(null)
+  // "Other…" — a free-typed id for a tier the CLI accepts before Operator has a preset for it.
+  // The listed aliases never need it: Claude Code resolves `opus`/`sonnet`/… to the current
+  // point release on its own, so a routine version bump costs us nothing.
+  const [customModel, setCustomModel] = useState(false)
+  const [customModelId, setCustomModelId] = useState('')
+  // TUNING WRITES A TYPED LINE INTO A LIVE PTY, so it is offered only between turns.
+  //
+  // Mid-turn that line does not become a command — Claude Code queues it as a message — so the
+  // chip would claim a change that did not happen.
+  //
+  // THE GATE USED TO BE `phase === 'idle'`, WHICH NO TRACKED LANE EVER IS: `derive_phase` returns
+  // only running / compacting / waiting, so the chips were permanently disabled. `isBetweenTurns`
+  // is the same predicate `canAnnounceTo` uses, shared so the two cannot drift.
+  //
+  // AND A PERMISSION PROMPT IS ALREADY EXCLUDED, which is the risk `waiting` looked like it
+  // reopened. A lane awaiting approval has an assistant `tool_use` block with no `tool_result`,
+  // so `openTools` is non-empty and `derivePhase` returns `running` on its second branch — the
+  // chips are disabled throughout. The tailers CAN tell that apart from an ordinary "your turn",
+  // and they already do; a bare CR cannot reach an unanswered prompt through this control.
+  const live = !!terminalId && !!onEffortChange
+  const tunable = live && isBetweenTurns(phase)
+  const waitTitle = 'Wait for the lane to finish its turn'
 
   useEffect(() => {
     // Only read from disk if no prop was provided
@@ -102,6 +148,48 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
   useEffect(() => {
     if (effortLevelProp) setEffortLevel(effortLevelProp)
   }, [effortLevelProp])
+
+  // Follow the session's model as it settles: the first transcript report backfills a launch
+  // that took the account default, and a `/model` typed straight into the terminal arrives the
+  // same way. A chip pick round-trips through this same prop, so following it never fights the
+  // user's own choice.
+  useEffect(() => {
+    if (modelProp) setModel(modelProp)
+  }, [modelProp])
+
+  // Drop the custom-id draft whenever the model menu is not the open one — covers every close
+  // path (pick, outside click, chip toggle, Escape) in one place instead of four.
+  useEffect(() => {
+    if (menu !== 'model') { setCustomModel(false); setCustomModelId('') }
+  }, [menu])
+
+  // PERSIST ONLY AFTER THE WRITE IS ISSUED. Setting the chip first and writing second made the
+  // toolbar assert a value the lane might never have been told about; now the optimistic update
+  // and the durable one both hang off the write actually going out.
+  const pickEffort = (level: EffortLevel) => {
+    if (!tunable || !terminalId) return
+    void submitQueue.submitTyped(terminalId, effortCommand(level)).then(() => {
+      setEffortLevel(level)
+      onEffortChange?.(level)
+    })
+  }
+
+  const pickModel = (id: string) => {
+    if (!tunable || !terminalId) return
+    void submitQueue.submitTyped(terminalId, modelCommand(id)).then(() => {
+      setModel(id)
+      onModelChange?.(id)
+    })
+  }
+
+  // ENTER COMMITS; BLUR DISCARDS. It used to commit on blur too, which sent a HALF-TYPED id to
+  // the pty on every way of leaving the field — clicking elsewhere, tabbing, the menu closing —
+  // and `/model son` is a command the lane acts on. Enter is the only deliberate commit.
+  const commitCustomModel = () => {
+    const id = normalizeModelId(customModelId)
+    setMenu(null)
+    if (id) pickModel(id)
+  }
 
   // A worktree's folder is named after its branch (operator-990540 ↔
   // operator/990540), so showing both the project name and the branch reads as
@@ -133,7 +221,7 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
         borderBottom: '1px solid var(--border)',
         fontFamily: "var(--font-body)",
       }}>
-        {/* Left cluster: sidebar toggle · title · Console·Chat·Preview main-view toggle.
+        {/* Left cluster: sidebar toggle · title · Console·Preview main-view toggle.
             `overflow: hidden` is the second half of the collision fix: the right cluster
             never shrinks, so this side is the one that must give — and when even the
             ellipsised title has run out of room it clips instead of riding over the badges. */}
@@ -211,9 +299,9 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             // @ts-expect-error Electron-specific CSS property
             WebkitAppRegion: 'no-drag',
           }}>
-            {/* The fourth segment, in the style the control already has — transparent track,
-                `--overlay-subtle` on the active one, `--accent` ink, no fill. */}
-            {([['terminal', 'Console'], ['chat', 'Chat'], ['preview', 'Preview'], ['files', 'Files']] as const).map(([v, label]) => {
+            {/* Transparent track, `--overlay-subtle` on the active segment, `--accent` ink,
+                no fill. */}
+            {([['terminal', 'Console'], ['preview', 'Preview']] as const).map(([v, label]) => {
               const activeSeg = v === mainView
               return (
                 <button
@@ -271,7 +359,7 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
 
           {/* MCP indicator — dropdown anchors to THIS badge (relative wrapper) so it drops
               directly beneath it, not the toolbar's far-right edge (which now holds the
-              Console/Chat/Preview segmented control). */}
+              Console/Preview segmented control). */}
           {mcpServers.length > 0 && (
             // `display: flex`, not the default block: an inline-flex chip inside a block
             // wrapper sits on that wrapper's text baseline, which added ~2px of descender
@@ -298,8 +386,103 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, de
             </div>
           )}
 
-          {/* Effort level badge */}
-          {effortLevel && (
+          {/* THE TUNING PAIR — model, then effort, in the order you reach for them: the model
+              is the big lever (a different rate per token) and the effort is the trim. Both are
+              per LANE, so five lanes can sit at five different points against one plan.
+
+              A chip with no live pty behind it stays a badge, exactly as it rendered before —
+              nothing to write to, so nothing to click. */}
+          {live ? (
+            <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+              <button
+                data-popmenu-trigger="model"
+                aria-expanded={menu === 'model'}
+                aria-haspopup="menu"
+                disabled={!tunable}
+                onClick={() => setMenu(menu === 'model' ? null : 'model')}
+                title={tunable ? 'Model for this lane — sends /model to its terminal' : waitTitle}
+                style={{
+                  ...chipBase,
+                  background: menu === 'model' ? 'var(--overlay-subtle)' : 'transparent',
+                  color: 'var(--fg-muted)', cursor: tunable ? 'pointer' : 'default', outline: 'none',
+                }}
+              >
+                {model ? modelFamilyLabel(model) : 'Model'}
+              </button>
+              {menu === 'model' && (
+                <PopMenu
+                  title="Model"
+                  placement="down"
+                  onClose={() => setMenu(null)}
+                  items={[
+                    ...ROSTER_MODELS.map((m) => ({
+                      key: m.id, label: m.label, active: m.id === model,
+                      onClick: () => pickModel(m.id),
+                    })),
+                    { key: 'other', label: 'Other…', keepOpen: true, onClick: () => setCustomModel(true) },
+                  ]}
+                  footer={customModel && (
+                    <div style={{ padding: '4px 12px 10px' }}>
+                      <input
+                        autoFocus
+                        value={customModelId}
+                        onChange={(e) => setCustomModelId(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitCustomModel()
+                          // Escape closes without sending — the menu's own dismissal contract.
+                          else if (e.key === 'Escape') { setMenu(null) }
+                        }}
+                        // BLUR DISCARDS. Committing here sent a half-typed id on every way of
+                        // leaving the field, and `/model son` is a command the lane acts on.
+                        onBlur={() => { setCustomModel(false); setCustomModelId('') }}
+                        placeholder="model id or alias"
+                        style={{
+                          width: '100%', boxSizing: 'border-box', padding: '5px 7px',
+                          borderRadius: 6, border: '1px solid var(--border)',
+                          background: 'transparent', color: 'var(--fg)', outline: 'none',
+                          fontFamily: 'var(--font-mono)', fontSize: 11,
+                        }}
+                      />
+                    </div>
+                  )}
+                />
+              )}
+            </div>
+          ) : model && (
+            <span style={{ ...chipBase, color: 'var(--fg-muted)' }}>{modelFamilyLabel(model)}</span>
+          )}
+
+          {live ? (
+            <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
+              <button
+                data-popmenu-trigger="effort"
+                aria-expanded={menu === 'effort'}
+                aria-haspopup="menu"
+                disabled={!tunable}
+                onClick={() => setMenu(menu === 'effort' ? null : 'effort')}
+                title={tunable ? 'Reasoning effort for this lane — sends /effort to its terminal' : waitTitle}
+                style={{
+                  ...chipBase,
+                  background: menu === 'effort' ? 'var(--overlay-subtle)' : 'transparent',
+                  color: 'var(--fg-muted)', cursor: tunable ? 'pointer' : 'default', outline: 'none',
+                  textTransform: effortLevel ? 'capitalize' : 'none',
+                }}
+              >
+                {effortLevel ?? 'Effort'}
+              </button>
+              {menu === 'effort' && (
+                <PopMenu
+                  title="Reasoning effort"
+                  placement="down"
+                  onClose={() => setMenu(null)}
+                  items={EFFORT_OPTIONS.map((o) => ({
+                    key: o.id, label: o.label, active: o.id === effortLevel,
+                    onClick: () => pickEffort(o.id),
+                  }))}
+                />
+              )}
+            </div>
+          ) : effortLevel && (
             <span style={{ ...chipBase, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>
               {effortLevel}
             </span>

@@ -18,11 +18,13 @@ import { buildArgs, mcpConfigArg } from '../../../src/renderer/lib/launch-args'
 import { app } from 'electron'
 import {
   reapTree, snapshotPs, sweepTagged, descendantsOf, selfPgidFrom, laneStrays, expandStrays,
+  abandonedLaneRows,
   type PsRow, type TaggedRow,
 } from './reap'
-import { claimLease, releaseLease } from './leases'
-import { isPortLive } from './port-probe'
+import { claimLease, releaseLease, loadLeases } from './leases'
+import { isPortLive, isPortFree, retryScanWithoutV6, beginPortScan } from './port-probe'
 import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
+import { allocatePort, shouldReleaseCwdPort, provesOwnServer, DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
@@ -37,11 +39,6 @@ const DEFERRED_LAUNCH_FALLBACK_MS = 3000
 /** Fallback pty size when the frontend can't measure — the historical 100×30 from lib.rs. */
 const DEFAULT_COLS = 100
 const DEFAULT_ROWS = 30
-
-/** Dev-port reservations, mirroring `alloc_port`: one port per session, and lanes sharing a
- *  cwd share a port (a sibling lane serving the same code is not a collision). */
-const PORT_BASE = 1420
-const PORT_MAX = 1520
 
 export interface SpawnOptions {
   cwd: string
@@ -67,6 +64,9 @@ export interface SpawnOptions {
    *  they used to be resolved through picked the wrong row — see `resolveCaller`. */
   projectId?: string | null
   roleId?: string | null
+  /** Expose this lane to Claude Code's Remote Control (the Claude phone app). Written into the
+   *  session settings file EXPLICITLY, false included — see `buildSessionSettings`. */
+  remoteControl?: boolean
 }
 
 interface Managed {
@@ -108,28 +108,88 @@ export class TerminalManager {
   }
 
   /** Keyed by CWD, not by terminal id: lanes in the same directory serve identical code, so
-   *  the second lane joins the first's server rather than starting a redundant one. Same rule
-   *  as `alloc_port` in lib.rs, and its `shares one port across lanes in the same cwd` test. */
-  private allocPort(cwd: string): number | undefined {
-    const shared = this.portsByCwd.get(cwd)
-    if (shared) return shared
-    const taken = new Set(this.portsByCwd.values())
-    for (let p = PORT_BASE; p <= PORT_MAX; p++) {
-      if (!taken.has(p)) {
-        this.portsByCwd.set(cwd, p)
-        return p
-      }
+   *  the second lane joins the first's server rather than starting a redundant one.
+   *
+   *  The DECISION lives in `port-alloc.ts`, pure over the three probes below, because it is the
+   *  part with branches worth testing and this class needs a pty and an Electron `app` to exist
+   *  at all. What is left here is supplying reality: a real bind, the real lease file, and the
+   *  real process table. */
+  private async allocPort(cwd: string): Promise<{ port?: number; shared: boolean }> {
+    // SERIALIZED, and this is the one thing making the decision async cost us. The old scan was
+    // synchronous, so "pick a port" and "record it" could not be interleaved. Now there are
+    // awaits between them — a lease read and a bind per candidate — and two lanes launching at
+    // once (open a project, click Start all) would both scan the same window, both find the same
+    // first free port, and both take it, which is the collision this whole change is about.
+    //
+    // A promise chain rather than a lock: each allocation waits for the previous one to have
+    // WRITTEN its reservation into `portsByCwd`, which is what makes the next scan see it. The
+    // `catch` keeps one failed allocation from wedging every later launch.
+    const run = this.allocGate.then(() => this.allocPortLocked(cwd))
+    this.allocGate = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private allocGate: Promise<unknown> = Promise.resolve()
+
+  private async allocPortLocked(cwd: string): Promise<{ port?: number; shared: boolean }> {
+    const { port, displaced, shared } = await allocatePort(cwd, this.portsByCwd, {
+      isFree: isPortFree,
+      leased: async () => new Set((await loadLeases()).map((l) => l.devPort)),
+      sharedHolderIsOurs: (p) => this.sharedHolderIsOurs(cwd, p),
+      onEmptyScan: retryScanWithoutV6,
+      beginScan: beginPortScan,
+    })
+    if (displaced !== undefined) {
+      // Visible on purpose. This is the 2026-09-05 failure being caught rather than repeated —
+      // a stranger holding a port we had already promised to a cwd.
+      console.error(
+        `[ports] ${cwd}: reservation ${displaced} is held by a server that is not ours; ` +
+        `allocated ${port ?? 'none'} instead`,
+      )
     }
-    return undefined
+    return { port, shared: shared === true }
+  }
+
+  /** Is the server on this cwd's reserved port one WE started?
+   *
+   *  The same inference `attributePort` makes for the preview, and it has to be: the env tag
+   *  alone proves nothing, because `OPERATOR_DEV_PORT` is set on the pty itself and so the
+   *  lane's own shell and its `claude` child carry it forever, dev server or no dev server. The
+   *  claimant must therefore be DEEPER than `claude` — something a lane actually started.
+   *
+   *  Fails CLOSED. If the process table cannot be read, we do not know the holder is ours, and
+   *  handing the lane a port on the strength of an unanswered question is the bug. */
+  private async sharedHolderIsOurs(cwd: string, port: number): Promise<boolean> {
+    try {
+      // The SAME 3s-cached snapshot the preview's attribution polls on, rather than a fresh
+      // `ps -E` pair per allocation — that form dumps every process's environment, and a lane
+      // launch should not pay for it twice.
+      const { psRows } = await evidenceSnapshot()
+      const leasedPorts = new Set((await loadLeases()).map((l) => l.devPort))
+      const holders = [...this.terminals.values()].filter((o) => !o.exited && o.cwd === cwd && o.devPort === port)
+      for (const sibling of holders) {
+        if (provesOwnServer(port, {
+          ps: psRows,
+          shellPid: sibling.pty?.pid,
+          leasedPorts,
+          reservationHolders: holders.length,
+        })) return true
+      }
+      return false
+    } catch {
+      // Fails closed: not knowing is not the same as knowing it is ours, and the cost of the
+      // wrong answer here is one project's lane pointed at another project's server.
+      return false
+    }
   }
 
   /** Build the login-shell command line exactly as `terminal_spawn` does. The `-ilc` form is
    *  not incidental: Claude Code is usually on a PATH that only an interactive login shell
    *  sets up, and dropping to a bare exec is how a build "can't find claude" while the real
    *  app can. */
-  private buildCommand(o: SpawnOptions): { shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; id: string } {
+  private async buildCommand(o: SpawnOptions): Promise<{ shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; id: string }> {
     const id = this.nextId()
-    const devPort = this.allocPort(o.cwd)
+    const { port: devPort, shared: sharedPort } = await this.allocPort(o.cwd)
     // S0 — a settings FILE, not an inline JSON string.
     //
     // The inline form (`--settings {"tui":"default"}`) works for exactly one scalar and nothing
@@ -147,13 +207,37 @@ export class TerminalManager {
       env: o.env,
       skillOverrides: o.skillOverrides,
       enabledPlugins: o.enabledPlugins,
+      // `?? false` and not `|| undefined`: leaving the key out inherits Claude Code's org
+      // default, which is currently auto-ON, and that is exactly the behaviour being fixed.
+      remoteControlAtStartup: o.remoteControl ?? false,
     })
     const prefix = ['claude', '--settings', settingsPath ?? JSON.stringify({ tui: o.tuiMode })]
     const notes: string[] = []
     if (devPort) {
+      // THE CONTRACT, and it is only worth stating to the extent `allocPort` makes it true —
+      // which is different for a fresh port and a shared one, so the two say different things.
+      //
+      // A FRESH port was bind-checked against both loopbacks a moment ago and no lease claims it,
+      // so "verified free" is a fact. A SHARED port is a sibling lane's reservation in the same
+      // directory: it is either unbound or provably served by that sibling (see `provesOwnServer`,
+      // which fails closed), and "provably" is still not "verified free at this instant" — the
+      // sibling may start its server a second from now. Claiming otherwise is what the review
+      // caught: the old hint asserted a verification the shared path had not done, and the agent
+      // was told to trust it.
+      //
+      // Neither version asks the agent to identify a port's holder. `lsof -i :PORT` is how you
+      // would, and it fires a macOS TCC prompt per inspected process.
       notes.push(
-        `Operator reserved localhost port ${devPort} for this session; start any dev server on ` +
-          `exactly that port (pass --port ${devPort}, or read it from the PORT env var).`,
+        sharedPort
+          ? `Operator reserved localhost port ${devPort} for this session; start any dev server `
+            + `on exactly that port (pass --port ${devPort}, or read it from the PORT env var). `
+            + `Another session in this same directory shares this reservation and may already be `
+            + `serving the same code on it — if something answers on ${devPort}, use it rather `
+            + `than starting a second. Do not try to identify the process holding a port.`
+          : `Operator reserved localhost port ${devPort} for this session; start any dev server `
+            + `on exactly that port (pass --port ${devPort}, or read it from the PORT env var). `
+            + `Operator verified the port was free when this session started, so nothing should `
+            + `be answering on it yet. Do not try to identify the process holding a port.`,
       )
     }
     if (o.orchestrationNote?.trim()) notes.push(o.orchestrationNote.trim())
@@ -214,8 +298,8 @@ export class TerminalManager {
     return { shell, argv: ['-ilc', inner], env, devPort, id }
   }
 
-  spawn(o: SpawnOptions): { terminalId: string; cwd: string; grid: boolean } {
-    const { shell, argv, env, devPort, id } = this.buildCommand(o)
+  async spawn(o: SpawnOptions): Promise<{ terminalId: string; cwd: string; grid: boolean }> {
+    const { shell, argv, env, devPort, id } = await this.buildCommand(o)
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
@@ -383,9 +467,47 @@ export class TerminalManager {
     // Same as the Rust path: removing the entry is what makes a second `terminal:exit`
     // impossible, and the frontend's exit path must not run twice.
     this.terminals.delete(t.id)
-    if (t.devPort && this.portsByCwd.get(t.cwd) === t.devPort) this.portsByCwd.delete(t.cwd)
+    // The lane is already out of `this.terminals` (line above), so what remains is every OTHER
+    // live lane — see `shouldReleaseCwdPort` for the double-allocation this guards.
+    if (this.portsByCwd.get(t.cwd) === t.devPort
+        && shouldReleaseCwdPort([...this.terminals.values()], t.cwd, t.devPort)) {
+      this.portsByCwd.delete(t.cwd)
+    }
     // A CLEAN kill — so there is nothing left here for the next boot to hunt for.
     if (t.sessionId) await releaseLease(t.sessionId)
+    // DID THE REAP ACTUALLY FREE THE PORT? Everything above signals a process tree; nothing
+    // above confirms the socket went with it. A dev server that reparented past the walk (see
+    // reap.ts:319) leaves the port held, the lease released, and no trace anywhere — which is
+    // how 24 orphans accumulated unnoticed, one of them squatting 1420 since August. Now the
+    // leak announces itself at the moment it is created, next to the lane that caused it.
+    if (t.devPort) void this.reportStillBound(t.id, t.devPort)
+  }
+
+  /** Name whatever still holds a port after its lane was reaped. Best-effort and never awaited
+   *  by the kill path — a diagnostic must not slow down a close, or fail one.
+   *
+   *  INFERRED FROM `ps`, not from `lsof`: the call that would say for certain which process owns
+   *  a socket is the one this codebase forbids, because per-pid inspection fires a macOS TCC
+   *  prompt. So the report says what it actually knows — a tagged process still carrying this
+   *  port, or a command line mentioning it — and says plainly when it cannot attribute the
+   *  holder at all, rather than naming a plausible pid. */
+  private async reportStillBound(id: string, port: number): Promise<void> {
+    try {
+      if (await isPortFree(port)) return
+      const [ps, tagged] = await Promise.all([snapshotPs(), sweepTagged()])
+      const suspects = new Map<number, string>()
+      for (const r of tagged) if (r.devPort === port) suspects.set(r.pid, r.command)
+      // A server started with `--port 1425` need not carry our env tag at all — the agent may
+      // have launched it from a shell that never inherited it.
+      for (const r of ps) if (new RegExp(`\\b${port}\\b`).test(r.command)) suspects.set(r.pid, r.command)
+      if (!suspects.size) {
+        console.error(`[ports] ${id}: port ${port} is still bound after reap; holder not attributable from ps`)
+        return
+      }
+      for (const [pid, command] of suspects) {
+        console.error(`[ports] ${id}: port ${port} still bound after reap — pid ${pid}: ${command.slice(0, 200)}`)
+      }
+    } catch { /* a diagnostic that throws is worse than one that is missing */ }
   }
 
   list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; devPort?: number }> {
@@ -518,6 +640,89 @@ export class TerminalManager {
     if (!ids.length) return
     const snapshot = await freshReapSnapshot()
     await Promise.all(ids.map((id) => this.kill(id, snapshot)))
+  }
+
+  /** THE LIVE-APP SWEEP — narrow on purpose, and much narrower than it was.
+   *
+   *  It used to reap ANY tagged row carrying this app's pid whose terminal id is not open here.
+   *  That is far too broad for an automatic path: the tag is inherited, so the set includes every
+   *  process a closed lane ever started and anything that merely ran in a tagged shell — a
+   *  Homebrew `postgres` and an Xcode `Python3` were both carrying lane tags on this machine.
+   *  Killing on that evidence, on a timer, with no user in the loop, is how a reaper takes down a
+   *  database.
+   *
+   *  So it now applies the BOOT SWEEP'S GATES, all three, and reaps only their intersection:
+   *
+   *    1. a LEASE names that terminal id and port — written at spawn, released on a clean kill,
+   *       so it says Operator issued this and never took it back;
+   *    2. the port is STILL BOUND, so there is something to reclaim rather than a stale record;
+   *    3. the command LOOKS LIKE A DEV SERVER, which is the only thing this sweep exists to
+   *       reclaim a port from.
+   *
+   *  Everything else that is tagged-but-abandoned is left alone and surfaces in the Dev servers
+   *  list as `abandoned-lane`, for a person to confirm. An Operator or Electron binary is refused
+   *  outright regardless of tags — our own helpers carry the full set.
+   *
+   *  NOT A FORCE-QUIT BACKSTOP, which the previous comment claimed: a force-quit kills this timer
+   *  with the process, so nothing here runs. The case it actually covers is a close that raced or
+   *  threw while this app kept running. A previous run's leftovers are the BOOT sweep's job.
+   *
+   *  The open set is read at FIRE time, not captured when the timer was armed, so a lane opened
+   *  during the interval is never treated as abandoned. */
+  async sweepAbandoned(): Promise<number> {
+    try {
+      const { ps, tagged } = await freshReapSnapshot()
+      const open = this.openTerminalIds()
+      const candidates = abandonedLaneRows(tagged, {
+        appPid: process.pid,
+        openTerminalIds: open,
+        selfPid: process.pid,
+        selfPgid: selfPgidFrom(ps, process.pid),
+      })
+      if (!candidates.length) return 0
+
+      // GATE 1 — a lease, by terminal id AND port. Both, because a lease for another port on the
+      // same id says nothing about this row.
+      const leases = await loadLeases()
+      const leased = new Set(leases.map((l) => `${l.terminalId} ${l.devPort}`))
+      const gated = candidates.filter((r) => {
+        if (OPERATOR_BINARY_RE.test(r.command)) return false
+        if (r.devPort == null || !r.terminalId) return false
+        if (!leased.has(`${r.terminalId} ${r.devPort}`)) return false
+        // GATE 3 — the shape. Cheap, so it runs before the socket probe.
+        return DEV_SERVER_RE.test(r.command)
+      })
+      if (!gated.length) {
+        if (candidates.length) {
+          console.error(`[reap] sweep: ${candidates.length} tagged row(s) left for the Dev servers list — no lease, not a dev server, or ours`)
+        }
+        return 0
+      }
+
+      // GATE 2 — the port is still held. Last because it is the only check that costs a socket.
+      const doomed: typeof gated = []
+      for (const r of gated) {
+        if (!(await isPortLive(r.devPort!))) continue
+        doomed.push(r)
+      }
+      if (!doomed.length) return 0
+
+      const pids = expandStrays(ps, doomed)
+      for (const r of doomed) {
+        console.error(`[reap] sweep: ${r.terminalId} is not open here and still serves ${r.devPort} — pid ${r.pid}`)
+      }
+      const { escalated, found } = await reapTree(0, ps, { alsoReap: pids })
+      if (escalated.length) console.error(`[reap] sweep: SIGKILLed ${escalated.length} of ${found.length}`)
+      return pids.size
+    } catch (e) {
+      console.error('[reap] sweep failed:', e)
+      return 0
+    }
+  }
+
+  /** Terminal ids open right now — the fact the inventory needs and only this object has. */
+  openTerminalIds(): Set<string> {
+    return new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
   }
 
   private pushHistory(t: Managed, buf: Buffer): void {

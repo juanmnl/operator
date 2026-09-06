@@ -33,11 +33,13 @@ export interface ResolvedAgentConfig {
   effort: EffortLevel
   permissionMode: string
   useWorktree: boolean
+  /** Expose this lane to the Claude phone app. See `Role.remoteControl`. */
+  remoteControl: boolean
 }
 
 /** The floor. Reached only when nothing above it is set (a custom lane with no preset). */
 export const HARD_FALLBACK: ResolvedAgentConfig = {
-  model: 'sonnet', effort: 'high', permissionMode: 'default', useWorktree: false,
+  model: 'sonnet', effort: 'high', permissionMode: 'default', useWorktree: false, remoteControl: false,
 }
 
 /** "Not set" is `undefined` OR `''`, for STRING fields.
@@ -105,7 +107,11 @@ export function resolveAgentConfig(role: Role, projectDefaults?: Project['defaul
   const useWorktree = isCoordinator(role.id)
     ? false
     : [role.useWorktree, preset?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree
-  return { model, effort, permissionMode, useWorktree }
+  // Tri-state like `useWorktree`, and for the same reason: `false` is "definitely not on the
+  // phone", which is not the same as "no preference". Unlike `useWorktree` there is no rule
+  // overriding the pin — a coordinator you have deliberately turned off stays off.
+  const remoteControl = [role.remoteControl, preset?.remoteControl].find(setBool) ?? HARD_FALLBACK.remoteControl
+  return { model, effort, permissionMode, useWorktree, remoteControl }
 }
 
 /** The three states of a lane's worktree toggle, for the control that has to show which it is in. */
@@ -148,6 +154,9 @@ function legacyResolve(
     permissionMode: [role.permissionMode, g?.permissionMode, projectDefaults?.permissionMode, preset?.permissionMode]
       .find(set) ?? HARD_FALLBACK.permissionMode,
     useWorktree: [role.useWorktree, g?.useWorktree].find(setBool) ?? HARD_FALLBACK.useWorktree,
+    // The legacy cascade predates this field entirely, so the honest answer is the fallback —
+    // "what did this lane launch with yesterday?" is `false`, because yesterday nothing wrote it.
+    remoteControl: HARD_FALLBACK.remoteControl,
   }
 }
 
@@ -266,4 +275,25 @@ export function clearCoordinatorWorktree(p: Project): Project {
     return out
   })
   return changed ? { ...p, roster: next } : p
+}
+
+/** The two launch options Remote Control needs, resolved from the roster.
+ *
+ *  ONE FUNCTION AND TWO CALLERS, because two callers with a copy each is exactly how this broke:
+ *  the launch path resolved it and the RESTORE path did not, so every restored lane fell through
+ *  to `false` — including the coordinator, which is the one lane the feature exists for, and a
+ *  restore is the ordinary way a coordinator comes back.
+ *
+ *  The name carries the PROJECT because "operator" alone is indistinguishable across six of them
+ *  on a phone. */
+export function remoteControlLaunch(
+  project: Project | undefined,
+  roleId: string | undefined,
+): { remoteControl: boolean; remoteControlName?: string } {
+  const role = roleId ? project?.roster?.find((r) => r.id === roleId) : undefined
+  if (!role) return { remoteControl: false }
+  const on = resolveAgentConfig(role, project?.defaults).remoteControl
+  return on
+    ? { remoteControl: true, remoteControlName: `${project?.name ?? 'Operator'} · ${role.name}` }
+    : { remoteControl: false }
 }

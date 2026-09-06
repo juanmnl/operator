@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Operator — QA Dev servers harness</title></head>
+  <body>
+    <!-- DEV-ONLY, QA-only, throwaway: mounts the real WorktreesSection (Dev servers panel) against
+         a fixture computed by the REAL classifier (see qa-devservers-fixture.json / the vitest
+         one-off that produced it), for dev/drive-devservers.mjs. Never bundled into the app. -->
+    <div id="root" style="max-width:640px;margin:24px auto;font-family:sans-serif"></div>
+    <script type="module" src="./qa-devservers-main.tsx"></script>
+  </body>
+</html>

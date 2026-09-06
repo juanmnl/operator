@@ -11,10 +11,9 @@ export function isLightBackground(bg?: string): boolean {
   return lum > 140
 }
 
-/** Strip OSC and CSI/SGR escape sequences so colorized banners match plainly.
- *  Also used by the CHAT surface (CanvasConversation): terminal output quoted in an answer
- *  arrives with raw SGR codes, and a canvas renderer has no notion of escape sequences —
- *  they paint as replacement glyphs plus a literal "[1m". Not terminal-only; don't inline it. */
+/** Strip OSC and CSI/SGR escape sequences so colorized banners match plainly. Not
+ *  terminal-only — anything that quotes pty output into prose needs it, because raw SGR
+ *  codes paint as replacement glyphs plus a literal "[1m". Don't inline it. */
 export function stripAnsi(s: string): string {
   return s
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')

@@ -1562,8 +1562,7 @@ fn backup_projects(stamp: String) -> Result<String, String> {
 }
 
 /// A single path segment is safe (no `/`, `..`, or exotic chars) so it can't escape its
-/// parent dir. Used to validate project ids and moodboard filenames (traversal guard, same
-/// containment spirit as image_data_url).
+/// parent dir. Used to validate project ids and moodboard filenames — a traversal guard.
 fn safe_segment(s: &str) -> bool {
     !s.is_empty()
         && !s.contains("..")
@@ -1724,45 +1723,9 @@ fn chat_db_file() -> std::path::PathBuf {
     std::path::Path::new(&home).join(".operator").join("chat.db")
 }
 
-/// Read a cached dropped-image file and return it as a `data:` URL for an <img> in
-/// the Chat panel. Scoped to `~/.operator/img-cache` so it can't read arbitrary files.
-#[tauri::command]
-fn image_data_url(path: String) -> Result<String, String> {
-    use base64::Engine;
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cache = std::path::Path::new(&home).join(".operator").join("img-cache");
-    let p = std::path::Path::new(&path);
-    // Canonicalize and confirm the resolved path stays inside the cache dir.
-    let real = std::fs::canonicalize(p).map_err(|e| e.to_string())?;
-    let cache_real = std::fs::canonicalize(&cache).map_err(|e| e.to_string())?;
-    if !real.starts_with(&cache_real) {
-        return Err("path outside image cache".into());
-    }
-    let bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
-    let media = match real.extension().and_then(|e| e.to_str()) {
-        Some("png") => "image/png",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => "image/jpeg",
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", media, b64))
-}
-
-/// Full durable chat history for a session (the reading-panel answers), from the
-/// SQLite store. The panel loads this on open so it can show the WHOLE conversation
-/// — not just the bounded tail the transcript tailer keeps in memory.
-#[tauri::command]
-fn chat_history(
-    store: tauri::State<Arc<chatstore::ChatStore>>,
-    id: String,
-) -> Vec<backend::NarrationEntry> {
-    store.load(&id)
-}
-
-/// Every OPERATOR-REPLY posted to a project, oldest first. Read-only, like `chat_history`:
-/// replies are written by the tailer alone (a lane posts one by emitting the sentinel into
-/// its own transcript), so there is deliberately no write command here.
+/// Every OPERATOR-REPLY posted to a project, oldest first. Read-only: replies are written by
+/// the tailer alone (a lane posts one by emitting the sentinel into its own transcript), so
+/// there is deliberately no write command here.
 #[tauri::command]
 fn project_replies(
     store: tauri::State<Arc<chatstore::ChatStore>>,
@@ -2271,9 +2234,7 @@ pub fn run() {
             preview_inspect_close,
             save_pasted_image,
             set_dock_icon,
-            chat_history,
             project_replies,
-            image_data_url,
             renderer_heartbeat,
             quit::quit_dialog_shown,
             quit::quit_decision,

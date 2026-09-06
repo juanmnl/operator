@@ -15,7 +15,7 @@
 // how this defect was hit — is therefore decided entirely by `dragenter`.
 //
 // The listeners sit on `window` in the BUBBLE phase, i.e. after React's root-container
-// handlers, so every existing drop target (ChatComposer, MoodboardPanel, TerminalPane,
+// handlers, so every existing drop target (MoodboardPanel, TerminalPane,
 // ProjectRail, RosterPanel) still sees the event first and is untouched: it has already called
 // preventDefault, and a second call is a no-op. This is a backstop, not an interceptor — it
 // never reads the payload and never opens anything. A stray drop ends in nothing happening.

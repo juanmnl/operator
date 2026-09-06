@@ -146,6 +146,11 @@ pub struct AgentSession {
     /// Cumulative token usage for the session (absent until the first assistant turn).
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<TokenUsage>,
+    /// Effort as the TRANSCRIPT reports it — a top-level field on every assistant record, and so
+    /// the value actually running. Distinct from the launch pin, which a mid-session `/effort`
+    /// silently leaves behind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
 }
 
 pub fn now_iso() -> String {
@@ -318,7 +323,17 @@ impl AgentSession {
             permission_mode,
             model,
             usage,
+            effort: None,
         }
+    }
+
+    /// What the session is actually RUNNING at — read by the toolbar's effort chip, which shows
+    /// the live value with the launch pin as its fallback. A builder for the same reason
+    /// `with_queued` is one: only the tailer sets it, and the constructor already takes sixteen
+    /// arguments.
+    pub fn with_tuning(mut self, effort: Option<String>) -> AgentSession {
+        self.effort = effort;
+        self
     }
 
     /// Attach the prompts the TUI queued (see the field). A builder rather than a 17th

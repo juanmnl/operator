@@ -38,6 +38,9 @@ export interface SessionSettings {
   env?: Record<string, string>
   skillOverrides?: Record<string, SkillMode>
   enabledPlugins?: Record<string, boolean>
+  /** Start Claude Code's Remote Control bridge for this lane. See `buildSessionSettings` for why
+   *  it is the one key written even when false. */
+  remoteControlAtStartup?: boolean
 }
 
 /** `~/.operator/sessions/<sessionId>` — one directory per lane, so anything else we ever need to
@@ -59,6 +62,22 @@ export function buildSessionSettings(input: SessionSettings): SessionSettings {
   if (input.env && Object.keys(input.env).length) out.env = input.env
   if (input.skillOverrides && Object.keys(input.skillOverrides).length) out.skillOverrides = input.skillOverrides
   if (input.enabledPlugins && Object.keys(input.enabledPlugins).length) out.enabledPlugins = input.enabledPlugins
+  // THE ONE KEY WRITTEN EVEN WHEN FALSE, and the exception is the whole feature.
+  //
+  // Every other key here is dropped when it says nothing, because an absent key and an empty one
+  // mean the same thing to a merge. Not this one: absent means "fall through", and what it falls
+  // through to is an org default that is currently ON
+  // (`remote_control_auto_on_by_default`) — which is why the Claude phone app started listing
+  // every open lane. Writing `false` is the only way to say off.
+  //
+  // Read out of the installed binary (2.1.261), not the help text. `remoteControlAtStartup`
+  // resolves as: project/local settings `false` wins outright; otherwise the first of
+  // `["policySettings","flagSettings","userSettings"]`; then the legacy global config; then the
+  // org default. A `--settings` file is `flagSettings`, so it outranks the user's own
+  // `~/.claude/settings.json` and only an org policy beats it. Note the asymmetry the binary
+  // logs about: a repo-scoped `true` is IGNORED, so this would not work from
+  // `.claude/settings.json` even if we wrote there.
+  if (input.remoteControlAtStartup !== undefined) out.remoteControlAtStartup = input.remoteControlAtStartup
   return out
 }
 

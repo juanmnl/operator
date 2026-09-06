@@ -4,7 +4,7 @@ import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
-  resolveAgentConfig, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
+  resolveAgentConfig, remoteControlLaunch, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
@@ -13,7 +13,7 @@ import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
-import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason } from '../lib/lane-lifecycle'
+import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason, doneStampsFrom } from '../lib/lane-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { IDLE, installPressed, installProgressed, installFailed, type InstallState } from '../lib/update-install'
@@ -36,13 +36,10 @@ import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
-import { FilesView } from '../components/files/FilesView'
-import { FilesPanel } from '../components/files/FilesPanel'
-import { EMPTY_NAV, type FilesNav } from '../lib/code-nav'
 import { announcement, canAnnounceTo } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
+import { TuningView } from '../components/tuning/TuningView'
 import { CanvasPanel } from '../components/session/CanvasPanel'
-import { CanvasConversation } from '../components/session/CanvasConversation'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
@@ -116,13 +113,11 @@ const CONVERSATION_PANEL_W = 460
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
 // which surface it shows. Keyed by session id, persisted across reloads.
-// Main content area shows ONE of these (Console = the raw terminal). Chat + Preview can
-// fill the main window; Console is the live agent terminal (always mounted underneath).
-type MainView = 'terminal' | 'chat' | 'preview' | 'files'
-// The right side panel's tabs. Contextual to the main view: Chat is offered here when the
-// main view is Console or Preview (so you can watch the terminal / preview AND read the
-// conversation), but dropped in Chat view where it's already the main surface.
-type PanelTab = 'plan' | 'diff' | 'chat' | 'files'
+// Main content area shows ONE of these (Console = the raw terminal). Preview can fill the
+// main window; Console is the live agent terminal (always mounted underneath).
+type MainView = 'terminal' | 'preview'
+// The right side panel's tabs.
+type PanelTab = 'plan' | 'diff'
 type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
@@ -149,8 +144,30 @@ function markOneAltitudeMigrationDone() {
 
 const LAYOUT_KEY = 'operator.sessionLayouts'
 const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
+/** Persisted layouts, COERCED to values this build still has.
+ *
+ *  `mainView` used to include `'chat'` and `'files'`, and every install that ever opened one has
+ *  that string on disk. After the removal those values match no render branch, so the main pane
+ *  was blank — with no way back, because the toolbar segment that used to set `terminal` is only
+ *  reachable when a view is showing. A parse that trusts whatever localStorage holds ages badly
+ *  by construction; this is the guard, and it is why the unions live here as arrays. */
 function loadLayouts(): Record<string, SessionLayout> {
-  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
+  let raw: unknown
+  try { raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
+  if (!raw || typeof raw !== 'object') return {}
+  const mains: MainView[] = ['terminal', 'preview']
+  const tabs: PanelTab[] = ['plan', 'diff']
+  const out: Record<string, SessionLayout> = {}
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object') continue
+    const l = v as Partial<SessionLayout>
+    out[id] = {
+      mainView: mains.includes(l.mainView as MainView) ? l.mainView as MainView : DEFAULT_LAYOUT.mainView,
+      panelTab: tabs.includes(l.panelTab as PanelTab) ? l.panelTab as PanelTab : DEFAULT_LAYOUT.panelTab,
+      panelOpen: typeof l.panelOpen === 'boolean' ? l.panelOpen : DEFAULT_LAYOUT.panelOpen,
+    }
+  }
+  return out
 }
 
 export function DashboardView() {
@@ -188,6 +205,7 @@ export function DashboardView() {
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
+  const [tuningViewActive, setTuningViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
   // WHERE YOU ARE. The durable navigation scope: null = at the gallery (outside every
   // project), set = inside that project — the sidebar is scoped to it and it SURVIVES
@@ -257,17 +275,9 @@ export function DashboardView() {
   const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
   const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
-  // Contextual panel tabs: Chat appears after Diff in Console/Preview, not in Chat view.
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
-  // Files is offered in the panel EXCEPT when it is already the main view — the two placements
-  // are one reader, and a tab that duplicates the surface beside it is the thing §4's rule A
-  // exists to prevent, expressed in the tab set rather than only in the routing.
-  const panelTabs: PanelTab[] = mainView === 'chat'
-    ? ['plan', 'diff', 'files']
-    : mainView === 'files'
-      ? ['plan', 'diff', 'chat']
-      : ['plan', 'diff', 'chat', 'files']
+  const panelTabs: PanelTab[] = ['plan', 'diff']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
     setSessionLayouts((prev) => {
@@ -278,15 +288,6 @@ export function DashboardView() {
       return next
     })
   }, [])
-  // FILES NAV — per session, mirroring `sessionLayouts` (§9), and shared by BOTH placements.
-  // One reader, two windows onto it: the main view and the panel must agree about which file is
-  // open, or following a link in one and glancing at the other shows two different files.
-  const [filesNavs, setFilesNavs] = useState<Record<string, FilesNav>>({})
-  const filesNav = (activeSessionId && filesNavs[activeSessionId]) || EMPTY_NAV
-  const setFilesNav = useCallback((next: FilesNav) => {
-    setFilesNavs((prev) => (activeSessionIdRef.current ? { ...prev, [activeSessionIdRef.current]: next } : prev))
-  }, [])
-
   const selectMainView = useCallback((v: MainView) => patchLayout({ mainView: v }), [patchLayout])
   const selectPanelTab = useCallback((t: PanelTab) => patchLayout({ panelTab: t }), [patchLayout])
   // User-adjustable right side-panel width (drag handle on its left edge), persisted.
@@ -315,12 +316,6 @@ export function DashboardView() {
   const togglePanel = useCallback(() => {
     patchLayout({ panelOpen: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.panelOpen : false) })
   }, [patchLayout, sessionLayouts])
-  // ⌘J flips the main view between Console (terminal) and Chat.
-  const toggleChat = useCallback(() => {
-    const cur = activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.mainView : undefined
-    patchLayout({ mainView: cur === 'chat' ? 'terminal' : 'chat' })
-  }, [patchLayout, sessionLayouts])
-
   // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
   // footer. `shellStarted` keeps it MOUNTED after first open (so the shell +
   // scrollback survive close→reopen); `shellOpen` slides it up/down.
@@ -594,7 +589,7 @@ export function DashboardView() {
 
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -610,9 +605,19 @@ export function DashboardView() {
     setActiveTerminalId(null)
   }, [])
 
+  const handleOpenTuning = useCallback(() => {
+    setTuningViewActive(true)
+    setAgentsViewActive(false)
+    setPrefsViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+  }, [])
+
   const handleOpenPrefs = useCallback(() => {
     setPrefsViewActive(true)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -654,7 +659,7 @@ export function DashboardView() {
    *  that costs a process, a worktree and a dev port. */
   const handleOpenProject = useCallback((projectId: string) => {
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveProjectId((prev) => {
@@ -691,7 +696,7 @@ export function DashboardView() {
   const handleOpenProjectHome = useCallback(() => {
     setProjectTab('board')
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -719,7 +724,7 @@ export function DashboardView() {
   const handleOpenProjectTeam = useCallback(() => {
     setProjectTab('team')
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -741,7 +746,7 @@ export function DashboardView() {
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
   const handleShowGallery = useCallback(() => {
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -2368,6 +2373,16 @@ export function DashboardView() {
       // lane's environment, which is what lets its MCP server stamp a report with who filed it
       // rather than looking up a terminal id that several sessions share.
       if (opts?.roleId) launchOptions.roleId = opts.roleId
+      // REMOTE CONTROL, resolved through the same cascade as model and effort. The boolean drives
+      // the settings file (which is what turns the bridge on, and must be written explicitly
+      // `false` — absent inherits an org default that is currently ON, which is why the phone
+      // started listing every lane). The name is what the phone shows, and it names the PROJECT
+      // because "operator" alone is indistinguishable across six of them.
+      // Resolved HERE rather than trusted from the dialog: a lane launched by a dispatch never
+      // passes through that dialog, and the roster is the source either way.
+      const rc = remoteControlLaunch(projectsRef.current.find((p) => p.id === proj.id), opts?.roleId)
+      launchOptions.remoteControl = rc.remoteControl
+      if (rc.remoteControlName) launchOptions.remoteControlName = rc.remoteControlName
       // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
       // back with its thread, so a re-dispatch costs a process start and not a cold context.
       if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId
@@ -2509,19 +2524,6 @@ export function DashboardView() {
   }, [handleLaunchSession, markTasksRunning])
   launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
 
-  /** A HUMAN just addressed a lane from the chat composer. The delivery brakes' hop budget is
-   *  restored by a human message and by nothing else — `exhausted` has no timer, and a lane that
-   *  hit the chain limit is barred from SENDING as well as receiving, so without this a lane you
-   *  are actively talking to stays silently unable to answer anyone until the app restarts.
-   *
-   *  `dispatchToRole` was the only caller, and it is reached only from the board's Send → and
-   *  Start all. That is the right home for the reset; it was never a sufficient SET of callers —
-   *  the chat composer is where a human actually talks to a lane. */
-  const handleHumanSend = useCallback((roleId?: string) => {
-    if (!roleId) return
-    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, roleId)
-  }, [])
-
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
   const focusTerminal = useCallback((terminalId: string) => {
     const tab = terminals.find((t) => t.id === terminalId)
@@ -2554,7 +2556,7 @@ export function DashboardView() {
     if (!tab) return false
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     setActiveTerminalId(terminalId)
     const hook = sessions.find((s) => s.terminalId === terminalId)
@@ -2747,6 +2749,17 @@ export function DashboardView() {
     // Same reply-scoping stamp as the launch path.
     launchOptions.projectId = saved.projectId ?? proj.id
     if (saved.roleId) launchOptions.roleId = saved.roleId
+    // REMOTE CONTROL, through the same role cascade the launch path uses. Missing here it fell
+    // through to `o.remoteControl === true` → false in ipc.ts, so every RESTORED lane wrote
+    // `remoteControlAtStartup: false` — including the coordinator, which is the one lane the
+    // whole feature exists to keep on the phone. A restored session is the ordinary way a
+    // coordinator comes back, so the bug hit the exact case it was built for.
+    const rc = remoteControlLaunch(
+      projectsRef.current.find((p) => p.id === (saved.projectId ?? proj.id)),
+      saved.roleId,
+    )
+    launchOptions.remoteControl = rc.remoteControl
+    if (rc.remoteControlName) launchOptions.remoteControlName = rc.remoteControlName
 
     // Restore spawns directly into the saved cwd (the worktree path persists
     // across quits), or into the one just reattached for a suspended lane.
@@ -2782,7 +2795,7 @@ export function DashboardView() {
     upsertProject(proj, { intent: 'user' }) // clicked a dormant session (or Resume project)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
   }, [rememberRecent, upsertProject])
 
@@ -2955,7 +2968,7 @@ export function DashboardView() {
     setActiveSessionId(session.id)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     // The single rule that keeps every entry point honest — ⌘1-9, the ⌘K palette, a toast,
     // the Agents hub, a restore: selecting a session scopes you to its project, so you can
@@ -2997,7 +3010,7 @@ export function DashboardView() {
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -3463,6 +3476,29 @@ export function DashboardView() {
     return () => clearInterval(t)
   }, [refreshReports])
 
+  // A REPORT COUNTS AS DONE for the close policy.
+  //
+  // `reportedDoneAt` was fed only by `task_status(id,'done')`, and the measurement is decisive:
+  // over a month lanes called `report` 643 times and `task_status` 5 times. The lifecycle was
+  // keyed on the call nobody makes, so in practice nothing was ever closable by having finished —
+  // only by the went-quiet backstop, which is a timer and not a statement.
+  //
+  // A report IS the statement. A lane calls it when it has something to hand back, which is what
+  // "I am done with this" looks like in this fleet's actual usage. The went-quiet backstop stays
+  // for lanes that report nothing at all, and the open-tasks guard below still overrides both:
+  // a lane with work outstanding does not close because it filed a report.
+  //
+  // Scoped to the LANE, and age-guarded for the same reason the status path is: `terminalId` is a
+  // per-run counter that collides across runs, so a report from an earlier run must not mark this
+  // run's t3 done.
+  useEffect(() => {
+    const stamps = doneStampsFrom(reports, terminalsRef.current, Date.now())
+    for (const [terminalId, at] of Object.entries(stamps)) {
+      const prev = doneReportsRef.current[terminalId]
+      if (!prev || Date.parse(at) > Date.parse(prev)) doneReportsRef.current[terminalId] = at
+    }
+  }, [reports])
+
 
   const announcingRef = useRef(false)
   useEffect(() => {
@@ -3590,9 +3626,6 @@ export function DashboardView() {
       } else if (e.key === 'b' || e.key === 'B') {
         e.preventDefault()
         toggleSidebar()
-      } else if (e.key === 'j' || e.key === 'J') {
-        e.preventDefault()
-        toggleChat()
       } else if (e.key === 'e' || e.key === 'E') {
         // Quick-switch the Preview between Interact and Annotate.
         e.preventDefault()
@@ -3628,7 +3661,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, toggleChat, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
 
   // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
   // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise
@@ -3739,8 +3772,8 @@ export function DashboardView() {
     }
   }, [sessions])
 
-  // Persist a chat-driven model/effort change onto the active session's tab (so it survives a
-  // tab switch and is written into the durable SavedSession). Keyed by the active terminalId.
+  // Persist a tuning change onto the active session's tab, so the toolbar chip survives a tab
+  // switch and the new value is written into the durable SavedSession. Keyed by terminalId.
   const patchActiveTerminal = useCallback((patch: Partial<TerminalTab>) => {
     const tid = activeSession?.terminalId
     if (!tid) return
@@ -3748,9 +3781,10 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'tuning' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
+    if (tuningViewActive) return 'tuning'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     // Only 'localTerminal' if the active id still refers to a live terminal — a
@@ -3761,7 +3795,7 @@ export function DashboardView() {
     // Inside a project with no session focused → Project Home, which is the board.
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
-  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
+  }, [prefsViewActive, agentsViewActive, tuningViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
 
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean
@@ -3858,6 +3892,7 @@ export function DashboardView() {
     setProjectTab(plan.projectTab)
     setPrefsViewActive(plan.mode === 'prefs')
     setAgentsViewActive(plan.mode === 'agents')
+    setTuningViewActive(plan.mode === 'tuning')
     setGlobalPrefsActive(plan.mode === 'globalPrefs')
 
     void (async () => {
@@ -3977,8 +4012,7 @@ export function DashboardView() {
         hint,
         run: () => selectMainView(v),
       })
-      view('terminal', 'Show Console', '⌘J')
-      view('chat', 'Show Chat', '⌘J')
+      view('terminal', 'Show Console')
       view('preview', 'Show Preview')
       actions.push(
         { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff)', run: togglePanel },
@@ -4057,6 +4091,7 @@ export function DashboardView() {
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
       { id: 'agents', group: 'Settings', label: 'Agents — fleet across all projects', run: handleOpenAgents },
+      { id: 'tuning', group: 'Settings', label: 'Tuning — where the window went', run: handleOpenTuning },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
       { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
@@ -4088,7 +4123,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -4132,6 +4167,9 @@ export function DashboardView() {
       // close would teach people to click through the confirms that matter. Not danger-toned:
       // red is the gallery's mark for Forget, and one verb must not read as two weights.
       {
+        // `id` and not the label: the label counts agents, and an agent exiting between the two
+        // clicks of the confirm would otherwise re-arm instead of firing.
+        id: 'close-project',
         label: live > 0 ? `Close project · end ${live} agent${live === 1 ? '' : 's'}` : 'Close project',
         onClick: () => { void closeProject(project.id) },
         separator: true,
@@ -4244,6 +4282,9 @@ export function DashboardView() {
         onOpenFolder={handleNewSession}
         onOpenAgents={handleOpenAgents}
         agentsActive={contentMode === 'agents'}
+        closingIds={closingProjects}
+        tuningActive={contentMode === 'tuning'}
+        onOpenTuning={handleOpenTuning}
         onReorder={handleReorderProject}
         onTileMenu={(projectId, anchor) => setRailMenu({ projectId, ...anchor })}
         menuProjectId={railMenu?.projectId ?? null}
@@ -4363,6 +4404,25 @@ export function DashboardView() {
           </AppShell>
         )}
 
+        {contentMode === 'tuning' && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
+            <TuningView
+              projects={projects}
+              saved={savedSessions}
+              // The whole point of the card and of every Roster button: land on the team tab of
+              // the project whose lane is being argued about. The role is not preselected —
+              // nothing in `ProjectView` takes a role to focus, and inventing that plumbing for
+              // a scroll target is more than this earns.
+              onOpenRoster={(projectId) => {
+                if (projectId && projects.some((x) => x.id === projectId)) {
+                  setActiveProjectId(projectId)
+                  handleOpenProjectTeam()
+                } else handleShowGallery()
+              }}
+            />
+          </AppShell>
+        )}
+
         {contentMode === 'agents' && (
           <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <AgentsHubView
@@ -4470,7 +4530,15 @@ export function DashboardView() {
               onOpenProjectHome={activeProjectId ? handleOpenProjectHome : undefined}
               terminalId={activeTerminalId}
               detectedDevPort={detectedDevPort}
-              effortLevel={tab?.effortLevel}
+              // THE LIVE VALUE FIRST, the launch pin as fallback. `activeSession.effort` is what
+              // the transcript reports on every assistant record, so it catches a mid-session
+              // `/effort` — including one typed straight into the terminal — that the pin cannot
+              // see. Before this the field was captured and read by nothing.
+              effortLevel={(activeSession.effort as EffortLevel | undefined) ?? tab?.effortLevel}
+              model={tab?.model ?? activeSession.model}
+              phase={activeSession.phase}
+              onModelChange={(m) => patchActiveTerminal({ model: m })}
+              onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
               lastToolName={activeSession.lastToolName}
               branch={tab?.worktreeBranch}
@@ -4594,48 +4662,18 @@ export function DashboardView() {
               </div>
             ))}
 
-            {/* Main-view overlays — Chat / Preview cover the (still-mounted, still-sized)
-                terminal in the SAME area. OVERLAYING it (rather than display:none-ing) means
-                the terminal never resizes on a Console⇄Chat⇄Preview switch, so it can't trip
-                the ghostty resize/render hang. Hidden while reviewing a diff / viewing activity. */}
+            {/* Main-view overlay — Preview covers the (still-mounted, still-sized) terminal in
+                the SAME area. OVERLAYING it (rather than display:none-ing) means the terminal
+                never resizes on a Console⇄Preview switch, so it can't trip the ghostty
+                resize/render hang. Hidden while reviewing a diff / viewing activity. */}
             {mainView !== 'terminal' && activeSession
               && reviewingTerminalId !== activeTerminalId
               && activityViewingTerminalId !== activeTerminalId && (
               // A FLEX COLUMN, for the same reason the panel body is one: the surfaces mounted
               // here ask for their height with `flex: 1`, and a plain block gives them nothing —
-              // they size to their content, overflow this box, and get clipped, which is what
-              // made Files unscrollable in 0.18.0. Column keeps full-width stretch, so Chat and
-              // Preview lay out exactly as they did.
+              // they size to their content, overflow this box, and get clipped. Column keeps
+              // full-width stretch, so Preview lays out exactly as it did.
               <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
-                {mainView === 'chat' && (
-                  <CanvasConversation
-                    session={activeSession}
-                    role={roleOf(activeSession)}
-                    customName={customNames[activeSession.id]}
-                    accent={accentOf(activeSession)}
-                    onHumanSend={handleHumanSend}
-                    onModelChange={(m) => patchActiveTerminal({ model: m })}
-                    onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
-                  />
-                )}
-                {/* PLACEMENT A (§2). The lane's worktree is `tab.cwd`; `tab.sourceCwd` is the
-                    project checkout the root switch offers. `onAsk` is the app's own answer to
-                    "I want to change this" — it hands the line to the lane through the same
-                    `submitQueue` the Plan tab's "Send to agent" uses. */}
-                {mainView === 'files' && (() => {
-                  const tab = terminals.find((t) => t.id === activeTerminalId)
-                  return (
-                    <FilesView
-                      laneRoot={tab?.cwd ?? ''}
-                      projectRoot={tab?.sourceCwd}
-                      nav={filesNav}
-                      onNav={setFilesNav}
-                      onAsk={activeSession.terminalId
-                        ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
-                        : undefined}
-                    />
-                  )
-                })()}
                 {mainView === 'preview' && (() => {
                   // The reserved port is only the starting hint — AppPreviewPanel asks the
                   // backend which ports this session is ACTUALLY serving on and picks (or
@@ -4766,30 +4804,9 @@ export function DashboardView() {
           />
           <CanvasPanel
             session={activeSession}
-            role={activeSession ? roleOf(activeSession) : undefined}
-            customName={activeSession ? customNames[activeSession.id] : undefined}
-            accent={activeSession ? accentOf(activeSession) : undefined}
             tabs={panelTabs}
-
-            filesTab={(() => {
-              const tab = terminals.find((t) => t.id === activeTerminalId)
-              return (
-                <FilesPanel
-                  laneRoot={tab?.cwd ?? ''}
-                  projectRoot={tab?.sourceCwd}
-                  nav={filesNav}
-                  onNav={setFilesNav}
-                  onAsk={activeSession?.terminalId
-                    ? (p, range) => { void submitQueue.submit(activeSession.terminalId!, range ? `\`${p}:${range[0]}\`` : `\`${p}\``) }
-                    : undefined}
-                />
-              )
-            })()}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
-            onHumanSend={handleHumanSend}
-            onModelChange={(m) => patchActiveTerminal({ model: m })}
-            onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
           />
         </div>
       )}

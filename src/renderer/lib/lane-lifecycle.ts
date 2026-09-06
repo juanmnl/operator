@@ -36,8 +36,9 @@ export interface LaneSnapshot {
   ended?: boolean
   /** Last transcript activity, ISO. The clock the grace window runs on. */
   lastActivityAt?: string
-  /** When this lane's most recent `task_status done` landed, ISO. Undefined = it has never
-   *  reported, which is the whole point of the distinction. */
+  /** When this lane's most recent completion signal landed, ISO — a `task_status(id,'done')`
+   *  OR an `operator__report`. Undefined = it has never reported, which is the whole point of
+   *  the distinction. See `doneStampsFrom`. */
   reportedDoneAt?: string
   /** Queued or running tasks still assigned to this lane. Any open work cancels the close —
    *  the lane is not finished, whatever it reported a moment ago. */
@@ -198,4 +199,55 @@ export function getQuietMinutes(): number {
 /** The policy as the effect reads it, once per tick. */
 export function laneClosePolicy(): LaneClosePolicy {
   return { keepWarmMs: getKeepWarmMinutes() * 60_000, quietMs: getQuietMinutes() * 60_000 }
+}
+
+
+// ── What counts as "this lane said it finished" ──────────────────────────────────────────────
+
+/** One completion signal, from either source. */
+export interface DoneSignal {
+  terminalId?: string | null
+  projectId?: string | null
+  at: string
+}
+
+/** How stale a signal may be before it is ignored.
+ *
+ *  `terminalId` is a per-run counter (`t0`, `t1`, …) that COLLIDES ACROSS RUNS, so a signal left
+ *  behind by an earlier run would otherwise mark this run's lane of the same id done. An hour is
+ *  far longer than the 4s poll and far shorter than a gap between runs. */
+export const DONE_SIGNAL_MAX_AGE_MS = 60 * 60 * 1000
+
+/** Fold completion signals into `terminalId → newest ISO`, applying the scoping rules.
+ *
+ *  WHY REPORTS COUNT. `reportedDoneAt` was fed only by `task_status(id,'done')`, and over a month
+ *  the fleet called `report` 643 times and `task_status` 5 times — so the lifecycle was keyed on
+ *  the call nobody makes, and in practice no lane was ever closable by having FINISHED, only by
+ *  the went-quiet timer. A report is the statement a lane actually makes when it has something to
+ *  hand back, which is what "done with this" looks like in real usage.
+ *
+ *  This does not weaken the guards it sits behind: `evaluateLaneClose` still refuses a lane with
+ *  open work, a busy phase, or focus, whatever it reported a moment ago. */
+export function doneStampsFrom(
+  signals: readonly DoneSignal[],
+  lanes: ReadonlyArray<{ id: string; projectId?: string | null }>,
+  nowMs: number,
+): Record<string, string> {
+  const byId = new Map(lanes.map((l) => [l.id, l]))
+  const out: Record<string, string> = {}
+  for (const sig of signals) {
+    if (!sig.terminalId) continue
+    const lane = byId.get(sig.terminalId)
+    if (!lane) continue
+    const at = Date.parse(sig.at)
+    if (Number.isNaN(at)) continue
+    const age = nowMs - at
+    if (age < 0 || age >= DONE_SIGNAL_MAX_AGE_MS) continue
+    // A signal carrying a project must agree with the lane's. Absent is fine — a lane that
+    // reported before `sessions.json` caught up still has a terminal id we can match.
+    if (sig.projectId && lane.projectId && sig.projectId !== lane.projectId) continue
+    const prev = out[sig.terminalId]
+    if (!prev || at > Date.parse(prev)) out[sig.terminalId] = sig.at
+  }
+  return out
 }
