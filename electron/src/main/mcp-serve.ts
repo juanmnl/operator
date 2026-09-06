@@ -191,12 +191,14 @@ const VERDICT_POLL_MS = 100
  *
  *  Returns null on timeout, and the caller says plainly that nothing was sent — a dispatch that
  *  silently did nothing is the failure this whole path exists to end. */
-function awaitVerdict(store: ArtifactStore, id: number): Record<string, unknown> | null {
+type StoredVerdict = NonNullable<ReturnType<ArtifactStore['dispatchVerdict']>>
+
+function awaitVerdict(store: ArtifactStore, id: number): StoredVerdict | null {
   const sleeper = new Int32Array(new SharedArrayBuffer(4))
   const deadline = Date.now() + VERDICT_TIMEOUT_MS
   for (;;) {
     const v = store.dispatchVerdict(id)
-    if (v) return v as unknown as Record<string, unknown>
+    if (v) return v
     if (Date.now() >= deadline) return null
     Atomics.wait(sleeper, 0, 0, VERDICT_POLL_MS)
   }
@@ -266,7 +268,21 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       // THE ANSWER IS JSON ON PURPOSE. The caller has to act on it — `send` means "now call
       // SendMessage with exactly these two fields" — and a sentence would have the model
       // reconstructing an address by eye.
-      return textResult(JSON.stringify(verdict))
+      //
+      // BUILT EXPLICITLY, not stringified from the row. The store column is `address`; the wire
+      // contract this tool's own description promises is `to`, and so does the coordinator's
+      // prompt. Stringifying the internal shape shipped `address` and left every real `send`
+      // outcome with no field the lane was told to read — caught by QA (#653) through a real
+      // round trip, because both ends were unit-tested in isolation and neither could see the
+      // seam. Naming the wire fields here is what stops a column rename becoming a protocol
+      // change.
+      return textResult(JSON.stringify({
+        outcome: verdict.outcome,
+        to: verdict.address,
+        text: verdict.text,
+        taskId: verdict.taskId,
+        reason: verdict.reason,
+      }))
     }
 
     return errorResult(`unknown tool: ${name}`)

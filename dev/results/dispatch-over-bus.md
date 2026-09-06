@@ -125,3 +125,63 @@ since the protocol block below it names the sentinel anyway.
   measured what the round trip actually feels like from a lane.
 - `pruneDispatches` exists and nothing calls it yet; the table is a mailbox, and the record that
   matters is the task in `projects.json`.
+
+---
+
+## QA #653 — the wire said `address`, the prompt said `to`
+
+QA round-tripped a real `dispatch` call through the real `handle()` against a real temp SQLite and
+found the one thing neither side's unit tests could see.
+
+**The bug.** `mcp-serve.ts` answered with `JSON.stringify(verdict)`, where `verdict` came straight
+out of `ArtifactStore.dispatchVerdict()` — the stored row, whose column is `address`. The tool's own
+description, and `DISPATCH_PROTOCOL` in `roster.ts` that every lane reads at launch, both tell the
+model to send to the `to` field. So every real `send` outcome handed the calling lane a payload with
+no `to` in it: the one outcome the whole feature exists to produce was the one that could not be
+acted on. `launching` and `refused` were unaffected, which is why nothing looked broken — they carry
+no address.
+
+**Why both suites passed.** `dispatch-bus.test.ts` asserts `verdict.to` and is right;
+`chat-store.test.ts` asserts the row's `address` and is right; `DashboardView` maps `to` → `address`
+on the way in and is right. Three correct halves and no test on the join. The types could not catch
+it either: `awaitVerdict` returned `Record<string, unknown>`, so the compiler had no shape to check
+the property access against.
+
+**The fix**, at `mcp-serve.ts`. The wire object is now built field by field rather than stringified
+from the row, so the mapping back is written down where the contract is:
+
+```ts
+return textResult(JSON.stringify({
+  outcome: verdict.outcome,
+  to: verdict.address,
+  text: verdict.text,
+  taskId: verdict.taskId,
+  reason: verdict.reason,
+}))
+```
+
+I took the rename over amending the description. The `to`/`address` split is deliberate — `address`
+is a column name and `to` is a protocol field, and they should be free to diverge — but a rename
+that only exists implicitly is the same bug waiting for the next column rename. Naming the wire
+fields at the boundary is what stops a schema change becoming a protocol change. `awaitVerdict`'s
+return type also tightened from `Record<string, unknown>` to
+`NonNullable<ReturnType<ArtifactStore['dispatchVerdict']>>`, so a future divergence is a tsc error.
+
+**The missing test, added**: `electron/src/main/mcp-serve.test.ts`, 7 tests. It asserts on the exact
+JSON text a lane receives, not on either side's internals — a test asserting "the outcome is `send`"
+would have passed throughout the bug. Confirmed as a guard: reverted to `JSON.stringify(verdict)`, 2
+of the 7 fail; restored, 7 pass. One of them needs no round trip at all — it reads the tool's own
+description out of `tools/list` and asserts the payload carries the field that text promises.
+
+**What the test taught.** It hung on the first run. `awaitVerdict` blocks its own thread on
+`Atomics.wait`, so a `setTimeout` answerer on the test's thread can never fire while the tool is
+waiting — the call sits there for its full 15s timeout. That is not an awkward test, it is the shape
+of the thing: in production the answerer *is* a separate process. So the answerer became one —
+`electron/src/main/__fixtures__/dispatch-answerer.cjs`, spawned before the blocking call and polling
+`dispatch_requests` the way `DashboardView` does. The test arrangement now matches production
+because no other arrangement was possible.
+
+**This closes one item from Not done above.** The round trip through SQLite — MCP request → open row
+→ another process answers → verdict on the wire — is now covered. What remains unproven is only the
+last hop: a real lane calling `SendMessage` with the address it was handed, which still needs a
+packaged build with two lanes open.
