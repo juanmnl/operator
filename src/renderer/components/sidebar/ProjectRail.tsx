@@ -8,6 +8,8 @@ import { DragRegion } from '../DragRegion'
 import { projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
 import { byRailOrder, isOnRail } from '../../lib/project-shelf'
 import { orderByRoster } from '../../lib/roster'
+import { railFootPlanText } from '../../lib/footer-reading'
+import type { PlanLimits } from '../../lib/plan-limits'
 import { projectAccent } from '../../lib/project-accent'
 import { laneTextColor } from '../../lib/lane-color'
 import { useHoverCard, closeHoverCards } from '../../lib/use-hover-card'
@@ -215,6 +217,11 @@ export interface ProjectRailProps {
    *  a second component. */
   sessions?: AgentSession[]
   activeSessionId?: string | null
+  /** Plan limits for the rail foot's text reading, or null to hide it — which is what the caller
+   *  passes while a session is open, since the session footer owns the reading then. Kept as a
+   *  prop rather than read here so there is ONE subscription to the limits in the app. */
+  planLimits?: PlanLimits | null
+  planNow?: number
   onSelectSession?: (session: AgentSession) => void
   accentOf?: (session: AgentSession) => string | undefined
   onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
@@ -260,6 +267,7 @@ export function ProjectRail({
   collapsed, projects, activities, activeProjectId,
   onOpenProject, onOpenProjectHome, projectHomeActive,
   onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive, closingIds,
+  planLimits, planNow,
   onReorder, onTileMenu, menuProjectId,
   sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
@@ -613,6 +621,7 @@ export function ProjectRail({
 
       <RailFoot
         collapsed={collapsed}
+        planText={railFootPlanText(planLimits, planNow ?? Date.now(), collapsed)}
         agentsActive={agentsActive}
         onOpenAgents={onOpenAgents}
         tuningActive={tuningActive}
@@ -1175,11 +1184,13 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
  *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
  *  unmount `Sidebar.tsx`, and with it the theme toggle, Preferences and both `.claude` shortcuts
  *  simply stopped existing. */
-function RailFoot({ collapsed, agentsActive, onOpenAgents, tuningActive, onOpenTuning, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
+function RailFoot({ collapsed, planText, agentsActive, onOpenAgents, tuningActive, onOpenTuning, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
   collapsed: boolean
   agentsActive?: boolean
   onOpenAgents: () => void
   tuningActive?: boolean
+  /** The plan reading as text, or null to draw none — see `railFootPlanText`. */
+  planText?: string | null
   onOpenTuning: () => void
   onShowGallery: () => void
   onOpenFolder: () => void
@@ -1269,6 +1280,31 @@ function RailFoot({ collapsed, agentsActive, onOpenAgents, tuningActive, onOpenT
             The cost, stated: there is no plan reading outside a session until the same component
             renders in the gallery/project header (the design's S3). */}
       </FootRow>
+      {/* THE PLAN READING, TEXT ONLY, and only while no session is open.
+          The cell that replaced the old arc lives in the session footer, which leaves the gallery
+          and first launch — exactly when you are deciding what to start — with no reading at all.
+          This is the smaller answer: the binding limit named and its percentage, no ring and no
+          popover, so it says more than the 12px arc did in less space.
+
+          NOT A FOOT ITEM. `lib/rail-foot` and `dev/drive-rail-invariant.mjs` assert which items
+          are present at rest and the fold's cut depends on that count staying at four, so this
+          sits between the rows as type rather than joining them as a button. `planText` is null
+          whenever the reading is unknown, which is what keeps it from rendering 0%. */}
+      {planText && (
+        <button
+          type="button"
+          onClick={onOpenTuning}
+          title="What's driving this — open Tuning"
+          style={{
+            display: 'block', width: '100%', padding: '2px 0 4px', border: 0, background: 'none',
+            font: 'inherit', fontSize: 10, letterSpacing: '0.02em', color: 'var(--fg-muted)',
+            textAlign: 'center', cursor: 'pointer', whiteSpace: 'nowrap',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+          }}
+        >
+          {planText}
+        </button>
+      )}
       {hairline}
       {/* Navigation BETWEEN projects. */}
       <FootRow>

@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { modelFamilyLabel } from '../../lib/roster'
 import { toneFor, TONE_FILL, updatedAgo, type PlanLimits } from '../../lib/plan-limits'
@@ -85,7 +86,15 @@ export function FooterReading({ session, pinnedEffort, limits, now, onOpenTuning
 // ── 3.1 context ──────────────────────────────────────────────────────────────────────────────
 
 function ContextCell({ session }: { session: AgentSession }) {
-  const { used, window, pct, compacting, compactions } = contextReading(session)
+  // THE WIDEST WINDOW EACH SESSION HAS BEEN SHOWN TO HAVE. `inferContextWindow` reads 1M off a
+  // prompt bigger than 200k — a 200k lane cannot hold one — but that evidence disappears at the
+  // next compaction, and without remembering it a 1M lane at 150k would go back to reading 75%
+  // full and "about to compact". Kept per session id, so switching lanes does not carry one
+  // lane's answer to another.
+  const windows = useRef(new Map<string, number>())
+  const known = windows.current.get(session.id)
+  const { used, window, pct, compacting, compactions } = contextReading(session, known)
+  if (window !== known) windows.current.set(session.id, window)
 
   // NOT A BUTTON. It describes this session and there is nothing to open.
   return (

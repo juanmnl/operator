@@ -4452,6 +4452,12 @@ export function DashboardView() {
           keeps the theme toggle, Preferences and both `.claude` shortcuts on screen at 60px. */}
       <ProjectRail
         collapsed={contentMode === 'gallery' || sidebarCollapsed}
+        // THE PLAN READING, only while no session is open. The session footer owns it otherwise,
+        // and two readings of the same three limits on screen at once would invite the reader to
+        // look for a difference between them. Null is the hide: the rail draws nothing rather
+        // than deciding for itself when to.
+        planLimits={activeSession ? null : planLimits.limits}
+        planNow={planLimits.now}
         projects={projects}
         activities={projectActivities}
         activeProjectId={contentMode === 'gallery' ? null : activeProjectId}

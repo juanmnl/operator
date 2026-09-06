@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { contextReading, planReading } from './footer-reading'
-import { CONTEXT_WINDOW, CONTEXT_WINDOW_1M } from './model-config'
+import { contextReading, planReading, railFootPlanText } from './footer-reading'
+import { CONTEXT_WINDOW, CONTEXT_WINDOW_1M, inferContextWindow } from './model-config'
 import type { PlanLimits } from './plan-limits'
 import { FRESH_MS } from './plan-limits'
 import type { AgentSession } from '../../shared/types'
@@ -172,5 +172,88 @@ describe('planReading — no data never renders as a percentage', () => {
     expect(r.state).toBe('aging')
     expect(r.rows).toHaveLength(3)
     expect(r.rows.some((x) => x.binding)).toBe(true)
+  })
+})
+
+describe('inferContextWindow — the 1M window, from evidence rather than the model id', () => {
+  // Review checked every transcript on the machine: not one `message.model` carries `[1m]`. So a
+  // lane switched to long context inside Claude Code kept a 200k denominator and a 400k prompt
+  // reported as 200% full — pinned red with the bar clamped.
+  it('takes the pin when it carries the marker', () => {
+    expect(inferContextWindow('claude-sonnet-5[1m]', 10_000)).toBe(CONTEXT_WINDOW_1M)
+    expect(inferContextWindow('claude-sonnet-5[1M]', undefined)).toBe(CONTEXT_WINDOW_1M)
+  })
+
+  it('infers 1M from a prompt no 200k lane could hold', () => {
+    // The evidence that cannot lie, and the only one available when the marker never arrives.
+    expect(inferContextWindow('claude-opus-5', 400_000)).toBe(CONTEXT_WINDOW_1M)
+  })
+
+  it('does NOT infer it at or below the standard window — full is not over', () => {
+    expect(inferContextWindow('claude-opus-5', 199_999)).toBe(CONTEXT_WINDOW)
+    expect(inferContextWindow('claude-opus-5', 200_000)).toBe(CONTEXT_WINDOW)
+  })
+
+  it('STAYS 1M once shown, so a compaction does not narrow it again', () => {
+    // Without this a 1M lane at 150k would read 75% full and "about to compact" when it is 15%.
+    expect(inferContextWindow('claude-opus-5', 150_000, CONTEXT_WINDOW_1M)).toBe(CONTEXT_WINDOW_1M)
+  })
+
+  it('defaults to the standard window when there is no evidence either way', () => {
+    expect(inferContextWindow(undefined, undefined)).toBe(CONTEXT_WINDOW)
+    expect(inferContextWindow('claude-opus-5', undefined, CONTEXT_WINDOW)).toBe(CONTEXT_WINDOW)
+  })
+})
+
+describe('contextReading — the percentage can never exceed 100', () => {
+  const session = (model: string | undefined, contextTokens: number) =>
+    ({ model, contextTokens, phase: 'running', compactions: 0 }) as Parameters<typeof contextReading>[0]
+
+  it('reads a long-context lane against 1M instead of reporting 200%', () => {
+    const r = contextReading(session('claude-opus-5', 400_000))
+    expect(r.window).toBe(CONTEXT_WINDOW_1M)
+    expect(Math.round(r.pct)).toBe(40)
+  })
+
+  it('caps at 100 even if a window were somehow still too small', () => {
+    // The cap makes "over 100%" unrepresentable rather than merely unlikely — it was the visible
+    // half of the bug.
+    const r = contextReading(session('claude-opus-5', 400_000), CONTEXT_WINDOW)
+    expect(r.pct).toBeLessThanOrEqual(100)
+  })
+
+  it('keeps a known 1M window across a compaction', () => {
+    const r = contextReading(session('claude-opus-5', 150_000), CONTEXT_WINDOW_1M)
+    expect(r.window).toBe(CONTEXT_WINDOW_1M)
+    expect(Math.round(r.pct)).toBe(15)
+  })
+})
+
+describe('railFootPlanText — the reading outside a session', () => {
+  // Moving the cell into the session footer left the gallery and first launch with no reading at
+  // all, which is exactly when you are deciding what to start.
+  const fresh = (over: Partial<PlanLimits> = {}): PlanLimits => ({
+    sessionPct: 10, weekPct: 42,
+    sessionResets: 'in 2 hr', weekResets: 'in 3 days',
+    fetchedAt: new Date().toISOString(), ...over,
+  })
+
+  it('names the binding limit and its percentage', () => {
+    expect(railFootPlanText(fresh(), Date.now())).toBe('Week 42%')
+  })
+
+  it('drops the label when the rail is collapsed and there is no room for it', () => {
+    expect(railFootPlanText(fresh(), Date.now(), true)).toBe('42%')
+  })
+
+  it('follows the BINDING limit rather than always the week', () => {
+    expect(railFootPlanText(fresh({ sessionPct: 88 }), Date.now())).toBe('Session 88%')
+  })
+
+  it('renders NOTHING rather than 0% when there is no reading', () => {
+    // A plan reading that quietly shows 0% while the data is missing says "plenty left" on no
+    // evidence at all.
+    expect(railFootPlanText(null, Date.now())).toBeNull()
+    expect(railFootPlanText(undefined, Date.now())).toBeNull()
   })
 })

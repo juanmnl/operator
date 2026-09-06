@@ -5,7 +5,7 @@
 // which of three limits is marked, and which freshness state suppresses a number entirely.
 
 import type { AgentSession } from '../../shared/types'
-import { contextWindowOf } from './model-config'
+import { inferContextWindow } from './model-config'
 import {
   bindingLimit, limitRows, freshnessOf, hasCurrentData, windowEnded, type PlanLimits,
 } from './plan-limits'
@@ -28,14 +28,24 @@ export interface ContextReading {
  *  fresh when in fact nothing is known — the same rule the plan meter already keeps for a missing
  *  reading, one axis over.
  *
- *  The window comes from the MODEL, so a `[1m]` lane is not reported as 84% full at 840k. */
-export function contextReading(session: Pick<AgentSession, 'model' | 'phase' | 'contextTokens' | 'compactions'>): ContextReading {
-  const window = contextWindowOf(session.model)
+ *  THE WINDOW IS INFERRED, not read off the model — see `inferContextWindow`. No transcript
+ *  carries the `[1m]` marker, so a lane switched to long context inside Claude Code would
+ *  otherwise be measured against 200k and report 200% full. `knownWindow` carries the widest
+ *  window this session has already been shown to have, which is what keeps the reading from
+ *  narrowing again after a compaction. */
+export function contextReading(
+  session: Pick<AgentSession, 'model' | 'phase' | 'contextTokens' | 'compactions'>,
+  knownWindow?: number,
+): ContextReading {
   const used = session.contextTokens && session.contextTokens > 0 ? session.contextTokens : undefined
+  const window = inferContextWindow(session.model, used, knownWindow)
   return {
     used,
     window,
-    pct: used ? (used / window) * 100 : 0,
+    // Capped at 100. With the window inferred this should not bind, but a percentage over 100 is
+    // never a thing to render: it was the visible half of the bug, and the cap is what makes that
+    // unrepresentable rather than merely unlikely.
+    pct: used ? Math.min(100, (used / window) * 100) : 0,
     compacting: session.phase === 'compacting',
     compactions: session.compactions ?? 0,
   }
@@ -80,4 +90,40 @@ export function planReading(limits: PlanLimits | null | undefined, now: number, 
     state: freshnessOf(limits, now) === 'aging' ? 'aging' : 'current',
     rows: limitRows(limits).map((r) => ({ ...r, binding: binding?.key === r.key })),
   }
+}
+
+/** The rail foot's plan reading, as text — or null when there is nothing honest to say.
+ *
+ *  WHY THE RAIL STILL CARRIES ONE. Moving the reading into the session bottom bar left no plan
+ *  reading at the gallery or on first launch, which is exactly when you are deciding what to
+ *  start — the case the deleted `PlanMeter`'s own comment named as its reason to exist. This is
+ *  the smaller replacement: the binding limit and its percentage, no ring, no popover.
+ *
+ *  TEXT, NOT A METER, and that is the point. The old arc was 12px and unlabelled, so it could not
+ *  say WHICH of three limits it had drawn — the defect that moved the reading in the first place.
+ *  Naming the limit in four characters of type says more than the ring did.
+ *
+ *  It is also NOT a foot item: `lib/rail-foot` and `dev/drive-rail-invariant.mjs` assert which
+ *  items are present at rest, and the fold's cut depends on that count staying at four.
+ *
+ *  NULL WHEN UNKNOWN, never a zero. `no-reading`, `window-closed` and `loading` all return no
+ *  rows, and a plan reading that quietly renders 0% while the data is missing is the failure the
+ *  cell states elsewhere it exists to avoid. */
+export function railFootPlanText(
+  limits: PlanLimits | null | undefined,
+  now: number,
+  collapsed = false,
+): string | null {
+  const { rows } = planReading(limits, now)
+  const binding = rows.find((r) => r.binding)
+  if (!binding) return null
+  const pct = `${Math.round(binding.pct)}%`
+  // Collapsed the rail is 70px wide and the label will not fit; the number alone still answers
+  // "how much is left", which is the question being asked at the gallery.
+  if (collapsed) return pct
+  // `Current week` → `Week`. The full-cell labels read as a list where every row starts the same
+  // way; alone in the rail foot that first word carries nothing and costs a third of the line.
+  // The per-model row keeps its own label, which is the CLI's and not ours to trim.
+  const label = binding.label.replace(/^Current /, '')
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)} ${pct}`
 }
