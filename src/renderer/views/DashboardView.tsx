@@ -21,7 +21,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { resolveDispatch } from '../lib/dispatch-bus'
+import { resolveDispatch, readDeliveryResult } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
@@ -252,6 +252,9 @@ export function DashboardView() {
    *  NOT persisted: a restart is a natural circuit-breaker reset, and a hop chain that survives one
    *  would be unkillable by the only recovery every user knows. */
   const deliveryStateRef = useRef<DeliveryState>(emptyDeliveryState())
+  /** Bus dispatches whose board row exists but whose delivery is unconfirmed, keyed by the
+   *  address the lane was handed. Consumed once, by the lane's own `SendMessage` result. */
+  const pendingSendsRef = useRef(new Map<string, { taskId: string; projectId: string; roleId: string; at: number }>())
   /** The reply subscription mounts once, so it reads the switch through a ref — the file's idiom
    *  for a mount-once subscription reaching fresh state. Pausing must take effect on the NEXT
    *  reply, not on the next remount: a kill switch you have to restart to apply is not one. */
@@ -1276,12 +1279,15 @@ export function DashboardView() {
     }
   }, [attachTaskDiffStats, runTaskChecks])
   // Record a task that's ALREADY running (orchestrator dispatched it straight to a live lane).
-  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string, lane?: TaskLane) => {
+  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string, lane?: TaskLane): string | undefined => {
     const t = text.trim()
-    if (!t) return
+    if (!t) return undefined
     const now = new Date().toISOString()
     const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, claudeSessionId: claudeIdOf(terminalId), createdAt: now, startedAt: now, ...(lane ?? {}) }
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
+    // Returned for the bus dispatch path, which has to tell the lane which task its own
+    // `SendMessage` result belongs to. Every other caller ignores it.
+    return task.id
   }, [])
   // When a lane's session ends, its still-running tasks are treated as done (auto-complete).
   // Also captures each task's diff summary — awaited by the close path BEFORE it removes the
@@ -1528,6 +1534,43 @@ export function DashboardView() {
     return () => unsub?.()
   }, [])
 
+  // ── DELIVERY CONFIRMATION, the other half of a bus dispatch ──────────────────────────────
+  //
+  // Operator routes the message; the LANE carries it. So `addRunningTask` above records a claim,
+  // and this is what turns it into a fact — or catches it not being one. The pty path had no
+  // confirmation at all (it typed bytes and inferred delivery from whether a turn started), which
+  // is why a bus dispatch without this was the WEAKER of the two: the board would show work in
+  // progress that was never delivered, the exact failure the bus path exists to end.
+  //
+  // The stale-socket case is the real one, and the spike measured what the CLI returns for it:
+  // `{"success":false,"message":"Failed to send to uds:… ENOENT … this socket path is stale"}`.
+  useEffect(() => {
+    const unsub = window.operator.onLaneDelivery?.((d) => {
+      const pending = pendingSendsRef.current.get(d.to)
+      if (!pending) return
+      // CONSUMED ONCE. A transcript re-read replays every `SendMessage` in the file; deleting
+      // here means a replayed result finds nothing to attribute rather than re-judging a task.
+      pendingSendsRef.current.delete(d.to)
+      const report = readDeliveryResult(d.result)
+      if (report.outcome === 'delivered') {
+        console.info(`[dispatch] delivered → ${d.to} (${report.detail ?? 'no id'})`)
+        return
+      }
+      // NOT DELIVERED. `abandoned` rather than `done` or a silent removal: its own type says it
+      // means the run ended without the work being seen to finish, and that is exactly true here
+      // — more precisely than any other value in the union, since nothing ever started.
+      setTaskStatus(pending.projectId, pending.taskId, 'abandoned')
+      pushToast({
+        text: 'A dispatch was never delivered',
+        // The CLI's own sentence, unparaphrased: it names the reason (a stale socket, an unknown
+        // agent) far better than a summary of ours would.
+        detail: report.detail ?? 'The lane reported no result.',
+        kind: 'error',
+      })
+    })
+    return () => { unsub?.() }
+  }, [setTaskStatus, pushToast])
+
   // ── DISPATCH OVER THE SESSION BUS ────────────────────────────────────────────────────────
   //
   // A lane calls `mcp__operator__dispatch`; that server process cannot hold the delivery brakes
@@ -1582,6 +1625,26 @@ export function DashboardView() {
           },
         )
         deliveryStateRef.current = brakes
+        let taskId: string | undefined
+
+        // HELD FOR APPROVAL — recorded exactly as the sentinel records it, so a bus dispatch and
+        // a sentinel dispatch from the same lane land in the same place and the same Approve
+        // button delivers either. `deliverDispatchRef` is what approval runs, and it does not
+        // care which transport asked.
+        if (verdict.held) {
+          const from = (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))
+          const preview = r.body.length > 60 ? r.body.slice(0, 60) + '…' : r.body
+          dispatchRef.current.logDispatch(projectId, {
+            id: `bus-${r.id}`, at: new Date().toISOString(),
+            fromRoleId: srcTab?.roleId ?? r.roleId, toRoleId: verdict.held.toRoleId,
+            task: r.body, outcome: 'pending-approval',
+          })
+          toast({
+            text: `${from?.name ?? 'A lane'} wants to dispatch to ${verdict.held.toLabel ?? verdict.held.toRoleId}`,
+            detail: `Needs your approval — see Dispatches. ${preview}`,
+            kind: 'info',
+          })
+        }
 
         // LAUNCHING IS OPERATOR'S OWN JOB, and it runs the SAME path the sentinel does rather
         // than a second near-identical one — `deliverDispatchRef` is that path, and reusing it is
@@ -1597,10 +1660,16 @@ export function DashboardView() {
           // depend on the sender remembering to say so afterwards.
           const target = lanes.find((l) => l.roleId && verdict.to === addresses.get(l.claudeSessionId ?? ''))
           if (target?.roleId) {
-            dispatchRef.current.addRunningTask(projectId, r.body, target.roleId, target.id, {
+            taskId = dispatchRef.current.addRunningTask(projectId, r.body, target.roleId, target.id, {
               cwd: target.cwd, sourceCwd: target.sourceCwd,
               worktreeBranch: target.worktreeBranch, worktreeBase: target.worktreeBase,
             })
+            // THE CONFIRMATION HALF. The task is marked running here, but Operator does not carry
+            // the message — the lane does — so until its `SendMessage` result comes back through
+            // the tailer this row is a claim, not a fact. Parked by the address the lane was
+            // handed, which is the only key both ends share: the lane echoes nothing back, and
+            // the tool result carries just the tool_use id and the `to` it was called with.
+            if (taskId) pendingSendsRef.current.set(verdict.to!, { taskId, projectId, roleId: target.roleId, at: Date.now() })
           }
           // WHICH PATH EACH DISPATCH USED, logged while both exist. The sentinel keeps working
           // unchanged for a release, and without this line there would be no way to tell whether
@@ -1610,11 +1679,23 @@ export function DashboardView() {
         }
         await window.operator.answerDispatch(r.id, {
           outcome: verdict.outcome, address: verdict.to, text: verdict.text,
-          taskId: verdict.taskId, reason: verdict.reason,
+          taskId: taskId ?? verdict.taskId, reason: verdict.reason,
         })
       }
     }
-    const t = window.setInterval(() => { void tick() }, 500)
+    // ONE TICK AT A TIME. `tick` awaits an IPC round trip and, on a launch, a worktree create and
+    // a spawn — seconds. Without this guard a second tick starts while the first is still between
+    // reading the open requests and answering them, and every side effect runs twice: the hop
+    // budget charged twice for one dispatch, a duplicate board row, a second `[Operator] …` note
+    // in the caller's pty. `answerDispatch`'s `WHERE answered_at IS NULL` makes only the WRITE
+    // idempotent, so the lane still gets one correct answer while the board and the brakes carry
+    // the second pass's damage — which is the worst shape for a bug to have.
+    let busy = false
+    const t = window.setInterval(() => {
+      if (busy) return
+      busy = true
+      void tick().finally(() => { busy = false })
+    }, 500)
     return () => { stopped = true; clearInterval(t) }
   }, [])
 

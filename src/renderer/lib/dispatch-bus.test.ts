@@ -99,6 +99,65 @@ describe('resolveDispatch — an UNKNOWN lane', () => {
   })
 })
 
+describe('resolveDispatch — the AUTHORITY GATE', () => {
+  // The hole this closes: `mcp__operator__dispatch` is offered to every lane regardless of role,
+  // and the gate had exactly one call site — the sentinel subscription. So the bus path let any
+  // lane commission work with no pending-approval record and no toast, which is the one guardrail
+  // that decides whether a lane may put work into another lane at all.
+  it('HOLDS a non-coordinator lane\'s dispatch instead of sending it', () => {
+    const { verdict } = resolveDispatch(req('review', { fromRoleId: 'code', fromLabel: 'Code' }), ctx())
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.to).toBeUndefined()
+    expect(verdict.text).toBeUndefined()
+    expect(verdict.held?.toRoleId).toBe('review')
+    expect(verdict.held?.toLabel).toBe('Review')
+  })
+
+  it('tells the caller not to retry — a held dispatch is not a transient failure', () => {
+    // `refused` also covers a brake and a typo, and a model that reads them alike will retry.
+    const { verdict } = resolveDispatch(req('review', { fromRoleId: 'code', fromLabel: 'Code' }), ctx())
+    expect(verdict.reason).toMatch(/approval/i)
+    expect(verdict.reason).toMatch(/not been delivered/i)
+    expect(verdict.reason).toMatch(/do not retry/i)
+  })
+
+  it('holds a LAUNCH too — filing work into a project is commissioning it', () => {
+    // The most consequential route, so the gate sits before the launch branch rather than after.
+    const { verdict } = resolveDispatch(
+      req('code', { fromRoleId: 'review', fromLabel: 'Review' }),
+      ctx({ lanes: [lane('review')] }),
+    )
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.held).toBeDefined()
+  })
+
+  it('holds an UNKNOWN sender, because an unidentified agent is not a trusted one', () => {
+    const { verdict } = resolveDispatch(req('code', { fromRoleId: undefined as unknown as string }), ctx())
+    expect(verdict.held).toBeDefined()
+  })
+
+  it('lets the COORDINATOR through, which is the whole point of the exception', () => {
+    const { verdict } = resolveDispatch(req('code', { fromRoleId: 'operator' }), ctx())
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.held).toBeUndefined()
+  })
+
+  it('charges the hop budget NOTHING for a held dispatch — nothing was delivered', () => {
+    const before = ctx()
+    const { brakes } = resolveDispatch(req('code', { fromRoleId: 'code' }), before)
+    expect(brakes).toBe(before.brakes)
+  })
+
+  it('still refuses an unknown lane by NAME rather than holding it, since nothing is commissioned', () => {
+    // The sentinel holds `unassigned` because its path files a backlog task; this path files
+    // nothing, so naming the roster is the more useful answer to what is usually a typo.
+    const { verdict } = resolveDispatch(req('cod', { fromRoleId: 'code' }), ctx())
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.held).toBeUndefined()
+    expect(verdict.reason).toMatch(/operator, code, review/)
+  })
+})
+
 describe('resolveDispatch — the brakes', () => {
   it('refuses when the human has paused agent chatter, and creates nothing', () => {
     const { verdict } = resolveDispatch(req('code'), ctx({ chatterPaused: true }))

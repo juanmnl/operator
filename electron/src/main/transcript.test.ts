@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { derivePhase, isInjectedTurn, toolResultText, userPromptText, COMPACTING_CEILING_MS } from './transcript'
+import { derivePhase, isInjectedTurn, toolResultText, userPromptText, COMPACTING_CEILING_MS, sendMessageAddress } from './transcript'
 
 describe('derivePhase', () => {
   it('is running while a tool is open', () => {
@@ -75,5 +75,33 @@ describe('COMPACTING_CEILING_MS', () => {
     // A boundary with nothing after it must not wedge the lane forever, and the ceiling is how
     // that is bounded. Kept equal to the Rust constant of the same name.
     expect(COMPACTING_CEILING_MS).toBe(5 * 60_000)
+  })
+})
+
+describe('sendMessageAddress', () => {
+  // The rule that decides whether a bus dispatch ever gets a delivery confirmation. Getting it
+  // wrong is silent in both directions: too narrow and the task stays marked running with nobody
+  // able to tell nothing was sent; too broad and an unrelated tool result confirms a delivery
+  // that never happened.
+  it('reads the address off a SendMessage call', () => {
+    expect(sendMessageAddress('SendMessage', { to: 'uds:/tmp/cc-socks/2001.sock', message: 'go' }))
+      .toBe('uds:/tmp/cc-socks/2001.sock')
+  })
+
+  it('accepts a plain agent name too — `to` is free-form and Operator does not own it', () => {
+    expect(sendMessageAddress('SendMessage', { to: 'review' })).toBe('review')
+  })
+
+  it('ignores EVERY other tool, so no unrelated result can confirm a dispatch', () => {
+    for (const name of ['Bash', 'Read', 'Task', 'sendmessage', 'SendMessages']) {
+      expect(sendMessageAddress(name, { to: 'uds:/tmp/x.sock' })).toBeNull()
+    }
+  })
+
+  it('returns null for a call with no usable address rather than an empty key', () => {
+    // An empty string would collide with every other empty one in the pending map.
+    for (const input of [null, undefined, {}, { to: '' }, { to: '   ' }, { to: 42 }, 'not an object']) {
+      expect(sendMessageAddress('SendMessage', input)).toBeNull()
+    }
   })
 })

@@ -121,11 +121,11 @@ const OPERATOR_CHARTER =
  *  BOTH PATHS WORK for one release. The sentinel is unchanged and still the fallback the tool's
  *  own timeout message points at. */
 const DISPATCH_PROTOCOL =
-  'Delegate with `mcp__operator__dispatch(lane, task)`. It ROUTES, it does not deliver: Operator ' +
-  'resolves the lane, applies the brakes and creates the task, then answers JSON. On `send`, call ' +
-  '`SendMessage` with the `to` and `text` it returns; on `launching` it starts that lane with ' +
-  'your task as its brief and you send nothing — either way the work starts. On `refused` ' +
-  'nothing was sent. If no lane fits, do it yourself. Fallback, on its own line:\n' +
+  'Delegate: `mcp__operator__dispatch(lane, task)`. It ROUTES, it does not deliver: Operator ' +
+  'resolves the lane and applies the brakes, then answers JSON. On `send`, call `SendMessage` ' +
+  'with its `to` and `text`; on `launching` it starts that lane with your task as its ' +
+  'brief and you send nothing — either way the work starts. On `refused` nothing was sent: read ' +
+  '`reason`, and retry only for a bad lane name. If no lane fits, do it yourself. Fallback:\n' +
   'OPERATOR-DISPATCH [<lane-id>] <task>\n'
 
 const REPLY_PROTOCOL =

@@ -18,7 +18,7 @@
 
 import type { Project, Role } from '../../shared/types'
 import { evaluateDelivery, deliveryPrefix, truncateForDelivery, type DeliveryState } from './agent-delivery'
-import { routeDispatch, type RoutableTab } from './dispatch'
+import { routeDispatch, dispatchNeedsApproval, type RoutableTab } from './dispatch'
 
 /** What a lane is told to do next. */
 export type DispatchOutcome = 'send' | 'launching' | 'refused'
@@ -30,11 +30,18 @@ export interface DispatchVerdict {
   /** The text to send, already wrapped with the same header the pty path types today, so the
    *  receiving lane reads an identical message whichever transport carried it. */
   text?: string
-  /** The task this dispatch created or matched, so the lane's `SendMessage` result can be
-   *  recorded against it. */
+  /** The task this dispatch created, so the lane's `SendMessage` result can be recorded against
+   *  it. NOT set here: the board entry is minted by the caller after this verdict is decided, so
+   *  the caller fills it in on the way to the wire. Declared here because it is part of the
+   *  verdict a lane receives. */
   taskId?: string
   /** Why, for `refused` — and for `launching`, what Operator is doing instead. */
   reason?: string
+  /** Set when the refusal is the AUTHORITY GATE rather than a brake or a bad lane name: the
+   *  dispatch was recorded for the user to approve, and Operator delivers it itself if they do.
+   *  The caller writes the `pending-approval` record from this; it never reaches the wire, which
+   *  is enforced by `mcp-serve` naming the five wire fields explicitly. */
+  held?: { toRoleId?: string; toLabel?: string }
 }
 
 export interface DispatchRequest {
@@ -86,12 +93,45 @@ export function resolveDispatch(
       brakes: ctx.brakes,
       verdict: {
         outcome: 'refused',
+        // Refused outright rather than held for approval, even from a non-coordinator. The
+        // sentinel HOLDS an unassigned dispatch because its unassigned path files a backlog
+        // task, and that is commissioning work; this path files nothing, so there is nothing to
+        // approve and naming the roster is the more useful answer to what is usually a typo.
         reason: `no lane "${req.lane}" in this project, and no preset by that name. `
           + `Roster: ${roster.map((r) => r.id).join(', ') || '(empty)'}`,
       },
     }
   }
   const targetRoleId = route.role.id
+
+  // AUTHORITY GATE, and it belongs here rather than only on the sentinel path. Only the
+  // coordinator commissions work unsupervised; every other lane's dispatch is recorded
+  // `pending-approval` and delivered by Operator only if the user approves it. The bus path
+  // shipped without this and that was the hole: `dispatchNeedsApproval` had one call site, the
+  // sentinel subscription, so `mcp__operator__dispatch` — offered to every lane regardless of
+  // role — routed around the one guardrail that decides whether a lane may put work into
+  // another lane at all. The brakes are a different rule: they cap how MUCH traffic flows, not
+  // who is allowed to commission it.
+  //
+  // BEFORE THE LAUNCH BRANCH, deliberately, and the sentinel's own comment says why: filing a
+  // task into the backlog is still commissioning work, so EVERY route is held — including a
+  // launch, which is the most consequential of them.
+  //
+  // The wire outcome is `refused` because from the calling lane's side that is the whole truth:
+  // nothing was sent and it must not retry. `held` carries the rest, for the board.
+  if (dispatchNeedsApproval(req.fromRoleId)) {
+    const toLabel = roster.find((r) => r.id === targetRoleId)?.name
+    return {
+      brakes: ctx.brakes,
+      verdict: {
+        outcome: 'refused',
+        held: { toRoleId: targetRoleId, toLabel },
+        reason: `held for approval: only the coordinator dispatches work directly. Your task for `
+          + `"${toLabel ?? targetRoleId}" is in this project's dispatch log awaiting the user's `
+          + `approval and has NOT been delivered. Do not retry — recommend it in your report.`,
+      },
+    }
+  }
 
   // A DORMANT LANE IS LAUNCHED BY OPERATOR, and the task becomes its opening brief — exactly as
   // the sentinel path does today. The calling lane sends nothing: a second message to a lane that

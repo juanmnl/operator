@@ -185,3 +185,96 @@ because no other arrangement was possible.
 → another process answers → verdict on the wire — is now covered. What remains unproven is only the
 last hop: a real lane calling `SendMessage` with the address it was handed, which still needs a
 packaged build with two lanes open.
+
+---
+
+## Review findings — the two HIGHs, and the guard that made them cheap to hit
+
+Review (`dev/results/review-plan-bar-and-bus.md`) found eight issues on this branch. Findings 1, 2
+and 3 are fixed below; 5 was the same `to`/`address` bug QA filed and is already fixed above.
+
+### 1 (HIGH) — the bus path bypassed the authority gate
+
+`dispatchNeedsApproval` had exactly one call site in the repo: the sentinel subscription at
+`DashboardView.tsx`. `mcp__operator__dispatch` is offered to every lane regardless of
+`OPERATOR_ROLE_ID`, so any lane could commission work — launch a lane, create a board task — with
+no `pending-approval` record, no toast, and nothing in the dispatch log. The brakes the account
+boasted about are a different rule: they cap how much traffic flows, not who may commission it.
+
+**The prompt already promised this guardrail.** `orchestrationNote` tells a non-coordinator lane its
+dispatch is "HELD for the user to approve", and `roster.test.ts` pins that sentence. The text was
+right and the new path did not implement it, which is the worst version of this bug: every lane was
+told a rule that was not being enforced.
+
+Fixed in `resolveDispatch`, not in the view, so it is pure and tested. The gate sits **before the
+launch branch** — the sentinel's own comment says why: filing work into a project is commissioning
+it, so every route is held, and a launch is the most consequential of them. The verdict carries a
+new `held` field for the caller to write the `pending-approval` record from; it never reaches the
+wire, which the explicit field mapping in `mcp-serve.ts` now guarantees. The wire outcome is
+`refused`, which from the calling lane's side is the whole truth: nothing was sent, and do not
+retry.
+
+`DashboardView` writes the same `logDispatch(... 'pending-approval')` record and the same toast the
+sentinel writes, so a bus dispatch and a sentinel dispatch land in the same place and the same
+Approve button delivers either — approval runs `deliverDispatchRef`, which does not care which
+transport asked.
+
+One deliberate difference from the sentinel: an **unassigned** lane token is refused outright rather
+than held. The sentinel holds it because its unassigned path files a backlog task; this path files
+nothing, so there is nothing to approve, and naming the roster is the more useful answer to what is
+almost always a typo.
+
+Seven tests, including that a held dispatch charges the hop budget nothing (nothing was delivered)
+and that an unknown sender is held too.
+
+### 2 (HIGH) — the delivery-confirmation half did not exist
+
+`readDeliveryResult` had no caller. Neither tailer was touched. `taskId` was documented on the
+verdict and never set. So `addRunningTask` marked a task running, the lane could then fail to send —
+the stale-socket case the spike measured verbatim — and nothing observed it. A bus dispatch had
+*less* delivery confirmation than the pty path it replaces, which is the reverse of the point.
+
+Now wired end to end, in both shells:
+
+- **Both tailers** record a `SendMessage` tool_use's `to`, and emit a delivery event when its
+  result arrives. Attribution is a pure helper on each side (`sendMessageAddress` /
+  `send_message_address`) so the rule is tested on its own: only `SendMessage` counts, because a
+  result wrongly attributed would confirm a delivery that never happened — worse than none.
+- An **empty result still emits**. The renderer treats anything unrecognised as a failure, so
+  swallowing the empty case would turn the one outcome that must not be lost into silence.
+- `addRunningTask` now returns the task id it mints. The verdict's `taskId` is filled by the caller
+  after the board entry exists, since `resolveDispatch` decides before the task is created.
+- `DashboardView` parks each unconfirmed send by the address the lane was handed — the only key
+  both ends share — and consumes it once, so a transcript re-read replays results that find nothing
+  to re-judge. A failure marks the task `abandoned` (its own type means "the run ended without the
+  work being seen to finish", which is exactly true) and toasts the CLI's own sentence unparaphrased.
+
+Four Rust tests drive the tracker directly, including the failed and empty cases.
+
+### 3 (MEDIUM-HIGH) — the 500ms poll had no in-flight guard
+
+`tick` awaits an IPC round trip and, on a launch, a worktree create and a spawn — seconds. A second
+tick could start mid-flight and run every side effect twice: the hop budget charged twice for one
+dispatch, a duplicate board row, a second `[Operator] …` note in the caller's pty. `answerDispatch`'s
+`WHERE answered_at IS NULL` makes only the *write* idempotent, so the lane still got one correct
+answer while the board and the brakes carried the second pass's damage — the worst shape a bug can
+have. A `busy` flag around `tick` closes it.
+
+### 6 (MEDIUM) — partly
+
+`DISPATCH_PROTOCOL` said "On `refused` nothing was sent", which reads the same for a typo (retry)
+and a brake or a hold (stop). It now says to read `reason` and retry only for a bad lane name, and
+the gate's own reason ends "Do not retry — recommend it in your report". The 3100-char guard was hit
+at 3150; per its own comment the note was trimmed rather than the ceiling raised, and the phrase
+`roster.test.ts` pins was kept intact.
+
+### Still open
+
+Findings **4** (unanswered requests never expire, so app downtime replays as a burst of launches),
+**7** (no liveness check on the bus registry; a duplicate `sessionId` resolves nondeterministically)
+and **8** (the board entry is re-derived from the address and silently skipped on a miss) are not
+fixed. 4 is now less dangerous — a replayed dispatch from a non-coordinator lane is held rather than
+launched — but it is still a real burst for the coordinator's own.
+
+Gates after all of it: renderer 1096, electron 519, cargo 192 passed / 3 ignored, tsc clean in both
+projects, both builds clean.

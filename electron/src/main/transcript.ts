@@ -39,6 +39,27 @@ export interface NewTrack { claudeSessionId: string; cwd: string; permissionMode
 
 export interface DispatchEvent { id: string; sessionId: string; terminalId: string; role: string; task: string }
 export interface ReplyEvent { id: string; sessionId: string; terminalId: string; projectId: string; to: string; text: string; ts: string }
+/** The address a `SendMessage` call was aimed at, or null if this is not one.
+ *
+ *  Pulled out of the tracker so the attribution rule is testable on its own: it is what decides
+ *  whether a delivery confirmation is emitted at all, and getting it wrong is silent — the task
+ *  simply stays marked running forever with nobody able to tell that nothing was sent.
+ *
+ *  Only `SendMessage` counts. A lane makes plenty of other tool calls, and one of THOSE results
+ *  attributed to a dispatch would be worse than no confirmation: it would confirm a delivery
+ *  that never happened. */
+export function sendMessageAddress(name: string, input: unknown): string | null {
+  if (name !== 'SendMessage') return null
+  const to = (input as Record<string, unknown> | null | undefined)?.to
+  return typeof to === 'string' && to.trim() ? to : null
+}
+
+/** A lane's own `SendMessage` finished. The bus dispatch path routes the message but does not
+ *  carry it, so this result is the ONLY confirmation that the thing Operator marked running was
+ *  actually delivered — the pty path had no confirmation at all, and shipping the bus path
+ *  without this made it the weaker of the two. Keyed by `to`, which is the address Operator
+ *  handed the lane. */
+export interface DeliveryEvent { sessionId: string; terminalId: string; to: string; result: string; ts: string }
 
 const nowIso = () => new Date().toISOString()
 
@@ -168,6 +189,10 @@ class Track {
   pending: Array<[number, NarrationEntry]> = []
   pendingDispatches: DispatchEvent[] = []
   pendingReplies: ReplyEvent[] = []
+  pendingDeliveries: DeliveryEvent[] = []
+  /** `SendMessage` tool_use id → the address it was sent to, held until its result arrives. Only
+   *  `SendMessage` calls are tracked, so a lane's ordinary tool traffic costs nothing here. */
+  openSends = new Map<string, string>()
 
   constructor(readonly terminalId: string, readonly track: NewTrack) {}
 
@@ -201,6 +226,10 @@ class Track {
     this.effort = null
     this.lastToolName = null
     this.openTools.clear()
+    // A re-read replays every `SendMessage` in the file. Clearing here keeps the map from
+    // holding ids the replay is about to re-add, and the renderer consumes each pending delivery
+    // once, so a replayed result finds nothing to attribute and is ignored.
+    this.openSends.clear()
     this.inSidechain = false
     this.activeSubagents = 0
     this.narration.length = 0
@@ -340,6 +369,19 @@ class Track {
         const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
         if (!id) continue
         const raw = toolResultText(block.content)
+        const sentTo = this.openSends.get(id)
+        if (sentTo !== undefined) {
+          this.openSends.delete(id)
+          // Emitted whatever the result says, including an empty one. The renderer decides what
+          // counts as delivered (`readDeliveryResult`), and its rule is that anything
+          // unrecognised is a FAILURE — so swallowing the empty case here would turn the one
+          // outcome that must not be lost into silence.
+          this.pendingDeliveries.push({
+            sessionId: this.sessionId, terminalId: this.terminalId,
+            to: sentTo, result: raw ?? '', ts: nowIso(),
+          })
+          this.dirty = true
+        }
         if (raw) {
           const chars = [...raw].length
           // Find the CALL this result belongs to and fill it in — the pair is what the chat
@@ -501,6 +543,11 @@ class Track {
       const id = typeof block.id === 'string' ? block.id : undefined
       if (id) this.openTools.add(id)
       this.applyTaskTools(name, input)
+      // `SendMessage` is the lane's half of a bus dispatch. Remember what address this call was
+      // aimed at so its result can be attributed when it lands — the result block carries only
+      // the tool_use id, and by then the input is gone.
+      const sentTo = id ? sendMessageAddress(name, input) : null
+      if (id && sentTo) this.openSends.set(id, sentTo)
 
       const s = summarize(name, input)
       this.lastToolName = name
@@ -637,6 +684,7 @@ export class Transcript extends EventEmitter {
       if (t.pending.length) { this.emit('chat', t.sessionId, t.pending.slice()); t.pending.length = 0 }
       for (const d of t.pendingDispatches.splice(0)) this.emit('dispatch', d)
       for (const r of t.pendingReplies.splice(0)) this.emit('reply', r)
+      for (const d of t.pendingDeliveries.splice(0)) this.emit('delivery', d)
 
       if (!alive) { t.ended = true; t.dirty = true }
 

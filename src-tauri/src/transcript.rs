@@ -165,6 +165,10 @@ struct Track {
     /// Replies parsed this tick, drained by the tailer loop: persisted to the chat store
     /// (project-scoped, durable) and emitted for any live listener.
     pending_replies: Vec<ReplyEvent>,
+    /// `SendMessage` tool_use id → the address it was aimed at, held until its result arrives.
+    /// Only `SendMessage` is tracked, so ordinary tool traffic costs nothing here.
+    open_sends: HashMap<String, String>,
+    pending_deliveries: Vec<DeliveryEvent>,
     last_stop_reason: Option<String>,
     last_was_user_prompt: bool,
     /// Between a `compact_boundary` record and the next REAL record. See `apply_system`.
@@ -208,6 +212,8 @@ impl Track {
             last_usage_msg_id: None,
             pending_dispatches: vec![],
             pending_replies: vec![],
+            open_sends: HashMap::new(),
+            pending_deliveries: vec![],
             last_stop_reason: None,
             last_was_user_prompt: false,
             compacting: false,
@@ -386,6 +392,20 @@ impl Track {
                         // content is either a string or an array of blocks; both flatten to
                         // text here rather than being dropped as they were before.
                         let raw = tool_result_text(b.get("content"));
+                        // Emitted whatever the result says, INCLUDING an empty one: the frontend
+                        // treats anything it cannot recognise as a failure, so swallowing the
+                        // empty case here would turn the one outcome that must not be lost into
+                        // silence.
+                        if let Some(to) = self.open_sends.remove(id) {
+                            self.pending_deliveries.push(DeliveryEvent {
+                                session_id: self.session_id.clone(),
+                                terminal_id: self.terminal_id.clone(),
+                                to,
+                                result: raw.clone(),
+                                ts: now_iso(),
+                            });
+                            self.dirty = true;
+                        }
                         if !raw.is_empty() {
                             let chars = raw.chars().count();
                             let capped: String = raw.chars().take(TOOL_RESULT_CAP).collect();
@@ -624,6 +644,12 @@ impl Track {
             let input = b.get("input").unwrap_or(&empty);
             if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
                 self.open_tools.insert(id.to_string());
+                // `SendMessage` is the lane's half of a bus dispatch. Remember the address this
+                // call was aimed at, because when the result lands it carries only the tool_use
+                // id and the input is gone by then.
+                if let Some(to) = send_message_address(&name, input) {
+                    self.open_sends.insert(id.to_string(), to);
+                }
             }
             // The agent's plan (Plan tab) — two tool models:
             match name.as_str() {
@@ -881,6 +907,38 @@ struct DispatchEvent {
 /// content-hash id so re-reads of the transcript (relaunch) don't re-fire it, and the same
 /// tolerant parsing. Unlike a dispatch it routes into NO pty — a reply is output only,
 /// nothing is typed anywhere for it.
+/// The address a `SendMessage` call was aimed at, or `None` if this is not one.
+///
+/// Pulled out so the attribution rule can be tested on its own — it decides whether a delivery
+/// confirmation is emitted at all, and getting it wrong is silent in both directions: too narrow
+/// and the task stays marked running with nobody able to tell nothing was sent; too broad and an
+/// unrelated tool result confirms a delivery that never happened. Mirrors
+/// `sendMessageAddress` in `electron/src/main/transcript.ts`.
+fn send_message_address(name: &str, input: &Value) -> Option<String> {
+    if name != "SendMessage" {
+        return None;
+    }
+    let to = input.get("to")?.as_str()?;
+    if to.trim().is_empty() {
+        return None;
+    }
+    Some(to.to_string())
+}
+
+/// A lane's own `SendMessage` finished. The bus dispatch path routes the message but the LANE
+/// carries it, so this result is the only confirmation that the task Operator marked running was
+/// actually delivered. Keyed by `to` — the address Operator handed the lane — because that is
+/// the one value both ends share: the tool result carries only the tool_use id.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryEvent {
+    session_id: String,
+    terminal_id: String,
+    to: String,
+    result: String,
+    ts: String,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReplyEvent {
@@ -1177,6 +1235,11 @@ pub fn start_tailer(app: tauri::AppHandle) {
                         let _ = app.emit("operator:reply", &r);
                     }
                 }
+                // Delivery confirmations: emitted, never persisted. This is a fact about a task
+                // that already exists, and the task is the durable record.
+                for d in t.pending_deliveries.drain(..) {
+                    let _ = app.emit("operator:delivery", &d);
+                }
                 if !alive {
                     t.ended = true;
                     t.dirty = true;
@@ -1350,6 +1413,93 @@ mod tests {
         assert_eq!(tb.output, "ok");
         assert_eq!(tb.output_chars, 2);
         assert!(!tb.truncated);
+    }
+
+    /// A lane's `SendMessage` result becomes a delivery confirmation, keyed by the address it
+    /// was sent to. This is the whole confirmation half of a bus dispatch: Operator marks the
+    /// task running when it hands out the address, and without this the board would show work in
+    /// progress that was never delivered — the exact failure the bus path exists to end.
+    #[test]
+    fn a_send_message_result_becomes_a_delivery_event() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [
+                { "type": "tool_use", "id": "tu_s1", "name": "SendMessage",
+                  "input": { "to": "uds:/tmp/cc-socks/2001.sock", "message": "go" } }
+            ] }
+        }), "2026-07-28T10:00:00Z");
+        assert!(t.pending_deliveries.is_empty(), "nothing to confirm until the result lands");
+
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_s1",
+                "content": "{\"success\":true,\"msg_id\":\"f0bfaf7d\"}" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        assert_eq!(t.pending_deliveries.len(), 1);
+        let d = &t.pending_deliveries[0];
+        assert_eq!(d.to, "uds:/tmp/cc-socks/2001.sock");
+        assert!(d.result.contains("f0bfaf7d"));
+        assert_eq!(d.terminal_id, "t0");
+    }
+
+    /// A FAILED send must produce an event too, carrying the CLI's own sentence. This is the
+    /// case the whole mechanism exists for — a stale socket, which the spike measured verbatim.
+    #[test]
+    fn a_failed_send_is_reported_not_swallowed() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [
+                { "type": "tool_use", "id": "tu_s2", "name": "SendMessage",
+                  "input": { "to": "uds:/tmp/cc-socks/9999.sock" } }
+            ] }
+        }), "2026-07-28T10:00:00Z");
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_s2",
+                "content": "{\"success\":false,\"message\":\"ENOENT … this socket path is stale\"}" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        assert_eq!(t.pending_deliveries.len(), 1);
+        assert!(t.pending_deliveries[0].result.contains("stale"));
+    }
+
+    /// An EMPTY result still emits. The frontend treats anything it cannot recognise as a
+    /// failure, so swallowing this case would turn the outcome that must not be lost into
+    /// silence — and an empty result is exactly what a crashed peer leaves behind.
+    #[test]
+    fn an_empty_send_result_still_emits() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [
+                { "type": "tool_use", "id": "tu_s3", "name": "SendMessage", "input": { "to": "review" } }
+            ] }
+        }), "2026-07-28T10:00:00Z");
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_s3", "content": "" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        assert_eq!(t.pending_deliveries.len(), 1);
+        assert_eq!(t.pending_deliveries[0].result, "");
+    }
+
+    /// No other tool may confirm a dispatch. A result wrongly attributed would mark a delivery
+    /// that never happened, which is worse than no confirmation at all.
+    #[test]
+    fn only_send_message_is_attributed() {
+        let mut t = track();
+        t.apply_assistant(&json!({
+            "message": { "content": [
+                { "type": "tool_use", "id": "tu_b1", "name": "Bash",
+                  "input": { "to": "uds:/tmp/cc-socks/2001.sock", "command": "echo hi" } }
+            ] }
+        }), "2026-07-28T10:00:00Z");
+        t.apply_user(&json!({
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_b1", "content": "hi" } ] },
+            "timestamp": "2026-07-28T10:00:01Z"
+        }));
+        assert!(t.pending_deliveries.is_empty(), "a Bash result is not a delivery");
+        assert_eq!(send_message_address("Bash", &json!({ "to": "x" })), None);
+        assert_eq!(send_message_address("SendMessage", &json!({ "to": "  " })), None);
+        assert_eq!(send_message_address("SendMessage", &json!({})), None);
     }
 
     /// A tool_result turn is not a user prompt — it must not reach chat as one.

@@ -237,6 +237,13 @@ export function installBridge(): void {
       const p = listen('operator:reply', (e) => cb(e.payload as { id: string; sessionId: string; terminalId: string; projectId: string; to: string; text: string }))
       return () => { void p.then((f) => f()) }
     },
+    // A lane's `SendMessage` result, parsed by the Rust tailer exactly as the Electron one does.
+    // The bus dispatch path routes the message but the LANE carries it, so this event is the only
+    // confirmation that what Operator marked running was actually delivered.
+    onLaneDelivery: (cb: (d: { sessionId: string; terminalId: string; to: string; result: string; ts: string }) => void): Unsub => {
+      const p = listen('operator:delivery', (e) => cb(e.payload as { sessionId: string; terminalId: string; to: string; result: string; ts: string }))
+      return () => { void p.then((f) => f()) }
+    },
     getSessions: () => invoke('get_sessions'),
     // Every OPERATOR-REPLY posted to a project, oldest first. Read-only by design: replies are
     // written by the tailer alone (a lane posts one by emitting the sentinel into its own

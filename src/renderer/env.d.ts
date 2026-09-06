@@ -28,6 +28,9 @@ declare global {
       onOrchestratorDispatch: (callback: (d: { id: string; sessionId: string; terminalId: string; role: string; task: string }) => void) => () => void
       /** A lane posted `OPERATOR-REPLY [to] text`. Already persisted by the tailer when this fires. */
       onOrchestratorReply?: (callback: (r: OperatorReply) => void) => () => void
+      /** A lane's own `SendMessage` finished. The bus dispatch path routes but does not carry the
+       *  message, so this is the only confirmation the dispatch was actually delivered. */
+      onLaneDelivery?: (callback: (d: { sessionId: string; terminalId: string; to: string; result: string; ts: string }) => void) => () => void
       getSessions: () => Promise<AgentSession[]>
       /** Every reply posted to a project, oldest first. Read-only — see the bridge. */
       projectReplies?: (projectId: string) => Promise<ProjectReply[]>

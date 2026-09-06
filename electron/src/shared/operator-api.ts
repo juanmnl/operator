@@ -73,6 +73,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   onSessionUpdate:        { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
   onOrchestratorDispatch: { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
   onOrchestratorReply:    { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
+  onLaneDelivery:         { delivery: 'event',  impl: 'native', rust: 'transcript.rs' },
   getSessions:            { delivery: 'invoke', impl: 'native', rust: 'transcript.rs' },
   projectReplies:         { delivery: 'invoke', impl: 'native', rust: 'chatstore.rs' },
   setActiveSession:       { delivery: 'send',   impl: 'native', rust: 'transcript.rs' },

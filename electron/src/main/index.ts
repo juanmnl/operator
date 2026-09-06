@@ -8,7 +8,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { TerminalManager } from './terminals'
-import { Transcript, type DispatchEvent, type ReplyEvent } from './transcript'
+import { Transcript, type DispatchEvent, type ReplyEvent, type DeliveryEvent } from './transcript'
 import type { AgentSession, NarrationEntry } from '../../../src/shared/types'
 import { ChatStore, ArtifactStore } from './chat-store'
 import { QuitGuard, isBusy } from './quit'
@@ -239,6 +239,9 @@ function boot(): void {
     const w = win()
     if (w) broadcast(w, 'onOrchestratorReply', r)
   })
+  // The lane's own `SendMessage` result, for the bus dispatch path. No persistence: this is a
+  // confirmation about a task that already exists, and the task is the durable record.
+  transcript.on('delivery', (d: DeliveryEvent) => { const w = win(); if (w) broadcast(w, 'onLaneDelivery', d) })
   transcript.on('sessions', (sessions: AgentSession[]) => {
     const w = win()
     if (w) broadcast(w, 'onSessionUpdate', sessions)
