@@ -22,7 +22,7 @@ import {
   type PsRow, type TaggedRow,
 } from './reap'
 import { claimLease, releaseLease, loadLeases } from './leases'
-import { isPortLive, isPortFree, retryScanWithoutV6 } from './port-probe'
+import { isPortLive, isPortFree, retryScanWithoutV6, beginPortScan } from './port-probe'
 import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
 import { allocatePort, shouldReleaseCwdPort, provesOwnServer, DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
@@ -137,6 +137,7 @@ export class TerminalManager {
       leased: async () => new Set((await loadLeases()).map((l) => l.devPort)),
       sharedHolderIsOurs: (p) => this.sharedHolderIsOurs(cwd, p),
       onEmptyScan: retryScanWithoutV6,
+      beginScan: beginPortScan,
     })
     if (displaced !== undefined) {
       // Visible on purpose. This is the 2026-09-05 failure being caught rather than repeated —

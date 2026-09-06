@@ -171,9 +171,6 @@ struct Track {
     compacting: bool,
     /// Epoch ms when the boundary landed, for the ceiling in `phase`.
     compacting_since_ms: u128,
-    /// How many boundaries this session has crossed. The phase says "right now"; this says "how
-    /// often", which is the one the Tuning page reads.
-    compactions: u32,
     /// Effort as the transcript reports it, latest wins — present on every assistant record.
     effort: Option<String>,
     started_at: Option<String>,
@@ -215,7 +212,6 @@ impl Track {
             last_was_user_prompt: false,
             compacting: false,
             compacting_since_ms: 0,
-            compactions: 0,
             effort: None,
             started_at: None,
             last_activity_at: now_iso(),
@@ -517,7 +513,6 @@ impl Track {
         if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
             self.compacting = true;
             self.compacting_since_ms = now_ms();
-            self.compactions += 1;
             self.dirty = true;
         }
     }
@@ -743,7 +738,7 @@ impl Track {
             if self.usage.output > 0 || self.usage.input > 0 { Some(self.usage) } else { None },
         )
         .with_queued(self.queued.clone())
-        .with_tuning(self.effort.clone(), self.compactions)
+        .with_tuning(self.effort.clone())
     }
 }
 
@@ -1801,49 +1796,20 @@ mod tests {
         assert_eq!(t.effort.as_deref(), Some("medium"));
     }
 
-    /// The COUNT, distinct from the phase: the phase says "right now", this says "how often", and
-    /// the Tuning page reads the second one.
+    /// The phase COMES BACK on each boundary rather than latching. The count moved to the usage
+    /// engine — which is what the Tuning page reads, and which spans the whole window rather than
+    /// one live session; the tailer's duplicate had no consumer.
     #[test]
-    fn compactions_are_counted_not_just_flagged() {
+    fn the_compacting_phase_recovers_across_repeated_boundaries() {
         let mut t = track();
-        assert_eq!(t.compactions, 0);
         for _ in 0..3 {
             t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
                 "timestamp": "2026-09-05T10:00:00.000Z" }));
+            assert_eq!(t.phase(), "compacting");
             t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:01:00.000Z",
                 "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+            assert_eq!(t.phase(), "waiting");
         }
-        assert_eq!(t.compactions, 3, "the count survives the phase being cleared each time");
-        assert_eq!(t.phase(), "waiting");
-    }
-
-    /// THE WEDGE. `/compact` at the end of a turn writes a boundary and waits for the next
-    /// prompt — no assistant record ever follows. Clearing only on an assistant record left the
-    /// lane in `compacting` indefinitely, which is not cosmetic: `can_announce_to` refuses a
-    /// compacting lane, so it silently stopped receiving dispatches.
-    #[test]
-    fn a_real_user_prompt_ends_the_compaction() {
-        let mut t = track();
-        t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
-            "timestamp": "2026-08-22T17:42:03.729Z" }));
-        assert_eq!(t.phase(), "compacting");
-        t.apply(&json!({ "type": "user", "timestamp": "2026-08-22T17:45:00.000Z",
-            "message": { "role": "user", "content": "now do the next thing" } }));
-        assert!(!t.compacting, "a real prompt is not the re-prime");
-    }
-
-    /// The ceiling, so a boundary with NOTHING after it cannot wedge the lane either.
-    #[test]
-    fn the_compacting_claim_expires() {
-        let mut t = track();
-        t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
-            "timestamp": "2026-08-22T17:42:03.729Z" }));
-        assert_eq!(t.phase(), "compacting");
-        // Backdate the boundary past the ceiling — the same thing a wall clock does while the
-        // user is away from a `/compact` typed at the end of a turn.
-        t.compacting_since_ms -= COMPACTING_CEILING_MS + 1;
-        assert_eq!(t.phase(), "waiting", "a stale claim falls back to what the transcript says");
-        assert!(t.compacting, "the flag is untouched; only the CLAIM expires");
     }
 
     /// A SUBAGENT talking must not end the main thread's compaction — the same rule that stops a

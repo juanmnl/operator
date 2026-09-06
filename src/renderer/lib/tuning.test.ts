@@ -85,9 +85,12 @@ describe('joinLanes — the lookup, never a guess', () => {
     expect(rows[rows.length - 1].key).toBe(UNATTRIBUTED)
   })
 
-  it('recovers the PROJECT via cwd when the uuid has rolled, without inventing a role', () => {
-    // `claudeSessionId` is "latest seen", so a resumed lane loses its earlier uuids. The weaker
-    // pass gets the project back; the role stays unknown rather than borrowed from a sibling.
+  it('recovers the project AND the role via cwd when the uuid has rolled', () => {
+    // `claudeSessionId` is "latest seen", so a resumed lane loses its earlier uuids — which is
+    // the whole reason the cwd pass exists. It used to read the role from the uuid match only,
+    // throwing away the roleId the cwd match had already found and sending a resumed lane to the
+    // unattributed row while its own saved session sat there naming it. The cwd match is weaker
+    // about WHICH lane, not about what that lane is.
     const rows = joinLanes({
       bySession: [sess({ session: 'rolled-uuid', slug: '-Users-dev-proj', tokens: 2000 })],
       byEffort: [], toolOutput: [],
@@ -95,7 +98,22 @@ describe('joinLanes — the lookup, never a guess', () => {
       saved: [saved({ id: 'a', claudeSessionId: 'some-other-uuid', roleId: 'code', projectId: 'p1' })],
     })
     expect(rows[0].projectName).toBe('proj')
-    expect(rows[0].roleId).toBeUndefined()
+    expect(rows[0].roleId).toBe('code')
+    expect(rows[0].name).toBe('Code')
+    expect(rows[0].key).not.toBe(UNATTRIBUTED)
+  })
+
+  it('the Not attributed row never wears a project name', () => {
+    // It used to fall back to the slug's last path segment, so a transcript nothing claimed was
+    // labelled with a real project — which reads as "this project's lane", the one thing the row
+    // exists not to say.
+    const rows = joinLanes({
+      bySession: [sess({ session: 'stranger', slug: '-Users-dev-someproject', tokens: 4000 })],
+      byEffort: [], toolOutput: [], projects: [], saved: [],
+    })
+    expect(rows[0].key).toBe(UNATTRIBUTED)
+    expect(rows[0].name).toBe('Not attributed')
+    expect(rows[0].projectName).toBe('—')
   })
 
   it('carries the roster pin beside the running effort, so a mid-session change is visible', () => {
@@ -153,6 +171,46 @@ describe('joinLanes — the lookup, never a guess', () => {
     expect(rows[0].highContextTurns).toBe(4)
   })
 
+  // Review-2 blocker B. `bySession` arrives sorted by TOKENS, so "latest wins" written as
+  // last-writer-wins described the BIGGEST session — a lane long since moved from Opus/xhigh to
+  // Sonnet/medium was still reported, and argued about, at its old settings.
+  it('takes the model and effort of the NEWEST session, not the biggest', () => {
+    const rows = joinLanes({
+      bySession: [
+        // Bigger, older, and first in the array — exactly the order the engine produces.
+        sess({ session: 'big-old', tokens: 900_000, model: 'claude-opus-4-20250514', effort: 'xhigh', lastTsMs: 1_000 }),
+        sess({ session: 'small-new', tokens: 1_000, model: 'claude-sonnet-4-20250514', effort: 'medium', lastTsMs: 9_000 }),
+      ],
+      byEffort: [], toolOutput: [],
+      projects: [project(ROSTER)],
+      saved: [
+        saved({ id: 'a', claudeSessionId: 'big-old', roleId: 'code', projectId: 'p1' }),
+        saved({ id: 'b', claudeSessionId: 'small-new', roleId: 'code', projectId: 'p1' }),
+      ],
+    })
+    expect(rows[0].model).toBe('claude-sonnet-4-20250514')
+    expect(rows[0].effort).toBe('medium')
+    expect(rows[0].lastTsMs).toBe(9_000)
+    // …and the tokens are still the SUM. Only the description follows the newest session.
+    expect(rows[0].tokens).toBe(901_000)
+  })
+
+  it('is order-independent — the newest wins whichever way the engine sorted', () => {
+    const mk = (order: 'big-first' | 'new-first') => joinLanes({
+      bySession: order === 'big-first'
+        ? [sess({ session: 'a', tokens: 900_000, effort: 'xhigh', lastTsMs: 1 }), sess({ session: 'b', tokens: 1, effort: 'low', lastTsMs: 9 })]
+        : [sess({ session: 'b', tokens: 1, effort: 'low', lastTsMs: 9 }), sess({ session: 'a', tokens: 900_000, effort: 'xhigh', lastTsMs: 1 })],
+      byEffort: [], toolOutput: [],
+      projects: [project(ROSTER)],
+      saved: [
+        saved({ id: 'x', claudeSessionId: 'a', roleId: 'code', projectId: 'p1' }),
+        saved({ id: 'y', claudeSessionId: 'b', roleId: 'code', projectId: 'p1' }),
+      ],
+    })
+    expect(mk('big-first')[0].effort).toBe('low')
+    expect(mk('new-first')[0].effort).toBe('low')
+  })
+
   it('answers an empty window with no rows and no division by zero', () => {
     expect(joinLanes({ bySession: [], byEffort: [], toolOutput: [], projects: [], saved: [] })).toEqual([])
   })
@@ -164,7 +222,7 @@ describe('biggestChange — what the card is allowed to say', () => {
   const lane = (o: Partial<LaneRow> & { name: string; share: number }): LaneRow => ({
     key: o.name, projectName: 'proj', model: 'claude-opus-4-20250514', effortInherited: false,
     tokens: Math.round(o.share * 1e7), cost: 1, turns: 40, compactions: 0, reReadTokens: 0,
-    highContextTurns: 0, medianContext: 0, toolP50: 0, toolP90: 0, sessions: [], ...o,
+    highContextTurns: 0, medianContext: 0, toolP50: 0, toolP90: 0, sessions: [], lastTsMs: 0, ...o,
   })
 
   it('FIRES when the top lane is over the threshold and a step exists', () => {

@@ -151,14 +151,6 @@ pub struct AgentSession {
     /// silently leaves behind.
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<String>,
-    /// `compact_boundary` records seen on this session. Zero is the ordinary case, so it is
-    /// skipped rather than shipped on every payload.
-    #[serde(skip_serializing_if = "is_zero_u32")]
-    compactions: u32,
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
 }
 
 pub fn now_iso() -> String {
@@ -332,16 +324,15 @@ impl AgentSession {
             model,
             usage,
             effort: None,
-            compactions: 0,
         }
     }
 
-    /// What the session is actually running, and how often it has had to compact. A builder for
-    /// the same reason `with_queued` is one: only the tailer sets these, the constructor already
-    /// takes sixteen arguments, and both are absent on most payloads.
-    pub fn with_tuning(mut self, effort: Option<String>, compactions: u32) -> AgentSession {
+    /// What the session is actually RUNNING at — read by the toolbar's effort chip, which shows
+    /// the live value with the launch pin as its fallback. A builder for the same reason
+    /// `with_queued` is one: only the tailer sets it, and the constructor already takes sixteen
+    /// arguments.
+    pub fn with_tuning(mut self, effort: Option<String>) -> AgentSession {
         self.effort = effort;
-        self.compactions = compactions;
         self
     }
 

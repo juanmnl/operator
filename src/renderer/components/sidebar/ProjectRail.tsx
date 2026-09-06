@@ -203,6 +203,9 @@ export interface ProjectRailProps {
   agentsActive?: boolean
   onOpenTuning: () => void
   tuningActive?: boolean
+  /** Projects whose teardown is in flight — the tile says so IMMEDIATELY, matching the
+   *  gallery card. See `GroupHeader`'s `closing`. */
+  closingIds?: Set<string>
   onReorder?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   /** Right-click a header. The strip REPORTS the anchor and nothing else: it is a clipping
    *  scroller at the window's edge, so a menu parented to a row would be cut off at 70. */
@@ -257,7 +260,7 @@ export interface ProjectRailProps {
 export function ProjectRail({
   collapsed, projects, activities, activeProjectId,
   onOpenProject, onOpenProjectHome, projectHomeActive,
-  onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive,
+  onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive, closingIds,
   onReorder, onTileMenu, menuProjectId,
   sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
@@ -496,6 +499,7 @@ export function ProjectRail({
                 onMenu={onTileMenu && ((anchor) => onTileMenu(p.id, anchor))}
                 menuOpen={menuProjectId === p.id}
                 onRestore={onRestoreProject && (() => onRestoreProject(p.id))}
+                closing={closingIds?.has(p.id)}
               />
 
               {/* HOME, iff nothing is live here. It is a place, not an agent — so it never
@@ -651,7 +655,7 @@ export function ProjectRail({
  *  Measured at 60, every single-token name in the real store fit and only the hyphenated compounds
  *  ellipsised, with the hover card carrying those whole. The strip is 70 now, so that bound only
  *  loosens — `EL-ENCANTO` fits where it used to clip — and nothing here had to change for it. */
-function GroupHeader({ project, activity, open, collapsed, draggable, dragging, onDragStart, onDragEnd, onOpen, onMenu, menuOpen, onRestore }: {
+function GroupHeader({ project, activity, open, collapsed, draggable, dragging, onDragStart, onDragEnd, onOpen, onMenu, menuOpen, onRestore, closing }: {
   project: Project
   activity: ProjectActivity
   open: boolean
@@ -664,6 +668,8 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
   onMenu?: (anchor: { top: number; left: number }) => void
   menuOpen?: boolean
   onRestore?: () => void
+  /** Teardown in flight — mirrors the gallery card's chip. See the render below. */
+  closing?: boolean
 }) {
   const [hover, setHover] = useState(false)
   const hoverCard = useHoverCard(`rail:${project.id}`)
@@ -672,9 +678,19 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
   const ink = laneTextColor(accent)
   return (
     <Fragment>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexShrink: 0 }}>
+      {/* THE ROW OWNS THE HOVER, not the name button — the design's first trap. With the state on
+          the button, moving the cursor from the name toward the `⋯` leaves the button, clears
+          `hover`, and the trigger vanishes from under the pointer you are reaching with. The row
+          wrapper is `position: relative` so the trigger can be absolutely positioned inside it and
+          take ZERO layout space at rest, which is what keeps the name's ellipsis point from moving
+          when it appears. */}
+      <div
+        ref={hoverCard.ref as React.RefObject<HTMLDivElement>}
+        onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
+        onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
+        style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexShrink: 0 }}
+      >
         <button
-          ref={hoverCard.ref as React.RefObject<HTMLButtonElement>}
           data-rail-project-header={project.id}
           // `.ink-centred` (styles.css) — cancels the TRAILING letter-space, which a centred
           // tracked string carries on its right and nowhere else. Without it the painted ink of a
@@ -740,13 +756,68 @@ function GroupHeader({ project, activity, open, collapsed, draggable, dragging, 
             opacity: dragging ? 0.4 : 1,
             transition: 'background 120ms ease',
           }}
-          onMouseEnter={(e) => { setHover(true); hoverCard.onMouseEnter(e) }}
-          onMouseLeave={() => { setHover(false); hoverCard.onMouseLeave() }}
         >{project.name}</button>
+        {/* PROJECT ACTIONS — the same menu the right-click opens, brought to where the project is.
+            `⋯` is deliberately not a verb: it stays clear of `×` (end session) and the red worded
+            `Forget`, and every consequence plus the graduated confirm live inside the menu.
+            Revealed on hover or focus; absolutely positioned so it costs no layout at rest. It
+            paints the row's own background so it composites onto the hovered row rather than
+            floating over the name it covers. */}
+        {onMenu && (
+          <button
+            data-rail-project-menu={project.id}
+            data-popmenu-trigger={`rail-project-${project.id}`}
+            aria-expanded={!!menuOpen}
+            aria-haspopup="menu"
+            aria-label={`${project.name} — project actions`}
+            title="Project actions"
+            tabIndex={0}
+            onFocus={() => setHover(true)}
+            onBlur={() => setHover(false)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setHover(false)
+              hoverCard.dismiss()
+              const r = e.currentTarget.getBoundingClientRect()
+              // The same coordinates the right-click uses, so both routes open one menu in one
+              // placerather than two menus that drift.
+              onMenu({ top: r.top, left: r.right + 8 })
+            }}
+            style={{
+              position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+              right: collapsed ? 2 : 4,
+              width: collapsed ? 14 : 18, height: collapsed ? 14 : 16,
+              display: hover || menuOpen ? 'flex' : 'none',
+              alignItems: 'center', justifyContent: 'center',
+              padding: 0, border: 'none', borderRadius: 4,
+              background: 'linear-gradient(to right, transparent, var(--bg-sidebar) 35%)',
+              color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+              fontFamily: 'var(--font-mono)', fontSize: collapsed ? 10 : 11, lineHeight: 1,
+            }}
+          >⋯</button>
+        )}
+        {/* CLOSING WINS while a teardown is in flight — the same answer the gallery card gives,
+            in the same muted register with no fill, so the row does not reflow when it appears.
+            The rail used to say nothing at all: you pressed Close and the project sat there
+            looking untouched until the last pty died. The chip is on screen before the first one
+            does. Expanded only, for the same reason `previous` is: at 70 there is no room for a
+            second thing on this row. */}
+        {!collapsed && closing && (
+          <span
+            data-rail-closing={project.id}
+            title="Ending this project’s agents"
+            style={{
+              flexShrink: 0, marginRight: 8,
+              fontFamily: 'var(--font-mono)', fontSize: 9,
+              textTransform: 'uppercase', letterSpacing: '0.1em',
+              color: 'var(--fg-muted)',
+            }}
+          >closing…</span>
+        )}
         {/* You can browse into a shelved project from the gallery, and nothing in here used to say
             so. The chip is the state AND the way out of it. Expanded only: at 70 there is no room
             for a second thing on this row, and the hover card carries the state. */}
-        {!collapsed && open && project.archivedAt && onRestore && (
+        {!collapsed && !closing && open && project.archivedAt && onRestore && (
           <button
             data-previous-chip
             className="sidebar-previous-chip"

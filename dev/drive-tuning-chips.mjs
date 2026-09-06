@@ -43,6 +43,19 @@ const chipText = (label) => p.evaluate((l) => {
   return b ? b.textContent.trim() : null
 }, label)
 
+// ---- 0. THE GATE. The fixture's phase is `waiting`, which is what a real between-turns lane
+// reports — no tracked lane is ever `idle`. On the build whose gate was `phase === 'idle'` the
+// chips render disabled with the wait title, so every check below fails to find its button. This
+// one names the reason rather than leaving that as a mystery locator failure. ------------------
+const gate = await p.evaluate(() => {
+  const btns = Array.from(document.querySelectorAll('button'))
+  const model = btns.find((el) => el.title?.startsWith('Model for this lane'))
+  const waiting = btns.find((el) => el.title === 'Wait for the lane to finish its turn')
+  return { enabled: !!model && !model.disabled, disabledCount: waiting ? 1 : 0 }
+})
+check('chips are ENABLED on a `waiting` lane (the gate is not `idle`-only)', gate.enabled,
+  gate.disabledCount ? 'found chips disabled with the wait title — this is the pre-fix build' : '')
+
 // ---- 1. /model — bare line + CR, not a bracketed paste ----------------------------------------
 check('Model chip present before pick', (await chipText('Model for this lane')) === 'Model')
 await p.locator('button[title^="Model for this lane"]').click()

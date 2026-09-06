@@ -8,6 +8,7 @@ import { EFFORT_OPTIONS } from '../../lib/effort'
 import { ROSTER_MODELS, modelFamilyLabel } from '../../lib/roster'
 import { effortCommand, modelCommand, normalizeModelId } from '../../lib/lane-tuning'
 import { submitQueue } from '../../lib/submit-queue'
+import { isBetweenTurns } from '../../lib/comms'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -105,15 +106,22 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
   // point release on its own, so a routine version bump costs us nothing.
   const [customModel, setCustomModel] = useState(false)
   const [customModelId, setCustomModelId] = useState('')
-  // TUNING WRITES A TYPED LINE INTO A LIVE PTY, so it is offered only when the lane is idle.
+  // TUNING WRITES A TYPED LINE INTO A LIVE PTY, so it is offered only between turns.
   //
-  // Mid-turn, that line does not become a command: Claude Code queues it as a message, or — if
-  // the lane is sitting on a permission prompt — the bare CR answers the prompt. Either way the
-  // chip would have claimed a change that did not happen, and the second is a keystroke landing
-  // on a question the user has not read. `idle` is the one phase where a typed line is what it
-  // looks like.
+  // Mid-turn that line does not become a command — Claude Code queues it as a message — so the
+  // chip would claim a change that did not happen.
+  //
+  // THE GATE USED TO BE `phase === 'idle'`, WHICH NO TRACKED LANE EVER IS: `derive_phase` returns
+  // only running / compacting / waiting, so the chips were permanently disabled. `isBetweenTurns`
+  // is the same predicate `canAnnounceTo` uses, shared so the two cannot drift.
+  //
+  // AND A PERMISSION PROMPT IS ALREADY EXCLUDED, which is the risk `waiting` looked like it
+  // reopened. A lane awaiting approval has an assistant `tool_use` block with no `tool_result`,
+  // so `openTools` is non-empty and `derivePhase` returns `running` on its second branch — the
+  // chips are disabled throughout. The tailers CAN tell that apart from an ordinary "your turn",
+  // and they already do; a bare CR cannot reach an unanswered prompt through this control.
   const live = !!terminalId && !!onEffortChange
-  const tunable = live && phase === 'idle'
+  const tunable = live && isBetweenTurns(phase)
   const waitTitle = 'Wait for the lane to finish its turn'
 
   useEffect(() => {

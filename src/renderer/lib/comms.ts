@@ -222,7 +222,21 @@ export function announcement(report: ArtifactReport): string {
  *  Moved here from `inbox.ts` when the mailbox was cut. It is about the ANNOUNCE path, which
  *  survived the cut intact, not about the mailbox surface that did not — so it lands next to
  *  `announcement`, the line it guards. */
+/** Is the lane between turns — free to receive a keystroke that means what it looks like?
+ *
+ *  ONE DEFINITION, because two surfaces now ask it and they must not drift: this gate, and the
+ *  toolbar's model/effort chips, which type a slash command straight into the pty.
+ *
+ *  `idle` is in the set for completeness and is currently unreachable from a tracked lane —
+ *  neither tailer emits it, `derive_phase` returns only running/compacting/waiting. That is what
+ *  made the chips' first gate (`phase === 'idle'`) dead on arrival. It stays listed rather than
+ *  removed because `SessionPhase` still declares it and a session with no transcript at all
+ *  legitimately has no turn in flight. */
+export function isBetweenTurns(phase: string | null | undefined): boolean {
+  return phase === 'idle' || phase === 'waiting'
+}
+
 export function canAnnounceTo(session: Pick<AgentSession, 'status' | 'phase'> | undefined): boolean {
   if (!session || session.status === 'ended') return false
-  return session.phase === 'idle' || session.phase === 'waiting'
+  return isBetweenTurns(session.phase)
 }

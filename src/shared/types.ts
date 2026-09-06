@@ -111,8 +111,6 @@ export interface AgentSession {
    *  `/effort` changes and the roster's launch pin does not know about. Distinct from
    *  `SavedSession.effortLevel`, which is the pin. */
   effort?: string
-  /** `compact_boundary` records seen on this session so far. */
-  compactions?: number
   activity: ActivityEntry[]
   /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
   messages?: NarrationEntry[]

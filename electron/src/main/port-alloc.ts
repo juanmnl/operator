@@ -45,7 +45,9 @@ export interface PortAllocDeps {
   /** Called when the whole window scanned empty, with the ports that were considered. Its job is
    *  to say whether that was a real exhaustion or an IPv6-less host failing every `::1` bind —
    *  see `retryScanWithoutV6`. Optional. */
-  onEmptyScan?(ports: readonly number[]): Promise<number | undefined>
+  onEmptyScan?(ports: readonly number[], isExcluded: (port: number) => boolean): Promise<number | undefined>
+  /** Reset the v6-failure tally for one scan. See `beginPortScan`. */
+  beginScan?(): void
 }
 
 export interface PortAllocResult {
@@ -101,10 +103,19 @@ export async function allocatePort(
   // with a v4-only probe. Absent (tests, and the Tauri stub) it stays undefined and the caller
   // behaves exactly as before.
   if (port === undefined && deps.onEmptyScan) {
-    const fallback = await deps.onEmptyScan(windowPorts(portsByCwd))
+    // The same exclusions the scan applied, handed down: the fallback is a retry of THIS scan,
+    // not a licence to ignore what it already ruled out.
+    const leased = await deps.leased()
+    const taken = new Set(portsByCwd.values())
+    const fallback = await deps.onEmptyScan(
+      windowPorts(portsByCwd),
+      (p) => leased.has(p) || taken.has(p),
+    )
     if (fallback !== undefined) {
       portsByCwd.set(cwd, fallback)
-      return { port: fallback }
+      // A FRESH port, so `shared` stays false — the hint may say "verified free", which for a
+      // v4-only bind on a host with no v6 loopback is exactly as true as it is anywhere else.
+      return { port: fallback, shared: false }
     }
   }
   if (port !== undefined) portsByCwd.set(cwd, port)
@@ -123,6 +134,7 @@ function windowPorts(portsByCwd: Map<string, number>): number[] {
 /** The window scan: the first port this process has not reserved, no lease claims, and nothing
  *  is bound to. */
 async function scan(portsByCwd: Map<string, number>, deps: PortAllocDeps): Promise<number | undefined> {
+  deps.beginScan?.()
   const taken = new Set(portsByCwd.values())
   // ONE read of the lease file for the whole scan, not one per candidate: this runs on the spawn
   // path, and re-reading a JSON file a hundred times is a visible pause before a lane appears.
@@ -196,8 +208,12 @@ const NOT_A_LANE_SERVER = /--mcp-serve|Operator Helper|\bclaude\b\s+--settings|^
  *  they carry the full tag set on every lane, and a sweep that kills them kills the app. */
 export const OPERATOR_BINARY_RE = /Operator\.app|Operator Helper|--mcp-serve|\belectron\b/i
 
-/** Anything that looks like a dev server, for the automatic paths that may only act on one. */
-export const DEV_SERVER_RE = /\b(vite|next(?:-server)?|astro|webpack(?:-dev-server)?|nuxt|remix|parcel|rollup|tsx\s+watch|nodemon|serve|http-server)\b/
+/** Anything that looks like a dev server. THE one definition — `dev-servers.ts` imports it
+ *  rather than keeping a copy, because the two had already drifted: this one carried a bare
+ *  `\bserve\b`, which matches `--mcp-serve` and made Operator's own helper look like a dev
+ *  server. Nothing but test ordering kept that from mattering, and ordering is not a guard.
+ *  `serve` is gone; `http-server` stays because it is a real package name and cannot collide. */
+export const DEV_SERVER_RE = /\b(vite|next(?:-server)?|astro|webpack(?:-dev-server)?|nuxt|remix|parcel|rollup|tsx\s+watch|nodemon|http-server)\b/
 
 export interface OwnServerEvidence {
   /** `ps` rows, for the ppid walk and the command test. */
@@ -240,7 +256,11 @@ export function provesOwnServer(port: number, ev: OwnServerEvidence): boolean {
         if (kid.pid <= 1 || seen.has(kid.pid)) continue
         seen.add(kid.pid)
         next.push(kid.pid)
-        if (depth >= 2 && !NOT_A_LANE_SERVER.test(kid.command)) return true
+        // MUST LOOK LIKE A DEV SERVER, not merely "not one of ours". The exclusion list alone
+        // let a build step, a test runner or a language server stand in as proof that the sibling
+        // was serving the port — the same shape as the bug this replaced, one filter narrower. A
+        // positive match is the claim actually being made.
+        if (depth >= 2 && DEV_SERVER_RE.test(kid.command) && !NOT_A_LANE_SERVER.test(kid.command)) return true
       }
     }
     frontier = next

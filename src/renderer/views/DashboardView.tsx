@@ -13,7 +13,7 @@ import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
-import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason } from '../lib/lane-lifecycle'
+import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason, doneStampsFrom } from '../lib/lane-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { IDLE, installPressed, installProgressed, installFailed, type InstallState } from '../lib/update-install'
@@ -3476,6 +3476,29 @@ export function DashboardView() {
     return () => clearInterval(t)
   }, [refreshReports])
 
+  // A REPORT COUNTS AS DONE for the close policy.
+  //
+  // `reportedDoneAt` was fed only by `task_status(id,'done')`, and the measurement is decisive:
+  // over a month lanes called `report` 643 times and `task_status` 5 times. The lifecycle was
+  // keyed on the call nobody makes, so in practice nothing was ever closable by having finished —
+  // only by the went-quiet backstop, which is a timer and not a statement.
+  //
+  // A report IS the statement. A lane calls it when it has something to hand back, which is what
+  // "I am done with this" looks like in this fleet's actual usage. The went-quiet backstop stays
+  // for lanes that report nothing at all, and the open-tasks guard below still overrides both:
+  // a lane with work outstanding does not close because it filed a report.
+  //
+  // Scoped to the LANE, and age-guarded for the same reason the status path is: `terminalId` is a
+  // per-run counter that collides across runs, so a report from an earlier run must not mark this
+  // run's t3 done.
+  useEffect(() => {
+    const stamps = doneStampsFrom(reports, terminalsRef.current, Date.now())
+    for (const [terminalId, at] of Object.entries(stamps)) {
+      const prev = doneReportsRef.current[terminalId]
+      if (!prev || Date.parse(at) > Date.parse(prev)) doneReportsRef.current[terminalId] = at
+    }
+  }, [reports])
+
 
   const announcingRef = useRef(false)
   useEffect(() => {
@@ -4144,6 +4167,9 @@ export function DashboardView() {
       // close would teach people to click through the confirms that matter. Not danger-toned:
       // red is the gallery's mark for Forget, and one verb must not read as two weights.
       {
+        // `id` and not the label: the label counts agents, and an agent exiting between the two
+        // clicks of the confirm would otherwise re-arm instead of firing.
+        id: 'close-project',
         label: live > 0 ? `Close project · end ${live} agent${live === 1 ? '' : 's'}` : 'Close project',
         onClick: () => { void closeProject(project.id) },
         separator: true,
@@ -4256,6 +4282,7 @@ export function DashboardView() {
         onOpenFolder={handleNewSession}
         onOpenAgents={handleOpenAgents}
         agentsActive={contentMode === 'agents'}
+        closingIds={closingProjects}
         tuningActive={contentMode === 'tuning'}
         onOpenTuning={handleOpenTuning}
         onReorder={handleReorderProject}
@@ -4503,7 +4530,11 @@ export function DashboardView() {
               onOpenProjectHome={activeProjectId ? handleOpenProjectHome : undefined}
               terminalId={activeTerminalId}
               detectedDevPort={detectedDevPort}
-              effortLevel={tab?.effortLevel}
+              // THE LIVE VALUE FIRST, the launch pin as fallback. `activeSession.effort` is what
+              // the transcript reports on every assistant record, so it catches a mid-session
+              // `/effort` — including one typed straight into the terminal — that the pin cannot
+              // see. Before this the field was captured and read by nothing.
+              effortLevel={(activeSession.effort as EffortLevel | undefined) ?? tab?.effortLevel}
               model={tab?.model ?? activeSession.model}
               phase={activeSession.phase}
               onModelChange={(m) => patchActiveTerminal({ model: m })}

@@ -301,8 +301,17 @@ export function registerIpc(d: Deps): void {
     // over a 30-day window would let transcripts land between them and the page paint two.
     getTuning: async (days) => {
       const n = Number(days) || 7
-      const core = await computeTuning(n)
-      const since = n > 0 ? new Date(Date.now() - n * 86_400_000).toISOString() : undefined
+      // ONE WINDOW FOR BOTH HALVES, computed once here.
+      //
+      // `computeTuning` derives its own cutoff from `Date.now()` and the chat query used to
+      // derive a second one a few milliseconds later, so the two halves described windows that
+      // differed by however long the transcript scan took — seconds, on a 30-day window over
+      // every project directory. A tool row could then belong to a session the lane table had
+      // already excluded, and the page would render a lane whose p90 came from a turn outside
+      // its own window.
+      const sinceMs = n > 0 ? Date.now() - n * 86_400_000 : 0
+      const since = sinceMs ? new Date(sinceMs).toISOString() : undefined
+      const core = await computeTuning(n, sinceMs || undefined)
       return { ...core, toolOutput: d.chat.toolOutputStats(since) }
     },
     getUsageStats: (days) => computeUsage(days ?? 0),

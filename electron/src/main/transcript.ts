@@ -147,9 +147,6 @@ class Track {
   compacting = false
   /** When the boundary landed, for the ceiling below. */
   compactingSinceMs = 0
-  /** How many boundaries this session has crossed. The phase says "right now"; this says "how
-   *  often", which is the one the Tuning page reads. */
-  compactions = 0
   /** Effort as the transcript reports it, latest wins — present on every assistant record. */
   effort: string | null = null
   lastToolName: string | null = null
@@ -201,7 +198,6 @@ class Track {
     this.lastWasUserPrompt = false
     this.compacting = false
     this.compactingSinceMs = 0
-    this.compactions = 0
     this.effort = null
     this.lastToolName = null
     this.openTools.clear()
@@ -426,7 +422,6 @@ class Track {
     if (v.subtype === 'compact_boundary') {
       this.compacting = true
       this.compactingSinceMs = Date.now()
-      this.compactions += 1
       this.dirty = true
     }
   }
@@ -592,8 +587,6 @@ class Track {
       model: this.model ?? undefined,
       usage: this.usage,
       effort: this.effort ?? undefined,
-      // Zero is the ordinary case and would ride on every payload; absent says the same thing.
-      compactions: this.compactions || undefined,
     }
   }
 }

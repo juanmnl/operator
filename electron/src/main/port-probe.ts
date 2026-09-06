@@ -72,8 +72,10 @@ export async function isPortFree(port: number): Promise<boolean> {
   return false
 }
 
-/** How many v6 binds have failed since the last successful one. Read by `noteEmptyScan`, which
- *  is the only thing that can tell "one orphan holds [::1]" from "this host has no v6 at all". */
+/** v6 bind failures IN THE CURRENT SCAN. Reset when a scan starts, not only on a success —
+ *  a process-lifetime tally would accumulate ordinary orphan refusals across hours of launches
+ *  and eventually cross any threshold, declaring a healthy host v6-less. The question is only
+ *  ever "did EVERY port in THIS scan fail v6", so the counter has to be scoped to a scan. */
 let v6Failures = 0
 let v6WarningShown = false
 
@@ -82,7 +84,10 @@ let v6WarningShown = false
  *
  *  Separate from `isPortFree` because a single port cannot tell the difference: one refusal is
  *  evidence of an orphan, a hundred consecutive refusals is evidence about the host. */
-export async function retryScanWithoutV6(ports: readonly number[]): Promise<number | undefined> {
+export async function retryScanWithoutV6(
+  ports: readonly number[],
+  isLeased: (port: number) => boolean = () => false,
+): Promise<number | undefined> {
   if (v6Failures < ports.length || !ports.length) return undefined
   if (!v6WarningShown) {
     v6WarningShown = true
@@ -93,6 +98,11 @@ export async function retryScanWithoutV6(ports: readonly number[]): Promise<numb
   }
   const { createServer } = await import('node:net')
   for (const port of ports) {
+    // THE LEASE CHECK COMES TOO, and leaving it out was the bug: this path is a fallback for the
+    // same scan, so it has to apply the same exclusions. Without it a v6-less host would hand out
+    // a port another Operator instance — or an unreaped orphan — already holds, which is the
+    // original failure with the bind-check bypassed.
+    if (isLeased(port)) continue
     const free = await new Promise<boolean>((resolve) => {
       const srv = createServer()
       srv.once('error', () => resolve(false))
@@ -103,5 +113,5 @@ export async function retryScanWithoutV6(ports: readonly number[]): Promise<numb
   return undefined
 }
 
-/** Reset the v6 tally — a successful v6 bind means the host has it after all. */
-export function noteV6Success(): void { v6Failures = 0 }
+/** Start a scan's v6 tally. Called by `allocatePort` before it walks the window. */
+export function beginPortScan(): void { v6Failures = 0 }

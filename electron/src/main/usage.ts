@@ -300,9 +300,13 @@ export function median(values: readonly number[]): number {
  *  `toolOutput` is injected by the caller rather than read here — it comes from `chat.db`, which
  *  this module deliberately knows nothing about; it reads `~/.claude/projects` and nothing else.
  */
-export async function computeTuning(days: number): Promise<Omit<TuningData, 'toolOutput'>> {
+export async function computeTuning(days: number, sinceMs?: number): Promise<Omit<TuningData, 'toolOutput'>> {
   const generatedAt = new Date().toISOString()
-  const { cutoffDay } = cutoffFor(days)
+  // `sinceMs` is passed by the IPC handler so BOTH halves of the payload share one window; see
+  // `getTuning`. Absent (tests, direct callers) it falls back to deriving its own, as before.
+  const cutoffDay = sinceMs !== undefined
+    ? new Date(sinceMs).toISOString().slice(0, 10)
+    : cutoffFor(days).cutoffDay
   const { recs, compactions } = await load()
 
   interface SessAcc {

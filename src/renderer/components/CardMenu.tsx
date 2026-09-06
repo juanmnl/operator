@@ -23,6 +23,14 @@ import { useDismiss } from '../lib/use-dismiss'
 export const CONFIRM_MS = 2500
 
 export interface CardMenuItem {
+  /** WHAT THIS ITEM DOES, stable across renders — the key the armed confirm is held under.
+   *
+   *  It used to be keyed on `label`, and the labels here are LIVE: `Close project · end 3 agents`
+   *  counts agents. Arm the confirm, let one agent exit, and the label becomes `… 2 agents`, so
+   *  the second click no longer matches the armed key and re-arms instead of firing. The user
+   *  clicks twice on a confirm and nothing happens — worse than a missing control, because it
+   *  looks like the app ignored them. Optional so existing static-label callers are unchanged. */
+  id?: string
   label: string
   onClick: () => void
   disabled?: boolean
@@ -32,6 +40,17 @@ export interface CardMenuItem {
   /** Requires a second click: the first arms it and relabels, the second fires. For an
    *  action that persists and can't be taken back by re-opening a folder. */
   confirm?: boolean
+}
+
+/** The key an armed confirm is held under: the item's ACTION identity, falling back to its label.
+ *
+ *  The fallback is what keeps every static-label caller working; the `id` is what fixes the live
+ *  ones. `Close project · end 3 agents` counts agents, so with the label as the key, one agent
+ *  exiting between the arming click and the confirming click changed the key and the second click
+ *  re-armed instead of firing — two clicks on a confirm and nothing happens, which reads as the
+ *  app ignoring you rather than as a guard. */
+export function confirmKeyOf(it: Pick<CardMenuItem, 'id' | 'label'>): string {
+  return it.id ?? it.label
 }
 
 /** Small popover of project verbs. Each item closes it after running, and the panel stops its
@@ -50,7 +69,8 @@ export function CardMenu({ items, onClose, at, title }: {
   title?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  // Which item is armed, by label. Disarms itself after CONFIRM_MS so a menu left open
+  // Which item is armed, by ACTION IDENTITY (see `confirmKeyOf`). Disarms itself after
+  // CONFIRM_MS so a menu left open
   // doesn't stay one stray click away from a delete.
   const [armed, setArmed] = useState<string | null>(null)
   const armTimer = useRef(0)
@@ -102,7 +122,7 @@ export function CardMenu({ items, onClose, at, title }: {
         </div>
       )}
       {items.map((it) => (
-        <div key={it.label}>
+        <div key={confirmKeyOf(it)}>
           {it.separator && <div style={{ height: 1, margin: '3px 0', background: 'var(--border)' }} />}
           <button
             data-card-menu-item={it.label}
@@ -110,8 +130,9 @@ export function CardMenu({ items, onClose, at, title }: {
             disabled={it.disabled}
             onClick={(e) => {
               e.stopPropagation()
-              if (it.confirm && armed !== it.label) {
-                setArmed(it.label)
+              const key = confirmKeyOf(it)
+              if (it.confirm && armed !== key) {
+                setArmed(key)
                 clearTimeout(armTimer.current)
                 armTimer.current = window.setTimeout(() => setArmed(null), CONFIRM_MS)
                 return
@@ -130,7 +151,7 @@ export function CardMenu({ items, onClose, at, title }: {
             onMouseEnter={(e) => { if (!it.disabled) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
-            {armed === it.label ? `${it.label} — click again` : it.label}
+            {armed === confirmKeyOf(it) ? `${it.label} — click again` : it.label}
           </button>
         </div>
       ))}

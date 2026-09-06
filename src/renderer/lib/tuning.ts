@@ -45,6 +45,8 @@ export interface LaneRow {
   toolP90: number
   topTool?: string
   sessions: string[]
+  /** Newest `lastTsMs` among this lane's sessions — what "latest" is decided by. */
+  lastTsMs: number
 }
 
 /** The row that keeps the shares honest. Transcripts no saved session claims — a lane started
@@ -91,27 +93,34 @@ export function joinLanes(input: JoinInput): LaneRow[] {
     const weak = hit ? undefined : byCwd.get(slugToPath(s.slug))
     const claim = hit ?? weak
     const project = claim?.projectId ? projectById.get(claim.projectId) : undefined
-    const role = hit?.roleId ? project?.roster?.find((r) => r.id === hit.roleId) : undefined
-    // A weak match claims the PROJECT only. Its role is unknowable, so the row is attributed to
-    // the project and named for it rather than borrowing a sibling lane's identity.
-    const key = role ? `${project?.id ?? ''}:${role.id}` : hit?.roleId ? `${project?.id ?? ''}:${hit.roleId}` : UNATTRIBUTED
+    // THE ROLE COMES FROM WHICHEVER SAVED SESSION CLAIMED THE ROW, uuid match or cwd match.
+    // Reading it from `hit` alone threw away the roleId the cwd match had already found, so a
+    // resumed lane — whose uuid has rolled, which is the entire reason the weak pass exists —
+    // fell through to the unattributed row while its own saved session sat right there naming
+    // the role. The cwd match is weaker about WHICH lane, not about what that lane is.
+    const claimedRoleId = claim?.roleId
+    const role = claimedRoleId ? project?.roster?.find((r) => r.id === claimedRoleId) : undefined
+    const key = role ? `${project?.id ?? ''}:${role.id}` : claimedRoleId ? `${project?.id ?? ''}:${claimedRoleId}` : UNATTRIBUTED
     const t = tools.get(s.session)
 
     let row = rows.get(key)
     if (!row) {
       row = {
         key,
-        name: role?.name ?? (key === UNATTRIBUTED ? 'Not attributed' : hit?.roleId ?? 'Unknown'),
-        roleId: role?.id ?? hit?.roleId,
+        name: key === UNATTRIBUTED ? 'Not attributed' : role?.name ?? claimedRoleId ?? 'Unknown',
+        roleId: role?.id ?? claimedRoleId,
         projectId: project?.id,
-        projectName: project?.name ?? (key === UNATTRIBUTED ? '—' : projectNameFromSlug(s.slug)),
+        // THE UNATTRIBUTED ROW NEVER WEARS A PROJECT NAME. It used to fall back to the slug's
+        // last path segment, so a transcript nothing claimed was labelled with a real project —
+        // which reads as "this project's lane" and is the one thing the row exists not to say.
+        projectName: key === UNATTRIBUTED ? '—' : project?.name ?? projectNameFromSlug(s.slug),
         accent: role?.accent,
         model: s.model, effort: s.effort,
         pinnedEffort: undefined, effortInherited: false,
         tokens: 0, cost: 0, turns: 0, share: 0,
         compactions: 0, reReadTokens: 0, highContextTurns: 0, medianContext: 0,
         toolP50: 0, toolP90: 0, topTool: undefined,
-        sessions: [],
+        sessions: [], lastTsMs: 0,
       }
       if (role) {
         const resolved = resolveAgentConfig(role, project?.defaults)
@@ -127,11 +136,16 @@ export function joinLanes(input: JoinInput): LaneRow[] {
     row.reReadTokens += s.reReadTokens
     row.highContextTurns += s.highContextTurns
     row.sessions.push(s.session)
-    // Latest session wins for the running model/effort and for the context median: a lane's
-    // current configuration is what a tuning decision is made against.
-    if (s.medianContext) row.medianContext = s.medianContext
-    if (s.model) row.model = s.model
-    if (s.effort) row.effort = s.effort
+    // LATEST BY TIME, and it has to be time. `bySession` arrives sorted by TOKENS, so "latest
+    // wins" implemented as last-writer-wins described the BIGGEST session instead — a lane that
+    // ran a long stretch on Opus/xhigh and has since been moved to Sonnet/medium would still be
+    // reported, and argued about, at its old settings.
+    if (s.lastTsMs >= row.lastTsMs) {
+      row.lastTsMs = s.lastTsMs
+      if (s.medianContext) row.medianContext = s.medianContext
+      if (s.model) row.model = s.model
+      if (s.effort) row.effort = s.effort
+    }
     if (t) {
       // The busiest session's distribution represents the lane. Averaging two sessions'
       // percentiles is not a percentile of anything.

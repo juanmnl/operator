@@ -263,14 +263,16 @@ describe('phase, end to end', () => {
     expect(session.effort).toBe('high')
   })
 
-  it('counts compactions, which is a different question from the phase', async () => {
+  it('recovers from repeated boundaries rather than latching', async () => {
+    // The COUNT moved to the usage engine, which is what the Tuning page reads and which spans
+    // the whole window rather than one live session; the tailer's duplicate had no consumer.
+    // What the tailer still owes is the phase, and that it comes back each time.
     const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
-    const { t, session } = await run(
+    const { t } = await run(
       boundary + assistant([{ type: 'text', text: 'a' }])
       + boundary + assistant([{ type: 'text', text: 'b' }]),
     )
-    expect(session.compactions).toBe(2)                     // how often
-    expect(t.liveLanes(() => true)[0].phase).toBe('waiting') // and not right now
+    expect(t.liveLanes(() => true)[0].phase).toBe('waiting')
   })
 
   it('a subagent talking does not end the compaction', async () => {

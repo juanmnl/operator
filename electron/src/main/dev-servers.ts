@@ -18,6 +18,7 @@
 // column says so rather than implying a process was observed holding it.
 
 import type { PsRow, TaggedRow } from './reap'
+import { DEV_SERVER_RE } from './port-alloc'
 
 /** How confident we are about who owns a row, worst to best. The UI orders and warns on this. */
 export type DevServerOwner =
@@ -50,10 +51,10 @@ export interface DevServerRow {
   owner: DevServerOwner
 }
 
-/** Dev-server-shaped commands. Deliberately a short list of the things this app's projects
- *  actually run: a broad "anything with `node` in it" would sweep in the user's editor servers,
- *  language servers and Electron helpers, and this list is a kill button. */
-const DEV_SERVER_RE = /\b(vite|next(?:-server)?|astro|webpack(?:-dev-server)?|nuxt|remix|parcel|rollup|tsx\s+watch|nodemon)\b/
+// `DEV_SERVER_RE` is imported, not redefined. The copy that used to live here had already
+// drifted from the one in `port-alloc.ts` — different alternations on each side — which is how
+// two call sites end up disagreeing about what a dev server is while both look correct.
+
 
 /** Things that look like a dev server and are not one. `--mcp-serve` is Operator's OWN artifact
  *  helper riding on every lane; it carries the full tag set and would otherwise dominate the
