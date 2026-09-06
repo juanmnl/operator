@@ -9,9 +9,10 @@ import Database from 'better-sqlite3'
 import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { operatorDir } from './store'
+import { percentile } from './usage'
 
 // The renderer's own types — see the note in transcript.ts.
-import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent } from '../../../src/shared/types'
+import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent, ToolOutputStats } from '../../../src/shared/types'
 export type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent }
 
 const SCHEMA_VERSION = 1
@@ -125,6 +126,66 @@ export class ChatStore {
       }
     })
     tx(entries)
+  }
+
+
+  /** Tool-output distribution per session, for the Tuning page.
+   *
+   *  THE DISTRIBUTION IS THE FINDING, which is why this returns p50 AND p90 and never a mean. A
+   *  lane at p50 2.1k and p90 96k is not "a bit chatty" — it is one turn in ten swallowing half a
+   *  context window, and a mean of 12k would have described neither turn.
+   *
+   *  Read from the store rather than re-parsed from transcripts: `outputChars` is the ORIGINAL
+   *  length, kept when the output itself was capped at 2000 chars on the way in, so the transcript
+   *  no longer holds it and this table is the only place the true size survives.
+   *
+   *  `ts` is a text column of ISO timestamps, so a lexicographic `>=` against an ISO cutoff is a
+   *  correct range filter — same encoding, same ordering.
+   */
+  toolOutputStats(sinceIso?: string): ToolOutputStats[] {
+    const rows = this.db.prepare(
+      sinceIso
+        ? 'SELECT session_id, tool FROM messages WHERE kind = ? AND tool IS NOT NULL AND ts >= ?'
+        : 'SELECT session_id, tool FROM messages WHERE kind = ? AND tool IS NOT NULL',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).all(...(sinceIso ? ['tool', sinceIso] : ['tool'])) as Array<{ session_id: string; tool: string }>
+
+    const acc = new Map<string, { chars: number[]; total: number; byTool: Map<string, number> }>()
+    for (const row of rows) {
+      let block: { name?: unknown; outputChars?: unknown; output?: unknown }
+      try { block = JSON.parse(row.tool) } catch { continue }
+      // `outputChars` is the true length; `output` is the capped copy. Falling back to the capped
+      // string's length would silently floor every large result at 2000 and erase the p90 this
+      // whole function exists to report.
+      const chars = typeof block.outputChars === 'number'
+        ? block.outputChars
+        : typeof block.output === 'string' ? block.output.length : 0
+      if (chars <= 0) continue
+      const name = typeof block.name === 'string' ? block.name : 'unknown'
+      let a = acc.get(row.session_id)
+      if (!a) { a = { chars: [], total: 0, byTool: new Map() }; acc.set(row.session_id, a) }
+      a.chars.push(chars)
+      a.total += chars
+      a.byTool.set(name, (a.byTool.get(name) ?? 0) + chars)
+    }
+
+    const out: ToolOutputStats[] = []
+    for (const [session, a] of acc) {
+      const sorted = [...a.chars].sort((x, y) => x - y)
+      let topTool: string | undefined
+      let topToolChars = 0
+      for (const [name, c] of a.byTool) if (c > topToolChars) { topTool = name; topToolChars = c }
+      out.push({
+        session,
+        p50: percentile(sorted, 50),
+        p90: percentile(sorted, 90),
+        totalChars: a.total,
+        calls: a.chars.length,
+        topTool,
+        topToolChars,
+      })
+    }
+    return out.sort((x, y) => y.totalChars - x.totalChars)
   }
 
   load(sessionId: string): NarrationEntry[] {

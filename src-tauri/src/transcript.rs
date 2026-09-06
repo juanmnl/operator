@@ -169,6 +169,11 @@ struct Track {
     last_was_user_prompt: bool,
     /// Between a `compact_boundary` record and the next assistant record. See `apply_system`.
     compacting: bool,
+    /// How many boundaries this session has crossed. The phase says "right now"; this says "how
+    /// often", which is the one the Tuning page reads.
+    compactions: u32,
+    /// Effort as the transcript reports it, latest wins — present on every assistant record.
+    effort: Option<String>,
     started_at: Option<String>,
     last_activity_at: String,
     last_phase: String,
@@ -207,6 +212,8 @@ impl Track {
             last_stop_reason: None,
             last_was_user_prompt: false,
             compacting: false,
+            compactions: 0,
+            effort: None,
             started_at: None,
             last_activity_at: now_iso(),
             last_phase: String::new(),
@@ -481,12 +488,26 @@ impl Track {
     fn apply_system(&mut self, v: &Value) {
         if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
             self.compacting = true;
+            self.compactions += 1;
             self.dirty = true;
         }
     }
 
     fn apply_assistant(&mut self, v: &Value, ts: &str) {
         self.last_was_user_prompt = false;
+        // EFFORT AS THE TRANSCRIPT REPORTS IT — a top-level sibling of `timestamp`, not something
+        // inside `message`. Measured across 300 real transcripts: present on 68,972 of 69,022
+        // assistant records. This is the value actually running, so it catches a mid-session
+        // `/effort` that the launch pin cannot. Sidechain records are skipped for the same reason
+        // the model is: a subagent's effort is not the lane's.
+        if !v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) {
+            if let Some(e) = v.get("effort").and_then(|e| e.as_str()) {
+                if self.effort.as_deref() != Some(e) {
+                    self.effort = Some(e.to_string());
+                    self.dirty = true;
+                }
+            }
+        }
         // THE COMPACTION IS OVER once the model speaks again. Guarded on sidechain because a
         // subagent's message says nothing about the main thread's state — the same reason the
         // model field below refuses to be relabelled by a Haiku subagent.
@@ -688,6 +709,7 @@ impl Track {
             if self.usage.output > 0 || self.usage.input > 0 { Some(self.usage) } else { None },
         )
         .with_queued(self.queued.clone())
+        .with_tuning(self.effort.clone(), self.compactions)
     }
 }
 
@@ -1683,6 +1705,68 @@ mod tests {
         // The model speaks: the compaction is over.
         t.apply(&json!({ "type": "assistant", "timestamp": "2026-08-22T17:44:10.000Z",
             "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.phase(), "waiting");
+    }
+
+    /// EFFORT AS THE TRANSCRIPT REPORTS IT. Top-level, a sibling of `timestamp` — not inside
+    /// `message`, which is where a reader would look first and find nothing. Measured across 300
+    /// real transcripts: present on 68,972 of 69,022 assistant records.
+    #[test]
+    fn effort_is_read_from_the_records_top_level() {
+        let mut t = track();
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:00:00.000Z", "effort": "high",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.effort.as_deref(), Some("high"));
+    }
+
+    /// LATEST WINS, which is the whole reason to read it: a mid-session `/effort` is invisible to
+    /// the roster's launch pin and this is the only signal that catches it.
+    #[test]
+    fn effort_follows_a_mid_session_change() {
+        let mut t = track();
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:00:00.000Z", "effort": "high",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T11:00:00.000Z", "effort": "low",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.effort.as_deref(), Some("low"));
+    }
+
+    /// A subagent's effort is not the lane's — the same rule that stops a Haiku subagent
+    /// relabelling an Opus session's model.
+    #[test]
+    fn a_sidechain_records_effort_is_ignored() {
+        let mut t = track();
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:00:00.000Z", "effort": "high",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        t.apply(&json!({ "type": "assistant", "isSidechain": true, "timestamp": "2026-09-05T10:30:00.000Z",
+            "effort": "low", "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.effort.as_deref(), Some("high"));
+    }
+
+    /// A record with no effort leaves the last known value alone rather than clearing it.
+    #[test]
+    fn a_record_without_effort_does_not_erase_it() {
+        let mut t = track();
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:00:00.000Z", "effort": "medium",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T11:00:00.000Z",
+            "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        assert_eq!(t.effort.as_deref(), Some("medium"));
+    }
+
+    /// The COUNT, distinct from the phase: the phase says "right now", this says "how often", and
+    /// the Tuning page reads the second one.
+    #[test]
+    fn compactions_are_counted_not_just_flagged() {
+        let mut t = track();
+        assert_eq!(t.compactions, 0);
+        for _ in 0..3 {
+            t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
+                "timestamp": "2026-09-05T10:00:00.000Z" }));
+            t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-05T10:01:00.000Z",
+                "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        }
+        assert_eq!(t.compactions, 3, "the count survives the phase being cleared each time");
         assert_eq!(t.phase(), "waiting");
     }
 

@@ -201,6 +201,8 @@ export interface ProjectRailProps {
   onOpenFolder: () => void
   onOpenAgents: () => void
   agentsActive?: boolean
+  onOpenTuning: () => void
+  tuningActive?: boolean
   onReorder?: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   /** Right-click a header. The strip REPORTS the anchor and nothing else: it is a clipping
    *  scroller at the window's edge, so a menu parented to a row would be cut off at 70. */
@@ -255,7 +257,7 @@ export interface ProjectRailProps {
 export function ProjectRail({
   collapsed, projects, activities, activeProjectId,
   onOpenProject, onOpenProjectHome, projectHomeActive,
-  onShowGallery, onOpenFolder, onOpenAgents, agentsActive,
+  onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive,
   onReorder, onTileMenu, menuProjectId,
   sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
@@ -612,6 +614,8 @@ export function ProjectRail({
         planLimits={planLimits}
         agentsActive={agentsActive}
         onOpenAgents={onOpenAgents}
+        tuningActive={tuningActive}
+        onOpenTuning={onOpenTuning}
         onShowGallery={onShowGallery}
         onOpenFolder={onOpenFolder}
         project={projects.find((p) => p.id === activeProjectId) ?? null}
@@ -1103,11 +1107,13 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
  *  All eight are present in BOTH states, which is the defect this whole change fixes: ⌘B used to
  *  unmount `Sidebar.tsx`, and with it the theme toggle, Preferences and both `.claude` shortcuts
  *  simply stopped existing. */
-function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
+function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, tuningActive, onOpenTuning, onShowGallery, onOpenFolder, project, activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark, onOpenFolderPrefs, onOpenGlobalPrefs, onOpenPrefs, onToggleTheme, version, update, installState = IDLE, onInstallUpdate }: {
   collapsed: boolean
   planLimits: ReturnType<typeof usePlanLimits>
   agentsActive?: boolean
   onOpenAgents: () => void
+  tuningActive?: boolean
+  onOpenTuning: () => void
   onShowGallery: () => void
   onOpenFolder: () => void
   project: Project | null
@@ -1159,6 +1165,24 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
             <circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
           <circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none" />
         </FootItem>
+        {/* Tuning sits between Agents and the meter, because that row is "views ACROSS projects"
+            and this is one: a lane is tuned against the plan window it shares with every other
+            lane, so it is never scoped to a project. */}
+        <FootItem
+          collapsed={collapsed}
+          attr="data-rail-tuning"
+          label="Tuning"
+          title="Tuning"
+          hint="where the window went, and what to change"
+          active={tuningActive}
+          onClick={onOpenTuning}
+        >
+          {/* Three sliders at different settings — the page is about where the knobs sit. */}
+          <path d="M3 4h10M3 8h10M3 12h10" strokeLinecap="round" />
+          <circle cx="6" cy="4" r="1.5" fill="currentColor" stroke="none" />
+          <circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none" />
+          <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+        </FootItem>
         {/* Needs no session and no project — `claude -p "/usage"` spawns its own short-lived
             process — so it is live at the gallery and on first launch, which is exactly when you
             are deciding what to start.
@@ -1172,6 +1196,7 @@ function RailFoot({ collapsed, planLimits, agentsActive, onOpenAgents, onShowGal
           now={planLimits.now}
           onRefresh={planLimits.refresh}
           onRevalidate={planLimits.revalidate}
+          onOpenTuning={onOpenTuning}
         />
       </FootRow>
       {hairline}

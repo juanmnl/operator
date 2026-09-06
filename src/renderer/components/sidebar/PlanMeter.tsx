@@ -39,7 +39,7 @@ import {
 const R = 5.25
 const STROKE = 1.5
 
-export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, collapsed, label }: {
+export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, collapsed, label, onOpenTuning }: {
   limits: PlanLimits | null
   loading?: boolean
   /** THE FOOT CELL'S OWN SHAPE. This control brings its own button, so it takes the shared cell
@@ -51,6 +51,10 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, colla
   /** The hook's clock. Passed in rather than read here so the age on screen advances with the
    *  same tick that decides whether to re-ask — one clock, or the two disagree. */
   now: number
+  /** THE MOMENT THE QUESTION GETS ASKED. Someone opened this popover because a bar went amber;
+   *  the next thing they want is what is driving it, which is the Tuning page. Optional so the
+   *  meter still renders anywhere this is not wired. */
+  onOpenTuning?: () => void
   /** Explicit refresh — skips the backend's 5-minute TTL. */
   onRefresh: () => void
   /** Re-ask only if the reading has aged out. Fired on open: the popover is the moment someone
@@ -256,6 +260,19 @@ export function PlanMeter({ limits, loading, now, onRefresh, onRevalidate, colla
               }}
             >Refresh</button>
           </div>
+          {onOpenTuning && (
+            <div style={{ display: 'flex', paddingTop: 8 }}>
+              <button
+                data-usage-tuning
+                onClick={onOpenTuning}
+                style={{
+                  border: 'none', background: 'transparent', color: 'var(--accent)',
+                  cursor: 'pointer', outline: 'none', padding: 0,
+                  fontFamily: 'var(--font-body)', fontSize: 11,
+                }}
+              >What&apos;s driving this →</button>
+            </div>
+          )}
         </div>
       )}
     </>

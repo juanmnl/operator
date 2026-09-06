@@ -230,6 +230,36 @@ describe('phase, end to end', () => {
     expect(t.liveLanes(() => true)[0].phase).toBe('compacting')
   })
 
+  // EFFORT AND THE COMPACTION COUNT — the capture the Tuning page reads, and the Rust tailer
+  // carries the identical rules (see `effort_is_read_from_the_records_top_level` and friends).
+  it('reads effort from the record’s TOP level, and follows a mid-session change', async () => {
+    // Top-level, a sibling of `timestamp` — not inside `message`, which is where a reader would
+    // look first and find nothing. Present on 68,972 of 69,022 real assistant records.
+    const { session } = await run(
+      assistant([{ type: 'text', text: 'a' }], { effort: 'high' })
+      + assistant([{ type: 'text', text: 'b' }], { effort: 'low' }),
+    )
+    expect(session.effort).toBe('low')
+  })
+
+  it('ignores a subagent’s effort — it is not the lane’s', async () => {
+    const { session } = await run(
+      assistant([{ type: 'text', text: 'a' }], { effort: 'high' })
+      + assistant([{ type: 'text', text: 'sub' }], { effort: 'low', isSidechain: true }),
+    )
+    expect(session.effort).toBe('high')
+  })
+
+  it('counts compactions, which is a different question from the phase', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t, session } = await run(
+      boundary + assistant([{ type: 'text', text: 'a' }])
+      + boundary + assistant([{ type: 'text', text: 'b' }]),
+    )
+    expect(session.compactions).toBe(2)                     // how often
+    expect(t.liveLanes(() => true)[0].phase).toBe('waiting') // and not right now
+  })
+
   it('a subagent talking does not end the compaction', async () => {
     const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
     const { t } = await run(

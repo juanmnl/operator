@@ -268,6 +268,12 @@ export function installBridge(): void {
     // NOT IMPLEMENTED on the Tauri backend, and empty rather than throwing: an empty list reads
     // correctly as "nothing to show", where the worktree reaper below has to refuse loudly
     // because a silent no-op there looks like a successful cleanup.
+    // NOT IMPLEMENTED on the Tauri backend — the Tuning page's capture is Electron-only. An
+    // empty window reads correctly as "nothing ran", and the page's own empty state says so.
+    getTuning: async (days: number) => ({
+      days, totalTokens: 0, totalCost: 0, bySession: [], byEffort: [],
+      byProject: [], byModel: [], toolOutput: [], generatedAt: new Date().toISOString(),
+    }),
     devServerList: async () => [],
     devServerKill: async () => 0,
     worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),

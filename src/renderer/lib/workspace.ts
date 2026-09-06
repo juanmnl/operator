@@ -23,7 +23,7 @@ import type { SavedSession } from '../../shared/types'
 
 /** What the content area was showing. Mirrors DashboardView's `contentMode`, plus `session`
  *  for "a lane was focused" — which is the one value that cannot be restored as-is. */
-export type WorkspaceMode = 'gallery' | 'project' | 'agents' | 'prefs' | 'globalPrefs' | 'session'
+export type WorkspaceMode = 'gallery' | 'project' | 'agents' | 'tuning' | 'prefs' | 'globalPrefs' | 'session'
 
 export type WorkspaceProjectTab = 'board' | 'team' | 'moodboard'
 

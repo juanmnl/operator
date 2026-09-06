@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -129,6 +129,8 @@ declare global {
        *  never removes anything. */
       /** Every dev-server-shaped process attributable to a project or worktree, with how it was
        *  attributed. Read-only — killing is a separate, explicitly confirmed call. */
+      /** Everything the Tuning page reads, for a 1/7/30-day window, in one call. */
+      getTuning: (days: number) => Promise<TuningData>
       devServerList: () => Promise<DevServerProc[]>
       /** Kill exactly these pids and their descendants. Only ever called after the user has seen
        *  the list and confirmed; returns how many processes were signalled. */

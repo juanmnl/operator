@@ -142,6 +142,11 @@ class Track {
   lastWasUserPrompt = false
   /** Between a `compact_boundary` record and the next assistant record. See `applySystem`. */
   compacting = false
+  /** How many boundaries this session has crossed. The phase says "right now"; this says "how
+   *  often", which is the one the Tuning page reads. */
+  compactions = 0
+  /** Effort as the transcript reports it, latest wins — present on every assistant record. */
+  effort: string | null = null
   lastToolName: string | null = null
   openTools = new Set<string>()
   inSidechain = false
@@ -179,6 +184,8 @@ class Track {
     this.lastStopReason = null
     this.lastWasUserPrompt = false
     this.compacting = false
+    this.compactions = 0
+    this.effort = null
     this.lastToolName = null
     this.openTools.clear()
     this.inSidechain = false
@@ -378,6 +385,7 @@ class Track {
   private applySystem(v: Record<string, unknown>): void {
     if (v.subtype === 'compact_boundary') {
       this.compacting = true
+      this.compactions += 1
       this.dirty = true
     }
   }
@@ -387,7 +395,18 @@ class Track {
     // THE COMPACTION IS OVER once the model speaks again. Guarded on sidechain because a
     // subagent's message says nothing about the main thread's state — the same reason the model
     // below refuses to be relabelled by a subagent.
-    if (v.isSidechain !== true) this.compacting = false
+    if (v.isSidechain !== true) {
+      this.compacting = false
+      // EFFORT AS THE TRANSCRIPT REPORTS IT — a top-level sibling of `timestamp`, not something
+      // inside `message`. Measured across 300 real transcripts: present on 68,972 of 69,022
+      // assistant records. The value actually running, so it catches a mid-session `/effort` the
+      // launch pin never hears about. Sidechain-guarded for the same reason the model is: a
+      // subagent's effort is not the lane's.
+      if (typeof v.effort === 'string' && v.effort && this.effort !== v.effort) {
+        this.effort = v.effort
+        this.dirty = true
+      }
+    }
     const msg = v.message as Record<string, unknown> | undefined
     if (!msg) return
     this.lastStopReason = typeof msg.stop_reason === 'string' ? msg.stop_reason : null
@@ -531,6 +550,9 @@ class Track {
       permissionMode: this.track.permissionMode ?? undefined,
       model: this.model ?? undefined,
       usage: this.usage,
+      effort: this.effort ?? undefined,
+      // Zero is the ordinary case and would ride on every payload; absent says the same thing.
+      compactions: this.compactions || undefined,
     }
   }
 }

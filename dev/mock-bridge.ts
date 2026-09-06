@@ -504,6 +504,42 @@ export function installMockBridge() {
     getSessions: async () => (empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_SESSIONS : MOCK_SESSIONS),
     // Shape-exact with ChatStore::replies — including `id`, the content-hash PK a delivery
     // outcome is keyed to. A fixture missing it would let the feed's fold silently no-op.
+    // A window with the shape the Tuning page argues about: one lane well over the card's 25%
+    // threshold with a step available, a second lane, and an unattributed transcript so the
+    // "Not attributed" row and the shares-still-sum rule are both exercised.
+    getTuning: async (days: number) => ({
+      days, totalTokens: 21_600_000, totalCost: 128.4,
+      generatedAt: new Date().toISOString(),
+      bySession: [
+        { session: 's-code', slug: '-Users-dev-operator', model: 'claude-opus-4-20250514', effort: 'xhigh',
+          tokens: 12_400_000, cost: 74.1, turns: 41, highContextTurns: 12, medianContext: 96_000,
+          compactions: 3, reReadTokens: 64_000, droppedTokens: 2_400_000, firstTsMs: 0, lastTsMs: 2 },
+        { session: 's-research', slug: '-Users-dev-operator', model: 'claude-sonnet-4-20250514', effort: 'high',
+          tokens: 5_800_000, cost: 31.2, turns: 63, highContextTurns: 2, medianContext: 41_000,
+          compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 1 },
+        { session: 's-stranger', slug: '-Users-dev-elsewhere', model: 'claude-opus-4-20250514',
+          tokens: 3_400_000, cost: 23.1, turns: 18, highContextTurns: 1, medianContext: 22_000,
+          compactions: 1, reReadTokens: 18_000, droppedTokens: 900_000, firstTsMs: 0, lastTsMs: 3 },
+      ],
+      byEffort: [
+        { session: 's-code', model: 'claude-opus-4-20250514', effort: 'xhigh', tokens: 12_400_000, cost: 74.1, turns: 41 },
+        { session: 's-research', model: 'claude-sonnet-4-20250514', effort: 'high', tokens: 5_800_000, cost: 31.2, turns: 63 },
+      ],
+      byProject: [
+        { slug: '-Users-dev-operator', name: 'operator', cost: 105.3, tokens: 18_200_000, messages: 104 },
+        { slug: '-Users-dev-elsewhere', name: 'elsewhere', cost: 23.1, tokens: 3_400_000, messages: 18 },
+      ],
+      byModel: [
+        { model: 'claude-opus-4-20250514', inputTokens: 210_000, outputTokens: 180_000,
+          cacheWriteTokens: 1_900_000, cacheReadTokens: 13_500_000, cost: 97.2, messages: 59 },
+        { model: 'claude-sonnet-4-20250514', inputTokens: 480_000, outputTokens: 90_000,
+          cacheWriteTokens: 900_000, cacheReadTokens: 4_300_000, cost: 31.2, messages: 63 },
+      ],
+      toolOutput: [
+        { session: 's-code', p50: 2100, p90: 96_000, totalChars: 4_200_000, calls: 380, topTool: 'Bash', topToolChars: 2_900_000 },
+        { session: 's-research', p50: 1400, p90: 8200, totalChars: 640_000, calls: 210, topTool: 'Grep', topToolChars: 300_000 },
+      ],
+    }),
     projectReplies: async (projectId: string) => replyRows.get(projectId) ?? [],
     terminalList: async () => {
       const list = empty || tz || (solo && !soloLive) ? [] : soloLive ? SOLO_TERMINALS : MOCK_TERMINALS

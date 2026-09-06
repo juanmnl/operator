@@ -146,6 +146,19 @@ pub struct AgentSession {
     /// Cumulative token usage for the session (absent until the first assistant turn).
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<TokenUsage>,
+    /// Effort as the TRANSCRIPT reports it — a top-level field on every assistant record, and so
+    /// the value actually running. Distinct from the launch pin, which a mid-session `/effort`
+    /// silently leaves behind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    /// `compact_boundary` records seen on this session. Zero is the ordinary case, so it is
+    /// skipped rather than shipped on every payload.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    compactions: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 pub fn now_iso() -> String {
@@ -318,7 +331,18 @@ impl AgentSession {
             permission_mode,
             model,
             usage,
+            effort: None,
+            compactions: 0,
         }
+    }
+
+    /// What the session is actually running, and how often it has had to compact. A builder for
+    /// the same reason `with_queued` is one: only the tailer sets these, the constructor already
+    /// takes sixteen arguments, and both are absent on most payloads.
+    pub fn with_tuning(mut self, effort: Option<String>, compactions: u32) -> AgentSession {
+        self.effort = effort;
+        self.compactions = compactions;
+        self
     }
 
     /// Attach the prompts the TUI queued (see the field). A builder rather than a 17th

@@ -107,6 +107,12 @@ export interface AgentSession {
   summary?: string
   status: SessionStatus
   phase: SessionPhase
+  /** Effort as the TRANSCRIPT reports it — the value actually running, which a mid-session
+   *  `/effort` changes and the roster's launch pin does not know about. Distinct from
+   *  `SavedSession.effortLevel`, which is the pin. */
+  effort?: string
+  /** `compact_boundary` records seen on this session so far. */
+  compactions?: number
   activity: ActivityEntry[]
   /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
   messages?: NarrationEntry[]
@@ -786,6 +792,93 @@ export interface UsageStats {
   byDay: DayUsage[]
   /** ISO start of the window, if filtered. */
   since?: string
+  generatedAt: string
+}
+
+// ── Tuning ───────────────────────────────────────────────────────────────────────────────────
+//
+// What the Tuning page reads. Design: `dev/results/usage-view-design.md`.
+//
+// The rule the shapes obey: every field is next to a change it argues for, or it admits it has no
+// knob. The two knobs the app actually owns are a role's model and effort (RosterPanel) and its
+// charter (`Role.prompt`) — so the page reports per LANE, and a number that cannot reach one of
+// those is either omitted or explicitly labelled as having no control behind it.
+//
+// TOKENS ARE THE HEADLINE. `cost` rides along once per row for a sanity check and is rendered
+// muted; nothing ranks or decides on it.
+
+/** One transcript session's usage, keyed by the Claude session uuid — which is exactly
+ *  `SavedSession.claudeSessionId`, so the lane join is a lookup and not new capture. */
+export interface SessionUsage {
+  /** Claude session uuid (the transcript filename stem). */
+  session: string
+  /** The `~/.claude/projects` directory name — a path slug, the fallback join when the uuid has
+   *  rolled on a resumed lane. */
+  slug: string
+  /** Latest model seen on this session's records. */
+  model: string
+  /** Effort as the TRANSCRIPT reports it, per record — the real running value, including a
+   *  mid-session `/effort`. Distinct from the roster's launch pin, and the reason the two can be
+   *  shown disagreeing rather than the page quietly trusting the pin. */
+  effort?: string
+  tokens: number
+  cost: number
+  /** Assistant records counted (deduped by message id, like every other total here). */
+  turns: number
+  /** Turns whose context exceeded 150k. */
+  highContextTurns: number
+  /** Median per-turn context. A median and not a mean: one 900k turn should not describe a lane. */
+  medianContext: number
+  /** `compact_boundary` records in the window. */
+  compactions: number
+  /** Context rebuilt after those boundaries — the sum of `postTokens`, i.e. what the model has to
+   *  read again. Its sibling `droppedTokens` is what was thrown away. */
+  reReadTokens: number
+  droppedTokens: number
+  firstTsMs: number
+  lastTsMs: number
+}
+
+/** Tokens for one (session, model, effort) triple — the grouping the page's lane table needs to
+ *  show a lane that changed effort mid-window as two rows rather than one averaged lie. */
+export interface EffortUsage {
+  session: string
+  model: string
+  effort: string
+  tokens: number
+  cost: number
+  turns: number
+}
+
+/** Tool-output distribution for one session, from `chat.db`'s persisted `tool` blocks.
+ *
+ *  p50 AND p90, never a mean: the distribution is the finding. A lane at p50 2.1k and p90 96k is
+ *  not "a bit chatty" — it is one turn in ten swallowing half a context window, and a mean of 12k
+ *  would have described neither turn. */
+export interface ToolOutputStats {
+  session: string
+  p50: number
+  p90: number
+  /** Total characters of tool output recorded for the session. */
+  totalChars: number
+  calls: number
+  /** The tool responsible for the most characters, and how many. */
+  topTool?: string
+  topToolChars: number
+}
+
+/** Everything the Tuning page reads, in one call. One IPC rather than four, because the page
+ *  renders as a whole and four round trips would let it paint four inconsistent windows. */
+export interface TuningData {
+  /** Days in the window: 1, 7 or 30. */
+  days: number
+  totalTokens: number
+  totalCost: number
+  bySession: SessionUsage[]
+  byEffort: EffortUsage[]
+  byProject: ProjectUsage[]
+  byModel: ModelUsage[]
+  toolOutput: ToolOutputStats[]
   generatedAt: string
 }
 

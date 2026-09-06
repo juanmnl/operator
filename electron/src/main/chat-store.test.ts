@@ -417,3 +417,66 @@ describe('the one-time injected-row purge', () => {
     again.close()
   })
 })
+
+describe('toolOutputStats — the tool-output distribution the Tuning page reads', () => {
+  /** A store of its own per test: these assert on ORDER and totals across sessions, so a shared
+   *  store would have every earlier test's rows in the answer. */
+  let n = 0
+  const fresh = () => new ChatStore(join(SANDBOX, `tools-${n++}.db`))
+
+  const tool = (name: string, outputChars: number, output = 'x') =>
+    ({ kind: 'tool' as const, text: `${name} run`, timestamp: '2026-09-05T10:00:00.000Z',
+       tool: { name, target: 't', caller: 'lead', id: `tu${outputChars}`, output, outputChars } })
+
+  it('reports p50 and p90 rather than a mean — the distribution is the finding', () => {
+    const store = fresh()
+    // Nine small results and one enormous one: a mean of ~11.5k would describe neither.
+    const entries = [...Array(9)].map((_, i) => tool('Bash', 2100 + i))
+    entries.push(tool('Bash', 96_000))
+    store.append('s1', entries.map((e, i) => [i, e] as [number, typeof e]))
+    const [s] = store.toolOutputStats()
+    expect(s.calls).toBe(10)
+    expect(s.p50).toBe(2104)
+    expect(s.p90).toBe(2108)
+    expect(s.totalChars).toBeGreaterThan(96_000)
+  })
+
+  it('uses outputChars and NOT the capped output string', () => {
+    // The store caps `output` at 2000 chars on the way in, so measuring the string would floor
+    // every large result and erase the p90 this function exists to report.
+    const store = fresh()
+    store.append('s1', [[0, tool('Bash', 71_194, 'x'.repeat(2000))]])
+    expect(store.toolOutputStats()[0].p50).toBe(71_194)
+  })
+
+  it('names the tool responsible for the most characters', () => {
+    const store = fresh()
+    store.append('s1', [[0, tool('Read', 1000)], [1, tool('Bash', 50_000)], [2, tool('Read', 2000)]])
+    const [s] = store.toolOutputStats()
+    expect(s.topTool).toBe('Bash')
+    expect(s.topToolChars).toBe(50_000)
+  })
+
+  it('keeps sessions apart and orders by total characters', () => {
+    const store = fresh()
+    store.append('s1', [[0, tool('Bash', 100)]])
+    store.append('s2', [[0, tool('Bash', 9000)]])
+    expect(store.toolOutputStats().map((s) => s.session)).toEqual(['s2', 's1'])
+  })
+
+  it('ignores non-tool turns and zero-length output', () => {
+    const store = fresh()
+    store.append('s1', [
+      [0, { kind: 'text', text: 'prose', timestamp: '2026-09-05T10:00:00.000Z' }],
+      [1, tool('Bash', 0)],
+    ])
+    expect(store.toolOutputStats()).toEqual([])
+  })
+
+  it('filters by the window, since `ts` is ISO text and sorts lexicographically', () => {
+    const store = fresh()
+    store.append('s1', [[0, { ...tool('Bash', 5000), timestamp: '2026-08-01T10:00:00.000Z' }]])
+    store.append('s2', [[0, { ...tool('Bash', 5000), timestamp: '2026-09-05T10:00:00.000Z' }]])
+    expect(store.toolOutputStats('2026-09-01T00:00:00.000Z').map((s) => s.session)).toEqual(['s2'])
+  })
+})

@@ -38,6 +38,7 @@ import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { announcement, canAnnounceTo } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
+import { TuningView } from '../components/tuning/TuningView'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
@@ -182,6 +183,7 @@ export function DashboardView() {
   const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
+  const [tuningViewActive, setTuningViewActive] = useState(false)
   const [prefsViewActive, setPrefsViewActive] = useState(false)
   // WHERE YOU ARE. The durable navigation scope: null = at the gallery (outside every
   // project), set = inside that project — the sidebar is scoped to it and it SURVIVES
@@ -565,7 +567,7 @@ export function DashboardView() {
 
   const handleOpenGlobalPrefs = useCallback(() => {
     setGlobalPrefsActive(true)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -581,9 +583,19 @@ export function DashboardView() {
     setActiveTerminalId(null)
   }, [])
 
+  const handleOpenTuning = useCallback(() => {
+    setTuningViewActive(true)
+    setAgentsViewActive(false)
+    setPrefsViewActive(false)
+    setGlobalPrefsActive(false)
+    setActiveFolderPrefs(null)
+    setActiveSessionId(null)
+    setActiveTerminalId(null)
+  }, [])
+
   const handleOpenPrefs = useCallback(() => {
     setPrefsViewActive(true)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -625,7 +637,7 @@ export function DashboardView() {
    *  that costs a process, a worktree and a dev port. */
   const handleOpenProject = useCallback((projectId: string) => {
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveProjectId((prev) => {
@@ -662,7 +674,7 @@ export function DashboardView() {
   const handleOpenProjectHome = useCallback(() => {
     setProjectTab('board')
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -690,7 +702,7 @@ export function DashboardView() {
   const handleOpenProjectTeam = useCallback(() => {
     setProjectTab('team')
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -712,7 +724,7 @@ export function DashboardView() {
   // path that clears scope; it stops nothing, the agents keep running (spec §4 rule 3).
   const handleShowGallery = useCallback(() => {
     setPrefsViewActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
@@ -2524,7 +2536,7 @@ export function DashboardView() {
     if (!tab) return false
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     setActiveTerminalId(terminalId)
     const hook = sessions.find((s) => s.terminalId === terminalId)
@@ -2752,7 +2764,7 @@ export function DashboardView() {
     upsertProject(proj, { intent: 'user' }) // clicked a dormant session (or Resume project)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
   }, [rememberRecent, upsertProject])
 
@@ -2925,7 +2937,7 @@ export function DashboardView() {
     setActiveSessionId(session.id)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     // The single rule that keeps every entry point honest — ⌘1-9, the ⌘K palette, a toast,
     // the Agents hub, a restore: selecting a session scopes you to its project, so you can
@@ -2967,7 +2979,7 @@ export function DashboardView() {
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setGlobalPrefsActive(false)
-    setAgentsViewActive(false)
+    setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
   }, [])
 
@@ -3715,9 +3727,10 @@ export function DashboardView() {
   }, [activeSession?.terminalId])
 
   // Single source of truth for content area routing. Order = priority.
-  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
+  const contentMode: 'folderPrefs' | 'globalPrefs' | 'agents' | 'tuning' | 'prefs' | 'localTerminal' | 'project' | 'gallery' = useMemo(() => {
     if (prefsViewActive) return 'prefs'
     if (agentsViewActive) return 'agents'
+    if (tuningViewActive) return 'tuning'
     if (globalPrefsActive) return 'globalPrefs'
     if (activeFolderPrefs) return 'folderPrefs'
     // Only 'localTerminal' if the active id still refers to a live terminal — a
@@ -3728,7 +3741,7 @@ export function DashboardView() {
     // Inside a project with no session focused → Project Home, which is the board.
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
-  }, [prefsViewActive, agentsViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
+  }, [prefsViewActive, agentsViewActive, tuningViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
 
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean
@@ -3825,6 +3838,7 @@ export function DashboardView() {
     setProjectTab(plan.projectTab)
     setPrefsViewActive(plan.mode === 'prefs')
     setAgentsViewActive(plan.mode === 'agents')
+    setTuningViewActive(plan.mode === 'tuning')
     setGlobalPrefsActive(plan.mode === 'globalPrefs')
 
     void (async () => {
@@ -4023,6 +4037,7 @@ export function DashboardView() {
     actions.push(
       { id: 'new-session', group: 'New', label: 'New session (pick folder)', hint: '⌘N', run: handleNewSession },
       { id: 'agents', group: 'Settings', label: 'Agents — fleet across all projects', run: handleOpenAgents },
+      { id: 'tuning', group: 'Settings', label: 'Tuning — where the window went', run: handleOpenTuning },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
       { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
       { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
@@ -4054,7 +4069,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -4210,6 +4225,8 @@ export function DashboardView() {
         onOpenFolder={handleNewSession}
         onOpenAgents={handleOpenAgents}
         agentsActive={contentMode === 'agents'}
+        tuningActive={contentMode === 'tuning'}
+        onOpenTuning={handleOpenTuning}
         onReorder={handleReorderProject}
         onTileMenu={(projectId, anchor) => setRailMenu({ projectId, ...anchor })}
         menuProjectId={railMenu?.projectId ?? null}
@@ -4326,6 +4343,25 @@ export function DashboardView() {
             projectName="Global Claude Files"
             globalOnly
           />
+          </AppShell>
+        )}
+
+        {contentMode === 'tuning' && (
+          <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
+            <TuningView
+              projects={projects}
+              saved={savedSessions}
+              // The whole point of the card and of every Roster button: land on the team tab of
+              // the project whose lane is being argued about. The role is not preselected —
+              // nothing in `ProjectView` takes a role to focus, and inventing that plumbing for
+              // a scroll target is more than this earns.
+              onOpenRoster={(projectId) => {
+                if (projectId && projects.some((x) => x.id === projectId)) {
+                  setActiveProjectId(projectId)
+                  handleOpenProjectTeam()
+                } else handleShowGallery()
+              }}
+            />
           </AppShell>
         )}
 

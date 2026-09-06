@@ -22,7 +22,7 @@ import * as agents from './agents'
 import * as wt from './worktree'
 import * as moodboard from './moodboard'
 import { fetchPlanLimits } from './plan-limits'
-import { computeUsage, computeInsights } from './usage'
+import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
@@ -296,6 +296,15 @@ export function registerIpc(d: Deps): void {
     // gallery showed "v43.4.1". The SHELL's package.json is the source, and it is what the
     // packager stamps into Info.plist, so dev and packaged agree. (Reading the repo root
     // instead would report the Tauri app's version, which is a different number.)
+    // ONE CALL for the whole Tuning page. The transcript scan and the chat.db query are joined
+    // HERE rather than in the renderer so both halves describe the same window — two round trips
+    // over a 30-day window would let transcripts land between them and the page paint two.
+    getTuning: async (days) => {
+      const n = Number(days) || 7
+      const core = await computeTuning(n)
+      const since = n > 0 ? new Date(Date.now() - n * 86_400_000).toISOString() : undefined
+      return { ...core, toolOutput: d.chat.toolOutputStats(since) }
+    },
     getUsageStats: (days) => computeUsage(days ?? 0),
     getUsageInsights: (days) => computeInsights(days ?? 0),
     checkUpdate: () => checkUpdate(),

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — Tuning page harness</title>
+    <style>
+      html, body { margin: 0; background: var(--bg-app, #0b0d10); }
+    </style>
+  </head>
+  <body>
+    <!-- Renders the REAL TuningView against the mock bridge's fixture window, so a headless
+         WebKit screenshot shows what the page actually draws. Serves the one check `tsc` cannot:
+         that every section renders, in the production palette, from the real component.
+         Driven by scripts/visual/capture.mjs --page tuning --sel "#tuning". -->
+    <div id="tuning"></div>
+    <script type="module" src="./tuning-harness.tsx"></script>
+  </body>
+</html>
