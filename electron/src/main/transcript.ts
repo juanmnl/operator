@@ -62,6 +62,9 @@ async function findTranscript(sessionId: string): Promise<string | null> {
  *  and nobody is typing" rather than "nothing happened this instant".
  *
  *  Mirrors `derive_phase` in src-tauri/src/transcript.rs, argument for argument. */
+/** How long a lane may claim to be compacting before the claim is dropped. See `phase`. */
+export const COMPACTING_CEILING_MS = 5 * 60_000
+
 export function derivePhase(
   runningTools: boolean,
   lastStopReason: string | null,
@@ -140,8 +143,10 @@ class Track {
   lastUsageMsgId: string | null = null
   lastStopReason: string | null = null
   lastWasUserPrompt = false
-  /** Between a `compact_boundary` record and the next assistant record. See `applySystem`. */
+  /** Between a `compact_boundary` record and the next REAL record. See `applySystem`. */
   compacting = false
+  /** When the boundary landed, for the ceiling below. */
+  compactingSinceMs = 0
   /** How many boundaries this session has crossed. The phase says "right now"; this says "how
    *  often", which is the one the Tuning page reads. */
   compactions = 0
@@ -171,7 +176,18 @@ class Track {
 
   get sessionId(): string { return this.track.claudeSessionId }
 
-  phase(): string { return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting) }
+  /** A CEILING on the compacting phase, because the record that ends it may never arrive.
+   *
+   *  A compaction takes seconds to a couple of minutes (the longest measured in a real transcript
+   *  was 134s of `durationMs`). Five minutes is comfortably past that, so a lane still claiming
+   *  to compact after it is a lane whose closing record never came — and reporting `compacting`
+   *  forever is worse than falling back to what the transcript otherwise says, because the rest
+   *  of the app refuses to talk to a compacting lane. */
+  phase(): string {
+    const stuck = this.compacting && this.compactingSinceMs > 0
+      && Date.now() - this.compactingSinceMs > COMPACTING_CEILING_MS
+    return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting && !stuck)
+  }
 
   /** Drop everything DERIVED from the transcript, keeping the track's identity. Called when the
    *  file is re-read from the start, so the rebuilt state describes the file that exists now. */
@@ -184,6 +200,7 @@ class Track {
     this.lastStopReason = null
     this.lastWasUserPrompt = false
     this.compacting = false
+    this.compactingSinceMs = 0
     this.compactions = 0
     this.effort = null
     this.lastToolName = null
@@ -357,6 +374,8 @@ class Track {
     if (text == null) return
     this.lastWasUserPrompt = true
     this.lastStopReason = null
+    // A REAL prompt ends the compaction. The re-prime does not — see `endCompaction`.
+    if (v.isSidechain !== true) this.endCompaction(v)
     const injected = isInjectedTurn(text)
     // The summary is the FIRST real prompt. An injected turn must not claim it, or every
     // session is titled with Operator's own dev-server preamble.
@@ -382,9 +401,31 @@ class Track {
    *  (measured, not assumed) is a `user` record re-priming the compacted context, then
    *  attachments, and only then the assistant. So the window this flag covers is the model coming
    *  back with a rebuilt context, which is the part the user actually sits through. */
+  /** THE COMPACTION IS OVER once a real main-thread record follows the boundary.
+   *
+   *  It used to be cleared by exactly one thing — a non-sidechain assistant record — and nothing
+   *  else: not a user prompt, not the end of the turn, not the pty going quiet, not the session
+   *  ending. Type `/compact` at the end of a turn and walk away and Claude Code writes the
+   *  boundary and waits, so no assistant record ever follows and the lane sits in `compacting`
+   *  indefinitely. That is not cosmetic: `canAnnounceTo` refuses a compacting lane, so it
+   *  silently stops receiving dispatches, and `BUSY` includes it, so closing it prompts.
+   *
+   *  The re-prime is EXCLUDED because it is part of the compaction, not the end of it: Claude
+   *  Code writes `type:"user", isCompactSummary:true` immediately after the boundary (verified in
+   *  a real transcript), followed by `attachment` records, and only then the assistant. Clearing
+   *  on the re-prime would make the phase last one record and never be seen. */
+  private endCompaction(v: Record<string, unknown>): void {
+    if (!this.compacting) return
+    if (v.isCompactSummary === true) return
+    this.compacting = false
+    this.compactingSinceMs = 0
+    this.dirty = true
+  }
+
   private applySystem(v: Record<string, unknown>): void {
     if (v.subtype === 'compact_boundary') {
       this.compacting = true
+      this.compactingSinceMs = Date.now()
       this.compactions += 1
       this.dirty = true
     }
@@ -396,7 +437,7 @@ class Track {
     // subagent's message says nothing about the main thread's state — the same reason the model
     // below refuses to be relabelled by a subagent.
     if (v.isSidechain !== true) {
-      this.compacting = false
+      this.endCompaction(v)
       // EFFORT AS THE TRANSCRIPT REPORTS IT — a top-level sibling of `timestamp`, not something
       // inside `message`. Measured across 300 real transcripts: present on 68,972 of 69,022
       // assistant records. The value actually running, so it catches a mid-session `/effort` the

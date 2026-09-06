@@ -276,3 +276,24 @@ export function clearCoordinatorWorktree(p: Project): Project {
   })
   return changed ? { ...p, roster: next } : p
 }
+
+/** The two launch options Remote Control needs, resolved from the roster.
+ *
+ *  ONE FUNCTION AND TWO CALLERS, because two callers with a copy each is exactly how this broke:
+ *  the launch path resolved it and the RESTORE path did not, so every restored lane fell through
+ *  to `false` — including the coordinator, which is the one lane the feature exists for, and a
+ *  restore is the ordinary way a coordinator comes back.
+ *
+ *  The name carries the PROJECT because "operator" alone is indistinguishable across six of them
+ *  on a phone. */
+export function remoteControlLaunch(
+  project: Project | undefined,
+  roleId: string | undefined,
+): { remoteControl: boolean; remoteControlName?: string } {
+  const role = roleId ? project?.roster?.find((r) => r.id === roleId) : undefined
+  if (!role) return { remoteControl: false }
+  const on = resolveAgentConfig(role, project?.defaults).remoteControl
+  return on
+    ? { remoteControl: true, remoteControlName: `${project?.name ?? 'Operator'} · ${role.name}` }
+    : { remoteControl: false }
+}

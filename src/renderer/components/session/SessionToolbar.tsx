@@ -7,6 +7,7 @@ import { TOOLBAR_BAND_H } from '../../lib/chrome'
 import { EFFORT_OPTIONS } from '../../lib/effort'
 import { ROSTER_MODELS, modelFamilyLabel } from '../../lib/roster'
 import { effortCommand, modelCommand, normalizeModelId } from '../../lib/lane-tuning'
+import { submitQueue } from '../../lib/submit-queue'
 
 const TYPE_VARS: Record<string, string> = {
   stdio: 'var(--mcp-stdio)',
@@ -68,6 +69,8 @@ interface SessionToolbarProps {
   effortLevel?: EffortLevel | null
   /** Alias or full transcript id; the chip renders the family label either way. */
   model?: string | null
+  /** The lane's phase. The chips are live only at `idle` — see `tunable`. */
+  phase?: string | null
   /** Persist the pick back onto the session so the chip survives a tab switch. Absent = the
    *  chips render as static badges, which is what a lane with no live pty gets. */
   onModelChange?: (model: string) => void
@@ -86,7 +89,7 @@ interface SessionToolbarProps {
   onToggleSidebar?: () => void
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -102,8 +105,16 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
   // point release on its own, so a routine version bump costs us nothing.
   const [customModel, setCustomModel] = useState(false)
   const [customModelId, setCustomModelId] = useState('')
-  // Tuning writes to a pty. Without one there is nothing to tune, and the chips stay read-outs.
-  const tunable = !!terminalId && !!onEffortChange
+  // TUNING WRITES A TYPED LINE INTO A LIVE PTY, so it is offered only when the lane is idle.
+  //
+  // Mid-turn, that line does not become a command: Claude Code queues it as a message, or — if
+  // the lane is sitting on a permission prompt — the bare CR answers the prompt. Either way the
+  // chip would have claimed a change that did not happen, and the second is a keystroke landing
+  // on a question the user has not read. `idle` is the one phase where a typed line is what it
+  // looks like.
+  const live = !!terminalId && !!onEffortChange
+  const tunable = live && phase === 'idle'
+  const waitTitle = 'Wait for the lane to finish its turn'
 
   useEffect(() => {
     // Only read from disk if no prop was provided
@@ -144,20 +155,28 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
     if (menu !== 'model') { setCustomModel(false); setCustomModelId('') }
   }, [menu])
 
+  // PERSIST ONLY AFTER THE WRITE IS ISSUED. Setting the chip first and writing second made the
+  // toolbar assert a value the lane might never have been told about; now the optimistic update
+  // and the durable one both hang off the write actually going out.
   const pickEffort = (level: EffortLevel) => {
-    setEffortLevel(level)
-    if (terminalId) window.operator.terminalWrite(terminalId, effortCommand(level))
-    onEffortChange?.(level)
+    if (!tunable || !terminalId) return
+    void submitQueue.submitTyped(terminalId, effortCommand(level)).then(() => {
+      setEffortLevel(level)
+      onEffortChange?.(level)
+    })
   }
 
   const pickModel = (id: string) => {
-    setModel(id)
-    if (terminalId) window.operator.terminalWrite(terminalId, modelCommand(id))
-    onModelChange?.(id)
+    if (!tunable || !terminalId) return
+    void submitQueue.submitTyped(terminalId, modelCommand(id)).then(() => {
+      setModel(id)
+      onModelChange?.(id)
+    })
   }
 
-  // A hand-typed id goes out exactly like a preset, once it survives the guard. A refusal
-  // closes the menu without sending — see lib/lane-tuning for what it refuses and why.
+  // ENTER COMMITS; BLUR DISCARDS. It used to commit on blur too, which sent a HALF-TYPED id to
+  // the pty on every way of leaving the field — clicking elsewhere, tabbing, the menu closing —
+  // and `/model son` is a command the lane acts on. Enter is the only deliberate commit.
   const commitCustomModel = () => {
     const id = normalizeModelId(customModelId)
     setMenu(null)
@@ -365,15 +384,19 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
 
               A chip with no live pty behind it stays a badge, exactly as it rendered before —
               nothing to write to, so nothing to click. */}
-          {tunable ? (
+          {live ? (
             <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
               <button
+                data-popmenu-trigger="model"
+                aria-expanded={menu === 'model'}
+                aria-haspopup="menu"
+                disabled={!tunable}
                 onClick={() => setMenu(menu === 'model' ? null : 'model')}
-                title="Model for this lane — sends /model to its terminal"
+                title={tunable ? 'Model for this lane — sends /model to its terminal' : waitTitle}
                 style={{
                   ...chipBase,
                   background: menu === 'model' ? 'var(--overlay-subtle)' : 'transparent',
-                  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                  color: 'var(--fg-muted)', cursor: tunable ? 'pointer' : 'default', outline: 'none',
                 }}
               >
                 {model ? modelFamilyLabel(model) : 'Model'}
@@ -396,8 +419,14 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
                         autoFocus
                         value={customModelId}
                         onChange={(e) => setCustomModelId(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') commitCustomModel() }}
-                        onBlur={commitCustomModel}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitCustomModel()
+                          // Escape closes without sending — the menu's own dismissal contract.
+                          else if (e.key === 'Escape') { setMenu(null) }
+                        }}
+                        // BLUR DISCARDS. Committing here sent a half-typed id on every way of
+                        // leaving the field, and `/model son` is a command the lane acts on.
+                        onBlur={() => { setCustomModel(false); setCustomModelId('') }}
                         placeholder="model id or alias"
                         style={{
                           width: '100%', boxSizing: 'border-box', padding: '5px 7px',
@@ -415,15 +444,19 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
             <span style={{ ...chipBase, color: 'var(--fg-muted)' }}>{modelFamilyLabel(model)}</span>
           )}
 
-          {tunable ? (
+          {live ? (
             <div style={{ position: 'relative', display: 'flex', flexShrink: 0 }}>
               <button
+                data-popmenu-trigger="effort"
+                aria-expanded={menu === 'effort'}
+                aria-haspopup="menu"
+                disabled={!tunable}
                 onClick={() => setMenu(menu === 'effort' ? null : 'effort')}
-                title="Reasoning effort for this lane — sends /effort to its terminal"
+                title={tunable ? 'Reasoning effort for this lane — sends /effort to its terminal' : waitTitle}
                 style={{
                   ...chipBase,
                   background: menu === 'effort' ? 'var(--overlay-subtle)' : 'transparent',
-                  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+                  color: 'var(--fg-muted)', cursor: tunable ? 'pointer' : 'default', outline: 'none',
                   textTransform: effortLevel ? 'capitalize' : 'none',
                 }}
               >

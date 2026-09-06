@@ -900,3 +900,39 @@ describe('clearComposerSequence', () => {
     expect(composerLines('one\n')).toBe(2)
   })
 })
+
+// Blocker/medium 5: the toolbar's `/model` and `/effort` writes used to go straight to
+// `terminalWrite`, so a chip pressed while a dispatch paste was in flight could interleave a bare
+// CR into it — which submits the half-pasted prompt.
+describe('submitTyped — a slash command, in the same chain as a paste', () => {
+  it('writes a TYPED line, never the bracketed-paste sequence', async () => {
+    const writes: Array<[string, string]> = []
+    const q = createSubmitQueue({ write: (id, d) => writes.push([id, d]), onUndelivered: () => {} })
+    await q.submitTyped('t1', '/effort high\r')
+    expect(writes).toEqual([['t1', '/effort high\r\r']])
+    expect(writes[0][1]).not.toContain('\x1b[200~')
+  })
+
+  it('SERIALIZES with a paste on the same terminal, so a CR cannot land mid-paste', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, d) => writes.push(d), onUndelivered: () => {} })
+    const a = q.submit('t1', 'a long dispatch')
+    const b = q.submitTyped('t1', '/model opus\r')
+    await Promise.all([a, b])
+    // The paste is written WHOLE before the typed line begins — which is the property that
+    // matters. (A rescue CR from the paste's own watchdog may sit between them; that belongs to
+    // the paste, and it is precisely what must not land *inside* it.)
+    const paste = writes.findIndex((w) => w.includes('\x1b[200~'))
+    const typed = writes.findIndex((w) => w.startsWith('/model opus'))
+    expect(paste).toBeGreaterThanOrEqual(0)
+    expect(typed).toBeGreaterThan(paste)
+    expect(writes[paste]).toBe('\x1b[200~a long dispatch\x1b[201~\r')
+  })
+
+  it('does not serialize across DIFFERENT terminals — one lane must not block another', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (id) => writes.push(id), onUndelivered: () => {} })
+    await Promise.all([q.submitTyped('t1', '/x\r'), q.submitTyped('t2', '/y\r')])
+    expect(writes.sort()).toEqual(['t1', 't2'])
+  })
+})

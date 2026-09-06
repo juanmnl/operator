@@ -210,14 +210,27 @@ describe('phase, end to end', () => {
       level: 'info', timestamp: TS,
       compactMetadata: { trigger: 'auto', preTokens: 998698, postTokens: 21681, durationMs: 133798 },
     })
-    const during = await run(assistant([{ type: 'text', text: 'before' }]) + boundary + user('continue'))
+    // THE RE-PRIME in its real shape — `isCompactSummary: true`. It is part of the compaction,
+    // so the phase survives it.
+    const reprime = L({ type: 'user', timestamp: TS, isCompactSummary: true, message: { content: 'continue' } })
+    const during = await run(assistant([{ type: 'text', text: 'before' }]) + boundary + reprime)
     expect(during.t.liveLanes(() => true)[0].phase).toBe('compacting')
 
     const after = await run(
-      assistant([{ type: 'text', text: 'before' }]) + boundary + user('continue')
+      assistant([{ type: 'text', text: 'before' }]) + boundary + reprime
       + assistant([{ type: 'text', text: 'back' }]),
     )
     expect(after.t.liveLanes(() => true)[0].phase).toBe('waiting')
+  })
+
+  // THE WEDGE. `/compact` at the end of a turn writes a boundary and waits for the next prompt,
+  // so no assistant record ever follows. Clearing only on an assistant record left the lane in
+  // `compacting` indefinitely — and `canAnnounceTo` refuses a compacting lane, so it silently
+  // stopped receiving dispatches.
+  it('a REAL user prompt ends the compaction, unlike the re-prime', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { t } = await run(boundary + user('now do the next thing'))
+    expect(t.liveLanes(() => true)[0].phase).not.toBe('compacting')
   })
 
   // THE ASSERTION THAT MAKES THE PHASE REAL. `compacting` is derived correctly and would still

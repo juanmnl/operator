@@ -56,5 +56,52 @@ export async function isPortFree(port: number): Promise<boolean> {
     // via SO_REUSEPORT, which would report an occupied port as free.
     srv.listen({ port, host, exclusive: true }, () => srv.close(() => resolve(true)))
   })
-  return (await canBind('127.0.0.1')) && (await canBind('::1'))
+  const v4 = await canBind('127.0.0.1')
+  if (!v4) return false
+  const v6 = await canBind('::1')
+  if (v6) { v6Failures = 0; return true }
+  // THE v6 BIND FAILED WHILE v4 SUCCEEDED. Usually that means an orphan holds `[::1]` only, which
+  // is the case this pair exists to catch, and refusing the port is right.
+  //
+  // But if IPv6 loopback is unavailable ENTIRELY — a machine with it disabled, a container — then
+  // every port in the window fails this check, `allocatePort` scans 1420..1520 and returns
+  // undefined, and every lane launches with no dev port at all. Silently. So the allocator tells
+  // us when a whole scan came back empty and we say why once, then fall back to the v4 answer:
+  // a port that is v4-free on a host with no v6 is free.
+  v6Failures += 1
+  return false
 }
+
+/** How many v6 binds have failed since the last successful one. Read by `noteEmptyScan`, which
+ *  is the only thing that can tell "one orphan holds [::1]" from "this host has no v6 at all". */
+let v6Failures = 0
+let v6WarningShown = false
+
+/** Called when a whole port scan came back empty. Distinguishes the two causes and, for the
+ *  second, re-probes on v4 alone so a host without IPv6 still gets dev ports.
+ *
+ *  Separate from `isPortFree` because a single port cannot tell the difference: one refusal is
+ *  evidence of an orphan, a hundred consecutive refusals is evidence about the host. */
+export async function retryScanWithoutV6(ports: readonly number[]): Promise<number | undefined> {
+  if (v6Failures < ports.length || !ports.length) return undefined
+  if (!v6WarningShown) {
+    v6WarningShown = true
+    console.error(
+      '[ports] every port in the window failed its ::1 bind while 127.0.0.1 succeeded — '
+      + 'IPv6 loopback looks unavailable on this host, so dev ports are being allocated on v4 alone',
+    )
+  }
+  const { createServer } = await import('node:net')
+  for (const port of ports) {
+    const free = await new Promise<boolean>((resolve) => {
+      const srv = createServer()
+      srv.once('error', () => resolve(false))
+      srv.listen({ port, host: '127.0.0.1', exclusive: true }, () => srv.close(() => resolve(true)))
+    })
+    if (free) return port
+  }
+  return undefined
+}
+
+/** Reset the v6 tally — a successful v6 bind means the host has it after all. */
+export function noteV6Success(): void { v6Failures = 0 }

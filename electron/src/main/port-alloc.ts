@@ -42,12 +42,20 @@ export interface PortAllocDeps {
    *  server one of OUR lanes started? Only asked when the port is bound — an unbound shared port
    *  is a sibling that has not started its server yet, which is the case sharing exists for. */
   sharedHolderIsOurs(port: number): Promise<boolean>
+  /** Called when the whole window scanned empty, with the ports that were considered. Its job is
+   *  to say whether that was a real exhaustion or an IPv6-less host failing every `::1` bind —
+   *  see `retryScanWithoutV6`. Optional. */
+  onEmptyScan?(ports: readonly number[]): Promise<number | undefined>
 }
 
 export interface PortAllocResult {
   port?: number
   /** Why the shared reservation was not reused, when it was not. Logged, not shown. */
   displaced?: number
+  /** True when the port came from a sibling lane's existing reservation rather than a fresh
+   *  scan. The system-prompt hint MUST NOT claim "verified free at launch" for one of these —
+   *  see `buildCommand`. */
+  shared?: boolean
 }
 
 /** Pick a dev port for a lane in `cwd`, and record it in `portsByCwd`.
@@ -71,8 +79,11 @@ export async function allocatePort(
     // Free means no server yet — the sibling lane is still starting, and joining it is the whole
     // point of keying by cwd. Bound means somebody is serving, and the only question worth
     // asking is whether that somebody is us.
+    // Unbound means no server yet — the sibling is still starting, which is the case sharing
+    // exists for. Bound means somebody is serving, and the only question worth asking is whether
+    // that somebody is provably us. `sharedHolderIsOurs` fails closed; see `provesOwnServer`.
     if (await deps.isFree(shared) || await deps.sharedHolderIsOurs(shared)) {
-      return { port: shared }
+      return { port: shared, shared: true }
     }
     // The scan cannot hand `shared` back: `portsByCwd` is NOT edited before it runs, so the
     // stale reservation is still one of its values and `taken` excludes it. Left in deliberately
@@ -84,8 +95,29 @@ export async function allocatePort(
   }
 
   const port = await scan(portsByCwd, deps)
+  // A WHOLE SCAN CAME BACK EMPTY. Either the window really is full, or every `::1` bind failed
+  // because this host has no IPv6 loopback — and the second is silent and total: every lane
+  // launches with no dev port. `onEmptyScan` tells the two apart and, for the second, answers
+  // with a v4-only probe. Absent (tests, and the Tauri stub) it stays undefined and the caller
+  // behaves exactly as before.
+  if (port === undefined && deps.onEmptyScan) {
+    const fallback = await deps.onEmptyScan(windowPorts(portsByCwd))
+    if (fallback !== undefined) {
+      portsByCwd.set(cwd, fallback)
+      return { port: fallback }
+    }
+  }
   if (port !== undefined) portsByCwd.set(cwd, port)
   return { port }
+}
+
+/** The candidates a scan would have considered — the window minus what this process already
+ *  holds. Handed to `onEmptyScan` so the retry covers the same set. */
+function windowPorts(portsByCwd: Map<string, number>): number[] {
+  const taken = new Set(portsByCwd.values())
+  const out: number[] = []
+  for (let p = PORT_BASE; p <= PORT_MAX; p++) if (!taken.has(p)) out.push(p)
+  return out
 }
 
 /** The window scan: the first port this process has not reserved, no lease claims, and nothing
@@ -129,4 +161,89 @@ export function shouldReleaseCwdPort(
 ): boolean {
   if (devPort == null) return false
   return !stillOpen.some((o) => !o.exited && o.cwd === cwd && o.devPort === devPort)
+}
+
+// ── Does a sibling lane actually serve this port? ────────────────────────────────────────────
+//
+// THE PREDICATE THIS REPLACES DID NOT PROVE WHAT IT CLAIMED. It asked `claimantsByPort` for the
+// processes carrying `OPERATOR_DEV_PORT=<port>` and intersected them with the sibling's deep
+// pids — but that variable is set on the PTY, so every descendant inherits it, and `ownDeepPids`
+// removes only the shell and its direct children. The `--mcp-serve` helper, every subagent and
+// every process a Bash call starts sit at depth >= 2 and satisfy both halves. The question it
+// actually answered was "does the sibling have any grandchild", and it never inspected the port.
+//
+// Which re-created the exact bug this branch exists to fix: a lane mid-build has grandchildren, a
+// stranger takes its reservation, and the next lane in that directory is handed the stranger's
+// port with a system prompt asserting the port was verified.
+//
+// So it FAILS CLOSED now. Sharing a bound port needs proof-positive, and proof is two facts that
+// a grandchild cannot fake:
+//
+//   1. a process in the sibling's subtree at depth >= 2 whose command is not the mcp helper,
+//      not `claude`, and not a bare shell — i.e. something the lane actually started; and
+//   2. a lease naming that lane and that port, which is written at spawn and released on a clean
+//      kill, so it says the reservation is still live rather than merely once-issued.
+//
+// Neither alone is enough. (1) without (2) is the old bug with extra steps; (2) without (1) is a
+// reservation with nothing running behind it.
+
+/** Commands that inherit the tag and are never a dev server. `--mcp-serve` is Operator's own
+ *  artifact helper riding on every lane; `claude` is the lane itself; a bare login shell is the
+ *  pty. All three sit at depth >= 2 and all three fooled the old predicate. */
+const NOT_A_LANE_SERVER = /--mcp-serve|Operator Helper|\bclaude\b\s+--settings|^-?(?:\/bin\/)?(?:ba|z|fi|c)?sh\b|\/(?:ba|z|fi|c)?sh\s+-[il]/
+
+/** Operator's own binaries and helpers. Refused by every automatic path REGARDLESS of tags:
+ *  they carry the full tag set on every lane, and a sweep that kills them kills the app. */
+export const OPERATOR_BINARY_RE = /Operator\.app|Operator Helper|--mcp-serve|\belectron\b/i
+
+/** Anything that looks like a dev server, for the automatic paths that may only act on one. */
+export const DEV_SERVER_RE = /\b(vite|next(?:-server)?|astro|webpack(?:-dev-server)?|nuxt|remix|parcel|rollup|tsx\s+watch|nodemon|serve|http-server)\b/
+
+export interface OwnServerEvidence {
+  /** `ps` rows, for the ppid walk and the command test. */
+  ps: ReadonlyArray<{ pid: number; ppid: number; command: string }>
+  /** The sibling lane's pty pid — the root of the walk. */
+  shellPid?: number
+  /** Ports this app currently holds a lease on, by terminal id. */
+  leasedPorts: ReadonlySet<number>
+  /** How many live lanes hold this same reservation. More than one and the signal cannot tell
+   *  them apart — the same ambiguity `attributePort` reports as `shared`. */
+  reservationHolders: number
+}
+
+/** Proof-positive that a sibling lane is serving this port, or false.
+ *
+ *  Pure over a `ps` table so every branch is exercised against a fabricated tree rather than
+ *  whatever happens to be running — which matters more here than usual, because a wrong `true`
+ *  hands one project's lane another project's server. */
+export function provesOwnServer(port: number, ev: OwnServerEvidence): boolean {
+  // AMBIGUOUS IS NOT YES. Two lanes in one cwd share the reservation by design, so the evidence
+  // cannot say which of them is serving — and "we are not sure" must lose to nothing.
+  if (ev.reservationHolders > 1) return false
+  if (!ev.shellPid) return false
+  if (!ev.leasedPorts.has(port)) return false
+
+  // Depth >= 2 from the pty: the shell is depth 0, `claude` is depth 1, and anything the LANE
+  // started is deeper. Walk rather than trust a flat descendant set, so depth is real.
+  const kids = new Map<number, Array<{ pid: number; ppid: number; command: string }>>()
+  for (const r of ev.ps) {
+    const list = kids.get(r.ppid)
+    if (list) list.push(r)
+    else kids.set(r.ppid, [r])
+  }
+  let frontier = [ev.shellPid]
+  const seen = new Set<number>(frontier)
+  for (let depth = 1; depth <= 12 && frontier.length; depth++) {
+    const next: number[] = []
+    for (const pid of frontier) {
+      for (const kid of kids.get(pid) ?? []) {
+        if (kid.pid <= 1 || seen.has(kid.pid)) continue
+        seen.add(kid.pid)
+        next.push(kid.pid)
+        if (depth >= 2 && !NOT_A_LANE_SERVER.test(kid.command)) return true
+      }
+    }
+    frontier = next
+  }
+  return false
 }

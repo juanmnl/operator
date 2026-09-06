@@ -5,6 +5,7 @@ import { EFFORT_LEVELS } from './effort'
 import {
   resolveAgentConfig, worktreeStateOf, clearSeededRoleFields, clearCoordinatorWorktree,
   migrateGlobalsToLanePins, HARD_FALLBACK,
+  remoteControlLaunch,
   type LegacyGlobalDefaults,
 } from './model-config'
 
@@ -369,5 +370,43 @@ describe('resolveAgentConfig — remoteControl', () => {
     const off = resolveAgentConfig({ id: 'operator', name: 'Operator', useWorktree: true, remoteControl: false })
     expect(off.useWorktree).toBe(false)
     expect(off.remoteControl).toBe(false)
+  })
+})
+
+// The review's blocker 2: the launch path resolved this and the restore path did not, so every
+// RESTORED lane wrote `remoteControlAtStartup: false` — including the coordinator, which is the
+// one lane the feature exists for and the one a restore ordinarily brings back.
+describe('remoteControlLaunch — one resolution, both call sites', () => {
+  const proj = (roster: Role[]): Project => ({
+    id: 'p1', name: 'operator', path: '/p', createdAt: '', roster,
+  } as Project)
+  const roster: Role[] = [
+    { id: 'operator', name: 'Operator' },
+    { id: 'code', name: 'Code' },
+  ]
+
+  it('turns it ON for the coordinator and names the session for the project', () => {
+    expect(remoteControlLaunch(proj(roster), 'operator'))
+      .toEqual({ remoteControl: true, remoteControlName: 'operator · Operator' })
+  })
+
+  it('leaves every other role off, with no name to pass', () => {
+    expect(remoteControlLaunch(proj(roster), 'code')).toEqual({ remoteControl: false })
+  })
+
+  it('honours an explicit OFF pin on the coordinator', () => {
+    const off = proj([{ id: 'operator', name: 'Operator', remoteControl: false }])
+    expect(remoteControlLaunch(off, 'operator')).toEqual({ remoteControl: false })
+  })
+
+  it('honours an explicit ON pin on another role', () => {
+    const on = proj([{ id: 'code', name: 'Code', remoteControl: true }])
+    expect(remoteControlLaunch(on, 'code').remoteControl).toBe(true)
+  })
+
+  it('is off for a lane with no role and for a missing project — never a guess', () => {
+    expect(remoteControlLaunch(proj(roster), undefined)).toEqual({ remoteControl: false })
+    expect(remoteControlLaunch(undefined, 'operator')).toEqual({ remoteControl: false })
+    expect(remoteControlLaunch(proj(roster), 'nobody')).toEqual({ remoteControl: false })
   })
 })

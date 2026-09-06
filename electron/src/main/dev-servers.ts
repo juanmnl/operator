@@ -122,9 +122,16 @@ export function devServerInventory(input: InventoryInput): DevServerRow[] {
     if (r.pid <= 1 || r.pid === input.selfPid) continue
     const command = stripEnvDump(r.command)
     if (NOT_A_SERVER_RE.test(command)) continue
-    // A TAGGED row is listed whether or not its command looks like a server: the tag is stronger
-    // evidence than the command shape, and a leaked `node server.mjs` (measured on this machine,
-    // t14) matches no dev-server pattern at all.
+    const owner = ownerOf(r, input)
+    // A LIVE LANE'S rows must LOOK like a dev server; an abandoned or dead-app row need not.
+    //
+    // The asymmetry is deliberate and it is about consequence. For a lane open right now, the
+    // relaxed match listed every process it had ever started — a `tsc --watch`, a test runner, a
+    // language server — each with a kill button beside it under a heading that says "dev
+    // servers". For a row whose lane is gone the relaxed match is the point: t14's real leak was
+    // `node server.mjs`, which matches no dev-server pattern at all, and refusing it there would
+    // hide the exact thing this list exists to surface.
+    if (owner === 'live-lane' && !DEV_SERVER_RE.test(command)) continue
     out.set(r.pid, {
       pid: r.pid,
       ppid: 0,
@@ -134,7 +141,7 @@ export function devServerInventory(input: InventoryInput): DevServerRow[] {
       cwd: projectPathOf(command, input.roots),
       command,
       ageSeconds: input.ages?.get(r.pid),
-      owner: ownerOf(r, input),
+      owner,
     })
   }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createServer, type Server } from 'node:net'
-import { allocatePort, shouldReleaseCwdPort, PORT_BASE, type PortAllocDeps } from './port-alloc'
+import { allocatePort, shouldReleaseCwdPort, provesOwnServer, PORT_BASE, type PortAllocDeps } from './port-alloc'
 import { isPortFree } from './port-probe'
 
 /** Deps that say yes to everything — each test overrides only the probe it is about, so the
@@ -228,5 +228,83 @@ describe('shouldReleaseCwdPort', () => {
 
   it('releases nothing when the lane never had a reservation', () => {
     expect(shouldReleaseCwdPort([], '/a', undefined)).toBe(false)
+  })
+})
+
+// THE PREDICATE THE REVIEW CAUGHT. The old one asked "does the sibling have any grandchild" and
+// never inspected the port, so a lane mid-build handed its stranger-held reservation to the next
+// lane in that directory. These are fixture `ps` tables, not stubs — the walk is the thing under
+// test.
+describe('provesOwnServer — proof-positive, or false', () => {
+  const SHELL = 100
+  // The shape every lane really has: pty shell → claude → the mcp helper, plus whatever the lane
+  // itself started. Depths: shell 0, claude 1, helper/server 2.
+  const base = [
+    { pid: SHELL, ppid: 1, command: '/bin/zsh -il' },
+    { pid: 101, ppid: SHELL, command: 'claude --settings /Users/dev/.operator/sessions/x.json' },
+    { pid: 102, ppid: 101, command: '/Applications/Operator.app/Contents/MacOS/Operator --mcp-serve' },
+  ]
+  const ev = (over: Partial<Parameters<typeof provesOwnServer>[1]> = {}) => ({
+    ps: base, shellPid: SHELL, leasedPorts: new Set([1425]), reservationHolders: 1, ...over,
+  })
+
+  it('is FALSE for a lane whose only deep processes are the mcp helper and claude', () => {
+    // This is the old bug: both sit at depth >= 2 and both carry the port tag.
+    expect(provesOwnServer(1425, ev())).toBe(false)
+  })
+
+  it('is FALSE for a lane running a BUILD — grandchildren are not a server', () => {
+    // The review's failure scenario exactly: t8 is mid-build, so it has grandchildren, and a
+    // stranger holds 1425.
+    const ps = [...base, { pid: 200, ppid: 101, command: '/bin/sh -c npm run build' }]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(false)
+  })
+
+  it('is TRUE for a real dev server the lane started, with a lease behind it', () => {
+    const ps = [...base, { pid: 200, ppid: 101, command: 'node /Users/dev/app/node_modules/.bin/vite --port 1425' }]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(true)
+  })
+
+  it('is FALSE without a lease, however convincing the process tree', () => {
+    // A reservation with nothing behind it. The lease is written at spawn and released on a clean
+    // kill, so its absence says the claim is no longer live.
+    const ps = [...base, { pid: 200, ppid: 101, command: 'node .../vite --port 1425' }]
+    expect(provesOwnServer(1425, ev({ ps, leasedPorts: new Set() }))).toBe(false)
+  })
+
+  it('is FALSE when two lanes hold the same reservation — ambiguous is not yes', () => {
+    // Same-cwd sharing hands one port to N lanes, so the evidence cannot say which is serving.
+    const ps = [...base, { pid: 200, ppid: 101, command: 'node .../vite' }]
+    expect(provesOwnServer(1425, ev({ ps, reservationHolders: 2 }))).toBe(false)
+  })
+
+  it('is FALSE with no pty to walk from', () => {
+    expect(provesOwnServer(1425, ev({ shellPid: undefined }))).toBe(false)
+  })
+
+  it('ignores a server at DEPTH 1 — that position is claude, not something the lane started', () => {
+    const ps = [
+      { pid: SHELL, ppid: 1, command: '/bin/zsh -il' },
+      { pid: 101, ppid: SHELL, command: 'node vite' },
+    ]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(false)
+  })
+
+  it('finds a server nested deeper than two levels', () => {
+    const ps = [...base,
+      { pid: 200, ppid: 101, command: '/bin/sh -c npm run dev' },
+      { pid: 201, ppid: 200, command: 'node /Users/dev/app/node_modules/.bin/vite' },
+    ]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(true)
+  })
+
+  it('terminates on a cyclic table rather than hanging a launch', () => {
+    const ps = [
+      { pid: SHELL, ppid: 1, command: '/bin/zsh -il' },
+      { pid: 101, ppid: SHELL, command: 'claude --settings x' },
+      { pid: 102, ppid: 103, command: 'a' },
+      { pid: 103, ppid: 102, command: 'b' },
+    ]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(false)
   })
 })

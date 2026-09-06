@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { laneStrays, abandonedLaneRows, type TaggedRow, type PsRow } from './reap'
 import { devServerInventory, projectPathOf, stripEnvDump, ageSecondsFrom } from './dev-servers'
+import { DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 
 // Row shapes below are TRANSCRIBED from one `ps -eww -o pid,ppid,pgid,command -E` taken on the
 // dev machine on 2026-09-05, not invented. That matters: the reason the port rule in
@@ -239,5 +240,65 @@ describe('reading the ps row', () => {
     expect(ageSecondsFrom('not a date', now)).toBeUndefined()
     // A clock skew that would make a process look negative-aged reports nothing, not a lie.
     expect(ageSecondsFrom('Fri Sep 5 14:05:11 2026', now)).toBeUndefined()
+  })
+})
+
+// Blocker 4: the 10-minute sweep may only act on the boot sweep's gates. These pin the two
+// filters it applies before the lease and port checks.
+describe('the automatic sweep’s shape filters', () => {
+  it('refuses Operator’s own binaries whatever tags they carry', () => {
+    // Our helpers carry the full tag set on every lane, and a timer that kills them kills the app.
+    for (const cmd of [
+      '/Applications/Operator.app/Contents/MacOS/Operator --mcp-serve',
+      '/Applications/Operator.app/Contents/Frameworks/Operator Helper.app/Contents/MacOS/Helper',
+      '/Users/dev/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron',
+    ]) expect(OPERATOR_BINARY_RE.test(cmd)).toBe(true)
+  })
+
+  it('does not refuse a real dev server', () => {
+    expect(OPERATOR_BINARY_RE.test('node /Users/dev/app/node_modules/.bin/vite --port 1425')).toBe(false)
+  })
+
+  it('recognises the dev servers this app’s projects actually run', () => {
+    for (const cmd of ['node .../vite --port 1425', 'next-server', 'astro dev', 'tsx watch src/index.ts', 'nodemon server.js']) {
+      expect(DEV_SERVER_RE.test(cmd)).toBe(true)
+    }
+  })
+
+  it('does NOT recognise a build or a stray script as a dev server', () => {
+    // The gate exists so the timer reclaims a port and nothing else — a build that outlived its
+    // lane is for the Dev servers list, not for an automatic kill.
+    for (const cmd of ['/bin/sh -c npm run build', 'node scripts/migrate.js', 'postgres -D /opt/homebrew/var']) {
+      expect(DEV_SERVER_RE.test(cmd)).toBe(false)
+    }
+  })
+})
+
+// Medium 8: a live lane's rows must LOOK like a dev server; an abandoned or dead-app row need not.
+describe('the live-lane shape gate', () => {
+  const roots = ['/Users/dev/proj']
+  const base = {
+    openTerminalIds: new Set(['t18']), appPid: APP, selfPid: 999, roots,
+    isAppAlive: (pid: number) => pid === APP,
+  }
+
+  it('hides a LIVE lane’s non-server processes — they had kill buttons under "dev servers"', () => {
+    const tagged = [
+      tag({ pid: 100, terminalId: 't18', appPid: APP, command: '/Users/dev/proj/node_modules/.bin/tsc --watch' }),
+      tag({ pid: 101, terminalId: 't18', appPid: APP, command: 'node /Users/dev/proj/node_modules/.bin/vite' }),
+    ]
+    expect(devServerInventory({ ...base, tagged, ps: [] }).map((r) => r.pid)).toEqual([101])
+  })
+
+  it('KEEPS the relaxed match for an abandoned lane — that is where the real leak was', () => {
+    // t14's measured leak was `node server.mjs`, which matches no dev-server pattern at all.
+    const tagged = [tag({ pid: 200, terminalId: 't28', appPid: APP, command: 'node /Users/dev/proj/server.mjs' })]
+    const got = devServerInventory({ ...base, tagged, ps: [] })
+    expect(got.map((r) => [r.pid, r.owner])).toEqual([[200, 'abandoned-lane']])
+  })
+
+  it('keeps it for a dead app’s rows too', () => {
+    const tagged = [tag({ pid: 201, terminalId: 't3', appPid: 41111, command: 'node /Users/dev/proj/server.mjs' })]
+    expect(devServerInventory({ ...base, tagged, ps: [] })[0].owner).toBe('dead-app')
   })
 })

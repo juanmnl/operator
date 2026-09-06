@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { derivePhase, isInjectedTurn, toolResultText, userPromptText } from './transcript'
+import { derivePhase, isInjectedTurn, toolResultText, userPromptText, COMPACTING_CEILING_MS } from './transcript'
 
 describe('derivePhase', () => {
   it('is running while a tool is open', () => {
@@ -67,5 +67,13 @@ describe('userPromptText', () => {
   })
   it('returns null for whitespace-only content', () => {
     expect(userPromptText([{ type: 'text', text: '   ' }])).toBeNull()
+  })
+})
+
+describe('COMPACTING_CEILING_MS', () => {
+  it('is five minutes — past the longest real compaction, which measured 134s', () => {
+    // A boundary with nothing after it must not wedge the lane forever, and the ceiling is how
+    // that is bounded. Kept equal to the Rust constant of the same name.
+    expect(COMPACTING_CEILING_MS).toBe(5 * 60_000)
   })
 })

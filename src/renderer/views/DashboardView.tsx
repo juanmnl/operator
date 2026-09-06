@@ -4,7 +4,7 @@ import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
-  resolveAgentConfig, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
+  resolveAgentConfig, remoteControlLaunch, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, type ProjectActivity } from '../lib/project-status'
@@ -144,8 +144,30 @@ function markOneAltitudeMigrationDone() {
 
 const LAYOUT_KEY = 'operator.sessionLayouts'
 const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
+/** Persisted layouts, COERCED to values this build still has.
+ *
+ *  `mainView` used to include `'chat'` and `'files'`, and every install that ever opened one has
+ *  that string on disk. After the removal those values match no render branch, so the main pane
+ *  was blank — with no way back, because the toolbar segment that used to set `terminal` is only
+ *  reachable when a view is showing. A parse that trusts whatever localStorage holds ages badly
+ *  by construction; this is the guard, and it is why the unions live here as arrays. */
 function loadLayouts(): Record<string, SessionLayout> {
-  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
+  let raw: unknown
+  try { raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
+  if (!raw || typeof raw !== 'object') return {}
+  const mains: MainView[] = ['terminal', 'preview']
+  const tabs: PanelTab[] = ['plan', 'diff']
+  const out: Record<string, SessionLayout> = {}
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object') continue
+    const l = v as Partial<SessionLayout>
+    out[id] = {
+      mainView: mains.includes(l.mainView as MainView) ? l.mainView as MainView : DEFAULT_LAYOUT.mainView,
+      panelTab: tabs.includes(l.panelTab as PanelTab) ? l.panelTab as PanelTab : DEFAULT_LAYOUT.panelTab,
+      panelOpen: typeof l.panelOpen === 'boolean' ? l.panelOpen : DEFAULT_LAYOUT.panelOpen,
+    }
+  }
+  return out
 }
 
 export function DashboardView() {
@@ -2358,11 +2380,9 @@ export function DashboardView() {
       // because "operator" alone is indistinguishable across six of them.
       // Resolved HERE rather than trusted from the dialog: a lane launched by a dispatch never
       // passes through that dialog, and the roster is the source either way.
-      const rcProject = projectsRef.current.find((p) => p.id === proj.id)
-      const rcRole = opts?.roleId ? rcProject?.roster?.find((r) => r.id === opts.roleId) : undefined
-      const rcOn = config.remoteControl ?? (rcRole ? resolveAgentConfig(rcRole, rcProject?.defaults).remoteControl : false)
-      launchOptions.remoteControl = rcOn
-      if (rcOn) launchOptions.remoteControlName = `${proj.name} · ${rcRole?.name ?? opts?.roleId ?? 'operator'}`
+      const rc = remoteControlLaunch(projectsRef.current.find((p) => p.id === proj.id), opts?.roleId)
+      launchOptions.remoteControl = rc.remoteControl
+      if (rc.remoteControlName) launchOptions.remoteControlName = rc.remoteControlName
       // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
       // back with its thread, so a re-dispatch costs a process start and not a cold context.
       if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId
@@ -2729,6 +2749,17 @@ export function DashboardView() {
     // Same reply-scoping stamp as the launch path.
     launchOptions.projectId = saved.projectId ?? proj.id
     if (saved.roleId) launchOptions.roleId = saved.roleId
+    // REMOTE CONTROL, through the same role cascade the launch path uses. Missing here it fell
+    // through to `o.remoteControl === true` → false in ipc.ts, so every RESTORED lane wrote
+    // `remoteControlAtStartup: false` — including the coordinator, which is the one lane the
+    // whole feature exists to keep on the phone. A restored session is the ordinary way a
+    // coordinator comes back, so the bug hit the exact case it was built for.
+    const rc = remoteControlLaunch(
+      projectsRef.current.find((p) => p.id === (saved.projectId ?? proj.id)),
+      saved.roleId,
+    )
+    launchOptions.remoteControl = rc.remoteControl
+    if (rc.remoteControlName) launchOptions.remoteControlName = rc.remoteControlName
 
     // Restore spawns directly into the saved cwd (the worktree path persists
     // across quits), or into the one just reattached for a suspended lane.
@@ -4474,6 +4505,7 @@ export function DashboardView() {
               detectedDevPort={detectedDevPort}
               effortLevel={tab?.effortLevel}
               model={tab?.model ?? activeSession.model}
+              phase={activeSession.phase}
               onModelChange={(m) => patchActiveTerminal({ model: m })}
               onEffortChange={(e) => patchActiveTerminal({ effortLevel: e })}
               permissionMode={tab?.permissionMode || activeSession.permissionMode}
