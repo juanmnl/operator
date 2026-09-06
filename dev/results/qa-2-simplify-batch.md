@@ -1,0 +1,13 @@
+QA pass 2 on operator/e78fc0 at bca3c7d complete, per dev/briefs/qa-2-simplify-batch.md. Worktree stayed pinned to bca3c7d for the whole run this time (no drift like pass 1). Committed my drivers/fixtures with explicit paths only (git add dev/drive-toolbar-gating.mjs dev/drive-tuning-page.mjs dev/qa-tuning-bridge.ts dev/qa-tuning-main.tsx dev/qa-tuning.html), new commit e51b8cc, never -A.
+
+Suites: renderer 1052/0, electron 498/0, cargo 190/0/3-ignored, all Playwright harnesses green (verify:resize still fails for the pre-existing unrelated ghostty-web reason noted in pass 1).
+
+Tuning page (item 2): built a fully-synthetic bridge (no real chat data this time, given pass 1's leak) and drove all four biggest-change card cases plus all three navigation entry points (rail foot, plan-meter popover link, Cmd+K palette) — 20/20 checks pass, no defects.
+
+Tailer capture (item 3): wrote my own synthetic jsonl (never a real transcript) and drove it through the real Transcript tailer and the real computeTuning usage scan — 4/4 checks pass, including confirming with vi.useFakeTimers that the new 5-minute compaction ceiling actually clears a lane stuck in "compacting" after a `/compact`-at-turn-end with no following assistant record. No defects.
+
+Shared-port allocation (item 5): fixture ps table through the real provesOwnServer + allocatePort — 8/8 checks pass (stranger→fresh port, sibling-with-lease-and-deep-process→shared, plus the ambiguous/lease-alone/deep-alone/mcp-helper edge cases). No defects.
+
+Toolbar chip gating (item 4): gating itself is correct (disabled running/waiting with the right title, enabled idle, no menu/write on a disabled click, aria hooks right, custom-model blur-discards/Enter-commits both confirmed) — but found one real regression: chip writes now send a double carriage return, e.g. "/model opus\r\r" instead of "/model opus\r". Root cause: bca3c7d routed writes through submitQueue.submitTyped, whose typedSequence() appends its own trailing \r, but lane-tuning.ts's effortCommand/modelCommand were never updated and still append their own \r too — so every pick and every Enter-committed custom model now sends an extra bare Return after the command. Confirmed byte-exact via the captured terminalWrite call. Likely harmless in practice (Claude Code treats a blank Enter as a no-op) but it's a real, provable break of the feature's own "one typed line + one CR" contract, and the header comment in lane-tuning.ts is now stale on two counts. Fix sketch in the report; not applied since the brief scoped code changes to dev/ only.
+
+Full report written to dev/results/qa-2-simplify-batch.md.
