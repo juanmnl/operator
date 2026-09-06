@@ -278,3 +278,32 @@ launched — but it is still a real burst for the coordinator's own.
 
 Gates after all of it: renderer 1096, electron 519, cargo 192 passed / 3 ignored, tsc clean in both
 projects, both builds clean.
+
+### Review residual — one entry per address collapsed two dispatches
+
+Review verified `2054ce7` against source and found a defect in the new code: `pendingSendsRef` was
+`Map<address, entry>`, one slot per address. Two failures fall out of that, and both are real:
+
+- **Two dispatches to the same lane collapsed.** The second write overwrote the first, so the first
+  task never got a verdict at all — it sat marked running forever, which is the exact state the
+  confirmation half exists to prevent.
+- **Any lane's send to that address claimed the entry.** The tool result carries only a tool_use id
+  and the `to` it was called with, so a `SendMessage` made for a lane's own reasons could consume a
+  dispatch's entry — and, if that unrelated send failed, mark a delivered dispatch `abandoned`.
+
+Replaced with a small book in `dispatch-bus.ts` (`SendBook`, `trackSend`, `takeSend`), keyed by
+**sender terminal and address**, holding a **queue** per key and claimed **oldest first**. Entries
+expire after `SEND_CONFIRM_TTL_MS` (10 minutes): the lane is blocked at most 15s on the verdict and
+sends within its turn, so the real window is seconds, and expiry is what stops a send made hours
+later from claiming a stale entry. A stale entry is dropped in passing rather than left at the head,
+so it cannot shield a live one behind it.
+
+What this does not fix, and cannot from the transcript: a lane that was told to send to a peer and
+also messages that peer on its own account produces two indistinguishable results. Matching the
+sender, ordering by age and expiring the stale is as close as the available data allows. The
+remaining ambiguity fails toward **never judged** — the task keeps whatever status it has — rather
+than judged wrong, which is the right direction for a mechanism whose entire purpose is to stop the
+board asserting things that did not happen.
+
+Seven tests, one per named failure. Gates: renderer 1103, electron 519, cargo 192 passed / 3
+ignored, tsc clean in both projects, both builds clean.

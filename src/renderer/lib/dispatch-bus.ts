@@ -247,3 +247,67 @@ export function readDeliveryResult(resultText: string | undefined | null): Deliv
       : { outcome: 'failed', detail: raw.slice(0, 200) }
   }
 }
+
+// ── unconfirmed sends, and why they need a book rather than a map ─────────────────────────────
+
+/** How long an unconfirmed send stays claimable.
+ *
+ *  The lane is blocked up to 15s on the verdict and then sends within its turn, so the real
+ *  window is seconds. This is loose enough never to cut off a slow one and tight enough that a
+ *  `SendMessage` the lane makes hours later, for its own reasons, cannot be mistaken for it. An
+ *  entry that expires is simply never judged — the task stays as it is, which is the honest
+ *  outcome for "nobody ever found out". */
+export const SEND_CONFIRM_TTL_MS = 10 * 60_000
+
+export interface PendingSend {
+  taskId: string
+  projectId: string
+  /** When the address was handed out, for the TTL above. */
+  at: number
+}
+
+/** Sends handed out and not yet confirmed, keyed by SENDER and address.
+ *
+ *  Keyed by both, and holding a QUEUE per key, because neither alone is enough — Review found
+ *  both halves in the first version, which kept one entry per address:
+ *
+ *  - **A queue, not a slot.** Two dispatches to the same lane collapsed: the second write
+ *    overwrote the first, and that first task never got a verdict at all.
+ *  - **The sender in the key.** The tool result carries only a tool_use id and the `to` it was
+ *    called with, so ANY lane's send to that address consumed the entry — including a send some
+ *    other lane made for its own reasons, which could mark a delivered dispatch abandoned.
+ *
+ *  Neither half is fully decidable from the transcript: a lane told to send to a peer that also
+ *  messages that peer on its own account produces two indistinguishable results. Matching the
+ *  sender, taking them oldest-first and expiring the stale ones is as close as this gets, and it
+ *  fails toward "never judged" rather than "judged wrong". */
+export type SendBook = Map<string, PendingSend[]>
+
+const sendKey = (terminalId: string, to: string) => `${terminalId} ${to}`
+
+/** Record a send Operator handed out, waiting on the lane's own result. */
+export function trackSend(book: SendBook, terminalId: string, to: string, entry: PendingSend): void {
+  const q = book.get(sendKey(terminalId, to))
+  if (q) q.push(entry)
+  else book.set(sendKey(terminalId, to), [entry])
+}
+
+/** Claim the send a `SendMessage` result belongs to, oldest first, or undefined if there is none.
+ *
+ *  Removes what it returns: a result is one lane's one send, and a second result must not re-judge
+ *  a task that has already been decided. Expired entries are dropped here rather than on a timer,
+ *  because this is the only moment the answer matters. */
+export function takeSend(book: SendBook, terminalId: string, to: string, now: number): PendingSend | undefined {
+  const key = sendKey(terminalId, to)
+  const q = book.get(key)
+  if (!q) return undefined
+  let hit: PendingSend | undefined
+  while (q.length) {
+    const next = q.shift()!
+    // Expired entries are dropped and the loop moves on, so one stale entry cannot shield the
+    // live one behind it from ever being claimed.
+    if (now - next.at <= SEND_CONFIRM_TTL_MS) { hit = next; break }
+  }
+  if (!q.length) book.delete(key)
+  return hit
+}

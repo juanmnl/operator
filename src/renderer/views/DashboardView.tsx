@@ -21,7 +21,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { resolveDispatch, readDeliveryResult } from '../lib/dispatch-bus'
+import { resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
@@ -252,9 +252,9 @@ export function DashboardView() {
    *  NOT persisted: a restart is a natural circuit-breaker reset, and a hop chain that survives one
    *  would be unkillable by the only recovery every user knows. */
   const deliveryStateRef = useRef<DeliveryState>(emptyDeliveryState())
-  /** Bus dispatches whose board row exists but whose delivery is unconfirmed, keyed by the
-   *  address the lane was handed. Consumed once, by the lane's own `SendMessage` result. */
-  const pendingSendsRef = useRef(new Map<string, { taskId: string; projectId: string; roleId: string; at: number }>())
+  /** Bus dispatches whose board row exists but whose delivery is unconfirmed. Keyed by sender
+   *  AND address, oldest first — see `SendBook`, which is where the reasons are. */
+  const pendingSendsRef = useRef<SendBook>(new Map())
   /** The reply subscription mounts once, so it reads the switch through a ref — the file's idiom
    *  for a mount-once subscription reaching fresh state. Pausing must take effect on the NEXT
    *  reply, not on the next remount: a kill switch you have to restart to apply is not one. */
@@ -1546,11 +1546,11 @@ export function DashboardView() {
   // `{"success":false,"message":"Failed to send to uds:… ENOENT … this socket path is stale"}`.
   useEffect(() => {
     const unsub = window.operator.onLaneDelivery?.((d) => {
-      const pending = pendingSendsRef.current.get(d.to)
+      // CONSUMED ONCE, oldest first. A transcript re-read replays every `SendMessage` in the
+      // file, so a replayed result must find nothing to attribute rather than re-judge a task
+      // that was already decided.
+      const pending = takeSend(pendingSendsRef.current, d.terminalId, d.to, Date.now())
       if (!pending) return
-      // CONSUMED ONCE. A transcript re-read replays every `SendMessage` in the file; deleting
-      // here means a replayed result finds nothing to attribute rather than re-judging a task.
-      pendingSendsRef.current.delete(d.to)
       const report = readDeliveryResult(d.result)
       if (report.outcome === 'delivered') {
         console.info(`[dispatch] delivered → ${d.to} (${report.detail ?? 'no id'})`)
@@ -1669,7 +1669,10 @@ export function DashboardView() {
             // the tailer this row is a claim, not a fact. Parked by the address the lane was
             // handed, which is the only key both ends share: the lane echoes nothing back, and
             // the tool result carries just the tool_use id and the `to` it was called with.
-            if (taskId) pendingSendsRef.current.set(verdict.to!, { taskId, projectId, roleId: target.roleId, at: Date.now() })
+            // Tracked against the SENDER's terminal, not just the address: the result carries
+            // only a tool_use id and the `to` it was called with, so without the sender any
+            // lane's send to that address would claim this one.
+            if (taskId) trackSend(pendingSendsRef.current, r.terminalId, verdict.to!, { taskId, projectId, at: Date.now() })
           }
           // WHICH PATH EACH DISPATCH USED, logged while both exist. The sentinel keeps working
           // unchanged for a release, and without this line there would be no way to tell whether

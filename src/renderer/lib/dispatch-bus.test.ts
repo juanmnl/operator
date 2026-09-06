@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../shared/types'
 import { emptyDeliveryState, HOP_LIMIT, type DeliveryState } from './agent-delivery'
-import { resolveDispatch, readDeliveryResult, type BusLane, type DispatchContext } from './dispatch-bus'
+import {
+  resolveDispatch, readDeliveryResult, trackSend, takeSend, SEND_CONFIRM_TTL_MS,
+  type BusLane, type DispatchContext, type SendBook,
+} from './dispatch-bus'
 
 const ROSTER = [
   { id: 'operator', name: 'Operator' },
@@ -227,5 +230,70 @@ describe('readDeliveryResult — the tool_result → task outcome mapping', () =
   it('caps the detail it keeps, so a huge result cannot ride into the task row', () => {
     const r = readDeliveryResult('x'.repeat(5000))
     expect(r.detail!.length).toBeLessThanOrEqual(200)
+  })
+})
+
+// Review found both halves of this in the first version, which kept ONE entry per address.
+// These are the two failures it named, plus the expiry that keeps a stale entry from being
+// claimed by an unrelated send much later.
+describe('the send book — which SendMessage result belongs to which dispatch', () => {
+  const book = (): SendBook => new Map()
+  const entry = (taskId: string, at = 1_000) => ({ taskId, projectId: 'p1', at })
+
+  it('keeps TWO dispatches to the same lane apart, oldest first', () => {
+    // The first bug: the second `set` overwrote the first, so that task never got a verdict.
+    const b = book()
+    trackSend(b, 't-code', 'uds:/a.sock', entry('task-1'))
+    trackSend(b, 't-code', 'uds:/a.sock', entry('task-2'))
+    expect(takeSend(b, 't-code', 'uds:/a.sock', 1_000)?.taskId).toBe('task-1')
+    expect(takeSend(b, 't-code', 'uds:/a.sock', 1_000)?.taskId).toBe('task-2')
+    expect(takeSend(b, 't-code', 'uds:/a.sock', 1_000)).toBeUndefined()
+  })
+
+  it('will not let ANOTHER lane\'s send to the same address claim the dispatch', () => {
+    // The second bug: a send made for a lane's own reasons consumed the entry and could mark a
+    // delivered dispatch abandoned.
+    const b = book()
+    trackSend(b, 't-operator', 'uds:/a.sock', entry('task-1'))
+    expect(takeSend(b, 't-review', 'uds:/a.sock', 1_000)).toBeUndefined()
+    expect(takeSend(b, 't-operator', 'uds:/a.sock', 1_000)?.taskId).toBe('task-1')
+  })
+
+  it('does not confuse two addresses from the same sender', () => {
+    const b = book()
+    trackSend(b, 't-op', 'uds:/a.sock', entry('task-a'))
+    trackSend(b, 't-op', 'uds:/b.sock', entry('task-b'))
+    expect(takeSend(b, 't-op', 'uds:/b.sock', 1_000)?.taskId).toBe('task-b')
+    expect(takeSend(b, 't-op', 'uds:/a.sock', 1_000)?.taskId).toBe('task-a')
+  })
+
+  it('consumes an entry ONCE, so a replayed result cannot re-judge a decided task', () => {
+    // A transcript re-read replays every SendMessage in the file.
+    const b = book()
+    trackSend(b, 't-op', 'uds:/a.sock', entry('task-1'))
+    expect(takeSend(b, 't-op', 'uds:/a.sock', 1_000)).toBeDefined()
+    expect(takeSend(b, 't-op', 'uds:/a.sock', 1_000)).toBeUndefined()
+  })
+
+  it('expires an entry rather than letting a much later send claim it', () => {
+    // Failing toward "never judged" — the task keeps whatever status it has — beats judging it
+    // on the result of something unrelated.
+    const b = book()
+    trackSend(b, 't-op', 'uds:/a.sock', entry('task-1', 0))
+    expect(takeSend(b, 't-op', 'uds:/a.sock', SEND_CONFIRM_TTL_MS + 1)).toBeUndefined()
+  })
+
+  it('a stale entry does not shield the live one behind it', () => {
+    const b = book()
+    trackSend(b, 't-op', 'uds:/a.sock', entry('stale', 0))
+    trackSend(b, 't-op', 'uds:/a.sock', entry('live', SEND_CONFIRM_TTL_MS))
+    expect(takeSend(b, 't-op', 'uds:/a.sock', SEND_CONFIRM_TTL_MS + 1)?.taskId).toBe('live')
+  })
+
+  it('leaves no empty queues behind, so the book cannot grow without bound', () => {
+    const b = book()
+    trackSend(b, 't-op', 'uds:/a.sock', entry('task-1'))
+    takeSend(b, 't-op', 'uds:/a.sock', 1_000)
+    expect(b.size).toBe(0)
   })
 })
