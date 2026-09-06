@@ -908,16 +908,27 @@ describe('submitTyped — a slash command, in the same chain as a paste', () => 
   it('writes a TYPED line, never the bracketed-paste sequence', async () => {
     const writes: Array<[string, string]> = []
     const q = createSubmitQueue({ write: (id, d) => writes.push([id, d]), onUndelivered: () => {} })
-    await q.submitTyped('t1', '/effort high\r')
-    expect(writes).toEqual([['t1', '/effort high\r\r']])
+    await q.submitTyped('t1', '/effort high')
+    expect(writes).toEqual([['t1', '/effort high\r']])
     expect(writes[0][1]).not.toContain('\x1b[200~')
+  })
+
+  it('adds EXACTLY ONE terminator — the caller passes a line, not a submission', async () => {
+    // This assertion is the one that was wrong. It previously asserted `/effort high\r\r`,
+    // encoding the doubled CR as expected output, so a green suite hid a bare Return going into
+    // a live lane after every chip press. QA-2 caught it; the lesson is that a test written from
+    // observed output asserts the bug.
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, d) => writes.push(d), onUndelivered: () => {} })
+    await q.submitTyped('t1', '/model opus')
+    expect(writes[0].match(/\r/g)).toHaveLength(1)
   })
 
   it('SERIALIZES with a paste on the same terminal, so a CR cannot land mid-paste', async () => {
     const writes: string[] = []
     const q = createSubmitQueue({ write: (_id, d) => writes.push(d), onUndelivered: () => {} })
     const a = q.submit('t1', 'a long dispatch')
-    const b = q.submitTyped('t1', '/model opus\r')
+    const b = q.submitTyped('t1', '/model opus')
     await Promise.all([a, b])
     // The paste is written WHOLE before the typed line begins — which is the property that
     // matters. (A rescue CR from the paste's own watchdog may sit between them; that belongs to
@@ -932,7 +943,7 @@ describe('submitTyped — a slash command, in the same chain as a paste', () => 
   it('does not serialize across DIFFERENT terminals — one lane must not block another', async () => {
     const writes: string[] = []
     const q = createSubmitQueue({ write: (id) => writes.push(id), onUndelivered: () => {} })
-    await Promise.all([q.submitTyped('t1', '/x\r'), q.submitTyped('t2', '/y\r')])
+    await Promise.all([q.submitTyped('t1', '/x'), q.submitTyped('t2', '/y')])
     expect(writes.sort()).toEqual(['t1', 't2'])
   })
 })
