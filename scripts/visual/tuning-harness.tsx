@@ -36,3 +36,21 @@ const saved: SavedSession[] = [
 createRoot(document.getElementById('tuning')!).render(
   createElement(TuningView, { projects, saved }),
 )
+
+// SIGNAL READY ONLY ONCE THE DATA HAS LANDED. `capture.mjs` waits on `__visualReady`, and the
+// page fetches asynchronously — flagging at mount would screenshot the "Reading transcripts…"
+// state, which is a real state but not the one this harness exists to show. Poll for the lane
+// table, which only renders once `getTuning` has resolved with rows.
+const ready = () => {
+  ;(window as unknown as { __visualReady?: boolean }).__visualReady = true
+}
+const started = Date.now()
+const poll = window.setInterval(() => {
+  const painted = document.body.innerText.includes('Spend by lane')
+  // Give up after 10s and flag anyway: a screenshot of whatever DID render is more useful than a
+  // timeout with no image, and the empty/loading states are worth seeing when they are the bug.
+  if (painted || Date.now() - started > 10_000) {
+    clearInterval(poll)
+    requestAnimationFrame(() => requestAnimationFrame(ready))
+  }
+}, 100)
