@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Operator — Tuning view mock</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+    <!-- DEV-ONLY, STATIC: a hand-built mock of the Tuning page (dev/results/usage-view-design.md).
+         No React, no bridge, no real data — every number below is fixture. It exists so the
+         layout, the type scale and the six palettes can be eyeballed before anything is built.
+         Open it directly in a browser: `open dev/usage-preview.html`. Never bundled. -->
+    <style>
+      /* ── Palettes, copied verbatim from src/renderer/themes/*.ts ─────────────────── */
+      :root {
+        --radius-lg: 12px; --radius-md: 8px; --radius-sm: 6px;
+        --font-disp: 'Sora', 'Archivo', system-ui, -apple-system, sans-serif;
+        --font-body: 'Archivo', system-ui, -apple-system, sans-serif;
+        --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+        /* A control's LABEL is body ink, not meta ink — one value, per feedback_muted_opacity_rule. */
+        --fg-control: color-mix(in srgb, var(--fg) 72%, transparent);
+      }
+      [data-theme="mission-control-dark"] {
+        --bg-terminal:#0b0d10; --bg-sidebar:#07090b; --bg-surface:#161b21; --fg:#eef1f3;
+        --fg-muted:#8a94a0; --accent:#2fe39a; --btn-bg:#161b21; --border:#21272f;
+        --color-success:#2fe39a; --color-error:#ff5f56; --color-warning:#ffb454;
+        --status-running:#58b2ff; --status-compacting:#ffb454; --status-waiting:#2fe39a;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#58b2ff; --magenta:#c98bff; --cyan:#3fd9c9; --yellow:#ffb454; --red:#ff5f56;
+      }
+      [data-theme="mission-control-light"] {
+        --bg-terminal:#F6F8F7; --bg-sidebar:#ECEFED; --bg-surface:#E2E6E4; --fg:#1f2937;
+        --fg-muted:#6b7280; --accent:#0ca678; --btn-bg:#DEE2E0; --border:#cdd2cf;
+        --color-success:#0ca678; --color-error:#c0392b; --color-warning:#b8860b;
+        --status-running:#2563eb; --status-compacting:#b8860b; --status-waiting:#0ca678;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#2563eb; --magenta:#8e44ad; --cyan:#0e7490; --yellow:#b8860b; --red:#c0392b;
+      }
+      [data-theme="mr-pink-dark"] {
+        --bg-terminal:#22222A; --bg-sidebar:#1E1E25; --bg-surface:#2b2b37; --fg:#F6F8F7;
+        --fg-muted:#adadad; --accent:#D58FDB; --btn-bg:#1E1E25; --border:#2a2a35;
+        --color-success:#84eea7; --color-error:#ff6057; --color-warning:#FAD481;
+        --status-running:#84eea7; --status-compacting:#FAD481; --status-waiting:#D58FDB;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#4095ff; --magenta:#F859CA; --cyan:#8FC8FF; --yellow:#FAD481; --red:#ff6057;
+      }
+      [data-theme="mr-pink-light"] {
+        --bg-terminal:#F8F6F8; --bg-sidebar:#EFEBEF; --bg-surface:#E7E1E7; --fg:#2c2c2c;
+        --fg-muted:#777777; --accent:#a21caf; --btn-bg:#E1DBE1; --border:#d3ccd3;
+        --color-success:#27ae60; --color-error:#c0392b; --color-warning:#b8860b;
+        --status-running:#27ae60; --status-compacting:#b8860b; --status-waiting:#a21caf;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#2563eb; --magenta:#be185d; --cyan:#0e7490; --yellow:#b8860b; --red:#c0392b;
+      }
+      [data-theme="1984-dark"] {
+        --bg-terminal:#0d0f31; --bg-sidebar:#070825; --bg-surface:#12143f; --fg:#f1f1f1;
+        --fg-muted:#8888aa; --accent:#46BDFF; --btn-bg:#1c1f54; --border:#1a1c50;
+        --color-success:#B3F361; --color-error:#FF16B0; --color-warning:#FFEA16;
+        --status-running:#B3F361; --status-compacting:#FFEA16; --status-waiting:#46BDFF;
+        --overlay-subtle:rgba(255,255,255,0.06); --overlay-medium:rgba(255,255,255,0.12);
+        --shadow-panel:0 12px 34px rgba(0,0,0,0.24);
+        --blue:#46BDFF; --magenta:#F806FA; --cyan:#59E1E3; --yellow:#FFEA16; --red:#FF16B0;
+      }
+      [data-theme="1984-light"] {
+        --bg-terminal:#e4e5f5; --bg-sidebar:#dadbef; --bg-surface:#d0d1e8; --fg:#19152c;
+        --fg-muted:#6b6786; --accent:#0098fd; --btn-bg:#d0d1e8; --border:#c4c5dd;
+        --color-success:#00af4f; --color-error:#FF16B0; --color-warning:#FF8D01;
+        --status-running:#0a7333; --status-compacting:#FF8D01; --status-waiting:#0098fd;
+        --overlay-subtle:rgba(0,0,0,0.05); --overlay-medium:rgba(0,0,0,0.10);
+        --shadow-panel:0 6px 18px rgba(0,0,0,0.10);
+        --blue:#0098fd; --magenta:#F806FA; --cyan:#00b2be; --yellow:#FF8D01; --red:#FF16B0;
+      }
+
+      /* ── Page ─────────────────────────────────────────────────────────────────────── */
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg-terminal); color: var(--fg);
+        font-family: var(--font-body); font-size: 13px; -webkit-font-smoothing: antialiased;
+      }
+      .scroller { height: 100vh; overflow-y: scroll; overflow-x: auto; }
+      .measure { width: 100%; max-width: 1100px; margin: 0 auto; }
+      .page-chrome { position: sticky; top: 0; z-index: 2; background: var(--bg-terminal); }
+      .page-head { padding: 16px 24px 0; }
+      .page-body { padding: 20px 24px 60px; }
+
+      h1.page-title {
+        font-family: var(--font-disp); font-size: 17px; font-weight: 700;
+        letter-spacing: -0.01em; color: var(--fg); margin: 0;
+      }
+      p.page-subtitle { font-size: 11px; color: var(--fg-muted); margin: 4px 0 0; line-height: 1.6; }
+      h2.section {
+        font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+        text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg); margin: 0 0 2px;
+      }
+      p.section-desc { font-size: 11px; color: var(--fg-muted); line-height: 1.5; margin: 0 0 12px; }
+      section { margin-bottom: 28px; }
+
+      /* Buttons — btn-bg + border, never an accent fill, never a focus ring. */
+      button { font-family: inherit; cursor: pointer; outline: none; }
+      button:focus-visible { border-color: var(--fg-muted); }
+      .btn {
+        background: var(--btn-bg); border: 1px solid var(--border); color: var(--fg);
+        border-radius: var(--radius-sm); font-size: 11.5px; padding: 5px 11px;
+      }
+      .btn:hover { color: var(--fg); border-color: var(--fg-muted); }
+
+      /* Segmented range control. Active = --fg text on --btn-bg, not an accent fill. */
+      .seg { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border);
+             border-radius: var(--radius-sm); background: var(--bg-surface); flex-shrink: 0; }
+      .seg button {
+        border: none; background: transparent; color: var(--fg-control);
+        font-size: 11px; padding: 3px 10px; border-radius: 4px;
+      }
+      .seg button[aria-pressed="true"] { background: var(--btn-bg); color: var(--fg); }
+
+      /* Chips are TRANSPARENT with a border. Colour lands on the text, never as a fill. */
+      .chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
+        text-transform: uppercase; padding: 1px 6px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: transparent; color: var(--fg-muted);
+        white-space: nowrap;
+      }
+      .chip.warn { color: var(--status-compacting); border-color: color-mix(in srgb, var(--status-compacting) 45%, transparent); }
+      .chip.ok   { color: var(--color-success);    border-color: color-mix(in srgb, var(--color-success) 45%, transparent); }
+      .chip.gap  { color: var(--fg-muted); border-style: dashed; }
+
+      .card {
+        background: var(--bg-surface); border: 1px solid var(--border);
+        border-radius: var(--radius-lg); padding: 14px 16px;
+      }
+      .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+      .muted { color: var(--fg-muted); }
+      .cost { color: var(--fg-muted); font-size: 11px; }
+
+      /* Bars — no border (a colour-changing border on a radiused box re-rasterizes in WKWebView). */
+      .track { height: 6px; border-radius: 3px; background: var(--overlay-subtle); overflow: hidden; display: flex; }
+      .track > i { height: 100%; display: block; }
+
+      /* Lane dot: a filled dot carries identity. Never a coloured left-border stripe. */
+      .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+
+      .rows { border-top: 1px solid var(--border); }
+      .row { border-bottom: 1px solid var(--border); padding: 9px 4px 10px; }
+      .row:hover { background: var(--overlay-subtle); }
+      .row-main {
+        display: grid; align-items: center; gap: 12px;
+        grid-template-columns: 168px 108px 150px minmax(90px, 1fr) 64px 44px 62px;
+      }
+      .row-note {
+        display: flex; align-items: center; gap: 10px;
+        margin: 5px 0 0; padding-left: 15px; font-size: 11px; color: var(--fg-muted); line-height: 1.5;
+      }
+      .row-note .btn { font-size: 11px; padding: 2px 8px; margin-left: auto; flex-shrink: 0; }
+      .lane { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .lane b { font-weight: 600; font-size: 12.5px; color: var(--fg); }
+      .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .right { text-align: right; }
+      .head-row {
+        display: grid; gap: 12px; padding: 0 4px 6px;
+        grid-template-columns: 168px 108px 150px minmax(90px, 1fr) 64px 44px 62px;
+        font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em;
+        text-transform: uppercase; color: var(--fg-muted);
+      }
+      .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 10px; }
+      .legend > div { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+      .kv { display: flex; align-items: baseline; gap: 8px; }
+
+      /* DEV CHROME — the theme switcher is scaffolding, not part of the design. */
+      .devbar {
+        position: fixed; right: 14px; bottom: 14px; z-index: 50; display: flex; gap: 4px;
+        padding: 5px; border-radius: var(--radius-md);
+        background: var(--bg-sidebar); border: 1px dashed var(--border);
+      }
+      .devbar button {
+        border: 1px solid var(--border); background: transparent; color: var(--fg-control);
+        font-family: var(--font-mono); font-size: 9.5px; padding: 3px 6px; border-radius: 4px;
+      }
+      .devbar button[aria-pressed="true"] { background: var(--btn-bg); color: var(--fg); }
+      .devnote {
+        font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em;
+        text-transform: uppercase; color: var(--fg-muted); padding: 26px 0 8px;
+        border-top: 1px dashed var(--border); margin-top: 40px;
+      }
+    </style>
+  </head>
+  <body data-theme="mission-control-dark">
+    <div class="devbar" id="devbar">
+      <button data-t="mission-control-dark" aria-pressed="true">MC dark</button>
+      <button data-t="mission-control-light">MC light</button>
+      <button data-t="mr-pink-dark">Pink dark</button>
+      <button data-t="mr-pink-light">Pink light</button>
+      <button data-t="1984-dark">1984 dark</button>
+      <button data-t="1984-light">1984 light</button>
+    </div>
+
+    <div class="scroller">
+      <div class="page-chrome">
+        <div class="measure page-head">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+            <div>
+              <h1 class="page-title">Tuning</h1>
+              <p class="page-subtitle">What each lane spends, and the one change that would spend less.</p>
+            </div>
+            <div class="seg" role="group" aria-label="Range">
+              <button>Today</button>
+              <button aria-pressed="true">7 days</button>
+              <button>30 days</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="measure page-body">
+
+        <!-- ── 1. The one change ──────────────────────────────────────────────────── -->
+        <section>
+          <div class="card">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+              <h2 class="section" style="margin:0;">Biggest single change</h2>
+              <span class="chip warn">Estimate</span>
+            </div>
+            <p style="margin:0; font-size:14.5px; line-height:1.55; color:var(--fg); max-width:70ch;">
+              <b style="font-weight:600;">Review</b> on Opus at Extra&nbsp;high took
+              <span class="num">38%</span> of the last 7 days — <span class="num">12.4M</span> tokens over
+              <span class="num">41</span> turns, more than the next two lanes together. Dropping&nbsp;it one step to
+              High&nbsp;is the smallest change that moves this.
+            </p>
+            <div style="display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap;">
+              <button class="btn">Open Review in the roster</button>
+              <span class="muted" style="font-size:11px; line-height:1.5;">
+                Effort is read from the launch pin, not from the transcript. A&nbsp;mid-session <span class="num">/effort</span>
+                change is not visible here yet.
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 2. Spend by lane ───────────────────────────────────────────────────── -->
+        <section>
+          <h2 class="section">Spend by lane</h2>
+          <p class="section-desc">
+            Role × model × effort over the window, biggest first. Every&nbsp;row opens the roster entry that
+            holds its two knobs.
+          </p>
+
+          <div class="head-row">
+            <span>Lane</span><span>Project</span><span>Model · effort</span><span>Tokens</span>
+            <span class="right">Total</span><span class="right">Share</span><span class="right">Cost</span>
+          </div>
+          <div class="rows">
+
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--magenta)"></i><b class="ellipsis">Review</b></span>
+                <span class="muted ellipsis">operator</span>
+                <span class="ellipsis" style="color:var(--fg-control)">Opus · Extra high</span>
+                <span class="track"><i style="width:100%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">12.4M</span>
+                <span class="right num" style="font-size:12px">38%</span>
+                <span class="right cost num">$41.20</span>
+              </div>
+              <p class="row-note">
+                Opus at the top of the ladder, on a lane that reads more than it writes. Drop&nbsp;to High.
+                <button class="btn">Roster</button>
+              </p>
+            </div>
+
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--blue)"></i><b class="ellipsis">Code</b></span>
+                <span class="muted ellipsis">operator</span>
+                <span class="ellipsis" style="color:var(--fg-control)">Opus · High</span>
+                <span class="track"><i style="width:62%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">7.7M</span>
+                <span class="right num" style="font-size:12px">24%</span>
+                <span class="right cost num">$26.80</span>
+              </div>
+              <p class="row-note">
+                Priced where the work is. No&nbsp;change suggested.
+                <button class="btn">Roster</button>
+              </p>
+            </div>
+
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--cyan)"></i><b class="ellipsis">QA</b></span>
+                <span class="muted ellipsis">operator</span>
+                <span class="ellipsis" style="color:var(--fg-control)">Sonnet · High</span>
+                <span class="track"><i style="width:41%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">5.1M</span>
+                <span class="right num" style="font-size:12px">16%</span>
+                <span class="right cost num">$7.40</span>
+              </div>
+              <p class="row-note">
+                Cheap per token, but 71% of it is tool output. See&nbsp;tool output below.
+                <button class="btn">Roster</button>
+              </p>
+            </div>
+
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--yellow)"></i><b class="ellipsis">Design</b></span>
+                <span class="muted ellipsis">operator</span>
+                <span class="ellipsis" style="color:var(--fg-control)">Opus · <span class="muted">inherit</span></span>
+                <span class="track"><i style="width:27%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">3.4M</span>
+                <span class="right num" style="font-size:12px">10%</span>
+                <span class="right cost num">$11.90</span>
+              </div>
+              <p class="row-note">
+                Effort inherits the project default (High). Pin&nbsp;it if this lane should differ.
+                <button class="btn">Roster</button>
+              </p>
+            </div>
+
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--status-running)"></i><b class="ellipsis">Research</b></span>
+                <span class="muted ellipsis">mantel</span>
+                <span class="ellipsis" style="color:var(--fg-control)">Sonnet · Medium</span>
+                <span class="track"><i style="width:14%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">1.8M</span>
+                <span class="right num" style="font-size:12px">6%</span>
+                <span class="right cost num">$2.60</span>
+              </div>
+              <p class="row-note">
+                Already the cheapest pairing on the ladder. Nothing&nbsp;to turn down.
+                <button class="btn">Roster</button>
+              </p>
+            </div>
+
+            <!-- The honest row: transcripts that no live lane claims. -->
+            <div class="row">
+              <div class="row-main">
+                <span class="lane"><i class="dot" style="background:var(--overlay-medium)"></i><b class="ellipsis muted">Not attributed</b></span>
+                <span class="muted ellipsis">3 projects</span>
+                <span><span class="chip gap">no lane on record</span></span>
+                <span class="track"><i style="width:16%; background:var(--fg-muted)"></i></span>
+                <span class="right num muted" style="font-size:12px">2.0M</span>
+                <span class="right num muted" style="font-size:12px">6%</span>
+                <span class="right cost num">$3.10</span>
+              </div>
+              <p class="row-note">
+                Sessions started outside Operator, or lanes forgotten since. Counted&nbsp;in the totals, not against a lane.
+              </p>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ── 3. Project share of the window ─────────────────────────────────────── -->
+        <section>
+          <h2 class="section">Project share of the week</h2>
+          <p class="section-desc">
+            Which project is eating the window, and what the plan itself reports about that window.
+          </p>
+
+          <div class="card">
+            <!-- The plan meter's own reading, in its own units, quoted rather than recomputed. -->
+            <div class="kv" style="margin-bottom:4px;">
+              <span style="font-size:12.5px; color:var(--fg);">Week</span>
+              <span class="num" style="font-size:12px; margin-left:auto; color:var(--fg);">62% used</span>
+            </div>
+            <div class="track" style="height:4px;">
+              <i style="width:62%; background:var(--accent)"></i>
+            </div>
+            <p class="muted num" style="margin:4px 0 0; font-size:9.5px;">resets Sunday 4:00 PM · read 2 min ago</p>
+
+            <p class="muted" style="margin:14px 0 10px; font-size:11px; line-height:1.55; max-width:78ch;">
+              That 62% comes from Anthropic. The&nbsp;split below is local tokens from this machine's transcripts,
+              which is a different denominator — it is a ranking of your projects, not a slice of the 62%.
+            </p>
+
+            <div class="track" style="height:10px; border-radius:5px;">
+              <i style="width:64%; background:var(--accent)"></i>
+              <i style="width:21%; background:var(--blue)"></i>
+              <i style="width:9%;  background:var(--magenta)"></i>
+              <i style="width:6%;  background:var(--fg-muted)"></i>
+            </div>
+            <div class="legend">
+              <div><i class="dot" style="background:var(--accent)"></i><span>operator</span><span class="num muted">20.6M · 64%</span></div>
+              <div><i class="dot" style="background:var(--blue)"></i><span>mantel</span><span class="num muted">6.8M · 21%</span></div>
+              <div><i class="dot" style="background:var(--magenta)"></i><span>landing</span><span class="num muted">2.9M · 9%</span></div>
+              <div><i class="dot" style="background:var(--fg-muted)"></i><span class="muted">4 others</span><span class="num muted">1.9M · 6%</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 4. Context pressure ────────────────────────────────────────────────── -->
+        <section>
+          <h2 class="section">Context pressure</h2>
+          <p class="section-desc">
+            A lane that compacts every few turns is paying to rebuild what it just knew. Operator&nbsp;has no
+            knob for this — the change is a smaller task per lane, or a fresh lane per task.
+          </p>
+
+          <div class="head-row" style="grid-template-columns: 168px 130px minmax(90px,1fr) 90px 110px;">
+            <span>Lane</span><span>Compactions</span><span>Turns above 150k</span>
+            <span class="right">Median ctx</span><span class="right">Tokens re-read</span>
+          </div>
+          <div class="rows">
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 130px minmax(90px,1fr) 90px 110px;">
+                <span class="lane"><i class="dot" style="background:var(--magenta)"></i><b class="ellipsis">Review</b></span>
+                <span><span class="chip gap">not captured</span></span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:58%; background:var(--status-compacting)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">58%</span>
+                </span>
+                <span class="right num" style="font-size:12px">171k</span>
+                <span class="right num muted" style="font-size:12px">8.9M</span>
+              </div>
+              <p class="row-note">More than half its turns run past 150k. This&nbsp;is the same lane the tuning card names.</p>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 130px minmax(90px,1fr) 90px 110px;">
+                <span class="lane"><i class="dot" style="background:var(--cyan)"></i><b class="ellipsis">QA</b></span>
+                <span><span class="chip gap">not captured</span></span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:34%; background:var(--status-compacting)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">34%</span>
+                </span>
+                <span class="right num" style="font-size:12px">96k</span>
+                <span class="right num muted" style="font-size:12px">3.1M</span>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 130px minmax(90px,1fr) 90px 110px;">
+                <span class="lane"><i class="dot" style="background:var(--blue)"></i><b class="ellipsis">Code</b></span>
+                <span><span class="chip gap">not captured</span></span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:11%; background:var(--status-compacting)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">11%</span>
+                </span>
+                <span class="right num" style="font-size:12px">62k</span>
+                <span class="right num muted" style="font-size:12px">0.9M</span>
+              </div>
+            </div>
+          </div>
+          <p class="muted" style="margin:10px 0 0; font-size:11px; line-height:1.55; max-width:78ch;">
+            The compaction column stays empty until the tailer keeps <span class="num">compact_boundary</span> events.
+            Everything&nbsp;else in this table comes from data the parser already produces.
+          </p>
+        </section>
+
+        <!-- ── 5. Tool output ─────────────────────────────────────────────────────── -->
+        <section>
+          <h2 class="section">Tool output</h2>
+          <p class="section-desc">
+            How much of a lane's context is tool results it read once. The&nbsp;knob is the lane's charter:
+            narrow what it is told to read.
+          </p>
+
+          <div class="head-row" style="grid-template-columns: 168px 84px 84px minmax(90px,1fr) 150px;">
+            <span>Lane</span><span class="right">p50</span><span class="right">p90</span>
+            <span>Share of its tokens</span><span>Biggest source</span>
+          </div>
+          <div class="rows">
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 84px 84px minmax(90px,1fr) 150px;">
+                <span class="lane"><i class="dot" style="background:var(--cyan)"></i><b class="ellipsis">QA</b></span>
+                <span class="right num" style="font-size:12px">2.1k</span>
+                <span class="right num" style="font-size:12px">96k</span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:71%; background:var(--blue)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">71%</span>
+                </span>
+                <span class="ellipsis" style="color:var(--fg-control)">Bash · test output</span>
+              </div>
+              <p class="row-note">
+                A p90 of 96k means one turn in ten swallows half a context window.
+                <button class="btn">Edit charter</button>
+              </p>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 84px 84px minmax(90px,1fr) 150px;">
+                <span class="lane"><i class="dot" style="background:var(--magenta)"></i><b class="ellipsis">Review</b></span>
+                <span class="right num" style="font-size:12px">6.4k</span>
+                <span class="right num" style="font-size:12px">41k</span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:46%; background:var(--blue)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">46%</span>
+                </span>
+                <span class="ellipsis" style="color:var(--fg-control)">Read · whole files</span>
+              </div>
+              <p class="row-note">
+                Whole-file reads where a grep would do.
+                <button class="btn">Edit charter</button>
+              </p>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px 84px 84px minmax(90px,1fr) 150px;">
+                <span class="lane"><i class="dot" style="background:var(--blue)"></i><b class="ellipsis">Code</b></span>
+                <span class="right num" style="font-size:12px">1.4k</span>
+                <span class="right num" style="font-size:12px">9k</span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                  <span class="track" style="flex:1"><i style="width:18%; background:var(--blue)"></i></span>
+                  <span class="num" style="font-size:11.5px; width:32px; text-align:right;">18%</span>
+                </span>
+                <span class="ellipsis" style="color:var(--fg-control)">Edit · diffs</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── 6. Cache ───────────────────────────────────────────────────────────── -->
+        <section>
+          <h2 class="section">Cache</h2>
+          <p class="section-desc">
+            Cache reads bill at a tenth of fresh input, so a high read share is a lane working well.
+            A&nbsp;low one means sessions are being restarted more often than they are being used.
+          </p>
+
+          <div class="head-row" style="grid-template-columns: 168px minmax(160px,1fr) 84px 84px 84px;">
+            <span>Model</span><span>Input · cache write · cache read</span>
+            <span class="right">Read share</span><span class="right">Tokens</span><span class="right">Cost</span>
+          </div>
+          <div class="rows">
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px minmax(160px,1fr) 84px 84px 84px;">
+                <span class="lane"><b class="ellipsis">Opus</b><span class="chip ok">healthy</span></span>
+                <span class="track" style="height:8px;">
+                  <i style="width:7%;  background:var(--fg-muted)"></i>
+                  <i style="width:11%; background:var(--yellow)"></i>
+                  <i style="width:82%; background:var(--accent)"></i>
+                </span>
+                <span class="right num" style="font-size:12px">82%</span>
+                <span class="right num" style="font-size:12px">23.5M</span>
+                <span class="right cost num">$79.90</span>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px minmax(160px,1fr) 84px 84px 84px;">
+                <span class="lane"><b class="ellipsis">Sonnet</b><span class="chip warn">low</span></span>
+                <span class="track" style="height:8px;">
+                  <i style="width:34%; background:var(--fg-muted)"></i>
+                  <i style="width:22%; background:var(--yellow)"></i>
+                  <i style="width:44%; background:var(--accent)"></i>
+                </span>
+                <span class="right num" style="font-size:12px">44%</span>
+                <span class="right num" style="font-size:12px">6.9M</span>
+                <span class="right cost num">$10.00</span>
+              </div>
+              <p class="row-note">
+                Short-lived sessions pay full price for a prompt they never reuse. Keep&nbsp;a lane open across
+                its task instead of relaunching per question.
+              </p>
+            </div>
+            <div class="row">
+              <div class="row-main" style="grid-template-columns: 168px minmax(160px,1fr) 84px 84px 84px;">
+                <span class="lane"><b class="ellipsis">Haiku</b></span>
+                <span class="track" style="height:8px;">
+                  <i style="width:19%; background:var(--fg-muted)"></i>
+                  <i style="width:14%; background:var(--yellow)"></i>
+                  <i style="width:67%; background:var(--accent)"></i>
+                </span>
+                <span class="right num" style="font-size:12px">67%</span>
+                <span class="right num" style="font-size:12px">1.1M</span>
+                <span class="right cost num">$0.40</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="legend" style="margin-top:12px;">
+            <div><i class="dot" style="background:var(--fg-muted)"></i><span class="muted">fresh input</span></div>
+            <div><i class="dot" style="background:var(--yellow)"></i><span class="muted">cache write</span></div>
+            <div><i class="dot" style="background:var(--accent)"></i><span class="muted">cache read</span></div>
+          </div>
+        </section>
+
+        <!-- ── States, dev-only ──────────────────────────────────────────────────── -->
+        <p class="devnote">Below: the states, side by side. Dev&nbsp;chrome, not part of the page.</p>
+
+        <section style="display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));">
+          <div class="card">
+            <h2 class="section" style="margin-bottom:8px;">Loading</h2>
+            <p style="margin:0; font-size:12px; color:var(--fg-muted); line-height:1.6;">
+              Reading transcripts…
+            </p>
+            <div class="track" style="margin-top:10px;"><i style="width:0; background:var(--accent)"></i></div>
+          </div>
+
+          <div class="card">
+            <h2 class="section" style="margin-bottom:8px;">Empty window</h2>
+            <p style="margin:0; font-size:12px; color:var(--fg-muted); line-height:1.6;">
+              Nothing ran today. Widen&nbsp;the range, or start a lane.
+            </p>
+          </div>
+
+          <div class="card">
+            <h2 class="section" style="margin-bottom:8px;">Plan reading absent</h2>
+            <div class="kv" style="margin-bottom:4px;">
+              <span style="font-size:12.5px; color:var(--fg);">Week</span>
+              <span class="chip gap" style="margin-left:auto;">no reading</span>
+            </div>
+            <div class="track" style="height:4px;"><i style="width:0"></i></div>
+            <p style="margin:8px 0 0; font-size:11px; color:var(--fg-muted); line-height:1.55;">
+              Operator asks the Claude CLI for this — it needs a signed-in subscription. The&nbsp;project split
+              below still stands: it is read&nbsp;locally.
+            </p>
+          </div>
+
+          <div class="card">
+            <h2 class="section" style="margin-bottom:8px;">Overflow</h2>
+            <div class="row" style="border-bottom:none; padding-top:0;">
+              <div class="row-main" style="grid-template-columns: 130px 90px minmax(60px,1fr) 52px 40px;">
+                <span class="lane"><i class="dot" style="background:var(--magenta)"></i><b class="ellipsis">Structured transcript review lane</b></span>
+                <span class="muted ellipsis">operator-landing-experiments</span>
+                <span class="track"><i style="width:88%; background:var(--accent)"></i></span>
+                <span class="right num" style="font-size:12px">12.4M</span>
+                <span class="right num" style="font-size:12px">38%</span>
+              </div>
+              <p class="row-note" style="padding-left:15px;">Names and projects truncate. Numbers&nbsp;never do.</p>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <script>
+      document.getElementById('devbar').addEventListener('click', function (e) {
+        var t = e.target.getAttribute && e.target.getAttribute('data-t')
+        if (!t) return
+        document.body.setAttribute('data-theme', t)
+        Array.prototype.forEach.call(this.querySelectorAll('button'), function (b) {
+          if (b.getAttribute('data-t') === t) b.setAttribute('aria-pressed', 'true')
+          else b.removeAttribute('aria-pressed')
+        })
+      })
+    </script>
+  </body>
+</html>
