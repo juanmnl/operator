@@ -42,7 +42,7 @@ const THEMES = process.env.THEMES === 'all'
 const AXIS = 35
 const TOL = 0.75
 
-const RESTING = ['data-rail-agents', 'data-rail-usage', 'data-rail-gallery', 'data-rail-open-folder']
+const RESTING = ['data-rail-agents', 'data-rail-tuning', 'data-rail-gallery', 'data-rail-open-folder']
 const FOLDED = ['data-rail-folder-prefs', 'data-rail-global-prefs', 'data-rail-prefs', 'data-rail-theme']
 
 async function boot(theme, { expanded }) {

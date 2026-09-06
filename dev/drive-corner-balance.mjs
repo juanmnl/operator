@@ -100,7 +100,7 @@ const hoverProbe = async (sel, i) => {
   const after = await el.evaluate((n) => { const s = getComputedStyle(n); return { bg: s.backgroundColor, color: s.color } })
   return { moved: before.bg !== after.bg || before.color !== after.color, before, after }
 }
-const railFootSel = '[data-rail-agents], [data-rail-gallery], [data-rail-open-folder], [data-rail-usage]'
+const railFootSel = '[data-rail-agents], [data-rail-gallery], [data-rail-open-folder], [data-rail-tuning]'
 for (let i = 0; i < c.rail.length; i++) {
   const r = await hoverProbe(`${railFootSel}`, i)
   console.log(`4 rail "${c.rail[i].id}" answers hover:`, r?.moved, r ? JSON.stringify(r.after) : '')

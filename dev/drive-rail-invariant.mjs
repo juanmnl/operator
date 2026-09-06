@@ -309,7 +309,7 @@ const pad = (s, w) => String(s).padEnd(w)
 const updateShowing = (p) => p.evaluate(() => !!document.querySelector('[data-rail-identity-row] button'))
 
 const FOOT = [
-  ['agents', '[data-rail-agents]'], ['usage', '[data-rail-usage]'],
+  ['agents', '[data-rail-agents]'], ['tuning', '[data-rail-tuning]'],
   ['gallery', '[data-rail-gallery]'], ['open folder', '[data-rail-open-folder]'],
   ['.claude', '[data-rail-folder-prefs]'], ['~/.claude', '[data-rail-global-prefs]'],
   ['prefs', '[data-rail-prefs]'], ['theme', '[data-rail-theme]'],
@@ -418,7 +418,7 @@ async function measure(p, label) {
         return { top: r2(b.top - rail.top) }
       }),
       present: [
-        'data-rail-agents', 'data-rail-usage', 'data-rail-gallery', 'data-rail-open-folder',
+        'data-rail-agents', 'data-rail-tuning', 'data-rail-gallery', 'data-rail-open-folder',
         'data-rail-folder-prefs', 'data-rail-global-prefs', 'data-rail-prefs', 'data-rail-theme',
       ].filter((a) => document.querySelector(`[${a}]`)),
     }
@@ -702,7 +702,7 @@ for (const [theme, short] of THEMES) {
   if (r1.rows.length !== 4) fails.push(`${r1.rows.length} foot rows, expected 4`)
 
   // ---- T. THE WHOLE CELL IS THE TARGET --------------------------------------------------------
-  // The user's complaint, expressed as a test: "still can't click on the text for agents, usage,
+  // The user's complaint, expressed as a test: "still can't click on the text for agents, tuning,
   // etc, just the icon". `elementFromPoint` at the LABEL's centre must return the same control as
   // at the GLYPH's — measured from the user's side rather than by reading the tree, because a
   // label that merely LOOKS inside the button is exactly what shipped.

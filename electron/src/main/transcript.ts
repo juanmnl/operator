@@ -150,7 +150,12 @@ const asTodoStatus = (v: unknown): TodoItem['status'] =>
 
 const cap = (s: string, n: number): string => ([...s].length > n ? `${[...s].slice(0, n).join('')}…` : s)
 
-class Track {
+/** One live session's derived state.
+ *
+ *  EXPORTED, and `apply` with it, so this tailer can be driven from a test the way the Rust one
+ *  already can. The two are kept in lockstep by hand, and the asymmetry was doing real harm: the
+ *  sidechain defect below existed in both, and only the Rust half had a seam to catch it through. */
+export class Track {
   file: string | null = null
   offset = 0
   ended = false
@@ -170,6 +175,12 @@ class Track {
   compactingSinceMs = 0
   /** Effort as the transcript reports it, latest wins — present on every assistant record. */
   effort: string | null = null
+  /** Latest main-thread prompt size — see where it is assigned. Distinct from `usage`, which is
+   *  cumulative and cannot answer "how full is the context right now". */
+  contextTokens = 0
+  /** `compact_boundary` records seen on THIS session. Distinct from `SessionUsage.compactions`,
+   *  which is a windowed historical count from the usage module. */
+  compactions = 0
   lastToolName: string | null = null
   openTools = new Set<string>()
   inSidechain = false
@@ -223,6 +234,8 @@ class Track {
     this.lastWasUserPrompt = false
     this.compacting = false
     this.compactingSinceMs = 0
+    this.contextTokens = 0
+    this.compactions = 0
     this.effort = null
     this.lastToolName = null
     this.openTools.clear()
@@ -315,7 +328,7 @@ class Track {
     }
   }
 
-  private apply(v: Record<string, unknown>): void {
+  apply(v: Record<string, unknown>): void {
     const ts = typeof v.timestamp === 'string' ? v.timestamp : ''
     if (ts) {
       if (!this.startedAt) this.startedAt = ts
@@ -464,6 +477,7 @@ class Track {
     if (v.subtype === 'compact_boundary') {
       this.compacting = true
       this.compactingSinceMs = Date.now()
+      this.compactions += 1
       this.dirty = true
     }
   }
@@ -506,6 +520,19 @@ class Track {
         this.usage.input += g('input_tokens') + g('cache_creation_input_tokens')
         this.usage.output += g('output_tokens')
         this.usage.cacheRead += g('cache_read_input_tokens')
+        // THE LIVE PROMPT SIZE, and an ASSIGNMENT rather than a `+=`. `usage` above is cumulative
+        // over the session, so it can never answer "how full is the context right now" — and it
+        // folds `cache_creation` into `input` on the way in, so the parts cannot be separated back
+        // out afterwards. Captured here, where all three are still in hand.
+        //
+        // SIDECHAIN-GUARDED, unlike the cumulative totals above it. Those SHOULD count a
+        // subagent's tokens — they were really spent. This one is a reading of the MAIN thread's
+        // prompt, and a subagent starts with a near-empty context: an unguarded assignment let a
+        // 15k sidechain turn overwrite a 780k main-thread reading, so the bar dropped to almost
+        // empty at the exact moment a lane was closest to compacting.
+        if (v.isSidechain !== true) {
+          this.contextTokens = g('input_tokens') + g('cache_read_input_tokens') + g('cache_creation_input_tokens')
+        }
         this.dirty = true
       }
     }
@@ -634,6 +661,10 @@ class Track {
       model: this.model ?? undefined,
       usage: this.usage,
       effort: this.effort ?? undefined,
+      // ZERO IS ABSENT, not empty — the footer draws `—` with a bare track before the first
+      // assistant turn rather than `0k` with a full-looking bar.
+      contextTokens: this.contextTokens || undefined,
+      compactions: this.compactions || undefined,
     }
   }
 }

@@ -1,3 +1,17 @@
+// RETIRED. This drove the rail meter's POPOVER, which no longer exists — the plan reading moved
+// to the session footer (`FooterReading`), where every limit is named and the binding one is
+// marked. See `dev/results/plan-meter-bottom-bar.md` for why the arc-plus-popover form had to go.
+//
+// The three states it covered are still covered, and more precisely than a driver could: they are
+// `planReading`'s own return values, unit-tested in `src/renderer/lib/footer-reading.test.ts`
+// (`no-reading`, `window-closed`, `aging`, plus `loading`), on top of the freshness predicates
+// themselves in `plan-limits.test.ts`. What is NOT covered any more is the rendering of those
+// states in a real window, because the footer only exists inside a session and this driver boots
+// the gallery. Rewriting it against the footer needs a session opened first.
+//
+// Kept rather than deleted so the history of what was checked survives; it will not run.
+//
+// ── original header ──────────────────────────────────────────────────────────────────────────
 // Drive the usage meter's THREE freshness states (dev/briefs/plan-usage-stale.md).
 //
 // The reported failure: the popover showed `12% used` beside `resets Jul 30 at 9:59am` — after

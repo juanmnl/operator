@@ -177,6 +177,12 @@ struct Track {
     compacting_since_ms: u128,
     /// Effort as the transcript reports it, latest wins — present on every assistant record.
     effort: Option<String>,
+    /// Latest main-thread prompt size, for the footer's context cell. Distinct from `usage`,
+    /// which is cumulative — see where it is assigned.
+    context_tokens: u64,
+    /// `compact_boundary` records seen on this session. THIS session, right now — distinct from
+    /// `SessionUsage.compactions`, which is a windowed historical count from the usage module.
+    compactions: u32,
     started_at: Option<String>,
     last_activity_at: String,
     last_phase: String,
@@ -219,6 +225,8 @@ impl Track {
             compacting: false,
             compacting_since_ms: 0,
             effort: None,
+            context_tokens: 0,
+            compactions: 0,
             started_at: None,
             last_activity_at: now_iso(),
             last_phase: String::new(),
@@ -533,6 +541,7 @@ impl Track {
         if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
             self.compacting = true;
             self.compacting_since_ms = now_ms();
+            self.compactions += 1;
             self.dirty = true;
         }
     }
@@ -582,6 +591,22 @@ impl Track {
                 self.usage.input += g("input_tokens") + g("cache_creation_input_tokens");
                 self.usage.output += g("output_tokens");
                 self.usage.cache_read += g("cache_read_input_tokens");
+                // THE LIVE PROMPT SIZE, and an ASSIGNMENT rather than a `+=`. `usage` above is
+                // cumulative over the session, so it can never answer "how full is the context
+                // right now" — and it folds `cache_creation` into `input` on the way in, so the
+                // components cannot be separated back out afterwards. This is the number that
+                // decides whether the lane is about to compact, so it is captured where all three
+                // parts are still in hand.
+                //
+                // SIDECHAIN-GUARDED, unlike the cumulative totals above it. Those SHOULD count a
+                // subagent's tokens — they were really spent. This one is a reading of the MAIN
+                // thread's prompt, and a subagent starts with a near-empty context: unguarded, a
+                // 15k sidechain turn overwrote a 780k main-thread reading, so the bar dropped to
+                // almost empty at the exact moment a lane was closest to compacting.
+                if !is_side {
+                    self.context_tokens =
+                        g("input_tokens") + g("cache_read_input_tokens") + g("cache_creation_input_tokens");
+                }
                 self.dirty = true;
             }
         }
@@ -764,7 +789,7 @@ impl Track {
             if self.usage.output > 0 || self.usage.input > 0 { Some(self.usage) } else { None },
         )
         .with_queued(self.queued.clone())
-        .with_tuning(self.effort.clone())
+        .with_tuning(self.effort.clone(), self.context_tokens, self.compactions)
     }
 }
 
@@ -1898,6 +1923,92 @@ mod tests {
         t.apply(&json!({ "type": "assistant", "timestamp": "2026-08-22T17:44:10.000Z",
             "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
         assert_eq!(t.phase(), "waiting");
+    }
+
+    /// A SUBAGENT'S PROMPT IS NOT THE LANE'S. The cumulative totals above must count a
+    /// subagent's tokens — they were really spent — but `context_tokens` is a reading of the
+    /// MAIN thread, and a subagent starts near-empty. Unguarded, a 15k sidechain turn overwrote
+    /// a 780k reading, so the bar emptied at the exact moment the lane was closest to compacting.
+    #[test]
+    fn a_sidechain_turn_does_not_overwrite_the_main_threads_context() {
+        let mut t = track();
+        let rec = |id: &str, side: bool, read: u64| {
+            json!({ "type": "assistant", "isSidechain": side, "timestamp": "2026-09-06T10:00:00.000Z",
+                "message": { "id": id, "role": "assistant", "model": "claude-opus-4",
+                    "stop_reason": "end_turn", "content": [],
+                    "usage": { "input_tokens": 0, "cache_read_input_tokens": read,
+                               "cache_creation_input_tokens": 0, "output_tokens": 5 } } })
+        };
+        t.apply(&rec("m1", false, 780_000));
+        assert_eq!(t.context_tokens, 780_000);
+
+        t.apply(&rec("m2", true, 15_000));
+        assert_eq!(t.context_tokens, 780_000, "a subagent's context must not become the lane's");
+        // The spend still counts: that is the difference between the two numbers.
+        assert_eq!(t.usage.cache_read, 795_000, "cumulative usage DOES include the subagent");
+
+        // …and the main thread keeps moving the reading afterwards.
+        t.apply(&rec("m3", false, 790_000));
+        assert_eq!(t.context_tokens, 790_000);
+    }
+
+    /// THE LIVE PROMPT SIZE — an assignment, not a running total. `usage` accumulates once per
+    /// API response and folds `cache_creation` into `input`, so it can neither answer "how full
+    /// is the context now" nor be taken apart afterwards.
+    #[test]
+    fn context_tokens_are_the_latest_prompt_not_a_running_total() {
+        let mut t = track();
+        let rec = |id: &str, input: u64, read: u64, create: u64| {
+            json!({ "type": "assistant", "timestamp": "2026-09-06T10:00:00.000Z",
+                "message": { "id": id, "role": "assistant", "model": "claude-opus-4",
+                    "stop_reason": "end_turn", "content": [],
+                    "usage": { "input_tokens": input, "cache_read_input_tokens": read,
+                               "cache_creation_input_tokens": create, "output_tokens": 5 } } })
+        };
+        t.apply(&rec("m1", 1200, 80_000, 2800));
+        assert_eq!(t.context_tokens, 84_000, "the three parts of one prompt");
+        t.apply(&rec("m2", 1000, 30_000, 0));
+        assert_eq!(t.context_tokens, 31_000, "the LATEST prompt, not the sum of both");
+        // …while `usage` keeps accumulating, which is what makes it the wrong number for this.
+        assert!(t.usage.input > 1000, "usage is cumulative and stays so");
+    }
+
+    /// A re-emitted message must not move the number — the same guard the token totals use.
+    #[test]
+    fn context_tokens_ignore_a_re_emitted_message() {
+        let mut t = track();
+        let rec = json!({ "type": "assistant", "timestamp": "2026-09-06T10:00:00.000Z",
+            "message": { "id": "same", "role": "assistant", "model": "claude-opus-4",
+                "stop_reason": "end_turn", "content": [],
+                "usage": { "input_tokens": 1000, "cache_read_input_tokens": 10_000,
+                           "cache_creation_input_tokens": 0, "output_tokens": 5 } } });
+        t.apply(&rec);
+        t.apply(&rec);
+        assert_eq!(t.context_tokens, 11_000);
+    }
+
+    /// Zero before the first assistant turn, which the footer renders as `—` rather than `0k`.
+    #[test]
+    fn context_tokens_are_zero_until_a_turn_lands() {
+        let mut t = track();
+        t.apply(&json!({ "type": "user", "timestamp": "2026-09-06T10:00:00.000Z",
+            "message": { "role": "user", "content": "hello" } }));
+        assert_eq!(t.context_tokens, 0);
+    }
+
+    /// The count the footer's `↺` reads. Distinct from `SessionUsage.compactions`, which is a
+    /// windowed historical count from the usage module over a 1/7/30-day range.
+    #[test]
+    fn compactions_count_this_session() {
+        let mut t = track();
+        assert_eq!(t.compactions, 0);
+        for _ in 0..3 {
+            t.apply(&json!({ "type": "system", "subtype": "compact_boundary",
+                "timestamp": "2026-09-06T10:00:00.000Z" }));
+            t.apply(&json!({ "type": "assistant", "timestamp": "2026-09-06T10:01:00.000Z",
+                "message": { "role": "assistant", "stop_reason": "end_turn", "content": [] } }));
+        }
+        assert_eq!(t.compactions, 3, "the count survives the phase clearing each time");
     }
 
     /// EFFORT AS THE TRANSCRIPT REPORTS IT. Top-level, a sibling of `timestamp` — not inside

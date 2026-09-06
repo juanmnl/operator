@@ -7,6 +7,7 @@ import {
   migrateGlobalsToLanePins, HARD_FALLBACK,
   remoteControlLaunch,
   type LegacyGlobalDefaults,
+  contextWindowOf, CONTEXT_WINDOW, CONTEXT_WINDOW_1M,
 } from './model-config'
 
 const role = (o: Partial<Role> & { id: string }): Role => ({ name: o.id, ...o })
@@ -408,5 +409,29 @@ describe('remoteControlLaunch — one resolution, both call sites', () => {
     expect(remoteControlLaunch(proj(roster), undefined)).toEqual({ remoteControl: false })
     expect(remoteControlLaunch(undefined, 'operator')).toEqual({ remoteControl: false })
     expect(remoteControlLaunch(proj(roster), 'nobody')).toEqual({ remoteControl: false })
+  })
+})
+
+describe('contextWindowOf', () => {
+  it('is 200k for an ordinary model id', () => {
+    expect(contextWindowOf('claude-opus-4-20250514')).toBe(CONTEXT_WINDOW)
+    expect(contextWindowOf('opus')).toBe(200_000)
+  })
+
+  it('is 1M when the id carries the [1m] marker, wherever it sits', () => {
+    expect(contextWindowOf('claude-sonnet-4-20250514[1m]')).toBe(CONTEXT_WINDOW_1M)
+    expect(contextWindowOf('claude-sonnet-4[1M]-20250514')).toBe(1_000_000)
+  })
+
+  it('falls back to the STANDARD window for an unknown or absent id', () => {
+    // Wrong in the safe direction: a 200k denominator on a 1M model reads as "nearly full",
+    // which over-warns. The reverse would under-warn on a real limit.
+    expect(contextWindowOf(undefined)).toBe(CONTEXT_WINDOW)
+    expect(contextWindowOf('')).toBe(CONTEXT_WINDOW)
+    expect(contextWindowOf('some-future-model')).toBe(CONTEXT_WINDOW)
+  })
+
+  it('is not fooled by "1m" without the brackets', () => {
+    expect(contextWindowOf('claude-1million-preview')).toBe(CONTEXT_WINDOW)
   })
 })

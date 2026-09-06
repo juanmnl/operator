@@ -39,6 +39,8 @@ import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { announcement, canAnnounceTo } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
+import { FooterReading } from '../components/session/FooterReading'
+import { usePlanLimits } from '../lib/plan-limits'
 import { TuningView } from '../components/tuning/TuningView'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { ProjectView } from '../components/session/ProjectView'
@@ -207,6 +209,10 @@ export function DashboardView() {
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [tuningViewActive, setTuningViewActive] = useState(false)
+  // ONE PLAN READING for the whole window. The rail's foot and the session footer both render it,
+  // and two calls to the hook would be two fetch loops and two caches disagreeing about the same
+  // number. Owned here, the common ancestor.
+  const planLimits = usePlanLimits()
   const [prefsViewActive, setPrefsViewActive] = useState(false)
   // WHERE YOU ARE. The durable navigation scope: null = at the gallery (outside every
   // project), set = inside that project — the sidebar is scoped to it and it SURVIVES
@@ -4446,6 +4452,12 @@ export function DashboardView() {
           keeps the theme toggle, Preferences and both `.claude` shortcuts on screen at 60px. */}
       <ProjectRail
         collapsed={contentMode === 'gallery' || sidebarCollapsed}
+        // THE PLAN READING, only while no session is open. The session footer owns it otherwise,
+        // and two readings of the same three limits on screen at once would invite the reader to
+        // look for a difference between them. Null is the hide: the rail draws nothing rather
+        // than deciding for itself when to.
+        planLimits={activeSession ? null : planLimits.limits}
+        planNow={planLimits.now}
         projects={projects}
         activities={projectActivities}
         activeProjectId={contentMode === 'gallery' ? null : activeProjectId}
@@ -4912,7 +4924,9 @@ export function DashboardView() {
 
         {/* Consolidated action bar — the SINGLE place for session actions (scratch Terminal,
             Review changes, Activity timeline) + the working dir. Replaces the old
-            SessionInfoBar strip, so there's one action surface, not three. */}
+            SessionInfoBar strip (deleted — it had no consumer and kept being read as the bottom
+            bar), so there's one action surface, not three. It ends in the session's reading:
+            context, model · effort, and the plan. */}
         {contentMode === 'localTerminal' && activeSession && (() => {
           const tab = terminals.find((t) => t.id === activeTerminalId)
           const worktreePath = tab?.worktreeBranch ? tab.cwd : null
@@ -4949,9 +4963,25 @@ export function DashboardView() {
                 Activity
               </button>
             )}
-            <span className="actions-footer-label" style={{ marginLeft: 'auto' }}>
+            {/* THE WORKING DIRECTORY TRUNCATES FIRST as the footer narrows — the reading beside
+                it is the thing that must survive. `minWidth: 0` is what lets the ellipsis fire at
+                all inside a flex row. */}
+            <span className="actions-footer-label" style={{ marginLeft: 'auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {activeSession.workingDirectory}
             </span>
+            <FooterReading
+              session={activeSession}
+              pinnedEffort={tab?.effortLevel}
+              limits={planLimits.limits}
+              now={planLimits.now}
+              onOpenTuning={handleOpenTuning}
+              onOpenRoster={() => {
+                if (tab?.projectId && projects.some((p) => p.id === tab.projectId)) {
+                  setActiveProjectId(tab.projectId)
+                  handleOpenProjectTeam()
+                } else handleShowGallery()
+              }}
+            />
           </div>
           )
         })()}

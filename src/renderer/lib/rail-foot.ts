@@ -35,11 +35,15 @@
 /** The eight, keyed by the `data-rail-*` attribute each renders — the DOM contract the drivers
  *  assert against, so the tiering cannot drift from what is measured. */
 export type FootItemId =
-  | 'agents' | 'usage' | 'gallery' | 'open-folder'
+  | 'agents' | 'tuning' | 'gallery' | 'open-folder'
   | 'folder-prefs' | 'global-prefs' | 'prefs' | 'theme'
 
-/** Drawn whatever the state. Order is render order: row 1, then row 2. */
-export const RESTING_FOOT_ITEMS: readonly FootItemId[] = ['agents', 'usage', 'gallery', 'open-folder']
+/** Drawn whatever the state. Order is render order: row 1, then row 2.
+ *
+ *  `usage` left when the plan reading moved to the session footer — a 12px unlabelled arc could
+ *  not say which of the three limits it had drawn. `tuning` took the freed slot, so the tier is
+ *  still four: two rows of two, which is what keeps the fold's cut on a group seam. */
+export const RESTING_FOOT_ITEMS: readonly FootItemId[] = ['agents', 'tuning', 'gallery', 'open-folder']
 
 /** Behind the seam. Order is render order: row 3, then row 4. */
 export const FOLDED_FOOT_ITEMS: readonly FootItemId[] = ['folder-prefs', 'global-prefs', 'prefs', 'theme']

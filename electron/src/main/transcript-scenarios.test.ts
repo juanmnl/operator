@@ -275,6 +275,34 @@ describe('phase, end to end', () => {
     expect(t.liveLanes(() => true)[0].phase).toBe('waiting')
   })
 
+  // THE FOOTER'S CONTEXT NUMBER, in lockstep with the Rust tailer
+  // (`context_tokens_are_the_latest_prompt_not_a_running_total` and friends).
+  it('carries the LATEST prompt size, not a running total', async () => {
+    const withUsage = (id: string, input: number, read: number, create: number) => L({
+      type: 'assistant', timestamp: TS,
+      message: { id, role: 'assistant', model: 'claude-opus-4', stop_reason: 'end_turn', content: [],
+        usage: { input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: create, output_tokens: 5 } },
+    })
+    const { session } = await run(withUsage('m1', 1200, 80_000, 2800) + withUsage('m2', 1000, 30_000, 0))
+    expect(session.contextTokens).toBe(31_000)
+    // `usage` keeps accumulating, which is exactly why it cannot answer this question.
+    expect(session.usage!.input).toBeGreaterThan(1000)
+  })
+
+  it('leaves the context absent until a turn lands, so the cell draws — and not 0k', async () => {
+    const { session } = await run(user('hello'))
+    expect(session.contextTokens).toBeUndefined()
+  })
+
+  it('counts compactions for THIS session, which is not the windowed usage figure', async () => {
+    const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
+    const { session } = await run(
+      boundary + assistant([{ type: 'text', text: 'a' }])
+      + boundary + assistant([{ type: 'text', text: 'b' }]),
+    )
+    expect(session.compactions).toBe(2)
+  })
+
   it('a subagent talking does not end the compaction', async () => {
     const boundary = L({ type: 'system', subtype: 'compact_boundary', timestamp: TS })
     const { t } = await run(

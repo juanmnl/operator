@@ -111,6 +111,15 @@ export interface AgentSession {
    *  `/effort` changes and the roster's launch pin does not know about. Distinct from
    *  `SavedSession.effortLevel`, which is the pin. */
   effort?: string
+  /** The LATEST prompt size — `input + cache_read + cache_creation` of the most recent
+   *  main-thread assistant record. NOT `usage`, which is cumulative over the session and so can
+   *  never say how full the context is right now. Absent before the first assistant turn, which
+   *  the footer draws as `—` rather than `0k`. */
+  contextTokens?: number
+  /** `compact_boundary` records seen on THIS session, right now. Distinct from
+   *  `SessionUsage.compactions`, which is a windowed historical count from the usage module over
+   *  a 1/7/30-day range — a different question, and not a substitute. */
+  compactions?: number
   activity: ActivityEntry[]
   /** Assistant prose (answers + thinking) for the reading panel; recent tail. */
   messages?: NarrationEntry[]

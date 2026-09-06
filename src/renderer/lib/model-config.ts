@@ -297,3 +297,56 @@ export function remoteControlLaunch(
     ? { remoteControl: true, remoteControlName: `${project?.name ?? 'Operator'} · ${role.name}` }
     : { remoteControl: false }
 }
+
+
+// ── The context window ───────────────────────────────────────────────────────────────────────
+
+/** Claude's standard context window. */
+export const CONTEXT_WINDOW = 200_000
+
+/** …and the long variant's. */
+export const CONTEXT_WINDOW_1M = 1_000_000
+
+/** How much context this model can hold.
+ *
+ *  It lives beside the rest of model identity rather than as a literal at the render site, which
+ *  is where a second, disagreeing `200000` would eventually appear. Nothing in the repo carried a
+ *  context-window constant before this — grepping `200_000` and `contextWindow` returned only
+ *  unrelated test timings.
+ *
+ *  THE `[1m]` MARKER is Claude Code's own: a long-context model id carries it as a suffix tag.
+ *  Matched case-insensitively and anywhere in the id, because it rides on the id rather than being
+ *  a field of its own, and an unrecognised id gets the standard window rather than a guess — a
+ *  200k denominator on a 1M model reads as "nearly full" and is wrong in the safe direction. */
+export function contextWindowOf(model: string | null | undefined): number {
+  return model && /\[1m\]/i.test(model) ? CONTEXT_WINDOW_1M : CONTEXT_WINDOW
+}
+
+/** The window this session is actually running in, inferred from the evidence there is.
+ *
+ *  `contextWindowOf` above reads the `[1m]` marker off a model id, and that is the only place the
+ *  marker ever appears — but Review checked every `.jsonl` on this machine and NOT ONE transcript
+ *  carries it: the distinct `message.model` values are plain ids (`claude-opus-5`,
+ *  `claude-sonnet-5`, …). So the marker can only arrive from a roster pin or a hand-typed id. A
+ *  lane switched to long context inside Claude Code (`/model sonnet[1m]` typed into the terminal)
+ *  keeps its old pin, and read against a 200k denominator a 400k prompt reports as 200% full —
+ *  pinned red, permanently, with the bar clamped and the number nonsense.
+ *
+ *  So the reading falls back to the one piece of evidence that cannot lie: **a 200k lane cannot
+ *  hold more than 200k**. Above that, the window is 1M and there is nothing else it could be.
+ *
+ *  STICKY, via `previous`. Without it the window would flip back to 200k after every compaction —
+ *  a 1M lane sitting at 150k would read 75% full and "about to compact" when it is in fact 15%
+ *  full. A session that has once been shown to be 1M stays 1M; nothing in a session ever narrows
+ *  its window, so there is no case to unwind. */
+export function inferContextWindow(
+  pinnedModel: string | null | undefined,
+  used: number | undefined,
+  previous?: number,
+): number {
+  if (contextWindowOf(pinnedModel) === CONTEXT_WINDOW_1M) return CONTEXT_WINDOW_1M
+  if (previous === CONTEXT_WINDOW_1M) return CONTEXT_WINDOW_1M
+  // Strictly greater: a lane exactly at its window is full, not over it.
+  if (used && used > CONTEXT_WINDOW) return CONTEXT_WINDOW_1M
+  return CONTEXT_WINDOW
+}

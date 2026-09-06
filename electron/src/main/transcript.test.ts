@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { derivePhase, isInjectedTurn, toolResultText, userPromptText, COMPACTING_CEILING_MS, sendMessageAddress } from './transcript'
+import { derivePhase, isInjectedTurn, toolResultText, userPromptText, COMPACTING_CEILING_MS, sendMessageAddress, Track } from './transcript'
 
 describe('derivePhase', () => {
   it('is running while a tool is open', () => {
@@ -103,5 +103,50 @@ describe('sendMessageAddress', () => {
     for (const input of [null, undefined, {}, { to: '' }, { to: '   ' }, { to: 42 }, 'not an object']) {
       expect(sendMessageAddress('SendMessage', input)).toBeNull()
     }
+  })
+})
+
+describe('contextTokens — the MAIN thread only', () => {
+  // Review's HIGH on the plan bar, and it is the same defect in both tailers: the cumulative
+  // usage totals SHOULD count a subagent's tokens, because they were really spent, but
+  // `contextTokens` is a reading of the main thread's prompt and a subagent starts near-empty.
+  // Unguarded, a 15k sidechain turn overwrote a 780k reading — so the bar emptied at the exact
+  // moment the lane was closest to compacting, which is when the reading matters most.
+  const track = () => new Track('t0', {
+    claudeSessionId: 's0', cwd: '/tmp', permissionMode: null, projectId: 'p1',
+  })
+  const rec = (id: string, isSidechain: boolean, cacheRead: number) => ({
+    type: 'assistant', isSidechain, timestamp: '2026-09-06T10:00:00.000Z',
+    message: {
+      id, role: 'assistant', model: 'claude-opus-4', stop_reason: 'end_turn', content: [],
+      usage: {
+        input_tokens: 0, cache_read_input_tokens: cacheRead,
+        cache_creation_input_tokens: 0, output_tokens: 5,
+      },
+    },
+  })
+
+  it('a sidechain turn does not overwrite the main thread\'s reading', () => {
+    const t = track()
+    t.apply(rec('m1', false, 780_000))
+    expect(t.contextTokens).toBe(780_000)
+
+    t.apply(rec('m2', true, 15_000))
+    expect(t.contextTokens).toBe(780_000)
+  })
+
+  it('still COUNTS the subagent\'s spend — that is the difference between the two numbers', () => {
+    const t = track()
+    t.apply(rec('m1', false, 780_000))
+    t.apply(rec('m2', true, 15_000))
+    expect(t.usage.cacheRead).toBe(795_000)
+  })
+
+  it('keeps following the main thread afterwards', () => {
+    const t = track()
+    t.apply(rec('m1', false, 780_000))
+    t.apply(rec('m2', true, 15_000))
+    t.apply(rec('m3', false, 790_000))
+    expect(t.contextTokens).toBe(790_000)
   })
 })
