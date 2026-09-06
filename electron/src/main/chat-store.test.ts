@@ -480,3 +480,63 @@ describe('toolOutputStats — the tool-output distribution the Tuning page reads
     expect(store.toolOutputStats('2026-09-01T00:00:00.000Z').map((s) => s.session)).toEqual(['s2'])
   })
 })
+
+describe('ArtifactStore — expiring unanswered dispatch requests', () => {
+  // Finding 4. The app is closed while lanes keep running (they are ptys; `--mcp-serve` is spawned
+  // by `claude`, not by Operator). Each dispatch inserts a row, blocks 15s, times out, and
+  // correctly tells its caller nothing was sent and no task was created. Without an age cutoff the
+  // next morning's first poll read all of those rows and acted on every one — creating tasks and
+  // launching lanes for dispatches whose callers gave up hours earlier.
+  let store: ArtifactStore
+  beforeAll(() => { store = new ArtifactStore(join(SANDBOX, 'expire.db')) })
+
+  /** Insert a request and backdate it, which is how a row from before a restart looks. */
+  const aged = (lane: string, ageMs: number) => {
+    const id = store.openDispatch({
+      terminalId: 't1', projectId: 'p1', roleId: 'operator', kind: 'dispatch', lane, body: 'do it',
+    })
+    const at = new Date(Date.now() - ageMs).toISOString()
+    ;(store as unknown as { db: { prepare(s: string): { run(...a: unknown[]): unknown } } })
+      .db.prepare('UPDATE dispatch_requests SET at = ? WHERE id = ?').run(at, id)
+    return id
+  }
+
+  it('leaves a request that is still inside the window alone', () => {
+    const id = aged('code', 1_000)
+    expect(store.openDispatches().some((r) => r.id === id)).toBe(true)
+    expect(store.dispatchVerdict(id)).toBeNull()
+  })
+
+  it('answers one older than the TTL `refused`, and stops offering it', () => {
+    const id = aged('code', ArtifactStore.DISPATCH_TTL_MS + 60_000)
+    expect(store.openDispatches().some((r) => r.id === id)).toBe(false)
+    const v = store.dispatchVerdict(id)
+    expect(v?.outcome).toBe('refused')
+    expect(v?.reason).toMatch(/expired/i)
+  })
+
+  it('answers rather than deletes, so the request still has a record', () => {
+    // The row is the only evidence the request was ever made, and `refused` with a reason is a
+    // true statement about what became of it.
+    const id = aged('review', ArtifactStore.DISPATCH_TTL_MS + 1_000)
+    store.openDispatches()
+    expect(store.dispatchVerdict(id)).not.toBeNull()
+  })
+
+  it('expires past the SERVER\'s timeout, never inside it', () => {
+    // The lane blocks 15s. Expiring a request it is still waiting on would be the worse mistake,
+    // so the TTL sits beyond that with room for two processes reading two clocks.
+    expect(ArtifactStore.DISPATCH_TTL_MS).toBeGreaterThan(15_000)
+  })
+
+  it('never overwrites a request that was already answered properly', () => {
+    // The sweep's own `answered_at IS NULL` is what guarantees this: a real verdict must survive
+    // a sweep that would otherwise match the row on age alone. (A count assertion here would be
+    // about whatever else the shared store still holds, not about this row.)
+    const id = aged('code', 1_000)
+    store.answerDispatch(id, { outcome: 'send', address: 'uds:/tmp/a.sock', text: 'go' })
+    store.expireDispatches(0)
+    expect(store.dispatchVerdict(id)?.outcome).toBe('send')
+    expect(store.dispatchVerdict(id)?.address).toBe('uds:/tmp/a.sock')
+  })
+})

@@ -15,6 +15,7 @@
 // live lane (pid 19287 ↔ `479123b8-…`, matching the `--settings` path Operator wrote). Matching
 // on it is exact and needs no assumption about process shape.
 
+import { existsSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +32,9 @@ export interface BusSession {
   /** The name the Claude phone app and `ListAgents` show. */
   name?: string
   cwd?: string
+  /** Epoch ms the session started, from the descriptor. The tie-break when two descriptors claim
+   *  the same session — see `preferSession`. */
+  startedAt?: number
 }
 
 const sessionsDir = () => join(homedir(), '.claude', 'sessions')
@@ -53,9 +57,43 @@ export function parseBusSession(raw: string): BusSession | null {
     sessionId,
     socketPath,
     status: typeof d.status === 'string' ? d.status : 'unknown',
+    startedAt: typeof d.startedAt === 'number' ? d.startedAt : undefined,
     name: typeof d.name === 'string' ? d.name : undefined,
     cwd: typeof d.cwd === 'string' ? d.cwd : undefined,
   }
+}
+
+/** Is this process still there?
+ *
+ *  `kill(pid, 0)` sends no signal — it only asks. EPERM is a LIVE answer: the process exists and
+ *  belongs to someone else, which is a distinction that matters because getting it backwards would
+ *  drop a real lane from the registry.
+ *
+ *  Deliberately not `lsof`: a per-pid `lsof` fires a macOS TCC consent prompt per process, which is
+ *  a rule this repo learned the expensive way. `kill(pid, 0)` and a `stat` are free and silent. */
+export function pidAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Which of two descriptors for the same session is the one to address.
+ *
+ *  Operator's own restore path spawns with `--resume <same uuid>`, so a crashed process's leftover
+ *  descriptor and the live one differ only by pid. Before this, `out.set(sessionId, …)` ran inside
+ *  a `Promise.all` and the winner was whichever `readFile` happened to resolve last — nondeterministic,
+ *  and free to be the dead one.
+ *
+ *  NEWEST `startedAt` WINS, with the higher pid breaking an exact tie. A descriptor with no
+ *  `startedAt` loses to one that has it: an unstamped file is the older format, and the fallback has
+ *  to be an order rather than a coin toss. */
+export function preferSession(a: BusSession, b: BusSession): BusSession {
+  if (a.startedAt !== b.startedAt) return (b.startedAt ?? 0) > (a.startedAt ?? 0) ? b : a
+  return b.pid > a.pid ? b : a
 }
 
 /** Every live session, by `sessionId`.
@@ -72,7 +110,24 @@ export async function readBusSessions(): Promise<Map<string, BusSession>> {
     if (!f.endsWith('.json')) return
     try {
       const s = parseBusSession(await readFile(join(sessionsDir(), f), 'utf8'))
-      if (s) out.set(s.sessionId, s)
+      if (!s) return
+      // LIVENESS, because a descriptor outlives its process. A `claude` killed with SIGKILL never
+      // gets to clean up, and the file it leaves behind makes a dead lane look addressable —
+      // Operator would then answer `send` with a socket that refuses to connect. `addressOf`'s
+      // own comment argued that null is a real answer; this is what makes null actually happen.
+      // (Measured on a healthy machine: 20 of 20 descriptors live, so this is the crash path
+      // rather than routine hygiene.)
+      if (!pidAlive(s.pid) || !existsSync(s.socketPath)) return
+      const prior = out.get(s.sessionId)
+      if (prior) {
+        const winner = preferSession(prior, s)
+        // Logged rather than silent: two descriptors for one session means a process died in a
+        // way that left its file, and that is worth being able to see afterwards.
+        console.warn(`[bus] two descriptors for session ${s.sessionId} (pid ${prior.pid} and ${s.pid}); using ${winner.pid}`)
+        out.set(s.sessionId, winner)
+        return
+      }
+      out.set(s.sessionId, s)
     } catch { /* the file went away between readdir and read — ordinary here */ }
   }))
   return out

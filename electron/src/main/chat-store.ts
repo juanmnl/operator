@@ -476,7 +476,38 @@ export class ArtifactStore {
   }
 
   /** Everything the app has not yet ruled on. */
+  /** How long an unanswered request is still worth acting on.
+   *
+   *  The MCP server gives up at 15s and tells its caller, in as many words, that nothing was sent
+   *  and no task was created. Past that the answer can no longer reach anyone, so acting on the
+   *  row would make that message retroactively false. 30s rather than 15 because the two are
+   *  different processes reading different clocks, and expiring a request the lane is still
+   *  waiting on would be the worse mistake. */
+  static readonly DISPATCH_TTL_MS = 30_000
+
+  /** Answer every request too old to be acted on, so downtime does not replay as a burst.
+   *
+   *  THE FAILURE THIS PREVENTS: the app is closed while lanes keep running — they are ptys, and
+   *  `--mcp-serve` is spawned by `claude`, not by Operator. Each dispatch inserts a row, blocks
+   *  15s, times out, and correctly reports that nothing happened. Without an age cutoff the next
+   *  morning's first poll read every one of those rows and acted on all of them: tasks created
+   *  and lanes launched for dispatches whose callers gave up hours earlier and whose context was
+   *  gone.
+   *
+   *  Answered rather than deleted. The row is the only record that the request existed, and
+   *  `refused` with a reason is a true statement about what happened to it. */
+  expireDispatches(ttlMs = ArtifactStore.DISPATCH_TTL_MS): number {
+    const cutoff = new Date(Date.now() - ttlMs).toISOString()
+    return Number(this.db.prepare(
+      `UPDATE dispatch_requests SET answered_at = ?, outcome = 'refused', reason = ?
+       WHERE answered_at IS NULL AND at < ?`,
+    ).run(new Date().toISOString(), 'expired: Operator was not running when this was sent, and the caller has long since stopped waiting', cutoff).changes)
+  }
+
+  /** Requests still worth answering. Expired ones are closed out first, in the same call, so no
+   *  caller can read a stale row by forgetting to sweep. */
   openDispatches(): Array<{ id: number; at: string; terminalId: string; projectId?: string; roleId?: string; kind: string; lane: string; body: string }> {
+    this.expireDispatches()
     const rows = this.db.prepare(
       'SELECT id, at, terminal_id, project_id, role_id, kind, lane, body FROM dispatch_requests WHERE answered_at IS NULL ORDER BY id',
     ).all() as Array<Record<string, unknown>>
