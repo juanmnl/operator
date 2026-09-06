@@ -268,6 +268,10 @@ export function installBridge(): void {
     // NOT IMPLEMENTED on the Tauri backend, and empty rather than throwing: an empty list reads
     // correctly as "nothing to show", where the worktree reaper below has to refuse loudly
     // because a silent no-op there looks like a successful cleanup.
+    // NOT IMPLEMENTED on the Tauri backend. No lane it launches carries `--mcp-config`, so
+    // nothing can open a dispatch request there; an empty list is the truthful answer.
+    openDispatches: async () => ({ requests: [], addresses: [] }),
+    answerDispatch: async () => {},
     // NOT IMPLEMENTED on the Tauri backend — the Tuning page's capture is Electron-only. An
     // empty window reads correctly as "nothing ran", and the page's own empty state says so.
     getTuning: async (days: number) => ({

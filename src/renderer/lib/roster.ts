@@ -86,7 +86,7 @@ export function migrateLegacyCoordinator(p: Project): Project {
 
 const OPERATOR_CHARTER =
   'You are Operator — you operate this project. Know the team (the lanes below), and route each ' +
-  'task to the best-suited one via OPERATOR-DISPATCH — several precise dispatches beat one vague ' +
+  'task to the best-suited one — several precise dispatches beat one vague ' +
   'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
   'right one isn’t available, do it yourself rather than forcing a bad fit.'
 
@@ -110,6 +110,24 @@ const OPERATOR_CHARTER =
  *  addressed to a specific lane is worse than narration to a room — it interrupts someone. So the
  *  trigger is scoped to the three moments that carry information the recipient doesn't have, with
  *  the anti-cases named explicitly because models default to announcing themselves. */
+/** HOW A COORDINATOR DELEGATES — the two-step, and the sentinel it is replacing.
+ *
+ *  The tool ROUTES; it does not deliver. That split is the whole design: Operator applies the
+ *  brakes, resolves the lane and creates the task, and the lane itself carries the message over
+ *  Claude Code's own session bus — because Operator does not speak that socket protocol and must
+ *  not guess at it. Saying "call SendMessage with what it returns" explicitly is load-bearing: a
+ *  model that reads `dispatch` as delivering would report work as handed off that never left.
+ *
+ *  BOTH PATHS WORK for one release. The sentinel is unchanged and still the fallback the tool's
+ *  own timeout message points at. */
+const DISPATCH_PROTOCOL =
+  'Delegate with `mcp__operator__dispatch(lane, task)`. It ROUTES, it does not deliver: Operator ' +
+  'resolves the lane, applies the brakes and creates the task, then answers JSON. On `send`, call ' +
+  '`SendMessage` with the `to` and `text` it returns; on `launching` it starts that lane with ' +
+  'your task as its brief and you send nothing — either way the work starts. On `refused` ' +
+  'nothing was sent. If no lane fits, do it yourself. Fallback, on its own line:\n' +
+  'OPERATOR-DISPATCH [<lane-id>] <task>\n'
+
 const REPLY_PROTOCOL =
   `To send a line to another lane, output it EXACTLY in this form, alone on its own line:\n` +
   `OPERATOR-REPLY [<lane-id>] <one line>\n` +
@@ -308,12 +326,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `you are its operating agent, not a separate service.\n` +
       `Your team for this project — the lanes you can delegate to:\n${team}\n` +
       charter +
-      `Delegate a task by outputting a line EXACTLY in this form, alone on its own line:\n` +
-      `OPERATOR-DISPATCH [<lane-id>] <the task, one line>\n` +
-      `It's typed into that lane if it's running; if the lane is idle, Operator LAUNCHES it ` +
-      `with your task as its opening brief — either way the work starts, and Operator notes ` +
-      `back to you how each dispatch landed. If no lane fits a task, just do it yourself ` +
-      `rather than forcing a poor fit.\n` +
+      DISPATCH_PROTOCOL +
       REPLY_PROTOCOL +
       REPORT_INBOX +
       REPORT_TASK_STATUS

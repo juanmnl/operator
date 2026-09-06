@@ -271,6 +271,32 @@ export class ArtifactStore {
         applied     INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS task_status_applied ON task_status (applied, id);
+      -- DISPATCH OVER THE BUS: a request/verdict pair, because the two halves run in different
+      -- processes. The MCP server is short-lived, one process per tool call, and cannot hold the
+      -- delivery brakes -- those are a pure function over state living in the app's memory, and
+      -- the app owns the roster, the tasks and the board. So the server ASKS and the app ANSWERS,
+      -- through the same store the report path already uses.
+      --
+      -- One row, written by the server and updated by the app. answered_at is the flag the server
+      -- polls on, and a verdict is never half-visible because SQLite gives the whole UPDATE or
+      -- none of it.
+      CREATE TABLE IF NOT EXISTS dispatch_requests (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        at          TEXT NOT NULL,
+        terminal_id TEXT NOT NULL,
+        project_id  TEXT,
+        role_id     TEXT,
+        kind        TEXT NOT NULL,          -- 'dispatch' | 'reply'
+        lane        TEXT NOT NULL,
+        body        TEXT NOT NULL,
+        answered_at TEXT,
+        outcome     TEXT,                   -- 'send' | 'launching' | 'refused'
+        address     TEXT,
+        text        TEXT,
+        task_id     TEXT,
+        reason      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS dispatch_requests_open ON dispatch_requests (answered_at, id);
     `)
     this.migrateReports()
     this.backfillDelivered()
@@ -421,6 +447,61 @@ export class ArtifactStore {
          FROM reports ORDER BY id DESC LIMIT ?`,
     ).all(limit) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
+  }
+
+  // ── dispatch over the bus ──────────────────────────────────────────────────────────────────
+
+  /** Ask the app where a dispatch should go. Returns the row id to poll on. */
+  openDispatch(r: { terminalId: string; projectId: string | null; roleId: string | null; kind: 'dispatch' | 'reply'; lane: string; body: string }): number {
+    const info = this.db.prepare(
+      `INSERT INTO dispatch_requests (at, terminal_id, project_id, role_id, kind, lane, body)
+       VALUES (?,?,?,?,?,?,?)`,
+    ).run(new Date().toISOString(), r.terminalId, r.projectId, r.roleId, r.kind, r.lane, r.body)
+    return Number(info.lastInsertRowid)
+  }
+
+  /** The verdict for one request, or null while the app has not answered yet. */
+  dispatchVerdict(id: number): { outcome: string; address?: string; text?: string; taskId?: string; reason?: string } | null {
+    const row = this.db.prepare(
+      'SELECT outcome, address, text, task_id, reason FROM dispatch_requests WHERE id = ? AND answered_at IS NOT NULL',
+    ).get(id) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      outcome: String(row.outcome ?? 'refused'),
+      address: (row.address as string) ?? undefined,
+      text: (row.text as string) ?? undefined,
+      taskId: (row.task_id as string) ?? undefined,
+      reason: (row.reason as string) ?? undefined,
+    }
+  }
+
+  /** Everything the app has not yet ruled on. */
+  openDispatches(): Array<{ id: number; at: string; terminalId: string; projectId?: string; roleId?: string; kind: string; lane: string; body: string }> {
+    const rows = this.db.prepare(
+      'SELECT id, at, terminal_id, project_id, role_id, kind, lane, body FROM dispatch_requests WHERE answered_at IS NULL ORDER BY id',
+    ).all() as Array<Record<string, unknown>>
+    return rows.map((r) => ({
+      id: Number(r.id), at: String(r.at), terminalId: String(r.terminal_id),
+      projectId: (r.project_id as string) ?? undefined, roleId: (r.role_id as string) ?? undefined,
+      kind: String(r.kind), lane: String(r.lane), body: String(r.body),
+    }))
+  }
+
+  /** The app's answer. One UPDATE, so a verdict is never half-visible to the polling server. */
+  answerDispatch(id: number, v: { outcome: string; address?: string; text?: string; taskId?: string; reason?: string }): void {
+    this.db.prepare(
+      `UPDATE dispatch_requests SET answered_at = ?, outcome = ?, address = ?, text = ?, task_id = ?, reason = ?
+       WHERE id = ? AND answered_at IS NULL`,
+    ).run(new Date().toISOString(), v.outcome, v.address ?? null, v.text ?? null, v.taskId ?? null, v.reason ?? null, id)
+  }
+
+  /** Drop answered rows older than a day. The table is a mailbox, not a log — the dispatch
+   *  record that matters is the TASK, which lives in `projects.json`. */
+  pruneDispatches(olderThanMs = 24 * 60 * 60 * 1000): number {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString()
+    return Number(this.db.prepare(
+      'DELETE FROM dispatch_requests WHERE answered_at IS NOT NULL AND at < ?',
+    ).run(cutoff).changes)
   }
 
   pendingStatus(): ArtifactStatusEvent[] {

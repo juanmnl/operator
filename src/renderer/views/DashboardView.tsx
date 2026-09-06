@@ -21,6 +21,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
+import { resolveDispatch } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
@@ -1525,6 +1526,96 @@ export function DashboardView() {
       }
     })
     return () => unsub?.()
+  }, [])
+
+  // ── DISPATCH OVER THE SESSION BUS ────────────────────────────────────────────────────────
+  //
+  // A lane calls `mcp__operator__dispatch`; that server process cannot hold the delivery brakes
+  // (they are state in THIS component) so it writes a request and waits. This is the half that
+  // answers. Operator stays the router — same brakes, same role resolution, same task and board
+  // entry the sentinel applies — and the LANE does the send, with its own `SendMessage`.
+  //
+  // 500ms because a lane is blocked on the answer: the MCP side gives up at 15s and says plainly
+  // that nothing was sent, so this has to be comfortably inside that and cheap enough to run
+  // while idle. One indexed read of a table that is empty almost always.
+  useEffect(() => {
+    let stopped = false
+    const tick = async () => {
+      if (stopped) return
+      let open: Awaited<ReturnType<typeof window.operator.openDispatches>>
+      try { open = await window.operator.openDispatches() } catch { return }
+      if (stopped || !open.requests.length) return
+      const addresses = new Map(open.addresses.map((a) => [a.sessionId, a.address]))
+      const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
+      for (const r of open.requests) {
+        const srcTab = tabs.find((t) => t.id === r.terminalId)
+        const projectId = r.projectId ?? srcTab?.projectId
+        const project = projs.find((p) => p.id === projectId)
+        if (!project || !projectId) {
+          await window.operator.answerDispatch(r.id, {
+            outcome: 'refused',
+            reason: 'Operator cannot resolve which project this lane belongs to.',
+          })
+          continue
+        }
+        // The tailer's session id IS the Claude session uuid the bus addresses by; the tab only
+        // knows its own terminal id, so the join happens here.
+        const uuidOf = (terminalId: string) =>
+          sessionsRef.current.find((x) => x.terminalId === terminalId)?.id
+        const lanes = withActivityRef.current(tabs).map((t) => ({ ...t, claudeSessionId: uuidOf(t.id) }))
+
+        const { verdict, brakes } = resolveDispatch(
+          {
+            lane: r.lane,
+            task: r.body,
+            fromRoleId: srcTab?.roleId ?? r.roleId ?? 'unknown',
+            fromLabel: (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))?.name ?? 'Operator',
+            projectId,
+          },
+          {
+            project,
+            lanes,
+            addresses,
+            brakes: deliveryStateRef.current,
+            chatterPaused: chatterPausedRef.current,
+            now: Date.now(),
+          },
+        )
+        deliveryStateRef.current = brakes
+
+        // LAUNCHING IS OPERATOR'S OWN JOB, and it runs the SAME path the sentinel does rather
+        // than a second near-identical one — `deliverDispatchRef` is that path, and reusing it is
+        // what keeps "dispatched over the bus" and "dispatched by sentinel" the same event.
+        if (verdict.outcome === 'launching') {
+          deliverDispatchRef.current({
+            id: `bus-${r.id}`, roleToken: r.lane, task: r.body,
+            terminalId: r.terminalId, projectId,
+          })
+        } else if (verdict.outcome === 'send') {
+          // The task and its board entry are Operator's to create even though the lane carries
+          // the message: the board is how a human sees what was asked of whom, and it must not
+          // depend on the sender remembering to say so afterwards.
+          const target = lanes.find((l) => l.roleId && verdict.to === addresses.get(l.claudeSessionId ?? ''))
+          if (target?.roleId) {
+            dispatchRef.current.addRunningTask(projectId, r.body, target.roleId, target.id, {
+              cwd: target.cwd, sourceCwd: target.sourceCwd,
+              worktreeBranch: target.worktreeBranch, worktreeBase: target.worktreeBase,
+            })
+          }
+          // WHICH PATH EACH DISPATCH USED, logged while both exist. The sentinel keeps working
+          // unchanged for a release, and without this line there would be no way to tell whether
+          // anything had actually moved to the bus.
+          console.info(`[dispatch] bus → ${r.lane} (request ${r.id})`)
+          toast({ text: `Routed to ${r.lane} over the session bus`, kind: 'info' })
+        }
+        await window.operator.answerDispatch(r.id, {
+          outcome: verdict.outcome, address: verdict.to, text: verdict.text,
+          taskId: verdict.taskId, reason: verdict.reason,
+        })
+      }
+    }
+    const t = window.setInterval(() => { void tick() }, 500)
+    return () => { stopped = true; clearInterval(t) }
   }, [])
 
   const launchingLanesRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())

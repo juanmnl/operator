@@ -29,6 +29,7 @@ import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
 import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
 import { devServerInventory, ageSnapshot } from './dev-servers'
+import { readBusSessions } from './session-bus'
 import {
   resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
   skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
@@ -299,6 +300,22 @@ export function registerIpc(d: Deps): void {
     // ONE CALL for the whole Tuning page. The transcript scan and the chat.db query are joined
     // HERE rather than in the renderer so both halves describe the same window — two round trips
     // over a 30-day window would let transcripts land between them and the page paint two.
+    // THE APP ANSWERS, the server asks — see `dispatch_requests` in chat-store. The bus
+    // addresses come from `session-bus`, which reads Claude Code's own descriptors; Operator
+    // never speaks the socket protocol itself.
+    openDispatches: async () => {
+      const rows = d.artifacts.openDispatches()
+      if (!rows.length) return { requests: [], addresses: [] }
+      const sessions = await readBusSessions()
+      return {
+        requests: rows,
+        addresses: [...sessions.values()].map((s) => [s.sessionId, `uds:${s.socketPath}`] as const)
+          .map(([sessionId, address]) => ({ sessionId, address })),
+      }
+    },
+    answerDispatch: async (id, verdict) => {
+      d.artifacts.answerDispatch(Number(id), verdict as { outcome: string })
+    },
     getTuning: async (days) => {
       const n = Number(days) || 7
       // ONE WINDOW FOR BOTH HALVES, computed once here.

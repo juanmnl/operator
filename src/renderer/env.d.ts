@@ -129,6 +129,13 @@ declare global {
        *  never removes anything. */
       /** Every dev-server-shaped process attributable to a project or worktree, with how it was
        *  attributed. Read-only — killing is a separate, explicitly confirmed call. */
+      /** Dispatch requests a lane's MCP call is waiting on, with the bus addresses to resolve
+       *  them against. Operator answers; the LANE does the sending. */
+      openDispatches: () => Promise<{
+        requests: Array<{ id: number; at: string; terminalId: string; projectId?: string; roleId?: string; kind: string; lane: string; body: string }>
+        addresses: Array<{ sessionId: string; address: string }>
+      }>
+      answerDispatch: (id: number, verdict: { outcome: string; address?: string; text?: string; taskId?: string; reason?: string }) => Promise<void>
       /** Everything the Tuning page reads, for a 1/7/30-day window, in one call. */
       getTuning: (days: number) => Promise<TuningData>
       devServerList: () => Promise<DevServerProc[]>

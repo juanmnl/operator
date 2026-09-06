@@ -112,6 +112,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'dispatch',
+    description:
+      'Hand a task to another lane in THIS project. Operator resolves the lane, applies the '
+      + 'delivery brakes, creates the task and its board entry, and answers with where to send. '
+      + 'TWO STEPS: if the answer says `send`, you must then call SendMessage with the `to` and '
+      + '`text` it gives you — this tool does not deliver, it routes. If the answer says '
+      + '`launching`, Operator is starting that lane with your task as its opening brief and you '
+      + 'send nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lane: { type: 'string', description: "The lane's role id or name, e.g. `code`." },
+        task: { type: 'string', description: 'The task, in one line.' },
+      },
+      required: ['lane', 'task'],
+    },
+  },
+  {
+    name: 'reply',
+    description:
+      'Send one line to another lane in THIS project. Same two-step as `dispatch`: Operator '
+      + 'answers with where to send, and you then call SendMessage with what it returns. Use it '
+      + 'when a lane needs to know something that changes what it does next — not to narrate.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lane: { type: 'string', description: "The lane's role id or name." },
+        line: { type: 'string', description: 'The message, one line.' },
+      },
+      required: ['lane', 'line'],
+    },
+  },
+  {
     name: 'task_status',
     description: "Tell Operator a task's status changed. Call it when you START and when you FINISH.",
     inputSchema: {
@@ -143,6 +176,31 @@ const TOOLS = [
 // name them that way.
 
 const VALID_STATUS = new Set(['queued', 'running', 'done', 'blocked'])
+
+/** How long a lane waits for Operator's routing decision before giving up. */
+const VERDICT_TIMEOUT_MS = 15_000
+const VERDICT_POLL_MS = 100
+
+/** Wait for the app's verdict, SYNCHRONOUSLY.
+ *
+ *  `callTool` is synchronous and so is `handle` above it, because this process serves one stdio
+ *  request at a time and nothing here has ever needed to interleave. Threading async through both
+ *  for one tool would change the shape of every other. `Atomics.wait` on a throwaway buffer is the
+ *  standard way to sleep a Node thread without a busy loop; better-sqlite3 is synchronous too, so
+ *  the poll below is a plain read.
+ *
+ *  Returns null on timeout, and the caller says plainly that nothing was sent — a dispatch that
+ *  silently did nothing is the failure this whole path exists to end. */
+function awaitVerdict(store: ArtifactStore, id: number): Record<string, unknown> | null {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  const deadline = Date.now() + VERDICT_TIMEOUT_MS
+  for (;;) {
+    const v = store.dispatchVerdict(id)
+    if (v) return v as unknown as Record<string, unknown>
+    if (Date.now() >= deadline) return null
+    Atomics.wait(sleeper, 0, 0, VERDICT_POLL_MS)
+  }
+}
 
 function callTool(name: string, args: Record<string, unknown>): unknown {
   let caller: Caller
@@ -179,6 +237,36 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       if (!VALID_STATUS.has(status)) return errorResult('`status` must be one of: queued, running, done, blocked.')
       store.insertStatus(at, caller.terminalId, caller.projectId, id, status)
       return textResult(`Task ${id} marked ${status}.`)
+    }
+
+    if (name === 'dispatch' || name === 'reply') {
+      const lane = typeof args.lane === 'string' ? args.lane.trim() : ''
+      const body = typeof (name === 'dispatch' ? args.task : args.line) === 'string'
+        ? String(name === 'dispatch' ? args.task : args.line).trim()
+        : ''
+      if (!lane || !body) {
+        return errorResult(`\`lane\` and \`${name === 'dispatch' ? 'task' : 'line'}\` are both required.`)
+      }
+      if (!caller.projectId) {
+        // Scope is the whole point of routing through Operator: a lane may only address lanes in
+        // its own project, and a caller whose project cannot be established has no scope to be in.
+        return errorResult('this lane has no project on record, so Operator cannot scope the dispatch.')
+      }
+      const id = store.openDispatch({
+        terminalId: caller.terminalId, projectId: caller.projectId, roleId: caller.roleId,
+        kind: name, lane, body,
+      })
+      const verdict = awaitVerdict(store, id)
+      if (!verdict) {
+        return errorResult(
+          'Operator did not answer in time. Nothing was sent and no task was created — retry, or '
+          + 'use the OPERATOR-DISPATCH sentinel, which still works.',
+        )
+      }
+      // THE ANSWER IS JSON ON PURPOSE. The caller has to act on it — `send` means "now call
+      // SendMessage with exactly these two fields" — and a sentence would have the model
+      // reconstructing an address by eye.
+      return textResult(JSON.stringify(verdict))
     }
 
     return errorResult(`unknown tool: ${name}`)
