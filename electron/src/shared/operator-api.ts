@@ -47,6 +47,8 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   terminalResize:       { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
   terminalKill:         { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   terminalList:         { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
+  claudeVersion:        { delivery: 'invoke', impl: 'native' },
+  onClaudeVersion:      { delivery: 'event',  impl: 'native' },
   terminalHistory:      { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   shellSpawn:           { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   onTerminalData:       { delivery: 'event',  impl: 'native', rust: 'lib.rs' },

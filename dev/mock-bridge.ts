@@ -653,6 +653,9 @@ export function installMockBridge() {
       }
     },
     getVersion: async () => '0.8.8-mock',
+    // `window.__mockClaudeVersion` stages an installed Claude Code newer than the lanes' own.
+    claudeVersion: async () => (window as unknown as { __mockClaudeVersion?: string }).__mockClaudeVersion ?? null,
+    onClaudeVersion: sub,
     checkUpdate: async () => null,
     // Populated, not empty: with `settingsFiles: []` every FolderPreferences tab renders its
     // "no settings file" empty state, so a theme/contrast sweep would measure blank pages and

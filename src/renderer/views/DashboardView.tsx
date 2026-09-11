@@ -65,6 +65,10 @@ import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WOR
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
+import {
+  isOutOfDate, restartable, canRestartLane, pickAutoRestart, restartLaunchOptions, replaceTab, rekeyTasks,
+  cliUpdateLabel, autoRestartEnabled, AUTO_RESTART_TICK_MS, type RestartCandidate,
+} from '../lib/cli-update'
 
 /** Who asked for a project upsert. `user` may lift a shelf and cancel a forget; `background`
  *  may do neither. Default is `background` — a new call site opts IN to the destructive
@@ -104,6 +108,9 @@ interface TerminalTab {
    *  take it from the spawn result; re-attached ones from `ManagedTerminal.grid`, which the
    *  backend reports off the pty itself. */
   grid?: boolean
+  /** The Claude Code version this tab's pty was spawned on, recorded by the backend. Compared with
+   *  the installed version to offer a restart (lib/cli-update). Null when it could not be read. */
+  claudeVersion?: string | null
 }
 
 
@@ -490,6 +497,9 @@ export function DashboardView() {
     })
 
     const unsubExit = window.operator.onTerminalExit((id) => {
+      // A pty ended BY A RESTART is not a lane finishing; its tab has been, or is about to be,
+      // swapped for the resumed one (see handleRestartLane).
+      if (restartedFromRef.current.has(id)) { submitQueue.busy(id, false); return }
       // Don't drop the tab — unmounting the pane blanks the final output. xterm
       // keeps its buffer after the pty dies, so mark the tab ended and leave it
       // mounted + active; the last frame stays on screen until the user dismisses
@@ -1360,8 +1370,13 @@ export function DashboardView() {
   /** `focusTerminal` is declared much further down, so the undelivered toast reaches it the
    *  same way the exit handler reaches its own late sibling — through a ref assigned on render. */
   const focusTerminalRef = useRef<(id: string) => void>(() => {})
+  /** Terminal ids ENDED BY A RESTART onto a new Claude Code. Their exit must not complete the lane's
+   *  running tasks — the lane is still working on them under its new id. Never cleared: terminal ids
+   *  are a per-run counter and are not reused within a run. */
+  const restartedFromRef = useRef(new Set<string>())
   const exitCompleteRef = useRef<(id: string) => void>(() => {})
   exitCompleteRef.current = (id: string) => {
+    if (restartedFromRef.current.has(id)) return
     const tab = terminals.find((t) => t.id === id)
     if (tab?.projectId) void completeTerminalTasks(id, tab.roleId, tab.projectId, laneOf(tab))
   }
@@ -2329,6 +2344,8 @@ export function DashboardView() {
             // Off the PTY, not off the pref: this session's renderer was decided when it was
             // spawned, possibly before a reload and possibly before the pref was last changed.
             grid: t.grid,
+            // Off the pty too: the version it was spawned on survives a renderer reload there.
+            claudeVersion: t.claudeVersion ?? null,
           }
         })
       })
@@ -2596,6 +2613,7 @@ export function DashboardView() {
         fanIndex: fanGroup ? i + 1 : undefined,
         fanTotal: fanGroup ? count : undefined,
         grid: result.grid,
+        claudeVersion: result.claudeVersion ?? null,
       }
       setTerminals((prev) => [...prev, tab])
       spawned.push(tab)
@@ -2966,6 +2984,7 @@ export function DashboardView() {
       projectId: saved.projectId ?? proj.id,
       roleId: saved.roleId,
       grid: result.grid,
+      claudeVersion: result.claudeVersion ?? null,
     }
     setTerminals((prev) => [...prev, tab])
     setActiveTerminalId(result.terminalId)
@@ -3083,6 +3102,121 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
   }, [terminals, forgetSavedSession, completeTerminalTasks])
   handleCloseSessionRef.current = handleCloseSession
+
+  // CLAUDE CODE UPDATED UNDER A RUNNING LANE (lib/cli-update). Main records the version each pty was
+  // spawned on and pushes the installed one when the `claude` link moves.
+  const [installedClaudeVersion, setInstalledClaudeVersion] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(window.operator.claudeVersion?.())
+      .then((v) => { if (live && v !== undefined) setInstalledClaudeVersion(v) })
+      .catch(() => { /* no reading: no restart offered */ })
+    const off = window.operator.onClaudeVersion?.((v) => setInstalledClaudeVersion(v))
+    return () => { live = false; off?.() }
+  }, [])
+
+  /** A tab as the restart decisions see it. Off refs, so the auto-restart timer reads the present. */
+  const restartCandidateOf = useCallback((tab: TerminalTab): RestartCandidate => ({
+    terminalId: tab.id,
+    claudeVersion: tab.claudeVersion,
+    ended: tab.ended,
+    session: sessionsRef.current.find((s) => s.terminalId === tab.id),
+    pendingSubmission: !!submitQueue.pending(tab.id),
+    resumable: !!(claudeIdOf(tab.id) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [])
+
+  // RESTART A LANE ONTO THE INSTALLED CLAUDE CODE: end its process and resume the same session in
+  // place. Not `handleCloseSession`, which completes the lane's running tasks and removes its
+  // worktree; a restart does neither. The tab keeps its key, slot, worktree, role, model and effort.
+  // Only the terminal id changes, so what is keyed on it moves to the new id here: the active
+  // selection, terminal-stamped tasks, and a pending done report. Dispatch resolves lanes through
+  // the tabs (`pickLaneTab`) and saved rows by Claude session id, which `--resume` keeps.
+  const restartingRef = useRef(new Set<string>())
+  const handleRestartLane = useCallback(async (terminalId: string) => {
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+    if (!tab || tab.ended || restartingRef.current.has(terminalId)) return
+    const session = sessionsRef.current.find((s) => s.terminalId === terminalId)
+    // Re-checked at the moment of acting: a turn can start between drawing the button and the click.
+    if (!canRestartLane(session, !!submitQueue.pending(terminalId))) return
+    const claudeSessionId = claudeIdOf(terminalId) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId
+    if (!claudeSessionId) return // nothing to resume; a restart would open a blank session
+    const project = projectsRef.current.find((p) => p.id === tab.projectId)
+    const role = tab.roleId ? project?.roster?.find((r) => r.id === tab.roleId) : undefined
+    const rc = remoteControlLaunch(project, tab.roleId)
+    // The live effort first, as the toolbar reads it: a mid-session `/effort` is what the lane runs.
+    const effort = (session?.effort as EffortLevel | undefined) ?? tab.effortLevel
+    const launchOptions = restartLaunchOptions(
+      { model: tab.model, effort, permissionMode: tab.permissionMode, projectId: tab.projectId, roleId: tab.roleId },
+      claudeSessionId,
+      {
+        // `--append-system-prompt` belongs to the process, so the lane's note is sent again.
+        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster) : undefined,
+        remoteControl: rc.remoteControl,
+        remoteControlName: rc.remoteControlName,
+      },
+    )
+
+    restartingRef.current.add(terminalId)
+    restartedFromRef.current.add(terminalId)
+    try {
+      await window.operator.terminalKill(terminalId)
+      const result = await window.operator.terminalSpawn(tab.cwd, launchOptions)
+      if (!result) {
+        // The old process is gone and nothing replaced it. Leave the tab in the state any exited
+        // lane is in; its saved row is untouched, so it can still be resumed.
+        setTerminals((prev) => prev.map((t) => (t.id === terminalId ? { ...t, ended: true } : t)))
+        pushToast({ kind: 'error', text: 'Restart failed', detail: 'The lane ended but did not start again. It can still be resumed from its project.' })
+        return
+      }
+      const next: TerminalTab = {
+        ...tab,
+        id: result.terminalId,
+        cwd: result.cwd,
+        grid: result.grid,
+        effortLevel: effort,
+        claudeVersion: result.claudeVersion ?? null,
+        ended: undefined,
+        reattached: undefined,
+      }
+      setTerminals((prev) => replaceTab(prev, terminalId, next))
+      // Focus stays where it was: a lane on screen stays on screen, a background lane stays behind.
+      setActiveTerminalId((cur) => (cur === terminalId ? next.id : cur))
+      setActiveSessionId((cur) => (cur === `local-${terminalId}` ? `local-${next.id}` : cur))
+      setProjects((prev) => prev.map((p) => {
+        if (!p.tasks) return p
+        const tasks = rekeyTasks(p.tasks, terminalId, next.id)
+        return tasks === p.tasks ? p : { ...p, tasks: tasks as ProjectTask[] }
+      }))
+      const done = doneReportsRef.current[terminalId]
+      if (done) {
+        doneReportsRef.current[next.id] = done
+        delete doneReportsRef.current[terminalId]
+      }
+      submitQueue.busy(terminalId, false)
+    } catch (e) {
+      console.warn('Lane restart failed:', e)
+      pushToast({ kind: 'error', text: 'Restart failed', detail: String(e) })
+    } finally {
+      restartingRef.current.delete(terminalId)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pushToast])
+
+  // AUTO-RESTART, off unless switched on in Preferences (read per tick, so the switch applies at
+  // once). One lane per tick, never while another restart is in flight, never a lane mid-turn or
+  // blocked on a permission prompt — `pickAutoRestart` owns all of that.
+  useEffect(() => {
+    if (!installedClaudeVersion || !reattachDone) return
+    const tick = () => {
+      if (!autoRestartEnabled()) return
+      const lane = pickAutoRestart(terminalsRef.current.map(restartCandidateOf), installedClaudeVersion, restartingRef.current.size > 0)
+      if (lane) void handleRestartLane(lane)
+    }
+    tick()
+    const timer = window.setInterval(tick, AUTO_RESTART_TICK_MS)
+    return () => window.clearInterval(timer)
+  }, [installedClaudeVersion, reattachDone, restartCandidateOf, handleRestartLane])
 
   // TASK-SCOPED LANES: a lane that has finished stops holding a pty.
   //
@@ -3491,6 +3625,7 @@ export function DashboardView() {
           worktreeBase: t.worktreeBase,
           sourceCwd: t.sourceCwd,
           claudeSessionId: hook?.id,
+          claudeVersion: t.claudeVersion ?? undefined,
           terminalId: t.id,
           lastActiveAt: hook?.lastActivityAt || new Date().toISOString(),
         })
@@ -4142,6 +4277,24 @@ export function DashboardView() {
       })
     })
 
+    // Lanes on an older Claude Code than the one installed, while they can be restarted.
+    if (installedClaudeVersion) {
+      for (const t of terminals) {
+        if (!restartable(restartCandidateOf(t), installedClaudeVersion)) continue
+        const s = allSidebarSessions.find((x) => x.terminalId === t.id)
+        const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined
+        const role = t.roleId ? project?.roster?.find((r) => r.id === t.roleId) : undefined
+        const name = s ? sessionLabel({ session: s, role, customName: customNames[s.id], fallback: s.projectName || 'Session' }) : (role?.name ?? 'Session')
+        actions.push({
+          id: `restart-cli-${t.id}`,
+          group: 'Session',
+          label: `Restart ${name} on Claude Code ${installedClaudeVersion}`,
+          detail: `Running ${t.claudeVersion} · resumes the same conversation`,
+          run: () => { void handleRestartLane(t.id) },
+        })
+      }
+    }
+
     // Folder prefs entries (one per unique project)
     const seenProjects = new Set<string>()
     for (const s of allSidebarSessions) {
@@ -4310,7 +4463,8 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning])
+      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
+      installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -4342,6 +4496,22 @@ export function DashboardView() {
     return [
       { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
       { label: 'Project Claude files', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
+      // Lanes of this project still on an older Claude Code than the one installed. Listed while
+      // busy too, disabled, so the menu says why the header's Restart is not live yet.
+      ...terminals
+        .filter((t) => t.projectId === project.id && !t.ended && isOutOfDate(t.claudeVersion, installedClaudeVersion))
+        .map((t, i): CardMenuItem => {
+          const s = allSidebarSessions.find((x) => x.terminalId === t.id)
+          const role = project.roster?.find((r) => r.id === t.roleId)
+          const name = s ? sessionLabel({ session: s, role, customName: customNames[s.id], fallback: project.name }) : (role?.name ?? project.name)
+          return {
+            id: `restart-cli-${t.id}`,
+            label: `Restart ${name} on Claude Code ${installedClaudeVersion}`,
+            onClick: () => { void handleRestartLane(t.id) },
+            disabled: !restartable(restartCandidateOf(t), installedClaudeVersion),
+            separator: i === 0,
+          }
+        }),
       // ALWAYS PRESENT. Close means "take this off the rail", and every tile in this menu is on
       // the rail by definition (`isOnRail` is the filter that drew it) — so the `live > 0` gate
       // that used to hide it here was always answering the wrong question. It hid the case the
@@ -4363,7 +4533,7 @@ export function DashboardView() {
         confirm: live > 0,
       },
     ]
-  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject])
+  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
 
   /** THE LAUNCH PATH THE IDLE ROWS USED TO CARRY. The strip lists only what is LIVE now, so the
    *  roster's quiet lanes have no row to click — and removing a control must never strand the need
@@ -4741,6 +4911,13 @@ export function DashboardView() {
               onTogglePanel={togglePanel}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
+              cliUpdate={tab && installedClaudeVersion && isOutOfDate(tab.claudeVersion, installedClaudeVersion) && !tab.ended
+                ? {
+                  label: cliUpdateLabel(installedClaudeVersion),
+                  canRestart: restartable(restartCandidateOf(tab), installedClaudeVersion),
+                  onRestart: () => { void handleRestartLane(tab.id) },
+                }
+                : null}
             />
           )
         })()}
