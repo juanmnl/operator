@@ -1,88 +1,76 @@
-# Handoff — 2026-09-06
+# Handoff — 2026-09-11
 
-**`main` = `2418772`, pushed. 0.21.0 is PUBLISHED and LIVE** (tag `electron-v0.21.0`, run
-34067520738 green: `test` + `release`). Verified: the swap feed's `latest.json` serves **0.21.0**
-with the new notes; the `juanmnl/operator` release is `draft:false` with `Operator-0.21.0-arm64-mac.zip`,
-`Operator.app.tar.gz` + `.sig`, `latest-mac.yml`, `latest.json`. Every 0.20.0 install will be offered it.
+**`main` = `33adde0`, pushed. 0.22.0 is PUBLISHED and LIVE** (tag `electron-v0.22.0`, run
+34642598920 green: `test` + `release`). Verified: `operator-releases` release `v0.22.0` is
+`draft:false` with `Operator_0.22.0_aarch64.dmg`, `Operator-0.22.0-arm64-mac.zip`,
+`Operator.app.tar.gz`, `SHA256SUMS.txt`, `latest-mac.yml`, `latest.json`; the feed's
+`releases/latest/download/latest.json` serves **0.22.0** signed. Every 0.21.0 install is offered it.
 
-Final gates on `main`: renderer **1141 / 0**, electron **536 / 0**, cargo **197 / 0 (3 ignored)**,
-root `tsc`, electron typecheck, electron build all clean. The 33 "pre-existing" renderer failures
-every earlier handoff carried are gone: they were Node 26 shadowing jsdom's `localStorage`
-(`src/test-setup.ts`), not code defects.
+Final gates on merged `main` before tagging: renderer **1168 / 0**, electron **552 / 0**, root
+`tsc` + build, electron typecheck all clean.
 
-**⚠ THE ONE THING TO DO FIRST: nothing in 0.21.0 has been seen rendered by a person.** Two Review
-passes and two QA passes (Playwright + the dev/qa-real bridge) covered it; no human opened a real
-window. Look at, in this order: the session toolbar's model/effort chips (enabled only between
-turns), the Dev servers panel in Worktrees preferences (every row a confirm-gated kill), the
-Tuning page (plan-meter footer link, ⌘K "Tuning", rail foot), the session bottom bar's context and
-plan cells, and the rail's ⋯ close on a project row. Clean path back is `git revert 2418772` + a
-`0.21.1` tag, or a targeted revert of the merge commits below.
+**⚠ FIRST: nothing in 0.22.0 has been seen rendered by a person.** Check, in order:
+1. Install 0.22.0, open mantel in Preview: the Dock icon must stay unbadged (0.21.0 showed a red "3").
+2. Switch to a lane that ran a long turn while hidden: the prompt row must be on screen.
+3. Leave a lane idle on an older Claude Code binary (its own "Update installed · Restart to update"
+   banner shows): a `Claude Code <v> available · Restart` chip must appear on its header within a
+   minute, also in the project ⋯ menu and ⌘K. Press it: same conversation, same worktree, same
+   rail slot. Then dispatch to it and confirm delivery.
+Clean path back is `git revert 33adde0` of the notes/version plus reverts of merges `2274322`
+and `8a599a9`, then a `0.22.1` tag.
 
-## What 0.21.0 is: the app narrowed to the landing's meaning
+## What 0.22.0 is: three defects the user hit in one day, all traced before any code moved
 
-Direction set 2026-09-05 (`memory: project_simplify_direction`, hub note): open a project, launch
-sessions for specific work, hand work between agents, tune each lane's model and effort so plan
-limits are approached and never hit. Chat and Files were unused and went.
+Merge commits on main: `2274322` (`operator/bcab80`, badge block) and `8a599a9` (`operator/bcab80`
+again: pane activation + restart-on-update). Briefs in `dev/briefs/`, results in `dev/results/`.
 
-Merge commits on main, in order: `b521fc6` (the simplify batch, branch `operator/e78fc0`),
-`5bdf083` (`operator/dispatch-bus`), `cc536be` (`operator/plan-bar`).
+1. **Dock badge "3" (`preview-badge-block`).** Operator never sets a badge. Electron ships Chromium's
+   Badging API, so a page inside the Preview pane badges the host. mantel's `apps/web/src/App.tsx`
+   calls `navigator.setAppBadge(reservasCount)`. Measured with `electron/probes/badge-block.cjs`
+   (Electron 43.4.1): a cross-origin iframe, a top-level inspect view and a service worker could
+   all badge. Fix: main-world stubs via `contextBridge.executeInMainWorld` in
+   `electron/src/preload/badge-block.ts`, run in every subframe (`nodeIntegrationInSubFrames`,
+   subframes get NO `__operatorNative`), a service-worker preload, and `app.setBadgeCount(0)` at boot.
+2. **Prompt not visible after switching to a lane (`pane-activation-scroll`).** Activation never
+   called `scrollToBottom`, and the old `fit()` after `term.write()` resized before the queued
+   hidden bytes parsed. Now `applyPaneActivation` in `src/renderer/lib/terminal-options.ts`:
+   parse hidden output (composed at the pre-fit width) → fit in the write callback (only if still
+   active) → scrollToBottom → refresh. The research brief's "fit first" suggestion was WRONG and
+   the lane proved it with real xterm 6.0.0 tests; keep the order as shipped.
+3. **Restart a lane when Claude Code updated underneath it (`restart-lane-on-cli-update`).**
+   `electron/src/main/claude-version.ts` polls the `claude` symlink every 60 s; spawn records the
+   binary version per pty and saved session (`SavedSession.claudeVersion`). Pure decisions in
+   `src/renderer/lib/cli-update.ts`; action `DashboardView.handleRestartLane` kills the pty tree
+   (dev server dies, port may change), resumes with `--resume`, swaps the tab in the same slot,
+   re-keys tasks. Pref `operator.autoRestartOnCliUpdate` (off). Unsubmitted text in Claude Code's
+   input is lost on restart; Operator cannot see it.
 
-1. **Chat + Files removed** from both shells (−5,100 lines, 25 files, `@codemirror/*` dropped, ⌘J
-   unbound). Survivors that look like chat and must stay: `chat-signal.ts` (task board + quit
-   guard), `chatstore` write path (Comms log), the tailers. `chat.db` is read again by the Tuning
-   page's tool-output stats.
-2. **Port allocation** (`electron/src/main/port-alloc.ts`, `port-probe.ts`): bind check on v4+v6,
-   lease check, serialized allocations, same-cwd sharing only when `provesOwnServer` (deep process
-   matching `DEV_SERVER_RE` + a lease) — fails closed. The real cause of the 2026-09-05 double
-   allocation was the release path: `shouldReleaseCwdPort` now keeps a shared reservation while a
-   sibling holds it.
-3. **Orphan reaper** (`dev-servers.ts`): lane close reaps reparented servers (pinned by test); a
-   10-minute sweep with the boot sweep's three gates + shape filter; a Dev servers list by owner
-   class (`dead-app` / `abandoned-lane` / `untagged` / `live-lane`), confirm-only, no select-all.
-4. **Settings prune**: per-project Effort Level field removed. `compacting` phase is now emitted
-   (both tailers, cleared on the next real main-thread record, 5-minute ceiling).
-5. **Remote Control per role**: every per-session settings file writes `remoteControlAtStartup`
-   explicitly (flag scope outranks the user's settings.json; unset = org default = ON, which is why
-   the phone listed every lane). On for `operator`, off otherwise, per-role toggle on the roster;
-   session named `<project> · Operator` via `--remote-control`. Verified against claude 2.1.261.
-6. **Tuning page** (`src/renderer/lib/tuning.ts`, `electron/src/main/tuning.ts`): design in
-   `dev/results/usage-view-design.md`. Capture added: `effort` per assistant record, compaction
-   count + tokens re-read, per-session context stats, tool output p50/p90 from chat.db.
-7. **Bottom bar** (`.actions-footer` in DashboardView; `SessionInfoBar.tsx` was dead and is
-   deleted): `ctx used / window ↺n`, `Model · Effort`, `Session % Week % <Model> %` with the
-   binding limit marked. Context comes from the latest main-thread assistant record (sidechain
-   excluded); window inferred from a `[1m]` pin or observed context > 200k. Rail foot ring removed;
-   text-only reading there when no session is active.
-8. **Auto-close**: a `report` counts as done (lanes call `report` ~130× more than `task_status`).
-9. **Close from the rail**: ⋯ trigger on the project row, closing state on the tile, confirm keyed on
-   action identity.
-10. **Dispatch/reply over the session bus**: MCP tools `dispatch` and `reply` (bare names; Claude
-    Code prefixes `mcp__operator__`). The server asks the app for a verdict through a request/verdict
-    row in the artifact store (15s), the app applies route → authority gate → hop brakes, and the
-    LANE sends via native `SendMessage` to `uds:/tmp/cc-socks/<pid>.sock` (matched by sessionId from
-    `~/.claude/sessions/<pid>.json`). Both tailers record the `SendMessage` tool_result as the
-    delivery outcome (send book keyed by sender + address). Sentinels still work this release.
-    **Not run end to end between two live lanes** — the first real dispatch from a 0.21.0
-    coordinator is the test. Spike: `dev/results/session-bus-spike.md`.
+## Not fixed, by finding
 
-## Gotchas learned this cycle
-- **Briefs are invisible in a fresh lane worktree unless COMMITTED to main first.** Untracked
-  `dev/briefs/*` never reach the lane. Commit, then dispatch.
-- **QA and Code shared one worktree**; a `git add -A` swept a 431KB real chat history into a commit.
-  Purged from history before any push; `dev/*fixture*.json` is gitignored. Explicit paths only.
-- **One dispatch per idle lane**: the second is dropped silently. Queue the rest after it reports.
-- The coordinator can merge/push when the user types the command or sets `/goal`; an unprompted
-  `git merge` was blocked by the permission classifier once.
-- The long-running 0.20.0 process showed a "Diff unavailable" panel whose copy exists nowhere on
-  disk: a stale in-memory renderer bundle. Fully quitting clears it (`dev/results/diff-panel-unavailable.md`).
-- `phase === 'idle'` is never emitted by the tailers (only running/compacting/waiting); fixtures
-  that hardcode `idle` validate nothing.
+- **Scrollback empty after long sessions is Claude Code's renderer**, verified against the
+  installed 2.1.268 binary (`dev/results/scrollback-and-missing-input-RESULT.md`): once its frame
+  is taller than the viewport it repaints a viewport-tall window with cursor moves, no linefeeds,
+  no `ESC[3J` outside the alt screen. Nothing on Operator's side of the pty can recover those
+  lines; replay-on-activate would replay the same bytes. `INACTIVE_SCROLLBACK` (2,000) worsens it
+  but is not the cause. The fullscreen TUI pref is the only lever, at the ghosting risk on record.
 
-## Open
-- GUI pass by a person (above). Bus dispatch end to end.
-- Deferred Review lows on the batch: `devServerKill` pid cross-check, `\b<port>\b` log regex,
-  `chat.db` purge policy, two kill-list cosmetics. Six comments still name the deleted `PlanMeter.tsx`.
-- Rust keys `portsByCwd` on the canonical cwd, Electron on the raw string (sharing granularity).
-- `dev/drive-close-project.mjs` retired/rewritten? Check `dev/results/pass-3-and-close-features.md`.
-- Landing (`~/Developer/Operator-landing`) cell 07 now matches the app again; cells 06–09 should
-  be re-read against 0.21.0's actual screens once seen.
+## Open defects seen today
+
+- **Dispatch lost at lane launch, again.** The first `mcp__operator__dispatch` to the idle Code
+  lane answered `launching` but no Claude process was spawned and no task ran; the second attempt
+  worked. Memory: `project_dispatch_lost_on_lane_launch`. Confirm a launch by `ps` start time.
+- **Merges into `main` are classifier-blocked for lanes AND the coordinator**, even after the
+  user said "push when done". The user ran the merge with `!`. Releases need that step every time
+  until the permission rule changes. `mcp__operator__dispatch` was blocked once too (task text
+  mentioned merging); the `OPERATOR-DISPATCH` sentinel went through.
+- **Operator's own report backlog is draining late.** 22 reports from the 6 Sep session were never
+  delivered; the new app is announcing them now (e.g. #622 from 5 Sep, delivered 11 Sep 21:02Z).
+  Ignore announcements dated before the current session unless the content is still open.
+- Commit trailers from lanes say `Claude Opus 5`; the session attribution overrides the brief.
+
+## Next in the Code queue
+
+Nothing dispatched. Candidates, in order: the lost-at-launch dispatch defect (reproduce with a
+fresh idle lane and two dispatches); a permission rule so the coordinator can merge to `main`
+when the user has authorised a push; model pricing table (Sonnet 5 is $2/$10, memory
+`project_model_pricing_stale`).
