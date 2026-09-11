@@ -23,6 +23,7 @@ import { releaseLeasesOf } from './leases'
 import { reconcileAtBoot, reapOnQuit } from './worktree-reap'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
+import { ClaudeVersionWatcher } from './claude-version'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
 // so `__dirname` is the real thing here — `import.meta.url` compiles to an empty string.
@@ -41,6 +42,7 @@ let tray: OperatorTray | null = null
 let trayPhase: TrayPhase = 'idle'
 let stopTrayAnim: (() => void) | null = null
 let sweepTimer: ReturnType<typeof setInterval> | null = null
+let claudeVersion: ClaudeVersionWatcher | null = null
 
 /** How often the live app re-checks for its own leaked lanes. See the call site. */
 const ABANDONED_SWEEP_MS = 10 * 60 * 1000
@@ -179,6 +181,7 @@ function teardown(): Promise<void> {
     chat?.close()
     artifacts?.close()
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null }
+    claudeVersion?.stop()
     stopTrayAnim?.()
     stopTrayAnim = null
     tray?.destroy()
@@ -295,7 +298,12 @@ function boot(): void {
     },
   }
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, getWindow: () => mainWindow })
+  // Which Claude Code is installed, re-read once a minute. A lane records the version it spawned
+  // on, and the renderer offers a restart when this moves past it (see claude-version.ts).
+  claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
+  claudeVersion.start()
+
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, getWindow: () => mainWindow })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way

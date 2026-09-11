@@ -67,6 +67,10 @@ export interface SpawnOptions {
   /** Expose this lane to Claude Code's Remote Control (the Claude phone app). Written into the
    *  session settings file EXPLICITLY, false included — see `buildSessionSettings`. */
   remoteControl?: boolean
+  /** The Claude Code version this lane launches on, resolved by main just before the spawn (see
+   *  claude-version.ts). Only recorded and reported back, so the renderer can tell a lane running
+   *  an older binary than the one installed now. */
+  claudeVersion?: string | null
 }
 
 interface Managed {
@@ -82,6 +86,8 @@ interface Managed {
   devPort?: number
   /** Ports seen in this session's OWN output (dev-server banners). */
   sniffedPorts: Set<number>
+  /** Claude Code version at spawn — see `SpawnOptions.claudeVersion`. */
+  claudeVersion: string | null
   /** ms of the last pty chunk, for `activeWithin`. */
   lastActivityAt?: number
   exited: boolean
@@ -298,12 +304,12 @@ export class TerminalManager {
     return { shell, argv: ['-ilc', inner], env, devPort, id }
   }
 
-  async spawn(o: SpawnOptions): Promise<{ terminalId: string; cwd: string; grid: boolean }> {
+  async spawn(o: SpawnOptions): Promise<{ terminalId: string; cwd: string; grid: boolean; claudeVersion: string | null }> {
     const { shell, argv, env, devPort, id } = await this.buildCommand(o)
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), exited: false }
+    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, exited: false }
     this.terminals.set(id, managed)
 
     const launch = (c: number, r: number) => {
@@ -342,7 +348,7 @@ export class TerminalManager {
     // `grid` is echoed back because the caller mounts the matching pane off it. This shell has
     // no alacritty core, so it is always false — see the ledger: `gridterm.rs` is the one
     // module with no Node equivalent.
-    return { terminalId: id, cwd: o.cwd, grid: false }
+    return { terminalId: id, cwd: o.cwd, grid: false, claudeVersion: managed.claudeVersion }
   }
 
   /** Deferred launch, explicit half: the pane fitted, so exec at the real grid size. */
@@ -355,7 +361,7 @@ export class TerminalManager {
    *  is no startup banner wrapped to the wrong width to protect. */
   spawnShell(cwd: string): string {
     const id = this.nextId()
-    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), exited: false }
+    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), claudeVersion: null, exited: false }
     this.terminals.set(id, managed)
     const shell = loginShell()
     const p = ptySpawn(shell, ['-il'], {
@@ -510,8 +516,10 @@ export class TerminalManager {
     } catch { /* a diagnostic that throws is worse than one that is missing */ }
   }
 
-  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; devPort?: number }> {
+  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; devPort?: number; claudeVersion: string | null }> {
     return [...this.terminals.values()].map((t) => ({
+      // Reported so a tab re-attached after a renderer reload still knows its lane's version.
+      claudeVersion: t.claudeVersion,
       id: t.id,
       pid: t.pty?.pid ?? 0,
       cwd: t.cwd,

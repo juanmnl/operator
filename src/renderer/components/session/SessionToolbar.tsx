@@ -88,9 +88,12 @@ interface SessionToolbarProps {
   /** Sidebar collapse/expand — a persistent toggle left of the title (works in both states). */
   sidebarCollapsed?: boolean
   onToggleSidebar?: () => void
+  /** CLAUDE CODE UPDATED UNDER THIS LANE. Present only when the lane was spawned on an older
+   *  version than the one installed now; `canRestart` is the between-turns gate (lib/cli-update). */
+  cliUpdate?: { label: string; canRestart: boolean; onRestart: () => void } | null
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar, cliUpdate }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -486,6 +489,29 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
             <span style={{ ...chipBase, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>
               {effortLevel}
             </span>
+          )}
+
+          {/* Claude Code updated underneath this lane. Restart ends the process and resumes the
+              same conversation; offered only between turns, like the tuning chips. Transparent,
+              accent ink when it can act, muted when it cannot — no fill, no opacity stacking. */}
+          {cliUpdate && (
+            <button
+              data-cli-update
+              onClick={cliUpdate.canRestart ? cliUpdate.onRestart : undefined}
+              disabled={!cliUpdate.canRestart}
+              title={cliUpdate.canRestart
+                ? 'Restart this lane on the new Claude Code and resume the same conversation'
+                : waitTitle}
+              style={{
+                ...chipBase,
+                border: '1px solid var(--border)',
+                color: cliUpdate.canRestart ? 'var(--accent)' : 'var(--fg-muted)',
+                cursor: cliUpdate.canRestart ? 'pointer' : 'default',
+                outline: 'none',
+              }}
+            >
+              {cliUpdate.label}
+            </button>
           )}
 
           {/* Permission mode badge */}

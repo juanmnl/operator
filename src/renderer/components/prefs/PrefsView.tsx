@@ -11,6 +11,7 @@ import { getMacOptionIsMeta, setMacOptionIsMeta, getTuiMode, setTuiMode } from '
 import { resumeOnLaunchEnabled, RESUME_ON_LAUNCH_KEY } from '../../lib/workspace'
 import { askBeforeQuitEnabled, ASK_BEFORE_QUIT_KEY } from '../../lib/quit-guard'
 import { getKeepWarmMinutes, setKeepWarmMinutes, DEFAULT_KEEP_WARM_MINUTES } from '../../lib/lane-lifecycle'
+import { autoRestartEnabled, setAutoRestartEnabled } from '../../lib/cli-update'
 
 const MONO = "'SF Mono', 'Fira Code', Menlo, monospace"
 
@@ -169,6 +170,7 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
   const [resumeOnLaunch, setResumeOnLaunch] = useState(() => resumeOnLaunchEnabled())
   const [askBeforeQuit, setAskBeforeQuit] = useState(() => askBeforeQuitEnabled())
   const [keepWarm, setKeepWarm] = useState(() => getKeepWarmMinutes())
+  const [autoRestart, setAutoRestart] = useState(() => autoRestartEnabled())
 
   const toggleSounds = () => {
     const next = !sounds
@@ -202,6 +204,12 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
     try { localStorage.setItem(ASK_BEFORE_QUIT_KEY, next ? '1' : '0') } catch { /* quota */ }
     // Rust owns the veto and cannot read localStorage — mirror it, or the switch is decorative.
     window.operator.quitSetAsk?.(next)
+  }
+
+  const toggleAutoRestart = () => {
+    const next = !autoRestart
+    setAutoRestart(next)
+    setAutoRestartEnabled(next) // read per tick by the auto-restart effect — applies immediately
   }
 
   const selectKeepWarm = (minutes: number) => {
@@ -448,6 +456,42 @@ export function PrefsView({ currentTheme, onSelectTheme, onToggleTheme }: {
               <span style={{
                 position: 'absolute', top: 2, left: askBeforeQuit ? 16 : 2, width: 14, height: 14,
                 borderRadius: '50%', background: askBeforeQuit ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
+                transition: 'left 0.15s, background 0.15s',
+              }} />
+            </span>
+          </button>
+        </section>
+
+        <section style={{ marginBottom: SECTION_GAP }}>
+          <h3 data-section-header style={sectionHeader}>
+            Claude Code updates
+          </h3>
+          <p data-section-desc style={sectionDesc}>
+            A lane keeps running the Claude Code it started on until it restarts. When a newer version
+            is installed, the lane&apos;s header offers a Restart that resumes the same conversation.
+            Turn this on to restart lanes that are between turns automatically, one at a time. A lane
+            that is working, or waiting on a permission answer, is never restarted.
+          </p>
+          <button
+            onClick={toggleAutoRestart}
+            role="switch"
+            aria-checked={autoRestart}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              width: '100%', maxWidth: 320, padding: '10px 12px', cursor: 'pointer',
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 8, fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--fg)' }}>Restart idle lanes automatically</span>
+            <span style={{
+              position: 'relative', width: 32, height: 18, borderRadius: 999, flexShrink: 0,
+              background: autoRestart ? 'var(--accent)' : 'var(--overlay-medium)',
+              transition: 'background 0.15s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: autoRestart ? 16 : 2, width: 14, height: 14,
+                borderRadius: '50%', background: autoRestart ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
                 transition: 'left 0.15s, background 0.15s',
               }} />
             </span>

@@ -559,6 +559,8 @@ export interface SavedSession {
   sourceCwd?: string
   /** Latest Claude Code session id seen — enables "resume conversation". */
   claudeSessionId?: string
+  /** The Claude Code version the lane's current process was spawned on (see lib/cli-update). */
+  claudeVersion?: string
   /** Live pty id from the CURRENT backend run; stale (ignored) after a full restart. */
   terminalId?: string
   /** SUSPENDED, not gone. Set when a task-scoped lane was closed automatically: its pty is dead
@@ -631,6 +633,8 @@ export interface ManagedTerminal {
    *  because the core is created at spawn and never after: it is the one copy of this fact that
    *  a renderer reload cannot lose. Opt-in, default off — see `getRendererMode`. */
   grid?: boolean
+  /** The Claude Code version this pty was spawned on, recorded by the backend at spawn. */
+  claudeVersion?: string | null
 }
 
 // Folder Preferences types

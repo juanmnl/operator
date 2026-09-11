@@ -38,7 +38,7 @@ declare global {
       /** `grid` echoes back which renderer this session was actually spawned with, so the
        *  caller records what was SENT rather than re-reading the pref a second time (which a
        *  mid-flight change could answer differently). See `getRendererMode`. */
-      terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string; grid: boolean } | null>
+      terminalSpawn: (cwd?: string, launchOptions?: Record<string, unknown>) => Promise<{ terminalId: string; cwd: string; grid: boolean; claudeVersion?: string | null } | null>
       /** Launch a deferred session's Claude process at the pane's fitted size (defer-launch). */
       terminalStart: (id: string, cols: number, rows: number) => void
       /** Spawn a plain interactive shell in `cwd` (toolbar scratch terminal); returns its id. */
@@ -218,6 +218,10 @@ declare global {
       getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>
       installUpdate: () => Promise<void>
+      /** The Claude Code version the `claude` link resolves to now, or null when it cannot be read. */
+      claudeVersion?: () => Promise<string | null>
+      /** Pushed when the installed Claude Code version changes (main re-reads it once a minute). */
+      onClaudeVersion?: (callback: (version: string | null) => void) => () => void
     }
   }
 }

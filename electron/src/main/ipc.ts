@@ -16,6 +16,7 @@ import type { TerminalManager } from './terminals'
 import type { Transcript } from './transcript'
 import type { ChatStore, ArtifactStore } from './chat-store'
 import type { QuitGuard } from './quit'
+import { SPAWN_VERSION_WAIT_MS, type ClaudeVersionWatcher } from './claude-version'
 import * as store from './store'
 import * as prefs from './folder-prefs'
 import * as agents from './agents'
@@ -47,6 +48,8 @@ export interface Deps {
   chat: ChatStore
   artifacts: ArtifactStore
   quit: QuitGuard
+  /** The installed Claude Code version, watched in main (claude-version.ts). */
+  claudeVersion: ClaudeVersionWatcher
   getWindow: () => BrowserWindow | null
   /** The ONE question and the quit preparation the install needs — see `index.ts`. Passed in
    *  rather than imported, because `index.ts` already imports this module and a cycle between
@@ -119,7 +122,14 @@ export function registerIpc(d: Deps): void {
       // surface or a renderer change. That is what makes S3 the first step where the feature
       // does something while adding no UI at all.
       const layers = await projectConfig(String(o.projectId ?? ''))
+      // Which Claude Code this lane is about to run, so a later update can be detected against it.
+      // Bounded: a slow shell costs the lane its version reading, never its launch.
+      const claudeVersion = await Promise.race([
+        d.claudeVersion.resolve(),
+        new Promise<null>((r) => setTimeout(() => r(null), SPAWN_VERSION_WAIT_MS)),
+      ])
       const spawned = await d.terminals.spawn({
+        claudeVersion,
         cwd: target,
         args: buildArgs(o, sessionId),
         sessionId,
@@ -150,6 +160,7 @@ export function registerIpc(d: Deps): void {
     // files open in there has to be gone first, not merely signalled.
     terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
+    claudeVersion: () => d.claudeVersion.resolve(),
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
