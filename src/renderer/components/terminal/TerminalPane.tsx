@@ -7,7 +7,7 @@ import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
 import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
-import { buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, scrollbackFor, shouldFitOnResize } from '../../lib/terminal-options'
+import { applyPaneActivation, buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
 import { isAppChord } from '../../lib/key-routing'
@@ -651,37 +651,20 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // effect when you switch back to a terminal (no terminal recreate needed).
     term.options.macOptionIsMeta = getMacOptionIsMeta()
 
-    // A hidden pane keeps a smaller buffer. Every session's terminal stays mounted (that rule
-    // is what stops the pane blanking and the resize-hang), so a project with eight lanes was
-    // holding eight × 10k lines of cells in one renderer — measured at 737MB resting, and
-    // opening the heaviest project pushed WebKit into killing and respawning the renderer
-    // mid-navigation. Lowering the option TRIMS the buffer immediately, which is the whole
-    // point; see INACTIVE_SCROLLBACK for what that costs and why it is the right trade.
-    term.options.scrollback = scrollbackFor(active)
-
-    if (active) {
-      // Flush output buffered while this pane was hidden (it didn't render in the
-      // background to keep WKWebView load off the visible pane), in order, first.
-      if (bgBufferRef.current.length) {
+    // Scrollback trim, hidden-output flush, fit, scroll to bottom, repaint, focus. The order
+    // matters and the reasons are on `applyPaneActivation`.
+    applyPaneActivation(term, active, {
+      fit: () => fitRef.current?.fit(),
+      isActive: () => activeRef.current,
+      // Output buffered while this pane was hidden (it didn't render in the background to keep
+      // WKWebView load off the visible pane), taken in order.
+      takeHiddenOutput: () => {
         const buf = bgBufferRef.current.join('')
         bgBufferRef.current = []
         bgBufferLenRef.current = 0
-        try { term.write(buf) } catch { /* ignore */ }
-      }
-      term.options.cursorBlink = true
-      try {
-        fitRef.current?.fit()
-      } catch {
-        // ignore
-      }
-      // Repaint on becoming visible — it skipped repaints while hidden, so re-sync
-      // the viewport to the buffer (also covers any drift from while it was backgrounded).
-      try { term.refresh(0, term.rows - 1) } catch { /* ignore */ }
-      term.focus()
-    } else {
-      term.options.cursorBlink = false
-      term.blur()
-    }
+        return buf
+      },
+    })
   }, [active])
 
   // Handle image / file drag and drop. A dragged macOS screenshot *preview* (the

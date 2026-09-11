@@ -2,7 +2,7 @@
 // verification harnesses (scripts/visual, scripts/input) build the SAME terminal
 // and can't drift. App-specific bits that need window.operator (linkHandler) stay
 // in TerminalPane; everything font/behavior lives here.
-import type { ITerminalOptions, ITheme } from '@xterm/xterm'
+import type { ITerminalOptions, ITheme, Terminal } from '@xterm/xterm'
 import { isLightBackground } from './terminal'
 
 // Four bundled subsets go FIRST (see styles.css @font-face), supplying monochrome
@@ -150,13 +150,77 @@ export const ACTIVE_SCROLLBACK = 10_000
  *  If that trade needs undoing later, the honest fix is replay-on-activate: the backend already
  *  retains each pty's output (`terminalHistory`, the same source the post-reload re-attach
  *  replays from), so a reactivated pane could restore what it dropped. Not built here because it
- *  changes what a pane shows on every switch, and this bug needed a fix that does not. */
+ *  changes what a pane shows on every switch, and this bug needed a fix that does not.
+ *
+ *  Most history missing after a long session is NOT this trim: Claude Code repaints only a
+ *  viewport-tall window with cursor moves, so those lines never reach xterm at all, and replay
+ *  would not restore them either (dev/results/scrollback-and-missing-input-RESULT.md). */
 export const INACTIVE_SCROLLBACK = 2_000
 
 /** How much scrollback a pane should hold right now. Pure so the policy is one testable thing
  *  rather than a number written at two call sites that can drift apart. */
 export function scrollbackFor(active: boolean): number {
   return active ? ACTIVE_SCROLLBACK : INACTIVE_SCROLLBACK
+}
+
+/** The part of xterm's `Terminal` a pane's (de)activation touches. Narrow so the sequence can be
+ *  tested against a recorder as well as a real terminal. */
+export type ActivatingTerminal = Pick<Terminal, 'options' | 'rows' | 'write' | 'scrollToBottom' | 'refresh' | 'focus' | 'blur'>
+
+/** What a pane does when `active` changes, in the order it has to happen.
+ *
+ *  HIDDEN OUTPUT IS PARSED BEFORE THE FIT. A hidden pane never resizes its pty
+ *  (`shouldFitOnResize`), so everything Claude Code sent while it was hidden was composed for the
+ *  pane's pre-fit size, cursor moves included. Parsed at that size, a cursor-up rewrite lands on
+ *  the row it was aimed at; parsed after a fit that changed the width, it lands on the wrong row.
+ *  `term.write` only queues, so the fit runs in its callback. Calling `fit()` straight after the
+ *  write, as this sequence used to, resized first and parsed second (terminal-activation.test.ts
+ *  shows both). The callback also waits for bytes queued earlier, including a flush from the
+ *  live-output path, because xterm runs write callbacks in order.
+ *
+ *  THEN IT SCROLLS TO THE BOTTOM, once for the first frame and again after the fit. A pane that
+ *  was scrolled above the fold when hidden used to stay there, and the prompt, always the last
+ *  row, was what fell off screen.
+ *
+ *  `isActive` is re-read in the callback: a pane switched away before its bytes parsed must not
+ *  fit, because a hidden pane's fit reaches the pty. */
+export function applyPaneActivation(
+  term: ActivatingTerminal,
+  active: boolean,
+  hooks: { fit: () => void; takeHiddenOutput: () => string; isActive: () => boolean },
+): void {
+  // A hidden pane keeps a smaller buffer. Every session's terminal stays mounted (that rule
+  // is what stops the pane blanking and the resize-hang), so a project with eight lanes was
+  // holding eight × 10k lines of cells in one renderer — measured at 737MB resting, and
+  // opening the heaviest project pushed WebKit into killing and respawning the renderer
+  // mid-navigation. Lowering the option TRIMS the buffer immediately, which is the whole
+  // point; see INACTIVE_SCROLLBACK for what that costs and why it is the right trade.
+  term.options.scrollback = scrollbackFor(active)
+
+  if (!active) {
+    term.options.cursorBlink = false
+    term.blur()
+    return
+  }
+
+  term.options.cursorBlink = true
+  // Repaint on becoming visible — it skipped repaints while hidden, so re-sync the viewport to
+  // the buffer (also covers any drift from while it was backgrounded).
+  const settle = () => {
+    try {
+      term.scrollToBottom()
+      term.refresh(0, term.rows - 1)
+    } catch { /* disposed */ }
+  }
+  settle()
+  try {
+    term.write(hooks.takeHiddenOutput(), () => {
+      if (!hooks.isActive()) return
+      try { hooks.fit() } catch { /* ignore */ }
+      settle()
+    })
+  } catch { /* disposed */ }
+  term.focus()
 }
 
 /** Should a pane's resize callback fit — and therefore resize its pty?
