@@ -5,7 +5,7 @@
 // explicitly. That last part is not hygiene theatre — Operator has already lost a window to it
 // (2026-08-14: a stray Finder drop navigated the WKWebView to `file:///…/image.png`, and
 // closing the resulting window killed every lane's pty).
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, session, shell } from 'electron'
 import { join } from 'node:path'
 import { TerminalManager } from './terminals'
 import { Transcript, type DispatchEvent, type ReplyEvent, type DeliveryEvent } from './transcript'
@@ -102,6 +102,10 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // Runs the preload in the Preview <iframe> so a lane's dev server cannot badge Operator's
+      // Dock tile. Sandboxed, so no node there either, and the preload exposes nothing to a
+      // subframe; see preload/index.ts.
+      nodeIntegrationInSubFrames: true,
       webSecurity: true,
       // A background Chromium renderer is throttled to ~1fps with coalesced timers. Operator's
       // whole premise is that a lane you are not looking at keeps working.
@@ -185,6 +189,17 @@ function teardown(): Promise<void> {
 
 function boot(): void {
   const win = () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null)
+
+  // Operator never sets a Dock badge, so any badge present is one a previewed page set through the
+  // Badging API before the preloads blocked it (see preload/badge-block.ts). Clear it.
+  app.setBadgeCount(0)
+  // Service workers are the one context the frame preloads cannot reach. Before the window, so a
+  // previewed page's worker never starts without it.
+  session.defaultSession.registerPreloadScript({
+    type: 'service-worker',
+    id: 'operator-badge-block',
+    filePath: join(here, '..', 'preload', 'service-worker.cjs'),
+  })
 
   // BEFORE the first port is handed out. A previous run that crashed or was force-quit leaves
   // its dev servers bound to ports in the same 1420-1520 range this run is about to allocate

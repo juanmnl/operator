@@ -61,6 +61,9 @@ export function installPreviewInspect(getWindow: () => BrowserWindow | null, onP
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
+        // Loads the (sandboxed) preload in the page's iframes too, for the badge stub. It grants
+        // no node access; see preload/inspector.ts.
+        nodeIntegrationInSubFrames: true,
       },
     })
     // The user's dev server is arbitrary local code. It gets no node, no shared context with

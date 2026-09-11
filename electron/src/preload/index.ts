@@ -9,8 +9,17 @@
 // to forward one" is not a failure mode that exists here.
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { channel, eventChannel, SPEC, NATIVE_METHODS, type ApiMethod } from '../shared/operator-api'
+import { blockBadging } from './badge-block'
 
 type AnyFn = (...args: unknown[]) => unknown
+
+// THIS PRELOAD ALSO RUNS IN EVERY SUBFRAME. The window sets `nodeIntegrationInSubFrames` so the
+// Preview pane's <iframe> — a lane's dev server, arbitrary code — gets `blockBadging` before its
+// own scripts run (see badge-block.ts). The same flag loads this whole file there, so a subframe
+// gets the badge stub and NOTHING else: no `__operatorNative`, no drop handling. `window.top` is
+// the check because a sandboxed preload has no `process.isMainFrame`.
+const isTopFrame = window.top === window
+if (!isTopFrame) contextBridge.executeInMainWorld({ func: blockBadging })
 
 const api: Record<string, AnyFn> = {}
 
@@ -46,14 +55,16 @@ for (const method of NATIVE_METHODS) {
 // this works at all with `sandbox: true`.
 const dropCallbacks = new Set<(paths: string[]) => void>()
 
-window.addEventListener('dragover', (e) => { e.preventDefault() })
-window.addEventListener('drop', (e) => {
-  e.preventDefault()
-  const files = Array.from(e.dataTransfer?.files ?? [])
-  if (!files.length || !dropCallbacks.size) return
-  const paths = files.map((f) => webUtils.getPathForFile(f)).filter(Boolean)
-  if (paths.length) dropCallbacks.forEach((cb) => cb(paths))
-})
+if (isTopFrame) {
+  window.addEventListener('dragover', (e) => { e.preventDefault() })
+  window.addEventListener('drop', (e) => {
+    e.preventDefault()
+    const files = Array.from(e.dataTransfer?.files ?? [])
+    if (!files.length || !dropCallbacks.size) return
+    const paths = files.map((f) => webUtils.getPathForFile(f)).filter(Boolean)
+    if (paths.length) dropCallbacks.forEach((cb) => cb(paths))
+  })
+}
 
 api.onFileDrop = ((cb: (paths: string[]) => void) => {
   dropCallbacks.add(cb)
@@ -64,5 +75,7 @@ api.onFileDrop = ((cb: (paths: string[]) => void) => {
  *  console can answer "is this lane's terminal actually a pty?" without reading source. */
 const nativeMethods: ApiMethod[] = [...NATIVE_METHODS]
 
-contextBridge.exposeInMainWorld('__operatorNative', api)
-contextBridge.exposeInMainWorld('__operatorNativeMethods', nativeMethods)
+if (isTopFrame) {
+  contextBridge.exposeInMainWorld('__operatorNative', api)
+  contextBridge.exposeInMainWorld('__operatorNativeMethods', nativeMethods)
+}
