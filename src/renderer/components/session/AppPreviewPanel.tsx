@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
 import { pickPreviewUrl, pickPreviewPort, portOf, parseTarget, formatTarget, evidenceLabel, isWarnEvidence, EMPTY_TARGET } from '../../lib/preview-port'
 import {
@@ -7,6 +7,7 @@ import {
 } from '../../lib/preview-history'
 import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
+import { toolbarTier, originChipLabel, scaleReadout, pointerMode, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -22,6 +23,12 @@ const PRESETS: { id: Preset; label: string }[] = [
   { id: 375, label: '375' },
   { id: 768, label: '768' },
   { id: 1280, label: '1280' },
+]
+
+const POINTER_MODES: { id: PointerMode; label: string; title: string }[] = [
+  { id: 'interact', label: 'Interact', title: 'Interact with the running app' },
+  { id: 'annotate', label: 'Annotate', title: 'Pin/box feedback over the app' },
+  { id: 'inspect', label: 'Inspect', title: 'Inspect elements — hover to outline, click to add a note → Console / Tasks' },
 ]
 
 // Common dev-server ports to fall back on when the reserved/detected port isn't
@@ -55,8 +62,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   /** The side panel's width. A panel drag moves the stage, and `box` below only tracks its size,
    *  so the inspector's bounds are re-sent on this too. */
   panelW?: number
-  /** True while a side-panel drag needs the pixels the native inspect view covers. The view is
-   *  hidden, not closed, and re-placed at the stage's new rect when this goes false. */
+  /** True while something outside this component covers the stage: a side-panel drag, the ⌘K
+   *  palette, the quit dialog. The native inspect view is hidden, not closed, and re-placed at the
+   *  stage's current rect when this goes false. */
   inspectHidden?: boolean
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
@@ -121,6 +129,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
    *  the preview shares. See the derivation below `deviceLabel`. */
   const stageRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
+  /** The component's own root, measured for the bar's layout (see lib/preview-toolbar). */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [tier, setTier] = useState<ToolbarTier>('one')
 
   // --- Annotations: pin/box feedback over the preview, dispatched to the agent -----------
   const annKey = storageKey ? `main-${storageKey}` : null
@@ -129,6 +140,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // Inspect mode: a native child webview embedded over the preview frame (Operator owns it, so
   // its injected script CAN read the DOM — hover-outline + click-capture). Off = the iframe.
   const [inspecting, setInspecting] = useState(false)
+  // ONE POINTER MODE. ⌘E sets Annotate from outside this component, so the rule is enforced here
+  // rather than only in the segment's click handler: Annotate on means Inspect off.
+  useEffect(() => { if (annotate) setInspecting(false) }, [annotate])
   const [annotations, setAnnotations] = useState<Annotation[]>(() => (annKey ? loadAnnotations(annKey) : []))
   // A note being authored: pending geometry + text (isNew distinguishes create vs edit).
   const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note'> & { isNew: boolean })>(null)
@@ -237,6 +251,21 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     measure()
     return () => ro.disconnect()
   }, [reach])
+  // The bar's tier, from the ROOT's width (the frame wrapper only exists while a server is up).
+  // A layout effect so the first paint already has the right rows. Stores the tier, not the
+  // width, so a drag re-renders only when a threshold is crossed.
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const measure = () => {
+      const t = toolbarTier(el.clientWidth)
+      setTier((prev) => (prev === t ? prev : t))
+    }
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    measure()
+    return () => ro.disconnect()
+  }, [])
 
   const commitOverride = (raw: string) => {
     setEditing(false)
@@ -258,10 +287,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
   /** What the origin chip says. Narrow drops `localhost` but NEVER the port — the port is the
    *  identity. An external target shows its host. */
-  const originLabel = useMemo(() => {
-    if (target.url) { try { return new URL(target.url).host } catch { return target.url } }
-    return pick.port != null ? `localhost:${pick.port}` : 'no server'
-  }, [target.url, pick.port])
+  const originLabel = originChipLabel(target.url, pick.port, tier)
 
   /** Load a history entry — the one place back/forward turn into an address. */
   const applyEntry = useCallback((h: PreviewHistory) => {
@@ -303,12 +329,17 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // Keep the embedded inspector aligned to the frame as the panel resizes — and as the PRESET
   // changes, which is new: the stage now moves and resizes without `box` changing at all, so a
   // preset switch that the wrapper never noticed would have stranded the webview at the old width.
-  // During a panel drag the view is hidden: nothing the renderer draws paints above it, including
-  // the drag's own mousemove overlay, so a drag across it would stop. The iframe underneath keeps
-  // the page on screen meanwhile.
+  // R1: NOTHING OPERATOR DRAWS MAY OVERLAP THE STAGE WHILE THE NATIVE VIEW IS UP, because nothing
+  // the renderer draws paints above it. So the view is hidden while something needs those pixels:
+  // this bar's server picker and port editor (both drop over the stage), and whatever the parent
+  // reports (a panel drag, whose mousemove overlay the view would swallow; the ⌘K palette; the
+  // quit dialog). The iframe underneath keeps the page on screen meanwhile, and on close the view
+  // is re-placed at the stage's CURRENT rect before it shows. `tier` is a dependency because a
+  // change of rows moves the stage down or up.
+  const hideInspect = inspectHidden || pickerOpen || editing
   useEffect(() => {
     if (!inspecting) return
-    if (inspectHidden) { window.operator.previewInspectSetVisible?.(false); return }
+    if (hideInspect) { window.operator.previewInspectSetVisible?.(false); return }
     const id = requestAnimationFrame(() => {
       const el = stageRef.current
       if (!el) return
@@ -317,7 +348,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
       window.operator.previewInspectSetVisible?.(true)
     })
     return () => cancelAnimationFrame(id)
-  }, [box, preset, inspecting, panelW, inspectHidden])
+  }, [box, preset, inspecting, panelW, hideInspect, tier])
   // The inspector's floating card composes the note itself and beacons preview:pick with the final
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
@@ -396,6 +427,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
    *  would name a coordinate that does not exist on the page — `Annotation.viewport` is documented
    *  as "pixel viewport of the preview frame", and `lib/annotations.pxOf` multiplies by it. */
   const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
+  const readout = scaleReadout(preset, box.w)
+  // Inspect only counts while there is a page to inspect; the segment is absent without one.
+  const mode = pointerMode(annotating, inspecting && !!display)
+  const setPointerMode = (m: PointerMode) => {
+    setInspecting(m === 'inspect')
+    setAnnotate(m === 'annotate')
+  }
 
   const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
     id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
@@ -429,11 +467,17 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div ref={rootRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* THE BAR — an address group, then a tools group, in that order at every width. `tier`
+          decides only whether they share a row. `position: relative` so the picker and the port
+          editor anchor to the bar and not to whichever slot holds it: in the side panel the
+          nearest positioned box starts above the panel's own tab row. */}
       <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
-        height: PANEL_SUBHEAD_H, padding: '0 8px 0 12px', boxSizing: 'border-box', borderBottom: '1px solid var(--border)',
+        position: 'relative', flexShrink: 0, display: 'flex', flexDirection: tier === 'one' ? 'row' : 'column',
+        borderBottom: '1px solid var(--border)',
       }}>
+      {/* THE ADDRESS GROUP */}
+      <div style={{ ...barRow, flex: tier === 'one' ? 1 : undefined }}>
         {/* ◀ ▶ ⟳ — and the two arrows walk OPERATOR'S OWN address history, not the app's.
             The preview is cross-origin so the iframe's history is unreadable, and the tooltip
             says so rather than looking like a browser control that silently behaves differently.
@@ -501,6 +545,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         {pathInput && (
           <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" style={navBtn}>↩</button>
         )}
+        <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
+      </div>
 
         {pickerOpen && (
           <>
@@ -511,7 +557,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               style={{ position: 'fixed', inset: 0, zIndex: 99 }}
             />
             <div data-no-drag style={{
-              position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: 60, zIndex: 100, width: 320,
+              position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: tier === 'narrow' ? 8 : 60, zIndex: 100,
+              width: 320, maxWidth: 'calc(100% - 16px)',
               background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 8,
               boxShadow: '0 8px 24px rgba(0,0,0,0.4)', overflow: 'hidden',
             }}>
@@ -566,7 +613,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
         {editing && (
         <div data-no-drag style={{
-          position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: 60, zIndex: 101,
+          position: 'absolute', top: PANEL_SUBHEAD_H + 2, left: tier === 'narrow' ? 8 : 60, zIndex: 101,
           background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 6,
         }}>
           <input
@@ -586,60 +633,69 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           />
         </div>
       )}
-      {/* Device-width presets */}
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 1 }}>
-          {PRESETS.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => setPreset(p.id)}
-              title={p.id === 'fit' ? 'Fit to panel' : `${p.id}px wide`}
-              style={{
-                fontFamily: "var(--font-body)", fontSize: 9.5, fontWeight: 600,
-                padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer', outline: 'none',
-                background: 'transparent',
-                color: preset === p.id ? 'var(--accent)' : 'var(--fg-muted)',
-              }}
-            >{p.label}</button>
-          ))}
-        </span>
-        {(onDispatch || onSendToTasks) && reach === 'up' && (
-          <>
-            {/* Mode: Interact (clicks pass to your app) vs Annotate (pin/box feedback). */}
-            <span style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1 }}>
-              {([['interact', 'Interact'], ['annotate', 'Annotate']] as const).map(([m, label]) => {
-                const on = (m === 'annotate') === annotating
-                return (
-                  <button
-                    key={m}
-                    onClick={() => setAnnotate(m === 'annotate')}
-                    title={m === 'annotate' ? 'Pin/box feedback over the app' : 'Interact with the running app'}
-                    style={{
-                      height: 20, padding: '0 8px', border: 'none', borderRadius: 5, background: 'transparent',
-                      cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
-                      color: on ? 'var(--accent)' : 'var(--fg-muted)',
-                    }}
-                  >
-                    {label}{m === 'annotate' && annotations.length > 0 ? ` ${annotations.length}` : ''}
-                  </button>
-                )
-              })}
-            </span>
-            {/* Inspect: embeds an Operator-owned webview over the frame with a DOM inspector —
-                hover to outline the real element, click to capture it (component@file:line).
-                Cross-origin blocks this in the iframe, so it's a native child webview. */}
-            {display && (
+        {/* THE TOOLS GROUP — beside the address from ONE_ROW_MIN_W, its own row below that, and
+            allowed to wrap to a third line below TWO_ROW_MIN_W. Nothing collapses into a menu: a
+            menu drops over the stage, where the native inspect view would cover it, and it would
+            hide the toggles you flip while looking at the page. The reload lives once, in the
+            address group. */}
+        <div style={{
+          ...barRow,
+          padding: tier === 'one' ? '0 8px 0 0' : '0 8px 0 12px',
+          ...(tier === 'narrow' ? { height: 'auto', flexWrap: 'wrap', rowGap: 0 } as const : {}),
+        }}>
+          {/* Device-width presets, then the scale when a preset is wider than the stage. The
+              readout is text in both slots: the panel's width belongs to the user, and the
+              preview never changes it. */}
+          <span style={toolGroup}>
+            {PRESETS.map((p) => (
               <button
-                onClick={() => setInspecting((v) => !v)}
-                title={inspecting ? 'Stop inspecting' : 'Inspect elements — hover to outline, click to add a note → Console / Tasks'}
-                style={{ ...previewBtn, width: 'auto', padding: '0 8px', fontSize: 10.5,
-                  color: inspecting ? 'var(--accent)' : 'var(--fg-muted)',
-                  borderColor: inspecting ? 'color-mix(in srgb, var(--accent) 45%, var(--border))' : 'var(--border)' }}
-              >Inspect ⧉</button>
+                key={p.id}
+                onClick={() => setPreset(p.id)}
+                title={p.id === 'fit' ? 'Fit to panel' : `${p.id}px wide`}
+                style={{
+                  fontFamily: "var(--font-body)", fontSize: 9.5, fontWeight: 600,
+                  padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer', outline: 'none',
+                  background: 'transparent',
+                  color: preset === p.id ? 'var(--accent)' : OFF_INK,
+                }}
+              >{p.label}</button>
+            ))}
+            {readout && (
+              <span
+                title="Device width · scaled down to fit"
+                style={{ marginLeft: 6, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-muted)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}
+              >{readout}</span>
             )}
-          </>
-        )}
-        <button onClick={() => setNonce((n) => n + 1)} title="Reload preview" style={previewBtn}>⟳</button>
-        <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
+          </span>
+          {(onDispatch || onSendToTasks) && reach === 'up' && (
+            // POINTER MODE — exactly one. Inspect used to be a separate toggle, so Annotate and
+            // Inspect could both be on: two click-capturing layers, the native one covering the
+            // pins. Inspect embeds an Operator-owned webview with a DOM inspector (cross-origin
+            // blocks this in the iframe), so its segment exists only while there is a page.
+            <span style={{ ...toolGroup, marginLeft: 'auto' }}>
+              <span style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1 }}>
+                {POINTER_MODES.filter((m) => m.id !== 'inspect' || display).map((m) => {
+                  const on = mode === m.id
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setPointerMode(m.id)}
+                      title={m.title}
+                      style={{
+                        height: 20, padding: '0 8px', border: 'none', borderRadius: 5,
+                        background: on ? 'var(--overlay-subtle)' : 'transparent',
+                        cursor: 'pointer', outline: 'none', fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
+                        color: on ? 'var(--accent)' : OFF_INK,
+                      }}
+                    >
+                      {m.label}{m.id === 'annotate' && annotations.length > 0 ? ` ${annotations.length}` : ''}
+                    </button>
+                  )
+                })}
+              </span>
+            </span>
+          )}
+        </div>
       </div>
 
         {/* THE PERSISTENT STRIP, only ever reachable by an explicit pin. Not a toast, because
@@ -931,4 +987,18 @@ const navBtn: React.CSSProperties = {
   width: 18, height: 18, display: 'grid', placeItems: 'center', flexShrink: 0,
   background: 'transparent', border: 'none', borderRadius: 4, padding: 0,
   color: 'var(--fg-muted)', fontSize: 10, cursor: 'pointer', outline: 'none',
+}
+
+/** Off-state ink for the bar's text controls (presets, pointer mode). `--fg-muted` at 9.5–10px
+ *  is below the 4.5:1 control-label floor on the light palettes. */
+const OFF_INK = 'color-mix(in srgb, var(--fg) 72%, transparent)'
+
+/** One band of the bar: the address row, or the tools row. */
+const barRow: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
+  height: PANEL_SUBHEAD_H, padding: '0 8px 0 12px', boxSizing: 'border-box',
+}
+/** A cluster inside the tools row. Band-high, so a line the row wraps to is as tall as the rest. */
+const toolGroup: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 1, height: PANEL_SUBHEAD_H, flexShrink: 0,
 }

@@ -4584,7 +4584,9 @@ export function DashboardView() {
         annotate={previewAnnotate}
         onAnnotateChange={setPreviewAnnotate}
         panelW={panelW}
-        inspectHidden={resizingPanel}
+        // R1: every renderer surface that can open over the stage hides the native inspect view
+        // while it is open. The picker and port editor are the component's own.
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest}
       />
     )
   }
