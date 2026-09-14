@@ -434,6 +434,23 @@ export class ArtifactStore {
     return rows.map(rowToReport)
   }
 
+  /** Mark reports filed before `before` delivered WITHOUT announcing them, and return how many.
+   *
+   *  The announce queue had no age limit, so a report filed while no coordinator was idle waited
+   *  until one was — nine days, for operator #623 — and was then typed in ahead of the new ones.
+   *  Same filter as `undeliveredFor` (role, project scope), so it expires exactly the rows that
+   *  queue would have announced. `delivered_at` gets the time of the expiry, like any delivery; the
+   *  row stays readable in the Comms log. */
+  expireUndelivered(role: string, before: string, at: string, projectId?: string | null): number {
+    const scope = projectId ? ' AND (project_id = ? OR project_id IS NULL)' : ''
+    const params: unknown[] = projectId ? [at, role, before, projectId] : [at, role, before]
+    const r = this.db.prepare(
+      `UPDATE reports SET delivered_at = ?
+        WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND at < ?${scope}`,
+    ).run(...params)
+    return Number(r.changes)
+  }
+
   insertStatus(at: string, terminalId: string, projectId: string | null, taskId: string, status: string): number {
     const r = this.db.prepare(
       'INSERT INTO task_status (at, terminal_id, project_id, task_id, status) VALUES (?, ?, ?, ?, ?)',

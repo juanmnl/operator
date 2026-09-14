@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
-import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
+import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, laneKey, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, remoteControlLaunch, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
@@ -37,7 +37,7 @@ import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
-import { announcement, canAnnounceTo } from '../lib/comms'
+import { announcement, canAnnounceTo, announceCutoff, REPORT_ANNOUNCE_MAX_AGE_MS } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { FooterReading } from '../components/session/FooterReading'
 import { usePlanLimits } from '../lib/plan-limits'
@@ -1501,8 +1501,11 @@ export function DashboardView() {
 
       const target = tabs.find((t) => t.roleId === to.id && t.projectId === project.id && !t.ended)
       const { decision, state } = evaluateDelivery({
-        from: from.id,
-        to: to.id,
+        // Per project (`laneKey`): every project's coordinator shares the role id `operator`.
+        from: laneKey(project.id, from.id),
+        to: laneKey(project.id, to.id),
+        fromLabel: from.name,
+        toLabel: to.name,
         text: r.text,
         targetLive: !!target,
         paused: chatterPausedRef.current,
@@ -1650,6 +1653,26 @@ export function DashboardView() {
         deliveryStateRef.current = brakes
         let taskId: string | undefined
 
+        // A BRAKE REFUSAL IS SHOWN. It used to reach only the calling lane, so a coordinator could
+        // stay refused for the rest of a session while the user saw nothing (audit 2026-09-14).
+        // The action puts the human back in the loop from the toast, and a toast with an action
+        // stays until dismissed. Not for the kill switch, which the user turned on themselves.
+        if (verdict.outcome === 'refused' && verdict.brake && verdict.brake !== 'paused') {
+          const fromRoleId = srcTab?.roleId ?? r.roleId ?? 'unknown'
+          const fromName = (project.roster ?? []).find((x) => x.id === fromRoleId)?.name ?? fromRoleId
+          toast({
+            text: `${fromName} was stopped from dispatching to ${r.lane}`,
+            detail: verdict.reason,
+            kind: 'info',
+            ...(verdict.brake === 'hop-limit' ? {
+              action: {
+                label: 'Let it continue',
+                run: () => { deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(projectId, fromRoleId)) },
+              },
+            } : {}),
+          })
+        }
+
         // HELD FOR APPROVAL — recorded exactly as the sentinel records it, so a bus dispatch and
         // a sentinel dispatch from the same lane land in the same place and the same Approve
         // button delivers either. `deliverDispatchRef` is what approval runs, and it does not
@@ -1688,7 +1711,9 @@ export function DashboardView() {
           // miss. Once delivery confirmation was added the same miss also skipped the tracking,
           // so one lookup quietly gated both. The router knows the target; it returns it now.
           const tgt = verdict.target
-          if (tgt) {
+          // A REPLY IS NOT WORK. `reply` shares this request table with `dispatch`, and filing a
+          // running board task for it put conversation on the board as commissioned work.
+          if (tgt && r.kind !== 'reply') {
             // Only for the worktree provenance the board shows. The task itself no longer needs
             // this to exist, so a lane that has gone since the verdict costs a diff link at worst.
             const tab = lanes.find((l) => l.id === tgt.terminalId)
@@ -2802,7 +2827,7 @@ export function DashboardView() {
     // `dispatchToRole` is the right home because it is the same act by the same authority: the
     // human addressing a lane. Its only callers are Send → on a board card and Start all, both
     // human-initiated; agent→agent delivery goes through `deliverDispatchRef`, never here.
-    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, role.id)
+    deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(project.id, role.id))
     const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
     if (liveTab) {
       void submitQueue.submit(liveTab.id, t)
@@ -2841,7 +2866,7 @@ export function DashboardView() {
       // A human sending work to an IDLE lane is the same act as sending it to a live one; only
       // the plumbing differs. This branch bypassed `dispatchToRole`, so it bypassed the reset —
       // and a lane you have to launch is exactly the one most likely to be sitting exhausted.
-      deliveryStateRef.current = resetChainFor(deliveryStateRef.current, role.id)
+      deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(project.id, role.id))
       // `focus: false` for the same reason as the live branch: where you end up must depend on
       // the verb, never on whether the lane happened to be running.
       void handleLaunchRole(project, role, undefined, false, { focus: false }) // picks up its queue
@@ -3838,7 +3863,24 @@ export function DashboardView() {
       // project on the machine, so the role filter alone had `uwazi-app`'s reports announced into
       // the composer of whatever project's coordinator was idle first — observed with #313/#316/
       // #318. A coordinator is only told about work in the project it is coordinating.
-      void window.operator.artifactUndelivered?.(role, 3, tab.projectId)
+      //
+      // OLD REPORTS EXPIRE INSTEAD OF BEING ANNOUNCED. The queue had no age limit, so reports filed
+      // while no coordinator was idle waited days and were then typed in one per idle turn, oldest
+      // first, ahead of new ones: operator #623 waited 9 days, and a report filed that morning waited
+      // 31 minutes behind 36 old rows (audit 2026-09-14). Past the cutoff they are marked delivered
+      // without being typed, stay in the Comms log, and the user is told once how many.
+      const projectName = dispatchRef.current.projects.find((p) => p.id === tab.projectId)?.name
+      void (window.operator.artifactExpireUndelivered?.(role, announceCutoff(Date.now()), tab.projectId) ?? Promise.resolve(0))
+        .then((expired) => {
+          if (expired > 0) {
+            dispatchRef.current.pushToast({
+              text: `${expired} older ${expired === 1 ? 'report was' : 'reports were'} not announced`,
+              detail: `They were more than ${REPORT_ANNOUNCE_MAX_AGE_MS / 3_600_000} hours old and are in the ${projectName ?? 'project'} Comms log.`,
+              kind: 'info',
+            })
+          }
+          return window.operator.artifactUndelivered?.(role, 3, tab.projectId)
+        })
         .then(async (pending) => {
           if (pending?.length) refreshReports()
           for (const report of pending ?? []) {
@@ -5117,6 +5159,12 @@ export function DashboardView() {
                     // attribution source that survives a session Operator didn't hand a
                     // port to, now that nothing inspects the process tree.
                     onDevServerDetected={(port) => window.operator.noteSessionPort?.(t.id, port)}
+                    // A PERSON SUBMITTING INPUT TO THIS LANE puts a human back in its loop, which is
+                    // what the delivery brakes measure the absence of. Typing to a braked coordinator
+                    // used to change nothing; only a board Send → did.
+                    onHumanSubmit={() => {
+                      if (t.roleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(t.projectId, t.roleId))
+                    }}
                   />
                 )}
                 {t.ended && (

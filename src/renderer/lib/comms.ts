@@ -203,6 +203,16 @@ export function reportsForTask(taskId: string, reports: readonly ArtifactReport[
  *  cap standing in for a receipt — so this announces and points, and the text stays where it can
  *  be read without a delivery race: on the task if the lane named one, in the project's Comms
  *  timeline either way. */
+/** How old an unannounced report may be and still be typed into a coordinator. Older ones are
+ *  marked delivered without being announced and stay in the Comms log (the announce pass in
+ *  DashboardView). Twelve hours covers a report filed overnight; the 2026-09-14 backlog was days. */
+export const REPORT_ANNOUNCE_MAX_AGE_MS = 12 * 60 * 60 * 1000
+
+/** The ISO cutoff for `artifactExpireUndelivered`: reports filed before it are not announced. */
+export function announceCutoff(now: number): string {
+  return new Date(now - REPORT_ANNOUNCE_MAX_AGE_MS).toISOString()
+}
+
 export function announcement(report: ArtifactReport): string {
   const from = report.roleId || report.terminalId
   const where = report.taskId ? 'on its task card' : 'in the project Comms log'

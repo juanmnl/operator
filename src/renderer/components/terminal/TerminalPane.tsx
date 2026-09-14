@@ -38,9 +38,11 @@ interface TerminalPaneProps {
   onTitleChange?: (title: string) => void
   /** Fires with the port when a dev server announces itself in the output. */
   onDevServerDetected?: (port: number) => void
+  /** Fires when the person at the keyboard presses Enter (or pastes a line) in this terminal. */
+  onHumanSubmit?: () => void
 }
 
-export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, suspendFit = false, webgl = false, onTitleChange, onDevServerDetected }: TerminalPaneProps) {
+export function TerminalPane({ terminalId, theme, active = true, replayHistory = false, suspendFit = false, webgl = false, onTitleChange, onDevServerDetected, onHumanSubmit }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -70,6 +72,9 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // Latest suspendFit without re-running the construction effect.
   const suspendFitRef = useRef(suspendFit)
   suspendFitRef.current = suspendFit
+  // Latest callback without re-running the construction effect, same as suspendFit.
+  const onHumanSubmitRef = useRef(onHumanSubmit)
+  onHumanSubmitRef.current = onHumanSubmit
   // True while an IME composition is in progress — the custom key handler must not
   // intercept keys (let the textarea commit the composed text through onData).
   const isComposingRef = useRef(false)
@@ -312,6 +317,10 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // Forward keystrokes to pty
     term.onData((data) => {
       window.operator.terminalWrite(terminalId, data)
+      // Enter from the person at the keyboard. `onData` carries only what xterm produced from
+      // input (keys, paste, and its replies to terminal queries, which contain no CR), never
+      // Operator's own writes, which go straight to `terminalWrite`.
+      if (data.includes('\r')) onHumanSubmitRef.current?.()
     })
 
     // Resize pty on terminal resize

@@ -202,6 +202,7 @@ export function installBridge(): void {
     // read-only instead of erroring on open.
     artifactUndelivered: async () => [],
     artifactMarkDelivered: async () => {},
+    artifactExpireUndelivered: async () => 0,
     artifactPendingStatus: () => invoke('artifacts_pending_status'),
     artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
 

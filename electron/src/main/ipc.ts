@@ -183,6 +183,11 @@ export function registerIpc(d: Deps): void {
       String(role), Number(limit) || 10, projectId ? String(projectId) : null,
     ),
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
+    // Reports filed before `before` are marked delivered without being announced; see
+    // `expireUndelivered`. Scoped like `artifactUndelivered`.
+    artifactExpireUndelivered: async (role, before, projectId) => d.artifacts.expireUndelivered(
+      String(role), String(before), new Date().toISOString(), projectId ? String(projectId) : null,
+    ),
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

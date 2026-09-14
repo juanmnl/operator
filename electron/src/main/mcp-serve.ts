@@ -261,8 +261,10 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       const verdict = awaitVerdict(store, id)
       if (!verdict) {
         return errorResult(
-          'Operator did not answer in time. Nothing was sent and no task was created — retry, or '
-          + 'use the OPERATOR-DISPATCH sentinel, which still works.',
+          // NOT "use the sentinel": the OPERATOR-DISPATCH sentinel skips the delivery brakes, so
+          // pointing a lane at it on a timeout offered a way around them.
+          'Operator did not answer in time. Nothing was sent and no task was created. Retry once; '
+          + 'if it fails again, tell the user that Operator is not answering dispatches.',
         )
       }
       // THE ANSWER IS JSON ON PURPOSE. The caller has to act on it — `send` means "now call

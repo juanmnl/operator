@@ -86,7 +86,7 @@ export interface DeliveryState {
    *  longer silences A↔C — which is the cascade — but see `FANOUT_EXHAUSTED_LIMIT` for the
    *  property that had to be kept by other means. */
   exhausted: Record<string, true>
-  /** roleId → agent-to-agent messages SENT since a human last addressed that lane. The ring
+  /** `laneKey` → agent-to-agent messages SENT since a human last addressed that lane. The ring
    *  backstop; see `LANE_SEND_LIMIT`. */
   laneSends: Record<string, number>
 }
@@ -112,6 +112,17 @@ export const LANE_SEND_LIMIT = 24
 
 export const emptyDeliveryState = (): DeliveryState => ({ chainHop: {}, laneSends: {}, pairHistory: {}, suspendedUntil: {}, exhausted: {} })
 
+/** A lane's key in the brake state: its project and its role.
+ *
+ *  THE ROLE ALONE IS NOT A LANE. Every project names its coordinator `operator`, and one
+ *  `deliveryStateRef` serves the whole app, so keyed by role every project's coordinator shared one
+ *  send budget and one set of pair chains. On 2026-09-14 mantel (9 sends), uwazi_app (10) and
+ *  operator (4) added up to the limit and all three coordinators were refused within 16 minutes
+ *  (`dev/results/agent-comms-audit-2026-09-14.md`). Scoped by project, a lane's budget measures what
+ *  that lane said. A session outside any project keeps the bare role. */
+export const laneKey = (projectId: string | null | undefined, roleId: string): string =>
+  projectId ? `${projectId}/${roleId}` : roleId
+
 const pairKey = (from: string, to: string) => `${from}>${to}`
 
 export type DeliveryDecision =
@@ -119,10 +130,13 @@ export type DeliveryDecision =
   | { kind: 'block'; reason: BlockReason; hop: number; note: string }
 
 export interface DeliveryInput {
-  /** Sender lane id. */
+  /** Sender lane key (`laneKey`). */
   from: string
-  /** Addressee lane id. */
+  /** Addressee lane key (`laneKey`). */
   to: string
+  /** Names for the notes a person reads; the keys are for the state. Default: the keys. */
+  fromLabel?: string
+  toLabel?: string
   text: string
   /** Is the addressee's lane live right now? A message NEVER launches one. */
   targetLive: boolean
@@ -170,6 +184,8 @@ export function deliveryPrefix(fromLabel: string): string {
  *  message was over budget, the conversation it belongs to is over, in both directions. */
 export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDecision; state: DeliveryState } {
   const { from, to, text, targetLive, paused, now, state } = input
+  const fromName = input.fromLabel ?? from
+  const toName = input.toLabel ?? to
   const key = pairKey(from, to)
   const back = pairKey(to, from)
   // INHERIT FROM THE REVERSE DIRECTION — what `to` last said to `from` is what this message is a
@@ -186,7 +202,7 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
   if (!targetLive) {
     // Queued, never launched — the same rule human→lane follows. A text box that starts sessions
     // is an unbounded spawn.
-    return block('queued', `"${to}" isn't running, and a message never starts a lane. Nothing was sent.`)
+    return block('queued', `"${toName}" isn't running, and a message never starts a lane. Nothing was sent.`)
   }
   // The chain budget. `exhausted` is checked alongside the count rather than after it, because a
   // lane that was marked when its partner hit the limit has a STALE count of its own — that gap is
@@ -197,11 +213,13 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
     return {
       decision: {
         kind: 'block', reason: 'hop-limit', hop,
+        // The notes name the way out, and it is one a person can find: typing into the lane's
+        // terminal resets it (`onHumanSubmit` in DashboardView), as does Send → on a board task.
         note: runaway
-          ? `"${from}" has sent ${LANE_SEND_LIMIT} agent-to-agent messages with no human in the loop. It is stopped until you send it a task.`
+          ? `"${fromName}" has sent ${LANE_SEND_LIMIT} agent-to-agent messages with no human in the loop. Nothing was sent. It can send again once you type into its terminal or press Send → on a board task for it.`
           : threadDead
-            ? `"${from}" and "${to}" are in a chain that already reached ${HOP_LIMIT} hops. Send one of them a task to let it speak again.`
-            : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; send "${to}" a task to restart the chain.`,
+            ? `"${fromName}" and "${toName}" are in a chain that already reached ${HOP_LIMIT} hops. Type into either lane's terminal to let them speak again.`
+            : `Chain reached ${HOP_LIMIT} hops without a human in it. Delivery stopped; type into "${toName}"'s terminal to restart the chain.`,
       },
       // BOTH DIRECTIONS OF THIS THREAD, and no others. The sender is over budget by this thread's
       // count; the addressee is the one that leaked, because nothing was delivered into it on this
@@ -216,7 +234,7 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
   const until = state.suspendedUntil[key] ?? 0
   if (now < until) {
     const secs = Math.ceil((until - now) / 1000)
-    return block('pair-brake', `${from} → ${to} is suspended for another ${secs}s after too many messages in a minute.`)
+    return block('pair-brake', `${fromName} → ${toName} is suspended for another ${secs}s after too many messages in a minute.`)
   }
   if (recent.length >= PAIR_MAX_IN_WINDOW) {
     // Trip it: suspend the pair and report once. Suspension is per ORDERED pair, so the reverse
@@ -224,7 +242,7 @@ export function evaluateDelivery(input: DeliveryInput): { decision: DeliveryDeci
     return {
       decision: {
         kind: 'block', reason: 'pair-brake', hop,
-        note: `${from} → ${to} sent ${recent.length} messages in under a minute, so that pair is suspended for ${PAIR_SUSPEND_MS / 60_000} minutes. Other lanes are unaffected.`,
+        note: `${fromName} → ${toName} sent ${recent.length} messages in under a minute, so that pair is suspended for ${PAIR_SUSPEND_MS / 60_000} minutes. Other lanes are unaffected.`,
       },
       state: { ...state, pairHistory: { ...state.pairHistory, [key]: recent }, suspendedUntil: { ...state.suspendedUntil, [key]: now + PAIR_SUSPEND_MS } },
     }

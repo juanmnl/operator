@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   HOP_LIMIT, PAIR_WINDOW_MS, PAIR_MAX_IN_WINDOW, PAIR_SUSPEND_MS, DELIVER_MAX_CHARS,
   emptyDeliveryState, evaluateDelivery, truncateForDelivery, deliveryPrefix, resetChainFor,
-  chatterPausedFrom, LANE_SEND_LIMIT,
+  chatterPausedFrom, LANE_SEND_LIMIT, laneKey,
   type DeliveryState,
 } from './agent-delivery'
 
@@ -11,6 +11,49 @@ const base = (over: Partial<Parameters<typeof evaluateDelivery>[0]> = {}) => ({
   from: 'research', to: 'code', text: 'have a look at this',
   targetLive: true, paused: false, now: T0, state: emptyDeliveryState(),
   ...over,
+})
+
+describe('laneKey — a lane is its project and its role', () => {
+  // Audit 2026-09-14: keyed by role alone, every project's `operator` coordinator shared one budget.
+  const spend = (state: DeliveryState, projectId: string) => {
+    for (let i = 0; i < LANE_SEND_LIMIT; i++) {
+      // A different addressee each time, far apart, so only the send budget is measured.
+      state = evaluateDelivery(base({
+        from: laneKey(projectId, 'operator'), to: laneKey(projectId, `lane${i}`),
+        now: T0 + i * PAIR_WINDOW_MS * 10, state,
+      })).state
+    }
+    return state
+  }
+  const later = T0 + LANE_SEND_LIMIT * PAIR_WINDOW_MS * 20
+  const next = (state: DeliveryState, projectId: string, labels = {}) => evaluateDelivery(base({
+    from: laneKey(projectId, 'operator'), to: laneKey(projectId, 'code'), now: later, state, ...labels,
+  })).decision
+
+  it('keeps two projects\' coordinators apart, and a session outside a project keeps its role', () => {
+    expect(laneKey('p1', 'operator')).not.toBe(laneKey('p2', 'operator'))
+    expect(laneKey(undefined, 'operator')).toBe('operator')
+  })
+
+  it('a budget spent in one project leaves the same role in another project free', () => {
+    const state = spend(emptyDeliveryState(), 'p1')
+    expect(next(state, 'p1').kind).toBe('block')
+    expect(next(state, 'p2').kind).toBe('deliver')
+  })
+
+  it('the human reset is per project too', () => {
+    const state = spend(emptyDeliveryState(), 'p1')
+    expect(next(resetChainFor(state, laneKey('p2', 'operator')), 'p1').kind).toBe('block')
+    expect(next(resetChainFor(state, laneKey('p1', 'operator')), 'p1').kind).toBe('deliver')
+  })
+
+  it('names lanes in the note by their labels, and says how to let it continue', () => {
+    const decision = next(spend(emptyDeliveryState(), 'p1'), 'p1', { fromLabel: 'Operator', toLabel: 'Code' })
+    const note = decision.kind === 'block' ? decision.note : ''
+    expect(note).toContain('"Operator" has sent')
+    expect(note).not.toContain('p1/')
+    expect(note).toMatch(/type into its terminal/)
+  })
 })
 
 describe('the kill switch', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../shared/types'
-import { emptyDeliveryState, HOP_LIMIT, type DeliveryState } from './agent-delivery'
+import { emptyDeliveryState, HOP_LIMIT, LANE_SEND_LIMIT, type DeliveryState } from './agent-delivery'
 import {
   resolveDispatch, readDeliveryResult, trackSend, takeSend, SEND_CONFIRM_TTL_MS,
   type BusLane, type DispatchContext, type SendBook,
@@ -219,6 +219,49 @@ describe('resolveDispatch — the brakes', () => {
     const before = ctx()
     const { brakes } = resolveDispatch(req('cod'), before)
     expect(brakes).toBe(before.brakes)
+  })
+})
+
+describe('resolveDispatch — brakes are per project, and count only what could be sent', () => {
+  // Audit 2026-09-14: every project's coordinator is `operator`, and keyed by role alone they
+  // shared one budget — three projects' ordinary traffic braked all three coordinators.
+  it('does not let one project\'s coordinator spend another project\'s budget', () => {
+    const p2 = { ...project(), id: 'p2' } as Project
+    // Ten minutes apart, so the pair brake never trips first and this measures the send budget.
+    const p2ctx = (brakes: DeliveryState, i: number) =>
+      ctx({ project: p2, lanes: [lane('code', { projectId: 'p2' })], brakes, now: 1_000_000 + i * 600_000 })
+    let brakes: DeliveryState = emptyDeliveryState()
+    for (let i = 0; i < LANE_SEND_LIMIT; i++) {
+      const r = resolveDispatch(req('code', { projectId: 'p2' }), p2ctx(brakes, i))
+      expect(r.verdict.outcome).toBe('send')
+      brakes = r.brakes
+    }
+    const p2next = resolveDispatch(req('code', { projectId: 'p2' }), p2ctx(brakes, LANE_SEND_LIMIT))
+    expect(p2next.verdict.outcome).toBe('refused')
+    expect(p2next.verdict.brake).toBe('hop-limit')
+    // Named for a person, not by its internal key.
+    expect(p2next.verdict.reason).toContain('"Operator" has sent')
+    expect(p2next.verdict.reason).not.toContain('p2/')
+
+    const p1 = resolveDispatch(req('code'), ctx({ brakes, now: 1_000_000 + (LANE_SEND_LIMIT + 1) * 600_000 }))
+    expect(p1.verdict.outcome).toBe('send')
+  })
+
+  it('names the brake on a brake refusal', () => {
+    expect(resolveDispatch(req('code'), ctx({ chatterPaused: true })).verdict.brake).toBe('paused')
+    expect(resolveDispatch(req('cod'), ctx()).verdict.brake).toBeUndefined()
+  })
+
+  it('charges nothing for a lane that is running but not on the bus yet', () => {
+    const before = ctx({ addresses: new Map() })
+    expect(resolveDispatch(req('code'), before).brakes).toBe(before.brakes)
+  })
+
+  it('sends a long task whole: SendMessage types nothing, so the pty cap does not apply', () => {
+    const long = 'x'.repeat(5000)
+    const { verdict } = resolveDispatch(req('code', { task: long }), ctx())
+    expect(verdict.text!.endsWith(long)).toBe(true)
+    expect(verdict.text).not.toMatch(/truncated/)
   })
 })
 

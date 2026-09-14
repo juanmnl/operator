@@ -17,7 +17,7 @@
 // asks; the app answers.
 
 import type { Project, Role } from '../../shared/types'
-import { evaluateDelivery, deliveryPrefix, truncateForDelivery, type DeliveryState } from './agent-delivery'
+import { evaluateDelivery, deliveryPrefix, laneKey, type BlockReason, type DeliveryState } from './agent-delivery'
 import { routeDispatch, dispatchNeedsApproval, type RoutableTab } from './dispatch'
 
 /** What a lane is told to do next. */
@@ -49,6 +49,9 @@ export interface DispatchVerdict {
    *  The caller writes the `pending-approval` record from this; it never reaches the wire, which
    *  is enforced by `mcp-serve` naming the five wire fields explicitly. */
   held?: { toRoleId?: string; toLabel?: string }
+  /** Which brake refused it, on a brake refusal, so the caller can show the user and offer the
+   *  reset. Internal, like `held`. */
+  brake?: BlockReason
 }
 
 export interface DispatchRequest {
@@ -167,8 +170,11 @@ export function resolveDispatch(
   // board entry for a message that was never delivered is the same lie as a delivered-looking
   // dispatch that vanished, told the other way round.
   const evaluated = evaluateDelivery({
-    from: req.fromRoleId,
-    to: targetRoleId,
+    // KEYED BY PROJECT AND ROLE (`laneKey`): every project's coordinator is `operator`.
+    from: laneKey(req.projectId, req.fromRoleId),
+    to: laneKey(req.projectId, targetRoleId),
+    fromLabel: req.fromLabel,
+    toLabel: roster.find((r) => r.id === targetRoleId)?.name ?? targetRoleId,
     text: req.task,
     targetLive: true,
     state: ctx.brakes,
@@ -178,7 +184,7 @@ export function resolveDispatch(
   if (evaluated.decision.kind === 'block') {
     return {
       brakes: evaluated.state,
-      verdict: { outcome: 'refused', reason: `delivery brake: ${evaluated.decision.note}` },
+      verdict: { outcome: 'refused', reason: `delivery brake: ${evaluated.decision.note}`, brake: evaluated.decision.reason },
     }
   }
 
@@ -189,7 +195,10 @@ export function resolveDispatch(
     // without Operator noticing. Refusing beats handing back an address assembled from a pid,
     // which would look valid and refuse to connect.
     return {
-      brakes: evaluated.state,
+      // NOTHING WAS SENT, so nothing is charged. Returning the evaluated state counted a dispatch
+      // to a lane that had not finished starting against the sender's budget, and a retry loop
+      // against a starting lane spent it with nothing delivered.
+      brakes: ctx.brakes,
       verdict: {
         outcome: 'refused',
         reason: `${targetRoleId} is running but not reachable on the session bus yet`,
@@ -197,14 +206,11 @@ export function resolveDispatch(
     }
   }
 
-  // THE SAME TEXT THE PTY PATH TYPES, header and truncation included, so a lane reads an
-  // identical message whichever transport carried it — and so the two paths can run side by side
-  // for a release without the receiving end being able to tell them apart.
-  // `evaluateDelivery` already truncated and wrapped for the pty path; reuse ITS text so the two
-  // transports cannot drift on what a lane actually receives.
-  const text = evaluated.decision.kind === 'deliver'
-    ? evaluated.decision.text
-    : truncateForDelivery(req.task).text
+  // THE SAME HEADER THE PTY PATH TYPES, so a lane reads a message the same way whichever transport
+  // carried it. NOT the pty path's truncation: that cap exists because typing a long string into a
+  // terminal can split it (`DELIVER_MAX_CHARS`), and the lane sends this with `SendMessage`, which
+  // types nothing. Cutting it anyway dropped the tail of every brief over 2000 characters.
+  const text = req.task
   return {
     brakes: evaluated.state,
     verdict: {

@@ -179,6 +179,22 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     next.close()
   })
 
+  it('EXPIRES reports older than the cutoff: marked delivered, out of the queue, still listed', () => {
+    // Audit 2026-09-14: operator #623 waited nine days and was then announced ahead of new work.
+    const store = new ArtifactStore(join(SANDBOX, 'expire-old.db'))
+    store.insertReport('2026-09-05T19:37:08.673Z', 't1', 'p', 'research', null, 'nine days old', '[]')
+    store.insertReport('2026-09-14T14:14:18.284Z', 't1', 'p', 'design', null, 'fresh', '[]')
+    store.insertReport('2026-09-05T19:40:00.000Z', 't1', 'other', 'code', null, 'another project', '[]')
+    expect(store.expireUndelivered('operator', '2026-09-14T02:00:00.000Z', '2026-09-14T14:15:00.000Z', 'p')).toBe(1)
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['fresh'])
+    // Another project's backlog is that project's coordinator's to expire.
+    expect(store.undeliveredFor('operator', 10, 'other').map((r) => r.summary)).toEqual(['another project'])
+    expect(store.listReports(10).find((r) => r.summary === 'nine days old')?.deliveredAt).toBe('2026-09-14T14:15:00.000Z')
+    // Nothing left to expire the second time.
+    expect(store.expireUndelivered('operator', '2026-09-14T02:00:00.000Z', '2026-09-14T14:16:00.000Z', 'p')).toBe(0)
+    store.close()
+  })
+
   it('marking delivered removes it from the queue and touches NOTHING else', () => {
     const store = new ArtifactStore(join(SANDBOX, 'delivered-only.db'))
     const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'announced', '[]')

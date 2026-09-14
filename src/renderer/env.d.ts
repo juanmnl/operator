@@ -62,6 +62,8 @@ declare global {
        *  so the receipt measured an automated read while looking authoritative. `written` vs
        *  `delivered` stays, because a `written` row means the announcer is broken. */
       artifactMarkDelivered: (id: number) => Promise<void>
+      /** Mark reports filed before `before` (ISO) delivered without announcing them; returns how many. */
+      artifactExpireUndelivered: (role: string, before: string, projectId?: string) => Promise<number>
       /** `operator__task_status` signals not yet applied to projects.json. */
       artifactPendingStatus: () => Promise<ArtifactStatusEvent[]>
       /** Ack AFTER the task is written through, so a crash replays rather than drops. */
