@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { measureBetween, formatPx, placeChip, type Box } from './redlines'
+import { measureBetween, formatPx, placeChip, describeRelation, type Box } from './redlines'
 
 const box = (left: number, top: number, right: number, bottom: number): Box => ({ left, top, right, bottom })
 
@@ -102,11 +102,48 @@ describe('placeChip', () => {
   })
 })
 
+describe('describeRelation — the measurement a note carries', () => {
+  const header = box(0, 0, 300, 50)
+
+  it('names the gap and the side for separated boxes', () => {
+    expect(describeRelation(box(0, 66, 300, 120), header, 'Header')).toBe('16px below Header')
+    expect(describeRelation(box(0, -40, 300, -24), header, 'Header')).toBe('24px above Header')
+    expect(describeRelation(box(312, 0, 400, 50), header, 'Header')).toBe('12px right of Header')
+    expect(describeRelation(box(-100, 0, -8, 50), header, 'Header')).toBe('8px left of Header')
+  })
+
+  it('gives both gaps for a diagonal neighbour, vertical first', () => {
+    expect(describeRelation(box(308, 66, 400, 120), header, 'Header')).toBe('16px below and 8px right of Header')
+  })
+
+  it('keeps a zero gap between touching boxes', () => {
+    expect(describeRelation(box(0, 50, 300, 80), header, 'Header')).toBe('0px below Header')
+  })
+
+  it('lists non-zero insets for an element inside the anchor, and for one containing it', () => {
+    expect(describeRelation(box(16, 24, 284, 50), header, 'Header')).toBe('inside Header (16px left, 24px top, 16px right)')
+    expect(describeRelation(box(-8, 0, 300, 60), header, 'Header')).toBe('contains Header (8px left, 10px bottom)')
+  })
+
+  it('gives the edge offsets for overlapping boxes, with a direction', () => {
+    expect(describeRelation(box(8, 20, 320, 70), header, 'Header')).toBe('overlaps Header (8px right, 20px down)')
+    expect(describeRelation(box(-4, -6, 200, 30), header, 'Header')).toBe('overlaps Header (4px left, 6px up)')
+  })
+
+  it('says so for identical boxes, and uses rule 5 for fractional px', () => {
+    expect(describeRelation(header, header, 'Header')).toBe('same box as Header')
+    expect(describeRelation(box(0, 62.5, 300, 90), header, 'Header')).toBe('12.5px below Header')
+    expect(describeRelation(box(0, 66.004, 300, 90), header, 'Header')).toBe('16px below Header')
+  })
+})
+
 describe('self-contained, for the script injected into the page', () => {
   it('each function works rebuilt from its source string', () => {
     const rebuild = <T,>(fn: T) => new Function(`return (${String(fn)})`)() as T
     const a = box(0, 0, 100, 50), b = box(130, 80, 200, 120)
     expect(rebuild(measureBetween)(a, b)).toEqual(measureBetween(a, b))
+    expect(rebuild(describeRelation)(b, a, 'Card')).toBe(describeRelation(b, a, 'Card'))
+    expect(rebuild(describeRelation)(box(16, 24, 284, 50), box(0, 0, 300, 50), 'Header')).toBe('inside Header (16px left, 24px top, 16px right)')
     expect(rebuild(formatPx)(72.6667)).toBe('72.7')
     const seg = { x1: 780, y1: 200, x2: 790, y2: 200, value: 10 }
     expect(rebuild(placeChip)(seg, 30, 14, 800, 600)).toEqual(placeChip(seg, 30, 14, 800, 600))

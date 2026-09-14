@@ -7,6 +7,7 @@ import {
 } from '../../lib/preview-history'
 import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
+import { formatPick, type PreviewPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 import { layoutGrid, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
@@ -373,10 +374,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   useEffect(() => {
     const unsub = window.operator.onPreviewPick?.((data) => {
       try {
-        const p = JSON.parse(data) as { selector?: string; tag?: string; text?: string; component?: string | null; source?: string | null; message?: string; target?: 'console' | 'tasks' }
-        const who = p.component || p.tag || 'element'
-        const loc = p.source ? `${who} @ ${p.source}` : `${who}${p.selector ? ` (${p.selector})` : ''}`
-        const msg = `${(p.message || '').trim()}\n\n↳ ${loc}${p.text ? ` — “${p.text}”` : ''}`.trim()
+        const p = JSON.parse(data) as PreviewPick
+        const msg = formatPick(p)
         if (p.target === 'console') onDispatch?.(msg); else onSendToTasks?.(msg)
       } catch { /* ignore */ }
     })

@@ -86,6 +86,58 @@ export function measureBetween(a: Box, b: Box): Segment[] {
   return segs
 }
 
+/** Where `a` (the element a note is about) sits relative to `b` (the redline anchor), as words for
+ *  the note Inspect sends, so "make this gap 24" arrives with the current gap:
+ *
+ *    separated     `16px below Header` · `12px left of Header` · `16px below and 8px right of Header`
+ *    containment   `inside Header (16px left, 24px top)` · `contains Header (8px right)`
+ *    overlapping   `overlaps Header (8px right, 4px down)`
+ *    identical     `same box as Header`
+ *
+ *  The same geometry as `measureBetween`, in CSS px of the preset layout. Zero insets and offsets
+ *  are left out; a zero gap between touching boxes is kept (`0px below`), because it is the answer.
+ *  Numbers follow rule 5. Self-contained like the rest of this file, so no call to `formatPx`. */
+export function describeRelation(a: Box, b: Box, name: string): string {
+  const eps = 0.01
+  const aInB = b.left <= a.left && b.top <= a.top && b.right >= a.right && b.bottom >= a.bottom
+  const bInA = a.left <= b.left && a.top <= b.top && a.right >= b.right && a.bottom >= b.bottom
+  if (aInB && bInA) return 'same box as ' + name
+
+  const items: Array<[number, string]> = []
+  let head = ''
+  let separated = false
+  if (aInB || bInA) {
+    const outer = aInB ? b : a
+    const inner = aInB ? a : b
+    items.push(
+      [inner.left - outer.left, 'left'], [inner.top - outer.top, 'top'],
+      [outer.right - inner.right, 'right'], [outer.bottom - inner.bottom, 'bottom'],
+    )
+    head = (aInB ? 'inside ' : 'contains ') + name
+  } else {
+    if (a.top >= b.bottom) items.push([a.top - b.bottom, 'below'])
+    else if (a.bottom <= b.top) items.push([b.top - a.bottom, 'above'])
+    if (a.left >= b.right) items.push([a.left - b.right, 'right of'])
+    else if (a.right <= b.left) items.push([b.left - a.right, 'left of'])
+    separated = items.length > 0
+    if (!separated) {
+      const dx = a.left - b.left
+      const dy = a.top - b.top
+      items.push([Math.abs(dx), dx > 0 ? 'right' : 'left'], [Math.abs(dy), dy > 0 ? 'down' : 'up'])
+      head = 'overlaps ' + name
+    }
+  }
+
+  const shown = items
+    .filter((it) => separated || it[0] > eps)
+    .map((it) => {
+      const r = Math.round(it[0])
+      return (Math.abs(it[0] - r) <= eps ? String(r) : it[0].toFixed(1)) + 'px ' + it[1]
+    })
+  if (separated) return shown.join(' and ') + ' ' + name
+  return shown.length ? head + ' (' + shown.join(', ') + ')' : head
+}
+
 /** Rule 5: CSS px as an integer when within 0.01 of one, otherwise one decimal (`12.5`). */
 export function formatPx(v: number): string {
   const r = Math.round(v)

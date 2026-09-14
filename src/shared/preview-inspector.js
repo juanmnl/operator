@@ -3,7 +3,7 @@
   // The page-side API. `selector` is shared with preview-overlay.js (it re-finds a redline anchor
   // after HMR); `configure` is how Operator switches the inspector on and off and hands it the
   // palette. Function declarations, so they exist here already.
-  window.__operatorInspector = { selector: selector, configure: configure };
+  window.__operatorInspector = { selector: selector, configure: configure, label: label };
   var box, label;
   // Off when the native view is only hosting redlines or the grid (Interact mode): no hover outline,
   // and clicks reach the app. A shell that never calls `configure` (Tauri) keeps it on.
@@ -85,6 +85,9 @@
     }
     return { component: comp, source: src ? (src.fileName + ':' + src.lineNumber) : null };
   }
+  /** What a note calls an element: its React component when there is one, else tag#id.class. The
+   *  overlay names a redline anchor with it. */
+  function label(el) { return source(el).component || name(el); }
   // Send the picked element + note back to Operator. A remote embedded webview can't route command
   // IPC (the ACL denies it) — but a request to our registered custom scheme is never ACL-gated. So
   // we beacon via an <img> to operatorpick://, URL-safe-base64-encoding the JSON payload.
@@ -112,11 +115,19 @@
       text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
       component: s.component, source: s.source, route: location.pathname, message: '',
     };
+    // A REDLINE ANCHOR goes into the note, so "make this gap 24" arrives with the gap it has now.
+    // Only in Electron, where the overlay and its functions exist; only for an element other than
+    // the anchor itself.
+    var ov = window.__operatorOverlay, fns = window.__operatorOverlayFns;
+    var an = ov && typeof ov.anchorInfo === 'function' ? ov.anchorInfo() : null;
+    if (an && an.node !== el && fns && typeof fns.describeRelation === 'function') {
+      data.measurement = fns.describeRelation({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }, an.box, an.name);
+    }
     var card = document.createElement('div');
     card.id = '__op_compose';
     // Scaled by 1/scale so the card keeps its size on screen in a zoomed-out page. Its footprint in
     // page px is then W and H times 1/scale, which is what the edge clamps below use.
-    var k = 1 / scale, W = 288, H = 130;
+    var k = 1 / scale, W = 288, H = data.measurement ? 148 : 130;
     var left = Math.min(Math.max(8, r.left), window.innerWidth - W * k - 8);
     var top = r.bottom + 8; if (top > window.innerHeight - H * k) top = Math.max(8, r.top - H * k);
     card.style.cssText = 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + W + 'px;z-index:2147483647;box-sizing:border-box;background:' + C.ground + ';border:1px solid ' + C.edge + ';border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,0.55);transform:scale(' + k + ');transform-origin:top left';
@@ -159,7 +170,16 @@
       else if (ev.key === 'Escape') { ev.preventDefault(); removeCompose(); }
     });
     row.appendChild(toConsole); row.appendChild(toTasks); row.appendChild(spacer); row.appendChild(cancel);
-    card.appendChild(chip); card.appendChild(inp); card.appendChild(row);
+    card.appendChild(chip);
+    if (data.measurement) {
+      var meas = document.createElement('div');
+      meas.setAttribute('data-op-measurement', '');
+      meas.textContent = data.measurement;
+      meas.title = data.measurement;
+      meas.style.cssText = 'margin-top:-4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;color:' + C.dim;
+      card.appendChild(meas);
+    }
+    card.appendChild(inp); card.appendChild(row);
     document.documentElement.appendChild(card);
     inp.focus();
   }

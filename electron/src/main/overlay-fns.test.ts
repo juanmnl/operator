@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { OVERLAY_FNS_JS } from './overlay-fns'
 import { layoutGrid, DEFAULT_GRID_SPEC } from '../../../src/shared/layout-grid'
-import { measureBetween, formatPx, placeChip } from '../../../src/shared/redlines'
+import { measureBetween, formatPx, placeChip, describeRelation } from '../../../src/shared/redlines'
 
-type Fns = { layoutGrid: typeof layoutGrid; measureBetween: typeof measureBetween; formatPx: typeof formatPx; placeChip: typeof placeChip }
+type Fns = {
+  layoutGrid: typeof layoutGrid; measureBetween: typeof measureBetween; formatPx: typeof formatPx; placeChip: typeof placeChip
+  describeRelation: typeof describeRelation
+}
 
 // The page gets these functions as SOURCE. A function that reached for an import or a module
 // constant would compile here and throw inside the page, where nobody would see it.
@@ -20,5 +23,6 @@ describe('OVERLAY_FNS_JS', () => {
     expect(fns.formatPx(12.5)).toBe(formatPx(12.5))
     const seg = { x1: 0, y1: 2, x2: 40, y2: 2, value: 40 }
     expect(fns.placeChip(seg, 30, 14, 800, 600)).toEqual(placeChip(seg, 30, 14, 800, 600))
+    expect(fns.describeRelation(b, a, 'Header')).toBe(describeRelation(b, a, 'Header'))
   })
 })

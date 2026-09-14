@@ -259,6 +259,14 @@
     configure: configure,
     clearAnchor: function () { if (anchor) setAnchor(null); },
     redlinesOn: function () { return !!cfg.redlines; },
+    // The anchor, for the note the inspector composes: the node, its box in CSS px of the preset
+    // layout, and a name a person would recognise (the component, else tag#id.class).
+    anchorInfo: function () {
+      if (!cfg.redlines || !anchor || !anchor.isConnected) return null;
+      var ins = window.__operatorInspector, nm = null;
+      if (ins && typeof ins.label === 'function') { try { nm = ins.label(anchor); } catch (e) { nm = null; } }
+      return { node: anchor, box: boxOf(anchor), name: nm || anchor.tagName.toLowerCase() };
+    },
     redraw: function () { drawGrid(); drawRedlines(); },
   };
 })();
