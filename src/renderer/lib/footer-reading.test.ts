@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { contextReading, planReading, railFootPlanText } from './footer-reading'
+import {
+  contextReading, planReading, railFootPlanText, shortLimitLabel, planSummary, planCellTitle,
+  planPanelStatus, planPanelPlacement, PLAN_PANEL_W, type PlanCellState,
+} from './footer-reading'
 import { CONTEXT_WINDOW, CONTEXT_WINDOW_1M, inferContextWindow } from './model-config'
 import type { PlanLimits } from './plan-limits'
-import { FRESH_MS } from './plan-limits'
+import { FRESH_MS, TONE_INK } from './plan-limits'
 import type { AgentSession } from '../../shared/types'
 
 const sess = (o: Partial<AgentSession> = {}) => ({
@@ -255,5 +258,140 @@ describe('railFootPlanText — the reading outside a session', () => {
     // evidence at all.
     expect(railFootPlanText(null, Date.now())).toBeNull()
     expect(railFootPlanText(undefined, Date.now())).toBeNull()
+  })
+})
+
+describe('shortLimitLabel — one name per limit, in the rail and the footer alike', () => {
+  it('drops the leading "Current" and keeps the CLI’s per-model part', () => {
+    expect(shortLimitLabel('Current session')).toBe('Session')
+    expect(shortLimitLabel('Current week')).toBe('Week')
+    expect(shortLimitLabel('Current week (Fable)')).toBe('Week (Fable)')
+  })
+})
+
+describe('planSummary — the collapsed cell names the limit closest to its cap', () => {
+  // The reading the user reported: session 6%, week 83%, Fable 97%.
+  const reported = () => limits({ sessionPct: 6, weekPct: 83, modelPct: 97 })
+
+  it('shows the binding limit by name, rounded, in its tone', () => {
+    const s = planSummary(reported(), NOW)
+    expect(s.state).toBe('current')
+    expect(s.label).toBe('Week (Fable)')
+    expect(s.pct).toBe(97)
+    expect(s.tone).toBe('danger')
+  })
+
+  it('does not hide a SECOND limit past the warn line behind the first', () => {
+    const s = planSummary(reported(), NOW)
+    expect(s.alsoHigh.map((r) => r.key)).toEqual(['week'])
+    expect(s.alsoHighTone).toBe('warn')
+  })
+
+  it('counts nothing extra when only one limit is high, or none is', () => {
+    expect(planSummary(limits({ sessionPct: 6, weekPct: 40, modelPct: 97 }), NOW).alsoHigh).toEqual([])
+    const calm = planSummary(limits({ sessionPct: 6, weekPct: 12, modelPct: 30 }), NOW)
+    expect(calm.tone).toBe('normal')
+    expect(calm.alsoHigh).toEqual([])
+    expect(calm.alsoHighTone).toBe('normal')
+  })
+
+  it('takes the tone from the ROUNDED number, so 74.6 cannot print 75% in normal ink', () => {
+    const s = planSummary(limits({ sessionPct: 1, weekPct: 74.6, modelPct: null }), NOW)
+    expect(s.pct).toBe(75)
+    expect(s.tone).toBe('warn')
+  })
+
+  it('carries no label and no percentage when there is no reading — absent is not zero', () => {
+    for (const [l, loading, state] of [
+      [null, false, 'no-reading'],
+      [null, true, 'loading'],
+      [limits({ sessionResets: 'in 0 min' }), false, 'window-closed'],
+    ] as const) {
+      const s = planSummary(l, NOW, loading)
+      expect(s.state).toBe(state)
+      expect(s.label).toBeUndefined()
+      expect(s.pct).toBeUndefined()
+      expect(s.alsoHigh).toEqual([])
+    }
+  })
+
+  it('keeps the number while aging, with the state saying so', () => {
+    const s = planSummary(limits({ fetchedAt: at(FRESH_MS + 60_000), sessionPct: 6, weekPct: 83, modelPct: 97 }), NOW)
+    expect(s.state).toBe('aging')
+    expect(s.pct).toBe(97)
+  })
+})
+
+describe('planCellTitle / planPanelStatus — the copy', () => {
+  const reported = () => planSummary(limits({ sessionPct: 6, weekPct: 83, modelPct: 97 }), NOW)
+
+  it('names the highest limit and every other high one', () => {
+    const t = planCellTitle(reported(), null)
+    expect(t).toContain('Week (Fable) 97%')
+    expect(t).toContain('Week 83% is also high')
+  })
+
+  it('says how old an aging reading is', () => {
+    const aging = planSummary(limits({ fetchedAt: at(FRESH_MS + 60_000) }), NOW)
+    expect(planCellTitle(aging, '6m ago')).toContain('updated 6m ago')
+  })
+
+  it('names the unknown states in words, never a percentage', () => {
+    expect(planCellTitle(planSummary(null, NOW), null)).not.toMatch(/%/)
+    expect(planCellTitle(planSummary(limits({ sessionResets: 'in 0 min' }), NOW), null)).toMatch(/closed/)
+  })
+
+  it('has no sentence break anywhere, so no word can be stranded after a full stop', () => {
+    const states: PlanCellState[] = ['loading', 'no-reading', 'window-closed', 'aging', 'current']
+    const copy = [
+      ...states.flatMap((s) => [planPanelStatus(s, '6m ago'), planPanelStatus(s, null)]),
+      planCellTitle(reported(), '6m ago'),
+      planCellTitle(planSummary(null, NOW), null),
+      planCellTitle(planSummary(null, NOW, true), null),
+      planCellTitle(planSummary(limits({ sessionResets: 'in 0 min' }), NOW), null),
+    ]
+    for (const line of copy) expect(line).not.toMatch(/\.\s/)
+  })
+})
+
+describe('planPanelPlacement — above the cell, always inside the window', () => {
+  const vp = { w: 1280, h: 834 }
+
+  it('opens upward from the cell with right edges aligned', () => {
+    const p = planPanelPlacement({ left: 1100, right: 1260, top: 806 }, vp)
+    expect(p.width).toBe(PLAN_PANEL_W)
+    expect(p.left).toBe(1260 - PLAN_PANEL_W)
+    expect(p.bottom).toBe(834 - 806 + 6)
+    expect(p.maxHeight).toBe(806 - 6 - 8)
+  })
+
+  it('narrows rather than overflowing a window thinner than the panel', () => {
+    const p = planPanelPlacement({ left: 200, right: 290, top: 500 }, { w: 300, h: 530 })
+    expect(p.width).toBe(284)
+    expect(p.left).toBe(8)
+    expect(p.left + p.width).toBeLessThanOrEqual(300 - 8)
+  })
+
+  it('never leaves the left or right edge', () => {
+    expect(planPanelPlacement({ left: 20, right: 100, top: 800 }, vp).left).toBe(8)
+    const offRight = planPanelPlacement({ left: 1250, right: 1300, top: 800 }, vp)
+    expect(offRight.left + offRight.width).toBe(1280 - 8)
+  })
+
+  it('never produces a negative height or width', () => {
+    const p = planPanelPlacement({ left: 0, right: 10, top: 4 }, { w: 10, h: 10 })
+    expect(p.maxHeight).toBe(0)
+    expect(p.width).toBe(0)
+  })
+})
+
+describe('TONE_INK — warning text that stays legible', () => {
+  it('never uses the muted token or an opacity, and mixes the warning tones into --fg', () => {
+    for (const ink of Object.values(TONE_INK)) {
+      expect(ink).not.toContain('--fg-muted')
+      expect(ink).not.toMatch(/opacity/)
+    }
+    expect(TONE_INK.warn).toMatch(/color-mix\(.*var\(--fg\)\)/)
+    expect(TONE_INK.danger).toMatch(/color-mix\(.*var\(--fg\)\)/)
   })
 })

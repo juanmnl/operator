@@ -1,11 +1,16 @@
-import { useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { AgentSession } from '../../../shared/types'
 import { modelFamilyLabel } from '../../lib/roster'
-import { toneFor, TONE_FILL, updatedAgo, type PlanLimits } from '../../lib/plan-limits'
-import { contextReading, planReading } from '../../lib/footer-reading'
+import { toneFor, TONE_FILL, TONE_INK, updatedAgo, type PlanLimits } from '../../lib/plan-limits'
+import {
+  contextReading, planReading, planSummary, planCellTitle, planPanelStatus, planPanelPlacement,
+  type AnchorRect,
+} from '../../lib/footer-reading'
+import { useDismiss } from '../../lib/use-dismiss'
 
 // THE READING AT THE RIGHT OF THE SESSION FOOTER. Design: `dev/results/plan-meter-bottom-bar.md`,
-// mock `dev/plan-bar-preview.html`.
+// mock `dev/plan-bar-preview.html`; the plan cell's collapse: `dev/results/plan-meter-collapse-RESULT.md`.
 //
 // Three cells, right to left: this session's context, what it is running, and the plan. The
 // session's own numbers sit nearer the session; ambient telemetry sits in the corner.
@@ -36,9 +41,9 @@ function k(n: number): string {
 
 /** A bar. Background and no border — a radiused element with a changing border colour is the
  *  WKWebView rule this app already carries. */
-function Bar({ pct, color, w = 34 }: { pct: number; color: string; w?: number }) {
+function Bar({ pct, color, w = 34, h = 3 }: { pct: number; color: string; w?: number | string; h?: number }) {
   return (
-    <span style={{ display: 'inline-block', width: w, height: 3, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden', verticalAlign: 'middle' }}>
+    <span style={{ display: 'inline-block', width: w, height: h, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden', verticalAlign: 'middle' }}>
       <span style={{ display: 'block', width: `${Math.max(0, Math.min(100, pct))}%`, height: '100%', borderRadius: 2, background: color }} />
     </span>
   )
@@ -61,15 +66,27 @@ function Chip({ children, tone }: { children: React.ReactNode; tone?: string }) 
   )
 }
 
-export function FooterReading({ session, pinnedEffort, limits, now, onOpenTuning, onOpenRoster }: {
+/** The aging marker. A filled dot, never a ring: a dynamic background is cheap, a dynamic border
+ *  on a radius is not. */
+function AgingDot({ title }: { title?: string }) {
+  return <span title={title} style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--yellow)', flexShrink: 0 }} />
+}
+
+export function FooterReading({ session, pinnedEffort, limits, now, loading, onOpenTuning, onOpenRoster, onRefresh, onRevalidate }: {
   session: AgentSession
   /** The roster's launch pin, used when the transcript has not reported an effort yet. */
   pinnedEffort?: string
   limits: PlanLimits | null
   /** The hook's clock, so freshness advances with the same tick that decides whether to re-ask. */
   now: number
+  /** A plan read is in flight. */
+  loading?: boolean
   onOpenTuning?: () => void
   onOpenRoster?: () => void
+  /** Force a fresh read — the panel's Refresh. */
+  onRefresh?: () => void
+  /** Re-read only if the reading has aged out — called when the panel opens. */
+  onRevalidate?: () => void
 }) {
   return (
     <span style={{ display: 'flex', alignItems: 'center', gap: CELL_GAP, flexShrink: 0 }}>
@@ -78,7 +95,10 @@ export function FooterReading({ session, pinnedEffort, limits, now, onOpenTuning
       <Rule />
       <ModelCell session={session} pinnedEffort={pinnedEffort} onOpenRoster={onOpenRoster} />
       <Rule />
-      <PlanCell limits={limits} now={now} onOpenTuning={onOpenTuning} />
+      <PlanCell
+        limits={limits} now={now} loading={!!loading}
+        onOpenTuning={onOpenTuning} onRefresh={onRefresh} onRevalidate={onRevalidate}
+      />
     </span>
   )
 }
@@ -168,74 +188,218 @@ function ModelCell({ session, pinnedEffort, onOpenRoster }: {
 }
 
 // ── 3.3 plan ─────────────────────────────────────────────────────────────────────────────────
+//
+// ONE CELL, ONE PANEL. The cell used to lay every limit out inline (`Current session 6% · Current
+// week 83% · Current week (Fable) 97%`, three bars), which spent most of the bar's right end on
+// telemetry. Collapsed, it names the limit closest to its cap — label, percentage, bar, in that
+// limit's tone — and adds `+N` when other limits are also past the warn line, so a second limit
+// near its cap is still seen without opening anything. Clicking opens the panel with everything.
 
-function PlanCell({ limits, now, onOpenTuning }: {
-  limits: PlanLimits | null; now: number; onOpenTuning?: () => void
+function PlanCell({ limits, now, loading, onOpenTuning, onRefresh, onRevalidate }: {
+  limits: PlanLimits | null; now: number; loading: boolean
+  onOpenTuning?: () => void; onRefresh?: () => void; onRevalidate?: () => void
 }) {
-  const { state, rows } = planReading(limits, now)
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => setOpen(false), [])
+  // Outside pointer-down, Escape (focus back to the cell) and focus leaving all close it. Scroll
+  // does NOT: the panel is fixed to the window, and the terminal beside it scrolls every time the
+  // lane prints.
+  useDismiss(open, { panelRef, onDismiss: close, closeOnScroll: false })
 
-  const shell = (children: React.ReactNode, title?: string) => (
-    <button
-      onClick={onOpenTuning}
-      title={title ?? 'What is driving this — opens Tuning'}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 10,
-        border: 'none', background: 'transparent', borderRadius: 4, padding: '2px 4px',
-        cursor: onOpenTuning ? 'pointer' : 'default', outline: 'none',
-      }}
-      onMouseEnter={(e) => { if (onOpenTuning) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-    >{children}</button>
-  )
+  const measure = useCallback(() => {
+    const r = triggerRef.current?.getBoundingClientRect()
+    if (r) setAnchor({ left: r.left, right: r.right, top: r.top })
+  }, [])
+  // Measured before paint so the panel never flashes at a stale position; re-measured on resize
+  // because the cell moves when the window does.
+  useLayoutEffect(() => {
+    if (!open) { setAnchor(null); return }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [open, measure])
+  // Focus INTO the panel once it exists, so Escape and Tab act on it rather than on the terminal.
+  const placed = anchor !== null
+  useEffect(() => { if (open && placed) panelRef.current?.focus() }, [open, placed])
 
-  // NO DATA NEVER RENDERS AS 0%, in any of these states. That rule is load-bearing in
-  // `plan-limits.ts` and this only changes what the three freshness states look like in 34px.
-  if (state !== 'current' && state !== 'aging') {
-    const ended = state === 'window-closed'
-    return shell(
-      <>
-        <span style={{ ...NUM, fontSize: 10, color: 'var(--fg-muted)' }}>plan</span>
-        <Chip tone={ended ? 'var(--yellow)' : undefined}>{ended ? 'window closed' : 'no reading'}</Chip>
-      </>,
-      ended
-        ? 'The plan window this reading described has closed — opens Tuning'
-        : 'No plan reading available right now — opens Tuning',
-    )
-  }
-
+  const summary = planSummary(limits, now, loading)
   const age = updatedAgo(limits?.fetchedAt, now)
-  return shell(
+  const hasPct = summary.label != null && summary.pct != null
+  const high = summary.tone !== 'normal'
+
+  return (
     <>
-      {/* AGING KEEPS ITS NUMBERS — they are still the best thing available, and one dot is the
-          only warning there is room for. An EXPIRED one shows no percentage at all, above,
-          because by then we genuinely do not know. */}
-      {state === 'aging' && (
-        <span title={age ? `Updated ${age}` : undefined}
-          style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--yellow)', flexShrink: 0 }} />
-      )}
-      {rows.map((row) => {
-        const isBinding = row.binding
-        const tone = TONE_FILL[toneFor(row.pct)]
-        return (
-          <span
-            key={row.key}
-            // The reset clause VERBATIM, on the binding row — it is already localised and already
-            // carries its zone, and re-deriving it is how you print the wrong hour.
-            title={isBinding && row.resets ? `${row.label} — ${row.pct}% used, resets ${row.resets}` : `${row.label} — ${row.pct}% used`}
-            style={{ display: 'inline-flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}
-          >
-            <span style={{ ...NUM, fontSize: 9.5, whiteSpace: 'nowrap', color: isBinding ? 'var(--fg)' : 'var(--fg-muted)' }}>
-              {row.label} {row.pct}%
+      <button
+        ref={triggerRef}
+        data-popmenu-trigger
+        data-plan-cell
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => {
+          // Opening is a moment attention lands: re-read if the reading has aged out. Free when it
+          // is current, because the hook checks first.
+          if (!open) onRevalidate?.()
+          setOpen((v) => !v)
+        }}
+        title={planCellTitle(summary, age)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          border: 'none', borderRadius: 4, padding: '2px 5px', cursor: 'pointer', outline: 'none',
+          background: open ? 'var(--overlay-subtle)' : 'transparent',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+        onMouseLeave={(e) => { if (!open) e.currentTarget.style.background = 'transparent' }}
+        onFocus={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+        onBlur={(e) => { if (!open) e.currentTarget.style.background = 'transparent' }}
+      >
+        {summary.state === 'aging' && <AgingDot />}
+        {hasPct ? (
+          <>
+            <span style={{ ...NUM, fontSize: 10, whiteSpace: 'nowrap', color: CONTROL_INK }}>
+              {summary.label}{' '}
+              {/* THE NUMBER CARRIES THE WARNING, in ink that clears contrast; the bar carries it in
+                  the raw tone. The label stays a control's label. */}
+              <span style={{ color: high ? TONE_INK[summary.tone] : CONTROL_INK }}>{summary.pct}%</span>
             </span>
-            {/* ONLY THE BINDING ROW IS COLOURED. Three amber bars would say three alarms are
-                ringing when only one of them can stop you. */}
-            <Bar pct={row.pct} color={isBinding ? tone : 'var(--fg-muted)'} w={44} />
-            {/* Marked three ways at once, none of them a fill: ink, bar colour, and this 1px
-                rule. Straight, so it never lands on a radiused edge. */}
-            <span aria-hidden style={{ width: 44, height: 1, background: isBinding ? tone : 'transparent' }} />
-          </span>
-        )
-      })}
-    </>,
+            <Bar pct={summary.pct!} color={TONE_FILL[summary.tone]} />
+            {summary.alsoHigh.length > 0 && (
+              <span style={{ ...NUM, fontSize: 9.5, color: TONE_INK[summary.alsoHighTone] }}>
+                +{summary.alsoHigh.length}
+              </span>
+            )}
+          </>
+        ) : (
+          // NO DATA NEVER RENDERS AS 0%. The three unknown states keep their words.
+          <>
+            <span style={{ ...NUM, fontSize: 10, color: 'var(--fg-muted)' }}>plan</span>
+            {summary.state === 'loading'
+              ? <span style={{ ...NUM, fontSize: 10, color: 'var(--fg-muted)' }}>…</span>
+              : <Chip tone={summary.state === 'window-closed' ? 'var(--yellow)' : undefined}>
+                  {summary.state === 'window-closed' ? 'window closed' : 'no reading'}
+                </Chip>}
+          </>
+        )}
+        {/* Opens upward, so the caret points up at rest. */}
+        <span aria-hidden style={{ fontSize: 8, lineHeight: 1, color: CONTROL_INK }}>{open ? '▾' : '▴'}</span>
+      </button>
+      {open && anchor && (
+        <PlanPanel
+          panelRef={panelRef} anchor={anchor}
+          limits={limits} now={now} loading={loading}
+          onRefresh={onRefresh} onOpenTuning={onOpenTuning} onClose={close}
+        />
+      )}
+    </>
   )
+}
+
+/** Everything the plan reading knows, in a panel above the cell.
+ *
+ *  PORTALLED TO `body` and fixed-positioned from `planPanelPlacement`, so it is always inside the
+ *  window and no ancestor's `overflow: hidden` or transform can clip or displace it. */
+function PlanPanel({ panelRef, anchor, limits, now, loading, onRefresh, onOpenTuning, onClose }: {
+  panelRef: React.RefObject<HTMLDivElement | null>
+  anchor: AnchorRect
+  limits: PlanLimits | null; now: number; loading: boolean
+  onRefresh?: () => void; onOpenTuning?: () => void; onClose: () => void
+}) {
+  const { state, rows } = planReading(limits, now, loading)
+  const place = planPanelPlacement(anchor, { w: window.innerWidth, h: window.innerHeight })
+  const age = updatedAgo(limits?.fetchedAt, now)
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Plan usage"
+      tabIndex={-1}
+      data-no-drag
+      data-plan-panel
+      style={{
+        position: 'fixed', left: place.left, bottom: place.bottom, width: place.width,
+        maxHeight: place.maxHeight, overflowY: 'auto', boxSizing: 'border-box', zIndex: 950,
+        // The app's floating-panel surface, opaque — see PopMenu for why a tint token fails here.
+        background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+        boxShadow: 'var(--shadow-panel)', outline: 'none', fontFamily: 'var(--font-body)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px 2px' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
+          Plan usage
+        </span>
+        {limits?.plan && <span style={{ marginLeft: 'auto' }}><Chip>{limits.plan}</Chip></span>}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 10px', ...NUM, fontSize: 9.5, color: 'var(--fg-muted)' }}>
+        {state === 'aging' && <AgingDot />}
+        <span>{planPanelStatus(state, age)}</span>
+      </div>
+
+      {rows.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 12px 12px' }}>
+          {rows.map((row) => {
+            const pct = Math.round(row.pct)
+            const tone = toneFor(pct)
+            return (
+              <div key={row.key} data-plan-row={row.key}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 5 }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--fg)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {row.label}
+                  </span>
+                  {/* EVERY BAR IN ITS OWN TONE, here. The strip coloured only the binding row
+                      because three amber bars side by side read as three alarms; in a list where
+                      each bar sits beside its own number, a grey bar next to "83%" would disagree
+                      with the number. */}
+                  <span style={{ marginLeft: 'auto', ...NUM, fontSize: 11, color: TONE_INK[tone] }}>{pct}%</span>
+                </div>
+                <Bar pct={pct} color={TONE_FILL[tone]} w="100%" h={4} />
+                {/* The reset clause VERBATIM — already localised and zoned. */}
+                {row.resets && (
+                  <div style={{ marginTop: 4, ...NUM, fontSize: 9.5, color: 'var(--fg-muted)' }}>
+                    Resets {row.resets}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {limits?.note && (
+        <div style={{ padding: '0 12px 10px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--fg-muted)' }}>
+          {limits.note}
+        </div>
+      )}
+
+      {(onRefresh || onOpenTuning) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 6px', borderTop: '1px solid var(--border)' }}>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={loading}
+              style={{ ...panelBtn, color: loading ? 'var(--fg-muted)' : CONTROL_INK, cursor: loading ? 'default' : 'pointer' }}
+              onMouseEnter={(e) => { if (!loading) e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >{loading ? 'Refreshing…' : 'Refresh'}</button>
+          )}
+          {onOpenTuning && (
+            <button
+              onClick={() => { onClose(); onOpenTuning() }}
+              style={{ ...panelBtn, marginLeft: 'auto', color: 'var(--accent)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >Open Tuning →</button>
+          )}
+        </div>
+      )}
+    </div>,
+    document.body,
+  )
+}
+
+const panelBtn: React.CSSProperties = {
+  border: 'none', background: 'transparent', outline: 'none', borderRadius: 5,
+  padding: '4px 8px', fontFamily: 'var(--font-body)', fontSize: 10.5, fontWeight: 600,
 }

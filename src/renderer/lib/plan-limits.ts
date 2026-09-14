@@ -40,6 +40,15 @@ export const TONE_FILL: Record<LimitTone, string> = {
   danger: 'var(--color-error)',
 }
 
+/** TEXT ink per tone. Not `TONE_FILL`: a raw amber at 10px measured 1.86–3.05:1 on the light
+ *  palettes, so a percentage in warn or danger ink is the tone mixed halfway into `--fg`, the same
+ *  construction as the roster's already-checked warning ink. Never `--fg-muted`, never an opacity. */
+export const TONE_INK: Record<LimitTone, string> = {
+  normal: 'var(--fg)',
+  warn: 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))',
+  danger: 'color-mix(in srgb, var(--color-error) 50%, var(--fg))',
+}
+
 /** A number we can actually draw: a real number in 0–100. `null`/`undefined`/NaN are ABSENT. */
 export function readable(pct: number | null | undefined): number | null {
   if (typeof pct !== 'number' || Number.isNaN(pct)) return null

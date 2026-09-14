@@ -24,8 +24,12 @@ export function useDismiss(open: boolean, opts: {
   /** Triggers carry `data-popmenu-trigger`; a pointer-down on one is not "outside" either, or the
    *  toggle would close on the way down and reopen on the click. */
   triggerAttr?: string
+  /** `false` for a panel that cannot detach from its trigger on scroll (fixed-positioned against
+   *  the window). The session footer's plan panel needs it: the terminal's viewport scrolls every
+   *  time a running lane prints, so closing on any scroll would shut the panel while you read it. */
+  closeOnScroll?: boolean
 }) {
-  const { panelRef, onDismiss, triggerAttr = 'data-popmenu-trigger' } = opts
+  const { panelRef, onDismiss, triggerAttr = 'data-popmenu-trigger', closeOnScroll = true } = opts
   // The element to hand focus back to. Captured at OPEN, not at dismiss — by then the panel has
   // usually taken it.
   const returnTo = useRef<HTMLElement | null>(null)
@@ -73,12 +77,12 @@ export function useDismiss(open: boolean, opts: {
     document.addEventListener('pointerdown', onDown, true)
     document.addEventListener('keydown', onKey, true)
     document.addEventListener('focusout', onFocusOut, true)
-    document.addEventListener('scroll', onScroll, true)
+    if (closeOnScroll) document.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('pointerdown', onDown, true)
       document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('focusout', onFocusOut, true)
       document.removeEventListener('scroll', onScroll, true)
     }
-  }, [open, panelRef, onDismiss, triggerAttr])
+  }, [open, panelRef, onDismiss, triggerAttr, closeOnScroll])
 }

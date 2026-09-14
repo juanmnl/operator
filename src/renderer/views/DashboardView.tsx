@@ -5151,6 +5151,9 @@ export function DashboardView() {
               pinnedEffort={tab?.effortLevel}
               limits={planLimits.limits}
               now={planLimits.now}
+              loading={planLimits.loading}
+              onRefresh={planLimits.refresh}
+              onRevalidate={planLimits.revalidate}
               onOpenTuning={handleOpenTuning}
               onOpenRoster={() => {
                 if (tab?.projectId && projects.some((p) => p.id === tab.projectId)) {

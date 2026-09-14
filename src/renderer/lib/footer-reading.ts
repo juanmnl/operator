@@ -7,7 +7,7 @@
 import type { AgentSession } from '../../shared/types'
 import { inferContextWindow } from './model-config'
 import {
-  bindingLimit, limitRows, freshnessOf, hasCurrentData, windowEnded, type PlanLimits,
+  bindingLimit, limitRows, freshnessOf, hasCurrentData, windowEnded, toneFor, type LimitTone, type PlanLimits,
 } from './plan-limits'
 
 /** What the context cell shows. */
@@ -121,9 +121,123 @@ export function railFootPlanText(
   // Collapsed the rail is 70px wide and the label will not fit; the number alone still answers
   // "how much is left", which is the question being asked at the gallery.
   if (collapsed) return pct
-  // `Current week` → `Week`. The full-cell labels read as a list where every row starts the same
-  // way; alone in the rail foot that first word carries nothing and costs a third of the line.
-  // The per-model row keeps its own label, which is the CLI's and not ours to trim.
-  const label = binding.label.replace(/^Current /, '')
-  return `${label.charAt(0).toUpperCase()}${label.slice(1)} ${pct}`
+  return `${shortLimitLabel(binding.label)} ${pct}`
+}
+
+/** `Current week` → `Week`, `Current week (Fable)` → `Week (Fable)`.
+ *
+ *  The full labels read as a list where every row starts the same way; alone in one cell that first
+ *  word carries nothing and costs a third of the space. The per-model part is the CLI's own label
+ *  and is kept exactly as it arrives. Shared by the rail foot and the collapsed footer cell, so the
+ *  two never name the same limit differently. */
+export function shortLimitLabel(label: string): string {
+  const l = label.replace(/^Current /, '')
+  return `${l.charAt(0).toUpperCase()}${l.slice(1)}`
+}
+
+// ── The collapsed plan cell and its panel ────────────────────────────────────────────────────
+//
+// The footer used to carry every limit inline — `Current session 6% · Current week 83% · Current
+// week (Fable) 97%`, three bars — which took most of the bar's right end. It is now ONE cell that
+// names the limit closest to its cap, and a panel above it that lists everything. Result:
+// `dev/results/plan-meter-collapse-RESULT.md`.
+
+/** What the collapsed cell shows. */
+export interface PlanSummary {
+  state: PlanCellState
+  /** The binding limit, shortened. Absent whenever there is no percentage to stand behind. */
+  label?: string
+  pct?: number
+  tone: LimitTone
+  /** Limits OTHER than the binding one that are at or past the warn line. */
+  alsoHigh: PlanRowReading[]
+  /** The worst tone among `alsoHigh`, for the ink of the `+N` marker. */
+  alsoHighTone: LimitTone
+}
+
+/** The collapsed cell's reading.
+ *
+ *  THE BINDING LIMIT, NAMED. Collapsing keeps the one limit that can stop you first, with its
+ *  name, so the "it only shows Fable" misreading that moved the reading out of the rail cannot come
+ *  back through a bare percentage.
+ *
+ *  A SECOND HIGH LIMIT IS NOT HIDDEN. Week at 83% under Fable at 97% is two limits past the warn
+ *  line, and showing only the higher one would say the other is fine. `alsoHigh` carries them, so
+ *  the cell can add `+1` without the panel being opened.
+ *
+ *  ROUNDED ONCE, and the tone is taken from the rounded number, so the cell can never print `75%`
+ *  in normal ink.
+ *
+ *  No rows, no label: the "absent is not zero" rule `planReading` already keeps. */
+export function planSummary(limits: PlanLimits | null | undefined, now: number, loading = false): PlanSummary {
+  const { state, rows } = planReading(limits, now, loading)
+  const binding = rows.find((r) => r.binding)
+  if (!binding) return { state, tone: 'normal', alsoHigh: [], alsoHighTone: 'normal' }
+  const pct = Math.round(binding.pct)
+  const alsoHigh = rows.filter((r) => !r.binding && toneFor(Math.round(r.pct)) !== 'normal')
+  return {
+    state,
+    label: shortLimitLabel(binding.label),
+    pct,
+    tone: toneFor(pct),
+    alsoHigh,
+    alsoHighTone: toneFor(Math.max(0, ...alsoHigh.map((r) => Math.round(r.pct)))),
+  }
+}
+
+/** The collapsed cell's tooltip. Written without sentence breaks, so no word can be stranded
+ *  after a full stop. */
+export function planCellTitle(s: PlanSummary, age: string | null): string {
+  if (s.label == null) {
+    if (s.state === 'window-closed') return 'The plan window this reading described has closed — click for details'
+    if (s.state === 'loading') return 'Reading plan limits…'
+    return 'No plan reading right now — click for details'
+  }
+  const parts = [`Highest limit: ${s.label} ${s.pct}%`]
+  for (const r of s.alsoHigh) parts.push(`${shortLimitLabel(r.label)} ${Math.round(r.pct)}% is also high`)
+  if (s.state === 'aging' && age) parts.push(`updated ${age}`)
+  return `${parts.join(' · ')} — click for every limit`
+}
+
+/** The panel's status line. Same rule: no sentence breaks. */
+export function planPanelStatus(state: PlanCellState, age: string | null): string {
+  switch (state) {
+    case 'loading': return 'Reading plan limits…'
+    case 'no-reading': return 'No plan reading right now'
+    case 'window-closed': return 'The session window this reading described has closed'
+    case 'aging': return age ? `Updated ${age} · may be out of date` : 'May be out of date'
+    default: return age ? `Updated ${age}` : 'Current reading'
+  }
+}
+
+/** The trigger's box, in window coordinates. */
+export interface AnchorRect { left: number; right: number; top: number }
+
+export interface PanelPlacement { left: number; bottom: number; width: number; maxHeight: number }
+
+export const PLAN_PANEL_W = 320
+
+/** Where the plan panel sits: ABOVE its cell (the footer is the bottom of the window, so there is
+ *  nowhere below), right edges aligned (the cell is the last thing on the bar), and always inside
+ *  the window.
+ *
+ *  Narrower than the panel plus both margins, the panel narrows rather than hanging off an edge.
+ *  `maxHeight` is the room between the trigger and the top of the window, and the panel scrolls
+ *  inside that rather than growing past it. Fixed-position numbers, so the panel can live in a
+ *  portal and no ancestor's `overflow: hidden` can clip it. */
+export function planPanelPlacement(
+  anchor: AnchorRect,
+  viewport: { w: number; h: number },
+  width = PLAN_PANEL_W,
+  gap = 6,
+  margin = 8,
+): PanelPlacement {
+  const w = Math.max(0, Math.min(width, viewport.w - 2 * margin))
+  const left = Math.max(margin, Math.min(anchor.right - w, viewport.w - margin - w))
+  return {
+    left,
+    bottom: Math.max(margin, viewport.h - anchor.top + gap),
+    width: w,
+    maxHeight: Math.max(0, anchor.top - gap - margin),
+  }
 }
