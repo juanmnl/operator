@@ -19,7 +19,7 @@ interface CommandPaletteProps {
 
 // Section order when browsing (no query), most-reached first. Sections are set apart
 // by their headers + spacing alone — no decorative colour (it carried no meaning).
-const GROUP_ORDER = ['Session', 'Continue', 'Recent', 'New', 'View', 'Settings']
+const GROUP_ORDER = ['Session', 'Continue', 'Recent', 'New', 'View', 'Preview', 'Settings']
 
 /** Cheap fuzzy match: returns a score (lower = better) or -1 for no match. */
 function score(query: string, text: string): number {

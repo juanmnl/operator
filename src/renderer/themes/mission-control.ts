@@ -45,6 +45,9 @@ export const missionControlVars = {
   '--blue': '#58b2ff',
   '--magenta': '#c98bff',
   '--cyan': '#3fd9c9',
+  // The Preview's layout-grid overlay: a hue from this palette's ANSI set, clear of its accent.
+  // Only ever a 10% column fill over a page, where red does not read as an error.
+  '--grid': 'var(--red)',
   /* SYNTAX INK — the code viewer's six roles, per palette.
      They exist because the ANSI tokens they used to borrow FAIL as small text on the light
      palettes. Measured against each palette's own `--bg-terminal` before the change:

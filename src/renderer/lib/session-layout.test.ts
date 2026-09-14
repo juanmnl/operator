@@ -101,6 +101,11 @@ describe('applyLayout — one preview surface per session', () => {
     expect(l).toMatchObject({ mainView: 'preview', panelOpen: true, panelTab: 'diff' })
   })
 
+  it('merges a tools patch field by field', () => {
+    const prev = layout({ tools: { grid: false, redlines: true } })
+    expect(applyLayout(prev, { tools: { grid: true } }).tools).toEqual({ grid: true, redlines: true })
+  })
+
   it('carries tools through untouched', () => {
     const prev = layout({ tools: { grid: true, redlines: false } })
     expect(applyLayout(prev, { panelTab: 'preview', panelOpen: true }).tools).toEqual({ grid: true, redlines: false })

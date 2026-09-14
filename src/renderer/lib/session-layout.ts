@@ -45,8 +45,11 @@ export function previewInBothSlots(l: SessionLayout): boolean {
  *  - any other patch that would leave both (only reachable from a stored layout): the panel keeps
  *    its placement and the main view shows the Console, because that is the state with both
  *    surfaces visible. `coerceLayouts` resolves it the same way. */
-export function applyLayout(prev: SessionLayout, patch: Partial<SessionLayout>): SessionLayout {
-  const next: SessionLayout = { ...prev, ...patch }
+/** A layout change. `tools` merges field by field, so turning the grid on leaves redlines alone. */
+export type LayoutPatch = Partial<Omit<SessionLayout, 'tools'>> & { tools?: Partial<SessionLayout['tools']> }
+
+export function applyLayout(prev: SessionLayout, patch: LayoutPatch): SessionLayout {
+  const next: SessionLayout = { ...prev, ...patch, tools: { ...prev.tools, ...patch.tools } }
   if (next.panelTab !== 'preview') next.readingTab = next.panelTab
   if (patch.mainView === 'preview' && next.panelTab === 'preview') {
     next.panelTab = next.readingTab

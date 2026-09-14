@@ -10,14 +10,16 @@ export interface KeyChordEvent {
   key: string
 }
 
-/** True if the chord is an Operator app shortcut (Cmd/Ctrl + K/N/B/W/J or 1-9, plus the
+/** True if the chord is an Operator app shortcut (Cmd/Ctrl + K/N/B/W/J/' or 1-9, plus the
  *  SHIFTED navigation pair ⌘⇧O = all projects and ⌘⇧P = project switcher).
+ *  ⌘' (layout grid) is fired by a View-menu accelerator, not by a keydown handler; claiming it
+ *  here only makes the terminal let it through to the menu.
  *  Note: the terminal only DECLINES the Cmd (meta) variants — Ctrl+<letter> are
  *  terminal control codes (^W werase, ^K kill-line) and must reach the pty. */
 export function isAppChord(e: KeyChordEvent): boolean {
   if (!(e.metaKey || e.ctrlKey)) return false
   const k = e.key.toLowerCase()
-  if (k === 'k' || k === 'n' || k === 'b' || k === 'w' || k === 'j') return true
+  if (k === 'k' || k === 'n' || k === 'b' || k === 'w' || k === 'j' || k === "'") return true
   // Only the SHIFTED forms are ours: plain ⌘O / ⌘P have no app meaning, so they stay the
   // terminal's (and can't be silently swallowed here).
   if (e.shiftKey && (k === 'o' || k === 'p')) return true

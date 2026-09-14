@@ -7,7 +7,9 @@ import {
 } from '../../lib/preview-history'
 import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
-import { toolbarTier, originChipLabel, scaleReadout, pointerMode, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
+import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
+import { layoutGrid, type GridSpec } from '../../../shared/layout-grid'
+import { GridSettingsBand } from './GridSettingsBand'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -47,7 +49,7 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
@@ -66,6 +68,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
    *  palette, the quit dialog. The native inspect view is hidden, not closed, and re-placed at the
    *  stage's current rect when this goes false. */
   inspectHidden?: boolean
+  /** The layout grid: shown or not (per session), its spec (per project), whether its settings
+   *  band is open, and the project the spec is saved to (null = no project, edits in memory).
+   *  Owned by DashboardView so ⌘' and ⌘K reach it. */
+  grid?: { on: boolean; spec: GridSpec; editing: boolean; savedTo: string | null }
+  onGridToggle?: () => void
+  onGridSpecChange?: (spec: GridSpec) => void
+  onGridEditingChange?: (open: boolean) => void
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
   // A pinned target, stored as the STRING THE USER TYPED — a port, a port and a path
@@ -428,6 +437,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
    *  as "pixel viewport of the preview frame", and `lib/annotations.pxOf` multiplies by it. */
   const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
   const readout = scaleReadout(preset, box.w)
+  // In PAGE px, so a column is a column of the page at any device preset.
+  const gridLayout = grid?.on ? layoutGrid(grid.spec, pageBox.w) : null
   // Inspect only counts while there is a page to inspect; the segment is absent without one.
   const mode = pointerMode(annotating, inspecting && !!display)
   const setPointerMode = (m: PointerMode) => {
@@ -472,10 +483,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           decides only whether they share a row. `position: relative` so the picker and the port
           editor anchor to the bar and not to whichever slot holds it: in the side panel the
           nearest positioned box starts above the panel's own tab row. */}
-      <div style={{
-        position: 'relative', flexShrink: 0, display: 'flex', flexDirection: tier === 'one' ? 'row' : 'column',
-        borderBottom: '1px solid var(--border)',
-      }}>
+      <div style={{ position: 'relative', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', flexDirection: tier === 'one' ? 'row' : 'column' }}>
       {/* THE ADDRESS GROUP */}
       <div style={{ ...barRow, flex: tier === 'one' ? 1 : undefined }}>
         {/* ◀ ▶ ⟳ — and the two arrows walk OPERATOR'S OWN address history, not the app's.
@@ -695,7 +704,34 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               </span>
             </span>
           )}
+          {grid && onGridToggle && reach === 'up' && display && (
+            // OVERLAYS, after a hairline: any combination, in any pointer mode, and never a
+            // click-catcher. `Grid` shows or hides it; `▾` opens its settings band under this row.
+            <span style={{ ...toolGroup, marginLeft: onDispatch || onSendToTasks ? undefined : 'auto' }}>
+              <span style={{ width: 1, height: 14, background: 'var(--border)', margin: '0 8px' }} />
+              <button
+                onClick={onGridToggle}
+                title={`${grid.on ? 'Hide' : 'Show'} the layout grid (⌘')${inspecting ? ' — not drawn while Inspect is on' : ''}`}
+                style={{ ...overlayBtn, color: grid.on ? 'var(--accent)' : OFF_INK }}
+              >Grid</button>
+              <button
+                onClick={() => onGridEditingChange?.(!grid.editing)}
+                title={grid.editing ? 'Close grid settings' : 'Grid settings'}
+                style={{ ...overlayBtn, padding: '2px 4px', color: grid.on ? 'var(--accent)' : OFF_INK }}
+              >{grid.editing ? '▴' : '▾'}</button>
+            </span>
+          )}
         </div>
+      </div>
+      {grid?.editing && onGridSpecChange && reach === 'up' && display && (
+        <GridSettingsBand
+          spec={grid.spec}
+          pageW={pageBox.w}
+          savedTo={grid.savedTo}
+          onChange={onGridSpecChange}
+          onDone={() => onGridEditingChange?.(false)}
+        />
+      )}
       </div>
 
         {/* THE PERSISTENT STRIP, only ever reachable by an explicit pin. Not a toast, because
@@ -768,6 +804,25 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                 }}
               />
             )}
+
+          {/* THE LAYOUT GRID. Laid out in page px and scaled with the iframe. It sits outside the
+              iframe, so it stays put while the page scrolls, and it never takes a click. Above
+              the page, below the annotation layers. Not drawn while Inspect is on: the native
+              view covers the stage, and drawing inside that page comes later. The dashed container
+              edges are `1 / scale` px wide so they stay one screen pixel at a scaled preset. */}
+          {gridLayout && !inspecting && gridLayout.cols.length > 0 && (
+            <div aria-hidden style={{
+              position: 'absolute', top: 0, left: 0, width: pageBox.w, height: pageBox.h, zIndex: 1,
+              transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none',
+            }}>
+              {gridLayout.cols.map((c, i) => (
+                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0, left: c.left, width: c.width, background: GRID_FILL }} />
+              ))}
+              {gridLayout.clamped && [gridLayout.containerLeft, gridLayout.containerLeft + gridLayout.containerW].map((x) => (
+                <div key={`edge-${x}`} style={{ position: 'absolute', top: 0, bottom: 0, left: x, borderLeft: `${1 / scale}px dashed ${GRID_EDGE}` }} />
+              ))}
+            </div>
+          )}
 
           {/* Annotation markers — numbered pins / boxes over the preview. Only shown while
               annotating: switching to Interact reveals the clean app (no leftover boxes). */}
@@ -989,9 +1044,17 @@ const navBtn: React.CSSProperties = {
   color: 'var(--fg-muted)', fontSize: 10, cursor: 'pointer', outline: 'none',
 }
 
-/** Off-state ink for the bar's text controls (presets, pointer mode). `--fg-muted` at 9.5–10px
- *  is below the 4.5:1 control-label floor on the light palettes. */
-const OFF_INK = 'color-mix(in srgb, var(--fg) 72%, transparent)'
+/** The layout grid's ink: a 10% column fill, and 45% dashed container edges, of the palette's
+ *  `--grid`. */
+const GRID_FILL = 'color-mix(in srgb, var(--grid) 10%, transparent)'
+const GRID_EDGE = 'color-mix(in srgb, var(--grid) 45%, transparent)'
+
+/** An overlay toggle in the tools row (`Grid`, `▾`): the preset buttons' type, transparent. */
+const overlayBtn: React.CSSProperties = {
+  fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
+  padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer', outline: 'none',
+  background: 'transparent',
+}
 
 /** One band of the bar: the address row, or the tools row. */
 const barRow: React.CSSProperties = {

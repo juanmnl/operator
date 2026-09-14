@@ -750,6 +750,8 @@ export function installMockBridge() {
     },
     gridtermAttach: noop, gridtermResize: noop, gridtermScroll: noop, gridtermSetTheme: noop, gridtermDetach: noop,
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,
+    // A subscription must hand back an unsubscribe; the Proxy's catch-all would hand back a Promise.
+    onMenuCommand: () => noop,
     installUpdate: async () => {}, savePastedImage: async () => '/tmp/x.png',
   }
 

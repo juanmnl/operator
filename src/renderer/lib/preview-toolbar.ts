@@ -33,6 +33,11 @@ export function scaleReadout(preset: 'fit' | number, stageW: number): string | n
   return `${preset} · ${Math.round((stageW / preset) * 100)}%`
 }
 
+/** Off-state ink for the Preview's text controls (presets, pointer mode, overlays, the grid
+ *  settings band). `--fg-muted` at 9.5–10px is below the 4.5:1 control-label floor on the light
+ *  palettes. */
+export const CONTROL_OFF_INK = 'color-mix(in srgb, var(--fg) 72%, transparent)'
+
 /** Exactly one pointer mode. Interact: clicks reach the app. Annotate: pin/box notes. Inspect:
  *  click an element to compose a note about it (the native view). */
 export type PointerMode = 'interact' | 'annotate' | 'inspect'

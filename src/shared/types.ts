@@ -383,6 +383,21 @@ export interface SkillsCatalog {
   installedPlugins: string[]
 }
 
+/** A layout grid over the Preview (see `src/shared/layout-grid`). */
+export interface GridSpec {
+  /** `auto` resolves columns, gutter and margin from the page width; `4` / `8` / `12` wrote their
+   *  values into the fields; `custom` is any field edit after that. */
+  preset: 'auto' | '4' | '8' | '12' | 'custom'
+  /** 1–24 */
+  columns: number
+  /** CSS px, 0–200 */
+  gutter: number
+  /** CSS px on each side, 0–400 */
+  margin: number
+  /** CSS px ≥ 240; null = none */
+  maxWidth: number | null
+}
+
 export interface Project {
   id: string
   /** Canonical repo root, or the folder path itself for a non-git folder. */
@@ -436,6 +451,10 @@ export interface Project {
    *  here (upsertProject) — a running agent must never hide in a collapsed section.
    *  Nothing writes it yet; see lib/project-shelf for how it's read. */
   archivedAt?: string
+  /** The layout grid drawn over this project's Preview. Per PROJECT, because it describes the
+   *  project's layout system and every lane should see the same one; whether it is SHOWN is per
+   *  session (`SessionLayout.tools.grid`). Absent = Auto. Read through `coerceGridSpec`. */
+  previewGrid?: GridSpec
   // The moodboard is BUILT — it just isn't a field here: its images live on disk under the
   // project's asset dir, reached by id via moodboardAdd/moodboardList, so nothing about it
   // needs to ride in projects.json. Remaining deferred seam: chatThreadId.

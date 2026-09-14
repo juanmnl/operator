@@ -48,3 +48,13 @@ describe('isAppChord', () => {
     expect(isAppChord(chord('Enter', { metaKey: true }))).toBe(false)
   })
 })
+
+describe("isAppChord — ⌘' (layout grid)", () => {
+  it("claims ⌘' so the terminal lets it through to the View-menu accelerator", () => {
+    expect(isAppChord(chord("'", { metaKey: true }))).toBe(true)
+  })
+
+  it("leaves a bare ' to the terminal", () => {
+    expect(isAppChord(chord("'"))).toBe(false)
+  })
+})

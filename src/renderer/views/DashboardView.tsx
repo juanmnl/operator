@@ -67,8 +67,9 @@ import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
 import {
   applyLayout, coerceLayouts, panelDragBounds, clampPanelW, halfPanelW, DEFAULT_LAYOUT, PANEL_MIN_W,
-  type MainView, type PanelTab, type SessionLayout,
+  type MainView, type PanelTab, type SessionLayout, type LayoutPatch,
 } from '../lib/session-layout'
+import { applyGridPreset, coerceGridSpec, DEFAULT_GRID_SPEC, type GridSpec } from '../../shared/layout-grid'
 import {
   isOutOfDate, restartable, canRestartLane, pickAutoRestart, restartLaunchOptions, replaceTab, rekeyTasks,
   cliUpdateLabel, autoRestartEnabled, AUTO_RESTART_TICK_MS, type RestartCandidate,
@@ -276,7 +277,7 @@ export function DashboardView() {
   const panelTabs: PanelTab[] = ['plan', 'diff', 'preview']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
   const previewInPanel = panelOpen && effPanelTab === 'preview'
-  const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
+  const patchLayout = useCallback((patch: LayoutPatch) => {
     setSessionLayouts((prev) => {
       const sid = activeSessionIdRef.current
       if (!sid) return prev
@@ -4257,6 +4258,35 @@ export function DashboardView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot: reads current values by design
   }, [savedHydrated, reattachDone])
 
+  // THE LAYOUT GRID over the Preview. The spec is per project (`Project.previewGrid`, written
+  // through updateProject); whether it is shown is per session (`SessionLayout.tools.grid`). A
+  // session with no project edits a spec that lives only in memory, and the settings band says
+  // so. Owned here rather than in AppPreviewPanel because ⌘' and ⌘K reach it, and because the
+  // component remounts every time the preview moves between the main view and the panel.
+  const gridProject = activeSession?.projectId ? projects.find((p) => p.id === activeSession.projectId) : undefined
+  const gridProjectId = gridProject?.id
+  const [looseGridSpec, setLooseGridSpec] = useState<GridSpec>(DEFAULT_GRID_SPEC)
+  const [gridEditing, setGridEditing] = useState(false)
+  useEffect(() => { setGridEditing(false); setLooseGridSpec(DEFAULT_GRID_SPEC) }, [activeSessionId])
+  const gridSpec = gridProject ? (coerceGridSpec(gridProject.previewGrid) ?? DEFAULT_GRID_SPEC) : looseGridSpec
+  const gridOn = activeLayout?.tools.grid ?? false
+  const toggleGrid = useCallback(() => patchLayout({ tools: { grid: !gridOn } }), [patchLayout, gridOn])
+  const changeGridSpec = useCallback((spec: GridSpec) => {
+    if (gridProjectId) updateProject(gridProjectId, { previewGrid: spec })
+    else setLooseGridSpec(spec)
+  }, [gridProjectId, updateProject])
+  // Opening the settings turns the grid on: they are opened to watch the columns move.
+  const editGrid = useCallback((open: boolean) => {
+    setGridEditing(open)
+    if (open) patchLayout({ tools: { grid: true } })
+  }, [patchLayout])
+  // ⌘' arrives from the View menu (electron `app-menu.ts`), which is what makes it work while the
+  // previewed page has focus. The window keydown handler deliberately does nothing with it.
+  useEffect(() => {
+    const unsub = window.operator.onMenuCommand?.((command) => { if (command === 'toggle-grid') toggleGrid() })
+    return () => unsub?.()
+  }, [toggleGrid])
+
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
 
@@ -4370,6 +4400,16 @@ export function DashboardView() {
           hint: '⌘E',
           run: () => setPreviewAnnotate((v) => !v),
         })
+        // The layout grid. Picking a preset also turns it on, since it is picked to be seen.
+        actions.push(
+          { id: 'preview-grid', group: 'Preview', label: gridOn ? 'Preview: Hide layout grid' : 'Preview: Show layout grid', hint: "⌘'", run: toggleGrid },
+          ...(['auto', '4', '8', '12'] as const).map((p) => ({
+            id: `preview-grid-${p}`, group: 'Preview',
+            label: `Preview: Grid — ${p === 'auto' ? 'Auto (4 · 8 · 12)' : `${p} columns`}${gridSpec.preset === p ? ' ✓' : ''}`,
+            run: () => { changeGridSpec(applyGridPreset(gridSpec, p)); patchLayout({ tools: { grid: true } }) },
+          })),
+          { id: 'preview-grid-edit', group: 'Preview', label: 'Preview: Edit layout grid…', run: () => editGrid(true) },
+        )
       }
     }
     actions.push(
@@ -4466,6 +4506,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
+      gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid,
       selectMainView, selectPanelTab, patchLayout, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
       installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
 
@@ -4587,6 +4628,10 @@ export function DashboardView() {
         // R1: every renderer surface that can open over the stage hides the native inspect view
         // while it is open. The picker and port editor are the component's own.
         inspectHidden={resizingPanel || paletteOpen || !!quitRequest}
+        grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
+        onGridToggle={toggleGrid}
+        onGridSpecChange={changeGridSpec}
+        onGridEditingChange={editGrid}
       />
     )
   }

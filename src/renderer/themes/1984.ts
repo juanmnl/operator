@@ -44,6 +44,8 @@ export const nineteen84Vars = {
   '--blue': '#46BDFF',
   '--magenta': '#F806FA',
   '--cyan': '#59E1E3',
+  // The Preview's layout-grid overlay: a hue from this palette's ANSI set, clear of its accent.
+  '--grid': 'var(--yellow)',
   /* SYNTAX INK — the code viewer's six roles, per palette.
      They exist because the ANSI tokens they used to borrow FAIL as small text on the light
      palettes. Measured against each palette's own `--bg-terminal` before the change:

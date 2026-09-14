@@ -217,6 +217,9 @@ declare global {
       previewInspectSetVisible?: (visible: boolean) => void
       /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */
       onPreviewPick: (callback: (data: string) => void) => () => void
+      /** A View-menu accelerator fired. Electron only. A menu accelerator reaches the app while
+       *  the previewed page has focus; a window keydown listener does not. */
+      onMenuCommand?: (callback: (command: 'toggle-grid') => void) => () => void
       /** Auto-update against the public releases feed. */
       getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>
