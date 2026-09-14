@@ -4268,7 +4268,13 @@ export function DashboardView() {
   const [looseGridSpec, setLooseGridSpec] = useState<GridSpec>(DEFAULT_GRID_SPEC)
   const [gridEditing, setGridEditing] = useState(false)
   useEffect(() => { setGridEditing(false); setLooseGridSpec(DEFAULT_GRID_SPEC) }, [activeSessionId])
-  const gridSpec = gridProject ? (coerceGridSpec(gridProject.previewGrid) ?? DEFAULT_GRID_SPEC) : looseGridSpec
+  const storedGrid = gridProject?.previewGrid
+  // Memoised: a new object on every render would re-send the overlay configuration to the page on
+  // every render while the inspect view is up.
+  const gridSpec = useMemo(
+    () => (gridProjectId ? (coerceGridSpec(storedGrid) ?? DEFAULT_GRID_SPEC) : looseGridSpec),
+    [gridProjectId, storedGrid, looseGridSpec],
+  )
   const gridOn = activeLayout?.tools.grid ?? false
   const toggleGrid = useCallback(() => patchLayout({ tools: { grid: !gridOn } }), [patchLayout, gridOn])
   const changeGridSpec = useCallback((spec: GridSpec) => {
@@ -4280,12 +4286,27 @@ export function DashboardView() {
     setGridEditing(open)
     if (open) patchLayout({ tools: { grid: true } })
   }, [patchLayout])
-  // ⌘' arrives from the View menu (electron `app-menu.ts`), which is what makes it work while the
-  // previewed page has focus. The window keydown handler deliberately does nothing with it.
+  // REDLINES: shown or not per session, like the grid. They draw inside the page, so the Preview
+  // hosts the page in the native inspect view while they are on (and pauses them in Annotate).
+  const redlinesOn = activeLayout?.tools.redlines ?? false
+  const toggleRedlines = useCallback(() => patchLayout({ tools: { redlines: !redlinesOn } }), [patchLayout, redlinesOn])
+  // Whether a measurement anchor is set in the page, for ⌘K's "Clear measurement anchor". The main
+  // process reports false when the inspect view closes or navigates.
+  const [previewAnchored, setPreviewAnchored] = useState(false)
   useEffect(() => {
-    const unsub = window.operator.onMenuCommand?.((command) => { if (command === 'toggle-grid') toggleGrid() })
+    const unsub = window.operator.onPreviewAnchor?.((anchored) => setPreviewAnchored(anchored))
     return () => unsub?.()
-  }, [toggleGrid])
+  }, [])
+  // ⌘' and ⌘⇧' arrive from the View menu (electron `app-menu.ts`), which is what makes them work
+  // while the previewed page has focus. The window keydown handler deliberately does nothing with
+  // either.
+  useEffect(() => {
+    const unsub = window.operator.onMenuCommand?.((command) => {
+      if (command === 'toggle-grid') toggleGrid()
+      else if (command === 'toggle-redlines') toggleRedlines()
+    })
+    return () => unsub?.()
+  }, [toggleGrid, toggleRedlines])
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
@@ -4409,6 +4430,10 @@ export function DashboardView() {
             run: () => { changeGridSpec(applyGridPreset(gridSpec, p)); patchLayout({ tools: { grid: true } }) },
           })),
           { id: 'preview-grid-edit', group: 'Preview', label: 'Preview: Edit layout grid…', run: () => editGrid(true) },
+          { id: 'preview-redlines', group: 'Preview', label: redlinesOn ? 'Preview: Hide redlines' : 'Preview: Show redlines', hint: "⌘⇧'", run: toggleRedlines },
+          ...(previewAnchored
+            ? [{ id: 'preview-redlines-clear', group: 'Preview', label: 'Preview: Clear measurement anchor', run: () => window.operator.previewInspectClearAnchor?.() }]
+            : []),
         )
       }
     }
@@ -4506,7 +4531,7 @@ export function DashboardView() {
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
-      gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid,
+      gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
       selectMainView, selectPanelTab, patchLayout, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
       installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
 
@@ -4632,6 +4657,8 @@ export function DashboardView() {
         onGridToggle={toggleGrid}
         onGridSpecChange={changeGridSpec}
         onGridEditingChange={editGrid}
+        redlines={{ on: redlinesOn }}
+        onRedlinesToggle={toggleRedlines}
       />
     )
   }

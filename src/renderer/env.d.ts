@@ -215,11 +215,19 @@ declare global {
       /** Hide or show the inspector without closing it, so the page inside keeps its state. Used
        *  while a side-panel drag needs the pixels it covers. Electron only. */
       previewInspectSetVisible?: (visible: boolean) => void
+      /** What the inspector view does inside the page: zoom, inspector on/off, redlines, the grid,
+       *  and Operator's resolved palette. Electron only. */
+      previewInspectConfigure?: (config: import('../shared/types').PreviewOverlayConfig) => void
+      /** Clear the redline anchor in the inspector view's page. Electron only. */
+      previewInspectClearAnchor?: () => void
       /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */
       onPreviewPick: (callback: (data: string) => void) => () => void
       /** A View-menu accelerator fired. Electron only. A menu accelerator reaches the app while
        *  the previewed page has focus; a window keydown listener does not. */
-      onMenuCommand?: (callback: (command: 'toggle-grid') => void) => () => void
+      onMenuCommand?: (callback: (command: 'toggle-grid' | 'toggle-redlines') => void) => () => void
+      /** Whether a redline anchor is set in the inspector view's page. Reported false when the view
+       *  closes or navigates. Electron only. */
+      onPreviewAnchor?: (callback: (anchored: boolean) => void) => () => void
       /** Auto-update against the public releases feed. */
       getVersion: () => Promise<string>
       checkUpdate: () => Promise<{ version: string } | null>

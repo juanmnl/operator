@@ -51,6 +51,9 @@ export const mrPinkLightVars = {
   '--cyan': '#0e7490',
   // The Preview's layout-grid overlay: a hue from this palette's ANSI set, clear of its accent.
   '--grid': 'var(--yellow)',
+  // Redline lines and chips over the Preview's page; the ink is checked in themes/index.test.ts.
+  '--measure': 'var(--blue)',
+  '--measure-ink': 'color-mix(in srgb, var(--measure) 70%, var(--fg))',
   /* SYNTAX INK — the code viewer's six roles, per palette.
      They exist because the ANSI tokens they used to borrow FAIL as small text on the light
      palettes. Measured against each palette's own `--bg-terminal` before the change:

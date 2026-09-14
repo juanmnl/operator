@@ -54,6 +54,10 @@ export const nineteen84LightVars = {
   '--cyan': '#00b2be',
   // The Preview's layout-grid overlay: a hue from this palette's ANSI set, clear of its accent.
   '--grid': 'var(--yellow)',
+  // Redline lines and chips over the Preview's page. The ink is 55%, not 70%: this magenta on this
+  // light surface measured 3.73:1 at 70% and 4.53:1 at 60%; 55% is 4.99:1.
+  '--measure': 'var(--magenta)',
+  '--measure-ink': 'color-mix(in srgb, var(--measure) 55%, var(--fg))',
   /* SYNTAX INK — the code viewer's six roles, per palette.
      They exist because the ANSI tokens they used to borrow FAIL as small text on the light
      palettes. Measured against each palette's own `--bg-terminal` before the change:

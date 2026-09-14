@@ -398,6 +398,32 @@ export interface GridSpec {
   maxWidth: number | null
 }
 
+/** Operator's palette as the Preview's page overlay draws with it, resolved to colours (or a
+ *  `color-mix()` of colours). The page is another document and cannot read Operator's CSS vars. */
+export interface PreviewOverlayTokens {
+  measure: string
+  measureInk: string
+  grid: string
+  surface: string
+  fg: string
+  border: string
+}
+
+/** What the Preview's native inspect view does inside the page (`src/shared/preview-overlay.js`). */
+export interface PreviewOverlayConfig {
+  /** The stage's scale, applied as the view's zoom factor so the page lays out at the device
+   *  preset rather than at the stage's scaled width. */
+  scale: number
+  /** The inspector's hover outline and click-to-compose. Off when the view only hosts redlines and
+   *  the grid. */
+  inspect: boolean
+  /** Draw redlines. False when they are off, or paused by Annotate. */
+  redlines: boolean
+  /** The grid to draw in the page, or null when it is hidden. */
+  grid: GridSpec | null
+  tokens: PreviewOverlayTokens
+}
+
 export interface Project {
   id: string
   /** Canonical repo root, or the folder path itself for a non-git folder. */

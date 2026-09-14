@@ -10,6 +10,7 @@ import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 import { layoutGrid, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
+import { useOverlayTokens } from '../../lib/overlay-tokens'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -49,7 +50,7 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
@@ -75,6 +76,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   onGridToggle?: () => void
   onGridSpecChange?: (spec: GridSpec) => void
   onGridEditingChange?: (open: boolean) => void
+  /** Redlines: shown or not (per session). Owned by DashboardView so ⌘⇧' and ⌘K reach it. */
+  redlines?: { on: boolean }
+  onRedlinesToggle?: () => void
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
   // A pinned target, stored as the STRING THE USER TYPED — a port, a port and a path
@@ -316,6 +320,12 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     setHistory((h) => pushEntry(h, { port: pick.port, path: target.path, url: target.url }))
   }, [pick.url, pick.port, target.path, target.url])
   const display = resolved || pick.url
+  // THE HOST. The native inspect view carries the page whenever something has to read or draw inside
+  // it: Inspect, and redlines. Annotate keeps the iframe, because its pins and capture layer are
+  // renderer DOM and would sit under the native view; redlines pause meanwhile.
+  const redlinesOn = !!redlines?.on
+  const redlinesPaused = redlinesOn && annotating
+  const nativeHost = !!display && (inspecting || (redlinesOn && !annotating))
   const host = display ? display.replace(/^https?:\/\//, '') : null
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
@@ -325,7 +335,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // iframe can't) → hover-outline + a floating compose card next to the clicked element. Close on
   // toggle-off / url change / unmount. Re-runs on `display` so it follows a URL change.
   useEffect(() => {
-    if (!inspecting || !display) { window.operator.previewInspectClose?.(); return }
+    if (!nativeHost || !display) { window.operator.previewInspectClose?.(); return }
     // THE STAGE'S rect, not the wrapper's. The wrapper is the whole panel, so at any preset
     // narrower than it the inspector was laid over the empty gutter as well as the page — every
     // hover outline offset by half the slack.
@@ -334,7 +344,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     const r = el.getBoundingClientRect()
     void window.operator.previewInspectOpen?.(display, r.left, r.top, r.width, r.height)
     return () => { window.operator.previewInspectClose?.() }
-  }, [inspecting, display])
+  }, [nativeHost, display])
   // Keep the embedded inspector aligned to the frame as the panel resizes — and as the PRESET
   // changes, which is new: the stage now moves and resizes without `box` changing at all, so a
   // preset switch that the wrapper never noticed would have stranded the webview at the old width.
@@ -347,7 +357,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // change of rows moves the stage down or up.
   const hideInspect = inspectHidden || pickerOpen || editing
   useEffect(() => {
-    if (!inspecting) return
+    if (!nativeHost) return
     if (hideInspect) { window.operator.previewInspectSetVisible?.(false); return }
     const id = requestAnimationFrame(() => {
       const el = stageRef.current
@@ -357,7 +367,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
       window.operator.previewInspectSetVisible?.(true)
     })
     return () => cancelAnimationFrame(id)
-  }, [box, preset, inspecting, panelW, hideInspect, tier])
+  }, [box, preset, nativeHost, panelW, hideInspect, tier])
   // The inspector's floating card composes the note itself and beacons preview:pick with the final
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
@@ -445,6 +455,17 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     setInspecting(m === 'inspect')
     setAnnotate(m === 'annotate')
   }
+  // What the native view does inside the page. `scale` becomes its zoom factor, so the page lays out
+  // at the device preset and redlines report that layout's px (F3). The palette goes with it because
+  // the page cannot read Operator's CSS variables; `overlayTokens` changes with the theme.
+  const overlayTokens = useOverlayTokens()
+  const overlayGrid = grid?.on ? grid.spec : null
+  useEffect(() => {
+    if (!nativeHost) return
+    window.operator.previewInspectConfigure?.({
+      scale, inspect: inspecting, redlines: redlinesOn && !annotating, grid: overlayGrid, tokens: overlayTokens,
+    })
+  }, [nativeHost, scale, inspecting, redlinesOn, annotating, overlayGrid, overlayTokens])
 
   const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
     id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
@@ -704,21 +725,40 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               </span>
             </span>
           )}
-          {grid && onGridToggle && reach === 'up' && display && (
+          {((grid && onGridToggle) || (redlines && onRedlinesToggle)) && reach === 'up' && display && (
             // OVERLAYS, after a hairline: any combination, in any pointer mode, and never a
-            // click-catcher. `Grid` shows or hides it; `▾` opens its settings band under this row.
+            // click-catcher. `Grid` shows or hides it and `▾` opens its settings band under this
+            // row; `Redlines` measures the live page (hover, or ⌥-click an element to measure from).
             <span style={{ ...toolGroup, marginLeft: onDispatch || onSendToTasks ? undefined : 'auto' }}>
               <span style={{ width: 1, height: 14, background: 'var(--border)', margin: '0 8px' }} />
-              <button
-                onClick={onGridToggle}
-                title={`${grid.on ? 'Hide' : 'Show'} the layout grid (⌘')${inspecting ? ' — not drawn while Inspect is on' : ''}`}
-                style={{ ...overlayBtn, color: grid.on ? 'var(--accent)' : OFF_INK }}
-              >Grid</button>
-              <button
-                onClick={() => onGridEditingChange?.(!grid.editing)}
-                title={grid.editing ? 'Close grid settings' : 'Grid settings'}
-                style={{ ...overlayBtn, padding: '2px 4px', color: grid.on ? 'var(--accent)' : OFF_INK }}
-              >{grid.editing ? '▴' : '▾'}</button>
+              {grid && onGridToggle && (
+                <>
+                  <button
+                    onClick={onGridToggle}
+                    title={`${grid.on ? 'Hide' : 'Show'} the layout grid (⌘')`}
+                    style={{ ...overlayBtn, color: grid.on ? 'var(--accent)' : OFF_INK }}
+                  >Grid</button>
+                  <button
+                    onClick={() => onGridEditingChange?.(!grid.editing)}
+                    title={grid.editing ? 'Close grid settings' : 'Grid settings'}
+                    style={{ ...overlayBtn, padding: '2px 4px', color: grid.on ? 'var(--accent)' : OFF_INK }}
+                  >{grid.editing ? '▴' : '▾'}</button>
+                </>
+              )}
+              {redlines && onRedlinesToggle && (
+                <button
+                  onClick={onRedlinesToggle}
+                  title={redlinesPaused
+                    ? 'Redlines pause while annotating. Switch to Interact or Inspect to measure.'
+                    : `${redlines.on ? 'Hide' : 'Show'} redlines — hover to measure, ⌥-click an element to measure from it (⌘⇧')`}
+                  style={{ ...overlayBtn, color: redlines.on ? 'var(--accent)' : OFF_INK }}
+                >
+                  Redlines
+                  {redlinesPaused && (
+                    <span style={{ marginLeft: 4, fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 400, color: 'var(--fg-muted)' }}>paused</span>
+                  )}
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -807,10 +847,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
           {/* THE LAYOUT GRID. Laid out in page px and scaled with the iframe. It sits outside the
               iframe, so it stays put while the page scrolls, and it never takes a click. Above
-              the page, below the annotation layers. Not drawn while Inspect is on: the native
-              view covers the stage, and drawing inside that page comes later. The dashed container
-              edges are `1 / scale` px wide so they stay one screen pixel at a scaled preset. */}
-          {gridLayout && !inspecting && gridLayout.cols.length > 0 && (
+              the page, below the annotation layers. While the native view hosts the page, the
+              overlay script draws the grid inside it instead. The dashed container edges are
+              `1 / scale` px wide so they stay one screen pixel at a scaled preset. */}
+          {gridLayout && !nativeHost && gridLayout.cols.length > 0 && (
             <div aria-hidden style={{
               position: 'absolute', top: 0, left: 0, width: pageBox.w, height: pageBox.h, zIndex: 1,
               transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none',

@@ -11,7 +11,7 @@
 import type { MenuItemConstructorOptions } from 'electron'
 
 /** What a View-menu item asks the renderer to do. Mirrors `onMenuCommand` in env.d.ts. */
-export type MenuCommand = 'toggle-grid'
+export type MenuCommand = 'toggle-grid' | 'toggle-redlines'
 
 export function appMenuTemplate(send: (command: MenuCommand) => void, isMac = process.platform === 'darwin'): MenuItemConstructorOptions[] {
   return [
@@ -22,6 +22,7 @@ export function appMenuTemplate(send: (command: MenuCommand) => void, isMac = pr
       label: 'View',
       submenu: [
         { label: 'Show or Hide Layout Grid', accelerator: "CmdOrCtrl+'", click: () => send('toggle-grid') },
+        { label: 'Show or Hide Redlines', accelerator: "CmdOrCtrl+Shift+'", click: () => send('toggle-redlines') },
         { type: 'separator' },
         // The rest of Electron's default View menu, unchanged.
         { role: 'reload' },

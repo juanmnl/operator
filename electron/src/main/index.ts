@@ -283,7 +283,11 @@ function boot(): void {
   )
   quit.install()
 
-  installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
+  installPreviewInspect(
+    () => mainWindow,
+    (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) },
+    (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
+  )
   // Electron's default menu, rebuilt, plus the Preview's View-menu accelerators. See app-menu.ts.
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate((command) => { const w = win(); if (w) broadcast(w, 'onMenuCommand', command) })))
   // THE INSTALL HOST — the ordering that makes "Install & Restart" actually install.

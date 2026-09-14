@@ -58,3 +58,9 @@ describe("isAppChord — ⌘' (layout grid)", () => {
     expect(isAppChord(chord("'"))).toBe(false)
   })
 })
+
+describe("isAppChord — ⌘⇧' (redlines)", () => {
+  it('claims the shifted chord, which arrives as a double quote', () => {
+    expect(isAppChord(chord('"', { metaKey: true, shiftKey: true }))).toBe(true)
+  })
+})

@@ -752,6 +752,7 @@ export function installMockBridge() {
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,
     // A subscription must hand back an unsubscribe; the Proxy's catch-all would hand back a Promise.
     onMenuCommand: () => noop,
+    onPreviewAnchor: () => noop,
     installUpdate: async () => {}, savePastedImage: async () => '/tmp/x.png',
   }
 

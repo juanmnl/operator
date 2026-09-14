@@ -103,3 +103,41 @@ describe('syntax ink clears 4.5:1 in every palette', () => {
     }
   })
 })
+
+// ── redline ink contrast, all six palettes ───────────────────────────────────────────────────
+//
+// `--measure-ink` is the text on the Preview's redline chips, drawn on `--bg-surface`. It is a mix,
+// so it is resolved here the way the browser resolves `color-mix(in srgb, …)` (channel by channel)
+// and measured. At the design's 70%, 1984-light measured 3.73:1 (magenta toward a dark fg on a light
+// surface) and 60% only 4.53:1; it uses 55%, 4.99:1.
+
+function resolveColor(vars: Record<string, string>, value: string): string {
+  const v = value.trim()
+  const ref = /^var\((--[\w-]+)\)$/.exec(v)
+  if (ref) return resolveColor(vars, vars[ref[1]])
+  const mix = /^color-mix\(in srgb, (.+) (\d+(?:\.\d+)?)%, (.+)\)$/.exec(v)
+  if (mix) {
+    const p = Number(mix[2]) / 100
+    const [a, b] = [resolveColor(vars, mix[1]), resolveColor(vars, mix[3])]
+      .map((h) => [0, 2, 4].map((i) => parseInt(h.replace('#', '').slice(i, i + 2), 16)))
+    return '#' + a.map((c, i) => Math.round(c * p + b[i] * (1 - p)).toString(16).padStart(2, '0')).join('')
+  }
+  return v.toLowerCase()
+}
+
+describe('redline tokens', () => {
+  for (const key of Object.keys(themes) as Array<keyof typeof themes>) {
+    const vars = themes[key].vars as Record<string, string>
+
+    it(`${key}: --measure-ink clears ${FLOOR}:1 on --bg-surface`, () => {
+      const ratio = contrast(resolveColor(vars, vars['--measure-ink']), vars['--bg-surface'])
+      expect(ratio, `${key} measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(FLOOR)
+    })
+
+    it(`${key}: --measure is neither the accent nor the grid hue`, () => {
+      const measure = resolveColor(vars, vars['--measure'])
+      expect(measure).not.toBe(resolveColor(vars, vars['--accent']))
+      expect(measure).not.toBe(resolveColor(vars, vars['--grid']))
+    })
+  }
+})

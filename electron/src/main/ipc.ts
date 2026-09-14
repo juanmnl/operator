@@ -399,6 +399,8 @@ export function registerIpc(d: Deps): void {
     previewInspectMove: (x, y, w, h) => previewApi.move(x, y, w, h),
     previewInspectClose: () => previewApi.close(),
     previewInspectSetVisible: (visible) => previewApi.setVisible(visible),
+    previewInspectConfigure: (config) => previewApi.configure(config),
+    previewInspectClearAnchor: () => previewApi.clearAnchor(),
     startWindowDrag: () => {},
     setDockIcon: (variant) => {
       if (process.platform !== 'darwin' || !app.dock) return

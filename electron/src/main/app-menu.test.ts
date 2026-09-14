@@ -22,6 +22,14 @@ describe('appMenuTemplate', () => {
     expect(send).toHaveBeenCalledWith('toggle-grid')
   })
 
+  it('binds ⌘⇧\' to redlines and sends it to the renderer', () => {
+    const send = vi.fn()
+    const redlines = viewItems(appMenuTemplate(send, true)).find((i) => i.accelerator === "CmdOrCtrl+Shift+'")!
+    expect(redlines).toBeDefined()
+    ;(redlines.click as () => void)()
+    expect(send).toHaveBeenCalledWith('toggle-redlines')
+  })
+
   it('keeps the default View menu\'s reload, devtools, zoom and full screen', () => {
     expect(viewItems(appMenuTemplate(() => {}, true)).map((i) => i.role).filter(Boolean))
       .toEqual(['reload', 'forceReload', 'toggleDevTools', 'resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen'])
