@@ -5,7 +5,7 @@
 // explicitly. That last part is not hygiene theatre — Operator has already lost a window to it
 // (2026-08-14: a stray Finder drop navigated the WKWebView to `file:///…/image.png`, and
 // closing the resulting window killed every lane's pty).
-import { app, BrowserWindow, session, shell } from 'electron'
+import { app, BrowserWindow, Menu, session, shell } from 'electron'
 import { join } from 'node:path'
 import { TerminalManager } from './terminals'
 import { Transcript, type DispatchEvent, type ReplyEvent, type DeliveryEvent } from './transcript'
@@ -17,6 +17,7 @@ import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
+import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
@@ -282,7 +283,13 @@ function boot(): void {
   )
   quit.install()
 
-  installPreviewInspect(() => mainWindow, (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) })
+  installPreviewInspect(
+    () => mainWindow,
+    (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) },
+    (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
+  )
+  // Electron's default menu, rebuilt, plus the Preview's View-menu accelerators. See app-menu.ts.
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate((command) => { const w = win(); if (w) broadcast(w, 'onMenuCommand', command) })))
   // THE INSTALL HOST — the ordering that makes "Install & Restart" actually install.
   //
   // `confirm` asks through the guard, once, up front. `prepareQuit` then disarms the guard AND

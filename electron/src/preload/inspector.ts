@@ -1,9 +1,9 @@
-// Preload for the embedded preview webview. Exposes ONE function, which is the whole reason
-// Electron does not need Tauri's `operatorpick://` beacon: a sandboxed preload can talk to main
-// directly.
+// Preload for the embedded preview webview. Its pick bridge is the whole reason Electron does not
+// need Tauri's `operatorpick://` beacon: a sandboxed preload can talk to main directly.
 //
 // Deliberately minimal — this preload runs inside the USER'S dev server, which is arbitrary
-// local code. It gets a one-way channel that carries a string to the app, and nothing else.
+// local code. It gets two one-way channels to the app, a string (a picked element) and a boolean
+// (whether a redline anchor is set), and nothing else.
 import { contextBridge, ipcRenderer } from 'electron'
 import { blockBadging } from './badge-block'
 
@@ -15,5 +15,9 @@ contextBridge.executeInMainWorld({ func: blockBadging })
 if (window.top === window) {
   contextBridge.exposeInMainWorld('__operatorPickBridge', (json: string) => {
     ipcRenderer.send('operator-preview:pick', json)
+  })
+  // Whether preview-overlay.js has a redline anchor, so the app's ⌘K can offer to clear it.
+  contextBridge.exposeInMainWorld('__operatorAnchorBridge', (value: unknown) => {
+    ipcRenderer.send('operator-preview:anchor', value === true)
   })
 }

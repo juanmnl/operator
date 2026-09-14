@@ -45,6 +45,14 @@ export const missionControlVars = {
   '--blue': '#58b2ff',
   '--magenta': '#c98bff',
   '--cyan': '#3fd9c9',
+  // The Preview's layout-grid overlay: a hue from this palette's ANSI set, clear of its accent.
+  // Only ever a 10% column fill over a page, where red does not read as an error.
+  '--grid': 'var(--red)',
+  // Redline lines and chips over the Preview's page: another ANSI hue, clear of the accent and of
+  // --grid. The ink is the chip text, mixed toward --fg until it clears 4.5:1 on --bg-surface
+  // (checked in themes/index.test.ts).
+  '--measure': 'var(--magenta)',
+  '--measure-ink': 'color-mix(in srgb, var(--measure) 70%, var(--fg))',
   /* SYNTAX INK — the code viewer's six roles, per palette.
      They exist because the ANSI tokens they used to borrow FAIL as small text on the light
      palettes. Measured against each palette's own `--bg-terminal` before the change:

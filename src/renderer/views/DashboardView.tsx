@@ -66,6 +66,11 @@ import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/ta
 import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
 import {
+  applyLayout, coerceLayouts, panelDragBounds, clampPanelW, halfPanelW, DEFAULT_LAYOUT, PANEL_MIN_W,
+  type MainView, type PanelTab, type SessionLayout, type LayoutPatch,
+} from '../lib/session-layout'
+import { applyGridPreset, coerceGridSpec, DEFAULT_GRID_SPEC, type GridSpec } from '../../shared/layout-grid'
+import {
   isOutOfDate, restartable, canRestartLane, pickAutoRestart, restartLaunchOptions, replaceTab, rekeyTasks,
   cliUpdateLabel, autoRestartEnabled, AUTO_RESTART_TICK_MS, type RestartCandidate,
 } from '../lib/cli-update'
@@ -122,13 +127,8 @@ const FOOTER_H = 34
 const CONVERSATION_PANEL_W = 460
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
-// which surface it shows. Keyed by session id, persisted across reloads.
-// Main content area shows ONE of these (Console = the raw terminal). Preview can fill the
-// main window; Console is the live agent terminal (always mounted underneath).
-type MainView = 'terminal' | 'preview'
-// The right side panel's tabs.
-type PanelTab = 'plan' | 'diff'
-type SessionLayout = { mainView: MainView; panelOpen: boolean; panelTab: PanelTab }
+// which surface it shows. Keyed by session id, persisted across reloads. The types and the
+// rules (one Preview per session, in the main view OR the panel) live in lib/session-layout.
 // The seeded-lane prune runs ONCE per install; this records that it has. The stamp is for a human
 // reading localStorage — nothing branches on the value, only on its presence. Storage being
 // unreachable reads as DONE, because a prune that can't remember it ran would run every launch.
@@ -153,31 +153,11 @@ function markOneAltitudeMigrationDone() {
 }
 
 const LAYOUT_KEY = 'operator.sessionLayouts'
-const DEFAULT_LAYOUT: SessionLayout = { mainView: 'terminal', panelOpen: false, panelTab: 'plan' }
-/** Persisted layouts, COERCED to values this build still has.
- *
- *  `mainView` used to include `'chat'` and `'files'`, and every install that ever opened one has
- *  that string on disk. After the removal those values match no render branch, so the main pane
- *  was blank — with no way back, because the toolbar segment that used to set `terminal` is only
- *  reachable when a view is showing. A parse that trusts whatever localStorage holds ages badly
- *  by construction; this is the guard, and it is why the unions live here as arrays. */
+/** Persisted layouts, coerced to values this build still has — see `coerceLayouts`. */
 function loadLayouts(): Record<string, SessionLayout> {
   let raw: unknown
   try { raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') } catch { return {} }
-  if (!raw || typeof raw !== 'object') return {}
-  const mains: MainView[] = ['terminal', 'preview']
-  const tabs: PanelTab[] = ['plan', 'diff']
-  const out: Record<string, SessionLayout> = {}
-  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!v || typeof v !== 'object') continue
-    const l = v as Partial<SessionLayout>
-    out[id] = {
-      mainView: mains.includes(l.mainView as MainView) ? l.mainView as MainView : DEFAULT_LAYOUT.mainView,
-      panelTab: tabs.includes(l.panelTab as PanelTab) ? l.panelTab as PanelTab : DEFAULT_LAYOUT.panelTab,
-      panelOpen: typeof l.panelOpen === 'boolean' ? l.panelOpen : DEFAULT_LAYOUT.panelOpen,
-    }
-  }
-  return out
+  return coerceLayouts(raw)
 }
 
 export function DashboardView() {
@@ -294,24 +274,32 @@ export function DashboardView() {
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
-  const panelTabs: PanelTab[] = ['plan', 'diff']
+  const panelTabs: PanelTab[] = ['plan', 'diff', 'preview']
   const effPanelTab: PanelTab = panelTabs.includes(panelTab) ? panelTab : 'plan'
-  const patchLayout = useCallback((patch: Partial<SessionLayout>) => {
+  const previewInPanel = panelOpen && effPanelTab === 'preview'
+  const patchLayout = useCallback((patch: LayoutPatch) => {
     setSessionLayouts((prev) => {
       const sid = activeSessionIdRef.current
       if (!sid) return prev
-      const next = { ...prev, [sid]: { ...DEFAULT_LAYOUT, ...prev[sid], ...patch } }
+      // Through `applyLayout`, never a bare spread: choosing Preview in one slot has to move it
+      // out of the other.
+      const next = { ...prev, [sid]: applyLayout({ ...DEFAULT_LAYOUT, ...prev[sid] }, patch) }
       try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(next)) } catch { /* quota */ }
       return next
     })
   }, [])
   const selectMainView = useCallback((v: MainView) => patchLayout({ mainView: v }), [patchLayout])
   const selectPanelTab = useCallback((t: PanelTab) => patchLayout({ panelTab: t }), [patchLayout])
-  // User-adjustable right side-panel width (drag handle on its left edge), persisted.
+  // User-adjustable right side-panel width (drag handle on its left edge), persisted. ONE width
+  // for every tab, so a tab switch never resizes the panel. No upper bound on load: a drag on the
+  // Preview tab may go past 1000 in a wide window (see `panelDragBounds`).
   const [panelW, setPanelW] = useState<number>(() => {
-    try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= 300 && v <= 1000 ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
+    try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= PANEL_MIN_W ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
   })
   const panelWRef = useRef(panelW); panelWRef.current = panelW
+  const panelTabRef = useRef(effPanelTab); panelTabRef.current = effPanelTab
+  // The content card, measured at the start of a panel drag: card + panel = the row they share.
+  const cardRef = useRef<HTMLDivElement>(null)
   // True while dragging the panel divider — the terminal suspends its fit during the drag.
   const [resizingPanel, setResizingPanel] = useState(false)
   // True while the OS window is actively resizing/zooming (edge-drag, titlebar
@@ -354,16 +342,30 @@ export function DashboardView() {
 
   // Drag the right panel's left edge to resize it — rAF-throttled, and the terminal
   // suspends fitting until release for a smooth drag.
+  // The bounds depend on the tab showing (Preview may grow until the Console is MIN_CONSOLE_W) and
+  // apply only to what the drag produces: a click without movement leaves the width as it was.
   const startPanelResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     const startX = e.clientX
     const startW = panelWRef.current
+    const rowW = (cardRef.current?.offsetWidth ?? 0) + startW
+    const persist = (w: number) => { try { localStorage.setItem('operator.canvasWidth', String(w)) } catch { /* ignore */ } }
+    // Double-click = split the row in half. Read off the second mousedown's `detail` rather than
+    // an `onDoubleClick`: the first click mounts the full-window drag overlay, which can end up as
+    // the second click's target, and then no dblclick reaches the handle.
+    if (e.detail >= 2) {
+      const half = halfPanelW(panelTabRef.current, rowW)
+      setPanelW(half)
+      persist(half)
+      return
+    }
+    const bounds = panelDragBounds(panelTabRef.current, rowW)
     setResizingPanel(true)
     let raf = 0
     let target = startW
     const apply = () => { raf = 0; setPanelW(target) }
     const onMove = (ev: MouseEvent) => {
-      target = Math.min(1000, Math.max(300, Math.round(startW + (startX - ev.clientX))))
+      target = clampPanelW(startW + (startX - ev.clientX), bounds)
       if (!raf) raf = requestAnimationFrame(apply)
     }
     const onUp = () => {
@@ -373,7 +375,7 @@ export function DashboardView() {
       setPanelW(target)
       setResizingPanel(false)
       document.body.style.cursor = ''
-      try { localStorage.setItem('operator.canvasWidth', String(target)) } catch { /* ignore */ }
+      persist(target)
     }
     document.body.style.cursor = 'col-resize'
     window.addEventListener('mousemove', onMove)
@@ -4256,6 +4258,56 @@ export function DashboardView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot: reads current values by design
   }, [savedHydrated, reattachDone])
 
+  // THE LAYOUT GRID over the Preview. The spec is per project (`Project.previewGrid`, written
+  // through updateProject); whether it is shown is per session (`SessionLayout.tools.grid`). A
+  // session with no project edits a spec that lives only in memory, and the settings band says
+  // so. Owned here rather than in AppPreviewPanel because ⌘' and ⌘K reach it, and because the
+  // component remounts every time the preview moves between the main view and the panel.
+  const gridProject = activeSession?.projectId ? projects.find((p) => p.id === activeSession.projectId) : undefined
+  const gridProjectId = gridProject?.id
+  const [looseGridSpec, setLooseGridSpec] = useState<GridSpec>(DEFAULT_GRID_SPEC)
+  const [gridEditing, setGridEditing] = useState(false)
+  useEffect(() => { setGridEditing(false); setLooseGridSpec(DEFAULT_GRID_SPEC) }, [activeSessionId])
+  const storedGrid = gridProject?.previewGrid
+  // Memoised: a new object on every render would re-send the overlay configuration to the page on
+  // every render while the inspect view is up.
+  const gridSpec = useMemo(
+    () => (gridProjectId ? (coerceGridSpec(storedGrid) ?? DEFAULT_GRID_SPEC) : looseGridSpec),
+    [gridProjectId, storedGrid, looseGridSpec],
+  )
+  const gridOn = activeLayout?.tools.grid ?? false
+  const toggleGrid = useCallback(() => patchLayout({ tools: { grid: !gridOn } }), [patchLayout, gridOn])
+  const changeGridSpec = useCallback((spec: GridSpec) => {
+    if (gridProjectId) updateProject(gridProjectId, { previewGrid: spec })
+    else setLooseGridSpec(spec)
+  }, [gridProjectId, updateProject])
+  // Opening the settings turns the grid on: they are opened to watch the columns move.
+  const editGrid = useCallback((open: boolean) => {
+    setGridEditing(open)
+    if (open) patchLayout({ tools: { grid: true } })
+  }, [patchLayout])
+  // REDLINES: shown or not per session, like the grid. They draw inside the page, so the Preview
+  // hosts the page in the native inspect view while they are on (and pauses them in Annotate).
+  const redlinesOn = activeLayout?.tools.redlines ?? false
+  const toggleRedlines = useCallback(() => patchLayout({ tools: { redlines: !redlinesOn } }), [patchLayout, redlinesOn])
+  // Whether a measurement anchor is set in the page, for ⌘K's "Clear measurement anchor". The main
+  // process reports false when the inspect view closes or navigates.
+  const [previewAnchored, setPreviewAnchored] = useState(false)
+  useEffect(() => {
+    const unsub = window.operator.onPreviewAnchor?.((anchored) => setPreviewAnchored(anchored))
+    return () => unsub?.()
+  }, [])
+  // ⌘' and ⌘⇧' arrive from the View menu (electron `app-menu.ts`), which is what makes them work
+  // while the previewed page has focus. The window keydown handler deliberately does nothing with
+  // either.
+  useEffect(() => {
+    const unsub = window.operator.onMenuCommand?.((command) => {
+      if (command === 'toggle-grid') toggleGrid()
+      else if (command === 'toggle-redlines') toggleRedlines()
+    })
+    return () => unsub?.()
+  }, [toggleGrid, toggleRedlines])
+
   const paletteActions: PaletteAction[] = useMemo(() => {
     const actions: PaletteAction[] = []
 
@@ -4355,18 +4407,34 @@ export function DashboardView() {
       view('terminal', 'Show Console')
       view('preview', 'Show Preview')
       actions.push(
-        { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff)', run: togglePanel },
+        { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff / Preview)', run: togglePanel },
         { id: 'panel-plan', group: 'View', label: 'Side panel: Plan', run: () => { selectPanelTab('plan'); if (!panelOpen) togglePanel() } },
         { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => { selectPanelTab('diff'); if (!panelOpen) togglePanel() } },
+        // One patch, so the move out of the main view and the open land together.
+        { id: 'panel-preview', group: 'View', label: 'Side panel: Preview', run: () => patchLayout({ panelTab: 'preview', panelOpen: true }) },
         { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => { void handleCloseSession(activeSession) } },
       )
-      if (mainView === 'preview') {
+      if (mainView === 'preview' || previewInPanel) {
         actions.push({
           id: 'preview-annotate', group: 'View',
           label: previewAnnotate ? 'Preview: Interact mode' : 'Preview: Annotate mode',
           hint: '⌘E',
           run: () => setPreviewAnnotate((v) => !v),
         })
+        // The layout grid. Picking a preset also turns it on, since it is picked to be seen.
+        actions.push(
+          { id: 'preview-grid', group: 'Preview', label: gridOn ? 'Preview: Hide layout grid' : 'Preview: Show layout grid', hint: "⌘'", run: toggleGrid },
+          ...(['auto', '4', '8', '12'] as const).map((p) => ({
+            id: `preview-grid-${p}`, group: 'Preview',
+            label: `Preview: Grid — ${p === 'auto' ? 'Auto (4 · 8 · 12)' : `${p} columns`}${gridSpec.preset === p ? ' ✓' : ''}`,
+            run: () => { changeGridSpec(applyGridPreset(gridSpec, p)); patchLayout({ tools: { grid: true } }) },
+          })),
+          { id: 'preview-grid-edit', group: 'Preview', label: 'Preview: Edit layout grid…', run: () => editGrid(true) },
+          { id: 'preview-redlines', group: 'Preview', label: redlinesOn ? 'Preview: Hide redlines' : 'Preview: Show redlines', hint: "⌘⇧'", run: toggleRedlines },
+          ...(previewAnchored
+            ? [{ id: 'preview-redlines-clear', group: 'Preview', label: 'Preview: Clear measurement anchor', run: () => window.operator.previewInspectClearAnchor?.() }]
+            : []),
+        )
       }
     }
     actions.push(
@@ -4462,8 +4530,9 @@ export function DashboardView() {
 
     return actions
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
-      activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewAnnotate, sidebarCollapsed, projects, terminals,
-      selectMainView, selectPanelTab, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
+      activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
+      gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
+      selectMainView, selectPanelTab, patchLayout, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
       installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
@@ -4559,6 +4628,40 @@ export function DashboardView() {
       { label: 'Add an agent on the roster…', onClick: handleAddLane, separator: idle.length > 0 },
     ]
   }, [laneMenuProject, allSidebarSessions, handleLaunchRole, handleAddLane])
+
+  // THE PREVIEW, built for whichever slot holds it: the main overlay or the side panel's Preview
+  // tab. `applyLayout` keeps it to one slot at a time. Moving slots remounts it, so the page
+  // reloads, at the same address because the pin and the path are persisted.
+  const renderPreview = (session: AgentSession) => {
+    // The reserved port is only the starting hint — AppPreviewPanel asks the
+    // backend which ports this session is ACTUALLY serving on and picks (or
+    // offers) among those.
+    const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
+    const projId = session.projectId
+    return (
+      <AppPreviewPanel
+        url={reserved ? `http://localhost:${reserved}` : null}
+        terminalId={activeTerminalId}
+        // `main-` in BOTH slots. A `panel-` key would reset the pin, the path and the
+        // annotations on every move.
+        storageKey={`main-${session.id}`}
+        onDispatch={session.terminalId ? (text) => { void submitQueue.submit(session.terminalId!, text) } : undefined}
+        onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
+        annotate={previewAnnotate}
+        onAnnotateChange={setPreviewAnnotate}
+        panelW={panelW}
+        // R1: every renderer surface that can open over the stage hides the native inspect view
+        // while it is open. The picker and port editor are the component's own.
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest}
+        grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
+        onGridToggle={toggleGrid}
+        onGridSpecChange={changeGridSpec}
+        onGridEditingChange={editGrid}
+        redlines={{ on: redlinesOn }}
+        onRedlinesToggle={toggleRedlines}
+      />
+    )
+  }
 
   return (
     /* THE FRAME — 8 on all four sides, and the top is not an exception. That is the decision, and
@@ -4686,7 +4789,7 @@ export function DashboardView() {
         onInstallUpdate={startInstall}
       />
 
-      <div data-term-focus-zone style={{
+      <div ref={cardRef} data-term-focus-zone style={{
         position: 'relative', flex: 1,
         display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)', overflow: 'hidden',
         // ELEVATION — the landing kit's `.panel` depth, and the one place it belongs: this is
@@ -5044,24 +5147,7 @@ export function DashboardView() {
               // they size to their content, overflow this box, and get clipped. Column keeps
               // full-width stretch, so Preview lays out exactly as it did.
               <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
-                {mainView === 'preview' && (() => {
-                  // The reserved port is only the starting hint — AppPreviewPanel asks the
-                  // backend which ports this session is ACTUALLY serving on and picks (or
-                  // offers) among those.
-                  const reserved = activeTerminalId ? reservedDevPorts[activeTerminalId] : undefined
-                  const projId = activeSession.projectId
-                  return (
-                    <AppPreviewPanel
-                      url={reserved ? `http://localhost:${reserved}` : null}
-                      terminalId={activeTerminalId}
-                      storageKey={`main-${activeSession.id}`}
-                      onDispatch={activeSession.terminalId ? (text) => { void submitQueue.submit(activeSession.terminalId!, text) } : undefined}
-                      onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
-                      annotate={previewAnnotate}
-                      onAnnotateChange={setPreviewAnnotate}
-                    />
-                  )
-                })()}
+                {mainView === 'preview' && renderPreview(activeSession)}
               </div>
             )}
           </div>
@@ -5198,6 +5284,7 @@ export function DashboardView() {
             tabs={panelTabs}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
+            preview={previewInPanel ? renderPreview(activeSession) : undefined}
           />
         </div>
       )}

@@ -129,6 +129,9 @@ export function installRealBridge() {
     terminalResize: noop, terminalKill: async () => {}, shellSpawn: async () => 'sh0',
     gridtermAttach: noop, gridtermResize: noop, gridtermScroll: noop, gridtermSetTheme: noop, gridtermDetach: noop,
     previewInspectOpen: async () => {}, previewInspectMove: noop, previewInspectClose: noop,
+    // A subscription must hand back an unsubscribe; the Proxy's catch-all would hand back a Promise.
+    onMenuCommand: () => noop,
+    onPreviewAnchor: () => noop,
     installUpdate: async () => {}, savePastedImage: async () => '/tmp/x.png',
   }
 

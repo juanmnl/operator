@@ -11,25 +11,36 @@
 //
 // The script itself is `src/shared/preview-inspector.js` — the SAME file the Rust `include_str!`s,
 // so a fix to the inspector lands in both shells.
+//
+// THE VIEW ALSO HOSTS REDLINES AND THE LAYOUT GRID (Electron only). Nothing the renderer draws can
+// paint above this view, so while it is up those are drawn inside the page by
+// `src/shared/preview-overlay.js`, configured from the renderer through `configure`. The page is
+// zoomed to the stage's scale, so it lays out at the device preset instead of at the stage's
+// scaled width.
 import { BrowserWindow, WebContentsView, ipcMain } from 'electron'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { PreviewOverlayConfig } from '../../../src/shared/types'
+import { OVERLAY_FNS_JS } from './overlay-fns'
 
-const INSPECTOR_JS = (() => {
-  // Bundled `out/main/` sits two levels under the spike root; the shared script lives in the
-  // repo. Read once at module load so a failure is loud at boot, not on first use.
+/** A script from `src/shared`, read once at module load so a failure is loud at boot, not on
+ *  first use. */
+function readShared(file: string): string {
   const candidates = [
     // Packaged and dev alike: `build:main` copies it beside the bundles.
-    join(__dirname, '..', 'preview-inspector.js'),
+    join(__dirname, '..', file),
     // Running straight from the repo without a build step.
-    join(__dirname, '..', '..', '..', 'src', 'shared', 'preview-inspector.js'),
+    join(__dirname, '..', '..', '..', 'src', 'shared', file),
   ]
   for (const p of candidates) {
     try { return readFileSync(p, 'utf8') } catch { /* try the next */ }
   }
-  console.error('[inspector] preview-inspector.js not found; the inspector will be inert')
+  console.error(`[inspector] ${file} not found; the inspector will be inert`)
   return ''
-})()
+}
+
+const INSPECTOR_JS = readShared('preview-inspector.js')
+const OVERLAY_JS = readShared('preview-overlay.js')
 
 /** Redirect the shared script's `beacon()` onto real IPC. The script calls
  *  `beacon(data, onOk, onFail)`; under Tauri that is an image request to a custom scheme,
@@ -47,8 +58,59 @@ const BRIDGE_JS = `
 
 let view: WebContentsView | null = null
 
-export function installPreviewInspect(getWindow: () => BrowserWindow | null, onPick: (data: string) => void): void {
+/** Lay the page out at the device preset inside a smaller box: a 1280 preset in a 640px stage is
+ *  scale 0.5, so the page gets a 1280px CSS viewport drawn at half size.
+ *
+ *  NOT `setZoomFactor`. Chromium keeps zoom per HOST in the session and ignores the port, and this
+ *  view shares the default session with the main window. Zooming a lane's http://localhost:5173
+ *  therefore also zoomed the dev build's own http://localhost:1420 window, and every localhost page
+ *  opened after it (`probes/preview-zoom-isolation.cjs`: main window and a fresh window both at 0.5).
+ *  Device emulation is per webContents: the same probe leaves both at 1, and the page still lays
+ *  out at 1280 with a 100px element measuring 100. Scale 1 (Fit, or a preset that fits) turns it
+ *  off, which returns the page to the box's own width. */
+function scalePage(v: WebContentsView, scale: number): void {
+  const { width, height } = v.getBounds()
+  if (!(scale > 0) || scale >= 1 || width <= 0 || height <= 0) {
+    v.webContents.disableDeviceEmulation()
+    return
+  }
+  const size = { width: Math.round(width / scale), height: Math.round(height / scale) }
+  v.webContents.enableDeviceEmulation({
+    screenPosition: 'desktop',
+    screenSize: size,
+    viewPosition: { x: 0, y: 0 },
+    deviceScaleFactor: 0,
+    viewSize: size,
+    scale,
+  })
+}
+/** The renderer's latest overlay configuration, applied again after every page load. */
+let config: PreviewOverlayConfig | null = null
+/** Whether a redline anchor is set, as last reported to the renderer. */
+let anchored = false
+
+export function installPreviewInspect(
+  getWindow: () => BrowserWindow | null,
+  onPick: (data: string) => void,
+  onAnchor: (anchored: boolean) => void,
+): void {
+  const setAnchored = (value: boolean) => {
+    if (anchored === value) return
+    anchored = value
+    onAnchor(value)
+  }
+
   ipcMain.on('operator-preview:pick', (_e, data: string) => onPick(data))
+  ipcMain.on('operator-preview:anchor', (_e, value: unknown) => setAnchored(value === true))
+
+  /** Push the configuration into the page: the page's scale first, then the overlay's settings. */
+  const apply = () => {
+    if (!view || !config) return
+    scalePage(view, config.scale)
+    void view.webContents
+      .executeJavaScript(`window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(config)})`)
+      .catch(() => { /* mid-navigation: did-finish-load applies it again */ })
+  }
 
   const open = (url: string, x: number, y: number, w: number, h: number) => {
     const win = getWindow()
@@ -70,10 +132,14 @@ export function installPreviewInspect(getWindow: () => BrowserWindow | null, onP
     // the app's renderer, and its own navigation is its business — but it must not be able to
     // open windows in our app.
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    // A new document has no anchor, whatever the previous one had.
+    view.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) setAnchored(false)
+    })
     view.webContents.on('did-finish-load', () => {
-      void view?.webContents.executeJavaScript(INSPECTOR_JS + BRIDGE_JS).catch((e) => {
-        console.error('[inspector] injection failed:', e)
-      })
+      void view?.webContents.executeJavaScript(INSPECTOR_JS + BRIDGE_JS + OVERLAY_FNS_JS + OVERLAY_JS)
+        .then(apply)
+        .catch((e) => { console.error('[inspector] injection failed:', e) })
     })
     win.contentView.addChildView(view)
     move(x, y, w, h)
@@ -81,10 +147,15 @@ export function installPreviewInspect(getWindow: () => BrowserWindow | null, onP
   }
 
   const move = (x: number, y: number, w: number, h: number) => {
-    view?.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) })
+    if (!view) return
+    view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) })
+    // The emulated size is the box divided by the scale, so a new box needs a new emulation.
+    if (config) scalePage(view, config.scale)
   }
 
   const close = () => {
+    config = null
+    setAnchored(false)
     if (!view) return
     const win = getWindow()
     try { win?.contentView.removeChildView(view) } catch { /* window already gone */ }
@@ -94,11 +165,32 @@ export function installPreviewInspect(getWindow: () => BrowserWindow | null, onP
     view = null
   }
 
-  previewApi = { open, move, close }
+  // Hidden, not closed. Nothing the renderer draws can paint above this view, including the
+  // full-window overlay a side-panel drag relies on for its mousemoves; closing it instead would
+  // reload the page and lose whatever the user had done in it.
+  const setVisible = (visible: boolean) => {
+    view?.setVisible(visible)
+  }
+
+  const configure = (next: PreviewOverlayConfig) => {
+    config = next
+    apply()
+  }
+
+  const clearAnchor = () => {
+    void view?.webContents
+      .executeJavaScript('window.__operatorOverlay && window.__operatorOverlay.clearAnchor()')
+      .catch(() => { /* no page to clear */ })
+  }
+
+  previewApi = { open, move, close, setVisible, configure, clearAnchor }
 }
 
 export let previewApi: {
   open: (url: string, x: number, y: number, w: number, h: number) => void
   move: (x: number, y: number, w: number, h: number) => void
   close: () => void
-} = { open: () => {}, move: () => {}, close: () => {} }
+  setVisible: (visible: boolean) => void
+  configure: (config: PreviewOverlayConfig) => void
+  clearAnchor: () => void
+} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {} }

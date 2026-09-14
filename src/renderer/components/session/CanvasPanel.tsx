@@ -1,17 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { AgentSession } from '../../../shared/types'
 import { DragRegion } from '../DragRegion'
 import { PlanPanel } from './PlanPanel'
 import { CanvasDiffPanel } from './CanvasDiffPanel'
 import { submitQueue } from '../../lib/submit-queue'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
+import type { PanelTab } from '../../lib/session-layout'
 
 // The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
 // is passed in as `tabs`. Project-level surfaces (Agents roster, Moodboard) live in the
 // ProjectView, not here. The active tab is owned per session by DashboardView.
-type PanelTab = 'plan' | 'diff'
 
-const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff' }
+const LABELS: Record<PanelTab, string> = { plan: 'Plan', diff: 'Diff', preview: 'Preview' }
 
 // The user's Plan-tab tasks live here (not in PlanPanel) so the "Send to agent"
 // action can sit in the shared actions footer below. Persisted per session.
@@ -20,11 +20,14 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, tabs, mode, onSelectMode }: {
+export function CanvasPanel({ session, tabs, mode, onSelectMode, preview }: {
   session?: AgentSession
   tabs: PanelTab[]
   mode: PanelTab
   onSelectMode: (m: PanelTab) => void
+  /** The session's Preview, built by DashboardView so its dispatch and task callbacks stay wired
+   *  where they are for the main view. Rendered on the Preview tab. */
+  preview?: ReactNode
 }) {
   const select = onSelectMode
 
@@ -90,6 +93,7 @@ export function CanvasPanel({ session, tabs, mode, onSelectMode }: {
           />
         )}
         {mode === 'diff' && <CanvasDiffPanel path={session?.workingDirectory} />}
+        {mode === 'preview' && preview}
       </div>
 
       {/* Canvas actions footer — primary action on the left; contextual info + the

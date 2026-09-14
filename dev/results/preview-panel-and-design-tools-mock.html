@@ -1,0 +1,623 @@
+<title>Preview Beside the Console</title>
+<meta name="description" content="Interactive mock: Operator's preview as a side-panel tab, with layout grid and redlines.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Operator's own tokens: Mission Control light on bare :root, Mission Control dark below.
+   Values copied from src/renderer/themes/mission-control{,-light}.ts. --measure / --grid are
+   the two tokens the spec proposes (§7). */
+:root {
+  --bg-terminal: #F6F8F7;
+  --bg-sidebar: #ECEFED;
+  --bg-deep: #ECEFED;
+  --bg-surface: #E2E6E4;
+  --btn-bg: #E2E6E4;
+  --fg: #1f2937;
+  --fg-muted: #6b7280;
+  --accent: #0ca678;
+  --border: #cdd2cf;
+  --overlay-subtle: rgba(0,0,0,0.05);
+  --color-success: #0ca678;
+  --magenta: #8e44ad;
+  --red: #c0392b;
+  --measure: var(--magenta);
+  --grid: var(--red);
+  --measure-ink: color-mix(in srgb, var(--measure) 70%, var(--fg));
+  --ctl-ink: color-mix(in srgb, var(--fg) 72%, transparent);
+  --radius-lg: 12px;
+  --font-body: 'Archivo', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --page-ground: #F6F8F7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-terminal: #0b0d10; --bg-sidebar: #07090b; --bg-deep: #07090b; --bg-surface: #161b21; --btn-bg: #161b21;
+    --fg: #eef1f3; --fg-muted: #8a94a0; --accent: #2fe39a; --border: #21272f;
+    --overlay-subtle: rgba(255,255,255,0.06); --color-success: #2fe39a;
+    --magenta: #c98bff; --red: #ff5f56; --page-ground: #0f1216;
+  }
+}
+:root[data-theme="dark"] {
+  --bg-terminal: #0b0d10; --bg-sidebar: #07090b; --bg-deep: #07090b; --bg-surface: #161b21; --btn-bg: #161b21;
+  --fg: #eef1f3; --fg-muted: #8a94a0; --accent: #2fe39a; --border: #21272f;
+  --overlay-subtle: rgba(255,255,255,0.06); --color-success: #2fe39a;
+  --magenta: #c98bff; --red: #ff5f56; --page-ground: #0f1216;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--page-ground); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.55; }
+.doc { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 56px; }
+.eyebrow { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-muted); margin: 0 0 10px; }
+h1 { font-size: 26px; line-height: 1.2; font-weight: 700; margin: 0 0 10px; text-wrap: balance; letter-spacing: -0.01em; }
+.lede { max-width: 68ch; margin: 0 0 22px; color: var(--fg); }
+.lede code, .try code { font-family: var(--font-mono); font-size: 12px; background: var(--overlay-subtle); padding: 1px 5px; border-radius: 4px; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 32px; margin: 0 0 22px; }
+.try { margin: 0; padding-left: 18px; max-width: 72ch; }
+.try li { margin-bottom: 4px; }
+.try-h { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-muted); margin: 0 0 6px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; margin: 0 0 12px; font-size: 12px; }
+.controls label { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-muted); }
+.controls input[type=range] { width: 220px; accent-color: var(--accent); }
+.controls output { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 96px; }
+.scroll { overflow-x: auto; border-radius: 14px; }
+.note { font-size: 12px; color: var(--fg-muted); margin: 10px 0 0; max-width: 80ch; }
+
+/* ---- the app window ---- */
+.win { position: relative; min-width: 980px; height: 640px; display: flex; gap: 8px; padding: 8px; background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 14px; }
+.rail { width: 40px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 12px; }
+.rail i { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-muted); display: block; }
+.rail i.on { background: var(--accent); }
+.card, .panel { background: var(--bg-terminal); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.card { flex: 1; }
+.panel { flex-shrink: 0; position: relative; }
+.handle { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 20; }
+.handle::after { content: ''; position: absolute; left: 2px; top: 50%; width: 3px; height: 28px; margin-top: -14px; border-radius: 2px; background: var(--border); }
+.handle:hover::after, .handle.drag::after { background: var(--fg-muted); height: 40px; margin-top: -20px; }
+.band { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+.crumb { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb span { color: var(--fg-muted); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+.seg button { border: 0; background: transparent; cursor: pointer; font-family: var(--font-mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 9px; color: var(--ctl-ink); }
+.seg button.on { background: var(--overlay-subtle); color: var(--accent); }
+.iconbtn { margin-left: auto; width: 24px; height: 24px; display: grid; place-items: center; border: 0; background: transparent; cursor: pointer; color: var(--ctl-ink); border-radius: 4px; }
+.iconbtn.on { color: var(--accent); }
+.tabs button { border: 0; background: transparent; cursor: pointer; font-family: var(--font-mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em; padding: 2px 9px; color: var(--ctl-ink); }
+.tabs button.on { color: var(--accent); }
+.body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.foot { height: 34px; flex-shrink: 0; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 12px; padding: 0 12px; font-size: 11px; color: var(--fg-muted); }
+.foot .mono { font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term { padding: 14px 16px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre; overflow: hidden; color: var(--fg); }
+.term .dot { color: var(--accent); }
+.term .dim { color: var(--fg-muted); }
+.plan { padding: 16px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.plan .row { display: flex; gap: 8px; align-items: baseline; }
+.plan .row b { font-family: var(--font-mono); font-weight: 500; font-size: 11px; color: var(--fg-muted); width: 14px; }
+.plan .row.done { color: var(--fg-muted); text-decoration: line-through; }
+.plan .row.now b { color: var(--accent); }
+
+/* ---- the preview surface (AppPreviewPanel) ---- */
+.pv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pv-head { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.grp { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 12px; min-width: 0; }
+.grp-addr { flex: 1 1 360px; }
+.grp-tools { flex: 0 0 auto; margin-left: auto; }
+.pv[data-tier="two"] .grp-addr, .pv[data-tier="narrow"] .grp-addr { flex-basis: 100%; }
+.pv[data-tier="two"] .grp-tools, .pv[data-tier="narrow"] .grp-tools { flex: 1 1 100%; margin-left: 0; border-top: 1px solid var(--border); }
+.pv[data-tier="narrow"] .grp-tools { height: auto; min-height: 30px; flex-wrap: wrap; padding-block: 4px; row-gap: 4px; }
+.pv .spacer { flex: 1; }
+.pv[data-tier="one"] .spacer { flex: 0 0 8px; }
+.nav { width: 18px; height: 18px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ctl-ink); font-size: 10px; cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; }
+.chip { display: flex; align-items: center; gap: 5px; flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; color: var(--fg); background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; max-width: 190px; cursor: pointer; }
+.chip .reach { font-size: 8px; color: var(--color-success); }
+.chip .car { color: var(--fg-muted); font-size: 9px; }
+.path { flex: 1; min-width: 40px; font-family: var(--font-mono); font-size: 11px; color: var(--fg); background: var(--overlay-subtle); border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; outline: none; }
+.path:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.tbtn { border: 0; background: transparent; cursor: pointer; font-family: var(--font-body); font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: var(--ctl-ink); white-space: nowrap; }
+.tbtn.on { color: var(--accent); }
+.tbtn:focus-visible, .nav:focus-visible, .seg button:focus-visible, .tabs button:focus-visible, .chip:focus-visible, .iconbtn:focus-visible { outline: none; background: var(--overlay-subtle); }
+.mode { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; padding: 1px; flex-shrink: 0; }
+.mode .tbtn { height: 20px; padding: 0 8px; border-radius: 5px; }
+.mode .tbtn.on { background: var(--overlay-subtle); }
+.divider { width: 1px; height: 14px; background: var(--border); flex-shrink: 0; }
+.split { display: inline-flex; flex-shrink: 0; }
+.split .tbtn + .tbtn { padding-left: 1px; }
+.readout { font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; border: 0; background: transparent; padding: 2px 4px; border-radius: 4px; }
+button.readout { cursor: pointer; }
+button.readout:hover { color: var(--fg); }
+.paused { font-family: var(--font-mono); font-size: 9px; color: var(--fg-muted); margin-left: 3px; font-weight: 400; }
+
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-height: 30px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 10.5px; }
+.strip .f { display: inline-flex; align-items: center; gap: 5px; color: var(--ctl-ink); font-weight: 600; font-size: 10px; }
+.strip input { width: 46px; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg); background: var(--overlay-subtle); border: 1px solid transparent; border-radius: 4px; padding: 2px 5px; outline: none; }
+.strip input:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.strip .hint { font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.strip .done { margin-left: auto; }
+
+.pv-wrap { flex: 1; min-height: 0; position: relative; overflow: hidden; background: var(--bg-deep); }
+.pv-stage { position: absolute; top: 0; height: 100%; overflow: visible; }
+.pv-page { position: absolute; top: 0; left: 0; transform-origin: top left; overflow: hidden; background: #fff; container-type: inline-size; container-name: app; cursor: default; }
+.pv[data-mode="annotate"] .pv-page { cursor: crosshair; }
+.pv[data-mode="inspect"] .pv-page { cursor: pointer; }
+.pv-grid, .pv-red { position: absolute; left: 0; top: 0; pointer-events: none; }
+.pv-grid { z-index: 5; }
+.pv-red { z-index: 6; overflow: visible; }
+.compose { position: absolute; z-index: 30; width: 240px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.25); font-size: 11px; }
+.compose .ctx { font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-muted); margin-bottom: 6px; line-height: 1.45; }
+.compose .ctx em { font-style: normal; color: var(--measure-ink); }
+.compose textarea { width: 100%; height: 54px; resize: none; font-family: var(--font-body); font-size: 12px; background: var(--overlay-subtle); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; outline: none; }
+.compose .acts { display: flex; gap: 6px; margin-top: 6px; }
+.compose .acts button { flex: 1; height: 24px; font-family: var(--font-body); font-size: 10.5px; font-weight: 600; cursor: pointer; border-radius: 5px; background: transparent; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+/* ---- the lane's app inside the preview. Its white ground and greys belong to that app,
+   not to Operator, so they are literal values on purpose. ---- */
+.app { font-family: var(--font-body); color: #16181d; }
+.app-nav { display: flex; align-items: center; gap: 22px; height: 56px; }
+.app-logo { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+.app-links { display: flex; gap: 18px; margin-left: auto; font-size: 13px; color: #5b6170; }
+.app-wrap { max-width: 1200px; margin-inline: auto; padding-inline: 32px; }
+.app-hero { padding-block: 36px 28px; }
+.app-hero h2 { font-size: 34px; line-height: 1.12; margin: 0 0 10px; letter-spacing: -0.02em; max-width: 560px; }
+.app-hero p { margin: 0; font-size: 15px; color: #5b6170; max-width: 520px; }
+.app-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding-bottom: 40px; }
+.app-card { border: 1px solid #e3e5ea; border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 6px; }
+.app-card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.app-price { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+.app-price small { font-size: 12px; font-weight: 500; color: #5b6170; }
+.app-card ul { margin: 6px 0 10px; padding-left: 16px; font-size: 12.5px; color: #5b6170; }
+.app-btn { align-self: flex-start; font: 600 13px var(--font-body); padding: 8px 14px; border-radius: 7px; background: #16181d; color: #fff; }
+.app-card.featured { border-color: #16181d; }
+@container app (max-width: 839px) { .app-cards { grid-template-columns: repeat(2, 1fr); } .app-hero h2 { font-size: 28px; } }
+@container app (max-width: 599px) { .app-wrap { padding-inline: 16px; } .app-cards { grid-template-columns: 1fr; gap: 16px; } .app-links { display: none; } .app-hero h2 { font-size: 24px; } }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="doc">
+  <p class="eyebrow">Operator · design mock · not built</p>
+  <h1>Preview beside the Console</h1>
+  <p class="lede">The preview is one surface per session. It sits either in the main view or in the side panel, and moving it to one place takes it out of the other. The layout grid and redlines are overlays you switch on in either place. Full spec: <code>dev/results/preview-panel-and-design-tools-design.md</code>.</p>
+
+  <div class="meta">
+    <div>
+      <p class="try-h">Try</p>
+      <ul class="try">
+        <li>Drag the panel's left edge. Under 880px the preview bar splits into an address row and a tools row.</li>
+        <li>Click <b>Plan</b>, then <b>Preview</b>: the panel remembers a width for each.</li>
+        <li>Click <b>Preview</b> in the top toolbar to move it to the main view.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="try-h">Measure</p>
+      <ul class="try">
+        <li>Hover the pricing page to see an element's size and its distance to its container.</li>
+        <li><code>⌥</code>-click to set an anchor, then hover another element. <code>Esc</code> clears it.</li>
+        <li>Switch device to 375, 768 or 1280: the Auto grid moves between 4, 8 and 12 columns.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label for="pw">Side panel width</label>
+    <input id="pw" type="range" min="300" max="900" step="1">
+    <output id="pw-out" for="pw"></output>
+    <label for="theme-note" style="display:none">Theme</label>
+  </div>
+
+  <div class="scroll">
+    <div class="win" id="win"></div>
+  </div>
+  <p class="note">The white page inside the preview stands in for the lane's own app, so its colours are that app's. Everything around it uses Operator's Mission Control tokens and follows your light or dark setting. Shortcuts in this mock: <code>⌘'</code> grid, <code>⌘⇧'</code> redlines, <code>⌘E</code> Interact ⇄ Annotate.</p>
+</div>
+
+<script>
+(function () {
+  const MIN_CONSOLE_W = 480
+  const PRESETS = { 4: { columns: 4, gutter: 16, margin: 16 }, 8: { columns: 8, gutter: 24, margin: 32 }, 12: { columns: 12, gutter: 24, margin: 32 } }
+  const S = {
+    mainView: 'terminal', panelOpen: true, panelTab: 'preview', readingTab: 'plan',
+    widths: { reading: 440, preview: 600 },
+    preset: 'fit', mode: 'interact', grid: true, gridOpen: false, redlines: true,
+    spec: { preset: 'auto', columns: 12, gutter: 24, margin: 32, maxWidth: 1200 },
+    anchor: 'card-team', hover: null, compose: null,
+  }
+  const win = document.getElementById('win')
+  const pw = document.getElementById('pw'), pwOut = document.getElementById('pw-out')
+  let geo = { scale: 1, pageW: 0, pageH: 0 }
+
+  // ---------- layout invariant (spec §1) ----------
+  function selectMain(v) {
+    S.mainView = v
+    if (v === 'preview' && S.panelTab === 'preview') S.panelTab = S.readingTab
+    S.compose = null; render()
+  }
+  function selectTab(t) {
+    S.panelOpen = true; S.panelTab = t
+    if (t === 'preview') { if (S.mainView === 'preview') S.mainView = 'terminal' }
+    else S.readingTab = t
+    S.compose = null; render()
+  }
+  const previewAt = () => S.mainView === 'preview' ? 'main' : (S.panelOpen && S.panelTab === 'preview') ? 'panel' : null
+  const widthKey = () => S.panelTab === 'preview' ? 'preview' : 'reading'
+  function rowW() { return win.clientWidth - 16 - 40 - 16 }
+  function clampW(w) {
+    if (widthKey() === 'preview') return Math.max(360, Math.min(w, rowW() - MIN_CONSOLE_W))
+    return Math.max(300, Math.min(w, 1000, rowW() - 300))
+  }
+
+  // ---------- grid geometry (spec §6) ----------
+  function resolveSpec(pageW) {
+    const s = S.spec
+    if (s.preset === 'auto') { const tier = pageW < 600 ? 4 : pageW < 840 ? 8 : 12; return { ...PRESETS[tier], maxWidth: s.maxWidth, tier } }
+    if (PRESETS[s.preset]) return { ...PRESETS[s.preset], maxWidth: s.maxWidth }
+    return { columns: s.columns, gutter: s.gutter, margin: s.margin, maxWidth: s.maxWidth }
+  }
+  function gridColumns(pageW, g) {
+    const containerW = g.maxWidth ? Math.min(pageW, g.maxWidth) : pageW
+    const x0 = (pageW - containerW) / 2 + g.margin
+    const contentW = containerW - 2 * g.margin
+    const colW = (contentW - (g.columns - 1) * g.gutter) / g.columns
+    const cols = colW > 0 ? Array.from({ length: g.columns }, (_, i) => ({ left: x0 + i * (colW + g.gutter), width: colW })) : []
+    return { cols, colW, containerW, containerLeft: (pageW - containerW) / 2 }
+  }
+  const fmt = (n) => Math.abs(n - Math.round(n)) < 0.01 ? String(Math.round(n)) : n.toFixed(Math.abs(n * 10 - Math.round(n * 10)) < 0.01 ? 1 : 2)
+
+  // ---------- markup ----------
+  const TERM = `<div class="term"><span class="dot">⏺</span> Read(src/renderer/components/session/AppPreviewPanel.tsx)
+  <span class="dim">⎿  Read 923 lines</span>
+<span class="dot">⏺</span> Update(src/renderer/components/session/CanvasPanel.tsx)
+  <span class="dim">⎿  Added 14 lines, removed 2 lines</span>
+<span class="dot">⏺</span> Bash(npm test -- layout)
+  <span class="dim">⎿  ✓ applyLayout keeps one preview per session (9 tests)</span>
+<span class="dot">⏺</span> Update(src/shared/grid-geometry.ts)
+  <span class="dim">⎿  Added 31 lines</span>
+
+<span class="dot">✻</span> Checking the 1280 / 1200 / 32 / 24 fixture…
+
+<span class="dim">────────────────────────────────────────────</span>
+&gt; </div>`
+  const PLAN = `<div class="plan">
+    <div class="row done"><b>✓</b>PanelTab gains preview</div>
+    <div class="row done"><b>✓</b>applyLayout + tests</div>
+    <div class="row now"><b>●</b>Two panel widths, rowW − 480 clamp</div>
+    <div class="row"><b>○</b>Measured toolbar tiers</div>
+    <div class="row"><b>○</b>Grid geometry + settings row</div>
+    <div class="row"><b>○</b>Redlines in the native view</div></div>`
+  const DIFF = `<div class="term" style="font-size:11px"><span class="dim">CanvasPanel.tsx</span>
+<span style="color:var(--accent)">+ type PanelTab = 'plan' | 'diff' | 'preview'</span>
+<span style="color:var(--red)">- type PanelTab = 'plan' | 'diff'</span>
+<span style="color:var(--accent)">+ const LABELS = { plan: 'Plan', diff: 'Diff', preview: 'Preview' }</span></div>`
+  const PANEL_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>`
+
+  function previewMarkup() {
+    const on = (b) => b ? ' on' : ''
+    const presets = ['fit', 375, 768, 1280].map((p) => `<button class="tbtn${on(S.preset === p)}" data-preset="${p}">${p === 'fit' ? 'Fit' : p}</button>`).join('')
+    const modes = [['interact', 'Interact'], ['annotate', 'Annotate'], ['inspect', 'Inspect']].map(([m, l]) => `<button class="tbtn${on(S.mode === m)}" data-mode="${m}">${l}</button>`).join('')
+    const paused = S.redlines && S.mode === 'annotate' ? '<span class="paused">paused</span>' : ''
+    const strip = !S.gridOpen ? '' : `<div class="strip">
+      <span class="mode">${['auto', '4', '8', '12', 'custom'].map((p) => `<button class="tbtn${on(S.spec.preset === p)}" data-gp="${p}">${p === 'auto' ? 'Auto' : p === 'custom' ? 'Custom' : p}</button>`).join('')}</span>
+      <label class="f" for="g-columns">Columns <input id="g-columns" data-gf="columns" inputmode="numeric"></label>
+      <label class="f" for="g-gutter">Gutter <input id="g-gutter" data-gf="gutter" inputmode="numeric"></label>
+      <label class="f" for="g-margin">Margin <input id="g-margin" data-gf="margin" inputmode="numeric"></label>
+      <label class="f" for="g-max">Max width <input id="g-max" data-gf="maxWidth" inputmode="numeric" placeholder="none"></label>
+      <span class="hint" id="g-hint"></span>
+      <button class="tbtn done" data-act="grid-done">Done</button></div>`
+    return `<div class="pv" data-mode="${S.mode}" data-tier="two">
+      <div class="pv-head">
+        <div class="grp grp-addr">
+          <span style="display:flex;gap:2px"><button class="nav" title="Back to the last address you opened here">◀</button><button class="nav" title="Forward">▶</button><button class="nav" title="Reload">⟳</button></span>
+          <button class="chip" title="Choose which server to preview"><span class="reach">●</span><span class="host">localhost:5173</span><span class="car">▾</span></button>
+          <input class="path" id="pv-path" value="/pricing" spellcheck="false" aria-label="Path">
+          <button class="nav" title="Open in browser">↗</button>
+        </div>
+        <div class="grp grp-tools">
+          <span style="display:flex;gap:1px">${presets}</span>
+          <span id="pv-scale"></span>
+          <span class="spacer"></span>
+          <span class="mode">${modes}</span>
+          <span class="divider"></span>
+          <span class="split"><button class="tbtn${on(S.grid)}" data-act="grid" title="Show layout grid (⌘')">Grid</button><button class="tbtn${on(S.grid)}" data-act="grid-open" title="Grid settings">${S.gridOpen ? '▴' : '▾'}</button></span>
+          <button class="tbtn${on(S.redlines)}" data-act="redlines" title="${paused ? 'Redlines pause while annotating. Switch to Interact or Inspect to measure.' : 'Show redlines (⌘⇧\')'}">Redlines${paused}</button>
+        </div>
+      </div>
+      ${strip}
+      <div class="pv-wrap"><div class="pv-stage"><div class="pv-page" id="pv-page">
+        <div class="app">
+          <div class="app-wrap" data-m="Container" data-id="wrap">
+            <div class="app-nav" data-m="Nav" data-id="nav"><span class="app-logo" data-m="Logo" data-id="logo">Ledgerly</span><span class="app-links" data-m="Links" data-id="links"><span>Product</span><span>Pricing</span><span>Docs</span><span>Sign in</span></span></div>
+            <div class="app-hero" data-m="Hero" data-id="hero"><h2 data-m="Heading" data-id="h2">Pricing that grows with your books</h2><p data-m="Lede" data-id="lede">Start free. Upgrade when your team needs shared ledgers and audit trails.</p></div>
+            <div class="app-cards" data-m="Cards" data-id="cards">
+              <div class="app-card" data-m="PlanCard · Starter" data-id="card-starter"><h3 data-m="Title" data-id="t1">Starter</h3><div class="app-price" data-m="Price" data-id="p1">$0<small> /mo</small></div><ul><li>One ledger</li><li>CSV export</li></ul><span class="app-btn" data-m="Button" data-id="b1">Start free</span></div>
+              <div class="app-card featured" data-m="PlanCard · Team" data-id="card-team"><h3 data-m="Title" data-id="t2">Team</h3><div class="app-price" data-m="Price" data-id="p2">$12<small> /seat /mo</small></div><ul><li>Shared ledgers</li><li>Audit trail</li></ul><span class="app-btn" data-m="Button" data-id="b2">Try Team</span></div>
+              <div class="app-card" data-m="PlanCard · Scale" data-id="card-scale"><h3 data-m="Title" data-id="t3">Scale</h3><div class="app-price" data-m="Price" data-id="p3">$40<small> /seat /mo</small></div><ul><li>SSO and roles</li><li>Priority support</li></ul><span class="app-btn" data-m="Button" data-id="b3">Talk to us</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="pv-grid" id="pv-grid"></div>
+        <svg class="pv-red" id="pv-red"></svg>
+      </div></div>
+      ${S.compose ? '<div class="compose" id="pv-compose"></div>' : ''}
+      </div>
+    </div>`
+  }
+
+  function render() {
+    const at = previewAt()
+    const toolbar = `<div class="band">
+      <span class="crumb">‹ operator <span>· operator/b11dc0</span></span>
+      <span class="seg"><button class="${S.mainView === 'terminal' ? 'on' : ''}" data-main="terminal">Console</button><button class="${S.mainView === 'preview' ? 'on' : ''}" data-main="preview">Preview</button></span>
+      <button class="iconbtn${S.panelOpen ? ' on' : ''}" data-act="panel" title="${S.panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff / Preview)'}" aria-label="Toggle side panel">${PANEL_ICON}</button>
+    </div>`
+    const mainBody = at === 'main' ? previewMarkup() : TERM
+    const card = `<div class="card">${toolbar}<div class="body">${mainBody}</div>
+      <div class="foot"><span>Terminal</span><span>Review</span><span class="mono" style="margin-left:auto">~/.operator/worktrees/operator-b11dc0</span><span class="mono">Opus 5 · high</span></div></div>`
+    let panel = ''
+    if (S.panelOpen) {
+      const w = clampW(S.widths[widthKey()])
+      const body = S.panelTab === 'preview' ? previewMarkup() : S.panelTab === 'plan' ? PLAN : DIFF
+      panel = `<div class="panel" id="panel" style="width:${w}px"><div class="handle" id="handle" title="Drag to resize. Double-click to split evenly."></div>
+        <div class="band tabs">${['plan', 'diff', 'preview'].map((t) => `<button class="${S.panelTab === t ? 'on' : ''}" data-tab="${t}">${t === 'plan' ? 'Plan 2/6' : t}</button>`).join('')}</div>
+        <div class="body">${body}</div><div class="foot"></div></div>`
+    }
+    win.innerHTML = `<div class="rail"><i class="on"></i><i></i><i></i><i></i></div>${card}${panel}`
+    syncSlider()
+    const pv = win.querySelector('.pv')
+    if (pv) { ro.disconnect(); ro.observe(pv); fillStrip(); layoutPreview() }
+  }
+
+  function syncSlider() {
+    const has = S.panelOpen
+    pw.disabled = !has
+    if (!has) { pwOut.textContent = 'panel closed'; return }
+    const min = widthKey() === 'preview' ? 360 : 300
+    const max = widthKey() === 'preview' ? rowW() - MIN_CONSOLE_W : Math.min(1000, rowW() - 300)
+    pw.min = min; pw.max = max; pw.value = clampW(S.widths[widthKey()])
+    pwOut.textContent = `${pw.value}px · ${widthKey()}`
+  }
+  function setPanelW(w) {
+    S.widths[widthKey()] = clampW(w)
+    const el = document.getElementById('panel'); if (el) el.style.width = S.widths[widthKey()] + 'px'
+    syncSlider()
+  }
+
+  // ---------- stage / tiers ----------
+  const ro = new ResizeObserver(() => layoutPreview())
+  function layoutPreview() {
+    const pv = win.querySelector('.pv'); if (!pv) return
+    const W = pv.clientWidth
+    const tier = W >= 880 ? 'one' : W >= 520 ? 'two' : 'narrow'
+    if (pv.dataset.tier !== tier) pv.dataset.tier = tier
+    pv.querySelector('.host').textContent = tier === 'narrow' ? ':5173' : 'localhost:5173'
+    const wrap = pv.querySelector('.pv-wrap'), stage = pv.querySelector('.pv-stage'), page = pv.querySelector('.pv-page')
+    const bw = wrap.clientWidth, bh = wrap.clientHeight
+    const fitting = S.preset === 'fit'
+    const scale = fitting ? 1 : Math.min(1, bw / S.preset)
+    const stageW = fitting ? bw : Math.min(S.preset, bw)
+    const gutter = fitting ? 0 : Math.max(0, (bw - stageW) / 2)
+    const pageW = fitting ? bw : S.preset, pageH = bh / scale
+    stage.style.left = gutter + 'px'; stage.style.width = stageW + 'px'
+    page.style.width = pageW + 'px'; page.style.height = pageH + 'px'; page.style.transform = `scale(${scale})`
+    geo = { scale, pageW, pageH }
+    const sc = pv.querySelector('#pv-scale')
+    if (scale < 1) {
+      const pct = Math.round(scale * 100)
+      sc.innerHTML = previewAt() === 'panel'
+        ? `<button class="readout" data-act="one-to-one" title="Widen the panel so ${S.preset}px shows at 1:1">${pct}% → 1:1</button>`
+        : `<span class="readout">${S.preset} · ${pct}%</span>`
+    } else sc.innerHTML = ''
+    drawGrid(); drawRedlines(); updateHint(); placeCompose()
+  }
+
+  function drawGrid() {
+    const el = document.getElementById('pv-grid'); if (!el) return
+    el.style.width = geo.pageW + 'px'; el.style.height = geo.pageH + 'px'
+    if (!S.grid) { el.innerHTML = ''; return }
+    const g = resolveSpec(geo.pageW), r = gridColumns(geo.pageW, g)
+    let html = r.cols.map((c) => `<div style="position:absolute;top:0;bottom:0;left:${c.left}px;width:${c.width}px;background:color-mix(in srgb, var(--grid) 10%, transparent)"></div>`).join('')
+    if (g.maxWidth && geo.pageW > g.maxWidth) {
+      const edge = `position:absolute;top:0;bottom:0;width:0;border-left:${1 / geo.scale}px dashed color-mix(in srgb, var(--grid) 45%, transparent)`
+      html += `<div style="${edge};left:${r.containerLeft}px"></div><div style="${edge};left:${r.containerLeft + r.containerW}px"></div>`
+    }
+    el.innerHTML = html
+  }
+
+  function fillStrip() {
+    if (!S.gridOpen) return
+    const g = resolveSpec(geo.pageW || 800)
+    const set = (id, v) => { const i = document.getElementById(id); if (i && document.activeElement !== i) i.value = v ?? '' }
+    set('g-columns', g.columns); set('g-gutter', g.gutter); set('g-margin', g.margin); set('g-max', g.maxWidth || '')
+  }
+  function updateHint() {
+    const h = document.getElementById('g-hint'); if (!h) return
+    const g = resolveSpec(geo.pageW), r = gridColumns(geo.pageW, g)
+    const auto = S.spec.preset === 'auto' ? `Auto → ${g.tier} · ` : ''
+    h.textContent = r.colW > 0 ? `${auto}${fmt(r.colW)}px columns · Saved to operator` : `${auto}Columns don't fit at this width`
+    if (S.spec.preset === 'auto') fillStrip()
+  }
+
+  // ---------- redlines (spec §5) ----------
+  function rectOf(id) {
+    const page = document.getElementById('pv-page'); const el = page && page.querySelector(`[data-id="${id}"]`)
+    if (!el) return null
+    const p = page.getBoundingClientRect(), r = el.getBoundingClientRect(), k = geo.scale
+    return { id, name: el.dataset.m, el, l: (r.left - p.left) / k, t: (r.top - p.top) / k, r: (r.right - p.left) / k, b: (r.bottom - p.top) / k }
+  }
+  function containerOf(R) {
+    let n = R.el.parentElement
+    while (n && n.id !== 'pv-page') {
+      if (n.dataset && n.dataset.id) {
+        const c = rectOf(n.dataset.id)
+        if (Math.abs(c.l - R.l) > 0.5 || Math.abs(c.t - R.t) > 0.5 || Math.abs(c.r - R.r) > 0.5 || Math.abs(c.b - R.b) > 0.5) {
+          const cs = getComputedStyle(n)
+          return { ...c, l: c.l + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft), r: c.r - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight), t: c.t + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop), b: c.b - parseFloat(cs.borderBottomWidth) - parseFloat(cs.paddingBottom) }
+        }
+      }
+      n = n.parentElement
+    }
+    return { name: 'Viewport', l: 0, t: 0, r: geo.pageW, b: geo.pageH }
+  }
+  function distances(a, b) {
+    const out = [], ext = []
+    const push = (x1, y1, x2, y2) => { const len = Math.hypot(x2 - x1, y2 - y1); if (len >= 0.5) out.push({ x1, y1, x2, y2, v: len }) }
+    const inside = (i, o) => o.l <= i.l + 0.01 && o.t <= i.t + 0.01 && o.r >= i.r - 0.01 && o.b >= i.b - 0.01
+    if (inside(a, b) || inside(b, a)) {
+      const [i, o] = inside(a, b) ? [a, b] : [b, a]; const cy = (i.t + i.b) / 2, cx = (i.l + i.r) / 2
+      push(o.l, cy, i.l, cy); push(i.r, cy, o.r, cy); push(cx, o.t, cx, i.t); push(cx, i.b, cx, o.b)
+      return { out, ext }
+    }
+    const vT = Math.max(a.t, b.t), vB = Math.min(a.b, b.b), vOver = vT < vB
+    const hL = Math.max(a.l, b.l), hR = Math.min(a.r, b.r), hOver = hL < hR
+    const y = vOver ? (vT + vB) / 2 : (a.t + a.b) / 2
+    const x = hOver ? (hL + hR) / 2 : (a.l + a.r) / 2
+    const sepH = b.l >= a.r || a.l >= b.r, sepV = b.t >= a.b || a.t >= b.b
+    if (b.l >= a.r) { push(a.r, y, b.l, y); if (!vOver) ext.push({ x1: b.l, y1: y < b.t ? b.t : b.b, x2: b.l, y2: y }) }
+    else if (a.l >= b.r) { push(b.r, y, a.l, y); if (!vOver) ext.push({ x1: b.r, y1: y < b.t ? b.t : b.b, x2: b.r, y2: y }) }
+    if (b.t >= a.b) { push(x, a.b, x, b.t); if (!hOver) ext.push({ x1: x < b.l ? b.l : b.r, y1: b.t, x2: x, y2: b.t }) }
+    else if (a.t >= b.b) { push(x, b.b, x, a.t); if (!hOver) ext.push({ x1: x < b.l ? b.l : b.r, y1: b.b, x2: x, y2: b.b }) }
+    if (!sepH && !sepV) { push(Math.min(a.l, b.l), y, Math.max(a.l, b.l), y); push(x, Math.min(a.t, b.t), x, Math.max(a.t, b.t)) }
+    return { out, ext }
+  }
+
+  const NS = 'http://www.w3.org/2000/svg'
+  function svgEl(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e }
+  function chip(svg, x, y, text, k, strong) {
+    const g = svgEl('g', {}, svg)
+    const rect = svgEl('rect', { rx: 3 * k, ry: 3 * k, fill: 'var(--bg-surface)', stroke: 'var(--measure)', 'stroke-width': k }, g)
+    const t = svgEl('text', { x, y, 'text-anchor': 'middle', 'dominant-baseline': 'central', fill: strong ? 'var(--measure-ink)' : 'var(--fg)', 'font-family': 'JetBrains Mono, ui-monospace, monospace', 'font-size': 10 * k, 'font-weight': 600, style: 'font-variant-numeric: tabular-nums' }, g)
+    t.textContent = text
+    const w = t.getComputedTextLength() + 8 * k, h = 15 * k
+    let cx = Math.max(w / 2 + 2 * k, Math.min(geo.pageW - w / 2 - 2 * k, x))
+    let cy = Math.max(h / 2 + 2 * k, Math.min(geo.pageH - h / 2 - 2 * k, y))
+    t.setAttribute('x', cx); t.setAttribute('y', cy)
+    rect.setAttribute('x', cx - w / 2); rect.setAttribute('y', cy - h / 2); rect.setAttribute('width', w); rect.setAttribute('height', h)
+  }
+  function box(svg, R, k, anchor) {
+    svgEl('rect', { x: R.l, y: R.t, width: R.r - R.l, height: R.b - R.t, fill: anchor ? 'color-mix(in srgb, var(--measure) 8%, transparent)' : 'none', stroke: 'var(--measure)', 'stroke-width': k, 'stroke-dasharray': anchor ? '' : `${3 * k} ${2 * k}` }, svg)
+  }
+  function sizeChip(svg, R, k) {
+    const below = R.b + 11 * k < geo.pageH
+    chip(svg, (R.l + R.r) / 2, below ? R.b + 11 * k : R.t - 11 * k, `${fmt(R.r - R.l)} × ${fmt(R.b - R.t)}`, k, false)
+  }
+  function drawLines(svg, d, k) {
+    d.ext.forEach((e) => svgEl('line', { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, stroke: 'color-mix(in srgb, var(--measure) 55%, transparent)', 'stroke-width': k, 'stroke-dasharray': `${3 * k} ${2 * k}` }, svg))
+    d.out.forEach((l) => {
+      svgEl('line', { x1: l.x1, y1: l.y1, x2: l.x2, y2: l.y2, stroke: 'var(--measure)', 'stroke-width': k }, svg)
+      const horiz = Math.abs(l.y1 - l.y2) < 0.01
+      ;[[l.x1, l.y1], [l.x2, l.y2]].forEach(([x, y]) => horiz
+        ? svgEl('line', { x1: x, y1: y - 3 * k, x2: x, y2: y + 3 * k, stroke: 'var(--measure)', 'stroke-width': k }, svg)
+        : svgEl('line', { x1: x - 3 * k, y1: y, x2: x + 3 * k, y2: y, stroke: 'var(--measure)', 'stroke-width': k }, svg))
+      chip(svg, (l.x1 + l.x2) / 2, (l.y1 + l.y2) / 2, fmt(l.v), k, true)
+    })
+  }
+  function measurement() {
+    const A = S.anchor && rectOf(S.anchor), H = S.hover && S.hover !== S.anchor && rectOf(S.hover)
+    if (A && H) return { A, B: H, d: distances(A, H), pair: true }
+    const X = A || (S.hover && rectOf(S.hover))
+    if (!X) return null
+    const C = containerOf(X)
+    return { A: X, B: C, d: distances(X, C), pair: false, anchored: !!A }
+  }
+  function drawRedlines() {
+    const svg = document.getElementById('pv-red'); if (!svg) return
+    svg.setAttribute('width', geo.pageW); svg.setAttribute('height', geo.pageH)
+    svg.setAttribute('viewBox', `0 0 ${geo.pageW} ${geo.pageH}`)
+    svg.innerHTML = ''
+    if (!S.redlines || S.mode === 'annotate') return
+    const m = measurement(); if (!m) return
+    const k = 1 / geo.scale
+    box(svg, m.A, k, !!S.anchor && m.A.id === S.anchor)
+    if (m.pair) box(svg, m.B, k, false)
+    drawLines(svg, m.d, k)
+    sizeChip(svg, m.A, k)
+    if (m.pair) sizeChip(svg, m.B, k)
+  }
+
+  // ---------- compose card (Inspect, spec §5 "Inspect + anchor") ----------
+  function placeCompose() {
+    const c = document.getElementById('pv-compose'); if (!c || !S.compose) return
+    const R = rectOf(S.compose); if (!R) return
+    const stage = win.querySelector('.pv-stage'), wrap = win.querySelector('.pv-wrap')
+    const k = geo.scale, left = stage.offsetLeft + R.l * k, top = R.b * k + 8
+    c.style.left = Math.max(8, Math.min(wrap.clientWidth - 248, left)) + 'px'
+    c.style.top = Math.max(8, Math.min(wrap.clientHeight - 150, top)) + 'px'
+    const A = S.anchor && S.anchor !== S.compose && rectOf(S.anchor)
+    let meas = ''
+    if (A) {
+      const d = distances(A, R).out[0]
+      if (d) meas = ` — <em>${fmt(d.v)}px from ${A.name}</em>`
+    }
+    c.innerHTML = `<div class="ctx">↳ ${R.name} @ src/Pricing.tsx:42${meas}</div>
+      <textarea id="compose-note" placeholder="What should change here?"></textarea>
+      <div class="acts"><button data-act="compose-close">→ Console</button><button data-act="compose-close">→ Tasks</button></div>`
+  }
+
+  // ---------- events ----------
+  win.addEventListener('click', (e) => {
+    const t = e.target.closest('button, .pv-page'); if (!t) return
+    if (t.dataset.main) return selectMain(t.dataset.main)
+    if (t.dataset.tab) return selectTab(t.dataset.tab)
+    if (t.dataset.preset) { S.preset = t.dataset.preset === 'fit' ? 'fit' : +t.dataset.preset; return render() }
+    if (t.dataset.mode) { S.mode = t.dataset.mode; S.compose = null; return render() }
+    if (t.dataset.gp) { S.spec.preset = t.dataset.gp; S.grid = true; if (t.dataset.gp !== 'custom') { const g = resolveSpec(geo.pageW); Object.assign(S.spec, { columns: g.columns, gutter: g.gutter, margin: g.margin }) } return render() }
+    const act = t.dataset.act
+    if (act === 'panel') { S.panelOpen = !S.panelOpen; return render() }
+    if (act === 'grid') { S.grid = !S.grid; if (!S.grid) S.gridOpen = false; return render() }
+    if (act === 'grid-open') { S.gridOpen = !S.gridOpen; if (S.gridOpen) S.grid = true; return render() }
+    if (act === 'grid-done') { S.gridOpen = false; return render() }
+    if (act === 'redlines') { S.redlines = !S.redlines; return render() }
+    if (act === 'one-to-one') { setPanelW(S.preset); return }
+    if (act === 'compose-close') { S.compose = null; return render() }
+    if (t.classList.contains('pv-page')) {
+      const m = e.target.closest('[data-id]')
+      if (e.altKey) { S.anchor = m && m.dataset.id !== S.anchor ? m.dataset.id : null; drawRedlines(); return }
+      if (S.mode === 'inspect' && m) { S.compose = m.dataset.id; render(); document.getElementById('compose-note')?.focus() }
+    }
+  })
+  win.addEventListener('mousemove', (e) => {
+    const page = e.target.closest('.pv-page')
+    const id = page ? (e.target.closest('[data-id]')?.dataset.id ?? null) : null
+    if (id !== S.hover) { S.hover = id; drawRedlines() }
+  })
+  win.addEventListener('mouseleave', () => { if (S.hover) { S.hover = null; drawRedlines() } })
+  win.addEventListener('input', (e) => {
+    const f = e.target.dataset && e.target.dataset.gf; if (!f) return
+    const g = resolveSpec(geo.pageW)
+    if (S.spec.preset !== 'custom') Object.assign(S.spec, { columns: g.columns, gutter: g.gutter, margin: g.margin })
+    S.spec.preset = 'custom'
+    const raw = e.target.value.trim()
+    const n = parseInt(raw, 10)
+    if (f === 'maxWidth') S.spec.maxWidth = raw === '' ? null : (n >= 240 ? n : S.spec.maxWidth)
+    else if (!Number.isNaN(n)) S.spec[f] = f === 'columns' ? Math.max(1, Math.min(24, n)) : Math.max(0, Math.min(400, n))
+    win.querySelectorAll('[data-gp]').forEach((b) => b.classList.toggle('on', b.dataset.gp === 'custom'))
+    drawGrid(); updateHint()
+  })
+  win.addEventListener('keydown', (e) => {
+    const f = e.target.dataset && e.target.dataset.gf; if (!f || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+    e.preventDefault()
+    const step = (e.shiftKey ? 8 : 1) * (e.key === 'ArrowUp' ? 1 : -1)
+    e.target.value = Math.max(0, (parseInt(e.target.value, 10) || 0) + step)
+    e.target.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  win.addEventListener('mousedown', (e) => {
+    if (e.target.id !== 'handle') return
+    e.preventDefault()
+    const startX = e.clientX, startW = S.widths[widthKey()], h = e.target
+    h.classList.add('drag')
+    const move = (ev) => setPanelW(startW + (startX - ev.clientX))
+    const up = () => { h.classList.remove('drag'); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  })
+  win.addEventListener('dblclick', (e) => { if (e.target.id === 'handle') setPanelW(Math.round(rowW() / 2)) })
+  pw.addEventListener('input', () => setPanelW(+pw.value))
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { if (S.compose) { S.compose = null; render() } else if (S.anchor) { S.anchor = null; drawRedlines() } return }
+    if (!e.metaKey && !e.ctrlKey) return
+    if (e.key === "'" || e.key === '"') { e.preventDefault(); if (e.shiftKey) S.redlines = !S.redlines; else S.grid = !S.grid; render() }
+    else if (e.key === 'e' || e.key === 'E') { if (!previewAt()) return; e.preventDefault(); S.mode = S.mode === 'annotate' ? 'interact' : 'annotate'; render() }
+  })
+  window.addEventListener('resize', () => { const el = document.getElementById('panel'); if (el) el.style.width = clampW(S.widths[widthKey()]) + 'px'; syncSlider() })
+
+  render()
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(layoutPreview)
+})()
+</script>
