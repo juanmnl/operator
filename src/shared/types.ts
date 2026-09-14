@@ -411,7 +411,7 @@ export interface PreviewOverlayTokens {
 
 /** What the Preview's native inspect view does inside the page (`src/shared/preview-overlay.js`). */
 export interface PreviewOverlayConfig {
-  /** The stage's scale, applied as the view's zoom factor so the page lays out at the device
+  /** The stage's scale, applied as the view's device-emulation scale so the page lays out at the device
    *  preset rather than at the stage's scaled width. */
   scale: number
   /** The inspector's hover outline and click-to-compose. Off when the view only hosts redlines and

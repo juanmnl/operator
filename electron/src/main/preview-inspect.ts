@@ -57,6 +57,33 @@ const BRIDGE_JS = `
 `
 
 let view: WebContentsView | null = null
+
+/** Lay the page out at the device preset inside a smaller box: a 1280 preset in a 640px stage is
+ *  scale 0.5, so the page gets a 1280px CSS viewport drawn at half size.
+ *
+ *  NOT `setZoomFactor`. Chromium keeps zoom per HOST in the session and ignores the port, and this
+ *  view shares the default session with the main window. Zooming a lane's http://localhost:5173
+ *  therefore also zoomed the dev build's own http://localhost:1420 window, and every localhost page
+ *  opened after it (`probes/preview-zoom-isolation.cjs`: main window and a fresh window both at 0.5).
+ *  Device emulation is per webContents: the same probe leaves both at 1, and the page still lays
+ *  out at 1280 with a 100px element measuring 100. Scale 1 (Fit, or a preset that fits) turns it
+ *  off, which returns the page to the box's own width. */
+function scalePage(v: WebContentsView, scale: number): void {
+  const { width, height } = v.getBounds()
+  if (!(scale > 0) || scale >= 1 || width <= 0 || height <= 0) {
+    v.webContents.disableDeviceEmulation()
+    return
+  }
+  const size = { width: Math.round(width / scale), height: Math.round(height / scale) }
+  v.webContents.enableDeviceEmulation({
+    screenPosition: 'desktop',
+    screenSize: size,
+    viewPosition: { x: 0, y: 0 },
+    deviceScaleFactor: 0,
+    viewSize: size,
+    scale,
+  })
+}
 /** The renderer's latest overlay configuration, applied again after every page load. */
 let config: PreviewOverlayConfig | null = null
 /** Whether a redline anchor is set, as last reported to the renderer. */
@@ -76,10 +103,10 @@ export function installPreviewInspect(
   ipcMain.on('operator-preview:pick', (_e, data: string) => onPick(data))
   ipcMain.on('operator-preview:anchor', (_e, value: unknown) => setAnchored(value === true))
 
-  /** Push the configuration into the page: the zoom factor first, then the overlay's settings. */
+  /** Push the configuration into the page: the page's scale first, then the overlay's settings. */
   const apply = () => {
     if (!view || !config) return
-    view.webContents.setZoomFactor(config.scale > 0 ? config.scale : 1)
+    scalePage(view, config.scale)
     void view.webContents
       .executeJavaScript(`window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(config)})`)
       .catch(() => { /* mid-navigation: did-finish-load applies it again */ })
@@ -120,7 +147,10 @@ export function installPreviewInspect(
   }
 
   const move = (x: number, y: number, w: number, h: number) => {
-    view?.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) })
+    if (!view) return
+    view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) })
+    // The emulated size is the box divided by the scale, so a new box needs a new emulation.
+    if (config) scalePage(view, config.scale)
   }
 
   const close = () => {

@@ -455,7 +455,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     setInspecting(m === 'inspect')
     setAnnotate(m === 'annotate')
   }
-  // What the native view does inside the page. `scale` becomes its zoom factor, so the page lays out
+  // What the native view does inside the page. `scale` becomes its device-emulation scale, so the page lays out
   // at the device preset and redlines report that layout's px (F3). The palette goes with it because
   // the page cannot read Operator's CSS variables; `overlayTokens` changes with the theme.
   const overlayTokens = useOverlayTokens()

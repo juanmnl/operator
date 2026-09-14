@@ -8,7 +8,7 @@
 // `measureBetween`, `formatPx`, `placeChip` from src/shared/redlines.ts), so the page and the
 // renderer cannot disagree about a column or a distance.
 //
-// The page is zoomed to the stage's scale (setZoomFactor), so it lays out at the device preset and
+// The page is scaled to the stage's scale (device emulation), so it lays out at the device preset and
 // getBoundingClientRect reports that layout's CSS px, which are the numbers to show. The lines and
 // chips are drawn in the zoomed page too, so every size below is divided by `scale` to stay 1px and
 // 10px on screen.

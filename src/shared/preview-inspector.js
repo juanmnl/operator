@@ -8,7 +8,7 @@
   // Off when the native view is only hosting redlines or the grid (Interact mode): no hover outline,
   // and clicks reach the app. A shell that never calls `configure` (Tauri) keeps it on.
   var enabled = true;
-  // The page's zoom factor (the stage's scale). The card and the label are counter-scaled by it so
+  // The page's emulated scale (the stage's scale). The card and the label are counter-scaled by it so
   // they stay their real size on screen when a wide device preset is scaled down to fit.
   var scale = 1;
   // Colours. These defaults are the inspector's original palette, kept for a shell that never
