@@ -303,6 +303,9 @@ function boot(): void {
       await Promise.race([teardown(), new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS))])
       tornDown = true
     },
+    // The updater's watchdog, for a `quitAndInstall` that did not quit after teardown ran. The
+    // guard is already disarmed and `tornDown` set, so this goes straight through `will-quit`.
+    quitAnyway: () => app.quit(),
   }
 
   // Which Claude Code is installed, re-read once a minute. A lane records the version it spawned

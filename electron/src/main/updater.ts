@@ -76,10 +76,18 @@ function currentVersion(): string | null {
 let pending: { version: string } | null = null
 let configuredUrl: string | null = null
 
-/** Set once a download has completed. From that moment `autoInstallOnAppQuit` is on, so a user
- *  who dismisses the restart and quits later still gets the update — the download is not thrown
- *  away because the moment passed. */
+/** Set once a download has completed. `autoInstallOnAppQuit` was armed just before it started (see
+ *  `installUpdate`), so a user who dismisses the restart and quits later still gets the update —
+ *  the download is not thrown away because the moment passed. */
 let downloaded = false
+
+/** How long to wait, after the download, for Squirrel.Mac to report it holds the update. It fetches
+ *  the zip from electron-updater's local proxy during the download and verifies it within seconds
+ *  (1.4 s on 2026-09-14), so a minute is generous. */
+const NATIVE_READY_TIMEOUT_MS = 60_000
+
+/** How long after `quitAndInstall` the app may still be running before the watchdog quits it. */
+const QUIT_WATCHDOG_MS = 30_000
 
 /** Where the update's own account of itself goes.
  *
@@ -165,8 +173,8 @@ function configure(): boolean {
     // The renderer drives this: `checkUpdate` then `installUpdate`, both explicit. Downloading
     // on its own would spend the user's bandwidth on a decision they have not made.
     autoUpdater.autoDownload = false
-    // Off UNTIL a download completes — see `downloaded`. Leaving it on from the start would have
-    // an unrequested update install itself on the next quit.
+    // Off until the user asks to install — `installUpdate` arms it just before the download.
+    // Leaving it on from the start would have an unrequested update install itself on the next quit.
     autoUpdater.autoInstallOnAppQuit = false
     autoUpdater.logger = {
       info: (...a: unknown[]) => log('info', ...a),
@@ -222,6 +230,32 @@ export interface InstallHost {
   /** Put the app into "we are quitting" state BEFORE `quitAndInstall`: disarm the guard's veto
    *  and finish teardown, so nothing between here and the relaunch can cancel it. */
   prepareQuit: () => Promise<void>
+  /** Quit through the app's normal path. Used only by the watchdog, when `quitAndInstall` has not
+   *  quit although teardown already ran. */
+  quitAnyway?: () => void
+  /** Test seams for the two waits. */
+  nativeReadyTimeoutMs?: number
+  quitWatchdogMs?: number
+}
+
+/** Does the platform installer hold the update yet?
+ *
+ *  On macOS that is electron-updater's `MacUpdater.squirrelDownloadedUpdate`, a boolean it sets
+ *  when Squirrel.Mac emits `update-downloaded` (electron-updater 6.8.9, `MacUpdater.js`). Squirrel
+ *  is what replaces the app bundle; until it holds the file, `quitAndInstall` quits nothing. Other
+ *  platforms' updaters have no such step and no such field, so the answer there is yes. */
+async function nativeInstallerReady(timeoutMs: number): Promise<boolean> {
+  const u = autoUpdater as unknown as { squirrelDownloadedUpdate?: unknown }
+  if (typeof u.squirrelDownloadedUpdate !== 'boolean') return true
+  const until = Date.now() + timeoutMs
+  while (u.squirrelDownloadedUpdate !== true) {
+    if (Date.now() >= until) {
+      log('error', `Squirrel.Mac did not report the update downloaded within ${timeoutMs}ms`)
+      return false
+    }
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  return true
 }
 
 /** THE BUG THIS FUNCTION IS THE FIX FOR.
@@ -236,8 +270,13 @@ export interface InstallHost {
  *
  *    1. DOWNLOAD first, reporting progress. Asking before the bytes exist would put the dialog up
  *       and then make the user wait behind it.
- *    2. `autoInstallOnAppQuit = true` the moment the download lands — so even if everything below
- *       is declined, a later ordinary quit still installs. The download is not wasted.
+ *    2. `autoInstallOnAppQuit = true` BEFORE the download starts. On macOS this is what makes
+ *       Squirrel.Mac fetch the file at all; armed after the download (as it was until 2026-09-14)
+ *       Squirrel never got it and `quitAndInstall` did nothing. It also means a later ordinary
+ *       quit still installs if everything below is declined.
+ *    2b. WAIT until the platform installer holds the update. Nothing below runs otherwise, because
+ *       step 4's teardown kills every lane and closes the stores, and an install that then does
+ *       not happen leaves an app that looks alive and answers nothing.
  *    3. ASK ONCE, through the guard, naming the version and how many lanes are busy. One question,
  *       at the point the user can answer it.
  *    4. PREPARE THE QUIT — mark the guard `quitting` and run teardown to completion — so nothing
@@ -252,14 +291,28 @@ export async function installUpdate(host: InstallHost): Promise<void> {
   const version = pending.version
   try {
     if (!configure()) return
+    // STEP 2 — armed BEFORE the download. `MacUpdater.doDownloadUpdate` only calls Squirrel.Mac's
+    // `checkForUpdates()` (which fetches the zip) when this is already true. The 2026-09-11 install
+    // of 0.22.0 armed it afterwards: Squirrel never fetched, `quitAndInstall` waited for an event
+    // that never came, and the app stayed on 0.21.0 with every lane killed and its databases closed.
+    // The user asked for this update, so arming it now installs nothing unrequested.
+    autoUpdater.autoInstallOnAppQuit = true
     log('info', `downloading ${version}`)
     await autoUpdater.downloadUpdate()
     downloaded = true
-    // STEP 2 — the download survives a "not now".
-    autoUpdater.autoInstallOnAppQuit = true
     log('info', `downloaded ${version}; autoInstallOnAppQuit armed`)
   } catch (e) {
+    // Nothing downloaded, so there is nothing to install on quit.
+    if (!downloaded) autoUpdater.autoInstallOnAppQuit = false
     reportError('Download failed', e)
+    return
+  }
+
+  // STEP 2b — nothing is asked and nothing is torn down until the installer holds the update.
+  if (!(await nativeInstallerReady(host.nativeReadyTimeoutMs ?? NATIVE_READY_TIMEOUT_MS))) {
+    reportError('Install failed', new Error(
+      `macOS did not take the downloaded ${version} update. Nothing was closed. Quit and reopen Operator, then install again.`,
+    ))
     return
   }
 
@@ -271,6 +324,15 @@ export async function installUpdate(host: InstallHost): Promise<void> {
     await host.prepareQuit()
     log('info', `quitAndInstall(${version})`)
     autoUpdater.quitAndInstall(false, true)
+    // THE WATCHDOG. Teardown has already run, so an app still here has no lanes and no open stores;
+    // staying open is the 61-hour failure above. The guard is disarmed, so this quits straight
+    // through, and quitting with the update held still installs it.
+    const ms = host.quitWatchdogMs ?? QUIT_WATCHDOG_MS
+    const watchdog = setTimeout(() => {
+      log('error', `quitAndInstall(${version}) had not quit after ${ms}ms; quitting`)
+      host.quitAnyway?.()
+    }, ms)
+    ;(watchdog as { unref?: () => void }).unref?.()
   } catch (e) {
     reportError('Install failed', e)
   }

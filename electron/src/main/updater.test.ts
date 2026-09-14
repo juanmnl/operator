@@ -137,22 +137,30 @@ describe('an up-to-date app is never offered itself', () => {
 
 type Call = string
 
-function fakeUpdater(over: Partial<{ downloadRejects: Error }> = {}) {
+function fakeUpdater(over: Partial<{ downloadRejects: Error; mac: boolean; nativeNeverReady: boolean }> = {}) {
   const calls: Call[] = []
   const handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
+  // `mac` models electron-updater's MacUpdater: `squirrelDownloadedUpdate` is a boolean that turns
+  // true once Squirrel.Mac holds the file. Other updaters have no such field.
+  const native = { squirrel: over.mac ? false : undefined as boolean | undefined }
+  const seen = { armedDuringDownload: undefined as boolean | undefined }
   return {
     calls,
+    seen,
     emit(event: string, ...args: unknown[]) { for (const h of handlers[event] ?? []) h(...args) },
     mock: {
       autoDownload: true,
       autoInstallOnAppQuit: false,
       logger: null as unknown,
+      get squirrelDownloadedUpdate(): boolean | undefined { return native.squirrel },
       setFeedURL: () => { calls.push('setFeedURL') },
       on(event: string, h: (...a: unknown[]) => void) { (handlers[event] ??= []).push(h) },
       checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: '0.18.0' } }),
-      downloadUpdate: async () => {
+      async downloadUpdate() {
         calls.push('downloadUpdate')
+        seen.armedDuringDownload = (this as unknown as { autoInstallOnAppQuit: boolean }).autoInstallOnAppQuit
         if (over.downloadRejects) throw over.downloadRejects
+        if (over.mac && !over.nativeNeverReady) native.squirrel = true
         return []
       },
       set updateConfigPath(v: string) {
@@ -229,12 +237,15 @@ describe('installUpdate — the order that makes it actually install', () => {
 
   // …but the download is not thrown away. A user who says "not now" and quits an hour later
   // still gets the update, which is the point of arming this the moment the bytes land.
-  it('arms autoInstallOnAppQuit once the download completes, even if the restart is declined', async () => {
+  it('arms autoInstallOnAppQuit BEFORE the download, and it stays armed if the restart is declined', async () => {
+    // 2026-09-11: armed only after the download, so macOS's installer never fetched the update
+    // and "Install & Restart" left the app on 0.21.0 with its lanes killed.
     const fake = fakeUpdater()
     const { checkUpdate, installUpdate, updateDownloaded } = await loadWithFake(fake)
     await checkUpdate()
-    expect(fake.mock.autoInstallOnAppQuit).toBe(false)  // not before
+    expect(fake.mock.autoInstallOnAppQuit).toBe(false)  // not before the user asks
     await installUpdate({ confirm: async () => false, prepareQuit: async () => {} })
+    expect(fake.seen.armedDuringDownload).toBe(true)
     expect(fake.mock.autoInstallOnAppQuit).toBe(true)
     expect(updateDownloaded()).toBe(true)
   })
@@ -251,6 +262,8 @@ describe('installUpdate — the order that makes it actually install', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('sha512 mismatch')     // the REAL message, not "install failed"
     expect(fake.calls.some((c) => c.startsWith('quitAndInstall'))).toBe(false)
+    // Nothing was downloaded, so nothing is left to install on the next quit.
+    expect(fake.mock.autoInstallOnAppQuit).toBe(false)
   })
 
   it('forwards download progress rather than swallowing it', async () => {
@@ -271,6 +284,65 @@ describe('installUpdate — the order that makes it actually install', () => {
     setUpdateSink({ error: (m) => errors.push(m) })
     fake.emit('error', new Error('ENOSPC: no space left on device'))
     expect(errors[0]).toContain('ENOSPC')
+  })
+})
+
+// ── MACOS: THE INSTALLER HAS TO HOLD THE UPDATE ──────────────────────────────────────────────
+//
+// 2026-09-11..14: `quitAndInstall` was called while Squirrel.Mac had never fetched the update.
+// It quit nothing, but `prepareQuit` had already killed every lane and closed the databases, so
+// the app stayed open answering nothing for 61 hours. These pin the wait and the watchdog.
+describe('installUpdate — macOS installer readiness and the watchdog', () => {
+  afterEach(() => { vi.resetModules(); vi.doUnmock('electron-updater'); vi.doUnmock('electron'); delete process.env.OPERATOR_UPDATE_FEED })
+
+  it('on macOS, asks and quits once Squirrel.Mac holds the update', async () => {
+    const fake = fakeUpdater({ mac: true })
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    const order: string[] = []
+    await installUpdate({
+      confirm: async () => { order.push('confirm'); return true },
+      prepareQuit: async () => { order.push('prepareQuit') },
+      quitWatchdogMs: 60_000,
+    })
+    expect(order).toEqual(['confirm', 'prepareQuit'])
+    expect(fake.calls).toContain('quitAndInstall(false,true)')
+  })
+
+  it('if Squirrel.Mac never takes it: reports why, never asks, and tears NOTHING down', async () => {
+    const fake = fakeUpdater({ mac: true, nativeNeverReady: true })
+    const { checkUpdate, installUpdate, setUpdateSink } = await loadWithFake(fake)
+    await checkUpdate()
+    const errors: string[] = []
+    setUpdateSink({ error: (m) => errors.push(m) })
+    let asked = false
+    let prepared = false
+    await installUpdate({
+      confirm: async () => { asked = true; return true },
+      prepareQuit: async () => { prepared = true },
+      nativeReadyTimeoutMs: 300,
+    })
+    expect(asked).toBe(false)
+    expect(prepared).toBe(false)
+    expect(fake.calls.some((c) => c.startsWith('quitAndInstall'))).toBe(false)
+    expect(errors[0]).toMatch(/did not take the downloaded 0\.18\.0 update/)
+    expect(errors[0]).toMatch(/Nothing was closed/)
+  })
+
+  it('the watchdog quits the app if quitAndInstall leaves it running after teardown', async () => {
+    const fake = fakeUpdater({ mac: true })
+    const { checkUpdate, installUpdate } = await loadWithFake(fake)
+    await checkUpdate()
+    let quits = 0
+    await installUpdate({
+      confirm: async () => true,
+      prepareQuit: async () => {},
+      quitAnyway: () => { quits++ },
+      quitWatchdogMs: 50,
+    })
+    expect(quits).toBe(0)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(quits).toBe(1)
   })
 })
 
