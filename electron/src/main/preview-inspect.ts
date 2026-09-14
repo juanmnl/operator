@@ -94,11 +94,19 @@ export function installPreviewInspect(getWindow: () => BrowserWindow | null, onP
     view = null
   }
 
-  previewApi = { open, move, close }
+  // Hidden, not closed. Nothing the renderer draws can paint above this view, including the
+  // full-window overlay a side-panel drag relies on for its mousemoves; closing it instead would
+  // reload the page and lose whatever the user had done in it.
+  const setVisible = (visible: boolean) => {
+    view?.setVisible(visible)
+  }
+
+  previewApi = { open, move, close, setVisible }
 }
 
 export let previewApi: {
   open: (url: string, x: number, y: number, w: number, h: number) => void
   move: (x: number, y: number, w: number, h: number) => void
   close: () => void
-} = { open: () => {}, move: () => {}, close: () => {} }
+  setVisible: (visible: boolean) => void
+} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {} }

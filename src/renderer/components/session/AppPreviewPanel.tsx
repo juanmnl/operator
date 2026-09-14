@@ -40,7 +40,7 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
@@ -52,6 +52,12 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   /** Annotate vs Interact mode — controlled by DashboardView so a shortcut can toggle it. */
   annotate?: boolean
   onAnnotateChange?: (annotate: boolean) => void
+  /** The side panel's width. A panel drag moves the stage, and `box` below only tracks its size,
+   *  so the inspector's bounds are re-sent on this too. */
+  panelW?: number
+  /** True while a side-panel drag needs the pixels the native inspect view covers. The view is
+   *  hidden, not closed, and re-placed at the stage's new rect when this goes false. */
+  inspectHidden?: boolean
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
   // A pinned target, stored as the STRING THE USER TYPED — a port, a port and a path
@@ -297,16 +303,21 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // Keep the embedded inspector aligned to the frame as the panel resizes — and as the PRESET
   // changes, which is new: the stage now moves and resizes without `box` changing at all, so a
   // preset switch that the wrapper never noticed would have stranded the webview at the old width.
+  // During a panel drag the view is hidden: nothing the renderer draws paints above it, including
+  // the drag's own mousemove overlay, so a drag across it would stop. The iframe underneath keeps
+  // the page on screen meanwhile.
   useEffect(() => {
     if (!inspecting) return
+    if (inspectHidden) { window.operator.previewInspectSetVisible?.(false); return }
     const id = requestAnimationFrame(() => {
       const el = stageRef.current
       if (!el) return
       const r = el.getBoundingClientRect()
       window.operator.previewInspectMove?.(r.left, r.top, r.width, r.height)
+      window.operator.previewInspectSetVisible?.(true)
     })
     return () => cancelAnimationFrame(id)
-  }, [box, preset, inspecting])
+  }, [box, preset, inspecting, panelW, inspectHidden])
   // The inspector's floating card composes the note itself and beacons preview:pick with the final
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {

@@ -147,6 +147,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   previewInspectOpen:     { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   previewInspectMove:     { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
   previewInspectClose:    { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
+  previewInspectSetVisible: { delivery: 'send', impl: 'native' },
   onPreviewPick:          { delivery: 'event',  impl: 'native', rust: 'lib.rs' },
   checkUpdate:            { delivery: 'invoke', impl: 'native', rust: 'plugin-updater' },
   installUpdate:          { delivery: 'invoke', impl: 'native', rust: 'plugin-updater' },

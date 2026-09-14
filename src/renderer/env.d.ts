@@ -212,6 +212,9 @@ declare global {
       previewInspectOpen: (url: string, x: number, y: number, w: number, h: number) => Promise<void>
       previewInspectMove: (x: number, y: number, w: number, h: number) => void
       previewInspectClose: () => void
+      /** Hide or show the inspector without closing it, so the page inside keeps its state. Used
+       *  while a side-panel drag needs the pixels it covers. Electron only. */
+      previewInspectSetVisible?: (visible: boolean) => void
       /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */
       onPreviewPick: (callback: (data: string) => void) => () => void
       /** Auto-update against the public releases feed. */
