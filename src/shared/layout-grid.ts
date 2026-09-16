@@ -1,9 +1,9 @@
 // The layout grid laid over the Preview: its geometry, its presets, and the rules for editing a
 // spec. In `src/shared` because two hosts draw it: the renderer over the iframe today, and a
 // script injected into the native inspect view's page later. Pure.
-import type { GridSpec } from './types'
+import type { GridSpec, GridFill } from './types'
 
-export type { GridSpec }
+export type { GridSpec, GridFill }
 
 /** What a project that never set a grid gets: Auto. The fields are where Custom starts. */
 export const DEFAULT_GRID_SPEC: GridSpec = { preset: 'auto', columns: 12, gutter: 24, margin: 32, maxWidth: null }
@@ -110,6 +110,66 @@ export function stepGridField(field: GridField, value: number | null, delta: num
   return Math.min(b.max, Math.max(b.min, value + delta))
 }
 
+// ── Colour ────────────────────────────────────────────────────────────────────────────────────
+//
+// The grid is drawn over the USER'S page, not over Operator's chrome, so its colour cannot follow
+// the theme's light/dark switch: the page under it can be white or black whatever Operator's theme
+// is. The swatches are therefore fixed colours chosen to hold at least 3:1 at full strength against
+// both #fff and #000 (relative luminance 0.15–0.27), so each still reads as a tint at 10–30% on
+// either kind of page. Yellow and near-black are left out for that reason. The first swatch is the
+// theme's own `--grid`, which is the default and what an old spec reads as.
+
+/** Fixed swatches after Theme. Contrast at full strength, vs white / vs black, in the comment. */
+export const GRID_SWATCHES: { color: string; name: string }[] = [
+  { color: '#f0283c', name: 'Red' }, //     4.1 / 5.1
+  { color: '#d6409f', name: 'Magenta' }, // 4.1 / 5.1
+  { color: '#3e63dd', name: 'Blue' }, //    5.2 / 4.0
+  { color: '#0797b9', name: 'Teal' }, //    3.4 / 6.1
+  { color: '#16a34a', name: 'Green' }, //   3.3 / 6.4
+]
+
+export const GRID_FILLS: GridFill[] = [10, 20, 30]
+
+/** `#rgb` / `#rrggbb`, any case, trimmed → `#rrggbb` lowercase; anything else → undefined. Only
+ *  this form is stored, because the colour ends up inside a style string in the previewed page. */
+export function parseGridColor(raw: string): string | undefined {
+  const t = raw.trim().replace(/^#?/, '#').toLowerCase()
+  if (/^#[0-9a-f]{6}$/.test(t)) return t
+  if (/^#[0-9a-f]{3}$/.test(t)) return '#' + t[1] + t[1] + t[2] + t[2] + t[3] + t[3]
+  return undefined
+}
+
+/** Set or clear the colour. `undefined` = back to the theme's `--grid`, and the key is dropped so
+ *  the stored spec stays what an old build wrote. */
+export function withGridColor(spec: GridSpec, color: string | undefined): GridSpec {
+  const { color: _old, ...rest } = spec
+  return color ? { ...rest, color } : rest
+}
+
+/** Set the fill strength. 10 is the default and is stored as absent. */
+export function withGridFill(spec: GridSpec, fill: GridFill): GridSpec {
+  const { fill: _old, ...rest } = spec
+  return fill === 10 ? rest : { ...rest, fill }
+}
+
+/** The grid's two inks: the column fill, and the dashed container edges. `themeGrid` is the
+ *  theme's `--grid`, as `var(--grid)` in the renderer or as the resolved colour in the page.
+ *
+ *  Opacity lives HERE and only here, as a `color-mix` toward transparent of a saturated colour. It
+ *  is never an `opacity` on an element and never mixed with `--fg-muted`. The edges step up with the
+ *  fill so the container stays visible over the stronger fill.
+ *
+ *  SELF-CONTAINED, like `layoutGrid`: the injected overlay script runs `String(gridInk)`. */
+export function gridInk(spec: GridSpec, themeGrid: string): { fill: string; edge: string } {
+  const color = typeof spec.color === 'string' && /^#[0-9a-f]{6}$/.test(spec.color) ? spec.color : themeGrid
+  const fill = spec.fill === 20 || spec.fill === 30 ? spec.fill : 10
+  const edge = fill === 30 ? 75 : fill === 20 ? 60 : 45
+  return {
+    fill: 'color-mix(in srgb, ' + color + ' ' + fill + '%, transparent)',
+    edge: 'color-mix(in srgb, ' + color + ' ' + edge + '%, transparent)',
+  }
+}
+
 /** Set one field. Columns, gutter or margin make the spec Custom, starting from the values in
  *  effect on this page, so editing the gutter of an Auto grid on a 768 page keeps its 8 columns.
  *  Max width leaves the preset alone, because no preset sets it. */
@@ -117,7 +177,7 @@ export function editGridField(spec: GridSpec, pageW: number, field: GridField, v
   if (field === 'maxWidth') return { ...spec, maxWidth: value }
   if (value == null) return spec
   const now = layoutGrid(spec, pageW)
-  return { preset: 'custom', columns: now.columns, gutter: now.gutter, margin: now.margin, maxWidth: spec.maxWidth, [field]: value }
+  return { ...spec, preset: 'custom', columns: now.columns, gutter: now.gutter, margin: now.margin, [field]: value }
 }
 
 /** A stored spec, checked. `projects.json` outlives builds and can be edited by hand; anything
@@ -133,13 +193,20 @@ export function coerceGridSpec(raw: unknown): GridSpec | undefined {
   if (!presets.includes(r.preset as GridSpec['preset'])) return undefined
   if (!inRange('columns', r.columns) || !inRange('gutter', r.gutter) || !inRange('margin', r.margin)) return undefined
   if (r.maxWidth != null && !inRange('maxWidth', r.maxWidth)) return undefined
-  return {
+  const out: GridSpec = {
     preset: r.preset as GridSpec['preset'],
     columns: r.columns as number,
     gutter: r.gutter as number,
     margin: r.margin as number,
     maxWidth: (r.maxWidth as number | null | undefined) ?? null,
   }
+  // COLOUR AND FILL ARE OPTIONAL, AND A BAD ONE IS DROPPED ALONE. A spec written before they
+  // existed has neither and reads as the theme colour at 10%. A hand-edited `"color": "red"` loses
+  // the colour, not the columns the user set up.
+  const color = typeof r.color === 'string' ? parseGridColor(r.color) : undefined
+  if (color) out.color = color
+  if (r.fill === 20 || r.fill === 30) out.fill = r.fill
+  return out
 }
 
 /** `72.67px`: at most two decimals, none when whole. */

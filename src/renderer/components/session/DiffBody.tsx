@@ -72,6 +72,28 @@ export function parseDiff(diff: string): DiffFile[] {
   return out
 }
 
+export type DiffLineKind = 'hunk' | 'add' | 'del' | 'context' | 'meta'
+
+/** One diff line, split into its one-character `+`/`−`/space marker and the text after it.
+ *
+ *  The split exists so a WRAPPED line keeps a hanging indent: the marker sits in its own fixed
+ *  column and the text wraps inside the column next to it, so continuation lines start under the
+ *  text, not under the `+`, and the marker column stays straight down the file.
+ *
+ *  Hunk headers (`@@ … @@`) and git's other lines (`\ No newline at end of file`, `Binary files …
+ *  differ`) have no marker; their whole line is the text. A line that is empty (a blank context
+ *  line with its space trimmed) is context with no text. The text is returned unchanged, tabs and
+ *  leading spaces included. */
+export function splitDiffLine(line: string): { kind: DiffLineKind; marker: string; text: string } {
+  if (line.startsWith('@@')) return { kind: 'hunk', marker: '', text: line }
+  if (line === '') return { kind: 'context', marker: ' ', text: '' }
+  const c = line[0]
+  if (c === '+') return { kind: 'add', marker: '+', text: line.slice(1) }
+  if (c === '-') return { kind: 'del', marker: '-', text: line.slice(1) }
+  if (c === ' ') return { kind: 'context', marker: ' ', text: line.slice(1) }
+  return { kind: 'meta', marker: '', text: line }
+}
+
 export function DiffBody({ diff, compact }: { diff: WorktreeDiff; compact?: boolean }) {
   // Track which files are EXPANDED (default: all collapsed, so the panel opens as a
   // browsable list of changed files instead of one endless scroll).
@@ -117,7 +139,11 @@ export function DiffBody({ diff, compact }: { diff: WorktreeDiff; compact?: bool
         </button>
       </div>
 
-      <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto' }}>
+      {/* NO SIDEWAYS SCROLL. Lines wrap to the panel (see DiffLine), so nothing is wider than
+          this box. When rows were `white-space: pre`, a long line pushed the scroll width past the
+          panel while every row and file header stayed one panel wide, so text past the first
+          screen sat on bare background and the header was cut off. */}
+      <div className="scroll-hidden" style={{ flex: 1, minWidth: 0, overflowX: 'hidden', overflowY: 'auto' }}>
         {parsed.length === 0 && (
           <div style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
             No changes.
@@ -199,16 +225,45 @@ function FilePath({ path }: { path: string }) {
 
 // One diff line: tinted row for +/−, accent-tinted @@ hunk separator, muted context.
 // Uses the landing's diff palette (--add-fg/--del-fg + their bg tints).
+//
+// WRAPS TO THE PANEL. The row is a two-column grid: a 1ch marker column and the text. The text is
+// `pre-wrap` (tabs and indentation kept) with `overflow-wrap: anywhere`, so an unbroken run such as
+// a URL or a long token also breaks rather than widening the row. Continuation lines start in the
+// text column, which is the hanging indent that keeps one logical line reading as one line. The
+// background is on the row, which is always exactly the panel's width, so it covers every wrapped
+// line.
+const INK: Record<DiffLineKind, string> = {
+  hunk: 'var(--fg-muted)',
+  add: 'var(--add-fg)',
+  del: 'var(--del-fg)',
+  context: 'color-mix(in srgb, var(--fg) 60%, transparent)',
+  meta: 'var(--fg-muted)',
+}
+const GROUND: Record<DiffLineKind, string | undefined> = {
+  hunk: 'color-mix(in srgb, var(--accent) 8%, transparent)',
+  add: 'var(--add-bg)',
+  del: 'var(--del-bg)',
+  context: undefined,
+  meta: undefined,
+}
+
 function DiffLine({ line }: { line: string }) {
-  const base: React.CSSProperties = { padding: '0 12px', whiteSpace: 'pre', minHeight: '1.55em' }
-  if (line.startsWith('@@')) {
-    return <div style={{ ...base, color: 'var(--fg-muted)', background: 'color-mix(in srgb, var(--accent) 8%, transparent)', padding: '3px 12px' }}>{line}</div>
+  const { kind, marker, text } = splitDiffLine(line)
+  const wrap: React.CSSProperties = { minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }
+  if (!marker) {
+    return (
+      <div data-diff-line={kind} style={{ ...wrap, padding: kind === 'hunk' ? '3px 12px' : '0 12px', minHeight: '1.55em', color: INK[kind], background: GROUND[kind] }}>
+        {text}
+      </div>
+    )
   }
-  if (line.startsWith('+')) {
-    return <div style={{ ...base, color: 'var(--add-fg)', background: 'var(--add-bg)' }}>{line}</div>
-  }
-  if (line.startsWith('-')) {
-    return <div style={{ ...base, color: 'var(--del-fg)', background: 'var(--del-bg)' }}>{line}</div>
-  }
-  return <div style={{ ...base, color: 'color-mix(in srgb, var(--fg) 60%, transparent)' }}>{line || ' '}</div>
+  return (
+    <div data-diff-line={kind} style={{
+      display: 'grid', gridTemplateColumns: '1ch minmax(0, 1fr)', padding: '0 12px', minHeight: '1.55em',
+      color: INK[kind], background: GROUND[kind],
+    }}>
+      <span aria-hidden={kind === 'context' || undefined} style={{ whiteSpace: 'pre' }}>{marker}</span>
+      <span style={wrap}>{text}</span>
+    </div>
+  )
 }

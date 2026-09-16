@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseDiff } from './DiffBody'
+import { parseDiff, splitDiffLine } from './DiffBody'
 // `?raw` rather than fs: the fixture then travels with the module graph, so it is resolved the
 // same way in the test runner and in a build, and a rename of the file is a compile error
 // instead of a runtime one.
@@ -77,5 +77,43 @@ describe('parseDiff, over real git output', () => {
 
   it('ignores anything before the first file header', () => {
     expect(parseDiff('warning: LF will be replaced by CRLF\n+not a real line\n')).toEqual([])
+  })
+})
+
+describe('splitDiffLine — the marker column that lets a wrapped line keep a hanging indent', () => {
+  it('splits added, removed and context lines into a one-character marker and the rest', () => {
+    expect(splitDiffLine('+const a = 1')).toEqual({ kind: 'add', marker: '+', text: 'const a = 1' })
+    expect(splitDiffLine('-const a = 0')).toEqual({ kind: 'del', marker: '-', text: 'const a = 0' })
+    expect(splitDiffLine(' unchanged')).toEqual({ kind: 'context', marker: ' ', text: 'unchanged' })
+  })
+
+  it('keeps tabs and leading spaces in the text exactly', () => {
+    expect(splitDiffLine('+\t\tindented').text).toBe('\t\tindented')
+    expect(splitDiffLine('-    four spaces').text).toBe('    four spaces')
+    expect(splitDiffLine('+').text).toBe('')
+  })
+
+  it('reads `-- dashes` and `++ pluses` content as content, the same as parseDiff', () => {
+    expect(splitDiffLine('--- dashes')).toEqual({ kind: 'del', marker: '-', text: '-- dashes' })
+    expect(splitDiffLine('+++ pluses')).toEqual({ kind: 'add', marker: '+', text: '++ pluses' })
+  })
+
+  it('gives hunk headers and git notes no marker, so they wrap from the row start', () => {
+    expect(splitDiffLine('@@ -1,3 +1,4 @@ function x()')).toEqual({ kind: 'hunk', marker: '', text: '@@ -1,3 +1,4 @@ function x()' })
+    expect(splitDiffLine('\\ No newline at end of file')).toEqual({ kind: 'meta', marker: '', text: '\\ No newline at end of file' })
+    expect(splitDiffLine('Binary files a/x.png and b/x.png differ').kind).toBe('meta')
+  })
+
+  it('reads an empty line as blank context', () => {
+    expect(splitDiffLine('')).toEqual({ kind: 'context', marker: ' ', text: '' })
+  })
+
+  it('classifies every line of the real git fixture without losing a character', () => {
+    for (const file of parseDiff(FIXTURE)) {
+      for (const line of file.lines) {
+        const { marker, text } = splitDiffLine(line)
+        expect(marker + text).toBe(line === '' ? ' ' : line)
+      }
+    }
   })
 })

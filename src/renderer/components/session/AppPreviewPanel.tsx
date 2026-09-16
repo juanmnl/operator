@@ -9,7 +9,7 @@ import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { formatPick, type PreviewPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
-import { layoutGrid, type GridSpec } from '../../../shared/layout-grid'
+import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
 
@@ -448,6 +448,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   const readout = scaleReadout(preset, box.w)
   // In PAGE px, so a column is a column of the page at any device preset.
   const gridLayout = grid?.on ? layoutGrid(grid.spec, pageBox.w) : null
+  const gridColors = grid?.on ? gridInk(grid.spec, 'var(--grid)') : null
   // Inspect only counts while there is a page to inspect; the segment is absent without one.
   const mode = pointerMode(annotating, inspecting && !!display)
   const setPointerMode = (m: PointerMode) => {
@@ -855,10 +856,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none',
             }}>
               {gridLayout.cols.map((c, i) => (
-                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0, left: c.left, width: c.width, background: GRID_FILL }} />
+                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0, left: c.left, width: c.width, background: gridColors!.fill }} />
               ))}
               {gridLayout.clamped && [gridLayout.containerLeft, gridLayout.containerLeft + gridLayout.containerW].map((x) => (
-                <div key={`edge-${x}`} style={{ position: 'absolute', top: 0, bottom: 0, left: x, borderLeft: `${1 / scale}px dashed ${GRID_EDGE}` }} />
+                <div key={`edge-${x}`} style={{ position: 'absolute', top: 0, bottom: 0, left: x, borderLeft: `${1 / scale}px dashed ${gridColors!.edge}` }} />
               ))}
             </div>
           )}
@@ -1083,10 +1084,6 @@ const navBtn: React.CSSProperties = {
   color: 'var(--fg-muted)', fontSize: 10, cursor: 'pointer', outline: 'none',
 }
 
-/** The layout grid's ink: a 10% column fill, and 45% dashed container edges, of the palette's
- *  `--grid`. */
-const GRID_FILL = 'color-mix(in srgb, var(--grid) 10%, transparent)'
-const GRID_EDGE = 'color-mix(in srgb, var(--grid) 45%, transparent)'
 
 /** An overlay toggle in the tools row (`Grid`, `▾`): the preset buttons' type, transparent. */
 const overlayBtn: React.CSSProperties = {

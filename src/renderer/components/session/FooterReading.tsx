@@ -5,7 +5,7 @@ import { modelFamilyLabel } from '../../lib/roster'
 import { toneFor, TONE_FILL, TONE_INK, updatedAgo, type PlanLimits } from '../../lib/plan-limits'
 import {
   contextReading, planReading, planSummary, planCellTitle, planPanelStatus, planPanelPlacement,
-  type AnchorRect,
+  planBasis, type AnchorRect,
 } from '../../lib/footer-reading'
 import { useDismiss } from '../../lib/use-dismiss'
 
@@ -40,11 +40,18 @@ function k(n: number): string {
 }
 
 /** A bar. Background and no border — a radiused element with a changing border colour is the
- *  WKWebView rule this app already carries. */
-function Bar({ pct, color, w = 34, h = 3 }: { pct: number; color: string; w?: number | string; h?: number }) {
+ *  WKWebView rule this app already carries.
+ *
+ *  `zeroTick`: a REAL 0% keeps a 2px stub of fill at the start, so an empty track still reads as a
+ *  meter reading zero rather than a divider line. Only for a value known to be zero — the context
+ *  cell's "no value yet" track passes a transparent colour and stays bare. */
+function Bar({ pct, color, w = 34, h = 3, track = 'var(--overlay-subtle)', zeroTick = false }: {
+  pct: number; color: string; w?: number | string; h?: number; track?: string; zeroTick?: boolean
+}) {
+  const clamped = Math.max(0, Math.min(100, pct))
   return (
-    <span style={{ display: 'inline-block', width: w, height: h, borderRadius: 2, background: 'var(--overlay-subtle)', overflow: 'hidden', verticalAlign: 'middle' }}>
-      <span style={{ display: 'block', width: `${Math.max(0, Math.min(100, pct))}%`, height: '100%', borderRadius: 2, background: color }} />
+    <span style={{ display: 'inline-block', width: w, height: h, borderRadius: 2, background: track, overflow: 'hidden', verticalAlign: 'middle' }}>
+      <span style={{ display: 'block', width: `${clamped}%`, minWidth: zeroTick ? 2 : 0, height: '100%', borderRadius: 2, background: color }} />
     </span>
   )
 }
@@ -244,7 +251,9 @@ function PlanCell({ limits, now, loading, onOpenTuning, onRefresh, onRevalidate 
           if (!open) onRevalidate?.()
           setOpen((v) => !v)
         }}
-        title={planCellTitle(summary, age)}
+        // NO TOOLTIP WHILE OPEN. The native tooltip stayed up over the panel's bottom edge, and it
+        // only repeats what the panel is showing.
+        title={open ? undefined : planCellTitle(summary, age)}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           border: 'none', borderRadius: 4, padding: '2px 5px', cursor: 'pointer', outline: 'none',
@@ -309,6 +318,7 @@ function PlanPanel({ panelRef, anchor, limits, now, loading, onRefresh, onOpenTu
   const { state, rows } = planReading(limits, now, loading)
   const place = planPanelPlacement(anchor, { w: window.innerWidth, h: window.innerHeight })
   const age = updatedAgo(limits?.fetchedAt, now)
+  const basis = planBasis(limits?.plan)
 
   return createPortal(
     <div
@@ -326,25 +336,42 @@ function PlanPanel({ panelRef, anchor, limits, now, loading, onRefresh, onOpenTu
         boxShadow: 'var(--shadow-panel)', outline: 'none', fontFamily: 'var(--font-body)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px 2px' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
-          Plan usage
-        </span>
-        {limits?.plan && <span style={{ marginLeft: 'auto' }}><Chip>{limits.plan}</Chip></span>}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 10px', ...NUM, fontSize: 9.5, color: 'var(--fg-muted)' }}>
-        {state === 'aging' && <AgingDot />}
-        <span>{planPanelStatus(state, age)}</span>
+      {/* ONE TYPE SYSTEM. Words are body type, at three steps: title (--fg, 600), row label (--fg),
+          meta (--fg-muted, smaller). Mono is kept for the one thing that has to line up — the
+          percentages. The old header was tracked mono caps, the rows sans and the reset lines mono,
+          which read as three systems in a 320px panel. */}
+      <div style={{ padding: '11px 12px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)', whiteSpace: 'nowrap' }}>Plan usage</span>
+          {/* The plan's one-word form sits beside the title; its sentence is the tooltip. */}
+          {basis.short && (
+            <span title={basis.full ?? undefined} style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>
+              {basis.short}
+            </span>
+          )}
+        </div>
+        {/* A line that does not collapse gets its own row and wraps. It is never clipped. */}
+        {!basis.short && basis.full && (
+          <div style={{ marginTop: 2, fontSize: 10, lineHeight: 1.4, color: 'var(--fg-muted)', overflowWrap: 'anywhere' }}>
+            {basis.full}
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, fontSize: 10, color: 'var(--fg-muted)' }}>
+          {state === 'aging' && <AgingDot />}
+          <span>{planPanelStatus(state, age)}</span>
+        </div>
       </div>
 
       {rows.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 12px 12px' }}>
+        // RHYTHM: 4px and 3px inside a row, 14px between rows, so each limit's label, bar and reset
+        // line group as one unit. They used to share one step and read as a single list of lines.
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '14px 12px 12px' }}>
           {rows.map((row) => {
             const pct = Math.round(row.pct)
             const tone = toneFor(pct)
             return (
               <div key={row.key} data-plan-row={row.key}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 5 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 11.5, color: 'var(--fg)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {row.label}
                   </span>
@@ -354,10 +381,12 @@ function PlanPanel({ panelRef, anchor, limits, now, loading, onRefresh, onOpenTu
                       with the number. */}
                   <span style={{ marginLeft: 'auto', ...NUM, fontSize: 11, color: TONE_INK[tone] }}>{pct}%</span>
                 </div>
-                <Bar pct={pct} color={TONE_FILL[tone]} w="100%" h={4} />
+                {/* The panel's track is one overlay step up from the strip's: at full width and 5%
+                    alpha on the light palettes an empty track barely showed. */}
+                <Bar pct={pct} color={TONE_FILL[tone]} w="100%" h={4} track="var(--overlay-medium)" zeroTick />
                 {/* The reset clause VERBATIM — already localised and zoned. */}
                 {row.resets && (
-                  <div style={{ marginTop: 4, ...NUM, fontSize: 9.5, color: 'var(--fg-muted)' }}>
+                  <div style={{ marginTop: 3, fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--fg-muted)' }}>
                     Resets {row.resets}
                   </div>
                 )}

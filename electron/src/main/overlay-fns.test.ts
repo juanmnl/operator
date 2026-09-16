@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { OVERLAY_FNS_JS } from './overlay-fns'
-import { layoutGrid, DEFAULT_GRID_SPEC } from '../../../src/shared/layout-grid'
+import { layoutGrid, gridInk, DEFAULT_GRID_SPEC } from '../../../src/shared/layout-grid'
 import { measureBetween, formatPx, placeChip, describeRelation } from '../../../src/shared/redlines'
 
 type Fns = {
-  layoutGrid: typeof layoutGrid; measureBetween: typeof measureBetween; formatPx: typeof formatPx; placeChip: typeof placeChip
+  layoutGrid: typeof layoutGrid; gridInk: typeof gridInk; measureBetween: typeof measureBetween; formatPx: typeof formatPx; placeChip: typeof placeChip
   describeRelation: typeof describeRelation
 }
 
@@ -17,6 +17,9 @@ describe('OVERLAY_FNS_JS', () => {
     const fns = page.__operatorOverlayFns!
     const spec = { ...DEFAULT_GRID_SPEC, preset: 'custom' as const, maxWidth: 1200 }
     expect(fns.layoutGrid(spec, 1280)).toEqual(layoutGrid(spec, 1280))
+    const colored = { ...spec, color: '#3e63dd', fill: 30 as const }
+    expect(fns.gridInk(colored, '#ff5f56')).toEqual(gridInk(colored, '#ff5f56'))
+    expect(fns.gridInk(DEFAULT_GRID_SPEC, '#ff5f56')).toEqual(gridInk(DEFAULT_GRID_SPEC, '#ff5f56'))
     const a = { left: 0, top: 0, right: 100, bottom: 50 }
     const b = { left: 130, top: 80, right: 200, bottom: 120 }
     expect(fns.measureBetween(a, b)).toEqual(measureBetween(a, b))
