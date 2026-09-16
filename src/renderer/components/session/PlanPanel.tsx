@@ -1,14 +1,18 @@
 import { useState } from 'react'
 import type { AgentSession, TodoItem } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
+import type { DispatchedStatus, DispatchedTaskRow } from '../../lib/plan-dispatches'
 
 // The Plan tab. Top (read-only): the agent's latest TodoWrite snapshot as a live
 // checklist. Below it (writable): YOUR tasks — jot them down here; the "Send to agent"
 // action lives in the Canvas actions footer (owned by CanvasPanel), which injects them
 // into the session's terminal as a prompt for the agent to pick up. Operator's first
 // structured-INPUT surface, riding the existing terminal-as-stdin channel.
-export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
+// For a coordinator, a DISPATCHED section between the two lists shows the tasks it handed out
+// through `mcp__operator__dispatch`, so it does not have to print that list into chat.
+export function PlanPanel({ session, dispatched, userTodos, onAdd, onRemove }: {
   session?: AgentSession
+  dispatched?: DispatchedTaskRow[]
   userTodos: string[]
   onAdd: (text: string) => void
   onRemove: (index: number) => void
@@ -57,10 +61,29 @@ export function PlanPanel({ session, userTodos, onAdd, onRemove }: {
       <div className="scroll-hidden" style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: '12px 12px 16px' }}>
         {agentTodos.map((t, i) => <TodoRow key={`a${i}`} todo={t} />)}
 
+        {dispatched && (
+          <div style={{
+            marginTop: agentTodos.length ? 16 : 0,
+            paddingTop: agentTodos.length ? 12 : 0,
+            borderTop: agentTodos.length ? '1px solid var(--border)' : 'none',
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3, color: 'var(--fg-muted)', padding: '0 2px 8px' }}>
+              DISPATCHED
+            </div>
+            {dispatched.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', padding: '2px 2px', lineHeight: 1.5 }}>
+                Tasks you hand to lanes appear here with their status.
+              </div>
+            ) : (
+              dispatched.map((d) => <DispatchedRow key={d.id} row={d} />)
+            )}
+          </div>
+        )}
+
         <div style={{
-          marginTop: agentTodos.length ? 16 : 0,
-          paddingTop: agentTodos.length ? 12 : 0,
-          borderTop: agentTodos.length ? '1px solid var(--border)' : 'none',
+          marginTop: agentTodos.length || dispatched ? 16 : 0,
+          paddingTop: agentTodos.length || dispatched ? 12 : 0,
+          borderTop: agentTodos.length || dispatched ? '1px solid var(--border)' : 'none',
         }}>
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3, color: 'var(--fg-muted)', padding: '0 2px 8px' }}>
             YOUR TASKS
@@ -123,6 +146,38 @@ function TodoRow({ todo }: { todo: TodoItem }) {
         fontWeight: active ? 600 : 400,
       }}>
         {todo.content}
+      </span>
+    </div>
+  )
+}
+
+const DISPATCH_GLYPH: Record<DispatchedStatus, { glyph: string; color: string }> = {
+  blocked: { glyph: '!', color: 'var(--yellow)' },
+  running: { glyph: '▸', color: 'var(--accent)' },
+  queued: { glyph: '○', color: 'var(--fg-muted)' },
+  done: { glyph: '✓', color: 'var(--add-fg)' },
+  abandoned: { glyph: '–', color: 'var(--fg-muted)' },
+}
+
+function DispatchedRow({ row }: { row: DispatchedTaskRow }) {
+  const { glyph, color } = DISPATCH_GLYPH[row.status]
+  const finished = row.status === 'done' || row.status === 'abandoned'
+  return (
+    <div
+      title={`${row.lane} — ${row.status}${row.reportId !== undefined ? ` — report #${row.reportId}` : ''}\n${row.text}`}
+      style={{ display: 'flex', gap: 9, alignItems: 'baseline', padding: '5px 4px', lineHeight: 1.45 }}
+    >
+      <span aria-label={row.status} style={{ flexShrink: 0, width: 14, textAlign: 'center', fontSize: 12, color }}>{glyph}</span>
+      <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>{row.lane}</span>
+      <span style={{
+        fontSize: 12.5, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        color: finished ? 'var(--fg-muted)' : 'var(--fg)',
+      }}>
+        {row.text}
+      </span>
+      <span style={{ flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-muted)' }}>
+        {row.status === 'blocked' || row.status === 'abandoned' ? row.status : ''}
+        {row.reportId !== undefined ? `${row.status === 'blocked' || row.status === 'abandoned' ? ' · ' : ''}#${row.reportId}` : ''}
       </span>
     </div>
   )

@@ -330,8 +330,11 @@ describe('orchestrationNote — the return path', () => {
     // (an audit anecdote and a task count came out) rather than the ceiling being moved to fit it.
     // The guard is against a slow slide, not the current value; a note that outgrows the charter
     // it accompanies has stopped being a note.
+    // Raised to 3300 on 2026-09-16 for one stated addition: the coordinator charter's Plan-tab
+    // sentence (keep drafted steps in TaskCreate/TaskUpdate, not in chat) took the coordinator
+    // note from 3097 to 3261. The lane note did not change.
     for (const role of [op, code]) {
-      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(3100)
+      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(3300)
     }
   })
 })

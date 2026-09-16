@@ -20,11 +20,13 @@ import { isCoordinator, NO_COMMISSIONING, rolePresets } from './roster'
  *  real stored rosters carry empty strings where nothing was ever chosen. */
 const unset = (v: string | undefined): boolean => v === undefined || v === ''
 
-/** The coordinator charter's two PREVIOUS wordings. Both were rewrites rather than additions, so
+/** The coordinator charter's PREVIOUS wordings. Each was a rewrite rather than an addition, so
  *  unlike the worker charters (whose only edit was appending NO_COMMISSIONING) they cannot be
- *  derived from today's text and have to be frozen here. This list never grows: it is history,
- *  and nothing seeds a roster any more. Verified against the real store — every one of the 60
- *  persisted charters there is a stock text, i.e. no user has ever edited one. */
+ *  derived from today's text and have to be frozen here. Nothing seeds a roster any more, but a
+ *  lane added from the preset carries whatever the charter said that day, so every rewrite of
+ *  today's text appends the text it replaced (the third entry, 2026-09-16, the Plan-tab edit).
+ *  Verified against the real store — every one of the 60 persisted charters there is a stock
+ *  text, i.e. no user has ever edited one. */
 const LEGACY_COORDINATOR_CHARTERS = [
   'You are Operator, this project’s coordinator. Know the team (the lanes below), and route each ' +
   'task to the best-suited one via OPERATOR-DISPATCH — several precise dispatches beat one vague ' +
@@ -34,6 +36,10 @@ const LEGACY_COORDINATOR_CHARTERS = [
   'best-suited lane via OPERATOR-DISPATCH. Track what you delegated; when work comes back, check ' +
   'it against the goal and dispatch follow-ups for gaps. Prefer several precise dispatches over ' +
   'one vague one, and keep a running summary of who is doing what.',
+  'You are Operator — you operate this project. Know the team (the lanes below), and route each ' +
+  'task to the best-suited one — several precise dispatches beat one vague ' +
+  'one. Track who has what, and check returned work against the goal. If no lane fits a task, or the ' +
+  'right one isn’t available, do it yourself rather than forcing a bad fit.',
 ]
 
 /** The preset behind a roster id, mapping either coordinator id onto the canonical lane.

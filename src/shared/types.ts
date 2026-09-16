@@ -202,6 +202,13 @@ export interface ProjectTask {
    *  lying — reconciliation used to write `done`, which every count and chip reads as
    *  "finished". Absent = queued. */
   status?: 'queued' | 'running' | 'done' | 'abandoned'
+  /** Set when the lane called `task_status(id,'blocked')`; cleared by any later status. A stamp
+   *  beside `status` rather than a fifth value: a blocked task is still the lane's running work,
+   *  and every reader that closes or counts `running` tasks must keep seeing it as such. */
+  blockedAt?: string
+  /** `mcp-dispatch` = Operator created this task while routing an `mcp__operator__dispatch`
+   *  call. Absent for backlog tasks, sentinel dispatches and everything stored before the field. */
+  source?: 'mcp-dispatch'
   /** The lane's terminal this task was dispatched to (for auto-complete + diff link).
    *  NOT a liveness key: it's a per-run counter (`t0`, `t1`, …) that COLLIDES across runs —
    *  three different sessions in the real store hold `t5` — so "is this terminal alive?" is

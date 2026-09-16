@@ -6,6 +6,7 @@ import { CanvasDiffPanel } from './CanvasDiffPanel'
 import { submitQueue } from '../../lib/submit-queue'
 import { TOOLBAR_BAND_H } from '../../lib/chrome'
 import type { PanelTab } from '../../lib/session-layout'
+import type { DispatchedTaskRow } from '../../lib/plan-dispatches'
 
 // The right-side panel — the per-session "working" surfaces beside the main area. Its tab set
 // is passed in as `tabs`. Project-level surfaces (Agents roster, Moodboard) live in the
@@ -20,7 +21,7 @@ function loadUserTodos(id?: string): string[] {
   try { const r = localStorage.getItem(todosKey(id)); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 
-export function CanvasPanel({ session, tabs, mode, onSelectMode, preview }: {
+export function CanvasPanel({ session, tabs, mode, onSelectMode, preview, dispatched }: {
   session?: AgentSession
   tabs: PanelTab[]
   mode: PanelTab
@@ -28,6 +29,8 @@ export function CanvasPanel({ session, tabs, mode, onSelectMode, preview }: {
   /** The session's Preview, built by DashboardView so its dispatch and task callbacks stay wired
    *  where they are for the main view. Rendered on the Preview tab. */
   preview?: ReactNode
+  /** The coordinator's dispatched tasks for its project; undefined for any other lane. */
+  dispatched?: DispatchedTaskRow[]
 }) {
   const select = onSelectMode
 
@@ -87,6 +90,7 @@ export function CanvasPanel({ session, tabs, mode, onSelectMode, preview }: {
         {mode === 'plan' && (
           <PlanPanel
             session={session}
+            dispatched={dispatched}
             userTodos={userTodos}
             onAdd={(t) => persistTodos([...userTodos, t])}
             onRemove={(i) => persistTodos(userTodos.filter((_, j) => j !== i))}

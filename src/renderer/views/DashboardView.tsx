@@ -38,6 +38,7 @@ import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
 import { announcement, canAnnounceTo, announceCutoff, REPORT_ANNOUNCE_MAX_AGE_MS } from '../lib/comms'
+import { dispatchedTasks } from '../lib/plan-dispatches'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { FooterReading } from '../components/session/FooterReading'
 import { usePlanLimits } from '../lib/plan-limits'
@@ -1222,10 +1223,10 @@ export function DashboardView() {
   }, [openFolderAsProject])
 
   // --- Project task backlog (race-safe functional updates) ------------------------------
-  const addProjectTask = useCallback((projectId: string, text: string, roleId?: string) => {
+  const addProjectTask = useCallback((projectId: string, text: string, roleId?: string, source?: ProjectTask['source']) => {
     const t = text.trim()
     if (!t) return
-    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, createdAt: new Date().toISOString() }
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, createdAt: new Date().toISOString(), ...(source ? { source } : {}) }
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
   }, [])
   const assignProjectTask = useCallback((projectId: string, taskId: string, roleId?: string) => {
@@ -1284,7 +1285,7 @@ export function DashboardView() {
   }, [])
   const setTaskStatus = useCallback((projectId: string, id: string, status: ProjectTask['status']) => {
     setProjects((prev) => prev.map((p) => (p.id === projectId
-      ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === id ? { ...t, status, doneAt: status === 'done' ? new Date().toISOString() : t.doneAt } : t)) }
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === id ? { ...t, status, doneAt: status === 'done' ? new Date().toISOString() : t.doneAt, blockedAt: undefined } : t)) }
       : p)))
     // Manual "Done ✓": capture the task's change summary while its dir/branch still
     // resolves, and run the verification gate in its dir.
@@ -1296,12 +1297,20 @@ export function DashboardView() {
       if (task && !task.check) void runTaskChecks(projectId, [id], task.cwd)
     }
   }, [attachTaskDiffStats, runTaskChecks])
+  // `task_status(id,'blocked')` — a stamp, not a status: the task is still its lane's running work
+  // (see ProjectTask.blockedAt). Any later status clears it.
+  const setTaskBlocked = useCallback((projectId: string, id: string) => {
+    const now = new Date().toISOString()
+    setProjects((prev) => prev.map((p) => (p.id === projectId
+      ? { ...p, tasks: (p.tasks ?? []).map((t) => (t.id === id ? { ...t, blockedAt: now } : t)) }
+      : p)))
+  }, [])
   // Record a task that's ALREADY running (orchestrator dispatched it straight to a live lane).
-  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string, lane?: TaskLane): string | undefined => {
+  const addRunningTask = useCallback((projectId: string, text: string, roleId: string, terminalId: string, lane?: TaskLane, source?: ProjectTask['source']): string | undefined => {
     const t = text.trim()
     if (!t) return undefined
     const now = new Date().toISOString()
-    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, claudeSessionId: claudeIdOf(terminalId), createdAt: now, startedAt: now, ...(lane ?? {}) }
+    const task: ProjectTask = { id: crypto.randomUUID(), text: t, roleId, status: 'running', terminalId, claudeSessionId: claudeIdOf(terminalId), createdAt: now, startedAt: now, ...(lane ?? {}), ...(source ? { source } : {}) }
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, tasks: [...(p.tasks ?? []), task] } : p)))
     // Returned for the bus dispatch path, which has to tell the lane which task its own
     // `SendMessage` result belongs to. Every other caller ignores it.
@@ -1720,7 +1729,7 @@ export function DashboardView() {
             taskId = dispatchRef.current.addRunningTask(projectId, r.body, tgt.roleId, tgt.terminalId, {
               cwd: tab?.cwd, sourceCwd: tab?.sourceCwd,
               worktreeBranch: tab?.worktreeBranch, worktreeBase: tab?.worktreeBase,
-            })
+            }, 'mcp-dispatch')
             // THE CONFIRMATION HALF. The task is marked running here, but Operator does not carry
             // the message — the lane does — so until its `SendMessage` result comes back through
             // the tailer this row is a claim, not a fact. Tracked against the SENDER's terminal
@@ -1798,6 +1807,9 @@ export function DashboardView() {
       const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
       const routedRole = route.kind === 'unassigned' ? undefined : route.role
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
+      // A bus request's id is `bus-<n>` (the launch and approval paths both carry it through), so
+      // its tasks are marked as the coordinator's dispatched work for the Plan tab.
+      const source: ProjectTask['source'] = id.startsWith('bus-') ? 'mcp-dispatch' : undefined
       // On approval the record already exists — UPDATE it in place, so the log keeps one row per
       // dispatch and re-approving a delivered one has nothing left to find (that is what makes
       // "delivers once and only once" true rather than merely likely).
@@ -1831,7 +1843,7 @@ export function DashboardView() {
         // one composer draft that never runs as separate turns (see lib/submit-queue).
         void submitQueue.submit(tab.id, d.task)
         // track it as running on the lane (with its dir, so the diff link resolves)
-        addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
+        addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase }, source)
         record('sent')
         toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
       } else if (route.kind === 'queue' || route.kind === 'create') {
@@ -1841,8 +1853,8 @@ export function DashboardView() {
         const { role } = route
         const key = `${project.id}:${role.id}`
         const trackOrQueue = (tab: TerminalTab | undefined) => {
-          if (tab) addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase })
-          else addTask(project.id, d.task, role.id)
+          if (tab) addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase }, source)
+          else addTask(project.id, d.task, role.id, source)
         }
         const inflight = launchingLanesRef.current.get(key)
         if (inflight) {
@@ -2450,6 +2462,8 @@ export function DashboardView() {
           // 4 seconds for the life of the install.
           if (known && (ev.status === 'queued' || ev.status === 'running' || ev.status === 'done')) {
             setTaskStatus(projectId, ev.taskId, ev.status)
+          } else if (known && ev.status === 'blocked') {
+            setTaskBlocked(projectId, ev.taskId)
           }
           applied.push(ev.id)
         }
@@ -2459,7 +2473,7 @@ export function DashboardView() {
     void tick()
     const timer = window.setInterval(() => { void tick() }, 4000)
     return () => { stopped = true; clearInterval(timer) }
-  }, [setTaskStatus, savedHydrated])
+  }, [setTaskStatus, setTaskBlocked, savedHydrated])
 
 
   // Close out tasks left `running` by a previous run. `ProjectTask.terminalId` is a pty id
@@ -5333,6 +5347,9 @@ export function DashboardView() {
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
             preview={previewInPanel ? renderPreview(activeSession) : undefined}
+            dispatched={activeSession?.projectId && isCoordinator(activeSession.roleId ?? '')
+              ? dispatchedTasks(projects, activeSession.projectId, reports)
+              : undefined}
           />
         </div>
       )}
