@@ -654,7 +654,7 @@ function ProjectCard({
             { label: notes ? 'Edit description' : 'Add description', onClick: () => onEditingNotesChange(true) },
             { label: 'Rename', onClick: () => onRenamingChange(true) },
             { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
-            { label: 'Project Claude files', onClick: onOpenFolderPrefs, disabled: lost },
+            { label: 'Project settings…', onClick: onOpenFolderPrefs, disabled: lost },
             // A card can still be a SHELVED project — one with a live session is lifted back
             // onto the active shelf whatever its record says — so the verb reads off the
             // record, not off which list drew it.
@@ -1043,7 +1043,7 @@ function PreviousRow({ project, menuOpen, onMenu, onOpen, onRestore, onForget, o
             // No rename/description here: a 30px row has nowhere to host those editors, and
             // both verbs come back the moment the project does. Restore, then edit.
             { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
-            { label: 'Project Claude files', onClick: onOpenFolderPrefs, disabled: lost },
+            { label: 'Project settings…', onClick: onOpenFolderPrefs, disabled: lost },
             { label: 'Restore to active', onClick: onRestore, separator: true },
             { label: 'Forget project', onClick: onForget, danger: true, confirm: true },
           ]}

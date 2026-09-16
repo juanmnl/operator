@@ -20,14 +20,34 @@ interface FolderPreferencesViewProps {
    *  left, and one writer per file is the rule. Absent in the global view. */
   project?: Project | null
   onPatchProject?: (patch: Partial<Project>) => void
+  /** Open on this tab rather than the first, e.g. `Environment` from a deep link. Applied when the
+   *  view opens and whenever a different tab or project is asked for. */
+  initialTab?: FolderPrefsTab
 }
 
-const TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins', 'Environment', 'Skills', 'Worktrees'] as const
-type Tab = (typeof TABS)[number]
+export const FOLDER_PREFS_TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins', 'Environment', 'Skills', 'Worktrees'] as const
+const TABS = FOLDER_PREFS_TABS
+export type FolderPrefsTab = (typeof TABS)[number]
+type Tab = FolderPrefsTab
 
-export function FolderPreferencesView({ projectPath, projectName, globalOnly = false, project = null, onPatchProject }: FolderPreferencesViewProps) {
+/** The page title. `Project settings · <name>` for a project, `Global settings` for `~/.claude`.
+ *  The name is bound to the separator with non-breaking spaces, so a narrow pane cannot leave the
+ *  project name alone on the second line with its `·` stranded at the end of the first. */
+export function folderPrefsTitle(projectName: string, globalOnly: boolean): string {
+  if (globalOnly) return 'Global settings'
+  const name = projectName.trim()
+  return name ? `Project settings\u00a0·\u00a0${name}` : 'Project settings'
+}
+
+/** The line under the title: where the files live, and for global, that it applies everywhere. */
+export function folderPrefsSubtitle(projectPath: string, globalOnly: boolean): string {
+  return globalOnly ? '~/.claude · applies to every\u00a0project' : projectPath
+}
+
+export function FolderPreferencesView({ projectPath, projectName, globalOnly = false, project = null, onPatchProject, initialTab }: FolderPreferencesViewProps) {
   const [prefs, setPrefs] = useState<FolderPreferences | null>(null)
-  const [activeTab, setActiveTab] = useState<Tab>('Instructions')
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'Instructions')
+  useEffect(() => { if (initialTab) setActiveTab(initialTab) }, [initialTab, projectPath])
 
   const load = useCallback(async () => {
     const data = globalOnly
@@ -71,8 +91,8 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
 
   return (
     <PageShell
-      title={projectName}
-      subtitle={projectPath}
+      title={folderPrefsTitle(projectName, globalOnly)}
+      subtitle={folderPrefsSubtitle(projectPath, globalOnly)}
       measure="form"
       tabs={TABS.map((t) => ({ id: t, label: t }))}
       active={activeTab}

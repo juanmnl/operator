@@ -18,9 +18,11 @@ await p.locator('[data-project-card]').filter({ hasText: 'operator' }).first().c
 await p.waitForTimeout(900)
 
 const PAGES = [
-  ['PrefsView', 'Operator preferences', 'form'],
-  ['FolderPreferencesView (project)', 'operator Claude files (.claude)', 'form'],
-  ['FolderPreferencesView (global)', 'Global Claude files (~/.claude)', 'form'],
+  // Rail foot items, by their data attribute: a FootItem's `title` is `<name> (<hint>)`, so matching
+  // the name alone never found them.
+  ['PrefsView', '[data-rail-prefs]', 'form'],
+  ['FolderPreferencesView (project)', '[data-rail-folder-prefs]', 'form'],
+  ['FolderPreferencesView (global)', '[data-rail-global-prefs]', 'form'],
   ['AgentsHubView', 'Agents — every agent across your projects', 'grid'],
 ]
 
@@ -69,8 +71,8 @@ const snap = () => p.evaluate(() => {
 })
 
 const seen = []
-for (const [name, title, measure] of PAGES) {
-  await p.locator(`button[title="${title}"]`).click()
+for (const [name, target, measure] of PAGES) {
+  await p.locator(target.startsWith('[') ? target : `button[title="${target}"]`).click()
   await p.waitForTimeout(800)
   const s = await snap()
   seen.push({ name, measure, ...s })

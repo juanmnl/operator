@@ -15,12 +15,12 @@
 //     cost more than the 24px it returns. It is also the only one of the eight with no keyboard
 //     route, because "how much is left" is not a command.
 //
-//   FOLDED (behind the seam) — .claude · ~/.claude · Preferences · theme
-//     Occasional and rare. You open `.claude` when you are editing agent config, Preferences when
+//   FOLDED (behind the seam) — Project settings · Global settings · Preferences · theme
+//     Occasional and rare. You open Project settings when you are editing agent config, Preferences when
 //     something is wrong, and the theme toggle a handful of times ever. Rare-but-delightful is
 //     precisely the profile that survives folding: delight needs to be FINDABLE, not resident.
-//     And every one of the four has a ⌘K route already (`Edit settings for <project>`, `Global
-//     Claude files`, `Operator preferences`, `Switch to light/dark mode`), so folding costs a
+//     And every one of the four has a ⌘K route already (`Project settings · <project>`, `Global
+//     settings`, `Operator preferences`, `Switch to light/dark mode`), so folding costs a
 //     click and never reachability.
 //
 // THE PAIRS SURVIVE INTACT. The cut lands exactly on an existing hairline — the first two

@@ -87,7 +87,7 @@ export function EnvironmentSection({ project, onPatch, settingsFiles }: Environm
     return (
       <p style={sectionDesc}>
         This view isn't scoped to a project, so there is no environment to set. Open a project's
-        Claude files to edit its variables.
+        settings to edit its variables.
       </p>
     )
   }
