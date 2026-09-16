@@ -150,9 +150,9 @@ const TOOLS = [
     description:
       'Release YOUR OWN worktree once your task is done and your work is committed on your branch. '
       + 'Takes no arguments: Operator finds the directory this lane was launched in. It refuses, and '
-      + 'lists what is in the way, if there are uncommitted files or commits that are on no other '
-      + 'branch and no remote. Otherwise the worktree is removed when this session ends (never '
-      + 'while you are still running in it) and the branch is kept. Call mcp__operator__report after.',
+      + 'lists the files, if anything is uncommitted, and it refuses on a detached HEAD. Commits on '
+      + 'your branch are fine: the branch is kept. The worktree is removed when this session ends '
+      + '(never while you are still running in it). Call mcp__operator__report after.',
     inputSchema: { type: 'object', properties: {} },
   },
   {

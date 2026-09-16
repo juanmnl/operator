@@ -1107,8 +1107,8 @@ export type WorktreeDoneVerdict =
   | { ok: true; path: string; branch: string; sourceRepo: string }
   | { ok: false; message: string }
 
-/** What is in the way, for the refusal message. */
-export interface UnsavedDetails { files: string[]; commits: string[] }
+/** What is in the way, for the refusal message: the uncommitted files. */
+export interface UnsavedDetails { files: string[] }
 
 const LIST_MAX = 20
 const listed = (items: readonly string[]) =>
@@ -1132,41 +1132,48 @@ export function worktreeDoneVerdict(laneCwd: string | undefined, f: WorktreeFact
     return { ok: false, message: `git cannot read ${laneCwd}, so Operator cannot check it for unsaved work and will not remove it. Call mcp__operator__report and describe the state instead. ${nothing}` }
   }
   if (!f.branch || f.branch === 'HEAD') {
-    return { ok: false, message: `HEAD is detached in ${laneCwd}, so there is no branch to keep your commits on. Check out your branch (git switch <branch>) and call worktree_done again, or report instead. ${nothing}` }
+    return { ok: false, message: `HEAD is detached in ${laneCwd}, so no branch would keep your commits once the worktree is removed. Check out your branch (git switch <branch>) and call worktree_done again, or report instead. ${nothing}` }
   }
-  const u = unsavedWorkOf(f)
-  if (!u.known) {
-    return { ok: false, message: `git could not say whether ${laneCwd} has unsaved work, so it will not be removed. Call mcp__operator__report instead. ${nothing}` }
+  if (f.uncommittedCount === undefined) {
+    return { ok: false, message: `git could not say whether ${laneCwd} has uncommitted files, so it will not be removed. Call mcp__operator__report instead. ${nothing}` }
   }
-  if (u.any) {
-    const parts = [`Not released: ${laneCwd} (branch ${f.branch}) has work that exists nowhere else.`]
-    if (u.uncommitted) parts.push(`Uncommitted files (${u.uncommitted}):\n${listed(details.files)}`)
-    if (u.unsavedCommits) parts.push(`Commits on no other branch and no remote (${u.unsavedCommits}):\n${listed(details.commits)}`)
-    parts.push(
-      'Commit your changes on your branch, and push the branch if this project uses a remote; or, if the work '
-      + 'should stay here for the user to review, call mcp__operator__report and do not call worktree_done. ' + nothing,
-    )
-    return { ok: false, message: parts.join('\n') }
+  if (f.uncommittedCount > 0) {
+    return {
+      ok: false,
+      message: [
+        `Not released: ${laneCwd} (branch ${f.branch}) has uncommitted files, which removing the worktree would lose.`,
+        `Uncommitted files (${f.uncommittedCount}):\n${listed(details.files)}`,
+        'Commit them on your branch and call worktree_done again; or, if they should stay here for the user to '
+          + 'review, call mcp__operator__report and do not call worktree_done. ' + nothing,
+      ].join('\n'),
+    }
   }
   return { ok: true, path: f.path, branch: f.branch, sourceRepo: f.provenance.sourceRepo }
 }
 
-async function unsavedDetails(path: string, branch: string | undefined): Promise<UnsavedDetails> {
+/** THE RULE FOR THIS TOOL, and for its exit re-check only (user decision, 2026-09-16). Removal is
+ *  blocked by what the removal would LOSE: uncommitted files, a tree git cannot read, or a detached
+ *  HEAD (its commits are on no branch). Commits that exist only on the lane's own branch do not
+ *  block it, because the branch is kept. Settings and the reaper keep the stricter
+ *  `unsavedWorkOf` rule, where such commits count as unsaved. `null` = nothing blocks. */
+export function releaseBlocker(f: WorktreeFacts): string | null {
+  if (!f.gitValid || f.uncommittedCount === undefined) return 'git could not say whether it has uncommitted files'
+  if (!f.branch || f.branch === 'HEAD') return 'HEAD is detached, so no branch would keep its commits'
+  if (f.uncommittedCount > 0) return `${f.uncommittedCount} uncommitted file(s) at exit`
+  return null
+}
+
+async function unsavedDetails(path: string): Promise<UnsavedDetails> {
   const status = await git(path, ['status', '--porcelain'])
-  const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
-  const log = await git(path, ['log', '--format=%h %s', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
-  return {
-    files: (status ?? '').split('\n').filter(Boolean),
-    commits: (log ?? '').split('\n').filter(Boolean),
-  }
+  return { files: (status ?? '').split('\n').filter(Boolean) }
 }
 
 /** Gather and decide for one lane directory. Never throws. */
 export async function evaluateWorktreeDone(laneCwd: string | undefined): Promise<WorktreeDoneVerdict> {
   try {
-    if (!laneCwd) return worktreeDoneVerdict(undefined, undefined, { files: [], commits: [] })
+    if (!laneCwd) return worktreeDoneVerdict(undefined, undefined, { files: [] })
     const f = (await gatherFacts({ only: [laneCwd] }))[0]
-    const details = f?.gitValid ? await unsavedDetails(f.path, f.branch) : { files: [], commits: [] }
+    const details = f?.gitValid ? await unsavedDetails(f.path) : { files: [] }
     return worktreeDoneVerdict(laneCwd, f, details)
   } catch (e) {
     return { ok: false, message: `Operator could not check the worktree: ${e instanceof Error ? e.message : e}. Nothing was changed.` }
@@ -1183,9 +1190,10 @@ export type ReleaseOutcome = 'none' | 'removed' | 'already-gone' | 'kept' | 'ref
 
 /** Main, on a lane's pty exit: remove the worktree it released, if it is still safe to.
  *
- *  Checked AGAIN here, because the agent kept running after it called the tool. Unsaved work at
- *  exit keeps the directory (it stays listed in Settings → Worktrees with its unsaved state), and
- *  so does another terminal open in it. The branch is always kept. Never throws. */
+ *  Checked AGAIN here, because the agent kept running after it called the tool, with the tool's
+ *  own rule (`releaseBlocker`): uncommitted files, an unreadable tree or a detached HEAD at exit
+ *  keep the directory (it stays listed in Settings → Worktrees), and so does another terminal open
+ *  in it. Commits on the kept branch do not. The branch is always kept. Never throws. */
 export async function releaseWorktreeOnExit(terminalId: string, cwd: string | undefined, store: ReleaseStore, appPid = String(process.pid)): Promise<ReleaseOutcome> {
   if (!cwd) return 'none'
   let rows: Array<{ id: number; branch: string; sourceRepo: string }>
@@ -1196,11 +1204,9 @@ export async function releaseWorktreeOnExit(terminalId: string, cwd: string | un
   try {
     if (!existsSync(cwd)) { settle('already-gone'); return 'already-gone' }
     const f = (await gatherFacts({ only: [cwd] }))[0]
-    const u = f ? unsavedWorkOf(f) : undefined
     let why: string | undefined
     if (!f || !f.provenance) why = 'no longer an Operator worktree'
-    else if (!u!.known) why = 'git could not say whether it has unsaved work'
-    else if (u!.any) why = `unsaved work at exit (${u!.uncommitted ?? 0} uncommitted file(s), ${u!.unsavedCommits ?? 0} commit(s) on no other branch or remote)`
+    else if (releaseBlocker(f)) why = releaseBlocker(f)!
     else {
       // The exiting pty is already marked exited, so only ANOTHER terminal open in it claims it.
       const pty = ptyClaimOn(cwd, livePtyCwds())

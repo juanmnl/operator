@@ -109,27 +109,28 @@ describe('worktree_done — refusals', () => {
     expect(store.openReleases('t4', lane.path, String(process.pid))).toEqual([])
   })
 
-  it('commits on no other branch and no remote, listed', async () => {
+  // User decision 2026-09-16: commits that exist only on the kept lane branch do not block this tool.
+  it('commits only on the lane branch (unmerged, unpushed) do not block the release', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)
     writeFileSync(join(lane.path, 'feature.txt'), 'done')
     git(lane.path, ['add', '-A'])
     git(lane.path, ['commit', '-qm', 'the feature'])
-    const r = await callDone(lane.path)
-    expect(r.isError).toBe(true)
-    expect(r.content[0].text).toMatch(/Commits on no other branch and no remote \(1\):\n {2}[0-9a-f]+ the feature/)
-    expect(r.content[0].text).toMatch(/push the branch/)
-  })
-
-  it('the same commits, once another branch holds them, are released', async () => {
-    const repo = scratchRepo()
-    const lane = await wt.createWorktree(repo)
-    writeFileSync(join(lane.path, 'feature.txt'), 'done')
-    git(lane.path, ['add', '-A'])
-    git(lane.path, ['commit', '-qm', 'the feature'])
-    git(repo, ['branch', 'merged-copy', lane.branch])
     const r = await callDone(lane.path)
     expect(r.isError).not.toBe(true)
+    expect(r.content[0].text).toContain(lane.branch)
+  })
+
+  it('a detached HEAD with commits on no branch still refuses', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    git(lane.path, ['checkout', '-q', '--detach'])
+    writeFileSync(join(lane.path, 'orphan.txt'), 'x')
+    git(lane.path, ['add', '-A'])
+    git(lane.path, ['commit', '-qm', 'on no branch'])
+    const r = await callDone(lane.path)
+    expect(r.isError).toBe(true)
+    expect(r.content[0].text).toMatch(/HEAD is detached.*no branch would keep your commits/)
   })
 })
 
@@ -160,7 +161,31 @@ describe('release on exit', () => {
     const [row] = store.openReleases('t4', lane.path, String(process.pid))
     expect(await reap.releaseWorktreeOnExit('t4', lane.path, store)).toBe('kept')
     expect(existsSync(join(lane.path, 'late-edit.txt'))).toBe(true)
-    expect(store.releaseOutcome(row.id)?.outcome).toMatch(/^kept: unsaved work at exit/)
+    expect(store.releaseOutcome(row.id)?.outcome).toMatch(/^kept: 1 uncommitted file\(s\) at exit/)
+  })
+
+  it('a commit made on the branch after the call is removed on exit, with the commit kept on the branch', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    writeFileSync(join(lane.path, 'final.txt'), 'last word')
+    git(lane.path, ['add', '-A'])
+    git(lane.path, ['commit', '-qm', 'final commit'])
+    expect(await reap.releaseWorktreeOnExit('t4', lane.path, store)).toBe('removed')
+    expect(existsSync(lane.path)).toBe(false)
+    expect(git(repo, ['log', '-1', '--format=%s', lane.branch])).toBe('final commit')
+  })
+
+  it('a HEAD detached after the call keeps the directory at exit', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const r = await callDone(lane.path)
+    expect(r.isError).not.toBe(true)
+    git(lane.path, ['checkout', '-q', '--detach'])
+    const [row] = store.openReleases('t4', lane.path, String(process.pid))
+    expect(await reap.releaseWorktreeOnExit('t4', lane.path, store)).toBe('kept')
+    expect(existsSync(lane.path)).toBe(true)
+    expect(store.releaseOutcome(row.id)?.outcome).toMatch(/^kept: HEAD is detached/)
   })
 
   it('does nothing for another terminal, another app run, or a lane that never released', async () => {
