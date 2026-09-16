@@ -241,3 +241,20 @@ export function planPanelPlacement(
     maxHeight: Math.max(0, anchor.top - gap - margin),
   }
 }
+
+/** What the panel says about the plan the reading was taken under.
+ *
+ *  THE CLI'S LINE IS A SENTENCE, NOT A LABEL: `You are currently using your subscription to power
+ *  your Claude Code usage`. It used to sit in an uppercase chip beside the panel title, where it
+ *  pushed the title onto two lines and was clipped at the panel edge. The main process only keeps
+ *  a line that mentions a subscription, so the common case collapses to one word that fits beside
+ *  the title; the full line stays available as the tooltip.
+ *
+ *  Anything else is shown whole, on its own line, and wraps. Its last two words are bound with a
+ *  non-breaking space so the line never ends on one stranded word. */
+export function planBasis(plan: string | null | undefined): { short: string | null; full: string | null } {
+  const full = plan?.replace(/\s+/g, ' ').trim() || null
+  if (!full) return { short: null, full: null }
+  if (/\bsubscription\b/i.test(full)) return { short: 'Subscription', full }
+  return { short: null, full: full.replace(/ (\S+)$/, ' $1') }
+}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   contextReading, planReading, railFootPlanText, shortLimitLabel, planSummary, planCellTitle,
-  planPanelStatus, planPanelPlacement, PLAN_PANEL_W, type PlanCellState,
+  planPanelStatus, planPanelPlacement, planBasis, PLAN_PANEL_W, type PlanCellState,
 } from './footer-reading'
 import { CONTEXT_WINDOW, CONTEXT_WINDOW_1M, inferContextWindow } from './model-config'
 import type { PlanLimits } from './plan-limits'
@@ -393,5 +393,23 @@ describe('TONE_INK — warning text that stays legible', () => {
     }
     expect(TONE_INK.warn).toMatch(/color-mix\(.*var\(--fg\)\)/)
     expect(TONE_INK.danger).toMatch(/color-mix\(.*var\(--fg\)\)/)
+  })
+})
+
+describe('planBasis — the plan line never gets clipped', () => {
+  it('collapses the CLI subscription sentence to one word and keeps the sentence for the tooltip', () => {
+    const line = 'You are currently using your subscription to power your Claude Code usage'
+    expect(planBasis(line)).toEqual({ short: 'Subscription', full: line })
+  })
+
+  it('shows any other line whole, with its last two words bound so none is stranded', () => {
+    const b = planBasis('Billed through  the API console')
+    expect(b.short).toBeNull()
+    expect(b.full).toBe('Billed through the API console')
+  })
+
+  it('has nothing to say when there is no line', () => {
+    expect(planBasis(null)).toEqual({ short: null, full: null })
+    expect(planBasis('   ')).toEqual({ short: null, full: null })
   })
 })
