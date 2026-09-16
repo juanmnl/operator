@@ -54,7 +54,7 @@ import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { QuitGuard } from '../components/QuitGuard'
 import { askBeforeQuitEnabled, type LaneIdentity, type QuitRequest } from '../lib/quit-guard'
 import { chatSignal } from '../lib/chat-signal'
-import { ProjectGallery } from '../components/dashboard/ProjectGallery'
+import { ProjectGallery, type GalleryTab } from '../components/dashboard/ProjectGallery'
 import { Toasts, ToastMessage } from '../components/Toast'
 import { themes, defaultTheme, applyTheme, resolveThemeKey, themeKey, identities } from '../themes'
 import type { OperatorTheme } from '../themes'
@@ -216,7 +216,7 @@ export function DashboardView() {
   const [projectTab, setProjectTab] = useState<'board' | 'team' | 'moodboard'>('board')
   // Gallery sub-view: the project grid, or the cross-project ActivityDashboard behind the
   // rollup chip. That read is legitimate HERE (launcher level) and nowhere inside a project.
-  const [galleryTab, setGalleryTab] = useState<'projects' | 'activity'>('projects')
+  const [galleryTab, setGalleryTab] = useState<GalleryTab>('projects')
   /** The kill switch for agent→agent delivery. It now DEFAULTS TO LIVE — flipped 2026-07-30.
    *
    *  It shipped paused, on the reasoning that two cooperative agents which can each answer the
@@ -612,7 +612,9 @@ export function DashboardView() {
     return () => { unsubSession(); unsubExit(); unsubDrop(); clearInterval(reconcileTimer) }
   }, [])
 
-  const handleOpenGlobalPrefs = useCallback(() => {
+  const [globalPrefsTab, setGlobalPrefsTab] = useState<FolderPrefsTab | undefined>(undefined)
+  const handleOpenGlobalPrefs = useCallback((tab?: FolderPrefsTab) => {
+    setGlobalPrefsTab(typeof tab === 'string' ? tab : undefined)
     setGlobalPrefsActive(true)
     setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
@@ -4950,6 +4952,7 @@ export function DashboardView() {
           <FolderPreferencesView
             projectPath=""
             projectName="Global settings"
+            initialTab={globalPrefsTab}
             globalOnly
           />
           </AppShell>
@@ -5267,6 +5270,7 @@ export function DashboardView() {
             onArchiveProjects={archiveProjects}
             onRestoreProject={restoreProject}
             onOpenFolderPrefs={handleOpenFolderPrefs}
+            onOpenGlobalPrefs={handleOpenGlobalPrefs}
             onSelectSession={handleSelectSession}
             restorableSessions={restorableSessions}
             recentProjects={recentProjects}

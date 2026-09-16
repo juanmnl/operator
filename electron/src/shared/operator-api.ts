@@ -107,6 +107,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   devServerList:          { delivery: 'invoke', impl: 'native' },
   devServerKill:          { delivery: 'invoke', impl: 'native' },
   worktreeReapPlan:       { delivery: 'invoke', impl: 'native' },
+  worktreeQuickList:      { delivery: 'invoke', impl: 'native' },
   worktreeReap:           { delivery: 'invoke', impl: 'native' },
   worktreeRemoveSelected: { delivery: 'invoke', impl: 'native' },
   worktreeAutoRemovalCheck: { delivery: 'send', impl: 'native' },

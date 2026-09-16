@@ -27,7 +27,7 @@ import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
-import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval } from './worktree-reap'
+import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList } from './worktree-reap'
 import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
 import { devServerInventory, ageSnapshot } from './dev-servers'
 import { readBusSessions } from './session-bus'
@@ -257,6 +257,9 @@ export function registerIpc(d: Deps): void {
       return found.length
     },
     worktreeReapPlan: (opts) => reapPlan({ withSizes: true, refreshSizes: opts?.refreshSizes === true }),
+    // Read-only, and cheap on purpose: no git, no `du`. The Home overview paints from this at launch
+    // and fills in from `worktreeReapPlan` afterwards.
+    worktreeQuickList: () => quickWorktreeList(),
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is

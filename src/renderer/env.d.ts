@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -149,6 +149,9 @@ declare global {
       devServerKill: (pids: number[]) => Promise<number>
       /** Sizes come from a cache keyed on each directory's mtime; `refreshSizes` re-measures all. */
       worktreeReapPlan: (opts?: { refreshSizes?: boolean }) => Promise<ReapPlan>
+      /** Every worktree folder with its source repo, lane claim and CACHED size. No git, no `du`: the
+       *  Home overview's first paint. */
+      worktreeQuickList: () => Promise<WorktreeQuickEntry[]>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose
        *  unsaved work was confirmed separately; main re-checks everything before acting. */
       worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>

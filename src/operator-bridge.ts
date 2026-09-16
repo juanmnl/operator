@@ -289,6 +289,7 @@ export function installBridge(): void {
     devServerList: async () => [],
     devServerKill: async () => 0,
     worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true, wouldRemove: [] }),
+    worktreeQuickList: async () => [],
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     worktreeRemoveSelected: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     worktreeAutoRemovalCheck: () => {},

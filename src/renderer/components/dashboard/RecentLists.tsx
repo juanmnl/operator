@@ -14,6 +14,8 @@ export interface RecentSession {
   /** Present when the previous Claude conversation can be resumed. */
   claudeSessionId?: string
   lastActiveAt: string
+  /** The project it was saved under, when known. */
+  projectId?: string
 }
 
 export interface RecentProject {

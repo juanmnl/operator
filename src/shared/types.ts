@@ -396,6 +396,20 @@ export interface ReapPlan {
   lastCheck?: { trigger: string; at: number; entries: Array<{ path: string; reason: string }> }
 }
 
+/** One directory under `~/.operator/worktrees`, read WITHOUT git or `du`: the Home overview's first
+ *  paint. Everything here comes from small JSON files and each folder's own `.git` pointer. */
+export interface WorktreeQuickEntry {
+  path: string
+  /** Source repo: the provenance record, else the folder's `.git` pointer. Absent when neither names one. */
+  repo?: string
+  /** The source repo is on disk. True when no repo is known (nothing to be missing). */
+  repoExists: boolean
+  /** `sessions.json` has a lane with a terminal in this folder. */
+  live: boolean
+  /** The last measured size from `worktree-sizes.json`, not re-checked against mtime. Absent when never measured. */
+  cachedBytes?: number
+}
+
 export interface ReapRunResult {
   removed: string[]
   failed: Array<{ path: string; error: string }>

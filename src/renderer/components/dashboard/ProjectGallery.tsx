@@ -5,6 +5,8 @@ import { DragRegion } from '../DragRegion'
 import { LogoMark } from '../LogoMark'
 import { StatusWave } from '../sidebar/StatusWave'
 import { ActivityDashboard } from './ActivityDashboard'
+import { OverviewChip, WorktreeOverview, useOverview } from './WorktreeOverview'
+import type { FolderPrefsTab } from '../preferences/FolderPreferencesView'
 import type { RecentSession, RecentProject } from './RecentLists'
 import { relativeTime, tildePath } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
@@ -34,6 +36,9 @@ const MAX_ORBS = 8
 /** One measure for the header row and the card grid — they must share a left edge. */
 const GRID_MAX = 1100
 
+/** `overview`: projects and their worktrees (`WorktreeOverview`). */
+export type GalleryTab = 'projects' | 'activity' | 'overview'
+
 interface ProjectGalleryProps {
   projects: Project[]
   /** Live, per-terminal sessions (DashboardView's allSidebarSessions). */
@@ -41,8 +46,8 @@ interface ProjectGalleryProps {
   /** projectId → its rolled-up state, already computed once for the switcher. Drives the
    *  shelf split (a live project is active whatever its record says) and the ordering. */
   activities: Record<string, ProjectActivity>
-  tab: 'projects' | 'activity'
-  onSelectTab: (t: 'projects' | 'activity') => void
+  tab: GalleryTab
+  onSelectTab: (t: GalleryTab) => void
   accentOf: (s: AgentSession) => string | undefined
   customNames: Record<string, string>
   onOpenProject: (projectId: string) => void
@@ -64,7 +69,9 @@ interface ProjectGalleryProps {
   /** Shelve a whole batch under one timestamp, with one undo. The tidy pass. */
   onArchiveProjects: (ids: string[]) => void
   onRestoreProject: (id: string) => void
-  onOpenFolderPrefs: (projectPath: string, projectName: string) => void
+  onOpenFolderPrefs: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
+  /** Global settings on a tab: the overview's link for folders that match no project. */
+  onOpenGlobalPrefs?: (tab?: FolderPrefsTab) => void
   onSelectSession: (s: AgentSession) => void
   // Continuity shelf, for the activity sub-view (passed straight through).
   restorableSessions: RecentSession[]
@@ -83,8 +90,11 @@ export function ProjectGallery({
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
   onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
-  closingIds, activeProjectId,
+  closingIds, activeProjectId, onOpenGlobalPrefs,
 }: ProjectGalleryProps) {
+  // THE MACHINE OVERVIEW starts reading when the launcher mounts, from files only, so its chip in
+  // the header has a number by the time anyone looks. The git half follows on its own delay.
+  const { overview, data: overviewData } = useOverview(projects, sessions, restorableSessions)
   // Which card's ⋯ menu is open, and which card is being renamed or having its description
   // written (at most one of each — held here, not per card, so opening a second editor
   // closes the first instead of leaving two live inputs on screen).
@@ -158,7 +168,7 @@ export function ProjectGallery({
       }}>
         {/* The count is the ACTIVE shelf, not the store total: once you've shelved eleven
             things, "Projects · 19" is no longer the honest headline for what's on screen. */}
-        {tab === 'activity' ? (
+        {tab !== 'projects' ? (
           <button onClick={() => onSelectTab('projects')} style={backBtn} title="Back to your projects">
             <span style={{ fontSize: 12 }}>‹</span> Projects · {active.length}
           </button>
@@ -175,6 +185,12 @@ export function ProjectGallery({
             onClick={() => onSelectTab(tab === 'activity' ? 'projects' : 'activity')}
           />
         )}
+        <OverviewChip
+          overview={overview}
+          data={overviewData}
+          active={tab === 'overview'}
+          onClick={() => onSelectTab(tab === 'overview' ? 'projects' : 'overview')}
+        />
         {/* Past a shelf-full of projects, scanning stops working. Same threshold as the
             switcher popover (one definition now), and it searches both shelves.
             An <input> is exempt from DragRegion's own drag handler, so it stays typeable. */}
@@ -202,7 +218,15 @@ export function ProjectGallery({
         </button>
       </DragRegion>
 
-      {tab === 'activity' ? (
+      {tab === 'overview' ? (
+        <WorktreeOverview
+          overview={overview}
+          data={overviewData}
+          onOpenProject={onOpenProject}
+          onOpenSettings={onOpenFolderPrefs}
+          onOpenGlobalWorktrees={() => onOpenGlobalPrefs?.('Worktrees')}
+        />
+      ) : tab === 'activity' ? (
         // Unchanged component — the cross-project read, at launcher level only.
         <ActivityDashboard
           sessions={sessions}

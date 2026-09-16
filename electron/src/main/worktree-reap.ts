@@ -26,6 +26,7 @@ import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
 import { loadProjects, operatorDir } from './store'
+import type { WorktreeQuickEntry } from '../../../src/shared/types'
 import {
   appendProvenance, containsPath, dangerousRemovalReason, gitdirFromGitFile, provePairing, regularFile,
   removePlainDirectory, removeWorktree, type FileReader, type Provenance,
@@ -700,6 +701,44 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
     else f.sizeBytes = bytes
   }
   return facts
+}
+
+/** THE HOME OVERVIEW'S FIRST PAINT. Every folder under the worktree root with its source repo, whether
+ *  that repo still exists, whether a lane claims it, and its last CACHED size.
+ *
+ *  No git and no `du`, so it answers in milliseconds for 55 folders: two JSON files, one `readdir`,
+ *  one small `.git` file read and one `existsSync` per folder. The cached sizes are not re-checked
+ *  against mtime here (that is a `stat` per folder and belongs to the full plan). The overview says
+ *  a size came from the cache until the full plan replaces it. Never throws. */
+export async function quickWorktreeList(): Promise<WorktreeQuickEntry[]> {
+  const root = worktreeRoot()
+  let names: string[]
+  try {
+    names = (await readdir(root, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && d.name !== TRASH_DIR_NAME)
+      .map((d) => d.name)
+  } catch {
+    return []
+  }
+  let cache: Record<string, SizeCacheEntry> = {}
+  const [provenance, { claims }] = await Promise.all([
+    loadProvenance(),
+    liveClaims(),
+    readFile(sizesFile(), 'utf8').then((raw) => { cache = JSON.parse(raw) as Record<string, SizeCacheEntry> }, () => undefined).catch(() => undefined),
+  ])
+  return Promise.all(names.map(async (name): Promise<WorktreeQuickEntry> => {
+    const path = join(root, name)
+    const marker = await readFile(join(path, '.git'), 'utf8').catch(() => undefined)
+    const repo = provenance.get(path)?.sourceRepo ?? (marker ? sourceRepoFromGitFile(marker) : undefined)
+    const bytes = cache[path]?.bytes
+    return {
+      path,
+      repo,
+      repoExists: repo ? existsSync(repo) : true,
+      live: claims.has(path),
+      cachedBytes: typeof bytes === 'number' ? bytes : undefined,
+    }
+  }))
 }
 
 /** Branch names already merged into the repo's default branch. `null` when git could not say,
