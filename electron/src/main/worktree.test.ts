@@ -541,3 +541,54 @@ describe('removal paths re-check live claims and pending records', () => {
     expect(existsSync(lane.path)).toBe(false)
   })
 })
+
+// A lane without its own worktree runs in the project's main checkout. Nothing may remove that.
+describe('a registered project path is never removed', () => {
+  it('removeWorktree and removePlainDirectory refuse a path that is, or contains, a project in projects.json', async () => {
+    const home = process.env.OPERATOR_DIR!
+    const projectsFile = join(home, 'projects.json')
+    const before = existsSync(projectsFile) ? readFileSync(projectsFile, 'utf8') : null
+    const repo = scratchRepo()
+    const other = scratchRepo()
+    // A project that happens to live directly under the worktree root, the one place the plain path
+    // is allowed to act.
+    const underRoot = join(home, 'worktrees', 'registered-project')
+    mkdirSync(join(underRoot, 'src'), { recursive: true })
+    writeFileSync(join(underRoot, 'src', 'a.txt'), 'x')
+    const container = join(home, 'worktrees', 'holds-a-project')
+    mkdirSync(join(container, 'inner'), { recursive: true })
+    writeFileSync(projectsFile, JSON.stringify([
+      { id: 'a', name: 'a', path: repo },
+      { id: 'b', name: 'b', path: underRoot },
+      { id: 'c', name: 'c', path: join(container, 'inner') },
+    ]))
+    try {
+      await expect(wt.removeWorktree(repo, other)).rejects.toThrow(/registered project/)
+      await expect(wt.removePlainDirectory(underRoot)).rejects.toThrow(/is a registered project/)
+      await expect(wt.removePlainDirectory(container)).rejects.toThrow(/contains a registered project/)
+      expect(existsSync(join(repo, 'a.txt'))).toBe(true)
+      expect(existsSync(join(underRoot, 'src', 'a.txt'))).toBe(true)
+      expect(existsSync(join(container, 'inner'))).toBe(true)
+    } finally {
+      if (before === null) rmSync(projectsFile, { force: true })
+      else writeFileSync(projectsFile, before)
+    }
+  })
+
+  it('a worktree of a registered project is still removable', async () => {
+    const home = process.env.OPERATOR_DIR!
+    const projectsFile = join(home, 'projects.json')
+    const before = existsSync(projectsFile) ? readFileSync(projectsFile, 'utf8') : null
+    const repo = scratchRepo()
+    writeFileSync(projectsFile, JSON.stringify([{ id: 'a', name: 'a', path: repo }]))
+    try {
+      const lane = await wt.createWorktree(repo)
+      await wt.removeWorktree(lane.path, repo)
+      expect(existsSync(lane.path)).toBe(false)
+      expect(existsSync(join(repo, 'a.txt'))).toBe(true)
+    } finally {
+      if (before === null) rmSync(projectsFile, { force: true })
+      else writeFileSync(projectsFile, before)
+    }
+  })
+})

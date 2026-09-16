@@ -92,8 +92,9 @@ describe('useWorktree is TRI-STATE — false is a choice, not an absence', () =>
     // coordinator merges lane branches, reaps worktrees and launches every other lane, so doing
     // that from a checkout of its own is how work went missing. See the coordinator cases below.
     const on = (id: string) => resolveAgentConfig(role({ id })).useWorktree
-    expect([on('code'), on('design'), on('research')]).toEqual([true, true, true])
-    expect([on('review'), on('qa')]).toEqual([false, false])
+    expect([on('code'), on('design')]).toEqual([true, true])
+    // Research moved to the main checkout on 2026-09-16 (lib/lane-workspace).
+    expect([on('research'), on('review'), on('qa')]).toEqual([false, false, false])
   })
 
   // THE COORDINATOR IS NOT A CASCADE. Every other field ranks pin over preset; this one ignores

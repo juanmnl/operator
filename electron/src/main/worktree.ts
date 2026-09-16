@@ -12,7 +12,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { operatorDir } from './store'
+import { loadProjects, operatorDir } from './store'
 import { moveToTrash, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
@@ -287,6 +287,25 @@ export function dangerousRemovalReason(worktreePath: string, repo?: string): str
   return null
 }
 
+/** A REGISTERED PROJECT IS NEVER A REMOVAL TARGET. Refuses a path that is, or contains, any project
+ *  path in `projects.json`. Lanes without their own worktree run in the project's main checkout, so
+ *  a close or cleanup that mistook that checkout for a worktree would delete the project itself.
+ *  LIMIT: `loadProjects` reads a missing or corrupt file as `[]`, so then this guard has nothing to
+ *  compare against. `dangerousRemovalReason` still refuses the source repo itself and `$HOME`. */
+export async function projectPathReason(path: string): Promise<string | null> {
+  const projects = await loadProjects()
+  for (const p of Array.isArray(projects) ? projects : []) {
+    const projectPath = (p as { path?: unknown })?.path
+    if (typeof projectPath !== 'string' || !projectPath.trim()) continue
+    if (containsPath(path, projectPath)) {
+      return samePath(path, projectPath)
+        ? `path is a registered project (${projectPath})`
+        : `path contains a registered project (${projectPath})`
+    }
+  }
+  return null
+}
+
 /** Three answers, not two. `null` used to mean four different things — the walk finished, it hit
  *  a budget, it hit a depth limit, or it could not open a directory. Three of those are "I do
  *  not know" wearing the costume of "nothing is nested", and the lie is in the direction of
@@ -350,7 +369,7 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
  *  The durable half of a lane close lives in `worktree-reap.ts`, not here — see
  *  `removeWorktreeDurably` below for why this function is not the one the renderer should call. */
 export async function removeWorktree(path: string, sourceRoot: string): Promise<void> {
-  const reason = dangerousRemovalReason(path, sourceRoot)
+  const reason = dangerousRemovalReason(path, sourceRoot) ?? await projectPathReason(path)
   if (reason) throw new Error(`Refusing to remove worktree ${path}: ${reason}`)
   const vouched = await gitVouches(path, sourceRoot)
   if (!vouched.ok) throw new Error(`Refusing to remove worktree ${path}: ${vouched.why}`)
@@ -472,7 +491,7 @@ export async function removePlainDirectory(path: string): Promise<void> {
   if (realOf(resolvePath(real, '..')) !== realOf(root)) {
     throw new Error(`Refusing to remove ${path}: it is not directly under ${root}`)
   }
-  const reason = dangerousRemovalReason(path)
+  const reason = dangerousRemovalReason(path) ?? await projectPathReason(path)
   if (reason) throw new Error(`Refusing to remove ${path}: ${reason}`)
   const scan = await nestedCheckout(path)
   if (scan.kind === 'nested') throw new Error(`Refusing to remove ${path}: it contains ${scan.what}`)

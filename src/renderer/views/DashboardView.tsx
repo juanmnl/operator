@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
+import { launchWorkspace } from '../lib/lane-workspace'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, laneKey, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
   resolveAgentConfig, remoteControlLaunch, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
@@ -2702,8 +2703,6 @@ export function DashboardView() {
       return tab
     }
     const run = (async (): Promise<TerminalTab | undefined> => {
-    // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote).
-    const note = project.roster ? orchestrationNote(project.name, role, project.roster) : undefined
     // The agent picks up its assigned QUEUED tasks as its opening work; they move to running
     // (kept visible under this lane) rather than vanishing.
     const queued = (project.tasks ?? []).filter((t) => t.roleId === role.id && (t.status ?? 'queued') === 'queued')
@@ -2724,6 +2723,13 @@ export function DashboardView() {
     const suspended = savedSessionsRef.current
       .filter((s) => s.projectId === project.id && s.roleId === role.id && s.suspendedAt && s.claudeSessionId)
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))[0]
+    // Own worktree or the main checkout. A suspended lane resumes where it was (lib/lane-workspace).
+    const workspace = launchWorkspace(role.id, settings.useWorktree, suspended)
+    // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote), and, when it
+    // shares the main checkout, that it must leave git state and tracked files alone.
+    const note = project.roster
+      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout })
+      : undefined
     const tabs = await handleLaunchSession(
       project.path,
       {
@@ -2731,7 +2737,7 @@ export function DashboardView() {
         permissionMode: settings.permissionMode as SessionConfig['permissionMode'],
         model: settings.model,
         allowedTools: '',
-        useWorktree: settings.useWorktree, // isolated lane → attributable diff + merge-back
+        useWorktree: workspace.useWorktree, // isolated lane → attributable diff + merge-back
         launchDevServer,
         count: 1,
         prompt: combined,
@@ -3081,7 +3087,9 @@ export function DashboardView() {
       : Promise.resolve()
     // If this was a worktree session, clean up the worktree directory afterwards.
     // Branch is intentionally left intact — user may want to merge or review later.
-    if (tab?.worktreeBranch && tab?.sourceCwd) {
+    // A lane in the main checkout has neither field, and `cwd === sourceCwd` is refused as well:
+    // the directory removal must never be pointed at the project itself (main refuses it too).
+    if (tab?.worktreeBranch && tab?.sourceCwd && tab.cwd !== tab.sourceCwd) {
       void finishTasks.then(async () => {
         // SNAPSHOT FIRST, UNCONDITIONALLY. `worktree remove` takes uncommitted edits with it, and
         // with lanes now closing on their own that is no longer a directory the user chose to
