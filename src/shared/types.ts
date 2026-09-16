@@ -354,6 +354,21 @@ export interface ReapEntry {
   /** One sentence saying what will happen, or what is blocking. */
   reason: string
   needsCommit: boolean
+  /** Source repo for grouping: provenance, else the directory's own `.git` pointer. */
+  repo?: string
+  /** A lane is open in it. Never selectable. */
+  live: boolean
+  /** Uncommitted files; absent when git could not read the directory. */
+  uncommitted?: number
+  /** Commits on HEAD that no other local branch and no remote contains; absent when unknown. */
+  unsavedCommits?: number
+  unsavedKnown: boolean
+  /** Removing it needs the second confirmation: unsaved work, or git could not tell. */
+  needsUnsavedConfirm: boolean
+  /** Why the automatic rule WOULD remove it. Report only in stage 1. */
+  wouldRemove?: string
+  /** Its provenance was written by the boot backfill. */
+  backfilled?: boolean
 }
 
 export interface ReapPlan {
@@ -364,6 +379,10 @@ export interface ReapPlan {
   autoBytes: number
   /** Sizes were not collected — render no size rather than "0 GB". */
   sizesOmitted: boolean
+  /** Entries the automatic rule would remove. Nothing acts on this in stage 1. */
+  wouldRemove: ReapEntry[]
+  /** The last report-only check a trigger ran (boot, lane-exit, task-done). */
+  lastCheck?: { trigger: string; at: number; entries: Array<{ path: string; reason: string }> }
 }
 
 export interface ReapRunResult {

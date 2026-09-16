@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import { basename, join, resolve as resolvePath, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { operatorDir } from './store'
+import { moveToTrash, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
 
@@ -72,7 +73,7 @@ async function defaultBase(root: string): Promise<string | null> {
 
 export interface WorktreeCreateResult { path: string; branch: string; baseBranch?: string }
 
-interface Provenance { path: string; createdAt: number; createdBy: string; sourceRepo: string; branch: string; laneId?: string }
+export interface Provenance { path: string; createdAt: number; createdBy: string; sourceRepo: string; branch: string; laneId?: string }
 
 const provenanceFile = () => join(operatorDir(), 'worktree-provenance.json')
 
@@ -80,9 +81,15 @@ const provenanceFile = () => join(operatorDir(), 'worktree-provenance.json')
  *  failure to record it is logged rather than swallowed — an unrecorded worktree is one the
  *  cleanup will refuse to touch forever. */
 async function recordProvenance(entry: Provenance): Promise<void> {
+  await appendProvenance([entry])
+}
+
+/** Append records in one write. Also the boot backfill's writer (`worktree-reap.ts`). */
+export async function appendProvenance(entries: Provenance[]): Promise<void> {
+  if (!entries.length) return
   try {
     const existing = JSON.parse(await readFile(provenanceFile(), 'utf8').catch(() => '[]')) as Provenance[]
-    existing.push(entry)
+    existing.push(...entries)
     await mkdir(operatorDir(), { recursive: true })
     await writeFile(provenanceFile(), JSON.stringify(existing, null, 2), 'utf8')
   } catch (e) {
@@ -326,6 +333,13 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
 /** Remove the DIRECTORY. The branch always survives — that is what lets a suspended lane's
  *  reattach path put a directory back on it later.
  *
+ *  THROUGH THE TRASH, not `git worktree remove`. The directory is renamed into the trash root
+ *  (`worktree-trash.ts`), `git worktree prune` drops the admin entry that now points nowhere, and
+ *  the recursive delete runs in the background sweep. This replaces both `worktree remove` and
+ *  its `--force` fallback. The fallback already discarded uncommitted changes whenever the plain
+ *  form refused, so the non-force attempt protected nothing; callers that must keep uncommitted
+ *  work run `commitAll` first (reap, merge) or ask the user (Settings).
+ *
  *  THE GUARD BELOW IS UNTOUCHED. Every rule in it exists because some path shape would otherwise
  *  have taken something that was not a worktree, and the lifecycle audit named it the one piece
  *  of this system that is already solid. The reaper reuses it rather than reimplementing it.
@@ -339,9 +353,30 @@ export async function removeWorktree(path: string, sourceRoot: string): Promise<
     if (scan.kind === 'nested') throw new Error(`Refusing to remove worktree ${path}: it contains ${scan.what}`)
     if (scan.kind === 'unknown') throw new Error(`Refusing to remove worktree ${path}: cannot rule out a nested checkout — ${scan.why}`)
   }
-  if (await gitOk(sourceRoot, ['worktree', 'remove', path]) == null) {
-    await git(sourceRoot, ['worktree', 'remove', '--force', path])
+  await moveToTrash(path)
+  // `prune` removes admin entries whose directory is missing, so after the rename it removes this
+  // one. It can also remove entries of OTHER worktrees of this repo whose directories were already
+  // gone — which is what git would do on its own next `gc`, and never touches a directory.
+  await gitOk(sourceRoot, ['worktree', 'prune'])
+  void scheduleSweep()
+}
+
+/** Remove a directory under the worktree root WITHOUT git — for a directory whose source repo is
+ *  gone, or that git cannot read. Same guard, same nested-checkout walk, same trash path. Refuses
+ *  anything that is not a direct child of `~/.operator/worktrees`. */
+export async function removePlainDirectory(path: string): Promise<void> {
+  const root = worktreeRoot()
+  const real = realOf(path)
+  if (realOf(resolvePath(real, '..')) !== realOf(root)) {
+    throw new Error(`Refusing to remove ${path}: it is not directly under ${root}`)
   }
+  const reason = dangerousRemovalReason(path)
+  if (reason) throw new Error(`Refusing to remove ${path}: ${reason}`)
+  const scan = await nestedCheckout(path)
+  if (scan.kind === 'nested') throw new Error(`Refusing to remove ${path}: it contains ${scan.what}`)
+  if (scan.kind === 'unknown') throw new Error(`Refusing to remove ${path}: cannot rule out a nested checkout — ${scan.why}`)
+  await moveToTrash(path)
+  void scheduleSweep()
 }
 
 /** Commit everything. A clean tree is NOT an error — it returns the existing HEAD, so a caller

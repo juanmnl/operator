@@ -21,12 +21,13 @@
 // silently skipped forever (that was defect #6) — it is surfaced as `unattributed` for a human
 // to stand in for the missing proof.
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, readdir, rename, writeFile, unlink } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
-import { operatorDir } from './store'
-import { commitAll, dangerousRemovalReason, removeWorktree } from './worktree'
+import { loadProjects, operatorDir } from './store'
+import { appendProvenance, commitAll, dangerousRemovalReason, removePlainDirectory, removeWorktree, type Provenance } from './worktree'
+import { TRASH_DIR_NAME, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
 
@@ -45,6 +46,11 @@ const AUTO_REAP_ON_TRIGGERS = false
 const worktreeRoot = () => join(operatorDir(), 'worktrees')
 const provenanceFile = () => join(operatorDir(), 'worktree-provenance.json')
 const pendingFile = () => join(operatorDir(), 'worktree-pending.json')
+const sizesFile = () => join(operatorDir(), 'worktree-sizes.json')
+const autoCheckFile = () => join(operatorDir(), 'worktree-auto-check.json')
+
+/** How long a clean worktree must have gone unused before the automatic path would take it. */
+export const AUTO_REMOVE_GRACE_MS = 24 * 60 * 60 * 1000
 
 /** Anything at or under this is "no real content" for debris purposes. A `.vite` cache dir or a
  *  single stray `a.txt` from an interrupted `worktree add` lands well inside it; a real checkout
@@ -92,6 +98,22 @@ export interface WorktreeFacts {
   branch?: string
   /** `git status --porcelain` produced output. */
   dirty: boolean
+  /** Lines of `git status --porcelain`. `undefined` when git could not read the directory. */
+  uncommittedCount?: number
+  /** Commits on HEAD not reachable from any OTHER local branch or any remote-tracking branch.
+   *  `undefined` when git could not answer. */
+  unsavedCommits?: number
+  /** The source repo named by provenance, or failing that by the directory's own `.git` pointer.
+   *  A hint for grouping and for choosing the removal path — never attribution. */
+  sourceRepoHint?: string
+  /** The source repo exists and the `.git` pointer names an admin entry that is gone: git has
+   *  already pruned this worktree's record. */
+  orphaned?: boolean
+  /** Newest of: provenance creation, HEAD commit time, and the last `lastActiveAt` any saved
+   *  session recorded in this directory. Epoch ms. */
+  lastActivityAt?: number
+  /** The provenance record was written by the boot backfill rather than at creation. */
+  backfilled?: boolean
   /** Listed by `git worktree list` in its source repo. */
   registered: boolean
   /** Branch is an ancestor of the source repo's default branch. `undefined` = could not tell. */
@@ -118,6 +140,18 @@ export interface ReapEntry {
   reason: string
   /** `commitAll` must run before removal to preserve uncommitted work. */
   needsCommit: boolean
+  /** Source repo for grouping: provenance, else the `.git` pointer. */
+  repo?: string
+  live: boolean
+  uncommitted?: number
+  unsavedCommits?: number
+  /** Git answered both unsaved-work questions. */
+  unsavedKnown: boolean
+  /** Manual removal needs the second confirmation: unsaved work, or git could not tell. */
+  needsUnsavedConfirm: boolean
+  /** Set when the automatic rule WOULD take this directory; the sentence says why. Report only. */
+  wouldRemove?: string
+  backfilled?: boolean
 }
 
 export interface ReapPlan {
@@ -129,6 +163,16 @@ export interface ReapPlan {
   autoBytes: number
   /** Set when sizes were not collected, so the UI does not render "0 GB" as a fact. */
   sizesOmitted: boolean
+  /** Entries the automatic rule would remove. Nothing acts on this list in stage 1. */
+  wouldRemove: ReapEntry[]
+  /** The last report-only check a trigger ran, from `worktree-auto-check.json`. */
+  lastCheck?: AutoCheckRecord
+}
+
+export interface AutoCheckRecord {
+  trigger: string
+  at: number
+  entries: Array<{ path: string; reason: string }>
 }
 
 /** THE CLASSIFIER. Pure, and the order of these rules is the policy.
@@ -195,11 +239,56 @@ function isAuto(cls: ReapClass, f: WorktreeFacts): boolean {
   return cls === 'merged-clean' || cls === 'merged-dirty' || cls === 'debris'
 }
 
+export interface UnsavedWork {
+  uncommitted?: number
+  unsavedCommits?: number
+  /** Git answered both questions. */
+  known: boolean
+  /** Uncommitted files or unsaved commits exist. */
+  any: boolean
+}
+
+/** WHAT WOULD BE LOST. The user's rule: uncommitted changes, or commits not reachable from another
+ *  branch or a remote, count as unsaved. A directory git cannot read is UNKNOWN, never "none". */
+export function unsavedWorkOf(f: WorktreeFacts): UnsavedWork {
+  if (!f.gitValid) return { known: false, any: false }
+  const uncommitted = f.uncommittedCount
+  const known = uncommitted !== undefined && f.unsavedCommits !== undefined
+  const any = (uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0
+  return { uncommitted, unsavedCommits: f.unsavedCommits, known, any }
+}
+
+/** Manual removal of this directory needs the explicit second confirmation. */
+export const needsUnsavedConfirm = (u: UnsavedWork): boolean => u.any || !u.known
+
+/** THE AUTOMATIC RULE, as stage 1 reports it. Pure; `null` = would not remove.
+ *
+ *  Two ways in, both requiring provenance (created or backfilled), no open lane and no guard
+ *  refusal:
+ *  - clean, with no unsaved commits, and nothing active in it for `AUTO_REMOVE_GRACE_MS`;
+ *  - git-orphaned: the source repo exists and has already pruned this worktree's record.
+ *  Merge state is not a condition: a branch with no unsaved commits has nothing that exists only
+ *  here, and the branch is kept either way. */
+export function wouldAutoRemove(f: WorktreeFacts, now: number): string | null {
+  if (f.liveTerminalId || f.guardReason || !f.provenance) return null
+  if (f.orphaned && f.sourceRepoExists) {
+    return 'Git no longer tracks it: the source repo has already pruned its worktree record.'
+  }
+  if (!f.gitValid || !f.sourceRepoExists) return null
+  const u = unsavedWorkOf(f)
+  if (!u.known || u.any) return null
+  if (f.lastActivityAt === undefined) return null
+  const idle = now - f.lastActivityAt
+  if (idle < AUTO_REMOVE_GRACE_MS) return null
+  return `Clean, no unsaved commits, unused for ${Math.floor(idle / 3_600_000)}h.`
+}
+
 /** Build the plan from a fabricated or gathered table. Pure. */
-export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = false): ReapPlan {
+export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = false, now = Date.now()): ReapPlan {
   const entries: ReapEntry[] = facts.map((f) => {
     const cls = classify(f)
     const auto = isAuto(cls, f)
+    const unsaved = unsavedWorkOf(f)
     return {
       path: f.path,
       cls,
@@ -211,6 +300,14 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       // the class could say, and it is the reason a human most needs to see.
       reason: f.guardReason ? `Refused: ${f.guardReason}` : describe(cls, f),
       needsCommit: cls === 'merged-dirty',
+      repo: f.provenance?.sourceRepo ?? f.sourceRepoHint,
+      live: !!f.liveTerminalId,
+      uncommitted: unsaved.uncommitted,
+      unsavedCommits: unsaved.unsavedCommits,
+      unsavedKnown: unsaved.known,
+      needsUnsavedConfirm: needsUnsavedConfirm(unsaved),
+      wouldRemove: wouldAutoRemove(f, now) ?? undefined,
+      backfilled: f.backfilled,
     }
   })
   const auto = entries.filter((e) => e.auto)
@@ -221,7 +318,30 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
     totalBytes: entries.reduce((n, e) => n + e.sizeBytes, 0),
     autoBytes: auto.reduce((n, e) => n + e.sizeBytes, 0),
     sizesOmitted,
+    wouldRemove: entries.filter((e) => e.wouldRemove),
   }
+}
+
+export type RemovalDecision =
+  | { kind: 'refuse'; why: string }
+  | { kind: 'git'; sourceRepo: string }
+  | { kind: 'plain' }
+
+/** How a MANUAL removal of this directory proceeds. Pure.
+ *
+ *  An open lane is never removable, whatever was confirmed. Unsaved work (or unknown) needs the
+ *  second confirmation. With a source repo that still exists, removal goes through git so its
+ *  worktree record is pruned; without one (the repo is gone, or nothing names it) the directory is
+ *  deleted without git. Both paths end in the trash. */
+export function removalDecision(f: WorktreeFacts, unsavedConfirmed: boolean): RemovalDecision {
+  if (f.liveTerminalId) return { kind: 'refuse', why: `A lane is open in it (${f.liveTerminalId}).` }
+  if (f.guardReason) return { kind: 'refuse', why: f.guardReason }
+  if (needsUnsavedConfirm(unsavedWorkOf(f)) && !unsavedConfirmed) {
+    return { kind: 'refuse', why: 'It has unsaved work, or git could not tell, and removing it was not confirmed.' }
+  }
+  const repo = f.provenance?.sourceRepo ?? f.sourceRepoHint
+  if (repo && f.sourceRepoExists) return { kind: 'git', sourceRepo: repo }
+  return { kind: 'plain' }
 }
 
 // ── gathering the facts ──────────────────────────────────────────────────────────────────────
@@ -241,17 +361,56 @@ const git = async (cwd: string, args: string[]): Promise<string | null> => {
  *  is the same work once. Skipped entirely by the boot and quit sweeps — the auto tier's decision
  *  does not depend on size, only its presentation does, and quit must not wait on a 34 GB stat
  *  walk. */
-async function sizesOf(root: string): Promise<Map<string, number>> {
+async function duOf(paths: readonly string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>()
-  try {
-    const { stdout } = await execFileAsync('/bin/sh', ['-c', `du -sk "${root}"/* 2>/dev/null`], {
-      maxBuffer: 8 * 1024 * 1024,
-    })
-    for (const line of stdout.split('\n')) {
-      const m = /^(\d+)\s+(.*)$/.exec(line.trim())
-      if (m) out.set(m[2], Number(m[1]) * 1024)
-    }
-  } catch { /* sizes are presentation, never a blocker */ }
+  if (!paths.length) return out
+  // `du` exits non-zero when any one path is unreadable but still prints the rest.
+  const stdout = await execFileAsync('du', ['-sk', ...paths], { maxBuffer: 8 * 1024 * 1024 })
+    .then((r) => r.stdout, (e: { stdout?: string }) => e.stdout ?? '')
+  for (const line of stdout.split('\n')) {
+    const m = /^(\d+)\s+(.*)$/.exec(line.trim())
+    if (m) out.set(m[2], Number(m[1]) * 1024)
+  }
+  return out
+}
+
+export interface SizeCacheEntry { bytes: number; mtimeMs: number }
+
+/** Which directories need a fresh `du`. Pure. A directory's own mtime changes when an entry
+ *  directly inside it is added, removed or renamed, not when a deep file grows, so the cache can
+ *  under-report a checkout whose `node_modules` grew; `refresh` re-measures everything. */
+export function staleSizePaths(
+  cache: Readonly<Record<string, SizeCacheEntry>>,
+  mtimes: ReadonlyMap<string, number>,
+  refresh: boolean,
+): string[] {
+  return [...mtimes].filter(([p, m]) => refresh || cache[p]?.mtimeMs !== m).map(([p]) => p)
+}
+
+/** Sizes for the worktree root's children, measuring only what the cache cannot answer. */
+async function sizesOf(paths: readonly string[], refresh: boolean): Promise<Map<string, number>> {
+  let cache: Record<string, SizeCacheEntry> = {}
+  try { cache = JSON.parse(await readFile(sizesFile(), 'utf8')) as Record<string, SizeCacheEntry> } catch { /* none yet */ }
+  const mtimes = new Map<string, number>()
+  await Promise.all(paths.map(async (p) => {
+    try { mtimes.set(p, (await stat(p)).mtimeMs) } catch { /* gone */ }
+  }))
+  const stale = staleSizePaths(cache, mtimes, refresh)
+  const measured = await duOf(stale).catch(() => new Map<string, number>())
+  const next: Record<string, SizeCacheEntry> = {}
+  const out = new Map<string, number>()
+  for (const [p, m] of mtimes) {
+    const bytes = measured.get(p) ?? (stale.includes(p) ? undefined : cache[p]?.bytes)
+    if (bytes === undefined) continue
+    next[p] = { bytes, mtimeMs: m }
+    out.set(p, bytes)
+  }
+  if (stale.length) {
+    try {
+      await mkdir(operatorDir(), { recursive: true })
+      await writeFile(sizesFile(), JSON.stringify(next), 'utf8')
+    } catch { /* the cache is an optimisation */ }
+  }
   return out
 }
 
@@ -277,7 +436,123 @@ export function sourceRepoFromGitFile(contents: string): string | undefined {
   return at > 0 ? m[1].slice(0, at) : undefined
 }
 
-interface ProvenanceRecord { path: string; createdAt: number; sourceRepo: string; branch: string }
+/** The admin entry a `.git` file names, resolved against the worktree directory. */
+export function gitdirFromGitFile(contents: string, worktreePath: string): string | undefined {
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(contents)
+  return m ? resolvePath(worktreePath, m[1]) : undefined
+}
+
+// ── provenance backfill ──────────────────────────────────────────────────────────────────────
+//
+// The audit found 34 directories (13.8 GB) in `unattributed` only because they predate
+// `worktree-provenance.json`. Most were registered and merged. The backfill writes a record for a
+// directory only when git itself vouches for the pairing, from both ends:
+//   1. the source repo's `git worktree list` names the directory;
+//   2. the directory's `.git` FILE names an admin entry that is a direct child of that repo's
+//      `<common-dir>/worktrees`;
+//   3. that admin entry's `gitdir` file points back at the directory's `.git`.
+// Step 3 is what a copied `.git` file cannot fake. Anything that fails a step stays unattributed.
+
+export interface WorktreeListing { path: string; branch?: string }
+
+/** `git worktree list --porcelain` → path and branch per entry. Pure. */
+export function parseWorktreeList(porcelain: string): WorktreeListing[] {
+  const out: WorktreeListing[] = []
+  for (const block of porcelain.split(/\n\s*\n/)) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1]?.trim()
+    if (!path) continue
+    const ref = /^branch (.+)$/m.exec(block)?.[1]?.trim()
+    out.push({ path, branch: ref?.replace(/^refs\/heads\//, '') })
+  }
+  return out
+}
+
+/** Reads a file only if it is a regular file (not a symlink, not a directory). */
+export type FileReader = (path: string) => string | null
+
+/** Steps 2 and 3 above. Pure given `read`. */
+export function provePairing(worktreePath: string, worktreesDir: string, read: FileReader): boolean {
+  const marker = read(join(worktreePath, '.git'))
+  if (marker == null) return false
+  const admin = gitdirFromGitFile(marker, worktreePath)
+  if (!admin || dirname(admin) !== resolvePath(worktreesDir)) return false
+  const back = read(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+  if (!back) return false
+  return resolvePath(admin, back) === join(resolvePath(worktreePath), '.git')
+}
+
+/** The records to append for one source repo. Pure given `read` and `createdAtOf`.
+ *
+ *  `worktreeRootPath` is compared against git's paths, which git resolves (`/private/var/…`).
+ *  `recordRoot` is the form written to the record, which must be the form `createWorktree` writes
+ *  and `gatherFacts` looks up (`join(operatorDir(), 'worktrees', name)`), or the record never
+ *  matches its directory. */
+export function backfillRecords(
+  input: { sourceRepo: string; worktreesDir: string; listed: readonly WorktreeListing[] },
+  known: ReadonlySet<string>,
+  worktreeRootPath: string,
+  read: FileReader,
+  createdAtOf: (path: string) => number,
+  recordRoot = worktreeRootPath,
+): Provenance[] {
+  const out: Provenance[] = []
+  for (const l of input.listed) {
+    if (dirname(resolvePath(l.path)) !== resolvePath(worktreeRootPath)) continue
+    const path = join(recordRoot, basename(l.path))
+    if (known.has(path)) continue
+    if (!provePairing(l.path, input.worktreesDir, read)) continue
+    out.push({ path, createdAt: createdAtOf(l.path), createdBy: 'backfill', sourceRepo: input.sourceRepo, branch: l.branch ?? '' })
+  }
+  return out
+}
+
+const regularFile: FileReader = (path) => {
+  try {
+    const st = lstatSync(path)
+    return st.isFile() ? readFileSync(path, 'utf8') : null
+  } catch {
+    return null
+  }
+}
+
+/** Boot: write provenance for pre-provenance worktrees that git can pair with a known project.
+ *  Never throws. Returns how many records were written. */
+export async function backfillProvenanceAtBoot(): Promise<number> {
+  try {
+    const recordRoot = worktreeRoot()
+    let root: string
+    try { root = realpathSync(recordRoot) } catch { return 0 }
+    const known = new Set((await loadProvenance()).keys())
+    const projects = (await loadProjects()) as Array<{ path?: unknown }>
+    const seen = new Set<string>()
+    const records: Provenance[] = []
+    for (const p of projects) {
+      if (typeof p?.path !== 'string' || !existsSync(p.path)) continue
+      const common = await git(p.path, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+      if (!common || basename(common) !== '.git') continue
+      const sourceRepo = dirname(common)
+      if (seen.has(sourceRepo)) continue
+      seen.add(sourceRepo)
+      const list = await git(sourceRepo, ['worktree', 'list', '--porcelain'])
+      if (list == null) continue
+      records.push(...backfillRecords(
+        { sourceRepo, worktreesDir: join(common, 'worktrees'), listed: parseWorktreeList(list) },
+        known, root, regularFile,
+        (path) => { try { const st = statSync(path); return Math.round(st.birthtimeMs || st.mtimeMs) } catch { return Date.now() } },
+        recordRoot,
+      ))
+    }
+    for (const r of records) known.add(r.path)
+    await appendProvenance(records)
+    if (records.length) console.error(`[reap] boot: backfilled provenance for ${records.length} worktree(s)`)
+    return records.length
+  } catch (e) {
+    console.error('[reap] provenance backfill failed:', e)
+    return 0
+  }
+}
+
+interface ProvenanceRecord { path: string; createdAt: number; sourceRepo: string; branch: string; createdBy?: string }
 
 async function loadProvenance(): Promise<Map<string, ProvenanceRecord>> {
   const out = new Map<string, ProvenanceRecord>()
@@ -298,36 +573,40 @@ async function loadProvenance(): Promise<Map<string, ProvenanceRecord>> {
  *  so as of its last write", not a re-verification against the live process table. Verifying that
  *  would need per-pid `lsof`, which this project forbids for the TCC-prompt reason. It is
  *  therefore a FLOOR on what is live — which is the safe direction for it to be wrong in. */
-async function liveClaims(): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
+async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: Map<string, number> }> {
+  const claims = new Map<string, string>()
+  const lastActive = new Map<string, number>()
   try {
     const raw = JSON.parse(await readFile(join(operatorDir(), 'sessions.json'), 'utf8')) as unknown[]
     for (const s of Array.isArray(raw) ? raw : []) {
-      const r = s as { cwd?: unknown; terminalId?: unknown }
-      if (typeof r?.cwd === 'string' && typeof r.terminalId === 'string' && r.terminalId) {
-        out.set(r.cwd, r.terminalId)
-      }
+      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown }
+      if (typeof r?.cwd !== 'string') continue
+      if (typeof r.terminalId === 'string' && r.terminalId) claims.set(r.cwd, r.terminalId)
+      const at = typeof r.lastActiveAt === 'string' ? Date.parse(r.lastActiveAt) : NaN
+      if (!Number.isNaN(at)) lastActive.set(r.cwd, Math.max(at, lastActive.get(r.cwd) ?? 0))
     }
   } catch { /* no roster = nothing claimed */ }
-  return out
+  return { claims, lastActive }
 }
 
 /** Read the disk and answer the classifier's questions for every worktree directory.
  *
  *  Never throws: this runs at boot and on quit, and a reaper that can throw is a launch or a quit
  *  that can hang. Every probe that fails answers in the direction of "do not touch". */
-export async function gatherFacts(opts: { withSizes?: boolean } = {}): Promise<WorktreeFacts[]> {
+export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: boolean } = {}): Promise<WorktreeFacts[]> {
   const root = worktreeRoot()
   let names: string[]
   try {
-    names = (await readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name)
+    names = (await readdir(root, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && d.name !== TRASH_DIR_NAME)
+      .map((d) => d.name)
   } catch {
     return []
   }
-  const [provenance, claims, sizes] = await Promise.all([
+  const [provenance, { claims, lastActive }, sizes] = await Promise.all([
     loadProvenance(),
     liveClaims(),
-    opts.withSizes ? sizesOf(root) : Promise.resolve(new Map<string, number>()),
+    opts.withSizes ? sizesOf(names.map((n) => join(root, n)), !!opts.refreshSizes) : Promise.resolve(new Map<string, number>()),
   ])
 
   // One `git branch --merged` per SOURCE REPO, not per worktree: 107 directories share a handful
@@ -341,7 +620,9 @@ export async function gatherFacts(opts: { withSizes?: boolean } = {}): Promise<W
     // Provenance first (it is the attribution record), then the directory's own `.git` pointer.
     // The second is not attribution — it does not make a directory removable — but it is what
     // makes `dead-source-repo` reachable for the directories that have no provenance at all.
-    const pointedAt = await readFile(join(path, '.git'), 'utf8').then(sourceRepoFromGitFile).catch(() => undefined)
+    const marker = await readFile(join(path, '.git'), 'utf8').catch(() => undefined)
+    const pointedAt = marker ? sourceRepoFromGitFile(marker) : undefined
+    const adminEntry = marker ? gitdirFromGitFile(marker, path) : undefined
     const sourceRepo = prov?.sourceRepo ?? pointedAt
     const sourceRepoExists = sourceRepo ? existsSync(sourceRepo) : true
 
@@ -349,23 +630,46 @@ export async function gatherFacts(opts: { withSizes?: boolean } = {}): Promise<W
     const gitValid = head != null
     const branch = gitValid ? (await git(path, ['rev-parse', '--abbrev-ref', 'HEAD'])) ?? undefined : undefined
     const status = gitValid ? await git(path, ['status', '--porcelain']) : null
+    let unsavedCommits: number | undefined
+    let headAt: number | undefined
+    if (gitValid) {
+      // Commits on HEAD that no OTHER local branch and no remote-tracking branch contains. The
+      // exclusion names this worktree's own branch, which otherwise contains every commit on HEAD.
+      // The pattern is WITHOUT `refs/heads/`: `--branches` matches excludes relative to it, and the
+      // prefixed form silently excludes nothing, which reads every commit as saved (checked
+      // against git 2.54, 2026-09-16).
+      const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
+      const count = await git(path, ['rev-list', '--count', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+      unsavedCommits = count != null && /^\d+$/.test(count) ? Number(count) : undefined
+      const ct = await git(path, ['log', '-1', '--format=%ct', 'HEAD'])
+      headAt = ct && /^\d+$/.test(ct) ? Number(ct) * 1000 : undefined
+    }
 
     let merged: boolean | undefined
     let registered = false
-    if (gitValid && sourceRepo && sourceRepoExists) {
-      if (!mergedCache.has(sourceRepo)) mergedCache.set(sourceRepo, await mergedBranches(sourceRepo))
+    if (sourceRepo && sourceRepoExists) {
       if (!registeredCache.has(sourceRepo)) registeredCache.set(sourceRepo, await registeredPaths(sourceRepo))
-      const mergedSet = mergedCache.get(sourceRepo)
-      merged = mergedSet && branch ? mergedSet.has(branch) : undefined
       registered = registeredCache.get(sourceRepo)?.has(path) ?? false
+      if (gitValid) {
+        if (!mergedCache.has(sourceRepo)) mergedCache.set(sourceRepo, await mergedBranches(sourceRepo))
+        const mergedSet = mergedCache.get(sourceRepo)
+        merged = mergedSet && branch ? mergedSet.has(branch) : undefined
+      }
     }
 
+    const activity = [prov?.createdAt, headAt, lastActive.get(path)].filter((n): n is number => typeof n === 'number')
     return {
       path,
       sizeBytes: sizes.get(path) ?? 0,
       gitValid,
       branch,
       dirty: !!status,
+      uncommittedCount: status == null ? undefined : status.split('\n').filter(Boolean).length,
+      unsavedCommits,
+      sourceRepoHint: sourceRepo,
+      orphaned: !!(sourceRepo && sourceRepoExists && adminEntry && !registered && !existsSync(adminEntry)),
+      lastActivityAt: activity.length ? Math.max(...activity) : undefined,
+      backfilled: prov?.createdBy === 'backfill',
       registered,
       merged,
       provenance: prov ? { sourceRepo: prov.sourceRepo, createdAt: prov.createdAt, branch: prov.branch } : undefined,
@@ -402,10 +706,80 @@ async function registeredPaths(repo: string): Promise<Set<string> | null> {
   return new Set(out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice(9).trim()))
 }
 
-/** The plan, gathered and classified. This is what the bridge call returns. */
-export async function reapPlan(opts: { withSizes?: boolean } = {}): Promise<ReapPlan> {
+/** The plan, gathered and classified. This is what the bridge call returns. Sizes come from the
+ *  cache unless `refreshSizes`; see `staleSizePaths`. */
+export async function reapPlan(opts: { withSizes?: boolean; refreshSizes?: boolean } = {}): Promise<ReapPlan> {
   const facts = await gatherFacts(opts)
-  return reapPlanFrom(facts, !opts.withSizes)
+  const plan = reapPlanFrom(facts, !opts.withSizes)
+  try { plan.lastCheck = JSON.parse(await readFile(autoCheckFile(), 'utf8')) as AutoCheckRecord } catch { /* no check yet */ }
+  return plan
+}
+
+// ── report-only automatic check ──────────────────────────────────────────────────────────────
+//
+// STAGE 1 DELETES NOTHING HERE. A trigger computes what the automatic rule (`wouldAutoRemove`)
+// would take and records it for the Worktrees page; `AUTO_REAP_ON_TRIGGERS` is not consulted
+// because this path has no removal in it at all.
+
+let checking: Promise<void> | null = null
+let checkAgain: string | null = null
+
+/** Run the report-only check for `trigger` (`boot`, `lane-exit`, `task-done`). Coalesces bursts:
+ *  at most one run in flight and one queued. Never throws. */
+export function checkAutoRemoval(trigger: string): Promise<void> {
+  if (checking) { checkAgain = trigger; return checking }
+  checking = (async () => {
+    let next: string | null = trigger
+    while (next) {
+      const current = next
+      checkAgain = null
+      try {
+        const plan = reapPlanFrom(await gatherFacts())
+        const record: AutoCheckRecord = {
+          trigger: current,
+          at: Date.now(),
+          entries: plan.wouldRemove.map((e) => ({ path: e.path, reason: e.wouldRemove! })),
+        }
+        await mkdir(operatorDir(), { recursive: true })
+        await writeFile(autoCheckFile(), JSON.stringify(record, null, 2), 'utf8')
+        console.error(`[reap] ${current}: ${record.entries.length} worktree(s) would be removed automatically — REPORT ONLY, nothing removed`)
+      } catch (e) {
+        console.error(`[reap] ${current}: automatic-removal check failed:`, e)
+      }
+      next = checkAgain
+    }
+  })().finally(() => { checking = null })
+  return checking
+}
+
+// ── manual removal ───────────────────────────────────────────────────────────────────────────
+
+export interface RemoveSelectedResult { removed: string[]; failed: Array<{ path: string; error: string }> }
+
+/** Remove directories the user picked in Settings. Facts are gathered AGAIN here rather than
+ *  trusted from the page, so a lane opened since the page loaded, or work written since, is seen.
+ *  `confirmedUnsaved` lists the paths whose unsaved work the user confirmed separately. */
+export async function removeSelected(paths: readonly string[], confirmedUnsaved: readonly string[]): Promise<RemoveSelectedResult> {
+  const result: RemoveSelectedResult = { removed: [], failed: [] }
+  const facts = new Map((await gatherFacts()).map((f) => [f.path, f]))
+  const confirmed = new Set(confirmedUnsaved)
+  for (const path of paths) {
+    const f = facts.get(path)
+    if (!f) { result.failed.push({ path, error: 'Not a directory under the worktree root.' }); continue }
+    const decision = removalDecision(f, confirmed.has(path))
+    try {
+      if (decision.kind === 'refuse') throw new Error(decision.why)
+      if (decision.kind === 'git') {
+        await removeWorktreeDurably(path, decision.sourceRepo, { branch: f.branch, reason: 'removed from Settings' })
+      } else {
+        await removePlainDirectory(path)
+      }
+      result.removed.push(path)
+    } catch (e) {
+      result.failed.push({ path, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+  return result
 }
 
 // ── the pending-removal record ───────────────────────────────────────────────────────────────
@@ -576,6 +950,9 @@ export async function queueEndedSessions(): Promise<number> {
 /** Boot reconciliation — defect #5. Never throws; boot does not depend on it. */
 export async function reconcileAtBoot(): Promise<void> {
   try {
+    // Finishing removals the user already asked for: entries only reach the trash through one.
+    void scheduleSweep()
+    await backfillProvenanceAtBoot()
     const queued = await queueEndedSessions()
     const drained = await drainPending(!AUTO_REAP_ON_TRIGGERS)
     const result = await reap({ dryRun: !AUTO_REAP_ON_TRIGGERS })
@@ -589,6 +966,7 @@ export async function reconcileAtBoot(): Promise<void> {
   } catch (e) {
     console.error('[reap] boot reconciliation failed:', e)
   }
+  await checkAutoRemoval('boot')
 }
 
 /** The quit trigger — defect #1. Called from `teardown()` and AWAITED there, in main, so a

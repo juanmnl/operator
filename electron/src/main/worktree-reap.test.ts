@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { classify, reapPlanFrom, sourceRepoFromGitFile, type WorktreeFacts } from './worktree-reap'
+import {
+  classify, reapPlanFrom, sourceRepoFromGitFile, type WorktreeFacts,
+  backfillRecords, gitdirFromGitFile, needsUnsavedConfirm, parseWorktreeList, provePairing,
+  removalDecision, staleSizePaths, unsavedWorkOf, wouldAutoRemove, AUTO_REMOVE_GRACE_MS,
+} from './worktree-reap'
+import { isTrashEntryName, trashEntryName } from './worktree-trash'
 
 /** A directory in the SAFEST-to-remove state. Every test below is this, minus one thing — which
  *  keeps each case about the single fact that moved it. */
@@ -212,5 +217,201 @@ describe('sourceRepoFromGitFile — how a directory with no provenance names its
 
   it('tolerates trailing whitespace and CRLF', () => {
     expect(sourceRepoFromGitFile('gitdir: /r/.git/worktrees/w  \r\n')).toBe('/r')
+  })
+})
+
+// ── stage 1 cleanup: backfill, unsaved work, the report-only rule, manual removal ───────────────
+
+const ROOT = '/Users/j/.operator/worktrees'
+const REPO = '/Users/j/Developer/repo'
+const WT_DIR = `${REPO}/.git/worktrees`
+
+/** A fake disk: path → file contents. Anything absent reads as null, like a missing file. */
+const disk = (files: Record<string, string>) => (p: string) => files[p] ?? null
+
+/** The three files a real, correctly paired worktree has. */
+const paired = (name: string) => ({
+  [`${ROOT}/${name}/.git`]: `gitdir: ${WT_DIR}/${name}\n`,
+  [`${WT_DIR}/${name}/gitdir`]: `${ROOT}/${name}/.git\n`,
+})
+
+describe('parseWorktreeList', () => {
+  it('reads path and branch per block, and leaves a detached one without a branch', () => {
+    const out = parseWorktreeList([
+      `worktree ${REPO}`, 'HEAD abc', 'branch refs/heads/main', '',
+      `worktree ${ROOT}/repo-1`, 'HEAD def', 'branch refs/heads/operator/1', '',
+      `worktree ${ROOT}/repo-2`, 'HEAD 123', 'detached', '',
+    ].join('\n'))
+    expect(out).toEqual([
+      { path: REPO, branch: 'main' },
+      { path: `${ROOT}/repo-1`, branch: 'operator/1' },
+      { path: `${ROOT}/repo-2`, branch: undefined },
+    ])
+  })
+})
+
+describe('provePairing — git vouches for the pairing from both ends', () => {
+  it('accepts a .git file naming a direct admin child whose gitdir points back', () => {
+    expect(provePairing(`${ROOT}/repo-1`, WT_DIR, disk(paired('repo-1')))).toBe(true)
+  })
+
+  it('accepts a relative gitdir, resolved against the worktree', () => {
+    const files = {
+      [`${ROOT}/repo-1/.git`]: 'gitdir: ../../../Developer/repo/.git/worktrees/repo-1\n',
+      [`${WT_DIR}/repo-1/gitdir`]: `${ROOT}/repo-1/.git\n`,
+    }
+    expect(gitdirFromGitFile(files[`${ROOT}/repo-1/.git`], `${ROOT}/repo-1`)).toBe(`/Users/j/Developer/repo/.git/worktrees/repo-1`)
+    expect(provePairing(`${ROOT}/repo-1`, WT_DIR, disk(files))).toBe(true)
+  })
+
+  it('refuses a .git file copied from another worktree — the back-reference names someone else', () => {
+    const files = {
+      [`${ROOT}/copy/.git`]: `gitdir: ${WT_DIR}/repo-1\n`,
+      [`${WT_DIR}/repo-1/gitdir`]: `${ROOT}/repo-1/.git\n`,
+    }
+    expect(provePairing(`${ROOT}/copy`, WT_DIR, disk(files))).toBe(false)
+  })
+
+  it('refuses an admin entry that is not a direct child of the repo worktrees dir', () => {
+    const files = {
+      [`${ROOT}/repo-1/.git`]: `gitdir: ${WT_DIR}/nested/repo-1\n`,
+      [`${WT_DIR}/nested/repo-1/gitdir`]: `${ROOT}/repo-1/.git\n`,
+    }
+    expect(provePairing(`${ROOT}/repo-1`, WT_DIR, disk(files))).toBe(false)
+  })
+
+  it('refuses when .git is not a readable file, or the admin entry is gone', () => {
+    expect(provePairing(`${ROOT}/repo-1`, WT_DIR, disk({}))).toBe(false)
+    expect(provePairing(`${ROOT}/repo-1`, WT_DIR, disk({ [`${ROOT}/repo-1/.git`]: `gitdir: ${WT_DIR}/repo-1\n` }))).toBe(false)
+  })
+})
+
+describe('backfillRecords', () => {
+  const listed = [
+    { path: REPO, branch: 'main' },                          // the repo itself — not under the root
+    { path: `${ROOT}/repo-1`, branch: 'operator/1' },        // proven, no record → backfilled
+    { path: `${ROOT}/repo-2`, branch: 'operator/2' },        // already has provenance → skipped
+    { path: `${ROOT}/repo-3`, branch: 'operator/3' },        // listed but the pairing fails → skipped
+    { path: `${ROOT}/sub/repo-4`, branch: 'operator/4' },    // not a direct child of the root → skipped
+  ]
+  const read = disk({ ...paired('repo-1'), ...paired('repo-2'), [`${ROOT}/repo-3/.git`]: `gitdir: ${WT_DIR}/repo-3\n` })
+
+  it('writes a record only for listed, proven, unrecorded direct children of the root', () => {
+    const out = backfillRecords({ sourceRepo: REPO, worktreesDir: WT_DIR, listed }, new Set([`${ROOT}/repo-2`]), ROOT, read, () => 42)
+    expect(out).toEqual([{ path: `${ROOT}/repo-1`, createdAt: 42, createdBy: 'backfill', sourceRepo: REPO, branch: 'operator/1' }])
+  })
+
+  it('moves a merged, previously unattributed directory into the normal classes', () => {
+    const before = safe({ path: `${ROOT}/repo-1`, provenance: undefined })
+    expect(classify(before)).toBe('unattributed')
+    const [rec] = backfillRecords({ sourceRepo: REPO, worktreesDir: WT_DIR, listed }, new Set(), ROOT, read, () => 42)
+    const after = { ...before, provenance: { sourceRepo: rec.sourceRepo, createdAt: rec.createdAt, branch: rec.branch } }
+    expect(classify(after)).toBe('merged-clean')
+    expect(classify({ ...after, merged: false })).toBe('unmerged')
+  })
+})
+
+describe('unsavedWorkOf — the user rule: uncommitted files or commits on no other branch/remote', () => {
+  it('none when clean and every commit is elsewhere', () => {
+    const u = unsavedWorkOf(safe({ uncommittedCount: 0, unsavedCommits: 0 }))
+    expect(u).toMatchObject({ known: true, any: false })
+    expect(needsUnsavedConfirm(u)).toBe(false)
+  })
+
+  it('uncommitted files or unsaved commits each count', () => {
+    expect(unsavedWorkOf(safe({ dirty: true, uncommittedCount: 2, unsavedCommits: 0 })).any).toBe(true)
+    expect(unsavedWorkOf(safe({ uncommittedCount: 0, unsavedCommits: 1 })).any).toBe(true)
+  })
+
+  it('unknown when git cannot read the directory or could not answer — and unknown needs confirmation', () => {
+    const invalid = unsavedWorkOf(safe({ gitValid: false }))
+    expect(invalid.known).toBe(false)
+    expect(needsUnsavedConfirm(invalid)).toBe(true)
+    expect(needsUnsavedConfirm(unsavedWorkOf(safe({ uncommittedCount: 0, unsavedCommits: undefined })))).toBe(true)
+  })
+})
+
+describe('wouldAutoRemove — report only', () => {
+  const now = 10 * AUTO_REMOVE_GRACE_MS
+  const idle = (over: Partial<WorktreeFacts> = {}) =>
+    safe({ uncommittedCount: 0, unsavedCommits: 0, lastActivityAt: now - AUTO_REMOVE_GRACE_MS - 1, ...over })
+
+  it('takes a clean, unclaimed worktree with no unsaved commits past the grace period', () => {
+    expect(wouldAutoRemove(idle(), now)).toMatch(/Clean, no unsaved commits/)
+  })
+
+  it('does not require merged — nothing exists only here, and the branch is kept', () => {
+    expect(wouldAutoRemove(idle({ merged: false }), now)).not.toBeNull()
+  })
+
+  it('refuses inside the grace period, with no activity time, or with unsaved or unknown work', () => {
+    expect(wouldAutoRemove(idle({ lastActivityAt: now - 1000 }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ lastActivityAt: undefined }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ uncommittedCount: 1, dirty: true }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ unsavedCommits: 3 }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ unsavedCommits: undefined }), now)).toBeNull()
+  })
+
+  it('refuses a live lane, a guard refusal, or a directory without provenance', () => {
+    expect(wouldAutoRemove(idle({ liveTerminalId: 't3' }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ guardReason: 'path is $HOME' }), now)).toBeNull()
+    expect(wouldAutoRemove(idle({ provenance: undefined }), now)).toBeNull()
+  })
+
+  it('takes a git-orphaned worktree whose source repo exists, but not one whose repo is gone', () => {
+    expect(wouldAutoRemove(safe({ gitValid: false, orphaned: true, lastActivityAt: now }), now)).toMatch(/pruned/)
+    expect(wouldAutoRemove(safe({ gitValid: false, orphaned: true, sourceRepoExists: false }), now)).toBeNull()
+  })
+
+  it('lists it in the plan without touching the auto tier', () => {
+    const plan = reapPlanFrom([idle({ merged: false })], true, now)
+    expect(plan.wouldRemove).toHaveLength(1)
+    expect(plan.auto).toHaveLength(0)
+  })
+})
+
+describe('removalDecision — manual removal from Settings', () => {
+  it('never removes a live-claimed directory, confirmed or not', () => {
+    expect(removalDecision(safe({ liveTerminalId: 't1' }), true)).toMatchObject({ kind: 'refuse' })
+  })
+
+  it('needs the unsaved-work confirmation for unsaved or unknown work', () => {
+    const dirty = safe({ dirty: true, uncommittedCount: 4, unsavedCommits: 0 })
+    expect(removalDecision(dirty, false)).toMatchObject({ kind: 'refuse' })
+    expect(removalDecision(dirty, true)).toEqual({ kind: 'git', sourceRepo: '/Users/j/Developer/repo' })
+  })
+
+  it('removes through git when a source repo exists, even without provenance (the pointer names it)', () => {
+    const f = safe({ provenance: undefined, sourceRepoHint: REPO, uncommittedCount: 0, unsavedCommits: 0 })
+    expect(removalDecision(f, false)).toEqual({ kind: 'git', sourceRepo: REPO })
+  })
+
+  it('deletes the directory without git when the source repo is gone — after confirmation, since git cannot tell', () => {
+    const dead = safe({ gitValid: false, sourceRepoExists: false, provenance: undefined, sourceRepoHint: '/gone' })
+    expect(removalDecision(dead, false)).toMatchObject({ kind: 'refuse' })
+    expect(removalDecision(dead, true)).toEqual({ kind: 'plain' })
+  })
+
+  it('refuses whatever the guard refuses', () => {
+    expect(removalDecision(safe({ guardReason: 'path is the repository itself' }), true)).toMatchObject({ kind: 'refuse' })
+  })
+})
+
+describe('staleSizePaths — du only what the cache cannot answer', () => {
+  const cache = { '/a': { bytes: 1, mtimeMs: 10 }, '/b': { bytes: 2, mtimeMs: 20 } }
+  it('re-measures new and changed directories only', () => {
+    expect(staleSizePaths(cache, new Map([['/a', 10], ['/b', 21], ['/c', 5]]), false)).toEqual(['/b', '/c'])
+  })
+  it('re-measures everything on refresh', () => {
+    expect(staleSizePaths(cache, new Map([['/a', 10], ['/b', 20]]), true)).toEqual(['/a', '/b'])
+  })
+})
+
+describe('trash entry names', () => {
+  it('the sweep recognises only names it generates', () => {
+    expect(isTrashEntryName(trashEntryName(1726500000000))).toBe(true)
+    for (const bad of ['repo-abc123', 'wt-123-ABCDEF12', 'wt--deadbeef', 'wt-12-deadbee', '.operator-worktree-trash']) {
+      expect(isTrashEntryName(bad)).toBe(false)
+    }
   })
 })

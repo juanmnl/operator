@@ -1289,6 +1289,8 @@ export function DashboardView() {
     // Manual "Done ✓": capture the task's change summary while its dir/branch still
     // resolves, and run the verification gate in its dir.
     if (status === 'done') {
+      // Report-only: what the automatic worktree rule would remove now (see WorktreesSection).
+      window.operator.worktreeAutoRemovalCheck?.('task-done')
       const task = projectsRef.current.find((p) => p.id === projectId)?.tasks?.find((t) => t.id === id)
       if (task && !task.diffStat && taskHasDiffSource(task)) {
         void fetchTaskDiffStat(task).then((stat) => attachTaskDiffStats(projectId, [id], stat))

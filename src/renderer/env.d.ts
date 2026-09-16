@@ -147,7 +147,13 @@ declare global {
       /** Kill exactly these pids and their descendants. Only ever called after the user has seen
        *  the list and confirmed; returns how many processes were signalled. */
       devServerKill: (pids: number[]) => Promise<number>
-      worktreeReapPlan: () => Promise<ReapPlan>
+      /** Sizes come from a cache keyed on each directory's mtime; `refreshSizes` re-measures all. */
+      worktreeReapPlan: (opts?: { refreshSizes?: boolean }) => Promise<ReapPlan>
+      /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose
+       *  unsaved work was confirmed separately; main re-checks everything before acting. */
+      worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>
+      /** Report-only: record what the automatic worktree rule would remove after `trigger`. */
+      worktreeAutoRemovalCheck?: (trigger: string) => void
       /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a
        *  deliberate user action. */
       worktreeReap: (dryRun?: boolean) => Promise<ReapRunResult>

@@ -21,7 +21,7 @@ import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
-import { reconcileAtBoot, reapOnQuit } from './worktree-reap'
+import { checkAutoRemoval, reconcileAtBoot, reapOnQuit } from './worktree-reap'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
@@ -237,7 +237,12 @@ function boot(): void {
 
   terminals = new TerminalManager(
     (id, data) => { const w = win(); if (w) broadcast(w, 'onTerminalData', id, data) },
-    (id, code, signal) => { const w = win(); if (w) broadcast(w, 'onTerminalExit', id, code, signal) },
+    (id, code, signal, selfExit) => {
+      const w = win()
+      if (w) broadcast(w, 'onTerminalExit', id, code, signal)
+      // Report-only: what the automatic worktree rule would take now that a lane ended on its own.
+      if (selfExit) void checkAutoRemoval('lane-exit')
+    },
   )
   transcript = new Transcript()
   chat = new ChatStore()

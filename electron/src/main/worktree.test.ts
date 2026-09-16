@@ -307,3 +307,88 @@ describe('runCheck runs the project command through the USER\'S login shell', ()
     expect(r.output).not.toBe('') // zsh answered with its version; /bin/sh would print nothing
   })
 })
+
+// Every removal goes through the trash root and a background sweep. These run inside SANDBOX
+// (OPERATOR_DIR above), never against ~/.operator.
+describe('removal through the trash', () => {
+  it('renames the worktree into the trash root, prunes git’s record, and keeps the branch', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const trash = join(process.env.OPERATOR_DIR!, 'worktrees', '.operator-worktree-trash')
+    await wt.removeWorktree(lane.path, repo)
+    expect(existsSync(lane.path)).toBe(false)
+    expect(git(repo, ['worktree', 'list', '--porcelain'])).not.toContain(lane.path)
+    expect(git(repo, ['branch', '--list', lane.branch])).toContain(lane.branch)
+    expect(existsSync(trash)).toBe(true)
+  })
+
+  it('removes a dirty worktree too — the same outcome the old --force fallback had', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'uncommitted.txt'), 'x')
+    await wt.removeWorktree(lane.path, repo)
+    expect(existsSync(lane.path)).toBe(false)
+  })
+
+  it('plain directory removal refuses anything that is not directly under the worktree root', async () => {
+    const outside = mkdtempSync(join(SANDBOX, 'outside-'))
+    await expect(wt.removePlainDirectory(outside)).rejects.toThrow(/not directly under/)
+    expect(existsSync(outside)).toBe(true)
+    const nested = join(process.env.OPERATOR_DIR!, 'worktrees', 'a', 'b')
+    mkdirSync(nested, { recursive: true })
+    await expect(wt.removePlainDirectory(nested)).rejects.toThrow(/not directly under/)
+  })
+
+  it('plain directory removal takes a git-less directory under the root', async () => {
+    const dir = join(process.env.OPERATOR_DIR!, 'worktrees', 'dead-repo-abc')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '.git'), 'gitdir: /nowhere/.git/worktrees/dead-repo-abc\n')
+    await wt.removePlainDirectory(dir)
+    expect(existsSync(dir)).toBe(false)
+  })
+})
+
+// The facts the unsaved-work check and the backfill read, against real git (inside SANDBOX).
+describe('gathered facts and provenance backfill, end to end', () => {
+  it('counts uncommitted files and commits that exist on no other branch', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const factsOf = async () => (await reap.gatherFacts()).find((f) => f.path === lane.path)!
+
+    let f = await factsOf()
+    expect(f.uncommittedCount).toBe(0)
+    expect(f.unsavedCommits).toBe(0)
+
+    writeFileSync(join(lane.path, 'w.txt'), 'x')
+    git(lane.path, ['add', '-A'])
+    git(lane.path, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'lane work'])
+    writeFileSync(join(lane.path, 'u.txt'), 'y')
+    f = await factsOf()
+    expect(f.uncommittedCount).toBe(1)
+    expect(f.unsavedCommits).toBe(1)
+
+    // Once another branch holds the commit, it is no longer unsaved.
+    git(repo, ['branch', 'keep', lane.branch])
+    expect((await factsOf()).unsavedCommits).toBe(0)
+  })
+
+  it('backfills provenance for a listed, paired worktree of a known project, once', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const home = process.env.OPERATOR_DIR!
+    // Forget this worktree's provenance, as for a directory made before the file existed.
+    const provFile = join(home, 'worktree-provenance.json')
+    const kept = (JSON.parse(readFileSync(provFile, 'utf8')) as Array<{ path: string }>).filter((r) => r.path !== lane.path)
+    writeFileSync(provFile, JSON.stringify(kept))
+    writeFileSync(join(home, 'projects.json'), JSON.stringify([{ id: 'p', name: 'p', path: repo }]))
+
+    expect((await reap.gatherFacts()).find((f) => f.path === lane.path)?.provenance).toBeUndefined()
+    expect(await reap.backfillProvenanceAtBoot()).toBe(1)
+    const f = (await reap.gatherFacts()).find((x) => x.path === lane.path)!
+    expect(f.provenance?.branch).toBe(lane.branch)
+    expect(f.backfilled).toBe(true)
+    expect(await reap.backfillProvenanceAtBoot()).toBe(0)
+  })
+})

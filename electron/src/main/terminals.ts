@@ -99,7 +99,8 @@ interface Managed {
 }
 
 type DataSink = (id: string, base64: string) => void
-type ExitSink = (id: string, exitCode: number, signal: number) => void
+/** `selfExit` = the process ended without Operator killing it (the agent quit, or it crashed). */
+type ExitSink = (id: string, exitCode: number, signal: number, selfExit: boolean) => void
 
 export class TerminalManager {
   private readonly terminals = new Map<string, Managed>()
@@ -340,7 +341,7 @@ export class TerminalManager {
       p.onExit(({ exitCode, signal }) => {
         managed.exited = true
         managed.pty = null
-        this.onExit(id, exitCode, signal ?? 0)
+        this.onExit(id, exitCode, signal ?? 0, !managed.killing)
       })
     }
 
@@ -378,7 +379,8 @@ export class TerminalManager {
     p.onExit(({ exitCode, signal }) => {
       managed.exited = true
       managed.pty = null
-      this.onExit(id, exitCode, signal ?? 0)
+      // A plain shell is not a lane; its exit is never a worktree trigger.
+      this.onExit(id, exitCode, signal ?? 0, false)
     })
     return id
   }

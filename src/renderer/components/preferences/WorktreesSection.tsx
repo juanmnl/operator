@@ -1,23 +1,19 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { DevServerProc, ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
+import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedLabel } from '../../lib/worktree-groups'
 
-// The worktree reap plan, read-only except for one button.
+// Every directory under ~/.operator/worktrees, grouped by the repository it came from.
 //
 // From `dev/results/worktree-lifecycle-audit.md`: 107 directories, 34.0 GB, and defect #4 was
-// that there was no way to even AUDIT them from inside the app — that report had to be built by
-// shelling out to `git` and `du` by hand. This is the surface that closes it.
+// that there was no way to even AUDIT them from inside the app. The 2026-09-16 gap audit found
+// the next gap: 43 of 55 directories (15.4 GB) sat in classes the page could only display.
 //
-// COMPUTING THE PLAN NEVER REMOVES ANYTHING. The button is the only thing that does, it is the
-// only caller anywhere that passes `dryRun: false`, and it acts on the automatic tier only.
-
-/** Order the classes are listed in: what will be removed first, then what needs a decision, with
- *  the never-touched ones last. Reads top-to-bottom as "settled → open → not yours to decide". */
-const CLASS_ORDER: ReapClass[] = [
-  'merged-clean', 'merged-dirty', 'debris',
-  'unmerged', 'unattributed', 'corrupt', 'dead-source-repo',
-  'live-claimed',
-]
+// TWO WAYS ANYTHING IS REMOVED FROM HERE, both a press:
+// - "Remove selected": any rows the user ticks, except a row with a lane open in it. Rows with
+//   unsaved work (or where git cannot tell) need a second confirmation. Main re-checks all of it.
+// - "Remove N safe worktrees": the reaper's automatic tier, unchanged.
+// "Would remove automatically" is a report. Nothing on this page, and no trigger, acts on it yet.
 
 const CLASS_LABEL: Record<ReapClass, string> = {
   'merged-clean': 'Merged and clean',
@@ -30,17 +26,10 @@ const CLASS_LABEL: Record<ReapClass, string> = {
   'live-claimed': 'A lane is open here',
 }
 
-/** One line per class saying what the app will and won't do with it. The list is otherwise just
- *  paths, and a path does not tell you whether it is about to be deleted. */
-const CLASS_NOTE: Record<ReapClass, string> = {
-  'merged-clean': 'Removed automatically. The branch is kept — only the directory goes.',
-  'merged-dirty': 'Removed automatically, after the changes are committed to the branch first.',
-  'debris': 'Removed automatically. Left behind by an interrupted worktree creation.',
-  'unmerged': 'Never removed automatically — the branch has work that has not landed.',
-  'unattributed': 'Never removed automatically. Operator has no record of creating these, and the rule is that it only removes what it can prove it made.',
-  'corrupt': 'Never removed automatically. Something is wrong here that a sweep should not paper over.',
-  'dead-source-repo': 'Never removed automatically. No git command can reach these; removing one means deleting the directory outright.',
-  'live-claimed': 'Never touched.',
+const TRIGGER_LABEL: Record<string, string> = {
+  boot: 'app start',
+  'lane-exit': 'a lane exited',
+  'task-done': 'a task was marked done',
 }
 
 const GB = 1024 ** 3
@@ -51,27 +40,34 @@ function size(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 
+const baseName = (p: string) => p.split('/').pop() ?? p
+
 export function WorktreesSection() {
   const [plan, setPlan] = useState<ReapPlan | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  // 0 = not confirming · 1 = the list is shown · 2 = the unsaved-work confirmation is shown.
+  const [removeStep, setRemoveStep] = useState<0 | 1 | 2>(0)
 
-  const load = useCallback(() => {
+  const load = useCallback((refreshSizes = false) => {
     setError(null)
-    window.operator.worktreeReapPlan()
-      .then(setPlan)
+    window.operator.worktreeReapPlan({ refreshSizes })
+      .then((p) => {
+        setPlan(p)
+        setSelected((prev) => pruneSelection(prev, p.entries))
+      })
       .catch((e) => setError(String(e)))
   }, [])
 
-  useEffect(load, [load])
+  useEffect(() => { load() }, [load])
 
   const runReap = useCallback(async () => {
     setBusy(true)
     setConfirming(false)
     try {
-      // The ONLY `dryRun: false` in the app, and only ever from this press.
       const result = await window.operator.worktreeReap(false)
       setPlan(result.plan)
       const failed = result.failed.length
@@ -87,23 +83,44 @@ export function WorktreesSection() {
     }
   }, [load])
 
-  const byClass = CLASS_ORDER
-    .map((cls) => ({ cls, rows: (plan?.entries ?? []).filter((e) => e.cls === cls) }))
-    .filter((g) => g.rows.length > 0)
+  const chosen = (plan?.entries ?? []).filter((e) => selected.has(e.path) && isSelectable(e))
+  const unsaved = chosen.filter((e) => e.needsUnsavedConfirm)
+  const chosenBytes = chosen.reduce((n, e) => n + e.sizeBytes, 0)
+
+  const runRemoveSelected = useCallback(async (paths: string[], confirmedUnsaved: string[]) => {
+    setBusy(true)
+    setRemoveStep(0)
+    try {
+      const r = await window.operator.worktreeRemoveSelected(paths, confirmedUnsaved)
+      setOutcome(
+        `Removed ${r.removed.length} director${r.removed.length === 1 ? 'y' : 'ies'}.`
+        + (r.failed.length ? ` ${r.failed.length} not removed: ${r.failed.map((f) => `${baseName(f.path)} (${f.error})`).join('; ')}` : ''),
+      )
+      setSelected(new Set())
+      load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [load])
+
+  const groups = groupWorktrees(plan?.entries ?? [])
+  const showSize = !!plan && !plan.sizesOmitted
 
   return (
     <div>
       <h3 style={sectionHeader}>Worktrees</h3>
       <p style={sectionDesc}>
         Every directory under <code style={{ fontFamily: 'var(--font-mono)' }}>~/.operator/worktrees</code>,
-        classified. Nothing here is removed by opening this page — the button below is the only
-        thing that removes anything, and it acts only on the first three groups.
+        grouped by the repository it came from. Removing one deletes the directory and keeps its
+        branch. Nothing is removed by opening this page.
       </p>
 
       {error && (
         <div style={{ ...boxStyle, padding: '8px 12px', marginBottom: 12, fontSize: 11, color: 'var(--fg)' }}>
           Couldn't read the worktree plan. {error}{' '}
-          <button onClick={load} style={linkBtn}>retry</button>
+          <button onClick={() => load()} style={linkBtn}>retry</button>
         </div>
       )}
 
@@ -117,35 +134,67 @@ export function WorktreesSection() {
 
       {plan && (
         <>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--fg-muted)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12, fontSize: 11, color: 'var(--fg-muted)', flexWrap: 'wrap' }}>
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg)' }}>
               {plan.entries.length} worktree{plan.entries.length === 1 ? '' : 's'}
             </span>
-            {!plan.sizesOmitted && <span style={{ fontFamily: 'var(--font-mono)' }}>{size(plan.totalBytes)}</span>}
+            {showSize && <span style={{ fontFamily: 'var(--font-mono)' }}>{size(plan.totalBytes)}</span>}
             <span>·</span>
-            <span>{plan.asks.length} need a decision</span>
+            <span>{groups.length} repositor{groups.length === 1 ? 'y' : 'ies'}</span>
+            <button onClick={() => load(true)} disabled={busy} style={{ ...linkBtn, marginLeft: 'auto' }}
+                    title="Sizes are cached and re-measured when a directory changes. This re-measures every directory.">
+              Refresh sizes
+            </button>
           </div>
 
-          {byClass.map(({ cls, rows }) => (
-            <div key={cls} style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-                  textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg)',
-                }}>{CLASS_LABEL[cls]}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>
-                  {rows.length}
-                  {!plan.sizesOmitted && ` · ${size(rows.reduce((n, r) => n + r.sizeBytes, 0))}`}
-                </span>
+          <WouldRemove plan={plan} showSize={showSize} />
+
+          {groups.map((g) => {
+            const selectable = g.rows.filter(isSelectable)
+            const picked = selectable.filter((r) => selected.has(r.path)).length
+            return (
+              <div key={g.key || '(unknown)'} style={{ marginBottom: 16 }}>
+                <label style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4, cursor: selectable.length ? 'pointer' : 'default' }}
+                       title={g.key || 'No provenance record and no readable .git pointer names a repository'}>
+                  <input
+                    type="checkbox"
+                    checked={selectable.length > 0 && picked === selectable.length}
+                    ref={(el) => { if (el) el.indeterminate = picked > 0 && picked < selectable.length }}
+                    disabled={selectable.length === 0 || busy}
+                    onChange={() => setSelected((prev) => toggleGroup(prev, g))}
+                    aria-label={`Select all in ${g.label}`}
+                    style={{ margin: 0, flexShrink: 0 }}
+                  />
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                    textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg)',
+                  }}>{g.label}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>
+                    {g.rows.length} folder{g.rows.length === 1 ? '' : 's'}
+                    {showSize && ` · ${size(g.bytes)}`}
+                  </span>
+                </label>
+                <div style={boxStyle}>
+                  {g.rows.map((r, i) => (
+                    <Row
+                      key={r.path}
+                      entry={r}
+                      last={i === g.rows.length - 1}
+                      showSize={showSize}
+                      checked={selected.has(r.path)}
+                      disabled={busy}
+                      onToggle={() => setSelected((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(r.path)) next.delete(r.path)
+                        else next.add(r.path)
+                        return next
+                      })}
+                    />
+                  ))}
+                </div>
               </div>
-              <p style={{ ...sectionDesc, margin: '0 0 6px' }}>{CLASS_NOTE[cls]}</p>
-              <div style={boxStyle}>
-                {rows.map((r, i) => (
-                  <Row key={r.path} entry={r} last={i === rows.length - 1} showSize={!plan.sizesOmitted} />
-                ))}
-              </div>
-            </div>
-          ))}
+            )
+          })}
 
           {plan.entries.length === 0 && (
             <div style={{ ...boxStyle, padding: '10px 12px', fontSize: 11, color: 'var(--fg-muted)' }}>
@@ -157,25 +206,85 @@ export function WorktreesSection() {
             <p style={{ ...sectionDesc, margin: '12px 0 0' }}>{outcome}</p>
           )}
 
-          {plan.auto.length > 0 && (
-            <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              {confirming ? (
-                <>
-                  <span style={{ fontSize: 11, color: 'var(--fg)', flex: '1 1 100%' }}>
-                    {plan.auto.length} director{plan.auto.length === 1 ? 'y' : 'ies'} will be deleted.
-                    Every branch is kept — a lane can be resumed onto its branch afterwards, and
-                    uncommitted work is committed to the branch before its directory goes.
-                  </span>
-                  <button onClick={runReap} disabled={busy} style={primaryBtn}>
-                    {busy ? 'Removing…' : 'Remove them'}
+          {plan.entries.length > 0 && (
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {removeStep === 0 && (
+                <div>
+                  <button onClick={() => setRemoveStep(1)} disabled={busy || chosen.length === 0} style={primaryBtn}>
+                    Remove selected{chosen.length ? ` (${chosen.length}${showSize ? `, ${size(chosenBytes)}` : ''})` : ''}
                   </button>
-                  <button onClick={() => setConfirming(false)} style={linkBtn}>Cancel</button>
-                </>
-              ) : (
-                <button onClick={() => setConfirming(true)} disabled={busy} style={primaryBtn}>
-                  Remove {plan.auto.length} safe worktree{plan.auto.length === 1 ? '' : 's'}
-                  {!plan.sizesOmitted && ` (${size(plan.autoBytes)})`}
-                </button>
+                </div>
+              )}
+
+              {removeStep === 1 && (
+                <div style={{ ...boxStyle, padding: '10px 12px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--fg)', marginBottom: 8 }}>
+                    {chosen.length} director{chosen.length === 1 ? 'y' : 'ies'} will be deleted. Every branch is kept.
+                  </div>
+                  <ConfirmList rows={chosen} showSize={showSize} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                    {unsaved.length > 0 ? (
+                      <button onClick={() => setRemoveStep(2)} disabled={busy} style={primaryBtn}>Continue</button>
+                    ) : (
+                      <button onClick={() => runRemoveSelected(chosen.map((e) => e.path), [])} disabled={busy} style={primaryBtn}>
+                        {busy ? 'Removing…' : 'Remove them'}
+                      </button>
+                    )}
+                    <button onClick={() => setRemoveStep(0)} style={linkBtn}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {removeStep === 2 && (
+                <div style={{ ...boxStyle, padding: '10px 12px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--fg)', marginBottom: 8 }}>
+                    {unsaved.length} of these {unsaved.length === 1 ? 'has' : 'have'} unsaved work, or git
+                    cannot tell. Uncommitted files in {unsaved.length === 1 ? 'it' : 'them'} will be lost.
+                    Commits stay on their branches.
+                  </div>
+                  <ConfirmList rows={unsaved} showSize={showSize} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                    <button
+                      onClick={() => runRemoveSelected(chosen.map((e) => e.path), unsaved.map((e) => e.path))}
+                      disabled={busy} style={primaryBtn}
+                    >
+                      {busy ? 'Removing…' : `Remove all ${chosen.length}, including unsaved work`}
+                    </button>
+                    {chosen.length > unsaved.length && (
+                      <button
+                        onClick={() => runRemoveSelected(chosen.filter((e) => !e.needsUnsavedConfirm).map((e) => e.path), [])}
+                        disabled={busy} style={primaryBtn}
+                      >
+                        Remove only the {chosen.length - unsaved.length} without
+                      </button>
+                    )}
+                    <button onClick={() => setRemoveStep(0)} style={linkBtn}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {plan.auto.length > 0 && removeStep === 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {confirming ? (
+                    <>
+                      <span style={{ fontSize: 11, color: 'var(--fg)', flex: '1 1 100%' }}>
+                        {plan.auto.length} director{plan.auto.length === 1 ? 'y' : 'ies'} will be deleted.
+                        Every branch is kept — a lane can be resumed onto its branch afterwards, and
+                        uncommitted work is committed to the branch before its directory goes.
+                      </span>
+                      <button onClick={runReap} disabled={busy} style={primaryBtn}>
+                        {busy ? 'Removing…' : 'Remove them'}
+                      </button>
+                      <button onClick={() => setConfirming(false)} style={linkBtn}>Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirming(true)} disabled={busy} style={primaryBtn}
+                            title="Merged worktrees Operator can prove it created, plus creation debris.">
+                      Remove {plan.auto.length} safe worktree{plan.auto.length === 1 ? '' : 's'}
+                      {showSize && ` (${size(plan.autoBytes)})`}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -183,6 +292,69 @@ export function WorktreesSection() {
       )}
 
       <DevServers />
+    </div>
+  )
+}
+
+/** The report-only list. Stage 1: the rule is computed at app start, when a lane exits on its own
+ *  and when a task is marked done, and shown here. Nothing removes these automatically yet. */
+function WouldRemove({ plan, showSize }: { plan: ReapPlan; showSize: boolean }) {
+  const rows = plan.wouldRemove
+  const last = plan.lastCheck
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+          textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg)',
+        }}>Would remove automatically</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>{rows.length}</span>
+      </div>
+      <p style={{ ...sectionDesc, margin: '0 0 6px' }}>
+        Report only — nothing is removed automatically yet. The rule: clean, no commits that exist
+        only here, no lane open, unused for 24 hours; or already dropped by git.
+        {last && ` Last checked ${new Date(last.at).toLocaleString()} after ${TRIGGER_LABEL[last.trigger] ?? last.trigger}: ${last.entries.length}.`}
+      </p>
+      {rows.length > 0 ? (
+        <div style={boxStyle}>
+          {rows.map((r, i) => (
+            <div key={r.path} style={{
+              display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 12px',
+              borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none',
+            }}>
+              <span title={r.path} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', flexShrink: 0 }}>
+                {baseName(r.path)}
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--fg-muted)', flex: '1 1 auto', minWidth: 0 }}>{r.wouldRemove}</span>
+              {showSize && (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 0 60px', textAlign: 'right' }}>
+                  {size(r.sizeBytes)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ ...boxStyle, padding: '8px 12px', fontSize: 11, color: 'var(--fg-muted)' }}>
+          Nothing matches the rule right now.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ConfirmList({ rows, showSize }: { rows: ReapEntry[]; showSize: boolean }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: showSize ? 'minmax(0, 1fr) auto minmax(0, 1.4fr)' : 'minmax(0, 1fr) minmax(0, 1.4fr)', columnGap: 12, rowGap: 3 }}>
+      {rows.map((r) => (
+        <Fragment key={r.path}>
+          <span title={r.path} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {baseName(r.path)}
+          </span>
+          {showSize && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', textAlign: 'right' }}>{size(r.sizeBytes)}</span>}
+          <span style={{ fontSize: 11, color: r.needsUnsavedConfirm ? 'var(--fg)' : 'var(--fg-muted)' }}>{unsavedLabel(r)}</span>
+        </Fragment>
+      ))}
     </div>
   )
 }
@@ -374,25 +546,47 @@ function DevServers() {
   )
 }
 
-function Row({ entry, last, showSize }: { entry: ReapEntry; last: boolean; showSize: boolean }) {
+function Row({ entry, last, showSize, checked, disabled, onToggle }: {
+  entry: ReapEntry
+  last: boolean
+  showSize: boolean
+  checked: boolean
+  disabled: boolean
+  onToggle: () => void
+}) {
+  const selectable = isSelectable(entry)
   return (
-    <div style={{
-      display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 12px',
-      borderBottom: last ? 'none' : '1px solid var(--border)',
-    }}>
-      <span
-        style={{
-          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)',
-          flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}
-        title={entry.path}
-      >
+    <label
+      style={{
+        display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 12px',
+        borderBottom: last ? 'none' : '1px solid var(--border)',
+        cursor: selectable ? 'pointer' : 'default',
+      }}
+      title={`${entry.path}\n${entry.reason}`}
+    >
+      <input
+        type="checkbox"
+        checked={selectable && checked}
+        disabled={!selectable || disabled}
+        onChange={onToggle}
+        aria-label={selectable ? `Select ${baseName(entry.path)}` : `${baseName(entry.path)}: a lane is open here`}
+        style={{ margin: 0, flexShrink: 0, alignSelf: 'center' }}
+      />
+      <span style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
         {/* The basename carries the identity (`operator-a30080`); the full path is in the title.
             Truncating at the END, never the middle — the short id is the distinguishing part. */}
-        {entry.path.split('/').pop()}
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {baseName(entry.path)}
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {CLASS_LABEL[entry.cls]}{entry.backfilled ? ' (provenance backfilled)' : ''} · {unsavedLabel(entry)}
+        </span>
       </span>
       {entry.branch && (
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 0 auto' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {entry.branch}
         </span>
       )}
@@ -401,7 +595,7 @@ function Row({ entry, last, showSize }: { entry: ReapEntry; last: boolean; showS
           {size(entry.sizeBytes)}
         </span>
       )}
-    </div>
+    </label>
   )
 }
 
