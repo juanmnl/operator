@@ -1322,29 +1322,43 @@ function RailFoot({ collapsed, planText, agentsActive, onOpenAgents, tuningActiv
         </FootItem>
       </FootRow>
       {/* THE FOLD, and it lands on a hairline that was already here — see `lib/rail-foot` for which
-          tier is which and why. The seam between "navigation between projects" and "Claude files"
+          tier is which and why. The seam between "navigation between projects" and "settings"
           IS the control, so unfolding costs no extra row: expanded, the foot is exactly as tall as
           it has always been; folded, it loses two rows and a hairline and keeps its rhythm. */}
       <FootDisclosure expanded={footExpanded} onToggle={toggleFoot} />
       {footExpanded && (
         <>
-          {/* The two Claude-file shortcuts. A folder and a globe cannot say "project" and "global"
-              on their own, which is the argument for labelling all eight rather than some. */}
+          {/* SETTINGS, BY SCOPE: this project, and every project.
+              They were labelled `.claude` and `~/.claude`, which names the folders rather than
+              what is in them, and the project view also holds things that are not in `.claude` at
+              all (Environment is Operator's own per-project record). A user looking for where to
+              set a project's RAILWAY_TOKEN did not find it behind `.claude`.
+              `Global settings` and not `Settings · all projects`: `All projects` is already the
+              label of the gallery item two rows up, and two foot items sharing words for different
+              verbs is the confusion this rename removes. The paths stay in the tooltips.
+              GLYPHS: sliders for this project, the globe for global. Not the gear, which is
+              `Preferences` (Operator's own), and not the folder, which reads as "open folder". Two
+              verbs never share a glyph. Both labels measured in Archivo 11px against the 91px label
+              slot of a 121px cell: 79px and 76px, so neither ellipsises. */}
           <FootRow>
           <FootItem
             collapsed={collapsed}
             attr="data-rail-folder-prefs"
-            label=".claude"
-            mono
-            title={project ? `${project.name} Claude files (.claude)` : 'Project Claude files'}
-            hint="this project"
+            label="Project settings"
+            title={project ? `Settings for ${project.name}` : 'Project settings'}
+            hint=".claude, environment, worktrees"
             disabled={!project?.path}
             active={!!activeFolderPrefs && activeFolderPrefs === project?.path}
             onClick={() => project && onOpenFolderPrefs?.(project.path, project.name)}
           >
-            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.2l1.2 1.5h5.6A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z" strokeLinejoin="round" />
+            {/* Hollow knobs with the track broken around them, so nothing is filled with a
+                background colour that would show against the hover tint. */}
+            <path d="M2.5 4.5h6.4M12.1 4.5h1.4M2.5 8h1.4M7.1 8h6.4M2.5 11.5h4.9M10.6 11.5h2.9" strokeLinecap="round" />
+            <circle cx="10.5" cy="4.5" r="1.6" />
+            <circle cx="5.5" cy="8" r="1.6" />
+            <circle cx="9" cy="11.5" r="1.6" />
           </FootItem>
-          <FootItem collapsed={collapsed} attr="data-rail-global-prefs" label="~/.claude" mono title="Global Claude files (~/.claude)" hint="every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
+          <FootItem collapsed={collapsed} attr="data-rail-global-prefs" label="Global settings" title="Global settings" hint="~/.claude, every project" active={globalPrefsActive} onClick={() => onOpenGlobalPrefs?.()}>
             <circle cx="8" cy="8" r="6" />
             <ellipse cx="8" cy="8" rx="2.5" ry="6" />
             <path d="M2 8h12" />
@@ -1554,8 +1568,8 @@ function FootItem({ attr, label, title, hint, mono, onClick, active, disabled, c
   attr: string
   /** The word in the cell. Short — it is the widest thing in the foot. */
   label: string
-  /** The tooltip's name, which can be longer and more precise than the label (`.claude` is the
-   *  label; "operator Claude files (.claude)" is what it means). Also the accessible name. */
+  /** The tooltip's name, which can be longer and more precise than the label (`Project settings`
+   *  is the label; "Settings for operator" is what it means). Also the accessible name. */
   title: string
   hint: string
   /** Paths are named in mono — precise, short, and what the user recognises. */

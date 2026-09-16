@@ -36,7 +36,7 @@ import { GridTerminalPane } from '../components/terminal/GridTerminalPane'
 import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
-import { FolderPreferencesView } from '../components/preferences/FolderPreferencesView'
+import { FolderPreferencesView, type FolderPrefsTab } from '../components/preferences/FolderPreferencesView'
 import { announcement, canAnnounceTo, announceCutoff, REPORT_ANNOUNCE_MAX_AGE_MS } from '../lib/comms'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { FooterReading } from '../components/session/FooterReading'
@@ -192,7 +192,7 @@ export function DashboardView() {
       return Object.fromEntries(Object.entries(parsed).filter(([k]) => !k.startsWith('local-')))
     } catch { return {} }
   })
-  const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string } | null>(null)
+  const [activeFolderPrefs, setActiveFolderPrefs] = useState<{ projectPath: string; projectName: string; tab?: FolderPrefsTab } | null>(null)
   const [globalPrefsActive, setGlobalPrefsActive] = useState(false)
   const [agentsViewActive, setAgentsViewActive] = useState(false)
   const [tuningViewActive, setTuningViewActive] = useState(false)
@@ -3353,8 +3353,10 @@ export function DashboardView() {
   // terminals each render so closing siblings shrinks the totals (see lib/fan-out).
   const { effortLevels, fanInfo } = computeFanMembership(terminals)
 
-  const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string) => {
-    setActiveFolderPrefs({ projectPath, projectName })
+  // `tab` opens the view on one of its tabs (e.g. `Environment`) — for deep links. Nothing passes
+  // it yet.
+  const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string, tab?: FolderPrefsTab) => {
+    setActiveFolderPrefs({ projectPath, projectName, tab })
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setGlobalPrefsActive(false)
@@ -4397,7 +4399,7 @@ export function DashboardView() {
       actions.push({
         id: `prefs-${s.workingDirectory}`,
         group: 'Settings',
-        label: `Edit settings for ${s.projectName}`,
+        label: `Project settings · ${s.projectName}`,
         detail: s.workingDirectory,
         run: () => handleOpenFolderPrefs(s.workingDirectory, s.projectName),
       })
@@ -4543,7 +4545,7 @@ export function DashboardView() {
       { id: 'agents', group: 'Settings', label: 'Agents — fleet across all projects', run: handleOpenAgents },
       { id: 'tuning', group: 'Settings', label: 'Tuning — where the window went', run: handleOpenTuning },
       { id: 'prefs', group: 'Settings', label: 'Operator preferences', run: handleOpenPrefs },
-      { id: 'globals', group: 'Settings', label: 'Global Claude files', run: handleOpenGlobalPrefs },
+      { id: 'globals', group: 'Settings', label: 'Global settings (~/.claude)', run: handleOpenGlobalPrefs },
       { id: 'check-update', group: 'Settings', label: 'Check for updates', run: () => runUpdateCheck(true) },
       { id: 'theme', group: 'View', label: currentTheme.isDark ? 'Switch to light mode' : 'Switch to dark mode', run: handleToggleTheme },
     )
@@ -4583,7 +4585,7 @@ export function DashboardView() {
   // THE RAIL TILE'S MENU — deliberately SHORTER than the gallery card's, because the rail is a
   // switcher and the card is the project's admin surface.
   //
-  //   Reveal in Finder / Project Claude files   carry straight over: they act on the folder, need
+  //   Reveal in Finder / Project settings…      carry straight over: they act on the folder, need
   //                                             no room, and are the two things you want about a
   //                                             project you are working beside.
   //   Close project · end N agents              the one verb that belongs HERE rather than there:
@@ -4606,7 +4608,7 @@ export function DashboardView() {
     const live = projectActivities[project.id]?.live ?? 0
     return [
       { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
-      { label: 'Project Claude files', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
+      { label: 'Project settings…', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
       // Lanes of this project still on an older Claude Code than the one installed. Listed while
       // busy too, disabled, so the menu says why the header's Restart is not live yet.
       ...terminals
@@ -4890,6 +4892,7 @@ export function DashboardView() {
           <FolderPreferencesView
             projectPath={activeFolderPrefs.projectPath}
             projectName={activeFolderPrefs.projectName}
+            initialTab={activeFolderPrefs.tab}
             // The Operator-side record, for the Environment tab. Matched by PATH because that
             // is all this view is opened with; `projects.json` keys on the canonical repo root,
             // which is what `projectPath` already is here.
@@ -4906,7 +4909,7 @@ export function DashboardView() {
           <AppShell onToggleSidebar={toggleSidebar} sidebarCollapsed={sidebarCollapsed}>
           <FolderPreferencesView
             projectPath=""
-            projectName="Global Claude Files"
+            projectName="Global settings"
             globalOnly
           />
           </AppShell>

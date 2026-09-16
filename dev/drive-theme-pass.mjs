@@ -466,7 +466,7 @@ for (const [key, label] of THEMES) {
 
   // FolderPreferencesView — the tabbed page. Its General tab is where the de-facto field
   // labels live (the exported `fieldLabel` token is not actually consumed anywhere).
-  await p.locator('button[title="operator Claude files (.claude)"]').click()
+  await p.locator('[data-rail-folder-prefs]').click()
   await p.waitForTimeout(800)
   await p.locator('[data-page-tab="General"]').click()
   await p.waitForTimeout(600)

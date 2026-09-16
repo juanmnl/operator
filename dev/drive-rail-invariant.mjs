@@ -311,7 +311,7 @@ const updateShowing = (p) => p.evaluate(() => !!document.querySelector('[data-ra
 const FOOT = [
   ['agents', '[data-rail-agents]'], ['tuning', '[data-rail-tuning]'],
   ['gallery', '[data-rail-gallery]'], ['open folder', '[data-rail-open-folder]'],
-  ['.claude', '[data-rail-folder-prefs]'], ['~/.claude', '[data-rail-global-prefs]'],
+  ['project settings', '[data-rail-folder-prefs]'], ['global settings', '[data-rail-global-prefs]'],
   ['prefs', '[data-rail-prefs]'], ['theme', '[data-rail-theme]'],
 ]
 
