@@ -22,11 +22,18 @@
 // to stand in for the missing proof.
 import { execFile } from 'node:child_process'
 import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
 import { loadProjects, operatorDir } from './store'
-import { appendProvenance, dangerousRemovalReason, removePlainDirectory, removeWorktree, type Provenance } from './worktree'
+import {
+  appendProvenance, containsPath, dangerousRemovalReason, gitdirFromGitFile, provePairing, regularFile,
+  removePlainDirectory, removeWorktree, type FileReader, type Provenance,
+} from './worktree'
+
+// Moved to worktree.ts (removal needs them, and worktree.ts cannot import this module); re-exported
+// so the backfill's callers and tests keep one import site.
+export { gitdirFromGitFile, provePairing, type FileReader }
 import { TRASH_DIR_NAME, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
@@ -149,8 +156,12 @@ export interface ReapEntry {
   unsavedCommits?: number
   /** Git answered both unsaved-work questions. */
   unsavedKnown: boolean
-  /** Manual removal needs the second confirmation: unsaved work, or git could not tell. */
+  /** Manual removal needs the second confirmation: unsaved work, git could not tell, or git does
+   *  not vouch for it as a worktree so it is deleted as a plain directory. */
   needsUnsavedConfirm: boolean
+  /** Git does not vouch for it as a worktree of an existing repo: manual removal deletes the
+   *  directory without git. */
+  removedWithoutGit: boolean
   /** Set when the automatic rule WOULD take this directory; the sentence says why. Report only. */
   wouldRemove?: string
   backfilled?: boolean
@@ -241,7 +252,8 @@ function isAuto(cls: ReapClass, f: WorktreeFacts): boolean {
   if (cls === 'debris') return true
   // Merged and clean, and no unsaved work by the user's definition. A merged branch's commits are
   // on the default branch already; the check is here so the tier cannot drift from the rule.
-  return cls === 'merged-clean' && !unsavedWorkOf(f).any
+  // A failed `git status` leaves `dirty` false and the count undefined; that is unknown, not clean.
+  return cls === 'merged-clean' && f.uncommittedCount !== undefined && !unsavedWorkOf(f).any
 }
 
 export interface UnsavedWork {
@@ -268,17 +280,14 @@ export const needsUnsavedConfirm = (u: UnsavedWork): boolean => u.any || !u.know
 
 /** THE AUTOMATIC RULE, as stage 1 reports it. Pure; `null` = would not remove.
  *
- *  Two ways in, both requiring provenance (created or backfilled), no open lane and no guard
- *  refusal:
- *  - clean, with no unsaved commits, and nothing active in it for `AUTO_REMOVE_GRACE_MS`;
- *  - git-orphaned: the source repo exists and has already pruned this worktree's record.
+ *  Requires provenance (created or backfilled), no open lane, no guard refusal, a clean tree, no
+ *  unsaved commits, and nothing active in it for `AUTO_REMOVE_GRACE_MS`.
  *  Merge state is not a condition: a branch with no unsaved commits has nothing that exists only
  *  here, and the branch is kept either way. */
 export function wouldAutoRemove(f: WorktreeFacts, now: number): string | null {
   if (f.liveTerminalId || f.guardReason || !f.provenance) return null
-  if (f.orphaned && f.sourceRepoExists) {
-    return 'Git no longer tracks it: the source repo has already pruned its worktree record.'
-  }
+  // Git-orphaned folders are NOT taken (user decision, 2026-09-16): git cannot read them, so their
+  // unsaved state is unknown. They are shown for manual removal with the confirmation only.
   if (!f.gitValid || !f.sourceRepoExists) return null
   const u = unsavedWorkOf(f)
   if (!u.known || u.any) return null
@@ -309,7 +318,8 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       uncommitted: unsaved.uncommitted,
       unsavedCommits: unsaved.unsavedCommits,
       unsavedKnown: unsaved.known,
-      needsUnsavedConfirm: needsUnsavedConfirm(unsaved),
+      needsUnsavedConfirm: entryNeedsConfirm(f),
+      removedWithoutGit: !gitRepoFor(f),
       wouldRemove: wouldAutoRemove(f, now) ?? undefined,
       backfilled: f.backfilled,
     }
@@ -331,28 +341,47 @@ export type RemovalDecision =
   | { kind: 'git'; sourceRepo: string }
   | { kind: 'plain' }
 
+/** The repo git can remove this directory through: registered there, readable, repo present.
+ *  `removeWorktree` still asks git itself before acting (`gitVouches`); this is the plan's view. */
+function gitRepoFor(f: WorktreeFacts): string | undefined {
+  const repo = f.provenance?.sourceRepo ?? f.sourceRepoHint
+  return repo && f.sourceRepoExists && f.registered && f.gitValid ? repo : undefined
+}
+
 /** How a MANUAL removal of this directory proceeds. Pure.
  *
- *  An open lane is never removable, whatever was confirmed. Unsaved work (or unknown) needs the
- *  second confirmation. With a source repo that still exists, removal goes through git so its
- *  worktree record is pruned; without one (the repo is gone, or nothing names it) the directory is
- *  deleted without git. Both paths end in the trash. */
+ *  An open lane is never removable, whatever was confirmed. A directory git vouches for is removed
+ *  through git, and needs the confirmation only when it has unsaved work (or git could not tell).
+ *  Anything else — the repo is gone, git does not list it, its `.git` is broken, it is its own repo —
+ *  is deleted as a plain directory, and ALWAYS needs the confirmation: nothing can say what it
+ *  holds. Both paths end in the trash. */
 export function removalDecision(f: WorktreeFacts, unsavedConfirmed: boolean): RemovalDecision {
   if (f.liveTerminalId) return { kind: 'refuse', why: `A lane is open in it (${f.liveTerminalId}).` }
   if (f.guardReason) return { kind: 'refuse', why: f.guardReason }
-  if (needsUnsavedConfirm(unsavedWorkOf(f)) && !unsavedConfirmed) {
-    return { kind: 'refuse', why: 'It has unsaved work, or git could not tell, and removing it was not confirmed.' }
+  const repo = gitRepoFor(f)
+  if (!unsavedConfirmed && entryNeedsConfirm(f)) {
+    return {
+      kind: 'refuse',
+      why: repo
+        ? 'It has unsaved work, or git could not tell, and removing it was not confirmed.'
+        : 'Git does not vouch for it as a worktree, so it would be deleted as a plain directory, and that was not confirmed.',
+    }
   }
-  const repo = f.provenance?.sourceRepo ?? f.sourceRepoHint
-  if (repo && f.sourceRepoExists) return { kind: 'git', sourceRepo: repo }
-  return { kind: 'plain' }
+  return repo ? { kind: 'git', sourceRepo: repo } : { kind: 'plain' }
 }
+
+const entryNeedsConfirm = (f: WorktreeFacts): boolean => needsUnsavedConfirm(unsavedWorkOf(f)) || !gitRepoFor(f)
 
 // ── gathering the facts ──────────────────────────────────────────────────────────────────────
 
+/** Every git call in this module only READS. `GIT_OPTIONAL_LOCKS=0` stops `git status` taking
+ *  `index.lock` to refresh the index, which could fail a live lane's own `git commit` when a
+ *  report-only check runs on a lane exit or a task done (Review L5). */
 const git = async (cwd: string, args: string[]): Promise<string | null> => {
   try {
-    const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 8 * 1024 * 1024 })
+    const { stdout } = await execFileAsync('git', args, {
+      cwd, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    })
     return stdout.trim()
   } catch {
     return null
@@ -440,12 +469,6 @@ export function sourceRepoFromGitFile(contents: string): string | undefined {
   return at > 0 ? m[1].slice(0, at) : undefined
 }
 
-/** The admin entry a `.git` file names, resolved against the worktree directory. */
-export function gitdirFromGitFile(contents: string, worktreePath: string): string | undefined {
-  const m = /^gitdir:\s*(.+?)\s*$/m.exec(contents)
-  return m ? resolvePath(worktreePath, m[1]) : undefined
-}
-
 // ── provenance backfill ──────────────────────────────────────────────────────────────────────
 //
 // The audit found 34 directories (13.8 GB) in `unattributed` only because they predate
@@ -471,20 +494,6 @@ export function parseWorktreeList(porcelain: string): WorktreeListing[] {
   return out
 }
 
-/** Reads a file only if it is a regular file (not a symlink, not a directory). */
-export type FileReader = (path: string) => string | null
-
-/** Steps 2 and 3 above. Pure given `read`. */
-export function provePairing(worktreePath: string, worktreesDir: string, read: FileReader): boolean {
-  const marker = read(join(worktreePath, '.git'))
-  if (marker == null) return false
-  const admin = gitdirFromGitFile(marker, worktreePath)
-  if (!admin || dirname(admin) !== resolvePath(worktreesDir)) return false
-  const back = read(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
-  if (!back) return false
-  return resolvePath(admin, back) === join(resolvePath(worktreePath), '.git')
-}
-
 /** The records to append for one source repo. Pure given `read` and `createdAtOf`.
  *
  *  `worktreeRootPath` is compared against git's paths, which git resolves (`/private/var/…`).
@@ -508,15 +517,6 @@ export function backfillRecords(
     out.push({ path, createdAt: createdAtOf(l.path), createdBy: 'backfill', sourceRepo: input.sourceRepo, branch: l.branch ?? '' })
   }
   return out
-}
-
-const regularFile: FileReader = (path) => {
-  try {
-    const st = lstatSync(path)
-    return st.isFile() ? readFileSync(path, 'utf8') : null
-  } catch {
-    return null
-  }
 }
 
 /** Boot: write provenance for pre-provenance worktrees that git can pair with a known project.
@@ -770,6 +770,30 @@ export function checkAutoRemoval(trigger: string): Promise<void> {
 
 // ── manual removal ───────────────────────────────────────────────────────────────────────────
 
+/** THE PROCESS TABLE MAIN ALREADY HOLDS. `sessions.json` is written by a renderer effect and can lag
+ *  a lane that was just launched or resumed; `TerminalManager` knows every open pty's cwd now
+ *  (Review M4). Set once from `index.ts`. Empty until then, which only ever removes a refusal the
+ *  sessions file still makes. */
+let livePtyCwds: () => readonly string[] = () => []
+export function setLivePtyCwds(fn: () => readonly string[]): void { livePtyCwds = fn }
+
+/** A pty whose cwd is `path` or inside it. Pure given `cwds`. */
+export function ptyClaimOn(path: string, cwds: readonly string[]): string | undefined {
+  return cwds.find((c) => containsPath(path, c))
+}
+
+/** Is anything open in `path` RIGHT NOW: a pty in main, or a session record with a terminal. Asked
+ *  per folder immediately before its removal, not once for the whole batch. */
+async function liveClaimNow(path: string): Promise<string | undefined> {
+  const pty = ptyClaimOn(path, livePtyCwds())
+  if (pty) return `a terminal is open in ${pty}`
+  const { claims } = await liveClaims()
+  for (const [cwd, terminalId] of claims) {
+    if (containsPath(path, cwd)) return `a lane is open in it (${terminalId})`
+  }
+  return undefined
+}
+
 export interface RemoveSelectedResult { removed: string[]; failed: Array<{ path: string; error: string }> }
 
 /** Remove directories the user picked in Settings. Facts are gathered AGAIN here rather than
@@ -785,6 +809,8 @@ export async function removeSelected(paths: readonly string[], confirmedUnsaved:
     const decision = removalDecision(f, confirmed.has(path))
     try {
       if (decision.kind === 'refuse') throw new Error(decision.why)
+      const claim = await liveClaimNow(path)
+      if (claim) throw new Error(`Refused: ${claim}.`)
       if (decision.kind === 'git') {
         await removeWorktreeDurably(path, decision.sourceRepo, { branch: f.branch, reason: 'removed from Settings' })
       } else {
@@ -858,13 +884,25 @@ export async function clearPending(path: string): Promise<void> {
  *
  *  A record whose directory is already gone is simply dropped — the removal did happen, we just
  *  never got to clear the record, which is the ordinary outcome of the crash this exists for. */
-export async function drainPending(dryRun: boolean): Promise<{ removed: string[]; failed: string[]; pending: number }> {
+export async function drainPending(dryRun: boolean): Promise<{ removed: string[]; failed: string[]; held: string[]; pending: number }> {
   const list = await loadPending()
   const removed: string[] = []
   const failed: string[] = []
+  // Kept in the file but not removed: something is open in it, or it has unsaved work. A record can
+  // outlive its directory and later name a REATTACHED lane at the same deterministic path, so the
+  // record is never enough on its own (Review L1).
+  const held: string[] = []
+  const facts = dryRun ? new Map<string, WorktreeFacts>() : new Map((await gatherFacts()).map((f) => [f.path, f]))
   for (const entry of list) {
     if (!existsSync(entry.path)) { await clearPending(entry.path); continue }
     if (dryRun) continue
+    const f = facts.get(entry.path)
+    const claim = await liveClaimNow(entry.path)
+    if (claim || !f || f.liveTerminalId || needsUnsavedConfirm(unsavedWorkOf(f))) {
+      console.error(`[reap] pending removal of ${entry.path} held: ${claim ?? (f ? 'it has unsaved work, or git could not tell' : 'not a directory under the worktree root')}`)
+      held.push(entry.path)
+      continue
+    }
     try {
       await removeWorktree(entry.path, entry.sourceRepo)
       await clearPending(entry.path)
@@ -877,7 +915,7 @@ export async function drainPending(dryRun: boolean): Promise<{ removed: string[]
       failed.push(entry.path)
     }
   }
-  return { removed, failed, pending: (await loadPending()).length }
+  return { removed, failed, held, pending: (await loadPending()).length }
 }
 
 // ── the reap itself ──────────────────────────────────────────────────────────────────────────
@@ -896,13 +934,20 @@ export interface ReapResult {
  *  "is it clean?" answer is asked again right before each removal, because the plan can be minutes
  *  old: a folder that picked up changes since is skipped and reported, never committed and removed
  *  behind the one confirm. */
-export async function reap(opts: { dryRun?: boolean; withSizes?: boolean } = {}): Promise<ReapResult> {
+export async function reap(opts: { dryRun?: boolean; withSizes?: boolean; confirmedPaths?: readonly string[] } = {}): Promise<ReapResult> {
   const dryRun = opts.dryRun !== false
   const plan = await reapPlan({ withSizes: opts.withSizes })
   const result: ReapResult = { plan, removed: [], failed: [], bytesFreed: 0, dryRun }
   if (dryRun) return result
 
+  // The Settings button passes the paths its confirm listed. Only folders that are BOTH confirmed
+  // and still in the fresh tier are removed: one that left the tier since is not, and one that
+  // joined it was never shown (Review L2).
+  const confirmed = opts.confirmedPaths ? new Set(opts.confirmedPaths) : null
   for (const entry of plan.auto) {
+    if (confirmed && !confirmed.has(entry.path)) continue
+    const claim = await liveClaimNow(entry.path)
+    if (claim) { result.failed.push({ path: entry.path, error: `Refused: ${claim}.` }); continue }
     if (!entry.sourceRepo) {
       // Debris has no source repo and no git to remove it with; it is also the only class where
       // that is expected. Everything else in the auto tier is attributable by construction.
@@ -1031,6 +1076,14 @@ export async function removeWorktreeDurably(
     requestedAt: Date.now(),
     reason: opts.reason ?? 'lane close',
   })
-  await removeWorktree(path, sourceRepo)
+  try {
+    await removeWorktree(path, sourceRepo)
+  } catch (e) {
+    // A REFUSAL IS NOT AN INTERRUPTED REMOVAL. The record exists so a crash between intent and
+    // removal is retried; a removal that was refused would only be refused again, or worse, match
+    // a different lane later at the same path (Review L1).
+    await clearPending(path)
+    throw e
+  }
   await clearPending(path)
 }

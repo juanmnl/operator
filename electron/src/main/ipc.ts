@@ -261,8 +261,9 @@ export function registerIpc(d: Deps): void {
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.
-    worktreeReap: async (dryRun) => {
-      const result = await reap({ dryRun: dryRun !== false, withSizes: true })
+    worktreeReap: async (dryRun, confirmedPaths) => {
+      // A real run removes only folders the confirm listed: no list, nothing removed (Review L2).
+      const result = await reap({ dryRun: dryRun !== false, withSizes: true, confirmedPaths: (confirmedPaths ?? []).map(String) })
       return { removed: result.removed, failed: result.failed, bytesFreed: result.bytesFreed, dryRun: result.dryRun, plan: result.plan }
     },
     worktreeDiff: (path, base) => wt.worktreeDiff(path, base),

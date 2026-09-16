@@ -21,7 +21,7 @@ import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
-import { checkAutoRemoval, reconcileAtBoot, reapOnQuit } from './worktree-reap'
+import { checkAutoRemoval, reconcileAtBoot, reapOnQuit, setLivePtyCwds } from './worktree-reap'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
@@ -244,6 +244,7 @@ function boot(): void {
       if (selfExit) void checkAutoRemoval('lane-exit')
     },
   )
+  setLivePtyCwds(() => terminals?.liveCwds() ?? [])
   transcript = new Transcript()
   chat = new ChatStore()
   artifacts = new ArtifactStore()

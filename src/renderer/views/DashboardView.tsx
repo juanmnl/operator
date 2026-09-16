@@ -3100,7 +3100,16 @@ export function DashboardView() {
         const result = await window.operator.worktreeRemove(tab.cwd, tab.sourceCwd!)
         // `result?.ok` — an unexpected answer became an unhandled rejection here, and with
         // worktrees now a global default this path runs on every close of a writing lane.
-        if (!result?.ok) console.warn('Worktree removal failed:', result?.error ?? 'no result')
+        if (!result?.ok) {
+          console.warn('Worktree removal failed:', result?.error ?? 'no result')
+          // Shown, not only logged: a refusal now means git did not vouch for the folder (broken
+          // .git, not a worktree of this repo, locked), and it stays on disk for Settings to handle.
+          pushToast({
+            text: `Kept the worktree folder for ${tab.worktreeBranch}`,
+            detail: `${result?.error ?? 'No answer from the removal.'} Remove it from Settings → Worktrees if you no longer need it.`,
+            kind: 'error',
+          })
+        }
       })
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
@@ -3129,7 +3138,7 @@ export function DashboardView() {
     // Leave the session's settings view when its session is closed, so the main
     // area returns to the workspace instead of staying stuck in settings.
     setActiveFolderPrefs(null)
-  }, [terminals, forgetSavedSession, completeTerminalTasks])
+  }, [terminals, forgetSavedSession, completeTerminalTasks, pushToast])
   handleCloseSessionRef.current = handleCloseSession
 
   // CLAUDE CODE UPDATED UNDER A RUNNING LANE (lib/cli-update). Main records the version each pty was

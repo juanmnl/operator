@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { ReapEntry } from '../../shared/types'
-import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedLabel } from './worktree-groups'
+import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from './worktree-groups'
 
 const entry = (over: Partial<ReapEntry> = {}): ReapEntry => ({
   path: '/w/repo-1', cls: 'merged-clean', sizeBytes: 100, auto: true, reason: '',
   repo: '/dev/repo', live: false, uncommitted: 0, unsavedCommits: 0, unsavedKnown: true, needsUnsavedConfirm: false,
+  removedWithoutGit: false, branch: 'operator/abc',
   ...over,
 })
 
@@ -56,5 +57,25 @@ describe('unsavedLabel', () => {
   it('says so when there is nothing unsaved, and when git could not tell', () => {
     expect(unsavedLabel(entry())).toBe('No unsaved work')
     expect(unsavedLabel(entry({ unsavedKnown: false, uncommitted: undefined, unsavedCommits: undefined }))).toMatch(/unknown/)
+  })
+})
+
+describe('unsavedConsequence — the sentence above the second confirmation', () => {
+  it('says commits stay on their branches only for named branches', () => {
+    expect(unsavedConsequence([entry({ uncommitted: 2, unsavedCommits: 1 })]))
+      .toBe('Uncommitted files will be lost. Commits on a named branch stay on that branch.')
+  })
+
+  it('says detached-HEAD commits will be lost, and does not claim they stay on a branch', () => {
+    const text = unsavedConsequence([entry({ branch: 'HEAD', unsavedCommits: 3 })])
+    expect(text).toMatch(/detached HEAD, on no branch\. Those commits will be lost\./)
+    expect(text).not.toMatch(/stay on/)
+    expect(unsavedLabel(entry({ branch: 'HEAD', unsavedCommits: 3 }))).toBe('3 commits on a detached HEAD, on no branch')
+  })
+
+  it('says a folder git cannot read is deleted outright', () => {
+    const text = unsavedConsequence([entry({ unsavedKnown: false, uncommitted: undefined, unsavedCommits: undefined, removedWithoutGit: true })])
+    expect(text).toMatch(/deleted outright/)
+    expect(text).not.toMatch(/stay on/)
   })
 })

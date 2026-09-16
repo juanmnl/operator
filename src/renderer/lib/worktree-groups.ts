@@ -55,11 +55,36 @@ export function pruneSelection(selected: ReadonlySet<string>, entries: readonly 
   return new Set([...selected].filter((p) => ok.has(p)))
 }
 
+/** HEAD is detached: its commits are on no branch, and removing the folder drops the record that
+ *  holds them, so they become unreachable. */
+export const isDetached = (e: ReapEntry): boolean => e.branch === 'HEAD'
+
 /** What would be lost, in words, for the row and the confirm list. */
 export function unsavedLabel(e: ReapEntry): string {
   if (!e.unsavedKnown) return 'Unsaved work unknown — git cannot read it'
   const parts: string[] = []
   if (e.uncommitted) parts.push(`${e.uncommitted} uncommitted file${e.uncommitted === 1 ? '' : 's'}`)
-  if (e.unsavedCommits) parts.push(`${e.unsavedCommits} commit${e.unsavedCommits === 1 ? '' : 's'} on no other branch or remote`)
+  if (e.unsavedCommits) {
+    const n = `${e.unsavedCommits} commit${e.unsavedCommits === 1 ? '' : 's'}`
+    parts.push(isDetached(e) ? `${n} on a detached HEAD, on no branch` : `${n} on no other branch or remote`)
+  }
+  if (e.removedWithoutGit) parts.push('git does not recognise it as a worktree')
   return parts.length ? parts.join(' · ') : 'No unsaved work'
+}
+
+/** The consequence sentence above the second confirmation, true for the rows actually listed.
+ *  "Commits stay on their branches" is only said when it holds for every listed row (Review M3). */
+export function unsavedConsequence(rows: readonly ReapEntry[]): string {
+  const out: string[] = []
+  if (rows.some((r) => r.uncommitted)) out.push('Uncommitted files will be lost.')
+  const detached = rows.filter((r) => isDetached(r) && r.unsavedCommits)
+  if (detached.length) {
+    out.push(`${detached.length === 1 ? 'One folder has' : `${detached.length} folders have`} commits on a detached HEAD, on no branch. Those commits will be lost.`)
+  }
+  const unknown = rows.filter((r) => !r.unsavedKnown || r.removedWithoutGit)
+  if (unknown.length) {
+    out.push(`Git cannot say what ${unknown.length === 1 ? 'one folder holds' : `${unknown.length} folders hold`}; ${unknown.length === 1 ? 'it is' : 'they are'} deleted outright, and anything not already on a branch is lost.`)
+  }
+  if (rows.some((r) => r.unsavedCommits && !isDetached(r))) out.push('Commits on a named branch stay on that branch.')
+  return out.join(' ')
 }

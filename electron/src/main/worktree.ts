@@ -7,10 +7,10 @@
 // have taken something that was not a worktree with it.
 import { execFile } from 'node:child_process'
 import { loginShell } from './login-shell'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { existsSync, realpathSync } from 'node:fs'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, resolve as resolvePath, sep } from 'node:path'
+import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { operatorDir } from './store'
 import { moveToTrash, scheduleSweep } from './worktree-trash'
@@ -110,7 +110,10 @@ export async function appendProvenance(entries: Provenance[]): Promise<void> {
  *  already checked out. */
 async function reattachWorktree(root: string, branch: string): Promise<WorktreeCreateResult | null> {
   if (await gitOk(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]) == null) return null
-  await gitOk(root, ['worktree', 'prune'])
+  // NOT a bare `worktree prune`: that expires every missing worktree's record at once, including
+  // one on a disk that is merely unmounted (see `dropStaleAdminEntry`). Only the record holding
+  // THIS branch, and only if its directory is really gone, is dropped.
+  await dropStaleRecordForBranch(root, branch)
   const project = basename(root) || 'project'
   const short = branch.split('/').pop() || shortId()
   const path = join(worktreeRoot(), `${project}-${short}`)
@@ -255,7 +258,7 @@ function realOf(p: string): string {
   }
 }
 const samePath = (a: string, b: string) => realOf(a) === realOf(b)
-const containsPath = (parent: string, child: string) => {
+export const containsPath = (parent: string, child: string) => {
   const p = realOf(parent), c = realOf(child)
   return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
 }
@@ -349,16 +352,115 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
 export async function removeWorktree(path: string, sourceRoot: string): Promise<void> {
   const reason = dangerousRemovalReason(path, sourceRoot)
   if (reason) throw new Error(`Refusing to remove worktree ${path}: ${reason}`)
+  const vouched = await gitVouches(path, sourceRoot)
+  if (!vouched.ok) throw new Error(`Refusing to remove worktree ${path}: ${vouched.why}`)
   for (const scan of [await nestedRegisteredWorktree(path, sourceRoot), await nestedCheckout(path)]) {
     if (scan.kind === 'nested') throw new Error(`Refusing to remove worktree ${path}: it contains ${scan.what}`)
     if (scan.kind === 'unknown') throw new Error(`Refusing to remove worktree ${path}: cannot rule out a nested checkout — ${scan.why}`)
   }
   await moveToTrash(path)
-  // `prune` removes admin entries whose directory is missing, so after the rename it removes this
-  // one. It can also remove entries of OTHER worktrees of this repo whose directories were already
-  // gone — which is what git would do on its own next `gc`, and never touches a directory.
-  await gitOk(sourceRoot, ['worktree', 'prune'])
+  // Only THIS worktree's record. A bare `git worktree prune` expires every record whose directory
+  // is missing right now, with no grace period (`gc` waits `gc.worktreePruneExpire`, 3 months), so
+  // it would also delete the record of a worktree on an unmounted disk — its index, HEAD and
+  // reflog — and a detached HEAD's commits there become unreachable.
+  await dropStaleAdminEntry(vouched.admin, vouched.worktreesDir, vouched.gitFile)
+    .catch((e) => console.error(`[worktree] ${path} is in the trash but its git record was kept:`, e))
   void scheduleSweep()
+}
+
+/** Reads a file only if it is a regular file (not a symlink, not a directory). */
+export type FileReader = (path: string) => string | null
+
+export const regularFile: FileReader = (path) => {
+  try {
+    return lstatSync(path).isFile() ? readFileSync(path, 'utf8') : null
+  } catch {
+    return null
+  }
+}
+
+/** The admin entry a `.git` file names, resolved against the worktree directory. */
+export function gitdirFromGitFile(contents: string, worktreePath: string): string | undefined {
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(contents)
+  return m ? resolvePath(worktreePath, m[1]) : undefined
+}
+
+/** `<worktree>/.git` is a file naming an admin entry that is a DIRECT child of `worktreesDir`, and
+ *  that entry's `gitdir` points back at `<worktree>/.git`. The back-reference is what a copied
+ *  `.git` file cannot fake. Pure given `read`; pass real paths. */
+export function provePairing(worktreePath: string, worktreesDir: string, read: FileReader): boolean {
+  const marker = read(join(worktreePath, '.git'))
+  if (marker == null) return false
+  const admin = gitdirFromGitFile(marker, worktreePath)
+  if (!admin || dirname(admin) !== resolvePath(worktreesDir)) return false
+  const back = read(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+  if (!back) return false
+  return resolvePath(admin, back) === join(resolvePath(worktreePath), '.git')
+}
+
+type Vouch =
+  | { ok: true; admin: string; worktreesDir: string; gitFile: string }
+  | { ok: false; why: string }
+
+/** GIT MUST VOUCH FOR THE PAIR before a directory is removed as a worktree of `sourceRoot`.
+ *
+ *  `git worktree remove` used to do this check, even with `--force`: it refused a directory that
+ *  is not a worktree of the repo, a registered worktree whose `.git` file is broken, and a locked
+ *  worktree. The trash rename does not ask git anything, so the same three checks are made here
+ *  (Review H1, 2026-09-16). Without them a lane whose agent broke or re-`git init`ed its checkout
+ *  was deleted on close with its uncommitted work, because the WIP commit is skipped when status is
+ *  invalid. Anything refused here can still be removed from Settings, which treats it as a plain
+ *  directory with the unknown-unsaved confirmation. */
+export async function gitVouches(path: string, sourceRoot: string): Promise<Vouch> {
+  const real = realOf(path)
+  let listed: string[]
+  try { listed = await registeredWorktrees(sourceRoot) } catch (e) { return { ok: false, why: `git could not list the worktrees of ${sourceRoot}: ${e}` } }
+  if (!listed.some((p) => samePath(p, real))) return { ok: false, why: `git does not list it as a worktree of ${sourceRoot}` }
+  const common = await gitOk(sourceRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (!common) return { ok: false, why: `cannot resolve the git directory of ${sourceRoot}` }
+  const worktreesDir = join(realOf(common), 'worktrees')
+  if (!provePairing(real, worktreesDir, regularFile)) {
+    return { ok: false, why: 'its .git file and git\'s worktree record do not point at each other' }
+  }
+  const gitFile = join(real, '.git')
+  const admin = gitdirFromGitFile(regularFile(gitFile)!, real)!
+  if (existsSync(join(admin, 'locked'))) return { ok: false, why: 'the worktree is locked (git worktree lock)' }
+  return { ok: true, admin, worktreesDir, gitFile }
+}
+
+/** Delete ONE admin entry, and only when all of this still holds: it is a direct child of
+ *  `worktreesDir`, its `gitdir` names `expectedGitFile`, that path no longer exists, and the entry
+ *  is not locked. Throws otherwise; nothing is deleted. */
+async function dropStaleAdminEntry(admin: string, worktreesDir: string, expectedGitFile: string): Promise<void> {
+  if (dirname(admin) !== worktreesDir) throw new Error(`${admin} is not directly under ${worktreesDir}`)
+  const back = regularFile(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+  if (!back || resolvePath(admin, back) !== expectedGitFile) throw new Error(`${admin} does not point at ${expectedGitFile}`)
+  if (existsSync(expectedGitFile) || existsSync(dirname(expectedGitFile))) throw new Error(`${dirname(expectedGitFile)} still exists`)
+  if (existsSync(join(admin, 'locked'))) throw new Error(`${admin} is locked`)
+  await rm(admin, { recursive: true, force: true })
+}
+
+/** Reattach: drop the stale record that still holds `branch`, so `worktree add` accepts it. Only a
+ *  record whose directory is gone; a present directory means the branch is really checked out. */
+async function dropStaleRecordForBranch(root: string, branch: string): Promise<void> {
+  const out = await gitOk(root, ['worktree', 'list', '--porcelain'])
+  const common = await gitOk(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (out == null || !common) return
+  const worktreesDir = join(realOf(common), 'worktrees')
+  for (const block of out.split(/\n\s*\n/)) {
+    const wtPath = /^worktree (.+)$/m.exec(block)?.[1]?.trim()
+    if (!wtPath || !block.includes(`\nbranch refs/heads/${branch}\n`) && !block.endsWith(`\nbranch refs/heads/${branch}`)) continue
+    if (existsSync(wtPath)) return
+    let entries: string[] = []
+    try { entries = await readdir(worktreesDir) } catch { return }
+    for (const name of entries) {
+      const admin = join(worktreesDir, name)
+      const back = regularFile(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+      if (back && resolvePath(admin, back) === join(wtPath, '.git')) {
+        await dropStaleAdminEntry(admin, worktreesDir, join(wtPath, '.git')).catch(() => {})
+      }
+    }
+  }
 }
 
 /** Remove a directory under the worktree root WITHOUT git — for a directory whose source repo is

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classify, reapPlanFrom, sourceRepoFromGitFile, type WorktreeFacts,
   backfillRecords, gitdirFromGitFile, needsUnsavedConfirm, parseWorktreeList, provePairing,
-  removalDecision, staleSizePaths, unsavedWorkOf, wouldAutoRemove, AUTO_REMOVE_GRACE_MS,
+  removalDecision, staleSizePaths, unsavedWorkOf, wouldAutoRemove, AUTO_REMOVE_GRACE_MS, ptyClaimOn,
 } from './worktree-reap'
 import { isTrashEntryName, trashEntryName } from './worktree-trash'
 
@@ -14,6 +14,8 @@ const safe = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   gitValid: true,
   branch: 'operator/abc123',
   dirty: false,
+  uncommittedCount: 0,
+  unsavedCommits: 0,
   registered: true,
   merged: true,
   provenance: { sourceRepo: '/Users/j/Developer/repo', createdAt: 1, branch: 'operator/abc123' },
@@ -393,8 +395,10 @@ describe('wouldAutoRemove — report only', () => {
     expect(wouldAutoRemove(idle({ provenance: undefined }), now)).toBeNull()
   })
 
-  it('takes a git-orphaned worktree whose source repo exists, but not one whose repo is gone', () => {
-    expect(wouldAutoRemove(safe({ gitValid: false, orphaned: true, lastActivityAt: now }), now)).toMatch(/pruned/)
+  // User decision 2026-09-16: git cannot read an orphaned folder, so its unsaved state is unknown and
+  // the automatic rule never takes it. It is shown for manual removal with the confirmation only.
+  it('never takes a git-orphaned folder, whether or not its source repo exists', () => {
+    expect(wouldAutoRemove(safe({ gitValid: false, orphaned: true, uncommittedCount: undefined, unsavedCommits: undefined, lastActivityAt: 0 }), now)).toBeNull()
     expect(wouldAutoRemove(safe({ gitValid: false, orphaned: true, sourceRepoExists: false }), now)).toBeNull()
   })
 
@@ -402,6 +406,22 @@ describe('wouldAutoRemove — report only', () => {
     const plan = reapPlanFrom([idle({ merged: false })], true, now)
     expect(plan.wouldRemove).toHaveLength(1)
     expect(plan.auto).toHaveLength(0)
+  })
+})
+
+describe('the automatic tier treats a failed git status as unknown (Review L7)', () => {
+  it('a merged folder whose status could not be read is not auto', () => {
+    const plan = reapPlanFrom([safe({ uncommittedCount: undefined, dirty: false })])
+    expect(plan.entries[0].cls).toBe('merged-clean')
+    expect(plan.auto).toEqual([])
+  })
+})
+
+describe('ptyClaimOn — the live claim from main\'s own pty table (Review M4)', () => {
+  it('claims a folder when a pty runs in it or anywhere inside it, and not a sibling', () => {
+    expect(ptyClaimOn('/w/repo-1', ['/w/repo-1'])).toBe('/w/repo-1')
+    expect(ptyClaimOn('/w/repo-1', ['/elsewhere', '/w/repo-1/apps/web'])).toBe('/w/repo-1/apps/web')
+    expect(ptyClaimOn('/w/repo-1', ['/w/repo-10', '/w'])).toBeUndefined()
   })
 })
 
@@ -419,6 +439,19 @@ describe('removalDecision — manual removal from Settings', () => {
   it('removes through git when a source repo exists, even without provenance (the pointer names it)', () => {
     const f = safe({ provenance: undefined, sourceRepoHint: REPO, uncommittedCount: 0, unsavedCommits: 0 })
     expect(removalDecision(f, false)).toEqual({ kind: 'git', sourceRepo: REPO })
+  })
+
+  // Review H1: git must vouch. Unregistered or unreadable folders are plain deletions, and a plain
+  // deletion always needs the confirmation, even when nothing looked unsaved.
+  it('sends an unregistered or unreadable folder to the plain path, and only with confirmation', () => {
+    for (const f of [
+      safe({ registered: false }),
+      safe({ gitValid: false, uncommittedCount: undefined, unsavedCommits: undefined }),
+    ]) {
+      expect(removalDecision(f, false)).toMatchObject({ kind: 'refuse', why: expect.stringMatching(/plain directory/) })
+      expect(removalDecision(f, true)).toEqual({ kind: 'plain' })
+      expect(reapPlanFrom([f]).entries[0]).toMatchObject({ needsUnsavedConfirm: true, removedWithoutGit: true })
+    }
   })
 
   it('deletes the directory without git when the source repo is gone — after confirmation, since git cannot tell', () => {

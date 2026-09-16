@@ -5,9 +5,9 @@
 //
 // 1. A removal returns as soon as the rename is done. A lane checkout is routinely hundreds of
 //    thousands of files, and a recursive delete of one blocked `git worktree remove` for seconds.
-// 2. Every removal ends in the same place. Manual removal from Settings, the reaper, a lane close
-//    and the `--force` fallback all rename into one root that one sweep drains, so there is a
-//    single path to audit rather than four.
+// 2. Every removal ends in the same place. Manual removal from Settings, the reaper, a lane close,
+//    merge and discard all rename into one root that one sweep drains, so there is a single path
+//    to audit.
 //
 // TRIMMED FROM THE RUST, deliberately. The Rust version falls back to a sibling trash root beside
 // the directory when the canonical rename crosses a volume, and keeps a registry of those roots.
@@ -58,6 +58,17 @@ export interface SweepReport { removed: number; failed: number; deferred: number
 /** Delete trash entries, one at a time. Never throws. */
 export async function sweepTrash(): Promise<SweepReport> {
   const report: SweepReport = { removed: 0, failed: 0, deferred: 0 }
+  // The same check `moveToTrash` makes: a trash root swapped for a symlink would point the sweep at
+  // `wt-…` directories somewhere else (Review L7).
+  try {
+    const st = await lstat(trashRoot())
+    if (!st.isDirectory() || st.isSymbolicLink()) {
+      console.error(`[worktree-trash] ${trashRoot()} is not a plain directory; not sweeping`)
+      return report
+    }
+  } catch {
+    return report
+  }
   let names: string[]
   try {
     names = (await readdir(trashRoot(), { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name)

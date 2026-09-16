@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, renameSync, realpathSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -414,5 +414,130 @@ describe('boot/quit plan without sizes', () => {
     expect(result.plan.entries.find((e) => e.path === husk)!.cls).toBe('debris')
     expect(result.removed).toEqual([])
     expect(existsSync(dead)).toBe(true)
+  })
+})
+
+// Review H1: removal only when git vouches for the pair. Each case below is one the old
+// `git worktree remove --force` refused, and must still be refused — with the folder left intact.
+describe('removeWorktree refuses what git does not vouch for', () => {
+  it('a registered worktree whose .git file is corrupt', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'work.txt'), 'unsaved')
+    writeFileSync(join(lane.path, '.git'), 'this is not a gitdir line\n')
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/do not point at each other/)
+    expect(existsSync(join(lane.path, 'work.txt'))).toBe(true)
+  })
+
+  it('a directory that is not a worktree of the repo', async () => {
+    const repo = scratchRepo()
+    const stranger = join(process.env.OPERATOR_DIR!, 'worktrees', 'not-a-worktree')
+    mkdirSync(stranger, { recursive: true })
+    writeFileSync(join(stranger, 'keep.txt'), 'x')
+    await expect(wt.removeWorktree(stranger, repo)).rejects.toThrow(/does not list it/)
+    expect(existsSync(join(stranger, 'keep.txt'))).toBe(true)
+  })
+
+  it('a worktree whose root was git-init\'d into its own repo', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    rmSync(join(lane.path, '.git'))
+    git(lane.path, ['init', '-q'])
+    writeFileSync(join(lane.path, 'work.txt'), 'unsaved')
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/do not point at each other/)
+    expect(existsSync(join(lane.path, 'work.txt'))).toBe(true)
+  })
+
+  it('a locked worktree', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    git(repo, ['worktree', 'lock', lane.path])
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/locked/)
+    expect(existsSync(lane.path)).toBe(true)
+  })
+})
+
+// Review M1: removal drops only its own git record. A sibling worktree whose folder is missing for
+// a while (an unmounted disk) keeps its record, where a bare `git worktree prune` deleted it.
+describe('removal and reattach touch only their own git record', () => {
+  it('a temporarily missing sibling worktree survives another removal and a reattach', async () => {
+    const repo = scratchRepo()
+    const a = await wt.createWorktree(repo)
+    const b = await wt.createWorktree(repo)
+    const away = join(SANDBOX, `unmounted-${Date.now()}`)
+    renameSync(b.path, away)
+
+    await wt.removeWorktree(a.path, repo)
+    // A's record is gone and B's is still there, although B's folder is missing right now.
+    const listed = git(repo, ['worktree', 'list', '--porcelain'])
+    expect(listed).not.toContain(realpathSync(join(a.path, '..')) + '/' + a.path.split('/').pop())
+    expect(listed).toContain(`branch refs/heads/${b.branch}`)
+    // The reattach path used to run a bare prune too.
+    const again = await wt.createWorktree(repo, a.branch)
+    expect(again.branch).toBe(a.branch)
+
+    renameSync(away, b.path)
+    expect(git(b.path, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(b.branch)
+  })
+})
+
+describe('removal paths re-check live claims and pending records', () => {
+  it('Settings removal refuses a folder a pty is running in, whatever sessions.json says (M4)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    reap.setLivePtyCwds(() => [join(lane.path, 'apps')])
+    try {
+      const r = await reap.removeSelected([lane.path], [lane.path])
+      expect(r.removed).toEqual([])
+      expect(r.failed[0].error).toMatch(/terminal is open/)
+      expect(existsSync(lane.path)).toBe(true)
+    } finally {
+      reap.setLivePtyCwds(() => [])
+    }
+  })
+
+  it('a refused durable removal leaves no pending record (L1)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    git(repo, ['worktree', 'lock', lane.path])
+    await expect(reap.removeWorktreeDurably(lane.path, repo)).rejects.toThrow(/locked/)
+    expect((await reap.loadPending()).some((p) => p.path === lane.path)).toBe(false)
+  })
+
+  it('a real drain holds a pending record whose folder has unsaved work or a live pty (L1)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const dirty = await wt.createWorktree(repo)
+    writeFileSync(join(dirty.path, 'unsaved.txt'), 'x')
+    const live = await wt.createWorktree(repo)
+    for (const l of [dirty, live]) {
+      await reap.queueRemoval({ path: l.path, sourceRepo: repo, requestedAt: Date.now(), reason: 'test' })
+    }
+    reap.setLivePtyCwds(() => [live.path])
+    try {
+      const r = await reap.drainPending(false)
+      expect(r.held).toEqual(expect.arrayContaining([dirty.path, live.path]))
+      expect(r.removed).not.toContain(dirty.path)
+      expect(existsSync(dirty.path) && existsSync(live.path)).toBe(true)
+    } finally {
+      reap.setLivePtyCwds(() => [])
+      await reap.clearPending(dirty.path)
+      await reap.clearPending(live.path)
+    }
+  })
+
+  it('the safe button removes only confirmed paths that are still in the tier (L2)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const nothing = await reap.reap({ dryRun: false, confirmedPaths: [] })
+    expect(nothing.removed).toEqual([])
+    expect(existsSync(lane.path)).toBe(true)
+
+    const r = await reap.reap({ dryRun: false, confirmedPaths: [lane.path, '/not/in/the/tier'] })
+    expect(r.removed).toEqual([lane.path])
+    expect(existsSync(lane.path)).toBe(false)
   })
 })

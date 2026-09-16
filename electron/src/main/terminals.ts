@@ -735,6 +735,12 @@ export class TerminalManager {
     return new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
   }
 
+  /** The cwd of every pty that has not exited, lanes and plain shells alike. Read by the worktree
+   *  removal paths as the live claim that does not wait for `sessions.json`. */
+  liveCwds(): string[] {
+    return [...this.terminals.values()].filter((t) => !t.exited).map((t) => t.cwd)
+  }
+
   private pushHistory(t: Managed, buf: Buffer): void {
     t.history.push(buf)
     t.historyBytes += buf.length

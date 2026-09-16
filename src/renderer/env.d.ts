@@ -156,7 +156,7 @@ declare global {
       worktreeAutoRemovalCheck?: (trigger: string) => void
       /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a
        *  deliberate user action. */
-      worktreeReap: (dryRun?: boolean) => Promise<ReapRunResult>
+      worktreeReap: (dryRun?: boolean, confirmedPaths?: string[]) => Promise<ReapRunResult>
       folderPrefsLoad: (projectPath: string) => Promise<FolderPreferences>
       folderPrefsLoadGlobal: () => Promise<FolderPreferences>
       folderPrefsSaveSettings: (filePath: string, settings: ClaudeSettings) => Promise<void>

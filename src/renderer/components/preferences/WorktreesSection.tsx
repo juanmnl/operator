@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { DevServerProc, ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
-import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedLabel } from '../../lib/worktree-groups'
+import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from '../../lib/worktree-groups'
 
 // Every directory under ~/.operator/worktrees, grouped by the repository it came from.
 //
@@ -64,11 +64,12 @@ export function WorktreesSection() {
 
   useEffect(() => { load() }, [load])
 
-  const runReap = useCallback(async () => {
+  const runReap = useCallback(async (confirmedPaths: string[]) => {
     setBusy(true)
     setConfirming(false)
     try {
-      const result = await window.operator.worktreeReap(false)
+      // Only the folders the confirm listed; main removes those still in the tier (Review L2).
+      const result = await window.operator.worktreeReap(false, confirmedPaths)
       setPlan(result.plan)
       const failed = result.failed.length
       setOutcome(
@@ -239,8 +240,7 @@ export function WorktreesSection() {
                 <div style={{ ...boxStyle, padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, color: 'var(--fg)', marginBottom: 8 }}>
                     {unsaved.length} of these {unsaved.length === 1 ? 'has' : 'have'} unsaved work, or git
-                    cannot tell. Uncommitted files in {unsaved.length === 1 ? 'it' : 'them'} will be lost.
-                    Commits stay on their branches.
+                    cannot tell. {unsavedConsequence(unsaved)}
                   </div>
                   <ConfirmList rows={unsaved} showSize={showSize} />
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
@@ -272,7 +272,7 @@ export function WorktreesSection() {
                         Each is merged with no unsaved work, or is creation debris. Every branch is
                         kept — a lane can be resumed onto its branch afterwards.
                       </span>
-                      <button onClick={runReap} disabled={busy} style={primaryBtn}>
+                      <button onClick={() => runReap(plan.auto.map((e) => e.path))} disabled={busy} style={primaryBtn}>
                         {busy ? 'Removing…' : 'Remove them'}
                       </button>
                       <button onClick={() => setConfirming(false)} style={linkBtn}>Cancel</button>

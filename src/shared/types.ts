@@ -362,8 +362,11 @@ export interface ReapEntry {
   /** Commits on HEAD that no other local branch and no remote contains; absent when unknown. */
   unsavedCommits?: number
   unsavedKnown: boolean
-  /** Removing it needs the second confirmation: unsaved work, or git could not tell. */
+  /** Removing it needs the second confirmation: unsaved work, git could not tell, or it is deleted
+   *  without git. */
   needsUnsavedConfirm: boolean
+  /** Git does not vouch for it as a worktree of an existing repo; removal deletes the directory. */
+  removedWithoutGit: boolean
   /** Why the automatic rule WOULD remove it. Report only in stage 1. */
   wouldRemove?: string
   /** Its provenance was written by the boot backfill. */
