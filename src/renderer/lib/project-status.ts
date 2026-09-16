@@ -18,7 +18,9 @@ export interface ProjectActivity {
 // anything alive here"); `waiting` is kept as its own count because "your turn" is the
 // most actionable thing a project can be, and since the waiting pulse was removed the
 // orb alone can no longer say it — the label has to.
-const RANK: Record<string, number> = { running: 4, compacting: 3, waiting: 2, error: 1 }
+// `asking` outranks everything: the project orb is the only place a collapsed switcher can show that a
+// lane is blocked on a question, and a busy sibling must not hide it.
+const RANK: Record<string, number> = { asking: 5, running: 4, compacting: 3, waiting: 2, error: 1 }
 
 export function projectActivity(
   sessions: Array<{ status: string; phase: string }>,
@@ -29,7 +31,7 @@ export function projectActivity(
   let waiting = 0
   for (const s of open) {
     const w = sessionWaveStatus(s)
-    if (w === 'waiting') waiting++
+    if (w === 'waiting' || w === 'asking') waiting++
     if ((RANK[w] ?? 0) > (RANK[status] ?? 0)) status = w
   }
   return { live: open.length, waiting, lanes, status }

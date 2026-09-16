@@ -1601,7 +1601,7 @@ function FootItem({ attr, label, title, hint, mono, onClick, active, disabled, c
 /** The one status ladder, shared with the expanded row's `SessionItem`. */
 function waveStatusOf(session: AgentSession): WaveStatus {
   if (session.status === 'ended') return 'ended'
-  return session.phase === 'running' || session.phase === 'compacting' || session.phase === 'waiting'
+  return session.phase === 'running' || session.phase === 'compacting' || session.phase === 'waiting' || session.phase === 'asking'
     ? session.phase
     : 'idle'
 }

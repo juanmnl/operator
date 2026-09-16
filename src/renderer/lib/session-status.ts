@@ -9,6 +9,7 @@ export function sessionWaveStatus(session: { status: string; phase: string }): W
     case 'running': return 'running'
     case 'compacting': return 'compacting'
     case 'waiting': return 'waiting'
+    case 'asking': return 'asking'
     default: return 'idle'
   }
 }

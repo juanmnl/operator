@@ -32,7 +32,9 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 /** The subset `settings.json` accepts. Anything else is discarded on read, without an error. */
 export type SettingsEffortLevel = Exclude<EffortLevel, 'max'>
 
-export type SessionPhase = 'idle' | 'running' | 'compacting' | 'waiting'
+/** `asking`: the lane's latest turn has an `AskUserQuestion` call with no result yet, so it is
+ *  blocked on the user answering a question. Cleared by the result, whatever the answer. */
+export type SessionPhase = 'idle' | 'running' | 'compacting' | 'waiting' | 'asking'
 export type SessionStatus = 'active' | 'ended'
 
 export interface RequestOption {

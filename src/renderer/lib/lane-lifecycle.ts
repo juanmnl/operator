@@ -92,6 +92,7 @@ export function laneCloseDecision(lane: LaneSnapshot, nowMs: number, policy: Lan
   if (lane.openWork > 0) return { close: false, why: `${lane.openWork} task(s) still open` }
   if (!lane.phase) return { close: false, why: 'no tracked session yet' }
   if (BUSY.has(lane.phase)) return { close: false, why: `still ${lane.phase}` }
+  if (lane.phase === 'asking') return { close: false, why: 'asking you a question' }
   if (lane.phase === 'waiting') return { close: false, why: 'waiting on you' }
 
   const idleFor = ageOf(lane.lastActivityAt, nowMs)

@@ -611,7 +611,7 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
   const subagents = signal?.activeSubagents ?? 0
   // The lane is parked on you rather than working. Owned here so the state slot and the activity
   // line cannot disagree about it.
-  const awaitingYou = signal?.status !== 'ended' && signal?.phase === 'waiting'
+  const awaitingYou = signal?.status !== 'ended' && (signal?.phase === 'waiting' || signal?.phase === 'asking')
   return (
     <div>
       {/* NO LANE TINT ON THE CARD. It was doing the same job as the lane chip 40px below it, and
@@ -673,7 +673,7 @@ function RunningCard({ task, role, signal, now, laneLive, landed, diffOpen, onTo
             data-card-turn={awaitingYou || undefined}
             style={awaitingYou ? { ...TIME, color: laneTextColor(accent) } : TIME}
             title={`Started ${relativeTime(started)}`}
-          >{awaitingYou ? `your turn · ${elapsed}` : elapsed}</span>
+          >{awaitingYou ? `${signal?.phase === 'asking' ? 'asking you' : 'your turn'} · ${elapsed}` : elapsed}</span>
           <CheckChip task={task} />
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
             <DiffToggle task={task} open={diffOpen} onToggle={onToggleDiff} />
@@ -700,6 +700,8 @@ function LaneLine({ signal, accent }: { signal?: LaneSignal; accent: string }) {
   // beside the elapsed time, and printing it twice is what made a running card contradict
   // itself. MOTION MEANS BUSY still holds either way: waiting is not busy, so nothing animates.
   if (signal.phase === 'waiting') return null
+  // `asking` likewise: the state slot says `asking you`, and the rail orb carries the beacon.
+  if (signal.phase === 'asking') return null
   if (signal.phase !== 'running') return null
   return (
     <p data-lane-line style={{ ...ACTIVITY, display: 'flex', alignItems: 'center', gap: 5 }}>

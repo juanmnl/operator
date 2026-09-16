@@ -20,7 +20,7 @@ export interface QuitLane { terminalId: string; project: string; phase: string }
  *  `running || compacting` and dropped `waiting` — which is to say it stayed silent about
  *  exactly the lane the guard exists for. */
 export function isBusy(phase: string): boolean {
-  return phase === 'running' || phase === 'compacting' || phase === 'waiting'
+  return phase === 'running' || phase === 'compacting' || phase === 'waiting' || phase === 'asking'
 }
 
 /** How long to wait for the renderer to confirm it mounted the dialog before falling back to a

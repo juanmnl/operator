@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { TWINKLE_TROUGH_OP, TWINKLE_PEAK_OP, twinkleProgress } from './StatusWave'
+import { TWINKLE_TROUGH_OP, TWINKLE_PEAK_OP, twinkleProgress, beaconInk, BEACON_PEAK_OP, BEACON_INK, STATUS_WAVE_REST_OP } from './StatusWave'
 
 // THE ANIMATION IS CODE NOW, so it can be held to its own definition.
 //
@@ -124,5 +124,41 @@ describe('the paint law', () => {
     // "A resting orb must never out-shine the running one at ANY point in its cycle." The floor
     // of the busy dot's alpha is the number `REST_OP` had to clear.
     for (let t = 0; t < 4; t += 0.01) expect(O(twinkleProgress(t, 1.9, -0.4))).toBeGreaterThanOrEqual(TWINKLE_TROUGH_OP)
+  })
+})
+
+describe('the asking beacon — its ink against the twinkle’s measurements', () => {
+  // The twinkle's ink over a cycle, as StatusWave.tsx states it: opacity × scale, ≈ 0.51.
+  const twinkleInk = (() => {
+    let sum = 0
+    const n = 4000
+    for (let i = 0; i < n; i++) {
+      const p = twinkleProgress(i / n, 1, 0)
+      sum += (TWINKLE_TROUGH_OP + (TWINKLE_PEAK_OP - TWINKLE_TROUGH_OP) * p) * (0.5 + 0.5 * p)
+    }
+    return sum / n
+  })()
+
+  it('the twinkle really averages ≈ 0.51, the number the claims below are stated against', () => {
+    expect(twinkleInk).toBeCloseTo(0.51, 2)
+  })
+
+  it('rests at exactly the resting orb: REST_OP, in the lane’s own rest fill', () => {
+    expect(beaconInk(1.2)).toEqual({ alpha: STATUS_WAVE_REST_OP, mix: 0 })
+  })
+
+  it('peaks at full ink in the warning hue, at least 1.9× a running orb’s frame', () => {
+    const top = beaconInk(0.1199)
+    expect(top.alpha).toBeCloseTo(BEACON_PEAK_OP, 3)
+    expect(top.mix).toBeCloseTo(1, 3)
+    expect(BEACON_PEAK_OP / twinkleInk).toBeGreaterThanOrEqual(1.9)
+    expect(BEACON_INK).toBe('var(--color-warning)')
+  })
+
+  it('averages ≈ 0.365 over a cycle, as the comment says', () => {
+    let sum = 0
+    const n = 6000
+    for (let i = 0; i < n; i++) sum += beaconInk((i / n) * 1.5).alpha
+    expect(sum / n).toBeCloseTo(0.365, 2)
   })
 })

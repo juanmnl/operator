@@ -9,7 +9,7 @@ import type { AgentSession } from '../../shared/types'
 
 export interface ChatSignal {
   /** Which state to show — mirrors the sidebar's vocabulary so the two surfaces agree. */
-  kind: 'running' | 'compacting' | 'waiting' | 'ended'
+  kind: 'running' | 'compacting' | 'waiting' | 'asking' | 'ended'
   /** Human phrase: "Editing", "Running a command", "Thinking", "Your turn"… */
   label: string
   /** MOTION MEANS BUSY — the app-wide rule (see StatusWave). Only running/compacting animate;
@@ -76,6 +76,10 @@ export function chatSignal(session: Pick<AgentSession, 'status' | 'phase' | 'las
     case 'waiting':
       // Needs the user. Quiet by design — no pulse, the words carry it.
       return { kind: 'waiting', label: 'Your turn', animate: false, interruptible: false }
+    case 'asking':
+      // Blocked on a question the lane put to the user. Interruptible: Esc in the pty dismisses
+      // the question, the same as it stops a turn.
+      return { kind: 'asking', label: 'Asking you', animate: true, interruptible: true }
     default:
       return null
   }

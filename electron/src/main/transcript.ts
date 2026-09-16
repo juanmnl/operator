@@ -91,6 +91,7 @@ export function derivePhase(
   lastStopReason: string | null,
   lastWasUserPrompt: boolean,
   compacting: boolean,
+  asking = false,
 ): string {
   // FIRST, ahead of the tool check, and deliberately. Inside the boundary→assistant window the
   // one thing known for certain is that the context was just rebuilt; an `openTools` entry
@@ -99,6 +100,10 @@ export function derivePhase(
   // `lastToolName` being cleared rather than left stale. The UI has rendered this phase since it
   // was defined; this is the first thing that ever emits it.
   if (compacting) return 'compacting'
+  // AHEAD OF `runningTools`, because an open question IS an open tool: `AskUserQuestion` is a
+  // tool_use whose result is the user's answer. Without this the lane reads `running` for as long
+  // as the question sits there, which can be hours.
+  if (asking) return 'asking'
   if (runningTools) return 'running'
   if (lastStopReason === 'tool_use') return 'running'
   if (lastWasUserPrompt) return 'running' // prompt sent, response not started yet
@@ -183,6 +188,9 @@ export class Track {
   compactions = 0
   lastToolName: string | null = null
   openTools = new Set<string>()
+  /** Open `AskUserQuestion` tool_use ids on the MAIN thread. A subset of `openTools`, removed by
+   *  the same tool_result (answered, declined or interrupted — any result closes the question). */
+  openQuestions = new Set<string>()
   inSidechain = false
   activeSubagents = 0
   narration: NarrationEntry[] = []
@@ -219,7 +227,7 @@ export class Track {
   phase(): string {
     const stuck = this.compacting && this.compactingSinceMs > 0
       && Date.now() - this.compactingSinceMs > COMPACTING_CEILING_MS
-    return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting && !stuck)
+    return derivePhase(this.openTools.size > 0, this.lastStopReason, this.lastWasUserPrompt, this.compacting && !stuck, this.openQuestions.size > 0)
   }
 
   /** Drop everything DERIVED from the transcript, keeping the track's identity. Called when the
@@ -239,6 +247,7 @@ export class Track {
     this.effort = null
     this.lastToolName = null
     this.openTools.clear()
+    this.openQuestions.clear()
     // A re-read replays every `SendMessage` in the file. Clearing here keeps the map from
     // holding ids the replay is about to re-add, and the renderer consumes each pending delivery
     // once, so a replayed result finds nothing to attribute and is ignored.
@@ -415,6 +424,7 @@ export class Track {
           }
         }
         this.openTools.delete(id)
+        this.openQuestions.delete(id)
         if (this.openTools.size === 0) this.lastToolName = null
       }
     }
@@ -569,6 +579,9 @@ export class Track {
       const input = block.input ?? null
       const id = typeof block.id === 'string' ? block.id : undefined
       if (id) this.openTools.add(id)
+      // A subagent cannot put a question to the user, and a sidechain record is not the lane's own
+      // turn, so only the main thread's calls count.
+      if (id && name === 'AskUserQuestion' && v.isSidechain !== true) this.openQuestions.add(id)
       this.applyTaskTools(name, input)
       // `SendMessage` is the lane's half of a bus dispatch. Remember what address this call was
       // aimed at so its result can be attributed when it lands — the result block carries only
@@ -731,7 +744,10 @@ export class Transcript extends EventEmitter {
       // protection and throws away the only thing that explains why the wait is long.
       const ptyActive = !t.ended && opts.isActive(t.terminalId)
       const derived = t.phase()
-      const phase = ptyActive && derived !== 'compacting' ? 'running' : derived
+      // AND `asking`. The question dialog is drawn in the pty and redraws as the user moves through
+      // its options, so the pty is hot exactly while the user is reading the question. The
+      // transcript is authoritative here: the tool_use is written and its result is not.
+      const phase = ptyActive && derived !== 'compacting' && derived !== 'asking' ? 'running' : derived
       if (t.dirty || t.lastPhase !== phase) {
         t.lastPhase = phase
         t.dirty = false

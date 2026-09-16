@@ -48,7 +48,7 @@ export interface QuitRow {
   /** Right-aligned state text. */
   state: string
   /** Drives StatusWave; motion means busy, which is exactly what these rows are. */
-  phase: 'running' | 'compacting' | 'waiting'
+  phase: 'asking' | 'running' | 'compacting' | 'waiting'
   accent?: string
 }
 
@@ -57,13 +57,15 @@ export interface QuitRow {
 export const ROW_CAP = 6
 
 /** Most consequential first, so the cap can never hide the worst one. */
-const PHASE_ORDER = ['running', 'compacting', 'waiting']
+// `asking` FIRST: a lane with a question open is blocked on the person about to quit.
+const PHASE_ORDER = ['asking', 'running', 'compacting', 'waiting']
 
 /** Used only when the frontend cannot resolve the session behind a terminal id. */
 const PHASE_WORD: Record<string, string> = {
   running: 'Working',
   compacting: 'Compacting context',
   waiting: 'Your turn',
+  asking: 'Asking you',
 }
 
 function rank(phase: string): number {
@@ -128,7 +130,7 @@ export function quitGuardCopy(req: QuitRequest): QuitCopy {
   const n = req.lanes.length
   const one = n === 1
   // "waiting on you" only when NOTHING is mid-turn — otherwise the working ones are the story.
-  const onlyWaiting = n > 0 && req.lanes.every((l) => l.phase === 'waiting')
+  const onlyWaiting = n > 0 && req.lanes.every((l) => l.phase === 'waiting' || l.phase === 'asking')
   const more = Math.max(0, n - ROW_CAP)
   return {
     title: onlyWaiting

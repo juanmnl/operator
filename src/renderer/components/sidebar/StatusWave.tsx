@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { rand, hashSeed, gridPointsInDisc } from '../../lib/random'
 import { isWideGrapheme } from '../../lib/lane-initial'
+import { beaconLevel } from '../../../shared/beacon'
 
-export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting'
+export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting' | 'asking'
 
 // How long the your-turn pulse runs after a turn ends before it settles to the
 // static idle look. The pulse is an attention beacon ("your turn"), not a
@@ -71,9 +72,33 @@ const ENDED_OP = 0.12
 export const TWINKLE_TROUGH_OP = 0.3
 export const TWINKLE_PEAK_OP = 0.95
 
+/** THE ASKING BEACON — a lane with a question open for the user (`src/shared/beacon.ts` has the
+ *  rhythm and why it cannot be mistaken for the twinkle).
+ *
+ *  THE INK, against the measurements above, none of which it moves:
+ *    • TROUGH = REST. Between flashes every dot sits exactly as a resting orb does: full size,
+ *      `REST_OP`, the lane's own rest fill. So the orb still says WHICH lane, and the rest gap
+ *      really is rest. `REST_OP ≤` the running trough is untouched because rest is untouched.
+ *    • PEAK = every dot at full size and `BEACON_PEAK_OP` 1.0, at the same instant, in
+ *      `--color-warning`. The twinkle's frame ink is ≈0.51 of a full-strength disc and barely
+ *      varies, because its dots are desynced. The beacon's peak frame is 1.0: 1.96× the running
+ *      orb, which is the "at least twice" test `REST_OP` was set by, applied to the flash.
+ *    • MEAN over a cycle ≈ 0.365 (the test computes it). Lower than running on purpose. The beacon
+ *      is not "more busy", it is on-off, and the eye reads the change from 0.25 to 1.0 and back,
+ *      not the average.
+ *  HUE: `--color-warning`, not the lane accent. Running blooms in the lane accent, so an accent
+ *  beacon on a green lane would differ from its own running orb only by rhythm. Warning is the
+ *  same hue as `compacting`, which is rare and short and twinkles; unison plus the rest gap
+ *  separates the two.
+ *
+ *  REDUCED MOTION: no flash. Every dot is drawn static at the peak (full size, 1.0, warning ink),
+ *  which is brighter than any resting orb and a different hue from the lane's own fill. */
+export const BEACON_PEAK_OP = 1
+export const BEACON_INK = 'var(--color-warning)'
+
 // `fill` tints the resting dots; `fillPeak` tints the dots as they scale up (the
 // twinkle's bright half). Leaving them unset keeps the neutral gray→white default.
-const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
+const config: Record<WaveStatus, { animate: boolean; beacon?: boolean; unison?: boolean; durMin: number; durMax: number; maxOp: number; staticOp: number; fill?: string; fillPeak?: string }> = {
   // Two animated languages, mirroring the menu-bar tray (src-tauri/tray_anim.rs):
   //  • working states SHIMMER — each dot twinkles on its own desynced cycle, the
   //    peak tinted by the status hue (green = running, amber = compacting).
@@ -86,6 +111,10 @@ const config: Record<WaveStatus, { animate: boolean; unison?: boolean; durMin: n
   // agent is actively working. Waiting means it has stopped and handed the turn
   // back — not busy — so it rests STATIC like idle.
   waiting:    { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: REST_OP },
+  // A question open for the user. NOT the retired pulse: it flashes in unison with a rest gap,
+  // and it does not settle, because the lane cannot move until it is answered. Drawn by
+  // `BeaconCanvas`; the durations are unused.
+  asking:     { animate: true,  beacon: true, durMin: 0, durMax: 0, maxOp: BEACON_PEAK_OP, staticOp: REST_OP, fillPeak: BEACON_INK },
   idle:       { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: REST_OP },
   error:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: REST_OP },
   ended:      { animate: false, durMin: 0,   durMax: 0,   maxOp: 0,    staticOp: ENDED_OP },
@@ -122,6 +151,10 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
   // and was therefore never a signal either. House rule: a state gets a marker, never a dimmer.
   const effective: WaveStatus = status === 'waiting' && settled ? 'idle' : status
   const cfg = config[effective]
+  const reducedMotion = useReducedMotion()
+  const restFill = accent
+    ? `color-mix(in srgb, ${accent} 82%, var(--fg-muted))`
+    : 'var(--fg-muted)'
 
   const dots = useMemo(() => {
     const s = hashSeed(seed)
@@ -129,14 +162,12 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
     // some breathe a touch faster, some slower.
     const tempo = 0.82 + rand(s + 0.5) * 0.42 // ~[0.82, 1.24]
     return DOTS.map((d, i) => {
-      if (!cfg.animate) {
+      if (!cfg.animate || cfg.beacon) {
         // A resting orb still says WHICH lane: fill with the lane accent, slightly
         // desaturated toward the muted ink and dimmed by the state's staticOp so a
         // quiet lane recedes without going colourless. No accent (a non-lane
         // session) → the neutral muted gray. Motion stays the only busy signal.
-        const restFill = accent
-          ? `color-mix(in srgb, ${accent} 82%, var(--fg-muted))`
-          : 'var(--fg-muted)'
+        // The beacon starts from this same rest style; it has no per-dot timing.
         return { ...d, style: { opacity: cfg.staticOp, fill: restFill } as React.CSSProperties, timing: null }
       }
       // Unison (your-turn pulse): every dot shares one period and phase so the
@@ -164,7 +195,17 @@ export function StatusWave({ status, size = 13, seed = 0, accent, initial }: { s
       // moving half — that is what makes a collapsed rail say WHICH agent — it just travels as
       // an argument instead of as a custom property.
     }}>
-      {cfg.animate
+      {cfg.beacon
+        ? (reducedMotion
+          ? (
+            <svg data-orb-beacon="static" width={size} height={size} viewBox={`0 0 ${CELLS} ${CELLS}`} fill="none">
+              <g fill={BEACON_INK} opacity={BEACON_PEAK_OP}>
+                {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={R} />)}
+              </g>
+            </svg>
+          )
+          : <BeaconCanvas size={size} dots={dots} rest={restFill} peak={BEACON_INK} />)
+        : cfg.animate
         ? <OrbCanvas size={size} dots={dots} peak={(accent || cfg.fillPeak) ?? 'var(--fg)'} />
         : (
           // THE RESTING PATH IS UNTOUCHED, deliberately. Rest is most of the rail most of the
@@ -280,6 +321,92 @@ function OrbCanvas({ size, dots, peak }: {
     return () => { io.disconnect(); halt() }
   }, [dots, size, peak, theme])
   return <canvas ref={ref} width={size} height={size} style={{ width: size, height: size, display: 'block' }} />
+}
+
+/** THE ASKING ORB. Same canvas machinery as `OrbCanvas` (shared rAF, off-screen orbs leave the
+ *  loop, colours resolved once per theme), different draw: every dot the same, at the same instant.
+ *
+ *  Time is `performance.now()` itself, not time since mount, so every asking orb in the app is in
+ *  phase with every other one. Two lanes asking at once flash together rather than taking turns. */
+function BeaconCanvas({ size, dots, rest, peak }: {
+  size: number
+  dots: Array<{ cx: number; cy: number }>
+  rest: string
+  peak: string
+}) {
+  const ref = useRef<HTMLCanvasElement | null>(null)
+  const theme = useThemeEpoch()
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    const unit = size / CELLS
+    const from = rgbOf(resolveColor(rest))
+    const to = rgbOf(resolveColor(peak))
+    let dpr = 0
+    const draw = () => {
+      const next = window.devicePixelRatio || 1
+      if (next !== dpr) {
+        dpr = next
+        cv.width = Math.round(size * dpr)
+        cv.height = Math.round(size * dpr)
+      }
+      const { alpha, mix } = beaconInk(performance.now() / 1000)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.clearRect(0, 0, size, size)
+      ctx.globalAlpha = alpha
+      ctx.fillStyle = `rgb(${from[0] + (to[0] - from[0]) * mix | 0},${from[1] + (to[1] - from[1]) * mix | 0},${from[2] + (to[2] - from[2]) * mix | 0})`
+      ctx.beginPath()
+      for (const d of dots) {
+        ctx.moveTo(d.cx * unit + R * unit, d.cy * unit)
+        ctx.arc(d.cx * unit, d.cy * unit, R * unit, 0, Math.PI * 2)
+      }
+      ctx.fill()
+    }
+    let leave: (() => void) | null = null
+    const run = () => { if (!leave) leave = joinFrameLoop(draw) }
+    const halt = () => { leave?.(); leave = null }
+    draw()
+    if (typeof IntersectionObserver === 'undefined') {
+      run()
+      return () => halt()
+    }
+    const io = new IntersectionObserver((entries) => {
+      const latest = entries[entries.length - 1]
+      if (latest?.isIntersecting) run()
+      else halt()
+    }, { rootMargin: '48px' })
+    io.observe(cv)
+    return () => { io.disconnect(); halt() }
+  }, [dots, size, rest, peak, theme])
+  return <canvas data-orb-beacon="animated" ref={ref} width={size} height={size} style={{ width: size, height: size, display: 'block' }} />
+}
+
+/** The beacon's paint at `elapsed` seconds: the alpha every dot is drawn at, and how far its colour
+ *  has moved from the lane's rest fill toward the warning ink. At rest this is exactly a resting
+ *  orb (`REST_OP`, the rest fill); at the top of the flash it is `BEACON_PEAK_OP` in warning ink. */
+export function beaconInk(elapsed: number): { alpha: number; mix: number } {
+  const l = beaconLevel(elapsed)
+  return { alpha: REST_OP + (BEACON_PEAK_OP - REST_OP) * l, mix: l }
+}
+
+/** `REST_OP`, for the tests that hold the beacon's trough to it. */
+export const STATUS_WAVE_REST_OP = REST_OP
+
+/** Whether the user asked the OS for less motion. Follows changes live. */
+function useReducedMotion(): boolean {
+  const query = '(prefers-reduced-motion: reduce)'
+  const [reduced, setReduced] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches)
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return
+    const mq = matchMedia(query)
+    const on = () => setReduced(mq.matches)
+    on()
+    mq.addEventListener?.('change', on)
+    return () => mq.removeEventListener?.('change', on)
+  }, [])
+  return reduced
 }
 
 /** Where one dot is in its own breath: 0 at the trough, 1 at the peak, eased exactly as the
