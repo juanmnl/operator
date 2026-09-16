@@ -61,11 +61,14 @@
     // clientWidth, not innerWidth: the page's own viewport without its scrollbar.
     var g = F.layoutGrid(cfg.grid, viewW());
     if (!g.cols.length) return;
+    // The spec's own colour and fill when it has them, the theme's --grid at 10% when not. An
+    // older main process that does not define gridInk still draws the theme colour at 10%.
+    var ink = F.gridInk ? F.gridInk(cfg.grid, cfg.tokens.grid) : { fill: tint(cfg.tokens.grid, 10), edge: tint(cfg.tokens.grid, 45) };
     for (var i = 0; i < g.cols.length; i++) {
-      div(gridLayer, 'top:0;bottom:0;left:' + g.cols[i].left + 'px;width:' + g.cols[i].width + 'px;background:' + tint(cfg.tokens.grid, 10));
+      div(gridLayer, 'top:0;bottom:0;left:' + g.cols[i].left + 'px;width:' + g.cols[i].width + 'px;background:' + ink.fill);
     }
     if (g.clamped) {
-      var edge = s(1) + ' dashed ' + tint(cfg.tokens.grid, 45);
+      var edge = s(1) + ' dashed ' + ink.edge;
       div(gridLayer, 'top:0;bottom:0;width:0;left:' + g.containerLeft + 'px;border-left:' + edge);
       div(gridLayer, 'top:0;bottom:0;width:0;left:' + (g.containerLeft + g.containerW) + 'px;border-left:' + edge);
     }

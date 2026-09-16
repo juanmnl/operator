@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // `?raw` rather than fs, as diff-parse.test.ts does: the renderer's tsconfig has no node types.
 import OVERLAY_JS from './preview-overlay.js?raw'
 import INSPECTOR_JS from './preview-inspector.js?raw'
-import { layoutGrid } from './layout-grid'
+import { layoutGrid, gridInk } from './layout-grid'
 import { measureBetween, formatPx, placeChip, describeRelation } from './redlines'
 import type { PreviewOverlayConfig } from './types'
 
@@ -44,7 +44,7 @@ beforeEach(() => {
   // No frame ever fires on its own: draws happen only through `redraw()`, synchronously.
   vi.useFakeTimers()
   document.body.innerHTML = ''
-  page.__operatorOverlayFns = { layoutGrid, measureBetween, formatPx, placeChip, describeRelation }
+  page.__operatorOverlayFns = { layoutGrid, gridInk, measureBetween, formatPx, placeChip, describeRelation }
   bridge = vi.fn()
   page.__operatorAnchorBridge = bridge as unknown as (anchored: boolean) => void
   page.__operatorInspector = { selector: (el) => `#${el.id}` }

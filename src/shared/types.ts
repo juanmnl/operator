@@ -396,7 +396,14 @@ export interface GridSpec {
   margin: number
   /** CSS px ≥ 240; null = none */
   maxWidth: number | null
+  /** The grid's colour as `#rrggbb`. Absent = the theme's `--grid`, which is also what every spec
+   *  saved before this field existed reads as. */
+  color?: string
+  /** Column fill strength in percent: 10 (absent), 20 or 30. A busy page needs more than 10. */
+  fill?: GridFill
 }
+
+export type GridFill = 10 | 20 | 30
 
 /** Operator's palette as the Preview's page overlay draws with it, resolved to colours (or a
  *  `color-mix()` of colours). The page is another document and cannot read Operator's CSS vars. */

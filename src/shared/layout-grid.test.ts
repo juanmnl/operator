@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   layoutGrid, applyGridPreset, editGridField, parseGridField, stepGridField, coerceGridSpec, formatColumnWidth,
-  DEFAULT_GRID_SPEC, GRID_PRESETS, type GridSpec,
+  DEFAULT_GRID_SPEC, GRID_PRESETS, GRID_SWATCHES, gridInk, parseGridColor, withGridColor, withGridFill, type GridSpec,
 } from './layout-grid'
 
 const spec = (over: Partial<GridSpec>): GridSpec => ({ ...DEFAULT_GRID_SPEC, ...over })
@@ -148,5 +148,88 @@ describe('coerceGridSpec', () => {
     expect(coerceGridSpec({ preset: 'custom', columns: 0, gutter: 24, margin: 32 })).toBeUndefined()
     expect(coerceGridSpec({ preset: 'custom', columns: 12, gutter: '24', margin: 32 })).toBeUndefined()
     expect(coerceGridSpec({ preset: 'custom', columns: 12, gutter: 24, margin: 32, maxWidth: 100 })).toBeUndefined()
+  })
+})
+
+describe('grid colour and fill — persistence and old projects.json entries', () => {
+  // What a build before this change wrote into `Project.previewGrid`.
+  const OLD = { preset: '12', columns: 12, gutter: 24, margin: 32, maxWidth: 1200 }
+  /** projects.json is plain JSON through a pass-through store, so a save and a load is this. */
+  const roundTrip = (s: GridSpec) => coerceGridSpec(JSON.parse(JSON.stringify(s)))
+
+  it('reads an entry with no colour and no fill exactly as before, drawn in the theme colour at 10%', () => {
+    const s = coerceGridSpec(OLD)!
+    expect(s).toEqual(OLD)
+    expect('color' in s).toBe(false)
+    expect('fill' in s).toBe(false)
+    expect(gridInk(s, 'var(--grid)')).toEqual({
+      fill: 'color-mix(in srgb, var(--grid) 10%, transparent)',
+      edge: 'color-mix(in srgb, var(--grid) 45%, transparent)',
+    })
+  })
+
+  it('saves and loads a colour and a fill', () => {
+    const s = withGridFill(withGridColor(coerceGridSpec(OLD)!, '#3e63dd'), 30)
+    expect(roundTrip(s)).toEqual({ ...OLD, color: '#3e63dd', fill: 30 })
+  })
+
+  it('stores the defaults as absent, so choosing Theme and 10% writes what an old build wrote', () => {
+    const s = withGridFill(withGridColor(withGridFill(withGridColor(coerceGridSpec(OLD)!, '#16a34a'), 20), undefined), 10)
+    expect(s).toEqual(OLD)
+    expect(JSON.stringify(s)).toBe(JSON.stringify(OLD))
+  })
+
+  it('drops a bad colour or fill alone and keeps the columns', () => {
+    expect(coerceGridSpec({ ...OLD, color: 'red' })).toEqual(OLD)
+    expect(coerceGridSpec({ ...OLD, color: '#12345' })).toEqual(OLD)
+    expect(coerceGridSpec({ ...OLD, color: 'url(x);background:red' })).toEqual(OLD)
+    expect(coerceGridSpec({ ...OLD, fill: 50 })).toEqual(OLD)
+    expect(coerceGridSpec({ ...OLD, fill: '20' })).toEqual(OLD)
+    // A hand-written short or uppercase hex is normalised.
+    expect(coerceGridSpec({ ...OLD, color: '#0AF' })?.color).toBe('#00aaff')
+  })
+
+  it('keeps the colour and fill through preset changes and field edits', () => {
+    const s = { ...DEFAULT_GRID_SPEC, color: '#d6409f', fill: 20 as const }
+    expect(applyGridPreset(s, '8')).toMatchObject({ color: '#d6409f', fill: 20 })
+    expect(applyGridPreset(s, 'auto')).toMatchObject({ color: '#d6409f', fill: 20 })
+    expect(editGridField(s, 768, 'gutter', 12)).toMatchObject({ preset: 'custom', gutter: 12, color: '#d6409f', fill: 20 })
+    expect(editGridField(s, 768, 'maxWidth', 1000)).toMatchObject({ color: '#d6409f', fill: 20 })
+  })
+
+  it('parses hex the way the field accepts it', () => {
+    expect(parseGridColor('#F0283C')).toBe('#f0283c')
+    expect(parseGridColor(' 3e63dd ')).toBe('#3e63dd')
+    expect(parseGridColor('#abc')).toBe('#aabbcc')
+    expect(parseGridColor('')).toBeUndefined()
+    expect(parseGridColor('blue')).toBeUndefined()
+    expect(parseGridColor('#3e63dd80')).toBeUndefined()
+  })
+
+  it('steps the edge up with the fill, and ignores a colour that is not stored hex', () => {
+    const at = (fill: 10 | 20 | 30) => gridInk({ ...DEFAULT_GRID_SPEC, color: '#0797b9', fill }, '#ff5f56')
+    expect(at(20)).toEqual({ fill: 'color-mix(in srgb, #0797b9 20%, transparent)', edge: 'color-mix(in srgb, #0797b9 60%, transparent)' })
+    expect(at(30).edge).toBe('color-mix(in srgb, #0797b9 75%, transparent)')
+    expect(gridInk({ ...DEFAULT_GRID_SPEC, color: 'red' }, '#ff5f56').fill).toBe('color-mix(in srgb, #ff5f56 10%, transparent)')
+  })
+
+  it('works as a stringified function, for the script injected into the page', () => {
+    const injected = new Function(`return (${String(gridInk)})`)() as typeof gridInk
+    const s = { ...DEFAULT_GRID_SPEC, color: '#3e63dd', fill: 30 as const }
+    expect(injected(s, '#ff5f56')).toEqual(gridInk(s, '#ff5f56'))
+  })
+
+  it('offers swatches that hold 3:1 against both a white and a black page at full strength', () => {
+    const lum = (hex: string) => {
+      const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+        .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+    for (const { color } of GRID_SWATCHES) {
+      const l = lum(color)
+      expect(1.05 / (l + 0.05)).toBeGreaterThanOrEqual(3)
+      expect((l + 0.05) / 0.05).toBeGreaterThanOrEqual(3)
+      expect(parseGridColor(color)).toBe(color)
+    }
   })
 })
