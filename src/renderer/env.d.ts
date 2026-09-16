@@ -152,6 +152,9 @@ declare global {
       /** Every worktree folder with its source repo, lane claim and CACHED size. No git, no `du`: the
        *  Home overview's first paint. */
       worktreeQuickList: () => Promise<WorktreeQuickEntry[]>
+      /** `launch` the first time a renderer asks in this app run, `reload` after (watchdog respawn,
+       *  crash, ⌘R). Ask once per document: see lib/launch-kind. */
+      launchKind?: () => Promise<'launch' | 'reload'>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose
        *  unsaved work was confirmed separately; main re-checks everything before acting. */
       worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>

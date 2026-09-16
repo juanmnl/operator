@@ -63,7 +63,8 @@ import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
 import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened } from '../lib/forgotten-projects'
 import { DragRegion } from '../components/DragRegion'
-import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace } from '../lib/workspace'
+import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
+import { launchKind } from '../lib/launch-kind'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
@@ -2969,7 +2970,9 @@ export function DashboardView() {
   // Re-open a previously saved session. `resume` continues the prior Claude
   // conversation (--resume); otherwise it starts the agent clean in the same
   // folder/worktree with the same config.
-  const handleRestoreSession = useCallback(async (saved: SavedSession, resume: boolean) => {
+  // `background`: start the lane without focusing it or changing the view. The launch's auto-resume
+  // uses it, because the app opens on the home overview and a resumed lane must not pull you off it.
+  const handleRestoreSession = useCallback(async (saved: SavedSession, resume: boolean, opts?: { background?: boolean }) => {
     // THE DIRECTORY MAY BE GONE, and since lanes close themselves it usually is: a suspended
     // worktree lane kept its branch and lost its dir. Put it back on that branch before anything
     // else touches the path — spawning into a missing cwd fails, and every step below (the prefs
@@ -3044,9 +3047,11 @@ export function DashboardView() {
       claudeVersion: result.claudeVersion ?? null,
     }
     setTerminals((prev) => [...prev, tab])
-    setActiveTerminalId(result.terminalId)
-    setActiveSessionId(`local-${result.terminalId}`)
-    setActiveProjectId(tab.projectId ?? null) // restoring focuses the session → scope follows it
+    if (!opts?.background) {
+      setActiveTerminalId(result.terminalId)
+      setActiveSessionId(`local-${result.terminalId}`)
+      setActiveProjectId(tab.projectId ?? null) // restoring focuses the session → scope follows it
+    }
     if (saved.customName) {
       setCustomNames((prev) => {
         const next = { ...prev, [`local-${result.terminalId}`]: saved.customName! }
@@ -3056,6 +3061,7 @@ export function DashboardView() {
     }
     rememberRecent(cwd) // the same value unless a suspended lane's worktree was just rebuilt
     upsertProject(proj, { intent: 'user' }) // clicked a dormant session (or Resume project)
+    if (opts?.background) return
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false); setTuningViewActive(false)
@@ -3066,13 +3072,13 @@ export function DashboardView() {
   // each resuming its prior Claude conversation when one exists (else clean in the same
   // cwd/worktree). Sequential on purpose — each spawn allocates its port and re-attaches
   // cleanly; the last restored session ends up focused.
-  const handleResumeProject = useCallback(async (projectId: string) => {
+  const handleResumeProject = useCallback(async (projectId: string, opts?: { background?: boolean }) => {
     const liveKeys = new Set(terminals.map((t) => t.key))
     const toRestore = savedSessions
       .filter((s) => s.projectId === projectId && !liveKeys.has(s.key))
       .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt)) // oldest first → sidebar keeps its familiar order
     for (const s of toRestore) {
-      await handleRestoreSession(s, true)
+      await handleRestoreSession(s, true, opts)
     }
   }, [terminals, savedSessions, handleRestoreSession])
 
@@ -4210,6 +4216,30 @@ export function DashboardView() {
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean
   // exit loses it to exactly the stop this feature exists to survive.
+  // WHERE "CONTINUE" GOES after a launch opened on the home overview (lib/workspace `launchLanding`).
+  // Cleared the moment you go anywhere but the gallery: by then you have chosen, and the offer
+  // would be pointing at a place you already left.
+  const [continueTarget, setContinueTarget] = useState<ContinueTarget | null>(null)
+  /** The last project you were IN, persisted as `Workspace.lastProjectId` so the offer survives a
+   *  launch spent entirely on the overview. */
+  const lastProjectRef = useRef<string | null>(null)
+  const applyView = useCallback((v: ContinueTarget) => {
+    setActiveProjectId(v.projectId)
+    setProjectTab(v.projectTab)
+    setPrefsViewActive(v.mode === 'prefs')
+    setAgentsViewActive(v.mode === 'agents')
+    setTuningViewActive(v.mode === 'tuning')
+    setGlobalPrefsActive(v.mode === 'globalPrefs')
+  }, [])
+  const continueWhereYouWere = useCallback(() => {
+    if (!continueTarget) return
+    setContinueTarget(null)
+    applyView(continueTarget)
+  }, [continueTarget, applyView])
+  useEffect(() => {
+    if (contentMode !== 'gallery' && continueTarget) setContinueTarget(null)
+  }, [contentMode, continueTarget])
+
   // projectId → durable key of the agent last selected there. Kept in a ref because
   // `handleOpenProject` is a stable callback that reads refs by design, and this is exactly the
   // kind of value that must be current at the moment of the click rather than at the moment the
@@ -4259,10 +4289,11 @@ export function DashboardView() {
       // something real replaces it.
       liveKeys: terminals.length ? terminals.map((t) => t.key) : pendingLaneKeysRef.current,
       lastAgentByProject: lastAgentRef.current,
+      lastProjectId: (lastProjectRef.current = activeProjectId ?? continueTarget?.projectId ?? lastProjectRef.current),
       at: new Date().toISOString(),
     }
     try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
-  }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals])
+  }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals, continueTarget])
 
   // ── AND PUTTING YOU BACK ──────────────────────────────────────────────────────────────────
   // ⚠ RUNS EXACTLY ONCE, AT LAUNCH. This is NOT "restore where I was" as a general rule, and the
@@ -4274,6 +4305,9 @@ export function DashboardView() {
   //
   // Gated on `reattachDone` because ptys can survive a renderer reload: if the terminals came
   // back, you were never away, and there is nothing to restore.
+  // Claim the launch as early as this view mounts, not only when the restore below gets to it: if
+  // this first renderer died in between, the respawn would otherwise be taken for the launch.
+  useEffect(() => { void launchKind() }, [])
   const restoredRef = useRef(false)
   useEffect(() => {
     if (!savedHydrated || !reattachDone || restoredRef.current) return
@@ -4281,31 +4315,38 @@ export function DashboardView() {
     // Every path below must release the persist gate, including the ones that restore nothing.
     if (terminals.length > 0) { setRestoreSettled(true); return } // ptys survived: a reload, not a restart
 
-    const workspace = readWorkspace(localStorage.getItem(WORKSPACE_KEY))
-    if (!workspace) { setRestoreSettled(true); return }
-
-    // The filesystem check is best-effort and asynchronous, so the plan is computed and applied
-    // FIRST (a launch that waits on stat() before drawing is a slow launch for a rare case) and
-    // the folder-missing notes arrive a beat later.
-    const plan = planRestore({
-      workspace,
-      projectIds: projects.map((p) => p.id),
-      savedSessions,
-    })
-    // Carried so the offer survives a second restart (see the persist effect).
-    pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
-    // The per-project last agent outlives the restart too. It only ever WINS when the lane is
-    // live, so seeding it from a run where nothing is running is harmless — it starts mattering
-    // again the moment something is resumed.
-    lastAgentRef.current = workspace.lastAgentByProject ?? {}
-    setActiveProjectId(plan.projectId)
-    setProjectTab(plan.projectTab)
-    setPrefsViewActive(plan.mode === 'prefs')
-    setAgentsViewActive(plan.mode === 'agents')
-    setTuningViewActive(plan.mode === 'tuning')
-    setGlobalPrefsActive(plan.mode === 'globalPrefs')
-
     void (async () => {
+      // LAUNCH OR RELOAD, asked of main (lib/launch-kind). A launch opens on the home overview with
+      // where you were one click away; a reload (watchdog respawn, crash, ⌘R) restores it as before.
+      // One IPC round trip, while the window is still hidden behind the launch splash.
+      const kind = await launchKind()
+      const workspace = readWorkspace(localStorage.getItem(WORKSPACE_KEY))
+      if (!workspace) {
+        if (kind === 'launch') { setActiveProjectId(null); setGalleryTab('overview') }
+        setRestoreSettled(true)
+        return
+      }
+
+      // The filesystem check is best-effort and asynchronous, so the plan is computed and applied
+      // FIRST (a launch that waits on stat() before drawing is a slow launch for a rare case) and
+      // the folder-missing notes arrive a beat later.
+      const plan = planRestore({
+        workspace,
+        projectIds: projects.map((p) => p.id),
+        savedSessions,
+      })
+      // Carried so the offer survives a second restart (see the persist effect).
+      pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
+      // The per-project last agent outlives the restart too. It only ever WINS when the lane is
+      // live, so seeding it from a run where nothing is running is harmless — it starts mattering
+      // again the moment something is resumed.
+      lastAgentRef.current = workspace.lastAgentByProject ?? {}
+      const landing = launchLanding(kind, plan, workspace.lastProjectId, projects.map((p) => p.id))
+      lastProjectRef.current = landing.continueTo?.projectId ?? workspace.lastProjectId ?? null
+      applyView(landing.view)
+      if (landing.galleryTab) setGalleryTab(landing.galleryTab)
+      setContinueTarget(landing.continueTo)
+
       // Which of those lanes could not be resumed even if asked. `worktreeStatus` answers for
       // any path, worktree or not — a missing folder and a removed worktree are the same
       // question here: is there still somewhere to spawn into.
@@ -4328,14 +4369,15 @@ export function DashboardView() {
       // saved conversation and could therefore only start FRESH, is named before anything acts
       // on it — silently starting a new agent where someone expected their conversation back is
       // the outcome this whole feature is trying not to produce.
-      if (line) pushToast({ text: 'Picked up where you left off', kind: 'info', detail: line })
+      if (line) pushToast({ text: kind === 'launch' ? 'Where you left off' : 'Picked up where you left off', kind: 'info', detail: line })
 
       // AUTO-RESUME — off by default, and deliberately so: reopening the app should not silently
       // spawn six processes, six worktrees and six dev ports. When it is on, it runs the SAME
       // per-project resume the ⌘K action and Project Home use; there is no second resume path.
       const resumable = settled.lanes.filter((l) => !l.blocked)
       if (resumeOnLaunchEnabled() && settled.projectId && resumable.length) {
-        void handleResumeProject(settled.projectId)
+        // In the BACKGROUND on a launch: the lanes start, the overview stays on screen.
+        void handleResumeProject(settled.projectId, { background: kind === 'launch' })
       }
       // Released only now: the folder checks can still change what the plan says, and a
       // snapshot written mid-check would record a half-applied restore.
@@ -5271,6 +5313,10 @@ export function DashboardView() {
             onRestoreProject={restoreProject}
             onOpenFolderPrefs={handleOpenFolderPrefs}
             onOpenGlobalPrefs={handleOpenGlobalPrefs}
+            continueTo={continueTarget ? {
+              label: continueLabel(continueTarget, projects),
+              onContinue: continueWhereYouWere,
+            } : undefined}
             onSelectSession={handleSelectSession}
             restorableSessions={restorableSessions}
             recentProjects={recentProjects}

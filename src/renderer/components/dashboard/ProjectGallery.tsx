@@ -70,6 +70,9 @@ interface ProjectGalleryProps {
   onArchiveProjects: (ids: string[]) => void
   onRestoreProject: (id: string) => void
   onOpenFolderPrefs: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
+  /** Where the app was before this launch opened on the overview. Absent on a reload and once you
+   *  have gone somewhere. `label` is the place: a project name, or a view such as Preferences. */
+  continueTo?: { label: string; onContinue: () => void }
   /** Global settings on a tab: the overview's link for folders that match no project. */
   onOpenGlobalPrefs?: (tab?: FolderPrefsTab) => void
   onSelectSession: (s: AgentSession) => void
@@ -90,7 +93,7 @@ export function ProjectGallery({
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
   onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
-  closingIds, activeProjectId, onOpenGlobalPrefs,
+  closingIds, activeProjectId, onOpenGlobalPrefs, continueTo,
 }: ProjectGalleryProps) {
   // THE MACHINE OVERVIEW starts reading when the launcher mounts, from files only, so its chip in
   // the header has a number by the time anyone looks. The git half follows on its own delay.
@@ -208,9 +211,24 @@ export function ProjectGallery({
             }}
           />
         )}
+        {/* WHERE YOU WERE, one click away. The app opens on the overview at every launch; this is
+            the way back into the project (or view) the last run ended in. Same chrome as the other
+            header buttons, the name in --fg so it reads as the destination. */}
+        {continueTo && (
+          <button
+            data-continue
+            onClick={continueTo.onContinue}
+            title={`Back to ${continueTo.label}, where the last run ended`}
+            style={{ ...backBtn, marginLeft: tab === 'projects' && showFilter ? 8 : 'auto', maxWidth: 260, whiteSpace: 'nowrap' }}
+          >
+            <span style={{ flexShrink: 0 }}>Continue in</span>
+            <span style={{ color: 'var(--fg)', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{continueTo.label}</span>
+            <span aria-hidden style={{ flexShrink: 0 }}>→</span>
+          </button>
+        )}
         <button
           onClick={onOpenFolder}
-          style={{ ...backBtn, marginLeft: tab === 'projects' && showFilter ? 8 : 'auto' }}
+          style={{ ...backBtn, marginLeft: continueTo ? 8 : tab === 'projects' && showFilter ? 8 : 'auto' }}
           title="Open a folder as a project (⌘N)"
         >
           + Open folder

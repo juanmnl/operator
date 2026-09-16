@@ -51,6 +51,10 @@ export interface Workspace {
    *  six you had", and `savedSessions` alone cannot say that: it holds every session never
    *  explicitly closed, including ones from runs before this one. */
   liveKeys: string[]
+  /** The last project the user was IN, kept while they sit on the gallery. The app opens on the
+   *  home overview at launch, so `projectId` is null right after every launch; without this the
+   *  "Continue in <project>" offer would last one launch only. Optional: older snapshots lack it. */
+  lastProjectId?: string | null
   at: string
 }
 
@@ -213,4 +217,60 @@ export const RESUME_ON_LAUNCH_KEY = 'operator.resumeOnLaunch'
 
 export function resumeOnLaunchEnabled(): boolean {
   try { return localStorage.getItem(RESUME_ON_LAUNCH_KEY) === '1' } catch { return false }
+}
+
+// ── LAUNCH LANDS ON THE HOME OVERVIEW ───────────────────────────────────────────────────────────
+//
+// User decision, 2026-09-16: every app LAUNCH (cold start, relaunch after quit or update) opens on
+// the project gallery's worktree overview, not on the last project. A RELOAD of the renderer inside
+// a running app (the stall watchdog's respawn, a crash, ⌘R) still restores where you were: landing
+// on the overview then would look like the app losing your place.
+//
+// Nothing else changes. The plan is still computed, its lanes are still offered and resumed, and
+// where you were becomes `continueTo`: one click away, not the first screen.
+
+import type { LaunchKind } from './launch-kind'
+export type { LaunchKind }
+
+export interface ContinueTarget {
+  projectId: string | null
+  mode: RestorePlan['mode']
+  projectTab: WorkspaceProjectTab
+}
+
+export interface LaunchLanding {
+  /** What to show now. */
+  view: ContinueTarget
+  /** Open the gallery on this tab. */
+  galleryTab?: 'overview'
+  /** Where "Continue" goes. Null when the place you were IS the gallery and no project is known. */
+  continueTo: ContinueTarget | null
+}
+
+/** Pure. `unknown` (a shell that cannot tell) keeps the old behaviour: restore the plan. */
+export function launchLanding(kind: LaunchKind, plan: RestorePlan, lastProjectId: string | null | undefined, projectIds: readonly string[]): LaunchLanding {
+  const was: ContinueTarget = { projectId: plan.projectId, mode: plan.mode, projectTab: plan.projectTab }
+  if (kind !== 'launch') return { view: was, continueTo: null }
+  const knownLast = lastProjectId && projectIds.includes(lastProjectId) ? lastProjectId : null
+  const continueTo = plan.mode !== 'gallery' || plan.projectId
+    ? was
+    : knownLast ? { projectId: knownLast, mode: 'project' as const, projectTab: plan.projectTab } : null
+  return {
+    view: { projectId: null, mode: 'gallery', projectTab: plan.projectTab },
+    galleryTab: 'overview',
+    continueTo,
+  }
+}
+
+/** The place "Continue in …" names: the project, or the view when there is none. */
+export function continueLabel(t: ContinueTarget, projects: ReadonlyArray<{ id: string; name: string }>): string {
+  const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined
+  if (project && (t.mode === 'project' || t.mode === 'gallery')) return project.name
+  switch (t.mode) {
+    case 'prefs': return 'Preferences'
+    case 'globalPrefs': return 'Global settings'
+    case 'agents': return 'Agents'
+    case 'tuning': return 'Tuning'
+    default: return project?.name ?? 'your last project'
+  }
 }
