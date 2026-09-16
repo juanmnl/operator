@@ -96,7 +96,7 @@ describe('classify — the seven states the audit measured, plus corrupt', () =>
 })
 
 describe('reapPlanFrom — what the button acts on', () => {
-  it('puts merged-clean, merged-dirty and debris in auto, and nothing else', () => {
+  it('puts merged-clean and debris in auto, and nothing else', () => {
     const plan = reapPlanFrom([
       safe({ path: '/w/clean' }),
       safe({ path: '/w/dirty', dirty: true }),
@@ -106,9 +106,9 @@ describe('reapPlanFrom — what the button acts on', () => {
       safe({ path: '/w/live', liveTerminalId: 't1' }),
       safe({ path: '/w/dead', sourceRepoExists: false }),
     ])
-    expect(plan.auto.map((e) => e.path).sort()).toEqual(['/w/clean', '/w/debris', '/w/dirty'])
+    expect(plan.auto.map((e) => e.path).sort()).toEqual(['/w/clean', '/w/debris'])
     expect(plan.asks.map((e) => e.cls).sort())
-      .toEqual(['dead-source-repo', 'live-claimed', 'unattributed', 'unmerged'])
+      .toEqual(['dead-source-repo', 'live-claimed', 'merged-dirty', 'unattributed', 'unmerged'])
   })
 
   // THE GUARD IS REUSED UNTOUCHED, and it is consulted for the PLAN, not only at removal time —
@@ -124,10 +124,18 @@ describe('reapPlanFrom — what the button acts on', () => {
     expect(reapPlanFrom([safe({ liveTerminalId: 't9' })]).auto).toEqual([])
   })
 
-  it('flags the dirty ones as needing a commit first, and only those', () => {
-    const plan = reapPlanFrom([safe({ path: '/w/a' }), safe({ path: '/w/b', dirty: true })])
-    expect(plan.entries.find((e) => e.path === '/w/a')!.needsCommit).toBe(false)
-    expect(plan.entries.find((e) => e.path === '/w/b')!.needsCommit).toBe(true)
+  // The user's rule: unsaved work is never removed without asking. The button's one confirm is not
+  // asking per folder, so a merged folder with changes is never in its tier.
+  it('keeps a merged folder with uncommitted changes out of auto, and asks for confirmation instead', () => {
+    const plan = reapPlanFrom([safe({ path: '/w/a' }), safe({ path: '/w/b', dirty: true, uncommittedCount: 1, unsavedCommits: 0 })])
+    expect(plan.auto.map((e) => e.path)).toEqual(['/w/a'])
+    const dirty = plan.entries.find((e) => e.path === '/w/b')!
+    expect(dirty.cls).toBe('merged-dirty')
+    expect(dirty.needsUnsavedConfirm).toBe(true)
+  })
+
+  it('keeps a merged-clean folder out of auto if it somehow has unsaved commits', () => {
+    expect(reapPlanFrom([safe({ uncommittedCount: 0, unsavedCommits: 2 })]).auto).toEqual([])
   })
 
   it('totals bytes overall and for the auto tier separately — the button quotes the second', () => {
@@ -184,15 +192,42 @@ describe('the audit snapshot, replayed through the classifier', () => {
     safe({ path: '/w/uwazi_2026-a', gitValid: false, sourceRepoExists: false, sizeBytes: 118 * 1024 ** 2 }),
   ]
 
-  it('auto-removes the safe set and the debris, and asks about the dead repo', () => {
+  it('auto-removes the safe set and the debris, and asks about the dirty one and the dead repo', () => {
     const plan = reapPlanFrom(snapshot)
-    expect(plan.auto.map((e) => e.cls).sort()).toEqual(['debris', 'merged-clean', 'merged-dirty'])
-    expect(plan.asks).toHaveLength(1)
-    expect(plan.asks[0].cls).toBe('dead-source-repo')
+    expect(plan.auto.map((e) => e.cls).sort()).toEqual(['debris', 'merged-clean'])
+    expect(plan.asks.map((e) => e.cls).sort()).toEqual(['dead-source-repo', 'merged-dirty'])
   })
 
   it('never puts a dead-source-repo directory in the auto tier — no git command can reach it', () => {
     expect(reapPlanFrom(snapshot).auto.some((e) => e.path.includes('uwazi'))).toBe(false)
+  })
+})
+
+// THE BOOT AND QUIT PLANS COLLECT NO SIZES. The four uwazi_2026-* directories as they really are:
+// source repo deleted, no provenance, unregistered, git cannot read them. Unmeasured, every one
+// read as 0 bytes and passed the debris rule, which is in the auto tier.
+describe('debris never depends on sizes having been collected', () => {
+  const uwazi = (n: string): WorktreeFacts => safe({
+    path: `/Users/j/.operator/worktrees/uwazi_2026-${n}`,
+    gitValid: false, branch: undefined, dirty: false, registered: false, merged: undefined,
+    provenance: undefined, sourceRepoHint: '/Users/j/Developer/uwazi_2026', sourceRepoExists: false,
+    sizeBytes: 0, sizeUnknown: true,
+  })
+  const dirs = ['a1', 'b2', 'c3', 'd4'].map(uwazi)
+
+  it('classifies them as dead-source-repo, not debris, and keeps them out of the auto tier', () => {
+    const plan = reapPlanFrom(dirs, true) // `true` = sizes omitted, as boot and quit call it
+    expect(plan.entries.map((e) => e.cls)).toEqual(Array(4).fill('dead-source-repo'))
+    expect(plan.auto).toEqual([])
+    expect(plan.wouldRemove).toEqual([])
+  })
+
+  it('an unmeasured git-invalid directory with a live repo is corrupt, not debris', () => {
+    expect(classify(safe({ gitValid: false, provenance: undefined, registered: false, sizeBytes: 0, sizeUnknown: true }))).toBe('corrupt')
+  })
+
+  it('a MEASURED tiny leftover is still debris', () => {
+    expect(classify(safe({ gitValid: false, provenance: undefined, registered: false, sizeBytes: 8 * 1024 }))).toBe('debris')
   })
 })
 

@@ -348,12 +348,11 @@ export interface ReapEntry {
   sizeBytes: number
   branch?: string
   sourceRepo?: string
-  /** In the automatic tier: merged (clean, or dirty and committable first) or pure debris,
-   *  attributable, not live-claimed, and accepted by the removal guard. */
+  /** In the automatic tier: merged, clean and with no unsaved work, or pure debris; attributable,
+   *  not live-claimed, and accepted by the removal guard. */
   auto: boolean
   /** One sentence saying what will happen, or what is blocking. */
   reason: string
-  needsCommit: boolean
   /** Source repo for grouping: provenance, else the directory's own `.git` pointer. */
   repo?: string
   /** A lane is open in it. Never selectable. */

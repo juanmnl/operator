@@ -26,7 +26,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'nod
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
 import { loadProjects, operatorDir } from './store'
-import { appendProvenance, commitAll, dangerousRemovalReason, removePlainDirectory, removeWorktree, type Provenance } from './worktree'
+import { appendProvenance, dangerousRemovalReason, removePlainDirectory, removeWorktree, type Provenance } from './worktree'
 import { TRASH_DIR_NAME, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
@@ -69,9 +69,10 @@ export type ReapClass =
   | 'live-claimed'
   /** Merged into the source repo's default branch, working tree clean. THE AUTO TIER. */
   | 'merged-clean'
-  /** Merged, but with uncommitted changes. Auto too — but only after `commitAll` preserves
-   *  them, which is what stops a blunt "any porcelain output = don't touch" rule from
-   *  quarantining 35 directories over a single modified `CLAUDE.md`. */
+  /** Merged, but with uncommitted changes. NOT automatic (2026-09-16): the user's rule is that
+   *  unsaved work is never removed without asking, and committing it first behind one confirm
+   *  was removal without asking per folder. Removed only through Settings' per-row selection
+   *  and its second confirmation. */
   | 'merged-dirty'
   /** A real, unlanded branch. Only the person who wrote it can say whether it is still wanted. */
   | 'unmerged'
@@ -93,6 +94,9 @@ export interface WorktreeFacts {
   path: string
   /** Bytes on disk. `0` when sizes were not collected (the boot/quit sweeps skip them). */
   sizeBytes: number
+  /** `sizeBytes` was not measured, so `0` says nothing. The debris rule needs a real size: without
+   *  this, every unmeasured git-invalid directory read as 0 bytes and qualified as debris. */
+  sizeUnknown?: boolean
   /** `git rev-parse HEAD` works inside the directory. */
   gitValid: boolean
   branch?: string
@@ -138,8 +142,6 @@ export interface ReapEntry {
   auto: boolean
   /** Why it is not in the automatic tier — shown verbatim in the Settings list. */
   reason: string
-  /** `commitAll` must run before removal to preserve uncommitted work. */
-  needsCommit: boolean
   /** Source repo for grouping: provenance, else the `.git` pointer. */
   repo?: string
   live: boolean
@@ -198,7 +200,7 @@ export function classify(f: WorktreeFacts): ReapClass {
   // "zero risk, zero value in asking". Ordering it after the dead-repo rule turned
   // `.tmpIBNq7t-d96ee0` (8 KB, one stray file) into something a human has to adjudicate, which
   // is the opposite of the point.
-  const inert = !f.gitValid && f.sizeBytes <= DEBRIS_MAX_BYTES && !f.provenance && !f.registered
+  const inert = !f.gitValid && !f.sizeUnknown && f.sizeBytes <= DEBRIS_MAX_BYTES && !f.provenance && !f.registered
   if (inert) return 'debris'
   if (!f.sourceRepoExists) return 'dead-source-repo'
   if (!f.gitValid) return 'corrupt'
@@ -217,7 +219,7 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
   switch (cls) {
     case 'live-claimed': return `A lane is open here (${f.liveTerminalId}).`
     case 'merged-clean': return 'Merged and clean — safe to remove; the branch is kept.'
-    case 'merged-dirty': return 'Merged, with uncommitted changes — they are committed to the branch first, then the directory goes.'
+    case 'merged-dirty': return 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
     case 'unmerged': return f.merged === undefined
       ? `Could not tell whether ${f.branch ?? 'this branch'} is merged.`
       : `${f.branch ?? 'This branch'} is not merged into the default branch.`
@@ -236,7 +238,10 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
 function isAuto(cls: ReapClass, f: WorktreeFacts): boolean {
   if (f.guardReason) return false
   if (f.liveTerminalId) return false
-  return cls === 'merged-clean' || cls === 'merged-dirty' || cls === 'debris'
+  if (cls === 'debris') return true
+  // Merged and clean, and no unsaved work by the user's definition. A merged branch's commits are
+  // on the default branch already; the check is here so the tier cannot drift from the rule.
+  return cls === 'merged-clean' && !unsavedWorkOf(f).any
 }
 
 export interface UnsavedWork {
@@ -299,7 +304,6 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       // The guard's own sentence wins when it is the blocker: it is more specific than anything
       // the class could say, and it is the reason a human most needs to see.
       reason: f.guardReason ? `Refused: ${f.guardReason}` : describe(cls, f),
-      needsCommit: cls === 'merged-dirty',
       repo: f.provenance?.sourceRepo ?? f.sourceRepoHint,
       live: !!f.liveTerminalId,
       uncommitted: unsaved.uncommitted,
@@ -614,7 +618,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   const mergedCache = new Map<string, Set<string> | null>()
   const registeredCache = new Map<string, Set<string> | null>()
 
-  return Promise.all(names.map(async (name): Promise<WorktreeFacts> => {
+  const facts = await Promise.all(names.map(async (name): Promise<WorktreeFacts> => {
     const path = join(root, name)
     const prov = provenance.get(path)
     // Provenance first (it is the attribution record), then the directory's own `.git` pointer.
@@ -680,6 +684,18 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       guardReason: dangerousRemovalReason(path, sourceRepo),
     }
   }))
+
+  // DEBRIS NEEDS A REAL SIZE. Measure just the candidates the size question decides (git-invalid,
+  // unattributed, unregistered) when sizes were not collected, or when the full `du` missed one.
+  // A size that still cannot be read stays unknown, and `classify` then never calls it debris.
+  const candidates = facts.filter((f) => !sizes.has(f.path) && !f.gitValid && !f.provenance && !f.registered)
+  const measured = await duOf(candidates.map((f) => f.path)).catch(() => new Map<string, number>())
+  for (const f of facts) {
+    const bytes = sizes.get(f.path) ?? measured.get(f.path)
+    if (bytes === undefined) f.sizeUnknown = true
+    else f.sizeBytes = bytes
+  }
+  return facts
 }
 
 /** Branch names already merged into the repo's default branch. `null` when git could not say,
@@ -876,11 +892,10 @@ export interface ReapResult {
 
 /** Remove the automatic tier. `dryRun` computes and reports without touching anything.
  *
- *  `commitAll` runs on EVERY entry, not just the dirty ones — it is a documented no-op on a clean
- *  tree, and running it unconditionally means the "was it clean?" answer cannot go stale between
- *  the plan and the removal. If the commit fails, the directory is skipped rather than removed:
- *  the whole point of committing first is that no uncommitted work is lost, and a failed commit
- *  means that promise cannot be kept. */
+ *  The tier holds only folders with no unsaved work, so nothing is committed on the way out. The
+ *  "is it clean?" answer is asked again right before each removal, because the plan can be minutes
+ *  old: a folder that picked up changes since is skipped and reported, never committed and removed
+ *  behind the one confirm. */
 export async function reap(opts: { dryRun?: boolean; withSizes?: boolean } = {}): Promise<ReapResult> {
   const dryRun = opts.dryRun !== false
   const plan = await reapPlan({ withSizes: opts.withSizes })
@@ -896,7 +911,9 @@ export async function reap(opts: { dryRun?: boolean; withSizes?: boolean } = {})
     }
     try {
       if (entry.cls !== 'debris') {
-        await commitAll(entry.path, 'WIP preserved before reaping this worktree')
+        const status = await git(entry.path, ['status', '--porcelain'])
+        if (status == null) throw new Error('git could not read it any more')
+        if (status) throw new Error('it has uncommitted changes since the plan was made')
       }
       await removeWorktree(entry.path, entry.sourceRepo)
       result.removed.push(entry.path)

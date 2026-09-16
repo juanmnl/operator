@@ -392,3 +392,27 @@ describe('gathered facts and provenance backfill, end to end', () => {
     expect(await reap.backfillProvenanceAtBoot()).toBe(0)
   })
 })
+
+// The boot and quit triggers call `reap({ dryRun })` with no sizes. Inside SANDBOX, never ~/.operator.
+describe('boot/quit plan without sizes', () => {
+  it('measures debris candidates itself: a dead-repo folder over 2 MB is not debris and not auto', async () => {
+    const reap = await import('./worktree-reap')
+    const root = join(process.env.OPERATOR_DIR!, 'worktrees')
+    const dead = join(root, 'uwazi_2026-deadbe')
+    mkdirSync(dead, { recursive: true })
+    writeFileSync(join(dead, '.git'), 'gitdir: /Users/nobody/gone/uwazi_2026/.git/worktrees/uwazi_2026-deadbe\n')
+    writeFileSync(join(dead, 'blob.bin'), Buffer.alloc(3 * 1024 * 1024, 1))
+    const husk = join(root, '.tmpHusk-000001')
+    mkdirSync(husk, { recursive: true })
+    writeFileSync(join(husk, 'a.txt'), 'x')
+
+    const result = await reap.reap({ dryRun: true })
+    const deadEntry = result.plan.entries.find((e) => e.path === dead)!
+    expect(deadEntry.cls).toBe('dead-source-repo')
+    expect(deadEntry.sizeBytes).toBeGreaterThan(2 * 1024 * 1024)
+    expect(result.plan.auto.some((e) => e.path === dead)).toBe(false)
+    expect(result.plan.entries.find((e) => e.path === husk)!.cls).toBe('debris')
+    expect(result.removed).toEqual([])
+    expect(existsSync(dead)).toBe(true)
+  })
+})

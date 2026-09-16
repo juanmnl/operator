@@ -3,7 +3,7 @@ import type { ReapEntry } from '../../shared/types'
 import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedLabel } from './worktree-groups'
 
 const entry = (over: Partial<ReapEntry> = {}): ReapEntry => ({
-  path: '/w/repo-1', cls: 'merged-clean', sizeBytes: 100, auto: true, reason: '', needsCommit: false,
+  path: '/w/repo-1', cls: 'merged-clean', sizeBytes: 100, auto: true, reason: '',
   repo: '/dev/repo', live: false, uncommitted: 0, unsavedCommits: 0, unsavedKnown: true, needsUnsavedConfirm: false,
   ...over,
 })

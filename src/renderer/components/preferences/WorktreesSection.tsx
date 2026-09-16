@@ -269,8 +269,8 @@ export function WorktreesSection() {
                     <>
                       <span style={{ fontSize: 11, color: 'var(--fg)', flex: '1 1 100%' }}>
                         {plan.auto.length} director{plan.auto.length === 1 ? 'y' : 'ies'} will be deleted.
-                        Every branch is kept — a lane can be resumed onto its branch afterwards, and
-                        uncommitted work is committed to the branch before its directory goes.
+                        Each is merged with no unsaved work, or is creation debris. Every branch is
+                        kept — a lane can be resumed onto its branch afterwards.
                       </span>
                       <button onClick={runReap} disabled={busy} style={primaryBtn}>
                         {busy ? 'Removing…' : 'Remove them'}
@@ -279,7 +279,7 @@ export function WorktreesSection() {
                     </>
                   ) : (
                     <button onClick={() => setConfirming(true)} disabled={busy} style={primaryBtn}
-                            title="Merged worktrees Operator can prove it created, plus creation debris.">
+                            title="Merged worktrees with no unsaved work that Operator can prove it created, plus creation debris. Folders with unsaved work are removed only by selecting them.">
                       Remove {plan.auto.length} safe worktree{plan.auto.length === 1 ? '' : 's'}
                       {showSize && ` (${size(plan.autoBytes)})`}
                     </button>
