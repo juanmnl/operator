@@ -187,7 +187,6 @@ export function ProjectGallery({
         )}
         <OverviewChip
           overview={overview}
-          data={overviewData}
           active={tab === 'overview'}
           onClick={() => onSelectTab(tab === 'overview' ? 'projects' : 'overview')}
         />

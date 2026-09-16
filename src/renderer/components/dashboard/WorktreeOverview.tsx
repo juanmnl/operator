@@ -40,12 +40,13 @@ export function useOverview(projects: Project[], sessions: AgentSession[], suspe
 }
 
 /** The one-line machine total for the gallery header. Opens the overview. */
-export function OverviewChip({ overview, data, active, onClick }: {
-  overview: Overview; data: OverviewData; active: boolean; onClick: () => void
+export function OverviewChip({ overview, active, onClick }: {
+  overview: Overview; active: boolean; onClick: () => void
 }) {
-  if (data.phase === 'idle' && !data.worktrees.length) return null
   const t = overview.total
-  if (t.worktrees === 0 && !data.loading) return null
+  // Hidden until there is a folder to talk about. While the first reading is in flight a chip would
+  // flash `0 worktrees` for a few milliseconds, and a machine with none has nothing to overview.
+  if (t.worktrees === 0) return null
   const flagged = overview.detailed && t.unsaved > 0
   return (
     <button
