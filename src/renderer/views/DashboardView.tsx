@@ -2733,7 +2733,7 @@ export function DashboardView() {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote), and, when it
     // shares the main checkout, that it must leave git state and tracked files alone.
     const note = project.roster
-      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout })
+      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree })
       : undefined
     const tabs = await handleLaunchSession(
       project.path,

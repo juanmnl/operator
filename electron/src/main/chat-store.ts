@@ -261,6 +261,23 @@ export class ArtifactStore {
         seen        INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS reports_seen ON reports (seen, id);
+      -- WORKTREE RELEASE ON EXIT: a lane called worktree_done while it was still running in the
+      -- directory, so the removal waits for its pty to end. Main reads open rows when that pty
+      -- exits, re-checks the directory, and writes the outcome. app_pid scopes a row to the run
+      -- that spawned the lane, because terminal ids restart at t0 every run.
+      CREATE TABLE IF NOT EXISTS worktree_release (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        at          TEXT NOT NULL,
+        terminal_id TEXT NOT NULL,
+        project_id  TEXT,
+        app_pid     TEXT,
+        path        TEXT NOT NULL,
+        branch      TEXT NOT NULL,
+        source_repo TEXT NOT NULL,
+        handled_at  TEXT,
+        outcome     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS worktree_release_open ON worktree_release (terminal_id, handled_at);
       CREATE TABLE IF NOT EXISTS task_status (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         at          TEXT NOT NULL,
@@ -449,6 +466,37 @@ export class ArtifactStore {
         WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND at < ?${scope}`,
     ).run(...params)
     return Number(r.changes)
+  }
+
+  /** Record that a lane released its worktree for removal when its pty ends. One open row per
+   *  terminal + path + app run: a second call answers from the existing row. */
+  insertRelease(r: { at: string; terminalId: string; projectId: string | null; appPid: string | null; path: string; branch: string; sourceRepo: string }): number {
+    const open = this.db.prepare(
+      `SELECT id FROM worktree_release WHERE terminal_id = ? AND path = ? AND app_pid IS ? AND handled_at IS NULL`,
+    ).get(r.terminalId, r.path, r.appPid) as { id: number } | undefined
+    if (open) return open.id
+    const res = this.db.prepare(
+      `INSERT INTO worktree_release (at, terminal_id, project_id, app_pid, path, branch, source_repo) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(r.at, r.terminalId, r.projectId, r.appPid, r.path, r.branch, r.sourceRepo)
+    return Number(res.lastInsertRowid)
+  }
+
+  /** Open release rows for this pty, in this app run. */
+  openReleases(terminalId: string, path: string, appPid: string): Array<{ id: number; branch: string; sourceRepo: string }> {
+    return (this.db.prepare(
+      `SELECT id, branch, source_repo FROM worktree_release
+        WHERE terminal_id = ? AND path = ? AND app_pid = ? AND handled_at IS NULL ORDER BY id`,
+    ).all(terminalId, path, appPid) as Array<{ id: number; branch: string; source_repo: string }>)
+      .map((row) => ({ id: row.id, branch: row.branch, sourceRepo: row.source_repo }))
+  }
+
+  markReleaseHandled(id: number, at: string, outcome: string): void {
+    this.db.prepare(`UPDATE worktree_release SET handled_at = ?, outcome = ? WHERE id = ? AND handled_at IS NULL`).run(at, outcome, id)
+  }
+
+  releaseOutcome(id: number): { handledAt: string | null; outcome: string | null } | undefined {
+    const row = this.db.prepare(`SELECT handled_at, outcome FROM worktree_release WHERE id = ?`).get(id) as { handled_at: string | null; outcome: string | null } | undefined
+    return row ? { handledAt: row.handled_at, outcome: row.outcome } : undefined
   }
 
   insertStatus(at: string, terminalId: string, projectId: string | null, taskId: string, status: string): number {

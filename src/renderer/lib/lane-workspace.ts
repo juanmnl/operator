@@ -10,6 +10,8 @@ export interface LaunchWorkspace {
   useWorktree: boolean
   /** The lane runs in the shared main checkout and gets the no-commit line in its brief. */
   sharesMainCheckout: boolean
+  /** The lane has its own worktree and gets the `worktree_done` line in its brief. */
+  ownWorktree: boolean
 }
 
 /** A suspended lane resumes WHERE IT WAS, whatever the setting says now. A worktree lane goes back
@@ -21,5 +23,6 @@ export function launchWorkspace(
   suspended?: { worktreeBranch?: string } | null,
 ): LaunchWorkspace {
   const useWorktree = suspended ? !!suspended.worktreeBranch : resolvedUseWorktree
-  return { useWorktree, sharesMainCheckout: !useWorktree && !isCoordinator(roleId) }
+  const coordinator = isCoordinator(roleId)
+  return { useWorktree, sharesMainCheckout: !useWorktree && !coordinator, ownWorktree: useWorktree && !coordinator }
 }

@@ -21,7 +21,7 @@ import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
-import { checkAutoRemoval, reconcileAtBoot, reapOnQuit, setLivePtyCwds } from './worktree-reap'
+import { checkAutoRemoval, reconcileAtBoot, reapOnQuit, releaseWorktreeOnExit, setLivePtyCwds } from './worktree-reap'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
@@ -237,9 +237,11 @@ function boot(): void {
 
   terminals = new TerminalManager(
     (id, data) => { const w = win(); if (w) broadcast(w, 'onTerminalData', id, data) },
-    (id, code, signal, selfExit) => {
+    (id, code, signal, selfExit, laneCwd) => {
       const w = win()
       if (w) broadcast(w, 'onTerminalExit', id, code, signal)
+      // A lane that called worktree_done has its worktree removed now that it has ended.
+      if (artifacts) void releaseWorktreeOnExit(id, laneCwd, artifacts)
       // Report-only: what the automatic worktree rule would take now that a lane ended on its own.
       if (selfExit) void checkAutoRemoval('lane-exit')
     },

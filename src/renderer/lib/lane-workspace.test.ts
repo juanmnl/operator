@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Role } from '../../shared/types'
 import { launchWorkspace } from './lane-workspace'
 import { resolveAgentConfig } from './model-config'
-import { orchestrationNote, rolePresets, SHARED_CHECKOUT_NOTE } from './roster'
+import { orchestrationNote, rolePresets, SHARED_CHECKOUT_NOTE, WORKTREE_DONE_NOTE } from './roster'
 
 const role = (over: Partial<Role> & { id: string }): Role => ({ name: over.id, ...over })
 
@@ -29,17 +29,17 @@ describe('own-worktree default by role (no field stored)', () => {
 
 describe('launchWorkspace — where the launch goes', () => {
   it('a fresh launch follows the setting', () => {
-    expect(launchWorkspace('code', true)).toEqual({ useWorktree: true, sharesMainCheckout: false })
-    expect(launchWorkspace('research', false)).toEqual({ useWorktree: false, sharesMainCheckout: true })
+    expect(launchWorkspace('code', true)).toEqual({ useWorktree: true, sharesMainCheckout: false, ownWorktree: true })
+    expect(launchWorkspace('research', false)).toEqual({ useWorktree: false, sharesMainCheckout: true, ownWorktree: false })
   })
 
   it('the coordinator is in the main checkout but does not get the no-commit line', () => {
-    expect(launchWorkspace('operator', false)).toEqual({ useWorktree: false, sharesMainCheckout: false })
+    expect(launchWorkspace('operator', false)).toEqual({ useWorktree: false, sharesMainCheckout: false, ownWorktree: false })
   })
 
   it('a suspended lane resumes where it was, whatever the setting says now', () => {
-    expect(launchWorkspace('research', false, { worktreeBranch: 'operator/abc' })).toEqual({ useWorktree: true, sharesMainCheckout: false })
-    expect(launchWorkspace('code', true, { worktreeBranch: undefined })).toEqual({ useWorktree: false, sharesMainCheckout: true })
+    expect(launchWorkspace('research', false, { worktreeBranch: 'operator/abc' })).toEqual({ useWorktree: true, sharesMainCheckout: false, ownWorktree: true })
+    expect(launchWorkspace('code', true, { worktreeBranch: undefined })).toEqual({ useWorktree: false, sharesMainCheckout: true, ownWorktree: false })
   })
 })
 
@@ -58,5 +58,29 @@ describe('the shared-checkout line in the launch brief', () => {
 
   it('keeps the lane note under the size guard', () => {
     expect(orchestrationNote('proj', research, roster, { sharesMainCheckout: true }).length).toBeLessThan(3300)
+  })
+})
+
+describe('the worktree_done line in the launch brief', () => {
+  const roster = rolePresets()
+  const byId = (id: string) => roster.find((r) => r.id === id)!
+
+  it('is added for a lane in its own worktree — Code and Design by default — and not otherwise', () => {
+    for (const id of ['code', 'design']) {
+      const ws = launchWorkspace(id, resolveAgentConfig(byId(id)).useWorktree)
+      expect(orchestrationNote('proj', byId(id), roster, ws)).toContain(WORKTREE_DONE_NOTE)
+    }
+    for (const id of ['research', 'review', 'qa', 'operator']) {
+      const ws = launchWorkspace(id, resolveAgentConfig(byId(id)).useWorktree)
+      expect(orchestrationNote('proj', byId(id), roster, ws)).not.toContain(WORKTREE_DONE_NOTE)
+    }
+  })
+
+  it('names the order: committed, then worktree_done, then report', () => {
+    expect(WORKTREE_DONE_NOTE).toMatch(/committed on your branch, call `mcp__operator__worktree_done`, then `mcp__operator__report`/)
+  })
+
+  it('keeps a Code lane note under the size guard', () => {
+    expect(orchestrationNote('proj', byId('code'), roster, { ownWorktree: true }).length).toBeLessThan(3300)
   })
 })

@@ -197,7 +197,10 @@ describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () =>
           // `legacyResolve` reports the fallback precisely because nothing used to write it.
           // Comparing it would assert that a NEW feature changed nothing, which is backwards.
           // Every field the migration is actually about is still compared exactly.
-          const drop = (c: Record<string, unknown>) => { const { remoteControl: _rc, ...rest } = c; return rest }
+          // `useWorktree` is excluded too, since 2026-09-16: the migration no longer carries it (see
+          // the next-but-one test), because the per-role worktree default is now a policy that a
+          // re-run of this one-shot migration must not undo.
+          const drop = (c: Record<string, unknown>) => { const { remoteControl: _rc, useWorktree: _wt, ...rest } = c; return rest }
           expect(after.map((c) => drop(c as unknown as Record<string, unknown>)))
             .toEqual(before.map((c) => drop(c as unknown as Record<string, unknown>)))
         }
@@ -246,14 +249,19 @@ describe('migrateGlobalsToLanePins — collapsing three altitudes to two', () =>
     expect(out.projects[0].roster![0].model).toBe('opus') // preset is fable
   })
 
-  it('pins worktree OFF for a store with no entry for that lane — that WAS the old answer', () => {
-    // The old cascade had no preset layer for `useWorktree`: an absent global fell straight to
-    // the hard fallback, i.e. off. The preset now says `code` isolates, so preserving what the
-    // user actually launched with means writing the `false` down rather than quietly flipping
-    // four lanes into worktrees. This is the case that makes "resolve both ways and compare"
-    // worth more than pattern-matching the tier.
-    const out = migrateGlobalsToLanePins([project([role({ id: 'code' })])], {})
-    expect(out.projects[0].roster![0].useWorktree).toBe(false)
+  // CHANGED 2026-09-16. This used to pin worktree OFF where the old tier said off, to preserve what
+  // a lane launched with. The per-role worktree default is now a policy (Research moved to the main
+  // checkout) and `role-defaults.json` still says `research: true`, so a re-run from a lost
+  // localStorage flag would have pinned every Research lane back into a worktree and rewritten
+  // projects.json on load. Worktree now comes only from the preset and the lane's own pin.
+  it('never writes a useWorktree pin, whatever the old tier said', () => {
+    const out = migrateGlobalsToLanePins(
+      [project([role({ id: 'code' }), role({ id: 'research' }), role({ id: 'qa' })])],
+      { research: { useWorktree: true }, qa: { useWorktree: true } },
+    )
+    expect(out.pins).toBe(0)
+    expect(out.projects[0].roster!.every((r) => r.useWorktree === undefined)).toBe(true)
+    expect(resolveAgentConfig(out.projects[0].roster![1]).useWorktree).toBe(false)
   })
 
   it("carries a project's effort default down, since that layer is gone too", () => {

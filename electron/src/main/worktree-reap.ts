@@ -597,13 +597,17 @@ async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: 
  *
  *  Never throws: this runs at boot and on quit, and a reaper that can throw is a launch or a quit
  *  that can hang. Every probe that fails answers in the direction of "do not touch". */
-export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: boolean } = {}): Promise<WorktreeFacts[]> {
+export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: boolean; only?: readonly string[] } = {}): Promise<WorktreeFacts[]> {
   const root = worktreeRoot()
+  const only = opts.only ? new Set(opts.only) : null
   let names: string[]
   try {
     names = (await readdir(root, { withFileTypes: true }))
       .filter((d) => d.isDirectory() && d.name !== TRASH_DIR_NAME)
       .map((d) => d.name)
+      // One lane's own directory, for `worktree_done`: asking git about every worktree on disk to
+      // answer a question about one would make the tool call take seconds.
+      .filter((name) => !only || only.has(join(root, name)))
   } catch {
     return []
   }
@@ -1079,6 +1083,10 @@ export async function removeWorktreeDurably(
   try {
     await removeWorktree(path, sourceRepo)
   } catch (e) {
+    // ALREADY GONE IS DONE. A lane released with `worktree_done` is removed by main when its pty
+    // exits, and the renderer's close path asks for the same removal moments later; whichever
+    // arrives second finds nothing to move. That is success, not a refusal to show the user.
+    if (!existsSync(path)) { await clearPending(path); return }
     // A REFUSAL IS NOT AN INTERRUPTED REMOVAL. The record exists so a crash between intent and
     // removal is retried; a removal that was refused would only be refused again, or worse, match
     // a different lane later at the same path (Review L1).
@@ -1086,4 +1094,131 @@ export async function removeWorktreeDurably(
     throw e
   }
   await clearPending(path)
+}
+
+// ── worktree_done: a lane releases its own worktree ──────────────────────────────────────────
+//
+// The lane calls `mcp__operator__worktree_done` when its work is on its branch. The MCP process
+// checks the lane's own directory (never a path the agent names) and, if nothing unsaved is in
+// it, records a RELEASE. Nothing is removed while the agent is still running in that directory:
+// main removes it when the lane's pty exits, after checking again.
+
+export type WorktreeDoneVerdict =
+  | { ok: true; path: string; branch: string; sourceRepo: string }
+  | { ok: false; message: string }
+
+/** What is in the way, for the refusal message. */
+export interface UnsavedDetails { files: string[]; commits: string[] }
+
+const LIST_MAX = 20
+const listed = (items: readonly string[]) =>
+  items.slice(0, LIST_MAX).map((i) => `  ${i}`).join('\n') + (items.length > LIST_MAX ? `\n  …and ${items.length - LIST_MAX} more` : '')
+
+/** THE DECISION, pure. `f` is the facts for the lane's directory, `undefined` when that directory
+ *  is not under the worktree root (the lane runs in the main checkout, or somewhere else). */
+export function worktreeDoneVerdict(laneCwd: string | undefined, f: WorktreeFacts | undefined, details: UnsavedDetails): WorktreeDoneVerdict {
+  const nothing = 'Nothing was changed.'
+  if (!laneCwd) {
+    return { ok: false, message: `This lane was not told its directory at launch (it was started by an older Operator build), so Operator cannot tell which worktree is yours. ${nothing}` }
+  }
+  if (!f) {
+    return { ok: false, message: `This lane has no worktree of its own: it runs in ${laneCwd}, which is not an Operator worktree. There is nothing to remove. When your task is finished, call mcp__operator__report. ${nothing}` }
+  }
+  if (!f.provenance) {
+    return { ok: false, message: `Operator has no record of creating ${laneCwd}, so it will not remove it. Call mcp__operator__report and leave the directory to the user. ${nothing}` }
+  }
+  if (f.guardReason) return { ok: false, message: `Operator refuses to remove ${laneCwd}: ${f.guardReason}. ${nothing}` }
+  if (!f.gitValid) {
+    return { ok: false, message: `git cannot read ${laneCwd}, so Operator cannot check it for unsaved work and will not remove it. Call mcp__operator__report and describe the state instead. ${nothing}` }
+  }
+  if (!f.branch || f.branch === 'HEAD') {
+    return { ok: false, message: `HEAD is detached in ${laneCwd}, so there is no branch to keep your commits on. Check out your branch (git switch <branch>) and call worktree_done again, or report instead. ${nothing}` }
+  }
+  const u = unsavedWorkOf(f)
+  if (!u.known) {
+    return { ok: false, message: `git could not say whether ${laneCwd} has unsaved work, so it will not be removed. Call mcp__operator__report instead. ${nothing}` }
+  }
+  if (u.any) {
+    const parts = [`Not released: ${laneCwd} (branch ${f.branch}) has work that exists nowhere else.`]
+    if (u.uncommitted) parts.push(`Uncommitted files (${u.uncommitted}):\n${listed(details.files)}`)
+    if (u.unsavedCommits) parts.push(`Commits on no other branch and no remote (${u.unsavedCommits}):\n${listed(details.commits)}`)
+    parts.push(
+      'Commit your changes on your branch, and push the branch if this project uses a remote; or, if the work '
+      + 'should stay here for the user to review, call mcp__operator__report and do not call worktree_done. ' + nothing,
+    )
+    return { ok: false, message: parts.join('\n') }
+  }
+  return { ok: true, path: f.path, branch: f.branch, sourceRepo: f.provenance.sourceRepo }
+}
+
+async function unsavedDetails(path: string, branch: string | undefined): Promise<UnsavedDetails> {
+  const status = await git(path, ['status', '--porcelain'])
+  const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
+  const log = await git(path, ['log', '--format=%h %s', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+  return {
+    files: (status ?? '').split('\n').filter(Boolean),
+    commits: (log ?? '').split('\n').filter(Boolean),
+  }
+}
+
+/** Gather and decide for one lane directory. Never throws. */
+export async function evaluateWorktreeDone(laneCwd: string | undefined): Promise<WorktreeDoneVerdict> {
+  try {
+    if (!laneCwd) return worktreeDoneVerdict(undefined, undefined, { files: [], commits: [] })
+    const f = (await gatherFacts({ only: [laneCwd] }))[0]
+    const details = f?.gitValid ? await unsavedDetails(f.path, f.branch) : { files: [], commits: [] }
+    return worktreeDoneVerdict(laneCwd, f, details)
+  } catch (e) {
+    return { ok: false, message: `Operator could not check the worktree: ${e instanceof Error ? e.message : e}. Nothing was changed.` }
+  }
+}
+
+/** The store calls `releaseWorktreeOnExit` needs. Structural, so tests can hand it a real store. */
+export interface ReleaseStore {
+  openReleases(terminalId: string, path: string, appPid: string): Array<{ id: number; branch: string; sourceRepo: string }>
+  markReleaseHandled(id: number, at: string, outcome: string): void
+}
+
+export type ReleaseOutcome = 'none' | 'removed' | 'already-gone' | 'kept' | 'refused'
+
+/** Main, on a lane's pty exit: remove the worktree it released, if it is still safe to.
+ *
+ *  Checked AGAIN here, because the agent kept running after it called the tool. Unsaved work at
+ *  exit keeps the directory (it stays listed in Settings → Worktrees with its unsaved state), and
+ *  so does another terminal open in it. The branch is always kept. Never throws. */
+export async function releaseWorktreeOnExit(terminalId: string, cwd: string | undefined, store: ReleaseStore, appPid = String(process.pid)): Promise<ReleaseOutcome> {
+  if (!cwd) return 'none'
+  let rows: Array<{ id: number; branch: string; sourceRepo: string }>
+  try { rows = store.openReleases(terminalId, cwd, appPid) } catch { return 'none' }
+  if (!rows.length) return 'none'
+  const at = () => new Date().toISOString()
+  const settle = (outcome: string) => { for (const r of rows) store.markReleaseHandled(r.id, at(), outcome) }
+  try {
+    if (!existsSync(cwd)) { settle('already-gone'); return 'already-gone' }
+    const f = (await gatherFacts({ only: [cwd] }))[0]
+    const u = f ? unsavedWorkOf(f) : undefined
+    let why: string | undefined
+    if (!f || !f.provenance) why = 'no longer an Operator worktree'
+    else if (!u!.known) why = 'git could not say whether it has unsaved work'
+    else if (u!.any) why = `unsaved work at exit (${u!.uncommitted ?? 0} uncommitted file(s), ${u!.unsavedCommits ?? 0} commit(s) on no other branch or remote)`
+    else {
+      // The exiting pty is already marked exited, so only ANOTHER terminal open in it claims it.
+      const pty = ptyClaimOn(cwd, livePtyCwds())
+      if (pty) why = `a terminal is still open in ${pty}`
+    }
+    if (why) {
+      console.error(`[reap] ${terminalId}: kept released worktree ${cwd}: ${why}`)
+      settle(`kept: ${why}`)
+      return 'kept'
+    }
+    await removeWorktreeDurably(cwd, f!.provenance!.sourceRepo, { branch: f!.branch, reason: 'released with worktree_done' })
+    console.error(`[reap] ${terminalId}: removed released worktree ${cwd}; branch ${f!.branch} kept`)
+    settle('removed')
+    return 'removed'
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[reap] ${terminalId}: released worktree ${cwd} not removed: ${msg}`)
+    try { settle(`refused: ${msg}`) } catch { /* store gone at shutdown */ }
+    return 'refused'
+  }
 }

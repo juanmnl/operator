@@ -320,7 +320,13 @@ export const SHARED_CHECKOUT_NOTE =
   'You work in the project\u2019s main checkout, shared with other lanes: do not commit, switch ' +
   'branches, stash, or edit tracked files; write results only under dev/results/.\n'
 
-export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean } = {}): string {
+/** Appended to a non-coordinator lane that launches IN ITS OWN WORKTREE (Code and Design by
+ *  default). `worktree_done` refuses unless the work is committed, so the order matters. */
+export const WORKTREE_DONE_NOTE =
+  'When your task is done and your work is committed on your branch, call ' +
+  '`mcp__operator__worktree_done`, then `mcp__operator__report`.\n'
+
+export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
   // role works, not just which lane it is.
@@ -359,6 +365,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
     (opts.sharesMainCheckout ? SHARED_CHECKOUT_NOTE : '') +
+    (opts.ownWorktree ? WORKTREE_DONE_NOTE : '') +
     REPLY_PROTOCOL +
     REPORT_ARTIFACTS +
     REPORT_TASK_STATUS

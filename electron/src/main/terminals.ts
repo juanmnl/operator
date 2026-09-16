@@ -99,8 +99,9 @@ interface Managed {
 }
 
 type DataSink = (id: string, base64: string) => void
-/** `selfExit` = the process ended without Operator killing it (the agent quit, or it crashed). */
-type ExitSink = (id: string, exitCode: number, signal: number, selfExit: boolean) => void
+/** `selfExit` = the process ended without Operator killing it (the agent quit, or it crashed).
+ *  `laneCwd` is the directory a LANE was spawned in; undefined for a plain shell. */
+type ExitSink = (id: string, exitCode: number, signal: number, selfExit: boolean, laneCwd?: string) => void
 
 export class TerminalManager {
   private readonly terminals = new Map<string, Managed>()
@@ -283,6 +284,10 @@ export class TerminalManager {
     // of `operator` was filed under `uwazi-app`. Stated at spawn, where it is known for certain.
     if (o.projectId) env.OPERATOR_PROJECT_ID = o.projectId
     if (o.roleId) env.OPERATOR_ROLE_ID = o.roleId
+    // WHERE THIS LANE RUNS, stated at spawn like the two above. `worktree_done` removes the
+    // caller's own worktree and takes no path argument, so the directory has to come from here,
+    // not from the agent and not from the MCP process's cwd (which a `cd` does not reach).
+    env.OPERATOR_LANE_CWD = o.cwd
     if (devPort) {
       env.OPERATOR_DEV_PORT = String(devPort)
       env.PORT = String(devPort)
@@ -341,7 +346,7 @@ export class TerminalManager {
       p.onExit(({ exitCode, signal }) => {
         managed.exited = true
         managed.pty = null
-        this.onExit(id, exitCode, signal ?? 0, !managed.killing)
+        this.onExit(id, exitCode, signal ?? 0, !managed.killing, managed.cwd)
       })
     }
 
@@ -795,6 +800,7 @@ function stripNestedSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   delete out.OPERATOR_TERMINAL_ID
   delete out.OPERATOR_PROJECT_ID
   delete out.OPERATOR_ROLE_ID
+  delete out.OPERATOR_LANE_CWD
   delete out.OPERATOR_APP_PID
   delete out.OPERATOR_DEV_PORT
   delete out.PORT
