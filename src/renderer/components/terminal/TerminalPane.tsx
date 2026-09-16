@@ -14,12 +14,15 @@ import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom, bracketedPaste } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 import { submitQueue } from '../../lib/submit-queue'
+import { createHiddenOutputBuffer, type HiddenOutputBuffer } from '../../lib/hidden-output'
 
 // Claude Code's composer-divider ornaments (👀/👣 and newer cycled pictographs) are
 // decorative, not corruption. Strip them on EVERY path that writes to xterm — live
 // output AND replayed history (an idle input box keeps the ornament from its last draw,
 // so the history path matters). See lib/terminal `stripOrnaments` for the shared regex.
 const decoder = new TextDecoder()
+// Output held per hidden pane before it is written anyway (~512KB). See lib/hidden-output.
+const BG_CAP = 512_000
 
 interface TerminalPaneProps {
   terminalId: string
@@ -66,9 +69,14 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // Output that arrived while this pane was HIDDEN — buffered instead of written,
   // because xterm renders even when not visible, and several background panes
   // rendering at once overload WKWebView and corrupt the VISIBLE pane (the
-  // "worsens after the first session" report). Flushed when the pane activates.
-  const bgBufferRef = useRef<string[]>([])
-  const bgBufferLenRef = useRef(0)
+  // "worsens after the first session" report). Flushed when the pane activates, or
+  // written while still hidden once it reaches BG_CAP — never trimmed (see lib/hidden-output).
+  const bgBufferRef = useRef<HiddenOutputBuffer | null>(null)
+  if (!bgBufferRef.current) {
+    bgBufferRef.current = createHiddenOutputBuffer(BG_CAP, (data) => {
+      try { termRef.current?.write(data) } catch { /* disposed */ }
+    })
+  }
   // Latest suspendFit without re-running the construction effect.
   const suspendFitRef = useRef(suspendFit)
   suspendFitRef.current = suspendFit
@@ -479,13 +487,10 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (Date.now() - lastDataAtRef.current < 6000) rebuildLayer()
     }, 1000)
 
-    const BG_CAP = 512_000 // ~512KB of background output retained per hidden pane
     // Flush output buffered while hidden, in order, before any live/active write.
     const flushBg = () => {
-      if (!bgBufferRef.current.length) return
-      const buf = bgBufferRef.current.join('')
-      bgBufferRef.current = []
-      bgBufferLenRef.current = 0
+      const buf = bgBufferRef.current!.take()
+      if (!buf) return
       try { term.write(buf) } catch { /* disposed */ }
     }
     const writeLive = (data: string) => {
@@ -496,12 +501,8 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
         flushBg() // catch up anything buffered while hidden, preserving order
         term.write(clean, scheduleRepaint) // repaint after xterm parses+renders the chunk
       } else {
-        // Hidden: buffer, don't render (see bgBufferRef). Trim oldest past the cap.
-        bgBufferRef.current.push(clean)
-        bgBufferLenRef.current += clean.length
-        while (bgBufferLenRef.current > BG_CAP && bgBufferRef.current.length > 1) {
-          bgBufferLenRef.current -= bgBufferRef.current.shift()!.length
-        }
+        // Hidden: buffer, don't render (see bgBufferRef). Past the cap it is written, not trimmed.
+        bgBufferRef.current!.push(clean)
       }
     }
     // On (re)attach, replay the pty's buffered output first so a session that
@@ -667,12 +668,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       isActive: () => activeRef.current,
       // Output buffered while this pane was hidden (it didn't render in the background to keep
       // WKWebView load off the visible pane), taken in order.
-      takeHiddenOutput: () => {
-        const buf = bgBufferRef.current.join('')
-        bgBufferRef.current = []
-        bgBufferLenRef.current = 0
-        return buf
-      },
+      takeHiddenOutput: () => bgBufferRef.current!.take(),
     })
   }, [active])
 
