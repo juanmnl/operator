@@ -5,26 +5,32 @@
 // rasterized here to a macOS TEMPLATE image (black + alpha; the system tints it) and cycled from
 // the aggregate lane signal:
 //
-//   busy      (any live lane "running")  → lively desynced twinkle   ("working")
+//   asking    (any live lane "asking")   → unison flash, rest gap    ("a question is open")
+//   busy      (else any live "running")  → lively desynced twinkle   ("working")
 //   your-turn (else any live "waiting")  → slow unison pulse         ("your turn")
 //   idle      (neither)                  → the static mark, no timer
 //
 // MOTION IS THE BUSY SIGNAL — the house rule the sidebar follows too. Idle does not tick, it
 // rests: a menu bar that animates forever is a menu bar you stop reading.
 import { nativeImage } from 'electron'
+import { beaconLevel } from '../../../src/shared/beacon'
 
-export type TrayPhase = 'idle' | 'busy' | 'your-turn'
+export type TrayPhase = 'idle' | 'busy' | 'your-turn' | 'asking'
 
 /** The aggregate signal, ported from the reducer the tailer runs inline
  *  (src-tauri/src/transcript.rs:1131-1149). Anything working outranks anything waiting: the
  *  twinkle means "Operator is doing something", and one running lane makes that true. */
 export function aggregateState(lanes: Array<{ phase: string }>): TrayPhase {
+  // EXCEPT A QUESTION, which outranks working. One lane asking is blocked until the user answers,
+  // and while any other lane is busy the twinkle would hide that completely.
   let waiting = false
+  let busy = false
   for (const l of lanes) {
-    if (l.phase === 'running') return 'busy'
+    if (l.phase === 'asking') return 'asking'
+    if (l.phase === 'running') busy = true
     if (l.phase === 'waiting') waiting = true
   }
-  return waiting ? 'your-turn' : 'idle'
+  return busy ? 'busy' : waiting ? 'your-turn' : 'idle'
 }
 
 const SIZE = 44 // the canvas: 22pt @2x, the size a macOS tray image is handed in
@@ -130,6 +136,12 @@ export function frame(dots: Dot[], state: TrayPhase, t: number): Buffer {
       const s = (1 - Math.cos(TAU * (ph - Math.floor(ph)))) * 0.5 // 0->1->0
       op = 0.3 + 0.65 * s // 0.30->0.95
       scale = 0.5 + 0.5 * s // 0.5->1
+    } else if (state === 'asking') {
+      // The rail's beacon, in a template image: every dot flashes together, then rests. No colour
+      // is available in the menu bar, so the flash grows the dots as well as lighting them.
+      const l = beaconLevel(t)
+      op = 0.3 + 0.7 * l // 0.30 -> 1.0
+      scale = 0.6 + 0.4 * l // 0.6 -> 1
     } else if (state === 'your-turn') {
       op = 0.35 + 0.4 * pulse // gentle, legible
       scale = 0.62 + 0.3 * pulse

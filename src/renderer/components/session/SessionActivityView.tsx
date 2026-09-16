@@ -226,7 +226,7 @@ function StatusDot({ phase }: { phase: string }) {
   const isRunning = phase === 'running'
   const isCompacting = phase === 'compacting'
   const isWaiting = phase === 'waiting'
-  const color = isRunning ? 'var(--green)' : isCompacting ? 'var(--cyan)' : isWaiting ? 'var(--accent)' : 'var(--fg-muted)'
+  const color = isRunning ? 'var(--green)' : isCompacting ? 'var(--cyan)' : phase === 'asking' ? 'var(--color-warning)' : isWaiting ? 'var(--accent)' : 'var(--fg-muted)'
   // A SOLID dot: dynamic BACKGROUND on a rounded fill is cheap. The old version was
   // a hollow ring (`border: 1.5px solid ${color}` on `borderRadius:50%`) PLUS an
   // infinite `pulse` — a colour-changing border on a rounded element re-rasterizes

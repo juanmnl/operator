@@ -242,6 +242,8 @@ export function announcement(report: ArtifactReport): string {
  *  made the chips' first gate (`phase === 'idle'`) dead on arrival. It stays listed rather than
  *  removed because `SessionPhase` still declares it and a session with no transcript at all
  *  legitimately has no turn in flight. */
+// `asking` is NOT between turns: the lane is mid-turn with a question dialog in the pty, and text
+// typed into it would land in the dialog as an answer.
 export function isBetweenTurns(phase: string | null | undefined): boolean {
   return phase === 'idle' || phase === 'waiting'
 }

@@ -484,7 +484,8 @@ export function DashboardView() {
         // …and whether it is mid-turn, which is what tells the queue that silence is not yet a
         // verdict. A lane whose pty is gone is never "busy": that submission has nothing left to
         // wait for and must be reported.
-        submitQueue.busy(s.terminalId, s.status !== 'ended' && s.phase === 'running')
+        // `asking` is mid-turn too (it read `running` before it had a name), so the queue keeps waiting.
+        submitQueue.busy(s.terminalId, s.status !== 'ended' && (s.phase === 'running' || s.phase === 'asking'))
         const waiting = submitQueue.pending(s.terminalId)
         if (!waiting) continue
         // Turns AND queued prompts: a message typed into a working lane is accepted into its
@@ -3961,7 +3962,8 @@ export function DashboardView() {
     for (const s of sessions) {
       const prev = lastSoundPhaseRef.current[s.id]
       lastSoundPhaseRef.current[s.id] = s.phase
-      if ((prev === 'running' || prev === 'compacting') && s.phase === 'waiting') {
+      // `asking` chimes too: a question is the turn handed back, with a blocker on it.
+      if ((prev === 'running' || prev === 'compacting') && (s.phase === 'waiting' || s.phase === 'asking')) {
         playYourTurnChime()
       }
     }

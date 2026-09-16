@@ -44,7 +44,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
   // Landing-style uppercase phase word shown on the right of each row (rendered
   // uppercase via CSS). Mirrors the `.sess-phase` label in ../Operator-landing.
   const PHASE_LABEL: Record<string, string> = {
-    running: 'running', compacting: 'compacting', waiting: 'your turn',
+    running: 'running', compacting: 'compacting', waiting: 'your turn', asking: 'asking you',
     idle: 'idle', ended: 'ended', error: 'error',
   }
   const phaseLabel = PHASE_LABEL[status] ?? status
@@ -53,8 +53,12 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
   // longer pulses), plus muted active-work words and red for error. Idle alone shows no word —
   // a resting orb needs no label. Keeping the words muted avoids the loud "YOUR TURN" of old.
   const isRunning = status === 'running'
-  const showPhase = status === 'running' || status === 'compacting' || status === 'waiting' || status === 'error'
-  const phaseColor = status === 'error' ? 'var(--color-error, #f85149)' : 'var(--fg-muted)'
+  const showPhase = status === 'running' || status === 'compacting' || status === 'waiting' || status === 'asking' || status === 'error'
+  // `asking you` is the one phase word that must be read to act, so it is warning ink mixed into
+  // --fg (the plan meter's TONE_INK construction) and carries NO opacity.
+  const phaseColor = status === 'error' ? 'var(--color-error, #f85149)'
+    : status === 'asking' ? 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
+    : 'var(--fg-muted)'
 
   useEffect(() => {
     if (editing) {
@@ -290,7 +294,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
             textTransform: 'uppercase',
             letterSpacing: '0.1em',
             color: phaseColor,
-            opacity: status === 'error' ? 0.95 : 0.65,
+            opacity: status === 'error' ? 0.95 : status === 'asking' ? undefined : 0.65,
           }}
         >
           {phaseLabel}

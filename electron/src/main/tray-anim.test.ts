@@ -180,3 +180,29 @@ describe('startTrayAnimation', () => {
     vi.useRealTimers()
   })
 })
+
+describe('asking in the tray', () => {
+  const alphaSum = (b: Buffer) => { let s = 0; for (let i = 3; i < b.length; i += 4) s += b[i]; return s }
+
+  it('flashes: the top of a flash carries far more ink than the rest gap', () => {
+    const dots = buildDots()
+    const peak = alphaSum(frame(dots, 'asking', 0.12)) // end of the attack
+    const rest = alphaSum(frame(dots, 'asking', 1.2)) // inside the rest gap
+    expect(peak).toBeGreaterThan(rest * 2.5)
+    // The rest gap is flat: two instants in it are the same image.
+    expect(frame(dots, 'asking', 1.0).equals(frame(dots, 'asking', 1.3))).toBe(true)
+  })
+
+  it('does NOT settle, unlike your-turn: the question is still open', async () => {
+    const { vi } = await import('vitest')
+    vi.useFakeTimers()
+    let painted = 0
+    const stop = startTrayAnimation(() => 'asking', () => { painted++ })
+    vi.advanceTimersByTime(20_000)
+    const at20 = painted
+    vi.advanceTimersByTime(2000)
+    expect(painted).toBeGreaterThanOrEqual(at20 + 20)
+    stop()
+    vi.useRealTimers()
+  })
+})
