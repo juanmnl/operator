@@ -15,7 +15,7 @@ const calls: Array<{ fn: string; args: unknown[] }> = []
     calls.push({ fn: 'devServerKill', args: [pids] })
     return pids.length
   },
-  worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
+  worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true, wouldRemove: [] }),
   worktreeReap: async () => { throw new Error('not exercised by this harness') },
 }, {
   get: (t: Record<string, unknown>, p: string) => (p in t ? t[p] : (...args: unknown[]) => { calls.push({ fn: p, args }); return Promise.resolve(undefined) }),

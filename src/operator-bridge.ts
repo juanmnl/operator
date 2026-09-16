@@ -288,8 +288,10 @@ export function installBridge(): void {
     }),
     devServerList: async () => [],
     devServerKill: async () => 0,
-    worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true }),
+    worktreeReapPlan: async () => ({ entries: [], auto: [], asks: [], totalBytes: 0, autoBytes: 0, sizesOmitted: true, wouldRemove: [] }),
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
+    worktreeRemoveSelected: async () => { throw new Error('The Tauri build has no worktree reaper.') },
+    worktreeAutoRemovalCheck: () => {},
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here
     // while `App.tsx` called `invoke('app_ready')` itself — the operation existed under two

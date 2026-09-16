@@ -197,8 +197,13 @@ export function migrateGlobalsToLanePins(
       // construction on every coordinator and the migration DUTIFULLY RE-CREATES the pin that
       // `clearCoordinatorWorktree` exists to delete — on the same hydrate, from a file we do not
       // even read any more. A rule cannot be migrated back into a preference.
-      const worktreeIsAPreference = !isCoordinator(r.id)
-      if (worktreeIsAPreference && before.useWorktree !== after.useWorktree) { out.useWorktree = before.useWorktree; hit = true }
+      //
+      // …AND, SINCE 2026-09-16, NO LANE'S WORKTREE AT ALL. The per-role worktree default became a
+      // policy (Research moved to the main checkout), and `role-defaults.json` still says
+      // `research: { useWorktree: true }`. This migration is one-shot behind a localStorage flag; a
+      // lost flag would re-run it and pin every Research lane back into a worktree, rewriting
+      // `projects.json` on load. Worktree is decided by the preset and the lane's own pin only.
+      const worktreeIsAPreference = false
       if (!hit) return r
       pins += Number(before.model !== after.model) + Number(before.effort !== after.effort)
         + Number(before.permissionMode !== after.permissionMode)

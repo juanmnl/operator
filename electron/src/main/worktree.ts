@@ -7,12 +7,13 @@
 // have taken something that was not a worktree with it.
 import { execFile } from 'node:child_process'
 import { loginShell } from './login-shell'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { existsSync, realpathSync } from 'node:fs'
+import { lstat, mkdir, readFile, readdir, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, resolve as resolvePath, sep } from 'node:path'
+import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { operatorDir } from './store'
+import { loadProjects, operatorDir } from './store'
+import { moveToTrash, scheduleSweep } from './worktree-trash'
 
 const execFileAsync = promisify(execFile)
 
@@ -70,9 +71,157 @@ async function defaultBase(root: string): Promise<string | null> {
   return null
 }
 
-export interface WorktreeCreateResult { path: string; branch: string; baseBranch?: string }
+export interface WorktreeCreateResult {
+  path: string
+  branch: string
+  baseBranch?: string
+  /** What `cloneDependencies` did for this worktree. `note` is the one line for the lane when
+   *  something was not cloned. */
+  dependencies?: DependencyCloneResult & { note?: string }
+}
 
-interface Provenance { path: string; createdAt: number; createdBy: string; sourceRepo: string; branch: string; laneId?: string }
+// --- dependencies: clone node_modules into a new worktree --------------------------------------
+//
+// A fresh worktree has no `node_modules`, so a lane could not run the project's tests without
+// installing or symlinking the main checkout's. Each ignored `node_modules` directory of the source
+// checkout is CLONED into the same relative path: on APFS a clone shares every block with the
+// original until one side writes, so a 666 MB pair of trees costs a few MB (measured, see the
+// 2026-09-16 result). Never a symlink (a lane's install would write into the main checkout) and
+// never a full copy (that is the disk cost worktrees are already criticised for).
+
+/** `statfs.type` for APFS on macOS. Measured on this machine: `/`, the Data volume and the temp
+ *  directory report 26; devfs reports 19. */
+const APFS_FSTYPE = 26
+
+/** How long the clones may hold up a lane's launch in total. Two trees (13,869 entries) took about
+ *  2 s here; the cap is for a much larger monorepo or a slow disk, not the normal case. */
+export const DEPENDENCY_CLONE_CAP_MS = 30_000
+
+/** The ignored `node_modules` directories of `root`, relative, without a trailing slash.
+ *
+ *  `git ls-files --others --ignored --exclude-standard --directory` lists ignored directories and
+ *  STOPS at each one, so it never descends into `node_modules`, `.git`, or ignored build output:
+ *  a `node_modules` inside `src-tauri/target/…/app.asar.unpacked/` is not reported, because
+ *  `target/` is reported instead. That is the bounded walk the task needs, done by git in 29 ms on
+ *  this repo, and it answers "is it ignored" in the same pass. A directory is listed with a
+ *  trailing slash; a symlink named `node_modules` is listed without one and is dropped here, and
+ *  each result is lstat-checked as a real directory, so a symlink is never followed. */
+export async function ignoredNodeModules(root: string): Promise<string[]> {
+  let out: string
+  try {
+    const r = await execFileAsync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], {
+      cwd: root, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    })
+    out = r.stdout
+  } catch {
+    return []
+  }
+  const found: string[] = []
+  for (const entry of out.split('\0')) {
+    if (!entry.endsWith('node_modules/')) continue
+    const rel = entry.slice(0, -1)
+    if (rel !== 'node_modules' && !rel.endsWith('/node_modules')) continue
+    if (rel.split('/').some((seg) => seg === '..' || seg === '')) continue
+    try {
+      const st = await lstat(join(root, rel))
+      if (st.isDirectory() && !st.isSymbolicLink()) found.push(rel)
+    } catch { /* gone since git listed it */ }
+  }
+  return found
+}
+
+/** Why a clone from `src` into `destParent` cannot be a real clone, or `null` when it can.
+ *
+ *  `cp -c` does NOT fail when cloning is impossible: its man page says it falls back to copyfile(2),
+ *  a full copy. Node's `COPYFILE_FICLONE_FORCE` would fail properly but returns ENOSYS on macOS
+ *  (tried on this machine, same volume). So the guarantee comes from this gate instead: clonefile(2)
+ *  works between any two paths on the same APFS volume, which is exactly what is checked. */
+export async function cloneBlockedReason(src: string, destParent: string): Promise<string | null> {
+  if (process.platform !== 'darwin') return 'cloning needs APFS on macOS'
+  try {
+    const [a, b] = await Promise.all([statfs(src), statfs(destParent)])
+    if (a.type !== APFS_FSTYPE || b.type !== APFS_FSTYPE) return 'the checkout is not on an APFS volume'
+    const [sa, sb] = await Promise.all([stat(src), stat(destParent)])
+    if (sa.dev !== sb.dev) return 'the worktree is on a different volume from the checkout'
+  } catch (e) {
+    return `cannot inspect the volume: ${e instanceof Error ? e.message : e}`
+  }
+  return null
+}
+
+/** Clone one directory. Killable, so the launch cap holds. */
+export type DirCloner = (src: string, dst: string, timeoutMs: number) => Promise<void>
+
+const cpClone: DirCloner = async (src, dst, timeoutMs) => {
+  await execFileAsync('/bin/cp', ['-cR', src, dst], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 })
+}
+
+export interface DependencyCloneResult {
+  cloned: string[]
+  /** Not cloned, and why. A directory already present in the worktree is not listed. */
+  skipped: Array<{ rel: string; reason: string }>
+  ms: number
+}
+
+/** Clone every ignored `node_modules` of `sourceRoot` into `worktreePath`. Never throws: a
+ *  directory that cannot be cloned is skipped (and any partial clone removed), and the worktree is
+ *  kept either way. */
+export async function cloneDependencies(
+  sourceRoot: string,
+  worktreePath: string,
+  opts: { capMs?: number; cloner?: DirCloner; blockedReason?: typeof cloneBlockedReason } = {},
+): Promise<DependencyCloneResult> {
+  const started = Date.now()
+  const cap = opts.capMs ?? DEPENDENCY_CLONE_CAP_MS
+  const cloner = opts.cloner ?? cpClone
+  const blocked = opts.blockedReason ?? cloneBlockedReason
+  const result: DependencyCloneResult = { cloned: [], skipped: [], ms: 0 }
+  for (const rel of await ignoredNodeModules(sourceRoot)) {
+    const src = join(sourceRoot, rel)
+    const dst = join(worktreePath, rel)
+    if (existsSync(dst)) continue
+    const left = cap - (Date.now() - started)
+    if (left <= 0) { result.skipped.push({ rel, reason: `the ${Math.round(cap / 1000)}s launch cap was reached` }); continue }
+    if (!existsSync(dirname(dst))) { result.skipped.push({ rel, reason: 'its parent directory is not in the worktree' }); continue }
+    const reason = await blocked(src, dirname(dst))
+    if (reason) { result.skipped.push({ rel, reason }); continue }
+    try {
+      await cloner(src, dst, left)
+      result.cloned.push(rel)
+    } catch (e) {
+      // A killed or failed `cp` can leave half a tree. Only the destination inside the NEW worktree
+      // is removed; the source is never touched.
+      await rm(dst, { recursive: true, force: true }).catch(() => {})
+      const killed = (e as { killed?: boolean }).killed
+      result.skipped.push({ rel, reason: killed ? `timed out after ${Math.round(left / 1000)}s` : `clone failed: ${e instanceof Error ? e.message.split('\n')[0] : e}` })
+    }
+  }
+  result.ms = Date.now() - started
+  return result
+}
+
+/** The one line a lane sees when a dependency directory was not cloned. `undefined` when there is
+ *  nothing to say. */
+export function dependencyNote(r: DependencyCloneResult): string | undefined {
+  if (!r.skipped.length) return undefined
+  const what = r.skipped.map((s) => `${s.rel} (${s.reason})`).join('; ')
+  return `node_modules not cloned into this worktree: ${what}. Run npm install where you need it.`
+}
+
+/** Clone, log, and attach the result to a create result. */
+async function withDependencies(sourceRoot: string, created: WorktreeCreateResult): Promise<WorktreeCreateResult> {
+  const deps = await cloneDependencies(sourceRoot, created.path)
+  const note = dependencyNote(deps)
+  if (deps.cloned.length || deps.skipped.length) {
+    console.error(
+      `[worktree] ${created.path}: cloned ${deps.cloned.length ? deps.cloned.join(', ') : 'nothing'} in ${deps.ms} ms`
+      + (deps.skipped.length ? `; not cloned: ${deps.skipped.map((s) => `${s.rel} (${s.reason})`).join('; ')}` : ''),
+    )
+  }
+  return { ...created, dependencies: { ...deps, note } }
+}
+
+export interface Provenance { path: string; createdAt: number; createdBy: string; sourceRepo: string; branch: string; laneId?: string }
 
 const provenanceFile = () => join(operatorDir(), 'worktree-provenance.json')
 
@@ -80,9 +229,15 @@ const provenanceFile = () => join(operatorDir(), 'worktree-provenance.json')
  *  failure to record it is logged rather than swallowed — an unrecorded worktree is one the
  *  cleanup will refuse to touch forever. */
 async function recordProvenance(entry: Provenance): Promise<void> {
+  await appendProvenance([entry])
+}
+
+/** Append records in one write. Also the boot backfill's writer (`worktree-reap.ts`). */
+export async function appendProvenance(entries: Provenance[]): Promise<void> {
+  if (!entries.length) return
   try {
     const existing = JSON.parse(await readFile(provenanceFile(), 'utf8').catch(() => '[]')) as Provenance[]
-    existing.push(entry)
+    existing.push(...entries)
     await mkdir(operatorDir(), { recursive: true })
     await writeFile(provenanceFile(), JSON.stringify(existing, null, 2), 'utf8')
   } catch (e) {
@@ -103,7 +258,10 @@ async function recordProvenance(entry: Provenance): Promise<void> {
  *  already checked out. */
 async function reattachWorktree(root: string, branch: string): Promise<WorktreeCreateResult | null> {
   if (await gitOk(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]) == null) return null
-  await gitOk(root, ['worktree', 'prune'])
+  // NOT a bare `worktree prune`: that expires every missing worktree's record at once, including
+  // one on a disk that is merely unmounted (see `dropStaleAdminEntry`). Only the record holding
+  // THIS branch, and only if its directory is really gone, is dropped.
+  await dropStaleRecordForBranch(root, branch)
   const project = basename(root) || 'project'
   const short = branch.split('/').pop() || shortId()
   const path = join(worktreeRoot(), `${project}-${short}`)
@@ -125,7 +283,7 @@ export async function createWorktree(sourceCwd: string, reuseBranch?: string | n
     const reattached = await reattachWorktree(root, reuseBranch.trim())
     if (reattached) {
       await recordProvenance({ path: reattached.path, createdAt: Date.now(), createdBy: 'operator', sourceRepo: root, branch: reattached.branch, laneId: laneId ?? undefined })
-      return reattached
+      return withDependencies(root, reattached)
     }
   }
 
@@ -138,7 +296,7 @@ export async function createWorktree(sourceCwd: string, reuseBranch?: string | n
   const baseRef = base ?? 'HEAD'
   await git(root, ['worktree', 'add', '-b', branch, path, baseRef])
   await recordProvenance({ path, createdAt: Date.now(), createdBy: 'operator', sourceRepo: root, branch, laneId: laneId ?? undefined })
-  return { path, branch, baseBranch: baseRef }
+  return withDependencies(root, { path, branch, baseBranch: baseRef })
 }
 
 export interface WorktreeStatus { branch?: string; changes: number; valid: boolean }
@@ -248,7 +406,7 @@ function realOf(p: string): string {
   }
 }
 const samePath = (a: string, b: string) => realOf(a) === realOf(b)
-const containsPath = (parent: string, child: string) => {
+export const containsPath = (parent: string, child: string) => {
   const p = realOf(parent), c = realOf(child)
   return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
 }
@@ -272,6 +430,25 @@ export function dangerousRemovalReason(worktreePath: string, repo?: string): str
     const c = form.split(sep).filter(Boolean)
     if (c.length === 2 && (c[0].toLowerCase() === 'home' || c[0].toLowerCase() === 'users')) {
       return `path is a user home directory (${form})`
+    }
+  }
+  return null
+}
+
+/** A REGISTERED PROJECT IS NEVER A REMOVAL TARGET. Refuses a path that is, or contains, any project
+ *  path in `projects.json`. Lanes without their own worktree run in the project's main checkout, so
+ *  a close or cleanup that mistook that checkout for a worktree would delete the project itself.
+ *  LIMIT: `loadProjects` reads a missing or corrupt file as `[]`, so then this guard has nothing to
+ *  compare against. `dangerousRemovalReason` still refuses the source repo itself and `$HOME`. */
+export async function projectPathReason(path: string): Promise<string | null> {
+  const projects = await loadProjects()
+  for (const p of Array.isArray(projects) ? projects : []) {
+    const projectPath = (p as { path?: unknown })?.path
+    if (typeof projectPath !== 'string' || !projectPath.trim()) continue
+    if (containsPath(path, projectPath)) {
+      return samePath(path, projectPath)
+        ? `path is a registered project (${projectPath})`
+        : `path contains a registered project (${projectPath})`
     }
   }
   return null
@@ -326,6 +503,13 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
 /** Remove the DIRECTORY. The branch always survives — that is what lets a suspended lane's
  *  reattach path put a directory back on it later.
  *
+ *  THROUGH THE TRASH, not `git worktree remove`. The directory is renamed into the trash root
+ *  (`worktree-trash.ts`), `git worktree prune` drops the admin entry that now points nowhere, and
+ *  the recursive delete runs in the background sweep. This replaces both `worktree remove` and
+ *  its `--force` fallback. The fallback already discarded uncommitted changes whenever the plain
+ *  form refused, so the non-force attempt protected nothing; callers that must keep uncommitted
+ *  work run `commitAll` first (reap, merge) or ask the user (Settings).
+ *
  *  THE GUARD BELOW IS UNTOUCHED. Every rule in it exists because some path shape would otherwise
  *  have taken something that was not a worktree, and the lifecycle audit named it the one piece
  *  of this system that is already solid. The reaper reuses it rather than reimplementing it.
@@ -333,15 +517,135 @@ async function nestedCheckout(root: string, budget = 4000, maxDepth = 8): Promis
  *  The durable half of a lane close lives in `worktree-reap.ts`, not here — see
  *  `removeWorktreeDurably` below for why this function is not the one the renderer should call. */
 export async function removeWorktree(path: string, sourceRoot: string): Promise<void> {
-  const reason = dangerousRemovalReason(path, sourceRoot)
+  const reason = dangerousRemovalReason(path, sourceRoot) ?? await projectPathReason(path)
   if (reason) throw new Error(`Refusing to remove worktree ${path}: ${reason}`)
+  const vouched = await gitVouches(path, sourceRoot)
+  if (!vouched.ok) throw new Error(`Refusing to remove worktree ${path}: ${vouched.why}`)
   for (const scan of [await nestedRegisteredWorktree(path, sourceRoot), await nestedCheckout(path)]) {
     if (scan.kind === 'nested') throw new Error(`Refusing to remove worktree ${path}: it contains ${scan.what}`)
     if (scan.kind === 'unknown') throw new Error(`Refusing to remove worktree ${path}: cannot rule out a nested checkout — ${scan.why}`)
   }
-  if (await gitOk(sourceRoot, ['worktree', 'remove', path]) == null) {
-    await git(sourceRoot, ['worktree', 'remove', '--force', path])
+  await moveToTrash(path)
+  // Only THIS worktree's record. A bare `git worktree prune` expires every record whose directory
+  // is missing right now, with no grace period (`gc` waits `gc.worktreePruneExpire`, 3 months), so
+  // it would also delete the record of a worktree on an unmounted disk — its index, HEAD and
+  // reflog — and a detached HEAD's commits there become unreachable.
+  await dropStaleAdminEntry(vouched.admin, vouched.worktreesDir, vouched.gitFile)
+    .catch((e) => console.error(`[worktree] ${path} is in the trash but its git record was kept:`, e))
+  void scheduleSweep()
+}
+
+/** Reads a file only if it is a regular file (not a symlink, not a directory). */
+export type FileReader = (path: string) => string | null
+
+export const regularFile: FileReader = (path) => {
+  try {
+    return lstatSync(path).isFile() ? readFileSync(path, 'utf8') : null
+  } catch {
+    return null
   }
+}
+
+/** The admin entry a `.git` file names, resolved against the worktree directory. */
+export function gitdirFromGitFile(contents: string, worktreePath: string): string | undefined {
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(contents)
+  return m ? resolvePath(worktreePath, m[1]) : undefined
+}
+
+/** `<worktree>/.git` is a file naming an admin entry that is a DIRECT child of `worktreesDir`, and
+ *  that entry's `gitdir` points back at `<worktree>/.git`. The back-reference is what a copied
+ *  `.git` file cannot fake. Pure given `read`; pass real paths. */
+export function provePairing(worktreePath: string, worktreesDir: string, read: FileReader): boolean {
+  const marker = read(join(worktreePath, '.git'))
+  if (marker == null) return false
+  const admin = gitdirFromGitFile(marker, worktreePath)
+  if (!admin || dirname(admin) !== resolvePath(worktreesDir)) return false
+  const back = read(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+  if (!back) return false
+  return resolvePath(admin, back) === join(resolvePath(worktreePath), '.git')
+}
+
+type Vouch =
+  | { ok: true; admin: string; worktreesDir: string; gitFile: string }
+  | { ok: false; why: string }
+
+/** GIT MUST VOUCH FOR THE PAIR before a directory is removed as a worktree of `sourceRoot`.
+ *
+ *  `git worktree remove` used to do this check, even with `--force`: it refused a directory that
+ *  is not a worktree of the repo, a registered worktree whose `.git` file is broken, and a locked
+ *  worktree. The trash rename does not ask git anything, so the same three checks are made here
+ *  (Review H1, 2026-09-16). Without them a lane whose agent broke or re-`git init`ed its checkout
+ *  was deleted on close with its uncommitted work, because the WIP commit is skipped when status is
+ *  invalid. Anything refused here can still be removed from Settings, which treats it as a plain
+ *  directory with the unknown-unsaved confirmation. */
+export async function gitVouches(path: string, sourceRoot: string): Promise<Vouch> {
+  const real = realOf(path)
+  let listed: string[]
+  try { listed = await registeredWorktrees(sourceRoot) } catch (e) { return { ok: false, why: `git could not list the worktrees of ${sourceRoot}: ${e}` } }
+  if (!listed.some((p) => samePath(p, real))) return { ok: false, why: `git does not list it as a worktree of ${sourceRoot}` }
+  const common = await gitOk(sourceRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (!common) return { ok: false, why: `cannot resolve the git directory of ${sourceRoot}` }
+  const worktreesDir = join(realOf(common), 'worktrees')
+  if (!provePairing(real, worktreesDir, regularFile)) {
+    return { ok: false, why: 'its .git file and git\'s worktree record do not point at each other' }
+  }
+  const gitFile = join(real, '.git')
+  const admin = gitdirFromGitFile(regularFile(gitFile)!, real)!
+  if (existsSync(join(admin, 'locked'))) return { ok: false, why: 'the worktree is locked (git worktree lock)' }
+  return { ok: true, admin, worktreesDir, gitFile }
+}
+
+/** Delete ONE admin entry, and only when all of this still holds: it is a direct child of
+ *  `worktreesDir`, its `gitdir` names `expectedGitFile`, that path no longer exists, and the entry
+ *  is not locked. Throws otherwise; nothing is deleted. */
+async function dropStaleAdminEntry(admin: string, worktreesDir: string, expectedGitFile: string): Promise<void> {
+  if (dirname(admin) !== worktreesDir) throw new Error(`${admin} is not directly under ${worktreesDir}`)
+  const back = regularFile(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+  if (!back || resolvePath(admin, back) !== expectedGitFile) throw new Error(`${admin} does not point at ${expectedGitFile}`)
+  if (existsSync(expectedGitFile) || existsSync(dirname(expectedGitFile))) throw new Error(`${dirname(expectedGitFile)} still exists`)
+  if (existsSync(join(admin, 'locked'))) throw new Error(`${admin} is locked`)
+  await rm(admin, { recursive: true, force: true })
+}
+
+/** Reattach: drop the stale record that still holds `branch`, so `worktree add` accepts it. Only a
+ *  record whose directory is gone; a present directory means the branch is really checked out. */
+async function dropStaleRecordForBranch(root: string, branch: string): Promise<void> {
+  const out = await gitOk(root, ['worktree', 'list', '--porcelain'])
+  const common = await gitOk(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (out == null || !common) return
+  const worktreesDir = join(realOf(common), 'worktrees')
+  for (const block of out.split(/\n\s*\n/)) {
+    const wtPath = /^worktree (.+)$/m.exec(block)?.[1]?.trim()
+    if (!wtPath || !block.includes(`\nbranch refs/heads/${branch}\n`) && !block.endsWith(`\nbranch refs/heads/${branch}`)) continue
+    if (existsSync(wtPath)) return
+    let entries: string[] = []
+    try { entries = await readdir(worktreesDir) } catch { return }
+    for (const name of entries) {
+      const admin = join(worktreesDir, name)
+      const back = regularFile(join(admin, 'gitdir'))?.split('\n')[0]?.trim()
+      if (back && resolvePath(admin, back) === join(wtPath, '.git')) {
+        await dropStaleAdminEntry(admin, worktreesDir, join(wtPath, '.git')).catch(() => {})
+      }
+    }
+  }
+}
+
+/** Remove a directory under the worktree root WITHOUT git — for a directory whose source repo is
+ *  gone, or that git cannot read. Same guard, same nested-checkout walk, same trash path. Refuses
+ *  anything that is not a direct child of `~/.operator/worktrees`. */
+export async function removePlainDirectory(path: string): Promise<void> {
+  const root = worktreeRoot()
+  const real = realOf(path)
+  if (realOf(resolvePath(real, '..')) !== realOf(root)) {
+    throw new Error(`Refusing to remove ${path}: it is not directly under ${root}`)
+  }
+  const reason = dangerousRemovalReason(path) ?? await projectPathReason(path)
+  if (reason) throw new Error(`Refusing to remove ${path}: ${reason}`)
+  const scan = await nestedCheckout(path)
+  if (scan.kind === 'nested') throw new Error(`Refusing to remove ${path}: it contains ${scan.what}`)
+  if (scan.kind === 'unknown') throw new Error(`Refusing to remove ${path}: cannot rule out a nested checkout — ${scan.why}`)
+  await moveToTrash(path)
+  void scheduleSweep()
 }
 
 /** Commit everything. A clean tree is NOT an error — it returns the existing HEAD, so a caller

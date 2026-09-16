@@ -27,7 +27,7 @@ import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { skillsCatalog } from './skills'
-import { reapPlan, reap, removeWorktreeDurably } from './worktree-reap'
+import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval } from './worktree-reap'
 import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
 import { devServerInventory, ageSnapshot } from './dev-servers'
 import { readBusSessions } from './session-bus'
@@ -256,11 +256,14 @@ export function registerIpc(d: Deps): void {
       console.error(`[ports] user-confirmed kill of ${found.length} process(es): ${[...all].join(', ')}`)
       return found.length
     },
-    worktreeReapPlan: () => reapPlan({ withSizes: true }),
+    worktreeReapPlan: (opts) => reapPlan({ withSizes: true, refreshSizes: opts?.refreshSizes === true }),
+    worktreeRemoveSelected: (paths, confirmedUnsaved) =>
+      removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.
-    worktreeReap: async (dryRun) => {
-      const result = await reap({ dryRun: dryRun !== false, withSizes: true })
+    worktreeReap: async (dryRun, confirmedPaths) => {
+      // A real run removes only folders the confirm listed: no list, nothing removed (Review L2).
+      const result = await reap({ dryRun: dryRun !== false, withSizes: true, confirmedPaths: (confirmedPaths ?? []).map(String) })
       return { removed: result.removed, failed: result.failed, bytesFreed: result.bytesFreed, dryRun: result.dryRun, plan: result.plan }
     },
     worktreeDiff: (path, base) => wt.worktreeDiff(path, base),
@@ -370,6 +373,7 @@ export function registerIpc(d: Deps): void {
     terminalWrite: (id, data) => d.terminals.write(id, data),
     terminalResize: (id, cols, rows) => d.terminals.resize(id, cols, rows),
     noteSessionPort: (id, port) => d.terminals.noteSessionPort(id, port),
+    worktreeAutoRemovalCheck: (trigger) => { void checkAutoRemoval(String(trigger)) },
     saveSessions: (sessions) => { void store.saveSessions(sessions) },
     saveProjects: (projects) => { void store.saveProjects(projects) },
     saveRoleDefaults: (defaults) => { void store.saveRoleDefaults(defaults) },

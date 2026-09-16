@@ -14,6 +14,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { ArtifactStore } from './chat-store'
+import { evaluateWorktreeDone } from './worktree-reap'
 
 const PROTOCOL_VERSION = '2024-11-05'
 
@@ -143,6 +144,16 @@ const TOOLS = [
       },
       required: ['lane', 'line'],
     },
+  },
+  {
+    name: 'worktree_done',
+    description:
+      'Release YOUR OWN worktree once your task is done and your work is committed on your branch. '
+      + 'Takes no arguments: Operator finds the directory this lane was launched in. It refuses, and '
+      + 'lists the files, if anything is uncommitted, and it refuses on a detached HEAD. Commits on '
+      + 'your branch are fine: the branch is kept. The worktree is removed when this session ends '
+      + '(never while you are still running in it). Call mcp__operator__report after.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'task_status',
@@ -295,14 +306,52 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
   }
 }
 
+/** `worktree_done`: check the caller's own worktree, and record a release for main to act on when
+ *  this lane's pty exits. The directory comes from `OPERATOR_LANE_CWD`, set at spawn. */
+async function worktreeDone(): Promise<unknown> {
+  let caller: Caller
+  try { caller = resolveCaller() } catch (e) { return errorResult(String((e as Error).message)) }
+  const laneCwd = (process.env.OPERATOR_LANE_CWD ?? '').trim() || undefined
+  const verdict = await evaluateWorktreeDone(laneCwd)
+  if (!verdict.ok) return errorResult(verdict.message)
+  let store: ArtifactStore
+  try { store = new ArtifactStore() } catch (e) { return errorResult(`artifact store unavailable: ${e}. Nothing was changed.`) }
+  try {
+    const at = new Date().toISOString()
+    store.insertRelease({
+      at, terminalId: caller.terminalId, projectId: caller.projectId,
+      appPid: (process.env.OPERATOR_APP_PID ?? '').trim() || null,
+      path: verdict.path, branch: verdict.branch, sourceRepo: verdict.sourceRepo,
+    })
+    // FINISHED, NOT ORPHANED. The same signal as task_status(…, 'done'): the lane lifecycle reads
+    // it as "this lane said it is done", so an automatic close records `reported-done` rather than
+    // the went-quiet backstop. No task id matches it, and the poller acks it after stamping.
+    store.insertStatus(at, caller.terminalId, caller.projectId, 'worktree_done', 'done')
+    return textResult(
+      `Released. The worktree ${verdict.path} will be removed when this session ends, not while you are `
+      + `running in it. Your branch ${verdict.branch} is kept. If anything unsaved appears before then, the `
+      + `worktree is kept instead. Now call mcp__operator__report with your result.`,
+    )
+  } catch (e) {
+    return errorResult(`could not record the release: ${e}. Nothing was changed.`)
+  } finally {
+    store.close()
+  }
+}
+
 /** One request in, one response out — or `null` for a notification, which must NOT be answered.
  *  Answering `notifications/initialized` with a result is a protocol error and pushes every
  *  later response one frame out of step. */
-export function handle(req: Record<string, unknown>): Record<string, unknown> | null {
+export function handle(req: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> | null {
   const id = req?.id
   if (id === undefined || id === null) return null
   const method = typeof req.method === 'string' ? req.method : ''
   const params = (req.params ?? {}) as Record<string, unknown>
+  // THE ONE ASYNC TOOL. Checking a worktree for unsaved work runs git, and every other tool here is
+  // a synchronous store write; so this one answers with a promise and `serve` awaits it.
+  if (method === 'tools/call' && params.name === 'worktree_done') {
+    return worktreeDone().then((result) => ({ jsonrpc: '2.0', id, result }))
+  }
 
   switch (method) {
     case 'initialize':
@@ -342,7 +391,8 @@ export function serve(): void {
       return
     }
     const resp = handle(req)
-    if (resp) send(resp)
+    if (resp instanceof Promise) void resp.then(send)
+    else if (resp) send(resp)
   })
   // Exit with the client.
   rl.on('close', () => process.exit(0))

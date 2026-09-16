@@ -256,9 +256,11 @@ export function rolePresets(): Role[] {
     // `useWorktree` lives HERE as of the one-altitude collapse. It used to be the one field the
     // deleted global tier seeded, which meant the preset — now the only default layer — had no
     // opinion on it at all, and every unpinned lane would have fallen through to the hard
-    // fallback (off). These are the values that seed shipped: lanes that WRITE get isolation, so
-    // their diffs are attributable and two of them can't collide in one checkout. Review and QA
-    // read and verify, so they stay in the main checkout where the work actually is.
+    // fallback (off). Lanes that WRITE get isolation, so their diffs are attributable and two of
+    // them can't collide in one checkout: Code and Design (Design implements and commits here).
+    // Research, Review and QA read and verify, so they work in the main checkout where the work
+    // actually is. Research was ON until 2026-09-16; that made every research question a worktree
+    // for Settings to clean up. A custom lane falls to `HARD_FALLBACK` (off) until switched on.
     // THE COORDINATOR RUNS IN THE REPO ITSELF, and this is `false` as a matter of rule rather
     // than taste — see `resolveAgentConfig`, which enforces it over a persisted pin. A coordinator
     // in a worktree is on a branch of its own, so the work it merges, the branches it reaps and
@@ -267,7 +269,7 @@ export function rolePresets(): Role[] {
     // most 30–137 commits behind main.
     // `remoteControl` is the coordinator's alone by default — see `Role.remoteControl`.
     { id: 'operator', name: 'Operator', model: 'fable', effort: 'medium', useWorktree: false, accent: '#c98bff', remoteControl: true, prompt: DEFAULT_ROLE_PROMPTS.operator },
-    { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', useWorktree: true, accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
+    { id: 'research', name: 'Research', model: 'sonnet', effort: 'high', useWorktree: false, accent: '#5ac8fa', prompt: DEFAULT_ROLE_PROMPTS.research },
     { id: 'code', name: 'Code', model: 'opus', effort: 'high', useWorktree: true, accent: '#7ee787', prompt: DEFAULT_ROLE_PROMPTS.code },
     { id: 'review', name: 'Review', model: 'opus', effort: 'high', useWorktree: false, accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
     { id: 'design', name: 'Design', model: 'opus', effort: 'medium', useWorktree: true, accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
@@ -313,7 +315,20 @@ function laneSummary(r: Role): string {
  *  it's told it IS Operator, given the project's team with each lane's purpose, and told to
  *  dispatch to the best fit OR do the work itself when none fits. Worker lanes get the
  *  simpler "you are lane X, operated by Operator" framing. */
-export function orchestrationNote(projectName: string, role: Role, roster: Role[]): string {
+/** Appended to a non-coordinator lane that launches WITHOUT its own worktree. It shares the
+ *  project's main checkout with the coordinator and every other such lane, so anything it does to
+ *  git state or tracked files lands in everyone's working tree. */
+export const SHARED_CHECKOUT_NOTE =
+  'You work in the project\u2019s main checkout, shared with other lanes: do not commit, switch ' +
+  'branches, stash, or edit tracked files; write results only under dev/results/.\n'
+
+/** Appended to a non-coordinator lane that launches IN ITS OWN WORKTREE (Code and Design by
+ *  default). `worktree_done` refuses unless the work is committed, so the order matters. */
+export const WORKTREE_DONE_NOTE =
+  'When your task is done and your work is committed on your branch, call ' +
+  '`mcp__operator__worktree_done`, then `mcp__operator__report`.\n'
+
+export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
   // role works, not just which lane it is.
@@ -351,6 +366,8 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `but a dispatch from your lane is HELD for the user to approve — Operator does not deliver ` +
     `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
+    (opts.sharesMainCheckout ? SHARED_CHECKOUT_NOTE : '') +
+    (opts.ownWorktree ? WORKTREE_DONE_NOTE : '') +
     REPLY_PROTOCOL +
     REPORT_ARTIFACTS +
     REPORT_TASK_STATUS

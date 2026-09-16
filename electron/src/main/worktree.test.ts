@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, renameSync, realpathSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -305,5 +305,401 @@ describe('runCheck runs the project command through the USER\'S login shell', ()
     const r = await wt.runCheck(SANDBOX, 'echo $ZSH_VERSION')
     expect(r.ok).toBe(true)
     expect(r.output).not.toBe('') // zsh answered with its version; /bin/sh would print nothing
+  })
+})
+
+// Every removal goes through the trash root and a background sweep. These run inside SANDBOX
+// (OPERATOR_DIR above), never against ~/.operator.
+describe('removal through the trash', () => {
+  it('renames the worktree into the trash root, prunes git’s record, and keeps the branch', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const trash = join(process.env.OPERATOR_DIR!, 'worktrees', '.operator-worktree-trash')
+    await wt.removeWorktree(lane.path, repo)
+    expect(existsSync(lane.path)).toBe(false)
+    expect(git(repo, ['worktree', 'list', '--porcelain'])).not.toContain(lane.path)
+    expect(git(repo, ['branch', '--list', lane.branch])).toContain(lane.branch)
+    expect(existsSync(trash)).toBe(true)
+  })
+
+  it('removes a dirty worktree too — the same outcome the old --force fallback had', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'uncommitted.txt'), 'x')
+    await wt.removeWorktree(lane.path, repo)
+    expect(existsSync(lane.path)).toBe(false)
+  })
+
+  it('plain directory removal refuses anything that is not directly under the worktree root', async () => {
+    const outside = mkdtempSync(join(SANDBOX, 'outside-'))
+    await expect(wt.removePlainDirectory(outside)).rejects.toThrow(/not directly under/)
+    expect(existsSync(outside)).toBe(true)
+    const nested = join(process.env.OPERATOR_DIR!, 'worktrees', 'a', 'b')
+    mkdirSync(nested, { recursive: true })
+    await expect(wt.removePlainDirectory(nested)).rejects.toThrow(/not directly under/)
+  })
+
+  it('plain directory removal takes a git-less directory under the root', async () => {
+    const dir = join(process.env.OPERATOR_DIR!, 'worktrees', 'dead-repo-abc')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '.git'), 'gitdir: /nowhere/.git/worktrees/dead-repo-abc\n')
+    await wt.removePlainDirectory(dir)
+    expect(existsSync(dir)).toBe(false)
+  })
+})
+
+// The facts the unsaved-work check and the backfill read, against real git (inside SANDBOX).
+describe('gathered facts and provenance backfill, end to end', () => {
+  it('counts uncommitted files and commits that exist on no other branch', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const factsOf = async () => (await reap.gatherFacts()).find((f) => f.path === lane.path)!
+
+    let f = await factsOf()
+    expect(f.uncommittedCount).toBe(0)
+    expect(f.unsavedCommits).toBe(0)
+
+    writeFileSync(join(lane.path, 'w.txt'), 'x')
+    git(lane.path, ['add', '-A'])
+    git(lane.path, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'lane work'])
+    writeFileSync(join(lane.path, 'u.txt'), 'y')
+    f = await factsOf()
+    expect(f.uncommittedCount).toBe(1)
+    expect(f.unsavedCommits).toBe(1)
+
+    // Once another branch holds the commit, it is no longer unsaved.
+    git(repo, ['branch', 'keep', lane.branch])
+    expect((await factsOf()).unsavedCommits).toBe(0)
+  })
+
+  it('backfills provenance for a listed, paired worktree of a known project, once', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const home = process.env.OPERATOR_DIR!
+    // Forget this worktree's provenance, as for a directory made before the file existed.
+    const provFile = join(home, 'worktree-provenance.json')
+    const kept = (JSON.parse(readFileSync(provFile, 'utf8')) as Array<{ path: string }>).filter((r) => r.path !== lane.path)
+    writeFileSync(provFile, JSON.stringify(kept))
+    writeFileSync(join(home, 'projects.json'), JSON.stringify([{ id: 'p', name: 'p', path: repo }]))
+
+    expect((await reap.gatherFacts()).find((f) => f.path === lane.path)?.provenance).toBeUndefined()
+    expect(await reap.backfillProvenanceAtBoot()).toBe(1)
+    const f = (await reap.gatherFacts()).find((x) => x.path === lane.path)!
+    expect(f.provenance?.branch).toBe(lane.branch)
+    expect(f.backfilled).toBe(true)
+    expect(await reap.backfillProvenanceAtBoot()).toBe(0)
+  })
+})
+
+// The boot and quit triggers call `reap({ dryRun })` with no sizes. Inside SANDBOX, never ~/.operator.
+describe('boot/quit plan without sizes', () => {
+  it('measures debris candidates itself: a dead-repo folder over 2 MB is not debris and not auto', async () => {
+    const reap = await import('./worktree-reap')
+    const root = join(process.env.OPERATOR_DIR!, 'worktrees')
+    const dead = join(root, 'uwazi_2026-deadbe')
+    mkdirSync(dead, { recursive: true })
+    writeFileSync(join(dead, '.git'), 'gitdir: /Users/nobody/gone/uwazi_2026/.git/worktrees/uwazi_2026-deadbe\n')
+    writeFileSync(join(dead, 'blob.bin'), Buffer.alloc(3 * 1024 * 1024, 1))
+    const husk = join(root, '.tmpHusk-000001')
+    mkdirSync(husk, { recursive: true })
+    writeFileSync(join(husk, 'a.txt'), 'x')
+
+    const result = await reap.reap({ dryRun: true })
+    const deadEntry = result.plan.entries.find((e) => e.path === dead)!
+    expect(deadEntry.cls).toBe('dead-source-repo')
+    expect(deadEntry.sizeBytes).toBeGreaterThan(2 * 1024 * 1024)
+    expect(result.plan.auto.some((e) => e.path === dead)).toBe(false)
+    expect(result.plan.entries.find((e) => e.path === husk)!.cls).toBe('debris')
+    expect(result.removed).toEqual([])
+    expect(existsSync(dead)).toBe(true)
+  })
+})
+
+// Review H1: removal only when git vouches for the pair. Each case below is one the old
+// `git worktree remove --force` refused, and must still be refused — with the folder left intact.
+describe('removeWorktree refuses what git does not vouch for', () => {
+  it('a registered worktree whose .git file is corrupt', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'work.txt'), 'unsaved')
+    writeFileSync(join(lane.path, '.git'), 'this is not a gitdir line\n')
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/do not point at each other/)
+    expect(existsSync(join(lane.path, 'work.txt'))).toBe(true)
+  })
+
+  it('a directory that is not a worktree of the repo', async () => {
+    const repo = scratchRepo()
+    const stranger = join(process.env.OPERATOR_DIR!, 'worktrees', 'not-a-worktree')
+    mkdirSync(stranger, { recursive: true })
+    writeFileSync(join(stranger, 'keep.txt'), 'x')
+    await expect(wt.removeWorktree(stranger, repo)).rejects.toThrow(/does not list it/)
+    expect(existsSync(join(stranger, 'keep.txt'))).toBe(true)
+  })
+
+  it('a worktree whose root was git-init\'d into its own repo', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    rmSync(join(lane.path, '.git'))
+    git(lane.path, ['init', '-q'])
+    writeFileSync(join(lane.path, 'work.txt'), 'unsaved')
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/do not point at each other/)
+    expect(existsSync(join(lane.path, 'work.txt'))).toBe(true)
+  })
+
+  it('a locked worktree', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    git(repo, ['worktree', 'lock', lane.path])
+    await expect(wt.removeWorktree(lane.path, repo)).rejects.toThrow(/locked/)
+    expect(existsSync(lane.path)).toBe(true)
+  })
+})
+
+// Review M1: removal drops only its own git record. A sibling worktree whose folder is missing for
+// a while (an unmounted disk) keeps its record, where a bare `git worktree prune` deleted it.
+describe('removal and reattach touch only their own git record', () => {
+  it('a temporarily missing sibling worktree survives another removal and a reattach', async () => {
+    const repo = scratchRepo()
+    const a = await wt.createWorktree(repo)
+    const b = await wt.createWorktree(repo)
+    const away = join(SANDBOX, `unmounted-${Date.now()}`)
+    renameSync(b.path, away)
+
+    await wt.removeWorktree(a.path, repo)
+    // A's record is gone and B's is still there, although B's folder is missing right now.
+    const listed = git(repo, ['worktree', 'list', '--porcelain'])
+    expect(listed).not.toContain(realpathSync(join(a.path, '..')) + '/' + a.path.split('/').pop())
+    expect(listed).toContain(`branch refs/heads/${b.branch}`)
+    // The reattach path used to run a bare prune too.
+    const again = await wt.createWorktree(repo, a.branch)
+    expect(again.branch).toBe(a.branch)
+
+    renameSync(away, b.path)
+    expect(git(b.path, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(b.branch)
+  })
+})
+
+describe('removal paths re-check live claims and pending records', () => {
+  it('Settings removal refuses a folder a pty is running in, whatever sessions.json says (M4)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    reap.setLivePtyCwds(() => [join(lane.path, 'apps')])
+    try {
+      const r = await reap.removeSelected([lane.path], [lane.path])
+      expect(r.removed).toEqual([])
+      expect(r.failed[0].error).toMatch(/terminal is open/)
+      expect(existsSync(lane.path)).toBe(true)
+    } finally {
+      reap.setLivePtyCwds(() => [])
+    }
+  })
+
+  it('a refused durable removal leaves no pending record (L1)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    git(repo, ['worktree', 'lock', lane.path])
+    await expect(reap.removeWorktreeDurably(lane.path, repo)).rejects.toThrow(/locked/)
+    expect((await reap.loadPending()).some((p) => p.path === lane.path)).toBe(false)
+  })
+
+  it('a real drain holds a pending record whose folder has unsaved work or a live pty (L1)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const dirty = await wt.createWorktree(repo)
+    writeFileSync(join(dirty.path, 'unsaved.txt'), 'x')
+    const live = await wt.createWorktree(repo)
+    for (const l of [dirty, live]) {
+      await reap.queueRemoval({ path: l.path, sourceRepo: repo, requestedAt: Date.now(), reason: 'test' })
+    }
+    reap.setLivePtyCwds(() => [live.path])
+    try {
+      const r = await reap.drainPending(false)
+      expect(r.held).toEqual(expect.arrayContaining([dirty.path, live.path]))
+      expect(r.removed).not.toContain(dirty.path)
+      expect(existsSync(dirty.path) && existsSync(live.path)).toBe(true)
+    } finally {
+      reap.setLivePtyCwds(() => [])
+      await reap.clearPending(dirty.path)
+      await reap.clearPending(live.path)
+    }
+  })
+
+  it('the safe button removes only confirmed paths that are still in the tier (L2)', async () => {
+    const reap = await import('./worktree-reap')
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const nothing = await reap.reap({ dryRun: false, confirmedPaths: [] })
+    expect(nothing.removed).toEqual([])
+    expect(existsSync(lane.path)).toBe(true)
+
+    const r = await reap.reap({ dryRun: false, confirmedPaths: [lane.path, '/not/in/the/tier'] })
+    expect(r.removed).toEqual([lane.path])
+    expect(existsSync(lane.path)).toBe(false)
+  })
+})
+
+// A lane without its own worktree runs in the project's main checkout. Nothing may remove that.
+describe('a registered project path is never removed', () => {
+  it('removeWorktree and removePlainDirectory refuse a path that is, or contains, a project in projects.json', async () => {
+    const home = process.env.OPERATOR_DIR!
+    const projectsFile = join(home, 'projects.json')
+    const before = existsSync(projectsFile) ? readFileSync(projectsFile, 'utf8') : null
+    const repo = scratchRepo()
+    const other = scratchRepo()
+    // A project that happens to live directly under the worktree root, the one place the plain path
+    // is allowed to act.
+    const underRoot = join(home, 'worktrees', 'registered-project')
+    mkdirSync(join(underRoot, 'src'), { recursive: true })
+    writeFileSync(join(underRoot, 'src', 'a.txt'), 'x')
+    const container = join(home, 'worktrees', 'holds-a-project')
+    mkdirSync(join(container, 'inner'), { recursive: true })
+    writeFileSync(projectsFile, JSON.stringify([
+      { id: 'a', name: 'a', path: repo },
+      { id: 'b', name: 'b', path: underRoot },
+      { id: 'c', name: 'c', path: join(container, 'inner') },
+    ]))
+    try {
+      await expect(wt.removeWorktree(repo, other)).rejects.toThrow(/registered project/)
+      await expect(wt.removePlainDirectory(underRoot)).rejects.toThrow(/is a registered project/)
+      await expect(wt.removePlainDirectory(container)).rejects.toThrow(/contains a registered project/)
+      expect(existsSync(join(repo, 'a.txt'))).toBe(true)
+      expect(existsSync(join(underRoot, 'src', 'a.txt'))).toBe(true)
+      expect(existsSync(join(container, 'inner'))).toBe(true)
+    } finally {
+      if (before === null) rmSync(projectsFile, { force: true })
+      else writeFileSync(projectsFile, before)
+    }
+  })
+
+  it('a worktree of a registered project is still removable', async () => {
+    const home = process.env.OPERATOR_DIR!
+    const projectsFile = join(home, 'projects.json')
+    const before = existsSync(projectsFile) ? readFileSync(projectsFile, 'utf8') : null
+    const repo = scratchRepo()
+    writeFileSync(projectsFile, JSON.stringify([{ id: 'a', name: 'a', path: repo }]))
+    try {
+      const lane = await wt.createWorktree(repo)
+      await wt.removeWorktree(lane.path, repo)
+      expect(existsSync(lane.path)).toBe(false)
+      expect(existsSync(join(repo, 'a.txt'))).toBe(true)
+    } finally {
+      if (before === null) rmSync(projectsFile, { force: true })
+      else writeFileSync(projectsFile, before)
+    }
+  })
+})
+
+// Dependencies come with the worktree: each ignored node_modules is cloned (APFS clonefile) into
+// the same relative path. All inside SANDBOX.
+describe('node_modules cloned into a new worktree', () => {
+  /** A repo with a root and a nested ignored node_modules, a tracked one, one inside ignored build
+   *  output, and a symlink named node_modules. */
+  function depsRepo(): string {
+    const repo = scratchRepo()
+    writeFileSync(join(repo, '.gitignore'), 'node_modules\nbuild/\n')
+    mkdirSync(join(repo, 'electron'), { recursive: true })
+    writeFileSync(join(repo, 'electron', 'package.json'), '{}')
+    mkdirSync(join(repo, 'docs', 'node_modules'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'node_modules', 'tracked.txt'), 'tracked')
+    git(repo, ['add', '-A'])
+    git(repo, ['add', '-f', 'docs/node_modules/tracked.txt'])
+    git(repo, ['commit', '-qm', 'layout'])
+    mkdirSync(join(repo, 'node_modules', 'pkg', '.bin'), { recursive: true })
+    writeFileSync(join(repo, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
+    symlinkSync('../index.js', join(repo, 'node_modules', 'pkg', '.bin', 'run'))
+    mkdirSync(join(repo, 'electron', 'node_modules', 'dep'), { recursive: true })
+    writeFileSync(join(repo, 'electron', 'node_modules', 'dep', 'a.js'), 'a')
+    mkdirSync(join(repo, 'build', 'app', 'node_modules'), { recursive: true })
+    writeFileSync(join(repo, 'build', 'app', 'node_modules', 'bundled.js'), 'b')
+    const elsewhere = mkdtempSync(join(SANDBOX, 'shared-deps-'))
+    writeFileSync(join(elsewhere, 'secret.js'), 's')
+    mkdirSync(join(repo, 'linked'), { recursive: true })
+    symlinkSync(elsewhere, join(repo, 'linked', 'node_modules'))
+    return repo
+  }
+
+  it('finds the root and nested ignored node_modules only: not tracked, not inside ignored build output, not a symlink', async () => {
+    const repo = depsRepo()
+    expect((await wt.ignoredNodeModules(repo)).sort()).toEqual(['electron/node_modules', 'node_modules'])
+  })
+
+  it.skipIf(process.platform !== 'darwin')('createWorktree clones them as real directories, with symlinks inside kept as symlinks', async () => {
+    const repo = depsRepo()
+    const lane = await wt.createWorktree(repo)
+    expect(lane.dependencies?.cloned.sort()).toEqual(['electron/node_modules', 'node_modules'])
+    expect(lane.dependencies?.skipped).toEqual([])
+    expect(lane.dependencies?.note).toBeUndefined()
+    for (const rel of ['node_modules', 'electron/node_modules']) {
+      const st = lstatSync(join(lane.path, rel))
+      expect(st.isDirectory() && !st.isSymbolicLink()).toBe(true)
+    }
+    expect(readFileSync(join(lane.path, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+    expect(lstatSync(join(lane.path, 'node_modules', 'pkg', '.bin', 'run')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(lane.path, 'linked', 'node_modules'))).toBe(false)
+    expect(existsSync(join(lane.path, 'build'))).toBe(false)
+    // The worktree's node_modules is ignored there too: the clone is invisible to git.
+    expect(git(lane.path, ['status', '--porcelain'])).toBe('')
+    // Writing in the clone never reaches the source.
+    writeFileSync(join(lane.path, 'node_modules', 'pkg', 'index.js'), 'changed')
+    expect(readFileSync(join(repo, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+  })
+
+  it('a clone that fails is skipped, its partial tree removed, the source untouched, and one line says so', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    const r = await wt.cloneDependencies(repo, dest, {
+      blockedReason: async () => null,
+      cloner: async (_src, dst) => {
+        mkdirSync(join(dst, 'half'), { recursive: true })
+        throw new Error('clonefile failed: Operation not supported')
+      },
+    })
+    expect(r.cloned).toEqual([])
+    expect(r.skipped.map((s) => s.rel).sort()).toEqual(['electron/node_modules', 'node_modules'])
+    expect(existsSync(join(dest, 'node_modules'))).toBe(false)
+    expect(existsSync(join(dest, 'electron', 'node_modules'))).toBe(false)
+    expect(existsSync(join(repo, 'node_modules', 'pkg', 'index.js'))).toBe(true)
+    expect(wt.dependencyNote(r)).toMatch(/^node_modules not cloned into this worktree: .*clone failed: clonefile failed.*Run npm install/)
+  })
+
+  it('a volume that cannot clone is skipped without attempting a copy', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    let attempts = 0
+    const r = await wt.cloneDependencies(repo, dest, {
+      blockedReason: async () => 'the worktree is on a different volume from the checkout',
+      cloner: async () => { attempts++ },
+    })
+    expect(attempts).toBe(0)
+    expect(r.skipped.every((s) => s.reason === 'the worktree is on a different volume from the checkout')).toBe(true)
+  })
+
+  it('a clone that hits the time cap is reported as a timeout, and later directories are skipped by the cap', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    const r = await wt.cloneDependencies(repo, dest, {
+      capMs: 50,
+      blockedReason: async () => null,
+      cloner: async () => {
+        await new Promise((res) => setTimeout(res, 80))
+        throw Object.assign(new Error('killed'), { killed: true })
+      },
+    })
+    expect(r.cloned).toEqual([])
+    expect(r.skipped[0].reason).toMatch(/timed out/)
+    expect(r.skipped[1].reason).toMatch(/launch cap was reached/)
+  })
+
+  it('the gate names a non-APFS path', async () => {
+    if (process.platform !== 'darwin') return
+    expect(await wt.cloneBlockedReason('/dev', SANDBOX)).toMatch(/not on an APFS volume/)
+    expect(await wt.cloneBlockedReason(SANDBOX, SANDBOX)).toBeNull()
   })
 })
