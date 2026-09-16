@@ -7,7 +7,7 @@
 // have taken something that was not a worktree with it.
 import { execFile } from 'node:child_process'
 import { loginShell } from './login-shell'
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
@@ -71,7 +71,155 @@ async function defaultBase(root: string): Promise<string | null> {
   return null
 }
 
-export interface WorktreeCreateResult { path: string; branch: string; baseBranch?: string }
+export interface WorktreeCreateResult {
+  path: string
+  branch: string
+  baseBranch?: string
+  /** What `cloneDependencies` did for this worktree. `note` is the one line for the lane when
+   *  something was not cloned. */
+  dependencies?: DependencyCloneResult & { note?: string }
+}
+
+// --- dependencies: clone node_modules into a new worktree --------------------------------------
+//
+// A fresh worktree has no `node_modules`, so a lane could not run the project's tests without
+// installing or symlinking the main checkout's. Each ignored `node_modules` directory of the source
+// checkout is CLONED into the same relative path: on APFS a clone shares every block with the
+// original until one side writes, so a 666 MB pair of trees costs a few MB (measured, see the
+// 2026-09-16 result). Never a symlink (a lane's install would write into the main checkout) and
+// never a full copy (that is the disk cost worktrees are already criticised for).
+
+/** `statfs.type` for APFS on macOS. Measured on this machine: `/`, the Data volume and the temp
+ *  directory report 26; devfs reports 19. */
+const APFS_FSTYPE = 26
+
+/** How long the clones may hold up a lane's launch in total. Two trees (13,869 entries) took about
+ *  2 s here; the cap is for a much larger monorepo or a slow disk, not the normal case. */
+export const DEPENDENCY_CLONE_CAP_MS = 30_000
+
+/** The ignored `node_modules` directories of `root`, relative, without a trailing slash.
+ *
+ *  `git ls-files --others --ignored --exclude-standard --directory` lists ignored directories and
+ *  STOPS at each one, so it never descends into `node_modules`, `.git`, or ignored build output:
+ *  a `node_modules` inside `src-tauri/target/…/app.asar.unpacked/` is not reported, because
+ *  `target/` is reported instead. That is the bounded walk the task needs, done by git in 29 ms on
+ *  this repo, and it answers "is it ignored" in the same pass. A directory is listed with a
+ *  trailing slash; a symlink named `node_modules` is listed without one and is dropped here, and
+ *  each result is lstat-checked as a real directory, so a symlink is never followed. */
+export async function ignoredNodeModules(root: string): Promise<string[]> {
+  let out: string
+  try {
+    const r = await execFileAsync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], {
+      cwd: root, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    })
+    out = r.stdout
+  } catch {
+    return []
+  }
+  const found: string[] = []
+  for (const entry of out.split('\0')) {
+    if (!entry.endsWith('node_modules/')) continue
+    const rel = entry.slice(0, -1)
+    if (rel !== 'node_modules' && !rel.endsWith('/node_modules')) continue
+    if (rel.split('/').some((seg) => seg === '..' || seg === '')) continue
+    try {
+      const st = await lstat(join(root, rel))
+      if (st.isDirectory() && !st.isSymbolicLink()) found.push(rel)
+    } catch { /* gone since git listed it */ }
+  }
+  return found
+}
+
+/** Why a clone from `src` into `destParent` cannot be a real clone, or `null` when it can.
+ *
+ *  `cp -c` does NOT fail when cloning is impossible: its man page says it falls back to copyfile(2),
+ *  a full copy. Node's `COPYFILE_FICLONE_FORCE` would fail properly but returns ENOSYS on macOS
+ *  (tried on this machine, same volume). So the guarantee comes from this gate instead: clonefile(2)
+ *  works between any two paths on the same APFS volume, which is exactly what is checked. */
+export async function cloneBlockedReason(src: string, destParent: string): Promise<string | null> {
+  if (process.platform !== 'darwin') return 'cloning needs APFS on macOS'
+  try {
+    const [a, b] = await Promise.all([statfs(src), statfs(destParent)])
+    if (a.type !== APFS_FSTYPE || b.type !== APFS_FSTYPE) return 'the checkout is not on an APFS volume'
+    const [sa, sb] = await Promise.all([stat(src), stat(destParent)])
+    if (sa.dev !== sb.dev) return 'the worktree is on a different volume from the checkout'
+  } catch (e) {
+    return `cannot inspect the volume: ${e instanceof Error ? e.message : e}`
+  }
+  return null
+}
+
+/** Clone one directory. Killable, so the launch cap holds. */
+export type DirCloner = (src: string, dst: string, timeoutMs: number) => Promise<void>
+
+const cpClone: DirCloner = async (src, dst, timeoutMs) => {
+  await execFileAsync('/bin/cp', ['-cR', src, dst], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 })
+}
+
+export interface DependencyCloneResult {
+  cloned: string[]
+  /** Not cloned, and why. A directory already present in the worktree is not listed. */
+  skipped: Array<{ rel: string; reason: string }>
+  ms: number
+}
+
+/** Clone every ignored `node_modules` of `sourceRoot` into `worktreePath`. Never throws: a
+ *  directory that cannot be cloned is skipped (and any partial clone removed), and the worktree is
+ *  kept either way. */
+export async function cloneDependencies(
+  sourceRoot: string,
+  worktreePath: string,
+  opts: { capMs?: number; cloner?: DirCloner; blockedReason?: typeof cloneBlockedReason } = {},
+): Promise<DependencyCloneResult> {
+  const started = Date.now()
+  const cap = opts.capMs ?? DEPENDENCY_CLONE_CAP_MS
+  const cloner = opts.cloner ?? cpClone
+  const blocked = opts.blockedReason ?? cloneBlockedReason
+  const result: DependencyCloneResult = { cloned: [], skipped: [], ms: 0 }
+  for (const rel of await ignoredNodeModules(sourceRoot)) {
+    const src = join(sourceRoot, rel)
+    const dst = join(worktreePath, rel)
+    if (existsSync(dst)) continue
+    const left = cap - (Date.now() - started)
+    if (left <= 0) { result.skipped.push({ rel, reason: `the ${Math.round(cap / 1000)}s launch cap was reached` }); continue }
+    if (!existsSync(dirname(dst))) { result.skipped.push({ rel, reason: 'its parent directory is not in the worktree' }); continue }
+    const reason = await blocked(src, dirname(dst))
+    if (reason) { result.skipped.push({ rel, reason }); continue }
+    try {
+      await cloner(src, dst, left)
+      result.cloned.push(rel)
+    } catch (e) {
+      // A killed or failed `cp` can leave half a tree. Only the destination inside the NEW worktree
+      // is removed; the source is never touched.
+      await rm(dst, { recursive: true, force: true }).catch(() => {})
+      const killed = (e as { killed?: boolean }).killed
+      result.skipped.push({ rel, reason: killed ? `timed out after ${Math.round(left / 1000)}s` : `clone failed: ${e instanceof Error ? e.message.split('\n')[0] : e}` })
+    }
+  }
+  result.ms = Date.now() - started
+  return result
+}
+
+/** The one line a lane sees when a dependency directory was not cloned. `undefined` when there is
+ *  nothing to say. */
+export function dependencyNote(r: DependencyCloneResult): string | undefined {
+  if (!r.skipped.length) return undefined
+  const what = r.skipped.map((s) => `${s.rel} (${s.reason})`).join('; ')
+  return `node_modules not cloned into this worktree: ${what}. Run npm install where you need it.`
+}
+
+/** Clone, log, and attach the result to a create result. */
+async function withDependencies(sourceRoot: string, created: WorktreeCreateResult): Promise<WorktreeCreateResult> {
+  const deps = await cloneDependencies(sourceRoot, created.path)
+  const note = dependencyNote(deps)
+  if (deps.cloned.length || deps.skipped.length) {
+    console.error(
+      `[worktree] ${created.path}: cloned ${deps.cloned.length ? deps.cloned.join(', ') : 'nothing'} in ${deps.ms} ms`
+      + (deps.skipped.length ? `; not cloned: ${deps.skipped.map((s) => `${s.rel} (${s.reason})`).join('; ')}` : ''),
+    )
+  }
+  return { ...created, dependencies: { ...deps, note } }
+}
 
 export interface Provenance { path: string; createdAt: number; createdBy: string; sourceRepo: string; branch: string; laneId?: string }
 
@@ -135,7 +283,7 @@ export async function createWorktree(sourceCwd: string, reuseBranch?: string | n
     const reattached = await reattachWorktree(root, reuseBranch.trim())
     if (reattached) {
       await recordProvenance({ path: reattached.path, createdAt: Date.now(), createdBy: 'operator', sourceRepo: root, branch: reattached.branch, laneId: laneId ?? undefined })
-      return reattached
+      return withDependencies(root, reattached)
     }
   }
 
@@ -148,7 +296,7 @@ export async function createWorktree(sourceCwd: string, reuseBranch?: string | n
   const baseRef = base ?? 'HEAD'
   await git(root, ['worktree', 'add', '-b', branch, path, baseRef])
   await recordProvenance({ path, createdAt: Date.now(), createdBy: 'operator', sourceRepo: root, branch, laneId: laneId ?? undefined })
-  return { path, branch, baseBranch: baseRef }
+  return withDependencies(root, { path, branch, baseBranch: baseRef })
 }
 
 export interface WorktreeStatus { branch?: string; changes: number; valid: boolean }

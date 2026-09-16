@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, renameSync, realpathSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, renameSync, realpathSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -590,5 +590,116 @@ describe('a registered project path is never removed', () => {
       if (before === null) rmSync(projectsFile, { force: true })
       else writeFileSync(projectsFile, before)
     }
+  })
+})
+
+// Dependencies come with the worktree: each ignored node_modules is cloned (APFS clonefile) into
+// the same relative path. All inside SANDBOX.
+describe('node_modules cloned into a new worktree', () => {
+  /** A repo with a root and a nested ignored node_modules, a tracked one, one inside ignored build
+   *  output, and a symlink named node_modules. */
+  function depsRepo(): string {
+    const repo = scratchRepo()
+    writeFileSync(join(repo, '.gitignore'), 'node_modules\nbuild/\n')
+    mkdirSync(join(repo, 'electron'), { recursive: true })
+    writeFileSync(join(repo, 'electron', 'package.json'), '{}')
+    mkdirSync(join(repo, 'docs', 'node_modules'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'node_modules', 'tracked.txt'), 'tracked')
+    git(repo, ['add', '-A'])
+    git(repo, ['add', '-f', 'docs/node_modules/tracked.txt'])
+    git(repo, ['commit', '-qm', 'layout'])
+    mkdirSync(join(repo, 'node_modules', 'pkg', '.bin'), { recursive: true })
+    writeFileSync(join(repo, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
+    symlinkSync('../index.js', join(repo, 'node_modules', 'pkg', '.bin', 'run'))
+    mkdirSync(join(repo, 'electron', 'node_modules', 'dep'), { recursive: true })
+    writeFileSync(join(repo, 'electron', 'node_modules', 'dep', 'a.js'), 'a')
+    mkdirSync(join(repo, 'build', 'app', 'node_modules'), { recursive: true })
+    writeFileSync(join(repo, 'build', 'app', 'node_modules', 'bundled.js'), 'b')
+    const elsewhere = mkdtempSync(join(SANDBOX, 'shared-deps-'))
+    writeFileSync(join(elsewhere, 'secret.js'), 's')
+    mkdirSync(join(repo, 'linked'), { recursive: true })
+    symlinkSync(elsewhere, join(repo, 'linked', 'node_modules'))
+    return repo
+  }
+
+  it('finds the root and nested ignored node_modules only: not tracked, not inside ignored build output, not a symlink', async () => {
+    const repo = depsRepo()
+    expect((await wt.ignoredNodeModules(repo)).sort()).toEqual(['electron/node_modules', 'node_modules'])
+  })
+
+  it.skipIf(process.platform !== 'darwin')('createWorktree clones them as real directories, with symlinks inside kept as symlinks', async () => {
+    const repo = depsRepo()
+    const lane = await wt.createWorktree(repo)
+    expect(lane.dependencies?.cloned.sort()).toEqual(['electron/node_modules', 'node_modules'])
+    expect(lane.dependencies?.skipped).toEqual([])
+    expect(lane.dependencies?.note).toBeUndefined()
+    for (const rel of ['node_modules', 'electron/node_modules']) {
+      const st = lstatSync(join(lane.path, rel))
+      expect(st.isDirectory() && !st.isSymbolicLink()).toBe(true)
+    }
+    expect(readFileSync(join(lane.path, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+    expect(lstatSync(join(lane.path, 'node_modules', 'pkg', '.bin', 'run')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(lane.path, 'linked', 'node_modules'))).toBe(false)
+    expect(existsSync(join(lane.path, 'build'))).toBe(false)
+    // The worktree's node_modules is ignored there too: the clone is invisible to git.
+    expect(git(lane.path, ['status', '--porcelain'])).toBe('')
+    // Writing in the clone never reaches the source.
+    writeFileSync(join(lane.path, 'node_modules', 'pkg', 'index.js'), 'changed')
+    expect(readFileSync(join(repo, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+  })
+
+  it('a clone that fails is skipped, its partial tree removed, the source untouched, and one line says so', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    const r = await wt.cloneDependencies(repo, dest, {
+      blockedReason: async () => null,
+      cloner: async (_src, dst) => {
+        mkdirSync(join(dst, 'half'), { recursive: true })
+        throw new Error('clonefile failed: Operation not supported')
+      },
+    })
+    expect(r.cloned).toEqual([])
+    expect(r.skipped.map((s) => s.rel).sort()).toEqual(['electron/node_modules', 'node_modules'])
+    expect(existsSync(join(dest, 'node_modules'))).toBe(false)
+    expect(existsSync(join(dest, 'electron', 'node_modules'))).toBe(false)
+    expect(existsSync(join(repo, 'node_modules', 'pkg', 'index.js'))).toBe(true)
+    expect(wt.dependencyNote(r)).toMatch(/^node_modules not cloned into this worktree: .*clone failed: clonefile failed.*Run npm install/)
+  })
+
+  it('a volume that cannot clone is skipped without attempting a copy', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    let attempts = 0
+    const r = await wt.cloneDependencies(repo, dest, {
+      blockedReason: async () => 'the worktree is on a different volume from the checkout',
+      cloner: async () => { attempts++ },
+    })
+    expect(attempts).toBe(0)
+    expect(r.skipped.every((s) => s.reason === 'the worktree is on a different volume from the checkout')).toBe(true)
+  })
+
+  it('a clone that hits the time cap is reported as a timeout, and later directories are skipped by the cap', async () => {
+    const repo = depsRepo()
+    const dest = mkdtempSync(join(SANDBOX, 'wt-'))
+    mkdirSync(join(dest, 'electron'))
+    const r = await wt.cloneDependencies(repo, dest, {
+      capMs: 50,
+      blockedReason: async () => null,
+      cloner: async () => {
+        await new Promise((res) => setTimeout(res, 80))
+        throw Object.assign(new Error('killed'), { killed: true })
+      },
+    })
+    expect(r.cloned).toEqual([])
+    expect(r.skipped[0].reason).toMatch(/timed out/)
+    expect(r.skipped[1].reason).toMatch(/launch cap was reached/)
+  })
+
+  it('the gate names a non-APFS path', async () => {
+    if (process.platform !== 'darwin') return
+    expect(await wt.cloneBlockedReason('/dev', SANDBOX)).toMatch(/not on an APFS volume/)
+    expect(await wt.cloneBlockedReason(SANDBOX, SANDBOX)).toBeNull()
   })
 })

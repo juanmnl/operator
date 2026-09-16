@@ -2569,6 +2569,7 @@ export function DashboardView() {
       let spawnCwd = cwd
       let worktreeBranch: string | undefined
       let worktreeBase: string | undefined
+      let dependencyNote: string | undefined
       if (config.useWorktree) {
         // A resumed lane goes back on the branch it left, so its own committed work is in the
         // tree its transcript remembers writing (see worktree::reattach_worktree). A fresh lane
@@ -2584,6 +2585,7 @@ export function DashboardView() {
           spawnCwd = result.path
           worktreeBranch = result.branch
           worktreeBase = result.baseBranch
+          dependencyNote = result.dependencies?.note
         }
       }
 
@@ -2599,7 +2601,10 @@ export function DashboardView() {
         : ''
       const initial = [devInstr, config.prompt].filter(Boolean).join('\n\n')
       if (initial) launchOptions.initialPrompt = initial
-      if (opts?.orchestrationNote) launchOptions.orchestrationNote = opts.orchestrationNote
+      // A dependency directory that could not be cloned into the worktree is the lane's to know
+      // about before it runs anything: it rides in the same note, one line.
+      const note = [opts?.orchestrationNote, dependencyNote].filter(Boolean).join('\n')
+      if (note) launchOptions.orchestrationNote = note
       // Rides to the tailer so any OPERATOR-REPLY this lane posts is stamped with its project
       // (the backend can't derive our canonical-repo-root ids).
       launchOptions.projectId = proj.id

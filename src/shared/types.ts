@@ -811,6 +811,8 @@ export interface WorktreeCreateResult {
   path: string
   branch: string
   baseBranch?: string
+  /** node_modules cloned into the new worktree. `note` is the line for the lane when one was not. */
+  dependencies?: { cloned: string[]; skipped: Array<{ rel: string; reason: string }>; ms: number; note?: string }
 }
 
 export interface WorktreeStatus {
