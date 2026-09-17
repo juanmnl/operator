@@ -444,6 +444,7 @@ export function registerIpc(d: Deps): void {
     previewInspectConfigure: (config) => { if (previewCdp?.isAttached()) previewCdp.configure(config); else previewApi.configure(config) },
     previewInspectClearAnchor: () => { if (previewCdp?.isAttached()) previewCdp.clearAnchor(); else previewApi.clearAnchor() },
     previewCdpDetach: () => previewCdp?.detach(),
+    previewCdpEditCommand: (msg) => { void previewCdp?.editCommand(msg) },
     previewCdpInput: (ev) => { void previewCdp?.input(ev) },
     startWindowDrag: () => {},
     setDockIcon: (variant) => {

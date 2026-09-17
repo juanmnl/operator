@@ -18,6 +18,7 @@ import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
 import { installPreviewCdp } from './preview-cdp'
+import { ownCdpPort } from './preview-cdp-port'
 import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
@@ -301,6 +302,7 @@ function boot(): void {
     frame: (f) => { const w = win(); if (w) broadcast(w, 'onPreviewCdpFrame', f) },
     pick: (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) },
     anchor: (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
+    edit: (data) => { const w = win(); if (w) broadcast(w, 'onPreviewCdpEdit', data) },
     detached: (reason) => { const w = win(); if (w) broadcast(w, 'onPreviewCdpDetached', reason) },
   })
   // Electron's default menu, rebuilt, plus the Preview's View-menu accelerators. See app-menu.ts.
@@ -368,6 +370,11 @@ if (process.argv.includes('--mcp-serve')) {
   try { app.dock?.hide() } catch { /* not on macOS, or too early — neither matters here */ }
   serveMcp()
 } else {
+  // A dev build started from a lane working on Operator opens that lane's debugging port, so the
+  // lane's Preview can show this Operator (see `ownCdpPort`). Before `ready`, where the switch counts.
+  const cdpPort = ownCdpPort(app.isPackaged, process.env, process.argv)
+  if (cdpPort) app.commandLine.appendSwitch('remote-debugging-port', cdpPort)
+
   app.whenReady().then(boot)
 
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow() })

@@ -13,7 +13,7 @@ import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_IN
 import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
 import { PreviewEditPanel } from './PreviewEditPanel'
-import { usePreviewEdit } from '../../lib/use-preview-edit'
+import { cdpEditTransport, iframeEditTransport, usePreviewEdit } from '../../lib/use-preview-edit'
 import { ToolbarIcon, StatusDot } from '../ToolbarIcon'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
 import { PREVIEW_FRAME_NAME, PREVIEW_MESSAGE_TAG, previewFrameMessage } from '../../../shared/preview-frame'
@@ -538,12 +538,27 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   //                    in integers instead of trusting a float to land on box.w.
   const fitting = preset === 'fit' || box.w === 0
   const scale = fitting ? 1 : Math.min(1, box.w / preset)
-  const { state: editState, send: editSend } = usePreviewEdit(frameRef, `${nonce}|${display}`)
+  // The same controls on either source; only the transport to the page differs (lib/use-preview-edit).
+  const frameEditTransport = useMemo(() => iframeEditTransport(frameRef), [])
+  const editTransport = electronLive ? cdpEditTransport : frameEditTransport
+  const { state: editState, send: editSend } = usePreviewEdit(editTransport, `${nonce}|${pageKey}`)
   // Leaving Inspect stops editing (the handles go); the changes stay on the page until a reset or reload.
   useEffect(() => { if (!inspecting) editSend('deselect') }, [inspecting, editSend])
   /** A crop of the edited element as it is now, for the before/after pair. The handles and the
    *  compose card are hidden in the page for the frame. */
   const captureEdit = async (a: { box: { x: number; y: number; w: number; h: number } | null }, id: string): Promise<string | null> => {
+    if (electronLive) {
+      // An Electron app: the crop is taken in the app over CDP, in its page CSS px, with the handles hidden.
+      if (!a.box || !window.operator.previewCdpShot) return null
+      editSend('capture', { on: true })
+      try {
+        await new Promise((r) => setTimeout(r, 60))
+        const shot = await window.operator.previewCdpShot({ project: shotProj, id, targets: [a.box], outline: cssRgb('--measure') }).catch(() => null)
+        return shot?.path ?? null
+      } finally {
+        editSend('capture', { on: false })
+      }
+    }
     const stage = stageRef.current?.getBoundingClientRect()
     if (!a.box || !stage || stage.width <= 0 || !window.operator.previewShotCapture) return null
     editSend('capture', { on: true })

@@ -159,6 +159,8 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   previewCdpAttach:       { delivery: 'invoke', impl: 'native' },
   previewCdpDetach:       { delivery: 'send',   impl: 'native' },
   previewCdpInput:        { delivery: 'send',   impl: 'native' },
+  previewCdpEditCommand:  { delivery: 'send',   impl: 'native' },
+  onPreviewCdpEdit:       { delivery: 'event',  impl: 'native' },
   previewCdpShot:         { delivery: 'invoke', impl: 'native' },
   onPreviewCdpFrame:      { delivery: 'event',  impl: 'native' },
   onPreviewCdpDetached:   { delivery: 'event',  impl: 'native' },

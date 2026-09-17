@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CDP_BINDING, CDP_BRIDGE_JS, inputCommand, parseTargets, routeBinding } from './preview-cdp'
-import { allocateCdpPort, cdpLaunchNote, CDP_PORT_BASE, dependsOnElectron, isElectronProject } from './preview-cdp-port'
+import { allocateCdpPort, cdpLaunchNote, CDP_PORT_BASE, dependsOnElectron, isElectronProject, ownCdpPort } from './preview-cdp-port'
+import { CDP_BINDING as BINDING, editCommandExpression } from './preview-cdp'
 
 describe('target discovery', () => {
   const ws = (id: string) => `ws://127.0.0.1:9340/devtools/page/${id}`
@@ -39,7 +40,7 @@ describe('message routing from the app page', () => {
 
   it('the injected bridge calls the binding in exactly the shape routeBinding accepts', () => {
     const calls: string[] = []
-    const window: Record<string, unknown> = { [CDP_BINDING]: (s: string) => calls.push(s) }
+    const window: Record<string, unknown> = { [CDP_BINDING]: (s: string) => calls.push(s), addEventListener: () => {} }
     runInNewContext(CDP_BRIDGE_JS, { window, JSON, String, Error })
     let ok = false
     ;(window.__operatorBeacon as (d: unknown, a: () => void, b: () => void) => void)({ target: 'console', message: 'hi' }, () => { ok = true }, () => {})
@@ -53,7 +54,7 @@ describe('message routing from the app page', () => {
   })
 
   it('reports a failed pick when the binding is missing (not attached)', () => {
-    const window: Record<string, unknown> = {}
+    const window: Record<string, unknown> = { addEventListener: () => {} }
     runInNewContext(CDP_BRIDGE_JS, { window, JSON, String, Error })
     let failed = false
     ;(window.__operatorBeacon as (d: unknown, a: () => void, b: () => void) => void)({}, () => {}, () => { failed = true })
@@ -119,5 +120,46 @@ describe('Electron project detection', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe("Operator's own debugging port (dev builds only)", () => {
+  it('opens the lane port in a dev build, and never in a packaged app, on the --mcp-serve path, or for a non-port', () => {
+    expect(ownCdpPort(false, { OPERATOR_CDP_PORT: '9341' }, ['electron', '.'])).toBe('9341')
+    expect(ownCdpPort(true, { OPERATOR_CDP_PORT: '9341' }, ['Operator'])).toBeNull()
+    expect(ownCdpPort(false, { OPERATOR_CDP_PORT: '9341' }, ['electron', '.', '--mcp-serve'])).toBeNull()
+    expect(ownCdpPort(false, {}, ['electron', '.'])).toBeNull()
+    expect(ownCdpPort(false, { OPERATOR_CDP_PORT: '9341 --inspect' }, ['electron', '.'])).toBeNull()
+  })
+})
+
+describe('CSS controls over CDP', () => {
+  it('routes the edit engine state forwarded through the binding', () => {
+    expect(routeBinding({ name: BINDING, payload: JSON.stringify({ kind: 'edit', data: '{"count":1}' }) })).toEqual({ kind: 'edit', data: '{"count":1}' })
+    expect(routeBinding({ name: BINDING, payload: JSON.stringify({ kind: 'edit', data: 5 }) })).toBeNull()
+  })
+
+  it('the bridge forwards the engine state message the page posts to itself, once, and nothing else', () => {
+    const calls: string[] = []
+    const listeners: Array<(ev: { source: unknown; data: unknown }) => void> = []
+    const window: Record<string, unknown> = {
+      [CDP_BINDING]: (s: string) => calls.push(s),
+      addEventListener: (type: string, fn: (ev: { source: unknown; data: unknown }) => void) => { if (type === 'message') listeners.push(fn) },
+    }
+    runInNewContext(CDP_BRIDGE_JS, { window, JSON, String, Error })
+    runInNewContext(CDP_BRIDGE_JS, { window, JSON, String, Error }) // evaluated again on re-attach
+    expect(listeners).toHaveLength(1)
+    const fire = (source: unknown, data: unknown) => listeners.forEach((l) => l({ source, data }))
+    fire(window, { __operatorEdit: 'state', data: '{"count":2}' })
+    fire({}, { __operatorEdit: 'state', data: '{"count":3}' })           // another window
+    fire(window, { __operatorEditCmd: 'undo' })                         // a command, not state
+    expect(calls.map((payload) => routeBinding({ name: CDP_BINDING, payload }))).toEqual([{ kind: 'edit', data: '{"count":2}' }])
+  })
+
+  it('delivers only edit commands, JSON-encoded into the expression', () => {
+    expect(editCommandExpression({ __operatorEditCmd: 'set', uid: 'u1', prop: 'padding-top', value: "8px'); alert(1); ('" }))
+      .toBe(`window.postMessage(${JSON.stringify({ __operatorEditCmd: 'set', uid: 'u1', prop: 'padding-top', value: "8px'); alert(1); ('" })}, '*')`)
+    expect(editCommandExpression({ something: 'else' })).toBeNull()
+    expect(editCommandExpression('undo')).toBeNull()
   })
 })

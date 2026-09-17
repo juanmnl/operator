@@ -13,6 +13,10 @@
 //            as the same `onPreviewPick` / `onPreviewAnchor` events, so the UI path is shared.
 //   SHOTS    a note's crop is `Page.captureScreenshot` with a clip, finished by the web preview's own
 //            pipeline (preview-shot-capture.ts `finishShot`).
+//   EDIT     the CSS controls' page engine (preview-edit-page.js) is injected with the rest. It talks to
+//            its `window.parent`, which in an app's top-level page is the page itself: its state
+//            messages are forwarded over the same binding, and commands are posted to the page with
+//            `Runtime.evaluate`, which the engine accepts because their source is its parent.
 //
 // One attached app at a time, like the one Preview panel that shows it.
 import { nativeImage } from 'electron'
@@ -23,6 +27,8 @@ import { CdpConnection } from './cdp-client'
 
 export { CdpConnection }
 import { OVERLAY_FNS_JS } from './overlay-fns'
+import { EDIT_FNS_JS } from './edit-fns'
+import { EDIT_CMD_TAG, EDIT_STATE_TAG } from '../../../src/shared/preview-edit'
 import { finishShot } from './preview-shot-capture'
 import { cropRect, unionRect } from './preview-shots'
 
@@ -60,10 +66,19 @@ export const CDP_BRIDGE_JS = `
     try { window.__operatorPickBridge(JSON.stringify(data)); onOk && onOk() }
     catch (e) { onFail && onFail() }
   };
+  // CSS controls: the edit engine posts its state to window.parent, which is this window here.
+  // Forwarded once per document, however often the bridge is evaluated.
+  if (window.__operatorCdpEditForward) return;
+  window.__operatorCdpEditForward = true;
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (ev.source !== window || !d || d[${JSON.stringify(EDIT_STATE_TAG)}] !== 'state' || typeof d.data !== 'string') return;
+    try { call({ kind: 'edit', data: d.data }); } catch (e) { /* not attached */ }
+  });
 })();
 `
 
-export type BindingMessage = { kind: 'pick'; data: string } | { kind: 'anchor'; value: boolean }
+export type BindingMessage = { kind: 'pick'; data: string } | { kind: 'anchor'; value: boolean } | { kind: 'edit'; data: string }
 
 /** A `Runtime.bindingCalled` event → what it says, or null for any other binding or a malformed
  *  payload. Pure. */
@@ -73,7 +88,16 @@ export function routeBinding(params: { name?: unknown; payload?: unknown }): Bin
   try { m = JSON.parse(params.payload) } catch { return null }
   if (m?.kind === 'pick' && typeof m.data === 'string') return { kind: 'pick', data: m.data }
   if (m?.kind === 'anchor' && typeof m.value === 'boolean') return { kind: 'anchor', value: m.value }
+  if (m?.kind === 'edit' && typeof m.data === 'string') return { kind: 'edit', data: m.data }
   return null
+}
+
+/** The expression that delivers a CSS-controls command to the page's edit engine, or null for anything
+ *  that is not one. The command is JSON-encoded into the expression, never concatenated. Pure. */
+export function editCommandExpression(msg: unknown): string | null {
+  if (!msg || typeof msg !== 'object') return null
+  if (typeof (msg as Record<string, unknown>)[EDIT_CMD_TAG] !== 'string') return null
+  return `window.postMessage(${JSON.stringify(msg)}, '*')`
 }
 
 /** The `Input.dispatch*Event` call for one forwarded input. Pure. */
@@ -110,6 +134,8 @@ export interface PreviewCdpCallbacks {
   frame: (frame: CdpFrame) => void
   pick: (json: string) => void
   anchor: (anchored: boolean) => void
+  /** CSS controls state from the page engine, as the JSON string it posts. */
+  edit: (data: string) => void
   /** The app closed, the window went away, or the connection dropped. */
   detached: (reason: string) => void
 }
@@ -145,6 +171,7 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
   // so it is switched off at once: otherwise the first forwarded click opens a compose card and never
   // reaches the app. The renderer's configuration turns it on when Inspect is on.
   const pageScripts = () => (scripts ??= readShared('preview-inspector.js') + CDP_BRIDGE_JS + OVERLAY_FNS_JS + readShared('preview-overlay.js')
+    + EDIT_FNS_JS + readShared('preview-edit-page.js')
     + '\n;window.__operatorInspector && window.__operatorInspector.configure({ enabled: false });')
 
   const evaluate = (expression: string) =>
@@ -187,7 +214,8 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
       const m = routeBinding(params)
       if (!m) return
       if (m.kind === 'pick') cb.pick(m.data)
-      else cb.anchor(m.value)
+      else if (m.kind === 'anchor') cb.anchor(m.value)
+      else cb.edit(m.data)
     })
     // A new document: the scripts come from addScriptToEvaluateOnNewDocument; the configuration and
     // the anchor state are this side's to restore.
@@ -226,6 +254,11 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
     cb.anchor(false)
   }
   const clearAnchor = () => { void evaluate('window.__operatorOverlay && window.__operatorOverlay.clearAnchor()') }
+  /** A CSS-controls command for the page's edit engine. Resolves once the page has run it. */
+  const editCommand = (msg: unknown): Promise<void> => {
+    const expr = editCommandExpression(msg)
+    return expr ? evaluate(expr).then(() => undefined) : Promise.resolve()
+  }
   /** Resolves when the app has handled the event (CDP answers an input command after dispatch). */
   const input = (ev: CdpInput): Promise<void> => {
     if (!conn) return Promise.resolve()
@@ -267,6 +300,7 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
     configure,
     closeOverlays,
     clearAnchor,
+    editCommand,
     input,
     shot,
   }

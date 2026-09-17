@@ -253,6 +253,10 @@ declare global {
       /** A note screenshot of the attached window (targets in its CSS px). */
       previewCdpShot?: (req: import('../shared/types').CdpShotRequest) => Promise<import('../shared/types').PreviewShot | null>
       onPreviewCdpFrame?: (callback: (frame: import('../shared/types').CdpFrame) => void) => () => void
+      /** CSS controls on the attached app: a command for its page's edit engine (`__operatorEditCmd`). */
+      previewCdpEditCommand?: (msg: Record<string, unknown>) => void
+      /** CSS controls state from the attached app's page, as the JSON string the engine posts. */
+      onPreviewCdpEdit?: (callback: (data: string) => void) => () => void
       /** The attached app went away (closed window, quit app, dropped connection). */
       onPreviewCdpDetached?: (callback: (reason: string) => void) => () => void
       /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */

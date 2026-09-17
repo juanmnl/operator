@@ -16,6 +16,9 @@
 //   RELOAD   after Page.reload the scripts are back (addScriptToEvaluateOnNewDocument) and configured
 //   SHOT     Page.captureScreenshot with a clip, outlined by the shared pipeline, and the picked
 //            element's pixels are inside the outline
+//   EDIT     the CSS controls' page engine over CDP: the pick selects the element, `set padding-top`
+//            changes its computed style in the app and comes back as state through the binding, the
+//            before/after screenshots show the element grow, and `undo` reverts it
 // OPERATOR_DIR points at a temp dir, so the shot is never written under ~/.operator.
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs')
 const { tmpdir } = require('node:os')
@@ -97,9 +100,10 @@ app.whenReady().then(async () => {
     try {
       if (!(await answers(p, 8000))) throw new Error('no debugging port')
       await wait(800)
-      const frames = [], picks = [], anchors = [], detaches = []
+      const frames = [], picks = [], anchors = [], detaches = [], edits = []
       const cdp = cdpMod.createPreviewCdp({
         frame: (f) => frames.push(f), pick: (d) => picks.push(d), anchor: (a) => anchors.push(a), detached: (r) => detaches.push(r),
+        edit: (d) => edits.push(JSON.parse(d)),
       })
       const targets = await cdp.listTargets(p)
       check(`${label}: targets`, targets.length === 1 && targets[0].title === 'Probe App', JSON.stringify(targets.map((t) => t.title)))
@@ -166,6 +170,46 @@ app.whenReady().then(async () => {
           detail = `image ${width}x${height}, element ${JSON.stringify(red)} in outline ${JSON.stringify(blue)}, hover outline in image ${!!hover}`
         }
         check(`${label}: note screenshot outlines the element`, inside, detail)
+      }
+
+      // EDIT — the pick selected the element in the page's edit engine.
+      const redHeight = async (shot) => {
+        if (!shot) return null
+        const img = nativeImage.createFromPath(shot.path)
+        const { width, height } = img.getSize()
+        const bm = img.toBitmap()
+        let y0 = 1e9, y1 = -1
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const i = (y * width + x) * 4; if (bm[i + 2] > 200 && bm[i + 1] < 60 && bm[i] < 60) { y0 = Math.min(y0, y); y1 = Math.max(y1, y) } }
+        return y1 < 0 ? null : y1 - y0 + 1
+      }
+      const lastEdit = () => edits[edits.length - 1]
+      const selected = lastEdit()?.active
+      check(`${label}: edit — the pick selects the element, state arrives through the binding`, !!selected && selected.box && selected.box.w === 180, selected ? JSON.stringify({ uid: selected.uid, label: selected.label, box: selected.box }) : `no edit state (${edits.length} messages)`)
+      if (selected) {
+        const target = 'document.getElementById("target")'
+        // As AppPreviewPanel's captureEdit does: the engine hides its handles for the capture.
+        const editShot = async (id, box) => {
+          await cdp.editCommand({ __operatorEditCmd: 'capture', on: true })
+          await wait(60)
+          try { return await cdp.shot({ project: 'probe', id, targets: [box], outline: { r: 0, g: 0, b: 255 } }) }
+          finally { await cdp.editCommand({ __operatorEditCmd: 'capture', on: false }) }
+        }
+        const before = await editShot(`pick-edit-${selected.uid}-before`, selected.box)
+        const pad0 = await read(`getComputedStyle(${target}).paddingTop`)
+        await cdp.editCommand({ __operatorEditCmd: 'set', uid: selected.uid, prop: 'padding-top', value: '24px' })
+        await wait(250)
+        const pad1 = await read(`getComputedStyle(${target}).paddingTop`)
+        const stateAfter = lastEdit()?.active
+        check(`${label}: edit — set padding-top changes the computed style in the app`, pad0 === '0px' && pad1 === '24px' && stateAfter?.values?.['padding-top'] === '24px',
+          `computed ${pad0} → ${pad1}; state values ${JSON.stringify(stateAfter?.values)}; history ${stateAfter?.history}`)
+        const after = await editShot(`pick-edit-${selected.uid}-after`, stateAfter?.box ?? selected.box)
+        const h0 = await redHeight(before), h1 = await redHeight(after)
+        check(`${label}: edit — before/after screenshots show the element grow by the padding`, !!(h0 && h1) && Math.abs((h1 - h0) - 48) <= 2,
+          `element height in image ${h0} → ${h1} device px (24 CSS px = 48 at 2x)`)
+        await cdp.editCommand({ __operatorEditCmd: 'undo', uid: selected.uid })
+        await wait(250)
+        const pad2 = await read(`getComputedStyle(${target}).paddingTop`)
+        check(`${label}: edit — undo reverts it`, pad2 === '0px' && !lastEdit()?.active?.values?.['padding-top'], `computed ${pad2}; state values ${JSON.stringify(lastEdit()?.active?.values)}`)
       }
 
       // REDLINES

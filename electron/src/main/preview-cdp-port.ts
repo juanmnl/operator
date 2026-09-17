@@ -61,3 +61,16 @@ export function cdpLaunchNote(port: number): string {
     + `process.env.OPERATOR_CDP_PORT)\` in the main process (guard it for development builds), or start `
     + `Electron with \`--remote-debugging-port=${port}\`. Do not use this port for anything else.`
 }
+
+/** OPERATOR'S OWN OPT-IN: the port a dev build of Operator should open for debugging, or null.
+ *
+ *  A lane working on Operator itself gets OPERATOR_CDP_PORT like any Electron project's lane, and a
+ *  dev build it starts opens that port so the lane's Preview can show it. Never in a packaged app
+ *  (a released Operator must not expose its renderer), never on the `--mcp-serve` path (that process
+ *  is spawned inside a lane and inherits the same variable, and would take the port first), and only
+ *  for a port number. Pure. */
+export function ownCdpPort(isPackaged: boolean, env: Record<string, string | undefined>, argv: readonly string[]): string | null {
+  if (isPackaged || argv.includes('--mcp-serve')) return null
+  const port = (env.OPERATOR_CDP_PORT ?? '').trim()
+  return /^\d{2,5}$/.test(port) ? port : null
+}
