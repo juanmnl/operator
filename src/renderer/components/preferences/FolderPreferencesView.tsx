@@ -23,6 +23,11 @@ interface FolderPreferencesViewProps {
   /** Open on this tab rather than the first, e.g. `Environment` from a deep link. Applied when the
    *  view opens and whenever a different tab or project is asked for. */
   initialTab?: FolderPrefsTab
+  /** Every project in the store. Only the global view passes it, for the Environment tab's
+   *  doorway — a project's own page has a `project` and never reads this. */
+  projects?: Project[]
+  /** Opens another project's settings on a tab. Only the global view passes it. */
+  onOpenFolderPrefs?: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
 }
 
 export const FOLDER_PREFS_TABS = ['Instructions', 'Permissions', 'General', 'Hooks', 'Plugins', 'Environment', 'Skills', 'Worktrees'] as const
@@ -44,7 +49,7 @@ export function folderPrefsSubtitle(projectPath: string, globalOnly: boolean): s
   return globalOnly ? '~/.claude · applies to every\u00a0project' : projectPath
 }
 
-export function FolderPreferencesView({ projectPath, projectName, globalOnly = false, project = null, onPatchProject, initialTab }: FolderPreferencesViewProps) {
+export function FolderPreferencesView({ projectPath, projectName, globalOnly = false, project = null, onPatchProject, initialTab, projects, onOpenFolderPrefs }: FolderPreferencesViewProps) {
   const [prefs, setPrefs] = useState<FolderPreferences | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? 'Instructions')
   useEffect(() => { if (initialTab) setActiveTab(initialTab) }, [initialTab, projectPath])
@@ -133,6 +138,8 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
             project={project}
             onPatch={(patch) => onPatchProject?.(patch)}
             settingsFiles={prefs.settingsFiles}
+            projects={projects}
+            onOpenFolderPrefs={onOpenFolderPrefs}
           />
         )}
         {/* Machine-wide, not project-scoped — `~/.operator/worktrees` holds every project's

@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { EnvEntry, Project, SettingsFile } from '../../../shared/types'
+import type { FolderPrefsTab } from './FolderPreferencesView'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
 import { denyReason, validateEnvName } from '../../lib/env-policy'
+import { tildePath } from '../../lib/format'
 
 // S2 of `dev/results/session-settings-design.md` — the project's environment block.
 //
@@ -18,6 +20,11 @@ interface EnvironmentSectionProps {
   onPatch: (patch: Partial<Project>) => void
   /** The repo's own settings files, read for the inherited block. Never written here. */
   settingsFiles: SettingsFile[]
+  /** Every project in the store, for the global view's doorway. Optional, and absent on a
+   *  project's own page — where `project` is set and this list is never read. */
+  projects?: Project[]
+  /** Opens a project's settings on a tab. The doorway's rows pass `Environment`. */
+  onOpenFolderPrefs?: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
 }
 
 const rowStyle: React.CSSProperties = {
@@ -53,7 +60,7 @@ const inputStyle: React.CSSProperties = {
   padding: '4px 7px', outline: 'none', minWidth: 0,
 }
 
-export function EnvironmentSection({ project, onPatch, settingsFiles }: EnvironmentSectionProps) {
+export function EnvironmentSection({ project, onPatch, settingsFiles, projects = [], onOpenFolderPrefs }: EnvironmentSectionProps) {
   const entries = project?.env ?? []
   const [adding, setAdding] = useState(false)
   const [draftName, setDraftName] = useState('')
@@ -83,14 +90,7 @@ export function EnvironmentSection({ project, onPatch, settingsFiles }: Environm
   // empty box teaches nothing.
   const repoEnv = repoEnvEntries(settingsFiles)
 
-  if (!project) {
-    return (
-      <p style={sectionDesc}>
-        This view isn't scoped to a project, so there is no environment to set. Open a project's
-        settings to edit its variables.
-      </p>
-    )
-  }
+  if (!project) return <EnvironmentDoorway projects={projects} onOpen={onOpenFolderPrefs} />
 
   return (
     <div>
@@ -208,6 +208,74 @@ export function EnvironmentSection({ project, onPatch, settingsFiles }: Environm
       )}
     </div>
   )
+}
+
+/** The doorway, shown where the global page has no project to edit. The tab stays on the global
+ *  page on purpose: someone looking for env variables looks here first, and the useful answer is
+ *  not "wrong place" but the list of places that are right.
+ *
+ *  Read-only. Nothing here writes anything — each row is a link to the page that does. */
+function EnvironmentDoorway({ projects, onOpen }: {
+  projects: Project[]
+  onOpen?: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
+}) {
+  const rows = envDoorwayRows(projects)
+
+  return (
+    <div>
+      <h3 style={sectionHeader}>Environment</h3>
+      <p style={sectionDesc}>
+        Variables are set per project, and this page is not a project. Open one to edit what its
+        lanes launch with.
+      </p>
+
+      {rows.length === 0 ? (
+        // One honest line, no empty box: there is nothing to frame yet.
+        <p style={sectionDesc}>
+          No projects yet. Open a folder in Operator and it gets an Environment tab of its own.
+        </p>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          {rows.map(({ project, count }, i) => (
+            <button
+              key={project.id}
+              data-env-doorway-row={project.path}
+              onClick={() => onOpen?.(project.path, project.name, 'Environment')}
+              title={`${project.name}: its own Environment tab`}
+              style={{
+                ...rowStyle, width: '100%', boxSizing: 'border-box', textAlign: 'left',
+                background: 'transparent', border: 'none', outline: 'none', cursor: 'pointer',
+                fontFamily: 'inherit',
+                borderBottom: i === rows.length - 1 ? 'none' : '1px solid var(--border)',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <span style={{ ...nameStyle, fontFamily: 'inherit', fontSize: 12 }} title={project.name}>{project.name}</span>
+              <span style={{ ...valueStyle, color: 'var(--fg-muted)' }} title={project.path}>{tildePath(project.path)}</span>
+              <span style={{
+                fontSize: 11, fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums',
+                whiteSpace: 'nowrap', color: count === 0 ? 'var(--fg-muted)' : 'var(--fg)',
+              }}>
+                {count === 0 ? 'none set' : `${count} ${count === 1 ? 'variable' : 'variables'}`}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The doorway's order: the projects that actually set something first, most first, and the rest
+ *  after them in store order — `sort` is stable, so equal counts keep the order they came in.
+ *  A project with none is still listed and still opens: it is where you go to add the first one.
+ *
+ *  Tombstones (`unset`) count. Removing a variable for a project IS something set here. */
+export function envDoorwayRows(projects: Project[]): Array<{ project: Project; count: number }> {
+  return projects
+    .map((project) => ({ project, count: project.env?.length ?? 0 }))
+    .sort((a, b) => b.count - a.count)
 }
 
 const textBtn: React.CSSProperties = {

@@ -5004,6 +5004,8 @@ export function DashboardView() {
             projectName="Global settings"
             initialTab={globalPrefsTab}
             globalOnly
+            projects={projects}
+            onOpenFolderPrefs={handleOpenFolderPrefs}
           />
           </AppShell>
         )}
