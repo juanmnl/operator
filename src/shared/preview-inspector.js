@@ -129,6 +129,8 @@
       // A measurement note's crop holds BOTH elements.
       data.anchorBox = { x: an.box.left, y: an.box.top, w: an.box.right - an.box.left, h: an.box.bottom - an.box.top };
     }
+    // CSS controls (src/shared/preview-edit-page.js): the pick is also the element the controls edit.
+    if (window.__operatorEdit) window.__operatorEdit.select(el, data);
     var card = document.createElement('div');
     card.id = '__op_compose';
     // Scaled by 1/scale so the card keeps its size on screen in a zoomed-out page. Its footprint in

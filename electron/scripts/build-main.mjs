@@ -36,6 +36,7 @@ mkdirSync(resolve(root, 'out'), { recursive: true })
 copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-inspector.js'), resolve(root, 'out', 'preview-inspector.js'))
 // Its companion that draws redlines and the layout grid in the page (Electron only), same reason.
 copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-overlay.js'), resolve(root, 'out', 'preview-overlay.js'))
+copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-edit-page.js'), resolve(root, 'out', 'preview-edit-page.js'))
 
 // The tray icon. NOTHING READS THIS ANY MORE: `tray.ts` now rasterizes its first frame from
 // `tray-anim.ts` like every later frame, so the PNG and the animator can no longer disagree about

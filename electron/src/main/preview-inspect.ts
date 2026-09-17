@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import type { PreviewOverlayConfig } from '../../../src/shared/types'
 import { PREVIEW_BRIDGE_JS, PREVIEW_FRAME_NAME } from '../../../src/shared/preview-frame'
 import { OVERLAY_FNS_JS } from './overlay-fns'
+import { EDIT_FNS_JS } from './edit-fns'
 
 /** A script from `src/shared`, read once at module load so a failure is loud at boot, not on
  *  first use. */
@@ -46,6 +47,8 @@ function readShared(file: string): string {
 
 const INSPECTOR_JS = readShared('preview-inspector.js')
 const OVERLAY_JS = readShared('preview-overlay.js')
+/** CSS controls (v1): src/shared/preview-edit-page.js. */
+const EDIT_JS = readShared('preview-edit-page.js')
 
 /** Every overlay off: what `close` leaves in the page instead of unloading it. */
 export function overlaysOff(config: PreviewOverlayConfig | null): PreviewOverlayConfig | null {
@@ -77,7 +80,7 @@ export function installPreviewInspect(
   /** Put the scripts in the page (each guards against running twice) and apply the configuration. */
   const inject = (frame: WebFrameMain) => {
     if (!config) return
-    const script = INSPECTOR_JS + PREVIEW_BRIDGE_JS + OVERLAY_FNS_JS + OVERLAY_JS
+    const script = INSPECTOR_JS + PREVIEW_BRIDGE_JS + OVERLAY_FNS_JS + OVERLAY_JS + EDIT_FNS_JS + EDIT_JS
       + `\n;window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(config)});`
     void frame.executeJavaScript(script).catch(() => { /* mid-navigation: did-frame-finish-load injects again */ })
   }

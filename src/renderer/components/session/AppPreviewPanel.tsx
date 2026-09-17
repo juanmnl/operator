@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, shotPaths, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
-import { annotationTargets, pickShotRequest, withScreenshot, shotProject, parseRgb } from '../../lib/preview-shot'
+import { annotationTargets, pickShotRequest, withScreenshot, shotProject, parseRgb, pageToStage } from '../../lib/preview-shot'
 import { pickPreviewUrl, pickPreviewPort, portOf, parseTarget, formatTarget, evidenceLabel, isWarnEvidence, EMPTY_TARGET } from '../../lib/preview-port'
 import {
   emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
@@ -12,6 +12,8 @@ import { formatPick, type PreviewPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
+import { PreviewEditPanel } from './PreviewEditPanel'
+import { usePreviewEdit } from '../../lib/use-preview-edit'
 import { ToolbarIcon, StatusDot } from '../ToolbarIcon'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
 import { PREVIEW_FRAME_NAME, PREVIEW_MESSAGE_TAG, previewFrameMessage } from '../../../shared/preview-frame'
@@ -176,6 +178,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   /** A note's screenshot, full size, over the window. */
   const [enlarged, setEnlarged] = useState<string | null>(null)
   const shotProj = shotProject(projectId)
+  // CSS CONTROLS (v1): the element the inspector picked, edited from a panel under the stage.
   const dragRef = useRef<null | { x0: number; y0: number }>(null)
   const [rubber, setRubber] = useState<null | { x: number; y: number; w: number; h: number }>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -512,6 +515,29 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   //                    in integers instead of trusting a float to land on box.w.
   const fitting = preset === 'fit' || box.w === 0
   const scale = fitting ? 1 : Math.min(1, box.w / preset)
+  const { state: editState, send: editSend } = usePreviewEdit(frameRef, `${nonce}|${display}`)
+  // Leaving Inspect stops editing (the handles go); the changes stay on the page until a reset or reload.
+  useEffect(() => { if (!inspecting) editSend('deselect') }, [inspecting, editSend])
+  /** A crop of the edited element as it is now, for the before/after pair. The handles and the
+   *  compose card are hidden in the page for the frame. */
+  const captureEdit = async (a: { box: { x: number; y: number; w: number; h: number } | null }, id: string): Promise<string | null> => {
+    const stage = stageRef.current?.getBoundingClientRect()
+    if (!a.box || !stage || stage.width <= 0 || !window.operator.previewShotCapture) return null
+    editSend('capture', { on: true })
+    try {
+      await nextFrames(2)
+      await new Promise((r) => setTimeout(r, 40))
+      const shot = await window.operator.previewShotCapture({
+        source: 'window', project: shotProj, id,
+        targets: [pageToStage(a.box, stage, scale)],
+        clip: { x: stage.left, y: stage.top, w: stage.width, h: stage.height },
+        hideInspector: true, outline: cssRgb('--measure'),
+      }).catch(() => null)
+      return shot?.path ?? null
+    } finally {
+      editSend('capture', { on: false })
+    }
+  }
   /** The stage's box in PANEL pixels — the page AFTER scaling. */
   const stageW = fitting ? box.w : Math.min(preset, box.w)
   /** Split evenly, and NOT rounded: half of an odd remainder is what makes the two gutters equal
@@ -1143,6 +1169,15 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
             </>
           )}
         </Centered>
+      )}
+      {inspecting && editState?.active && (
+        <PreviewEditPanel
+          state={editState}
+          send={editSend}
+          onCapture={captureEdit}
+          onDispatch={onDispatch}
+          onSendToTasks={onSendToTasks}
+        />
       )}
     </div>
   )
