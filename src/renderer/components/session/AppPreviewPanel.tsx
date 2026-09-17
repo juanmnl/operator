@@ -11,6 +11,7 @@ import { formatPick, type PreviewPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
+import { ToolbarIcon, StatusDot } from '../ToolbarIcon'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
 
 // Live preview of the session's running app. The reserved/detected port is only a
@@ -508,7 +509,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
       <div style={{ display: 'flex', flexDirection: tier === 'one' ? 'row' : 'column' }}>
       {/* THE ADDRESS GROUP */}
       <div style={{ ...barRow, flex: tier === 'one' ? 1 : undefined }}>
-        {/* ◀ ▶ ⟳ — and the two arrows walk OPERATOR'S OWN address history, not the app's.
+        {/* Back, forward, reload — and the two arrows walk OPERATOR'S OWN address history, not the app's.
             The preview is cross-origin so the iframe's history is unreadable, and the tooltip
             says so rather than looking like a browser control that silently behaves differently.
             They disable by ABSENCE OF INK, never by grey chrome or a `disabled` attribute. */}
@@ -517,13 +518,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
             onClick={() => { const h = goBack(history); setHistory(h); applyEntry(h) }}
             title="Back to the last address you opened here (not the app's own history)"
             style={{ ...navBtn, color: canGoBack(history) ? 'var(--fg-muted)' : 'var(--border)' }}
-          >◀</button>
+           aria-label="Back"><ToolbarIcon name="back" /></button>
           <button
             onClick={() => { const h = goForward(history); setHistory(h); applyEntry(h) }}
             title="Forward to the next address you opened here (not the app's own history)"
             style={{ ...navBtn, color: canGoForward(history) ? 'var(--fg-muted)' : 'var(--border)' }}
-          >▶</button>
-          <button onClick={() => setNonce((n) => n + 1)} title="Reload" style={navBtn}>⟳</button>
+           aria-label="Forward"><ToolbarIcon name="forward" /></button>
+          <button onClick={() => setNonce((n) => n + 1)} title="Reload" aria-label="Reload" style={navBtn}><ToolbarIcon name="reload" /></button>
         </span>
 
         {/* THE ORIGIN CHIP. Opens the picker; never editable inline. That split is what makes
@@ -541,11 +542,11 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         >
           {/* The reach dot lives INSIDE the chip: reach is a property of the server, not of the
               address. Muted while checking — never a spinner, and never blanking the frame. */}
-          <span style={{ fontSize: 8, color: reach === 'up' ? 'var(--color-success)' : reach === 'down' ? 'var(--color-error)' : 'var(--fg-muted)' }}>●</span>
+          <StatusDot color={reach === 'up' ? 'var(--color-success)' : reach === 'down' ? 'var(--color-error)' : 'var(--fg-muted)'} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {originLabel}
           </span>
-          <span style={{ color: 'var(--fg-muted)', fontSize: 9 }}>▾</span>
+          <span style={{ color: 'var(--fg-muted)', display: 'flex' }}><ToolbarIcon name="caret-down" /></span>
         </button>
 
         {/* THE PATH — the editable half. A plain field, no focus ring (house rule); focus is an
@@ -573,9 +574,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
         {/* Back to the site root, without clearing the field by hand. Only when there is
             somewhere to go back to. */}
         {pathInput && (
-          <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" style={navBtn}>↩</button>
+          <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" aria-label="Back to /" style={navBtn}><ToolbarIcon name="root" /></button>
         )}
-        <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" style={previewBtn}>↗</button>
+        <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" aria-label="Open in browser" style={previewBtn}><ToolbarIcon name="external" /></button>
       </div>
 
         {pickerOpen && (
@@ -619,10 +620,10 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                       borderBottom: '1px solid var(--border)', cursor: 'pointer', outline: 'none',
                     }}
                   >
-                    {/* ● vs ○ is alive vs not. A dead candidate is still LISTED — "the port
+                    {/* The dot is alive vs not. A dead candidate is still LISTED — "the port
                         Operator reserved, which nothing is answering on" is information, and
                         hiding it is what makes the empty state feel like a bug. */}
-                    <span style={{ fontSize: 8, color: 'var(--color-success)' }}>●</span>
+                    <StatusDot color="var(--color-success)" />
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: isCurrent ? 'var(--accent)' : 'var(--fg)' }}>
                       :{sp.port}
                     </span>
@@ -727,7 +728,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           )}
           {((grid && onGridToggle) || (redlines && onRedlinesToggle)) && reach === 'up' && display && (
             // OVERLAYS, after a hairline: any combination, in any pointer mode, and never a
-            // click-catcher. `Grid` shows or hides it and `▾` opens its settings band under this
+            // click-catcher. `Grid` shows or hides it and the caret opens its settings band under this
             // row; `Redlines` measures the live page (hover, or ⌥-click an element to measure from).
             <span style={{ ...toolGroup, marginLeft: onDispatch || onSendToTasks ? undefined : 'auto' }}>
               <span style={{ width: 1, height: 14, background: 'var(--border)', margin: '0 8px' }} />
@@ -741,8 +742,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                   <button
                     onClick={() => onGridEditingChange?.(!grid.editing)}
                     title={grid.editing ? 'Close grid settings' : 'Grid settings'}
-                    style={{ ...overlayBtn, padding: '2px 4px', color: grid.on ? 'var(--accent)' : OFF_INK }}
-                  >{grid.editing ? '▴' : '▾'}</button>
+                    aria-label={grid.editing ? 'Close grid settings' : 'Grid settings'}
+                    style={{ ...overlayBtn, padding: '2px 4px', display: 'flex', alignItems: 'center', alignSelf: 'center', height: 18, color: grid.on ? 'var(--accent)' : OFF_INK }}
+                  ><ToolbarIcon name={grid.editing ? 'caret-up' : 'caret-down'} /></button>
                 </>
               )}
               {redlines && onRedlinesToggle && (
@@ -809,7 +811,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           // hex — and a background, so no colour-changing border on a radiused element.
           background: 'var(--bg-deep)',
         }}>
-          {/* (If the frame renders blank — X-Frame-Options / CSP — the toolbar's ↗ opens the
+          {/* (If the frame renders blank — X-Frame-Options / CSP — the toolbar's open-in-browser button opens the
               app in a real browser; no need for a second button floating over the content.) */}
 
           {/* THE STAGE — see the derivation above. Absolutely positioned rather than centred by a
@@ -1085,7 +1087,7 @@ const navBtn: React.CSSProperties = {
 }
 
 
-/** An overlay toggle in the tools row (`Grid`, `▾`): the preset buttons' type, transparent. */
+/** An overlay toggle in the tools row (`Grid`, its caret): the preset buttons' type, transparent. */
 const overlayBtn: React.CSSProperties = {
   fontFamily: 'var(--font-body)', fontSize: 10, fontWeight: 600,
   padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer', outline: 'none',
