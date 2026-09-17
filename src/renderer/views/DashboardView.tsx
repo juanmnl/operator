@@ -65,6 +65,8 @@ import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened 
 import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
 import { launchKind } from '../lib/launch-kind'
+import { describeOrigin, isPageMode, originKey, originLabel, pushOrigin, type LaneRef, type NavOrigin } from '../lib/nav-origin'
+import { PageBackProvider } from '../components/settings/PageShell'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
@@ -613,8 +615,31 @@ export function DashboardView() {
     return () => { unsubSession(); unsubExit(); unsubDrop(); clearInterval(reconcileTimer) }
   }, [])
 
+  // ── THE WAY BACK OUT OF A FULL-PAGE VIEW ──────────────────────────────────────────────────
+  //
+  // The five PageShell modes (folderPrefs, globalPrefs, prefs, agents, tuning) had no back control
+  // and no breadcrumb — AppShell's 44px header carries only the sidebar toggle. So the Worktrees
+  // tab, which the launcher's worktree overview links straight into, was a room with no door.
+  //
+  // WHERE YOU CAME FROM is recorded HERE because `contentMode` is this view's one routing fact and
+  // nothing below it knows what preceded it. The rules live in lib/nav-origin; this is the state.
+  //
+  // A CHAIN, not one slot: the rail's foot reaches Preferences, Global settings and Agents from
+  // any of them, so `gallery → prefs → globals` is an ordinary path, and a single slot would leave
+  // those two pages each pointing at the other. `pushOrigin` keeps it honest (and short).
+  const [originStack, setOriginStack] = useState<NavOrigin[]>([])
+  /** The view currently on screen, as a place. Written after each commit, so a click handler reads
+   *  where the user WAS rather than where this render is taking them. */
+  const currentViewRef = useRef<NavOrigin | null>(null)
+  /** Called by every handler that enters a PageShell mode, BEFORE it switches. `targetKey` is the
+   *  page being entered — `pushOrigin` needs it to tell a re-entry and a loop from a real step. */
+  const recordOrigin = useCallback((targetKey: string) => {
+    setOriginStack((prev) => pushOrigin(prev, currentViewRef.current, targetKey))
+  }, [])
+
   const [globalPrefsTab, setGlobalPrefsTab] = useState<FolderPrefsTab | undefined>(undefined)
   const handleOpenGlobalPrefs = useCallback((tab?: FolderPrefsTab) => {
+    recordOrigin('globalPrefs')
     setGlobalPrefsTab(typeof tab === 'string' ? tab : undefined)
     setGlobalPrefsActive(true)
     setAgentsViewActive(false); setTuningViewActive(false)
@@ -622,18 +647,20 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-  }, [])
+  }, [recordOrigin])
 
   const handleOpenAgents = useCallback(() => {
+    recordOrigin('agents')
     setAgentsViewActive(true)
     setPrefsViewActive(false)
     setGlobalPrefsActive(false)
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-  }, [])
+  }, [recordOrigin])
 
   const handleOpenTuning = useCallback(() => {
+    recordOrigin('tuning')
     setTuningViewActive(true)
     setAgentsViewActive(false)
     setPrefsViewActive(false)
@@ -641,9 +668,10 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
     setActiveSessionId(null)
     setActiveTerminalId(null)
-  }, [])
+  }, [recordOrigin])
 
   const handleOpenPrefs = useCallback(() => {
+    recordOrigin('prefs')
     setPrefsViewActive(true)
     setAgentsViewActive(false); setTuningViewActive(false)
     setGlobalPrefsActive(false)
@@ -652,7 +680,7 @@ export function DashboardView() {
     setActiveTerminalId(null)
     // NB: scope (activeProjectId) is deliberately kept — an overlay view is somewhere you
     // VISIT from inside a project, so leaving it returns you there (spec §4 rule 5).
-  }, [])
+  }, [recordOrigin])
 
   // Enter a project: sets the navigation scope and drops the active session so Project
   // Home can surface (see contentMode). Landing tab resets to the roster when you switch
@@ -3403,13 +3431,16 @@ export function DashboardView() {
   // `tab` opens the view on one of its tabs (e.g. `Environment`) — for deep links. Nothing passes
   // it yet.
   const handleOpenFolderPrefs = useCallback((projectPath: string, projectName: string, tab?: FolderPrefsTab) => {
+    // Keyed by PATH: the per-project settings page is a different page for each project, so
+    // opening B's from A's is a step, not a re-entry.
+    recordOrigin(`folderPrefs:${projectPath}`)
     setActiveFolderPrefs({ projectPath, projectName, tab })
     setActiveSessionId(null)
     setActiveTerminalId(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
-  }, [])
+  }, [recordOrigin])
 
   // Sidebar entries are only the sessions Operator launched in-app. External
   // Claude Code processes are intentionally not tracked — no OPERATOR_TERMINAL_ID,
@@ -4223,13 +4254,41 @@ export function DashboardView() {
   /** The last project you were IN, persisted as `Workspace.lastProjectId` so the offer survives a
    *  launch spent entirely on the overview. */
   const lastProjectRef = useRef<string | null>(null)
-  const applyView = useCallback((v: ContinueTarget) => {
+  /** Land on a recorded view. Takes a `NavOrigin` — a `ContinueTarget` with the four extra facts
+   *  a BACK control needs and the launch offer never did (which gallery tab; which of the two
+   *  pages that both report `mode: 'prefs'`; which tab of Global settings; which lane).
+   *
+   *  IT CLEARS WHAT IT USED TO LEAVE STANDING, and the reason is the ORDER in `contentMode`. The
+   *  four flags below cover `prefs`, `agents`, `tuning` and `globalPrefs`, and setting them false
+   *  is enough to leave any of those. `activeFolderPrefs` is the fifth and LOWEST of the page
+   *  flags — but it still ranks above `localTerminal`, `project` and `gallery`, so leaving it set
+   *  pinned you to the per-project settings page: the old `applyView` set six states and changed
+   *  nothing on screen. A stale `activeTerminalId` is the same trap one rung down, turning a
+   *  'project' landing into `localTerminal`.
+   *
+   *  So both are cleared — EXCEPT when the target names a lane, which is the one view whose
+   *  restoration needs them. The session id is resolved here rather than recorded: a lane's
+   *  session object can be replaced while the user sits in settings, and `handleOpenProject`
+   *  already resolves it this way. */
+  const applyView = useCallback((v: NavOrigin) => {
     setActiveProjectId(v.projectId)
     setProjectTab(v.projectTab)
-    setPrefsViewActive(v.mode === 'prefs')
+    setPrefsViewActive(v.mode === 'prefs' && !v.folderPrefs)
     setAgentsViewActive(v.mode === 'agents')
     setTuningViewActive(v.mode === 'tuning')
     setGlobalPrefsActive(v.mode === 'globalPrefs')
+    if (v.mode === 'globalPrefs') setGlobalPrefsTab(v.globalPrefsTab)
+    setActiveFolderPrefs(v.folderPrefs ? { ...v.folderPrefs } : null)
+    // Only when the target names one: a `ContinueTarget` from the launch plan doesn't, and
+    // overwriting the tab with a default would move a screen nobody asked to move.
+    if (v.galleryTab) setGalleryTab(v.galleryTab)
+    if (v.lane) {
+      setActiveTerminalId(v.lane.terminalId)
+      setActiveSessionId(sessionsRef.current.find((x) => x.terminalId === v.lane!.terminalId)?.id ?? `local-${v.lane.terminalId}`)
+    } else {
+      setActiveSessionId(null)
+      setActiveTerminalId(null)
+    }
   }, [])
   const continueWhereYouWere = useCallback(() => {
     if (!continueTarget) return
@@ -4239,6 +4298,80 @@ export function DashboardView() {
   useEffect(() => {
     if (contentMode !== 'gallery' && continueTarget) setContinueTarget(null)
   }, [contentMode, continueTarget])
+
+  // ── WHERE YOU CAME FROM, part 2: keeping the record current ───────────────────────────────
+  //
+  // The view on screen as a PLACE, refreshed after every commit. Read by `recordOrigin` from the
+  // click handler that is about to leave it, which is why it is a ref and not a dependency: those
+  // handlers are deliberately stable, and this value changes on every navigation.
+  const currentView = useMemo(() => describeOrigin({
+    contentMode,
+    projectId: activeProjectId,
+    projectTab,
+    galleryTab,
+    folderPrefs: activeFolderPrefs,
+    globalPrefsTab,
+    terminalId: activeTerminalId,
+  }), [contentMode, activeProjectId, projectTab, galleryTab, activeFolderPrefs, globalPrefsTab, activeTerminalId])
+  useEffect(() => { currentViewRef.current = currentView }, [currentView])
+
+  // Cleared the moment you are no longer on a page that has a back control — by then you left by
+  // some other door, and a chain kept across that would send you back to a screen two navigations
+  // old. Same shape as the `continueTarget` reset above.
+  useEffect(() => {
+    if (!isPageMode(contentMode) && originStack.length) setOriginStack([])
+  }, [contentMode, originStack.length])
+
+  /** The lane the control would name, IF the top of the chain names one and it is still open.
+   *
+   *  THE EXISTENCE GUARD lives in this list. `contentMode` calls a lane on screen by exactly this
+   *  test — `terminals.some(t => t.id === activeTerminalId)` — so the control and the router agree
+   *  about what exists. A lane that ended, was closed, or had its worktree reaped drops out, the
+   *  label comes back null, and no control renders. It is NEVER replaced by the lane's project.
+   *
+   *  Built for the one lane that matters rather than for every open terminal: the chain names at
+   *  most one place at a time, and the rest would be work nothing reads.
+   *
+   *  The name comes from `lib/session-label`, the app's one label ladder — a user rename, then the
+   *  lane it was launched on, then its own first prompt, then the model. The same words the rail,
+   *  the palette and the dashboard use, so the control names the lane the way the user knows it. */
+  const backLanes = useMemo((): LaneRef[] => {
+    const tid = originStack[originStack.length - 1]?.lane?.terminalId
+    if (!tid) return []
+    const t = terminals.find((x) => x.id === tid)
+    if (!t) return []
+    const s = allSidebarSessions.find((x) => x.terminalId === tid)
+    const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined
+    const role = t.roleId ? project?.roster?.find((r) => r.id === t.roleId) : undefined
+    const name = s
+      ? sessionLabel({ session: s, role, customName: customNames[s.id], fallback: s.projectName || 'Session' })
+      : (role?.name ?? 'Session')
+    return [{ terminalId: tid, name }]
+  }, [originStack, terminals, allSidebarSessions, projects, customNames])
+
+  /** The control PageShell renders, or null for none. Null whenever there is no origin — a reload,
+   *  or a page the launch plan restored straight into — and null again when the origin has since
+   *  stopped existing: a forgotten project, a lane that ended. Never a control that guesses. */
+  const pageBack = useMemo(() => {
+    const top = originStack[originStack.length - 1]
+    if (!top) return null
+    const label = originLabel(top, projects, backLanes)
+    // The project it names has been forgotten since, or the lane it names has ended. A label is a
+    // promise about where the press lands; with nowhere to land, no control.
+    if (!label) return null
+    return {
+      label,
+      onBack: () => {
+        // Pop only the entry this control was built for. A double press within one render would
+        // otherwise unwind two steps — the second press still holds the first's `top`.
+        setOriginStack((prev) => {
+          const head = prev[prev.length - 1]
+          return head && originKey(head) === originKey(top) ? prev.slice(0, -1) : prev
+        })
+        applyView(top)
+      },
+    }
+  }, [originStack, projects, backLanes, applyView])
 
   // projectId → durable key of the agent last selected there. Kept in a ref because
   // `handleOpenProject` is a stable callback that reads refs by design, and this is exactly the
@@ -4800,7 +4933,11 @@ export function DashboardView() {
   }
 
   return (
-    /* THE FRAME — 8 on all four sides, and the top is not an exception. That is the decision, and
+    // WHERE YOU CAME FROM, delivered to every PageShell page at once. It wraps the whole tree
+    // rather than each of the five mode branches: a provider per branch is five places to forget
+    // one, which is the copy-per-surface pattern AppShell exists to stop.
+    <PageBackProvider value={pageBack}>
+    {/* THE FRAME — 8 on all four sides, and the top is not an exception. That is the decision, and
        it is the vertical half of the traffic-light relationship `ProjectRail`'s `RAIL_W` settles
        horizontally.
     
@@ -4822,7 +4959,7 @@ export function DashboardView() {
        What the user actually saw ("the border looking like a bump, and the traffic lights almost
        overlapping") was HORIZONTAL: at `RAIL_W = 60` the card's edge came within 7pt of the zoom
        button. It is 17 now. `dev/drive-rail-invariant.mjs` assertion TL gates both halves — the
-       frame, and the gap — so neither can drift back without the driver saying so. */
+       frame, and the gap — so neither can drift back without the driver saying so. */}
     <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
           rail scrollers, which clip their overflow. */}
@@ -5466,6 +5603,7 @@ export function DashboardView() {
 
       <Toasts messages={toasts} onDismiss={dismissToast} onDismissAll={dismissAllToasts} />
     </div>
+    </PageBackProvider>
   )
 }
 

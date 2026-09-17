@@ -1,4 +1,5 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { createContext, useContext, type CSSProperties, type ReactNode } from 'react'
+import { BACK_BTN } from '../../lib/chrome'
 
 // The one shell every FULL-PAGE view wears — settings and not-settings alike (the Agents hub
 // uses it too). Before this, four pages each re-declared their own header: two different <h2>
@@ -54,11 +55,70 @@ export interface PageTab {
   label: string
 }
 
+// --- the way back ---------------------------------------------------------------------
+//
+// A PageShell page sits in `AppShell`, whose 44px header carries the sidebar toggle and nothing
+// else. Until this, that meant no back control and no breadcrumb on any of the five pages: from
+// the Worktrees tab — which the launcher's worktree overview links straight into, and the overview
+// is the screen every launch opens on — there was no way back to where you came from. The rail's
+// "All projects" foot item was the only escape, and it lands on the projects list rather than the
+// tab you left.
+//
+// It lives HERE, not on one page, for the reason the rest of this file exists: a control added to
+// FolderPreferencesView would be a control four other pages still do not have.
+//
+// DELIVERED BY CONTEXT, not by a prop through four view components. The pages do not know where
+// they were opened from — only the router does — and threading a prop through PrefsView,
+// AgentsHubView and TuningView so each could forward it unread is four chances to forget.
+
+export interface PageBack {
+  /** The ORIGIN'S OWN NAME — "Worktree overview", "All projects", the project's name. Never a
+   *  generic "Back": the label is the promise about where the press lands. */
+  label: string
+  onBack: () => void
+}
+
+/** Null = there is no known origin (a reload, or a page the launch plan restored straight into),
+ *  and then NO control is rendered. A back button that guesses is worse than none. */
+const PageBackContext = createContext<PageBack | null>(null)
+
+export function PageBackProvider({ value, children }: { value: PageBack | null; children: ReactNode }) {
+  return <PageBackContext.Provider value={value}>{children}</PageBackContext.Provider>
+}
+
+/** `‹ <origin>`, above the page title.
+ *
+ *  Same chrome as the gallery header's own back button (`BACK_BTN`, shared so the two cannot
+ *  drift) and the same chevron, which in this app means "go back" and nothing else.
+ *
+ *  The label NEVER WRAPS. That is the no-orphan rule enforced structurally rather than by a
+ *  non-breaking space: a line that cannot break cannot strand a word after a full stop. A long
+ *  project name ellipses instead of growing the header. */
+function BackToOrigin({ label, onBack }: PageBack) {
+  return (
+    <button
+      data-page-back
+      onClick={onBack}
+      title={`Back to ${label}`}
+      style={{ ...BACK_BTN, maxWidth: 320, marginBottom: 8 }}
+      // Background only. This is a radiused element and its border colour is fixed — see BACK_BTN.
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--overlay-subtle)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <span aria-hidden style={{ fontSize: 12, flexShrink: 0 }}>‹</span>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+    </button>
+  )
+}
+
 export function PageShell({
-  title, subtitle, measure = 'form', tabs, active, onSelectTab, scroll = 'page', children,
+  title, subtitle, measure = 'form', tabs, active, onSelectTab, scroll = 'page', back, children,
 }: {
   title: string
   subtitle?: string
+  /** Overrides the `PageBackProvider` context — for a page that knows its own origin, and for
+   *  tests. Pass `null` to suppress the control the router would otherwise supply. */
+  back?: PageBack | null
   measure?: 'form' | 'grid'
   /** Omit for a flat page. In a tabbed page the TAB NAME IS the section header — don't
    *  also render an <h3> repeating it (§4 corollary). */
@@ -78,6 +138,10 @@ export function PageShell({
   onSelectTab?: (id: string) => void
   children: ReactNode
 }) {
+  const fromContext = useContext(PageBackContext)
+  // `undefined` = the page said nothing, so the router's answer stands. An explicit `null` is a
+  // page suppressing it.
+  const backControl = back === undefined ? fromContext : back
   const max = measure === 'grid' ? MEASURE_GRID : MEASURE_FORM
   // Header, tab bar and content all share one measure, so they share one left edge. (A
   // header that doesn't is the ~100px misalignment that had to be fixed on ProjectGallery.)
@@ -90,6 +154,9 @@ export function PageShell({
   const header = (
     <>
       <div style={{ ...measureBox, padding: '16px 24px 0' }}>
+        {/* Above the title, sharing its left edge — the breadcrumb reads top-down: where you came
+            from, where you are, what this page is about. */}
+        {backControl && <BackToOrigin {...backControl} />}
         <h2 data-page-title style={pageTitle}>{title}</h2>
         {subtitle && <p data-page-subtitle style={pageSubtitle}>{subtitle}</p>}
       </div>

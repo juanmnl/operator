@@ -8,6 +8,7 @@ import { ActivityDashboard } from './ActivityDashboard'
 import { OverviewChip, WorktreeOverview, useOverview } from './WorktreeOverview'
 import type { FolderPrefsTab } from '../preferences/FolderPreferencesView'
 import type { RecentSession, RecentProject } from './RecentLists'
+import { BACK_BTN as backBtn } from '../../lib/chrome'
 import { relativeTime, tildePath } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
 import { projectActivity, projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
@@ -1189,9 +1190,4 @@ function RollupChip({ n, label, active, onClick }: { n: number; label: string; a
   )
 }
 
-const backBtn: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 11px',
-  borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'transparent',
-  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
-  fontFamily: 'var(--font-body)', fontSize: 11.5,
-}
+

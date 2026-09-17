@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react'
+
 // THE HEADER BAND — one height, for every strip that draws a rule across the top of a panel.
 //
 // It exists because two of them drifted and a COMMENT covered for it: `CanvasPanel`'s tab row was
@@ -46,3 +48,20 @@ export const PANEL_SUBHEAD_H = 30
  *  An EXPLICIT height is the fix. `flex: 1` stays alongside it, harmless and correct for any
  *  parent that IS a flex column. `chrome.test.ts` holds every such surface to it. */
 export const SURFACE_FILL = { flex: 1, height: '100%', minHeight: 0, minWidth: 0 } as const
+
+/** THE BACK CONTROL'S CHROME — one definition, because there are now two of them a window apart.
+ *
+ *  The gallery header's `‹ Projects · N` has worn this since the overview tab existed; PageShell's
+ *  `‹ <where you came from>` is the same verb on a different surface, and two hand-typed copies of
+ *  a bordered pill is how the pair drifts. The chevron is the app's ONE glyph for "go back" — the
+ *  session toolbar's and ProjectView's `‹` say the same thing — so no second verb may borrow it.
+ *
+ *  The border is a FIXED colour. Hover changes the background and nothing else: this element is
+ *  radiused, and a colour-CHANGING border on a radiused element is the WKWebView re-rasterization
+ *  trap. */
+export const BACK_BTN: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 11px',
+  borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'transparent',
+  color: 'var(--fg-muted)', cursor: 'pointer', outline: 'none',
+  fontFamily: 'var(--font-body)', fontSize: 11.5,
+}
