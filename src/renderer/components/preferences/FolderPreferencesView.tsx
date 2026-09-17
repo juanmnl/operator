@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, type ReactNode } from 'react'
 import type { FolderPreferences, ClaudeSettings, Project } from '../../../shared/types'
 import { InstructionsSection } from './InstructionsSection'
 import { PermissionsSection } from './PermissionsSection'
@@ -81,15 +81,10 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
     load()
   }, [load])
 
-  if (!prefs) {
-    return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-muted)', fontSize: 12 }}>
-        Loading...
-      </div>
-    )
-  }
-
-  return (
+  // The page's own chrome is knowable before its files are: the title, the tabs and — the reason
+  // this is no longer a bare centred div — the way back. A loading state without one is a room
+  // with no door for as long as the read takes. It also stops the header jumping into place.
+  const shell = (body: ReactNode) => (
     <PageShell
       title={folderPrefsTitle(projectName, globalOnly)}
       subtitle={folderPrefsSubtitle(projectPath, globalOnly)}
@@ -98,6 +93,18 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
       active={activeTab}
       onSelectTab={(id) => setActiveTab(id as typeof TABS[number])}
     >
+      {body}
+    </PageShell>
+  )
+
+  if (!prefs) {
+    return shell(
+      <div data-prefs-loading style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Loading…</div>,
+    )
+  }
+
+  return shell(
+    <>
         {activeTab === 'Instructions' && (
           <InstructionsSection
             mdFiles={prefs.mdFiles}
@@ -146,6 +153,6 @@ export function FolderPreferencesView({ projectPath, projectName, globalOnly = f
             globalSettings={prefs.settingsFiles.find((f) => f.scope === 'global') ?? null}
           />
         )}
-    </PageShell>
+    </>,
   )
 }

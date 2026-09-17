@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { folderPrefsTitle, folderPrefsSubtitle, FOLDER_PREFS_TABS } from './FolderPreferencesView'
+import { originLabel } from '../../lib/nav-origin'
 
 describe('the settings page header', () => {
   it('names a project as `Project settings · <name>`, with the name bound to its separator', () => {
@@ -20,5 +21,19 @@ describe('the settings page header', () => {
 
   it('has an Environment tab to deep-link to', () => {
     expect(FOLDER_PREFS_TABS).toContain('Environment')
+  })
+
+  // A back control labelled with a destination the destination does not call itself is a control
+  // that describes a screen the user cannot find. `originLabel` restates this wording (lib/ may
+  // not import a view), so the two are held together here.
+  it('is what a back control pointing AT this page calls it', () => {
+    for (const name of ['operator', 'mantel landing', '  ']) {
+      expect(originLabel(
+        { projectId: 'p1', mode: 'prefs', projectTab: 'board', folderPrefs: { projectPath: '/a', projectName: name } },
+        [{ id: 'p1', name }],
+      )).toBe(folderPrefsTitle(name, false))
+    }
+    expect(originLabel({ projectId: null, mode: 'globalPrefs', projectTab: 'board' }, []))
+      .toBe(folderPrefsTitle('', true))
   })
 })
