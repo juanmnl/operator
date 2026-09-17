@@ -4773,7 +4773,13 @@ export function DashboardView() {
         // `main-` in BOTH slots. A `panel-` key would reset the pin, the path and the
         // annotations on every move.
         storageKey={`main-${session.id}`}
-        onDispatch={session.terminalId ? (text) => { void submitQueue.submit(session.terminalId!, text) } : undefined}
+        projectId={projId}
+        // A note's screenshots are pasted first (Claude Code attaches a pasted image path as
+        // `[Image #N]`), in the same per-terminal chain, then the text submits them as one prompt.
+        onDispatch={session.terminalId ? (text, images) => {
+          if (images?.length) void submitQueue.attachImages(session.terminalId!, images)
+          void submitQueue.submit(session.terminalId!, text)
+        } : undefined}
         onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
         annotate={previewAnnotate}
         onAnnotateChange={setPreviewAnnotate}

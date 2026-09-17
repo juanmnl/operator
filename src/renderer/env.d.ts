@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -225,6 +225,13 @@ declare global {
       /** Preview inspector window (Stage 3): open on the app URL with an injected inspector. */
       previewInspectOpen: (url: string, x: number, y: number, w: number, h: number) => Promise<void>
       previewInspectMove: (x: number, y: number, w: number, h: number) => void
+      /** Capture, outline, size-cap and store a screenshot crop for a Preview note. Null when the
+       *  source is not available or the capture failed; the note is still sent without it. */
+      previewShotCapture?: (req: PreviewShotRequest) => Promise<PreviewShot | null>
+      /** A stored note screenshot as a data URL ('' when there is none). */
+      previewShotImage?: (project: string, id: string) => Promise<string>
+      /** Delete a note's screenshot. */
+      previewShotDelete?: (project: string, id: string) => Promise<void>
       previewInspectClose: () => void
       /** Hide or show the inspector without closing it, so the page inside keeps its state. Used
        *  while a side-panel drag needs the pixels it covers. Electron only. */

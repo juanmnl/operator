@@ -187,6 +187,11 @@ export interface SubmitQueueDeps {
 export interface SubmitQueue {
   /** Enqueue a message for `id`; resolves once it has been written. */
   submit(id: string, text: string): Promise<void>
+  /** Paste image PATHS into the lane's composer, ordered with the submissions around it and with no
+   *  Return, so the `submit` that follows goes out as one prompt carrying the images. Claude Code
+   *  turns a pasted image path into an `[Image #N]` attachment only when it arrives as a paste of
+   *  the path itself (see lib/paste-image `bracketedPaste`). */
+  attachImages(id: string, paths: readonly string[]): Promise<void>
   /** A TYPED line, in the SAME per-terminal chain as `submit`.
    *
    *  Same chain because that is the whole point: the toolbar's `/model` and `/effort` writes used
@@ -301,6 +306,14 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const watches = new Set<Promise<void>>()
 
   return {
+    attachImages(id, paths) {
+      const prev = chains.get(id) ?? Promise.resolve()
+      const next = prev.then(async () => {
+        if (paths.length) deps.write(id, `\x1b[200~${paths.join(' ')}\x1b[201~`)
+      })
+      chains.set(id, next.catch(() => {}))
+      return next
+    },
     clearComposer(id, lines = 1) {
       const prev = chains.get(id) ?? Promise.resolve()
       // No gap wait and no confirmation window: this writes no CR, so there is no turn to wait

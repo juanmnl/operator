@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
+import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, shotPaths, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
+import { annotationTargets, pickShotRequest, withScreenshot, shotProject, parseRgb } from '../../lib/preview-shot'
 import { pickPreviewUrl, pickPreviewPort, portOf, parseTarget, formatTarget, evidenceLabel, isWarnEvidence, EMPTY_TARGET } from '../../lib/preview-port'
 import {
   emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
@@ -52,13 +53,16 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
   storageKey?: string
-  /** Send the composed feedback straight to the Console pty (quick path). */
-  onDispatch?: (text: string) => void
+  /** The lane's project, for where note screenshots are stored (`~/.operator/preview-shots/<project>`). */
+  projectId?: string | null
+  /** Send the composed feedback straight to the Console pty (quick path). `images` are screenshot
+   *  paths to attach to the same prompt. */
+  onDispatch?: (text: string, images?: string[]) => void
   /** Add the composed feedback to the project's task backlog (assign to a lane later). */
   onSendToTasks?: (text: string) => void
   /** Annotate vs Interact mode — controlled by DashboardView so a shortcut can toggle it. */
@@ -160,7 +164,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   useEffect(() => { if (annotate) setInspecting(false) }, [annotate])
   const [annotations, setAnnotations] = useState<Annotation[]>(() => (annKey ? loadAnnotations(annKey) : []))
   // A note being authored: pending geometry + text (isNew distinguishes create vs edit).
-  const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note'> & { isNew: boolean })>(null)
+  const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note' | 'shot'> & { isNew: boolean; thumb?: string })>(null)
+  // SCREENSHOTS ON NOTES (lib/preview-shot, electron/src/main/preview-shots.ts). While a capture is
+  // in flight the pins, the overlay tint and the card are not drawn, so they are not in the picture.
+  const [capturing, setCapturing] = useState(false)
+  /** A note's screenshot, full size, over the window. */
+  const [enlarged, setEnlarged] = useState<string | null>(null)
+  const shotProj = shotProject(projectId)
   const dragRef = useRef<null | { x0: number; y0: number }>(null)
   const [rubber, setRubber] = useState<null | { x: number; y: number; w: number; h: number }>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -374,14 +384,21 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
     const unsub = window.operator.onPreviewPick?.((data) => {
-      try {
-        const p = JSON.parse(data) as PreviewPick
-        const msg = formatPick(p)
-        if (p.target === 'console') onDispatch?.(msg); else onSendToTasks?.(msg)
-      } catch { /* ignore */ }
+      let p: PreviewPick
+      try { p = JSON.parse(data) as PreviewPick } catch { return }
+      void (async () => {
+        // The crop is taken now, after the in-page card has gone. `pick-` ids age out on disk: an
+        // Inspect note is sent at once and has no stored note to be deleted with.
+        const req = pickShotRequest(p, shotProj, `pick-${crypto.randomUUID()}`, cssRgb('--measure'))
+        const shot = req && window.operator.previewShotCapture
+          ? await window.operator.previewShotCapture(req).catch(() => null)
+          : null
+        const msg = withScreenshot(formatPick(p), shot?.path)
+        if (p.target === 'console') onDispatch?.(msg, shot ? [shot.path] : undefined); else onSendToTasks?.(msg)
+      })()
     })
     return () => unsub?.()
-  }, [onDispatch, onSendToTasks])
+  }, [onDispatch, onSendToTasks, shotProj])
 
   const onOverlayDown = (e: React.MouseEvent) => {
     const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
@@ -400,9 +417,46 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     const W = r.width || 1, H = r.height || 1
     if (Math.hypot(cx - s.x0, cy - s.y0) > 6) {
       const x = Math.min(s.x0, cx), y = Math.min(s.y0, cy)
-      setDraft({ id: crypto.randomUUID(), xPct: (x / W) * 100, yPct: (y / H) * 100, wPct: (Math.abs(cx - s.x0) / W) * 100, hPct: (Math.abs(cy - s.y0) / H) * 100, note: '', isNew: true })
+      void startDraft({ xPct: (x / W) * 100, yPct: (y / H) * 100, wPct: (Math.abs(cx - s.x0) / W) * 100, hPct: (Math.abs(cy - s.y0) / H) * 100 })
     } else {
-      setDraft({ id: crypto.randomUUID(), xPct: (s.x0 / W) * 100, yPct: (s.y0 / H) * 100, note: '', isNew: true })
+      void startDraft({ xPct: (s.x0 / W) * 100, yPct: (s.y0 / H) * 100 })
+    }
+  }
+  /** A new note: capture its crop first (a frame with nothing of ours over the page), then open the
+   *  card. A failed or unavailable capture still opens the card; the note just has no picture. */
+  const startDraft = async (geom: { xPct: number; yPct: number; wPct?: number; hPct?: number }) => {
+    const id = crypto.randomUUID()
+    const stage = stageRef.current?.getBoundingClientRect()
+    let shot: Annotation['shot']
+    let thumb: string | undefined
+    if (stage && stage.width > 0 && window.operator.previewShotCapture) {
+      setCapturing(true)
+      await nextFrames(2)
+      const { targets, margin } = annotationTargets(geom, stage)
+      const r = await window.operator.previewShotCapture({
+        source: 'window', project: shotProj, id, targets, margin,
+        clip: { x: stage.left, y: stage.top, w: stage.width, h: stage.height },
+        outline: cssRgb('--accent'),
+      }).catch(() => null)
+      setCapturing(false)
+      if (r) { shot = { path: r.path, w: r.width, h: r.height }; thumb = r.thumb }
+    }
+    setDraft({ id, ...geom, note: '', isNew: true, shot, thumb })
+  }
+  /** Close the card. A new note that was never kept takes its screenshot with it. */
+  const cancelDraft = () => {
+    if (draft?.isNew && draft.shot && !annotations.some((a) => a.id === draft.id)) {
+      void window.operator.previewShotDelete?.(shotProj, draft.id)
+    }
+    setDraft(null)
+  }
+  /** Open an existing note, loading its thumbnail. */
+  const openNote = (a: Annotation) => {
+    setDraft({ id: a.id, xPct: a.xPct, yPct: a.yPct, wPct: a.wPct, hPct: a.hPct, note: a.note, shot: a.shot, isNew: false })
+    if (a.shot) {
+      void window.operator.previewShotImage?.(shotProj, a.id).then((url) => {
+        if (url) setDraft((d) => (d && d.id === a.id ? { ...d, thumb: url } : d))
+      })
     }
   }
   // A newly-authored annotation captures the FULL session-side context it was made in —
@@ -475,7 +529,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     // no-op on one of these (the recorded viewport IS the page box, so the rebase factor is 1),
     // but relying on that coincidence is how a second rebase eventually lands on a note it
     // shouldn't.
-    device: deviceLabel, v: ANNOTATION_GEOM_VERSION, createdAt: new Date().toISOString(),
+    device: deviceLabel, v: ANNOTATION_GEOM_VERSION, shot: d.shot, createdAt: new Date().toISOString(),
   })
   const saveDraft = () => {
     if (!draft) return
@@ -484,7 +538,13 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     else persistAnn([...annotations, buildAnnotation(draft)])
     setDraft(null)
   }
-  const deleteDraft = () => { if (draft) persistAnn(annotations.filter((a) => a.id !== draft.id)); setDraft(null) }
+  const deleteDraft = () => {
+    if (!draft) return
+    persistAnn(annotations.filter((a) => a.id !== draft.id))
+    // The note's screenshot goes with it.
+    if (draft.shot) void window.operator.previewShotDelete?.(shotProj, draft.id)
+    setDraft(null)
+  }
   // Send THIS annotation (the one in the open card) to the Console or Tasks — same self-contained
   // pattern as the Inspect card. Persist it first so it stays in the punch-list, then dispatch.
   const dispatchDraft = (target: 'console' | 'tasks') => {
@@ -495,12 +555,32 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
     // The PAGE's box, not the panel's — same reason as `buildAnnotation`'s viewport. This is only
     // the fallback anyway: `composeMessage` prefers the annotation's own captured viewport.
     const msg = composeMessage([ann], route, pageBox)
-    if (msg) { if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg) }
+    if (msg) { if (target === 'tasks') onSendToTasks?.(msg); else onDispatch?.(msg, shotPaths([ann])) }
     setDraft(null)
   }
 
   return (
     <div ref={rootRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* A note's screenshot at full size. Renderer DOM, so only while no native view is up: it is
+          opened from the Annotate card, and Annotate always keeps the iframe. */}
+      {enlarged && (
+        <div
+          data-no-drag
+          data-shot-enlarged
+          role="dialog"
+          aria-label="Note screenshot"
+          tabIndex={-1}
+          ref={(el) => el?.focus()}
+          onClick={() => setEnlarged(null)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setEnlarged(null) }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center', outline: 'none',
+            background: 'color-mix(in srgb, var(--bg-terminal) 82%, transparent)', cursor: 'zoom-out',
+          }}
+        >
+          <img src={enlarged} alt="Note screenshot" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 6, border: '1px solid var(--border)', boxShadow: 'var(--shadow-panel)' }} />
+        </div>
+      )}
       {/* THE BAR — an address group, then a tools group, in that order at every width. `tier`
           decides only whether they share a row. `position: relative` so the picker and the port
           editor anchor to the bar and not to whichever slot holds it: in the side panel the
@@ -868,11 +948,12 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
 
           {/* Annotation markers — numbered pins / boxes over the preview. Only shown while
               annotating: switching to Interact reveals the clean app (no leftover boxes). */}
-          {annotating && annotations.map((a, i) => (
+          {annotating && !capturing && annotations.map((a, i) => (
             <div
               key={a.id}
-              onClick={(e) => { e.stopPropagation(); setDraft({ id: a.id, xPct: a.xPct, yPct: a.yPct, wPct: a.wPct, hPct: a.hPct, note: a.note, isNew: false }) }}
-              title={a.note || `Note ${i + 1}`}
+              data-annotation-pin={a.id}
+              onClick={(e) => { e.stopPropagation(); openNote(a) }}
+              title={`${a.note || `Note ${i + 1}`}${a.shot ? ' · has a screenshot' : ''}`}
               style={{
                 position: 'absolute', zIndex: 3, left: `${a.xPct}%`, top: `${a.yPct}%`,
                 pointerEvents: 'auto', cursor: 'pointer',
@@ -894,7 +975,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               onMouseDown={onOverlayDown}
               onMouseMove={onOverlayMove}
               onMouseUp={onOverlayUp}
-              style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: 'crosshair', background: 'color-mix(in srgb, var(--accent) 4%, transparent)' }}
+              style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: capturing ? 'progress' : 'crosshair', background: capturing ? 'transparent' : 'color-mix(in srgb, var(--accent) 4%, transparent)' }}
             >
               {rubber && (
                 <div style={{ position: 'absolute', left: rubber.x, top: rubber.y, width: rubber.w, height: rubber.h, border: '1.5px dashed var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)', pointerEvents: 'none' }} />
@@ -903,8 +984,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
           )}
 
           {/* Note popover for the active draft (Enter saves, Esc cancels). */}
-          {draft && (
-            <div style={{
+          {draft && !capturing && (
+            <div data-annotation-card style={{
               position: 'absolute', zIndex: 5,
               left: `min(${draft.xPct}%, calc(100% - 234px))`,
               top: `min(calc(${draft.yPct}% + 14px), calc(100% - 178px))`,
@@ -929,11 +1010,25 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
                   </span>
                 )}
               </div>
+              {/* The screenshot this note carries. Click for full size. */}
+              {draft.shot && (
+                <button
+                  data-annotation-thumb
+                  onClick={() => { void window.operator.previewShotImage?.(shotProj, draft.id).then((url) => { if (url) setEnlarged(url) }) }}
+                  title="Screenshot sent with this note. Click to enlarge."
+                  style={{
+                    display: 'block', width: '100%', height: 84, marginBottom: 6, padding: 0, cursor: 'zoom-in', outline: 'none',
+                    background: 'var(--overlay-subtle)', border: '1px solid var(--border)', borderRadius: 5, overflow: 'hidden',
+                  }}
+                >
+                  {draft.thumb && <img src={draft.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />}
+                </button>
+              )}
               <textarea
                 autoFocus
                 value={draft.note}
                 onChange={(e) => setDraft({ ...draft, note: e.target.value })}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveDraft() } if (e.key === 'Escape') setDraft(null) }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveDraft() } if (e.key === 'Escape') cancelDraft() }}
                 placeholder="What should change here?"
                 rows={3}
                 style={{ width: '100%', boxSizing: 'border-box', resize: 'none', fontFamily: 'var(--font-body)', fontSize: 12, background: 'var(--overlay-subtle)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', outline: 'none' }}
@@ -948,7 +1043,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, onDispatch, onSen
               <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                 <button onClick={saveDraft} title="Keep this note in the punch-list without sending" style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px' }}>Save</button>
                 {!draft.isNew && <button onClick={deleteDraft} style={{ ...retryBtn, marginRight: 0, fontSize: 10.5, padding: '3px 9px' }}>Delete</button>}
-                <button onClick={() => setDraft(null)} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Cancel</button>
+                <button onClick={cancelDraft} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Cancel</button>
               </div>
             </div>
           )}
@@ -1102,4 +1197,24 @@ const barRow: React.CSSProperties = {
 /** A cluster inside the tools row. Band-high, so a line the row wraps to is as tall as the rest. */
 const toolGroup: React.CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 1, height: PANEL_SUBHEAD_H, flexShrink: 0,
+}
+
+/** Resolve a colour token to channels for the screenshot outline, which is drawn in main. */
+function cssRgb(token: string): { r: number; g: number; b: number } | undefined {
+  try {
+    const probe = document.createElement('span')
+    probe.style.color = `var(${token})`
+    document.body.appendChild(probe)
+    const c = getComputedStyle(probe).color
+    probe.remove()
+    return parseRgb(c)
+  } catch { return undefined }
+}
+
+/** Resolve after `n` animation frames, so a state change has painted before a capture. */
+function nextFrames(n: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (left: number) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)))
+    step(n)
+  })
 }

@@ -26,6 +26,8 @@ import { fetchPlanLimits } from './plan-limits'
 import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
+import { capturePreviewShot } from './preview-shot-capture'
+import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
@@ -264,6 +266,13 @@ export function registerIpc(d: Deps): void {
     // Read-only, and cheap on purpose: no git, no `du`. The Home overview paints from this at launch
     // and fills in from `worktreeReapPlan` afterwards.
     worktreeQuickList: () => quickWorktreeList(),
+    // Screenshot crops for Preview notes, stored under ~/.operator/preview-shots/<project>/.
+    previewShotCapture: (req) => capturePreviewShot(req, {
+      window: d.getWindow,
+      inspect: { size: () => previewApi.size(), capture: (rect) => previewApi.capture(rect) },
+    }),
+    previewShotImage: (project, id) => shotDataUrl(String(project), String(id)),
+    previewShotDelete: (project, id) => deleteShot(String(project), String(id)),
     // `launch` for the first renderer of this app run, `reload` after. The renderer asks once per
     // document and decides whether to open on the home overview or where it was.
     launchKind: async () => launchTracker.claim(),

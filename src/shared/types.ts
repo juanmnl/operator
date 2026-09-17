@@ -396,6 +396,36 @@ export interface ReapPlan {
   lastCheck?: { trigger: string; at: number; entries: Array<{ path: string; reason: string }> }
 }
 
+/** Capture a screenshot crop for a Preview note (see electron/src/main/preview-shots.ts). */
+export interface PreviewShotRequest {
+  /** `window`: the main window (Annotate, the iframe). `inspect`: the native inspect view. */
+  source: 'window' | 'inspect'
+  /** Folder under `~/.operator/preview-shots`: the project id. */
+  project: string
+  /** The note's id; Inspect notes use `pick-<uuid>`. */
+  id: string
+  /** What to outline. `window`: window CSS px. `inspect`: the page's CSS px (converted with `scale`). */
+  targets: Array<{ x: number; y: number; w: number; h: number }>
+  /** `inspect`: the page's emulated scale. */
+  scale?: number
+  /** `window`: the preview stage's rect; the crop never leaves it. */
+  clip?: { x: number; y: number; w: number; h: number }
+  /** Outline colour. */
+  outline?: { r: number; g: number; b: number }
+  /** Space around the targets, in the same units. Default 24; a point pin asks for more. */
+  margin?: number
+}
+
+export interface PreviewShot {
+  /** Absolute path of the stored PNG or JPEG. */
+  path: string
+  width: number
+  height: number
+  bytes: number
+  /** A small data URL for the note card. */
+  thumb: string
+}
+
 /** One directory under `~/.operator/worktrees`, read WITHOUT git or `du`: the Home overview's first
  *  paint. Everything here comes from small JSON files and each folder's own `.git` pointer. */
 export interface WorktreeQuickEntry {

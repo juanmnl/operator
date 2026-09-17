@@ -13,6 +13,12 @@ export interface PreviewPick {
   target?: 'console' | 'tasks'
   /** Where the element sits relative to the redline anchor, when one was set (`16px below Header`). */
   measurement?: string
+  /** The element's box in the page's CSS px, for the note's screenshot. */
+  box?: { x: number; y: number; w: number; h: number }
+  /** The redline anchor's box, when the note measures from one. */
+  anchorBox?: { x: number; y: number; w: number; h: number }
+  /** The page's emulated scale when it was picked. */
+  scale?: number
 }
 
 /** `<message>\n\n↳ PlanCard @ src/Pricing.tsx:42 — 16px below Header — “Pro”`. The location names

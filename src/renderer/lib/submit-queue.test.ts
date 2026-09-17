@@ -947,3 +947,29 @@ describe('submitTyped — a slash command, in the same chain as a paste', () => 
     expect(writes.sort()).toEqual(['t1', 't2'])
   })
 })
+
+describe('attachImages — a note screenshot goes out with its note', () => {
+  it('pastes the image paths with no Return, in order, before the text that submits them', async () => {
+    const clock = fakeClock()
+    const writes: { id: string; data: string }[] = []
+    const q = createSubmitQueue({ write: (id, data) => writes.push({ id, data }), ...clock })
+    await Promise.all([
+      q.submit('t1', 'earlier message'),
+      q.attachImages('t1', ['/s/a.png', '/s/b.png']),
+      q.submit('t1', 'note text'),
+    ])
+    const data = pastes(writes).map((w) => w.data)
+    const img = data.indexOf('\x1b[200~/s/a.png /s/b.png\x1b[201~')
+    expect(img).toBeGreaterThan(data.indexOf(submitSequence('earlier message')))
+    expect(img).toBeLessThan(data.indexOf(submitSequence('note text')))
+    expect(data[img].endsWith('\r')).toBe(false)
+  })
+
+  it('writes nothing for an empty list', async () => {
+    const clock = fakeClock()
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...clock })
+    await q.attachImages('t1', [])
+    expect(writes).toEqual([])
+  })
+})

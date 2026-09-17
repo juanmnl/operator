@@ -32,6 +32,9 @@ export interface Annotation {
    *  they are of the PAGE. See `migrateAnnotations` — this field is what makes that a one-time
    *  upgrade instead of a rebase that compounds on every load. */
   v?: number
+  /** The screenshot crop taken when the note was made (electron/src/main/preview-shots.ts). The
+   *  image is stored on disk; this is its path and pixel size. */
+  shot?: { path: string; w: number; h: number }
   createdAt: string
 }
 
@@ -167,6 +170,11 @@ export function composeMessage(anns: Annotation[], route: string, viewport?: { w
   if (vp && vp.w) parts.push(`viewport ${Math.round(vp.w)}×${Math.round(vp.h)}`)
   const ctx = parts.length ? ` (${parts.join(' · ')})` : ''
   const header = `UI feedback on ${page}${ctx}:`
-  const lines = anns.map((a, i) => `${i + 1}. [${locOf(a)}] ${a.note.trim() || '(no note)'}`)
+  const lines = anns.map((a, i) => `${i + 1}. [${locOf(a)}] ${a.note.trim() || '(no note)'}${a.shot ? `\n   Screenshot: ${a.shot.path}` : ''}`)
   return `${header}\n${lines.join('\n')}\n\nPlease locate each in the code and address it.`
+}
+
+/** The screenshot paths a set of notes carries, in order, for attaching to the prompt. */
+export function shotPaths(anns: readonly Annotation[]): string[] {
+  return anns.map((a) => a.shot?.path).filter((p): p is string => !!p)
 }

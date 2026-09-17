@@ -3,7 +3,7 @@
   // The page-side API. `selector` is shared with preview-overlay.js (it re-finds a redline anchor
   // after HMR); `configure` is how Operator switches the inspector on and off and hands it the
   // palette. Function declarations, so they exist here already.
-  window.__operatorInspector = { selector: selector, configure: configure, label: label };
+  window.__operatorInspector = { selector: selector, configure: configure, label: label, hide: function () { hide(); } };
   var box, label;
   // Off when the native view is only hosting redlines or the grid (Interact mode): no hover outline,
   // and clicks reach the app. A shell that never calls `configure` (Tauri) keeps it on.
@@ -114,6 +114,9 @@
       selector: selector(el), tag: el.tagName.toLowerCase(),
       text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
       component: s.component, source: s.source, route: location.pathname, message: '',
+      // The element's box in page CSS px, and the page's emulated scale, for the note's screenshot
+      // crop (Operator captures it after the card is gone).
+      box: { x: r.left, y: r.top, w: r.width, h: r.height }, scale: scale,
     };
     // A REDLINE ANCHOR goes into the note, so "make this gap 24" arrives with the gap it has now.
     // Only in Electron, where the overlay and its functions exist; only for an element other than
@@ -122,6 +125,8 @@
     var an = ov && typeof ov.anchorInfo === 'function' ? ov.anchorInfo() : null;
     if (an && an.node !== el && fns && typeof fns.describeRelation === 'function') {
       data.measurement = fns.describeRelation({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }, an.box, an.name);
+      // A measurement note's crop holds BOTH elements.
+      data.anchorBox = { x: an.box.left, y: an.box.top, w: an.box.right - an.box.left, h: an.box.bottom - an.box.top };
     }
     var card = document.createElement('div');
     card.id = '__op_compose';

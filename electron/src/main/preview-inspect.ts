@@ -17,7 +17,7 @@
 // `src/shared/preview-overlay.js`, configured from the renderer through `configure`. The page is
 // zoomed to the stage's scale, so it lays out at the device preset instead of at the stage's
 // scaled width.
-import { BrowserWindow, WebContentsView, ipcMain } from 'electron'
+import { BrowserWindow, WebContentsView, ipcMain, type NativeImage } from 'electron'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { PreviewOverlayConfig } from '../../../src/shared/types'
@@ -183,7 +183,22 @@ export function installPreviewInspect(
       .catch(() => { /* no page to clear */ })
   }
 
-  previewApi = { open, move, close, setVisible, configure, clearAnchor }
+  // SCREENSHOTS for Inspect notes (preview-shot-capture.ts). The hover outline is hidden first so it
+  // is not in the picture; the crop's own outline is drawn afterwards.
+  const size = () => {
+    if (!view) return null
+    const { width, height } = view.getBounds()
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+  const capture = async (rect: { x: number; y: number; w: number; h: number }): Promise<NativeImage | null> => {
+    if (!view) return null
+    await view.webContents
+      .executeJavaScript('window.__operatorInspector && window.__operatorInspector.hide && window.__operatorInspector.hide()')
+      .catch(() => { /* no page */ })
+    return view.webContents.capturePage({ x: rect.x, y: rect.y, width: rect.w, height: rect.h })
+  }
+
+  previewApi = { open, move, close, setVisible, configure, clearAnchor, size, capture }
 }
 
 export let previewApi: {
@@ -193,4 +208,6 @@ export let previewApi: {
   setVisible: (visible: boolean) => void
   configure: (config: PreviewOverlayConfig) => void
   clearAnchor: () => void
-} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {} }
+  size: () => { width: number; height: number } | null
+  capture: (rect: { x: number; y: number; w: number; h: number }) => Promise<NativeImage | null>
+} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {}, size: () => null, capture: async () => null }
