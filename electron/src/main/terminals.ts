@@ -23,6 +23,7 @@ import {
 } from './reap'
 import { claimLease, releaseLease, loadLeases } from './leases'
 import { isPortLive, isPortFree, retryScanWithoutV6, beginPortScan } from './port-probe'
+import { allocateCdpPort, cdpLaunchNote, isElectronProject } from './preview-cdp-port'
 import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
 import { allocatePort, shouldReleaseCwdPort, provesOwnServer, DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
@@ -84,6 +85,8 @@ interface Managed {
   history: Buffer[]
   historyBytes: number
   devPort?: number
+  /** Chrome DevTools Protocol port for an Electron project's app (preview-cdp-port.ts). */
+  cdpPort?: number
   /** Ports seen in this session's OWN output (dev-server banners). */
   sniffedPorts: Set<number>
   /** Claude Code version at spawn — see `SpawnOptions.claudeVersion`. */
@@ -195,9 +198,10 @@ export class TerminalManager {
    *  not incidental: Claude Code is usually on a PATH that only an interactive login shell
    *  sets up, and dropping to a bare exec is how a build "can't find claude" while the real
    *  app can. */
-  private async buildCommand(o: SpawnOptions): Promise<{ shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; id: string }> {
+  private async buildCommand(o: SpawnOptions): Promise<{ shell: string; argv: string[]; env: NodeJS.ProcessEnv; devPort?: number; cdpPort?: number; id: string }> {
     const id = this.nextId()
     const { port: devPort, shared: sharedPort } = await this.allocPort(o.cwd)
+    const cdpPort = await this.allocCdpPort(o.cwd)
     // S0 — a settings FILE, not an inline JSON string.
     //
     // The inline form (`--settings {"tui":"default"}`) works for exactly one scalar and nothing
@@ -248,6 +252,7 @@ export class TerminalManager {
             + `be answering on it yet. Do not try to identify the process holding a port.`,
       )
     }
+    if (cdpPort) notes.push(cdpLaunchNote(cdpPort))
     if (o.orchestrationNote?.trim()) notes.push(o.orchestrationNote.trim())
     if (notes.length) prefix.push('--append-system-prompt', notes.join('\n\n'))
 
@@ -292,6 +297,7 @@ export class TerminalManager {
       env.OPERATOR_DEV_PORT = String(devPort)
       env.PORT = String(devPort)
     }
+    if (cdpPort) env.OPERATOR_CDP_PORT = String(cdpPort)
     // The project's own variables, onto the pty as well as into the settings file. The file is
     // what Claude Code reads for its own subprocesses; the pty env is what the lane's SHELL
     // sees, which is where a user checks with `env | grep`. Set BEFORE the terminal-capability
@@ -307,16 +313,17 @@ export class TerminalManager {
     env.COLORFGBG = o.colorScheme === 'light' ? '0;15' : '15;0'
     // Claude gates its inline prompt suggestions on recognising the host terminal.
     env.TERM_PROGRAM = 'iTerm.app'
-    return { shell, argv: ['-ilc', inner], env, devPort, id }
+    return { shell, argv: ['-ilc', inner], env, devPort, cdpPort, id }
   }
 
   async spawn(o: SpawnOptions): Promise<{ terminalId: string; cwd: string; grid: boolean; claudeVersion: string | null }> {
-    const { shell, argv, env, devPort, id } = await this.buildCommand(o)
+    const { shell, argv, env, devPort, cdpPort, id } = await this.buildCommand(o)
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, exited: false }
+    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, exited: false }
     this.terminals.set(id, managed)
+    if (cdpPort) this.cdpReserving.delete(cdpPort)
 
     const launch = (c: number, r: number) => {
       if (managed.pty || managed.exited) return
@@ -617,6 +624,28 @@ export class TerminalManager {
         }
       })
       .sort((a, b) => a.port - b.port)
+  }
+
+  /** A lane in an Electron project: one CDP port per session, unshared (two lanes' apps are two
+   *  apps). Serialized through the same gate as the dev port so concurrent launches see each other. */
+  private async allocCdpPort(cwd: string): Promise<number | undefined> {
+    if (!(await isElectronProject(cwd))) return undefined
+    const run = this.allocGate.then(async () => {
+      const inUse = new Set([...this.terminals.values()].filter((t) => !t.exited && t.cdpPort).map((t) => t.cdpPort!))
+      for (const p of this.cdpReserving) inUse.add(p)
+      const port = await allocateCdpPort(inUse, isPortFree)
+      if (port) this.cdpReserving.add(port)
+      return port
+    })
+    this.allocGate = run.then(() => undefined, () => undefined)
+    return run
+  }
+  /** CDP ports handed out whose terminal is not in the map yet (between buildCommand and spawn). */
+  private readonly cdpReserving = new Set<number>()
+
+  /** The CDP port reserved for a terminal's app, if its project is an Electron app. */
+  cdpPort(id: string): number | undefined {
+    return this.terminals.get(id)?.cdpPort
   }
 
   devPorts(): Record<string, number> {

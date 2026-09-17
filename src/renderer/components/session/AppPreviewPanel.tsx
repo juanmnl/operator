@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { type Annotation, loadAnnotations, saveAnnotations, composeMessage, shotPaths, ANNOTATION_GEOM_VERSION } from '../../lib/annotations'
-import { annotationTargets, pickShotRequest, withScreenshot, shotProject, parseRgb, pageToStage } from '../../lib/preview-shot'
+import { annotationTargets, pickShotRequest, pickTargets, withScreenshot, shotProject, parseRgb, pageToStage } from '../../lib/preview-shot'
 import { pickPreviewUrl, pickPreviewPort, portOf, parseTarget, formatTarget, evidenceLabel, isWarnEvidence, EMPTY_TARGET } from '../../lib/preview-port'
 import {
   emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
@@ -17,6 +17,8 @@ import { usePreviewEdit } from '../../lib/use-preview-edit'
 import { ToolbarIcon, StatusDot } from '../ToolbarIcon'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
 import { PREVIEW_FRAME_NAME, PREVIEW_MESSAGE_TAG, previewFrameMessage } from '../../../shared/preview-frame'
+import { ElectronEmptyState, ElectronSourceControls, PreviewElectronCanvas, usePreviewElectron } from './PreviewElectron'
+import { fitFrame } from '../../lib/preview-electron'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -155,6 +157,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   /** The preview iframe, to tell its messages from anyone else's. */
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
+  // ELECTRON APP SOURCE (PreviewElectron.tsx): which source the stage shows, and the attach state.
+  const [source, setSource] = useState<'web' | 'electron'>('web')
+  const electron = usePreviewElectron(terminalId ?? undefined, source === 'electron')
   /** The component's own root, measured for the bar's layout (see lib/preview-toolbar). */
   const rootRef = useRef<HTMLDivElement>(null)
   const [tier, setTier] = useState<ToolbarTier>('one')
@@ -283,7 +288,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
     ro.observe(el)
     measure()
     return () => ro.disconnect()
-  }, [reach])
+  }, [reach, source, electron.attachedId])
   // The bar's tier, from the ROOT's width (the frame wrapper only exists while a server is up).
   // A layout effect so the first paint already has the right rows. Stores the tier, not the
   // width, so a drag re-renders only when a threshold is crossed.
@@ -347,7 +352,19 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   // backend still lays a native webview over the stage, which is what the rect effects below serve.
   const redlinesOn = !!redlines?.on
   const redlinesPaused = redlinesOn && annotating
-  const nativeHost = !!display && (inspecting || (redlinesOn && !annotating))
+  // A lane whose project is an Electron app can show the running app instead of a web server. While
+  // a window is attached, the page is that window, and the overlays always run inside it (there is no
+  // renderer-drawn layer over a canvas).
+  const electronLive = source === 'electron' && !!electron.attachedId
+  const electronFit = fitFrame(box, electron.css)
+  /** What the overlay effects key on: the web page's URL, or the attached app window. */
+  const pageKey = electronLive ? `electron:${electron.attachedId}` : display
+  /** A page is showing, in either source. */
+  const pageUp = electronLive || (source === 'web' && reach === 'up' && !!display)
+  /** For the pick handler, which subscribes once. */
+  const electronLiveRef = useRef(false)
+  electronLiveRef.current = electronLive
+  const nativeHost = !!pageKey && (electronLive || inspecting || (redlinesOn && !annotating))
   const host = display ? display.replace(/^https?:\/\//, '') : null
   // Best-effort route (the iframe is cross-origin — this is the URL WE loaded, not any
   // in-app navigation the user did afterwards).
@@ -357,16 +374,16 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   // iframe can't) → hover-outline + a floating compose card next to the clicked element. Close on
   // toggle-off / url change / unmount. Re-runs on `display` so it follows a URL change.
   useEffect(() => {
-    if (!nativeHost || !display) { window.operator.previewInspectClose?.(); return }
+    if (!nativeHost || !pageKey) { window.operator.previewInspectClose?.(); return }
     // THE STAGE'S rect, not the wrapper's. The wrapper is the whole panel, so at any preset
     // narrower than it the inspector was laid over the empty gutter as well as the page — every
     // hover outline offset by half the slack.
     const el = stageRef.current
     if (!el) return
     const r = el.getBoundingClientRect()
-    void window.operator.previewInspectOpen?.(display, r.left, r.top, r.width, r.height)
+    void window.operator.previewInspectOpen?.(pageKey, r.left, r.top, r.width, r.height)
     return () => { window.operator.previewInspectClose?.() }
-  }, [nativeHost, display])
+  }, [nativeHost, pageKey])
   // Keep the embedded inspector aligned to the frame as the panel resizes — and as the PRESET
   // changes, which is new: the stage now moves and resizes without `box` changing at all, so a
   // preset switch that the wrapper never noticed would have stranded the webview at the old width.
@@ -401,13 +418,19 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
         // the page is this component's iframe, so its box maps to window px through the stage's rect
         // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is sent at once and has
         // no stored note to be deleted with.
-        const stage = stageRef.current?.getBoundingClientRect()
-        const req = stage && stage.width > 0
-          ? pickShotRequest(p, shotProj, `pick-${crypto.randomUUID()}`, stage, cssRgb('--measure'))
-          : null
-        const shot = req && window.operator.previewShotCapture
-          ? await window.operator.previewShotCapture(req).catch(() => null)
-          : null
+        const id = `pick-${crypto.randomUUID()}`
+        let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
+        if (electronLiveRef.current) {
+          // An Electron app: captured in the app itself over CDP, in its page CSS px.
+          const targets = pickTargets(p)
+          if (targets.length && window.operator.previewCdpShot) {
+            shot = await window.operator.previewCdpShot({ project: shotProj, id, targets, outline: cssRgb('--measure') }).catch(() => null)
+          }
+        } else {
+          const stage = stageRef.current?.getBoundingClientRect()
+          const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
+          shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
+        }
         const msg = withScreenshot(formatPick(p), shot?.path)
         if (p.target === 'console') onDispatch?.(msg, shot ? [shot.path] : undefined); else onSendToTasks?.(msg)
       })()
@@ -557,7 +580,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   const gridLayout = grid?.on ? layoutGrid(grid.spec, pageBox.w) : null
   const gridColors = grid?.on ? gridInk(grid.spec, 'var(--grid)') : null
   // Inspect only counts while there is a page to inspect; the segment is absent without one.
-  const mode = pointerMode(annotating, inspecting && !!display)
+  const mode = pointerMode(annotating, inspecting && !!pageKey)
   const setPointerMode = (m: PointerMode) => {
     setInspecting(m === 'inspect')
     setAnnotate(m === 'annotate')
@@ -570,9 +593,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   useEffect(() => {
     if (!nativeHost) return
     window.operator.previewInspectConfigure?.({
-      scale, inspect: inspecting, redlines: redlinesOn && !annotating, grid: overlayGrid, tokens: overlayTokens,
+      scale: electronLive ? electronFit.scale : scale, inspect: inspecting, redlines: redlinesOn && !annotating, grid: overlayGrid, tokens: overlayTokens,
     })
-  }, [nativeHost, scale, inspecting, redlinesOn, annotating, overlayGrid, overlayTokens])
+  }, [nativeHost, scale, electronLive, electronFit.scale, inspecting, redlinesOn, annotating, overlayGrid, overlayTokens])
 
   const buildAnnotation = (d: NonNullable<typeof draft>): Annotation => ({
     id: d.id, xPct: d.xPct, yPct: d.yPct, wPct: d.wPct, hPct: d.hPct, note: d.note,
@@ -658,6 +681,9 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
            aria-label="Forward"><ToolbarIcon name="forward" /></button>
           <button onClick={() => setNonce((n) => n + 1)} title="Reload" aria-label="Reload" style={navBtn}><ToolbarIcon name="reload" /></button>
         </span>
+
+        {/* Web server or Electron app: only for a lane whose project is an Electron app. */}
+        <ElectronSourceControls state={electron} source={source} onSource={setSource} />
 
         {/* THE ORIGIN CHIP. Opens the picker; never editable inline. That split is what makes
             "changing the server never touches the path" structural. */}
@@ -830,14 +856,14 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
               >{readout}</span>
             )}
           </span>
-          {(onDispatch || onSendToTasks) && reach === 'up' && (
+          {(onDispatch || onSendToTasks) && pageUp && (
             // POINTER MODE — exactly one. Inspect used to be a separate toggle, so Annotate and
             // Inspect could both be on: two click-capturing layers, the native one covering the
             // pins. Inspect embeds an Operator-owned webview with a DOM inspector (cross-origin
             // blocks this in the iframe), so its segment exists only while there is a page.
             <span style={{ ...toolGroup, marginLeft: 'auto' }}>
               <span style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, padding: 1 }}>
-                {POINTER_MODES.filter((m) => m.id !== 'inspect' || display).map((m) => {
+                {POINTER_MODES.filter((m) => m.id !== 'inspect' || pageKey).map((m) => {
                   const on = mode === m.id
                   return (
                     <button
@@ -858,7 +884,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
               </span>
             </span>
           )}
-          {((grid && onGridToggle) || (redlines && onRedlinesToggle)) && reach === 'up' && display && (
+          {((grid && onGridToggle) || (redlines && onRedlinesToggle)) && pageUp && (
             // OVERLAYS, after a hairline: any combination, in any pointer mode, and never a
             // click-catcher. `Grid` shows or hides it and the caret opens its settings band under this
             // row; `Redlines` measures the live page (hover, or ⌥-click an element to measure from).
@@ -897,7 +923,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
           )}
         </div>
       </div>
-      {grid?.editing && onGridSpecChange && reach === 'up' && display && (
+      {grid?.editing && onGridSpecChange && pageUp && (
         <GridSettingsBand
           spec={grid.spec}
           pageW={pageBox.w}
@@ -932,7 +958,11 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
         </div>
       )}
 
-      {reach === 'up' && display ? (
+      {source === 'electron' && !electronLive ? (
+        <div ref={frameWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg-deep)' }}>
+          <ElectronEmptyState state={electron} />
+        </div>
+      ) : pageUp ? (
         <div ref={frameWrapRef} style={{
           flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
           // THE GUTTER'S OWN TONE. `#fff` used to be here and it is now on the stage, where it
@@ -957,20 +987,27 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
           <div
             ref={stageRef}
             data-preview-stage
-            style={{
+            style={electronLive ? {
+              // The app window, fitted and centred; the stage is exactly the frame, so a note's
+              // percentages and a window capture both refer to the app's own pixels.
+              position: 'absolute', top: 0, left: Math.max(0, (box.w - electronFit.w) / 2),
+              width: electronFit.w, height: electronFit.h, background: '#fff',
+            } : {
               position: 'absolute', top: 0, left: fitting ? 0 : gutter,
               width: fitting ? '100%' : stageW, height: '100%',
               background: '#fff',
             }}
           >
-          {fitting
-            ? <iframe ref={frameRef} name={PREVIEW_FRAME_NAME} key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
+          {electronLive
+            ? <PreviewElectronCanvas width={electronFit.w} height={electronFit.h} scale={electronFit.scale} interactive={!annotating} />
+            : fitting
+            ? <iframe ref={frameRef} name={PREVIEW_FRAME_NAME} key={nonce} src={display ?? undefined} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
             : (
               <iframe
                 ref={frameRef}
                 name={PREVIEW_FRAME_NAME}
                 key={nonce}
-                src={display}
+                src={display ?? undefined}
                 title="App preview"
                 style={{
                   width: preset, height: box.h / scale, border: 'none',

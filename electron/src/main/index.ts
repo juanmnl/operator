@@ -17,6 +17,7 @@ import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
 import { installPreviewInspect } from './preview-inspect'
+import { installPreviewCdp } from './preview-cdp'
 import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
@@ -295,6 +296,13 @@ function boot(): void {
     () => mainWindow,
     (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
   )
+  // An attached Electron app's picks and anchor arrive as the same events the web preview uses.
+  installPreviewCdp({
+    frame: (f) => { const w = win(); if (w) broadcast(w, 'onPreviewCdpFrame', f) },
+    pick: (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) },
+    anchor: (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
+    detached: (reason) => { const w = win(); if (w) broadcast(w, 'onPreviewCdpDetached', reason) },
+  })
   // Electron's default menu, rebuilt, plus the Preview's View-menu accelerators. See app-menu.ts.
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate((command) => { const w = win(); if (w) broadcast(w, 'onMenuCommand', command) })))
   // THE INSTALL HOST — the ordering that makes "Install & Restart" actually install.

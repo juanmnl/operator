@@ -27,6 +27,7 @@ import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { capturePreviewShot } from './preview-shot-capture'
+import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
 import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList } from './worktree-reap'
@@ -267,6 +268,17 @@ export function registerIpc(d: Deps): void {
     // and fills in from `worktreeReapPlan` afterwards.
     worktreeQuickList: () => quickWorktreeList(),
     // Screenshot crops for Preview notes, stored under ~/.operator/preview-shots/<project>/.
+    // ELECTRON APPS over CDP (preview-cdp.ts). The port is the one reserved for the lane's terminal.
+    previewCdpTargets: async (terminalId) => {
+      const port = d.terminals.cdpPort(String(terminalId)) ?? null
+      return { port, targets: port ? await listTargets(port) : [] }
+    },
+    previewCdpAttach: async (terminalId, targetId) => {
+      const port = d.terminals.cdpPort(String(terminalId))
+      if (!port || !previewCdp) return { ok: false as const, error: 'This lane has no Electron debugging port.' }
+      return previewCdp.attach(port, String(targetId))
+    },
+    previewCdpShot: async (req) => previewCdp?.shot(req) ?? null,
     previewShotCapture: (req) => capturePreviewShot(req, {
       window: d.getWindow,
       hideInspector: () => previewApi.hideOutline(),
@@ -311,7 +323,7 @@ export function registerIpc(d: Deps): void {
 
     // --- project assets ----------------------------------------------------------------
     operatorHome: async () => store.operatorDir(),
-    previewInspectOpen: async (url, x, y, w, h) => { previewApi.open(url, x, y, w, h) },
+    previewInspectOpen: async (url, x, y, w, h) => { if (!previewCdp?.isAttached()) previewApi.open(url, x, y, w, h) },
     projectAssetDir: (id) => moodboard.projectAssetDir(id),
     moodboardAdd: (id, dataB64, ext) => moodboard.moodboardAdd(id, dataB64, ext),
     moodboardList: (id) => moodboard.moodboardList(id),
@@ -425,10 +437,14 @@ export function registerIpc(d: Deps): void {
     // property (verified: `CSS.supports('-webkit-app-region','drag')` is false there), so the
     // rule is inert under Tauri and its imperative path is untouched.
     previewInspectMove: (x, y, w, h) => previewApi.move(x, y, w, h),
-    previewInspectClose: () => previewApi.close(),
+    // While an Electron app is attached, the overlays live in ITS page (preview-cdp.ts); otherwise in
+    // the Preview iframe (preview-inspect.ts). The renderer calls the same four either way.
+    previewInspectClose: () => { if (previewCdp?.isAttached()) previewCdp.closeOverlays(); else previewApi.close() },
     previewInspectSetVisible: (visible) => previewApi.setVisible(visible),
-    previewInspectConfigure: (config) => previewApi.configure(config),
-    previewInspectClearAnchor: () => previewApi.clearAnchor(),
+    previewInspectConfigure: (config) => { if (previewCdp?.isAttached()) previewCdp.configure(config); else previewApi.configure(config) },
+    previewInspectClearAnchor: () => { if (previewCdp?.isAttached()) previewCdp.clearAnchor(); else previewApi.clearAnchor() },
+    previewCdpDetach: () => previewCdp?.detach(),
+    previewCdpInput: (ev) => { void previewCdp?.input(ev) },
     startWindowDrag: () => {},
     setDockIcon: (variant) => {
       if (process.platform !== 'darwin' || !app.dock) return

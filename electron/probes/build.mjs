@@ -15,6 +15,7 @@ await Promise.all([
   build({ ...common, entryPoints: [resolve(root, 'src/main/agents.ts')], outfile: resolve(root, 'out/main/agents.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/main/usage.ts')], outfile: resolve(root, 'out/main/usage.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/main/preview-inspect.ts')], outfile: resolve(root, 'out/main/preview-inspect.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, 'src/main/preview-cdp.ts')], outfile: resolve(root, 'out/main/preview-cdp.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/main/preview-shot-capture.ts')], outfile: resolve(root, 'out/main/preview-shot-capture.cjs') }),
   build({ ...common, entryPoints: [resolve(root, '..', 'src/renderer/lib/preview-shot.ts')], outfile: resolve(root, 'out/main/preview-shot-renderer.cjs') }),
 ])

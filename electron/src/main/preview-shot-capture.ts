@@ -33,28 +33,37 @@ export async function capturePreviewShot(req: PreviewShotRequest, sources: Captu
     await settle()
     const shot: NativeImage = await win.webContents.capturePage({ x: crop.x, y: crop.y, width: crop.w, height: crop.h })
     if (!shot || shot.isEmpty()) return null
-
-    // Device pixels: on a Retina display the image is twice the crop's DIP size.
-    const { width, height } = shot.getSize()
-    const pixelScale = width / crop.w
-    const bitmap = Buffer.from(shot.toBitmap())
-    const color = req.outline ?? { r: 47, g: 227, b: 154 }
-    const thickness = Math.max(2, Math.round(pixelScale * 1.5))
-    for (const t of targets) drawOutline(bitmap, width, height, toBitmapRect(t, crop, pixelScale), color, thickness)
-    let img = nativeImage.createFromBitmap(bitmap, { width, height })
-    const fit = fitWidth(width, height)
-    if (fit) img = img.resize({ width: fit, quality: 'best' })
-
-    const { bytes, ext } = chooseEncoding({ png: () => img.toPNG(), jpeg: (q) => img.toJPEG(q) })
-    const path = await saveShot(req.project, req.id, bytes, ext)
-    if (req.id.startsWith(PICK_PREFIX)) void prunePickShots(req.project)
-    const size = img.getSize()
-    return {
-      path, width: size.width, height: size.height, bytes: bytes.length,
-      thumb: img.resize({ width: Math.min(THUMB_W, size.width), quality: 'good' }).toDataURL(),
-    }
+    return await finishShot(shot, crop, targets, req)
   } catch (e) {
     console.error('[preview-shot] capture failed:', e)
     return null
+  }
+}
+
+/** Outline, size, encode and store a captured crop. `crop` and `targets` share one unit (window DIP
+ *  here; a page's CSS px for an Electron app captured over CDP, see preview-cdp.ts). Throws on a
+ *  storage failure; the callers catch. */
+export async function finishShot(
+  shot: NativeImage, crop: Rect, targets: readonly Rect[],
+  req: Pick<PreviewShotRequest, 'project' | 'id' | 'outline'>,
+): Promise<PreviewShot> {
+  // Device pixels: on a Retina display the image is twice the crop's DIP size.
+  const { width, height } = shot.getSize()
+  const pixelScale = width / crop.w
+  const bitmap = Buffer.from(shot.toBitmap())
+  const color = req.outline ?? { r: 47, g: 227, b: 154 }
+  const thickness = Math.max(2, Math.round(pixelScale * 1.5))
+  for (const t of targets) drawOutline(bitmap, width, height, toBitmapRect(t, crop, pixelScale), color, thickness)
+  let img = nativeImage.createFromBitmap(bitmap, { width, height })
+  const fit = fitWidth(width, height)
+  if (fit) img = img.resize({ width: fit, quality: 'best' })
+
+  const { bytes, ext } = chooseEncoding({ png: () => img.toPNG(), jpeg: (q) => img.toJPEG(q) })
+  const path = await saveShot(req.project, req.id, bytes, ext)
+  if (req.id.startsWith(PICK_PREFIX)) void prunePickShots(req.project)
+  const size = img.getSize()
+  return {
+    path, width: size.width, height: size.height, bytes: bytes.length,
+    thumb: img.resize({ width: Math.min(THUMB_W, size.width), quality: 'good' }).toDataURL(),
   }
 }

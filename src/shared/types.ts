@@ -417,6 +417,37 @@ export interface PreviewShotRequest {
   margin?: number
 }
 
+/** An Electron app window Preview can attach to over Chrome DevTools Protocol (a `page` target). */
+export interface CdpTarget {
+  id: string
+  title: string
+  url: string
+}
+
+/** One screencast frame of an attached Electron app, as a JPEG. */
+export interface CdpFrame {
+  /** Base64 JPEG. */
+  data: string
+  /** The page's CSS viewport the frame shows. Input coordinates are in these px. */
+  cssWidth: number
+  cssHeight: number
+}
+
+/** Input forwarded to an attached Electron app, in its CSS px. `modifiers`: alt 1, ctrl 2, meta 4, shift 8. */
+export type CdpInput =
+  | { kind: 'mouse'; type: 'mousePressed' | 'mouseReleased' | 'mouseMoved'; x: number; y: number; button: 'none' | 'left' | 'middle' | 'right'; clickCount: number; modifiers: number }
+  | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers: number }
+  | { kind: 'key'; type: 'keyDown' | 'keyUp'; key: string; code: string; text?: string; keyCode: number; modifiers: number }
+
+/** A note screenshot of an attached Electron app: targets in the page's CSS px, captured over CDP. */
+export interface CdpShotRequest {
+  project: string
+  id: string
+  targets: Array<{ x: number; y: number; w: number; h: number }>
+  outline?: { r: number; g: number; b: number }
+  margin?: number
+}
+
 export interface PreviewShot {
   /** Absolute path of the stored PNG or JPEG. */
   path: string

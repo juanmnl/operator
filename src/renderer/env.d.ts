@@ -241,6 +241,20 @@ declare global {
       previewInspectConfigure?: (config: import('../shared/types').PreviewOverlayConfig) => void
       /** Clear the redline anchor in the inspector view's page. Electron only. */
       previewInspectClearAnchor?: () => void
+      /** Electron apps over CDP (Electron shell only). The windows of the app a lane runs, on the
+       *  debugging port Operator reserved for it; `port` is null for a lane whose project is not an
+       *  Electron app. */
+      previewCdpTargets?: (terminalId: string) => Promise<{ port: number | null; targets: import('../shared/types').CdpTarget[] }>
+      /** Attach Preview to one window: its screencast starts, and Inspect/Redlines/Grid act in it. */
+      previewCdpAttach?: (terminalId: string, targetId: string) => Promise<{ ok: true } | { ok: false; error: string }>
+      previewCdpDetach?: () => void
+      /** Mouse, wheel and keys for the attached window, in its CSS px. */
+      previewCdpInput?: (input: import('../shared/types').CdpInput) => void
+      /** A note screenshot of the attached window (targets in its CSS px). */
+      previewCdpShot?: (req: import('../shared/types').CdpShotRequest) => Promise<import('../shared/types').PreviewShot | null>
+      onPreviewCdpFrame?: (callback: (frame: import('../shared/types').CdpFrame) => void) => () => void
+      /** The attached app went away (closed window, quit app, dropped connection). */
+      onPreviewCdpDetached?: (callback: (reason: string) => void) => () => void
       /** Inspector picked an element — payload is a JSON string (selector/component/source/…). */
       onPreviewPick: (callback: (data: string) => void) => () => void
       /** A View-menu accelerator fired. Electron only. A menu accelerator reaches the app while
