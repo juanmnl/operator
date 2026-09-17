@@ -14,6 +14,7 @@ import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
 import { ToolbarIcon, StatusDot } from '../ToolbarIcon'
 import { useOverlayTokens } from '../../lib/overlay-tokens'
+import { PREVIEW_FRAME_NAME, PREVIEW_MESSAGE_TAG, previewFrameMessage } from '../../../shared/preview-frame'
 
 // Live preview of the session's running app. The reserved/detected port is only a
 // HINT — projects often ignore the injected PORT and bind their own default (Vite
@@ -53,7 +54,7 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle, onAnchorChange }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
@@ -85,6 +86,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   /** Redlines: shown or not (per session). Owned by DashboardView so ⌘⇧' and ⌘K reach it. */
   redlines?: { on: boolean }
   onRedlinesToggle?: () => void
+  /** A redline anchor was set or cleared in the page (Electron: reported by the page in the iframe). */
+  onAnchorChange?: (anchored: boolean) => void
 }) {
   const overrideKey = storageKey ? `operator.preview.port.${storageKey}` : null
   // A pinned target, stored as the STRING THE USER TYPED — a port, a port and a path
@@ -147,6 +150,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   /** THE STAGE — the frame's VISIBLE box, and the one coordinate system everything drawn over
    *  the preview shares. See the derivation below `deviceLabel`. */
   const stageRef = useRef<HTMLDivElement>(null)
+  /** The preview iframe, to tell its messages from anyone else's. */
+  const frameRef = useRef<HTMLIFrameElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
   /** The component's own root, measured for the bar's layout (see lib/preview-toolbar). */
   const rootRef = useRef<HTMLDivElement>(null)
@@ -332,9 +337,11 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
     setHistory((h) => pushEntry(h, { port: pick.port, path: target.path, url: target.url }))
   }, [pick.url, pick.port, target.path, target.url])
   const display = resolved || pick.url
-  // THE HOST. The native inspect view carries the page whenever something has to read or draw inside
-  // it: Inspect, and redlines. Annotate keeps the iframe, because its pins and capture layer are
-  // renderer DOM and would sit under the native view; redlines pause meanwhile.
+  // WHEN THE PAGE NEEDS OPERATOR'S SCRIPTS: Inspect, and redlines. Annotate is renderer DOM over the
+  // stage, so redlines pause meanwhile. In ELECTRON this never changes which page is shown: main
+  // injects the scripts into this component's own iframe, so toggling an overlay keeps the app's
+  // route, state, scroll and layout (electron/src/main/preview-inspect.ts). In the Tauri shell the
+  // backend still lays a native webview over the stage, which is what the rect effects below serve.
   const redlinesOn = !!redlines?.on
   const redlinesPaused = redlinesOn && annotating
   const nativeHost = !!display && (inspecting || (redlinesOn && !annotating))
@@ -383,22 +390,41 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   // The inspector's floating card composes the note itself and beacons preview:pick with the final
   // payload (message + element + chosen target). We format it and route to the Console or Tasks.
   useEffect(() => {
-    const unsub = window.operator.onPreviewPick?.((data) => {
+    const handlePick = (data: string) => {
       let p: PreviewPick
       try { p = JSON.parse(data) as PreviewPick } catch { return }
       void (async () => {
-        // The crop is taken now, after the in-page card has gone. `pick-` ids age out on disk: an
-        // Inspect note is sent at once and has no stored note to be deleted with.
-        const req = pickShotRequest(p, shotProj, `pick-${crypto.randomUUID()}`, cssRgb('--measure'))
+        // The crop is taken now, after the in-page card has gone, from the main window over the stage:
+        // the page is this component's iframe, so its box maps to window px through the stage's rect
+        // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is sent at once and has
+        // no stored note to be deleted with.
+        const stage = stageRef.current?.getBoundingClientRect()
+        const req = stage && stage.width > 0
+          ? pickShotRequest(p, shotProj, `pick-${crypto.randomUUID()}`, stage, cssRgb('--measure'))
+          : null
         const shot = req && window.operator.previewShotCapture
           ? await window.operator.previewShotCapture(req).catch(() => null)
           : null
         const msg = withScreenshot(formatPick(p), shot?.path)
         if (p.target === 'console') onDispatch?.(msg, shot ? [shot.path] : undefined); else onSendToTasks?.(msg)
       })()
-    })
-    return () => unsub?.()
-  }, [onDispatch, onSendToTasks, shotProj])
+    }
+    // Tauri: the native inspect webview beacons to the backend, which emits this.
+    const unsub = window.operator.onPreviewPick?.(handlePick)
+    // Electron: the inspector runs INSIDE the preview iframe (main injects it; see
+    // electron/src/main/preview-inspect.ts) and posts to this window. Accepted only from that
+    // iframe's own window, so no other frame on the page can send a pick or an anchor.
+    const onMessage = (e: MessageEvent) => {
+      const frame = frameRef.current
+      if (!frame || e.source !== frame.contentWindow) return
+      const m = previewFrameMessage(e.data)
+      if (!m) return
+      if (m[PREVIEW_MESSAGE_TAG] === 'pick') handlePick(m.data)
+      else onAnchorChange?.(m.value)
+    }
+    window.addEventListener('message', onMessage)
+    return () => { unsub?.(); window.removeEventListener('message', onMessage) }
+  }, [onDispatch, onSendToTasks, onAnchorChange, shotProj])
 
   const onOverlayDown = (e: React.MouseEvent) => {
     const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
@@ -912,9 +938,11 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
             }}
           >
           {fitting
-            ? <iframe key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
+            ? <iframe ref={frameRef} name={PREVIEW_FRAME_NAME} key={nonce} src={display} title="App preview" style={{ width: '100%', height: '100%', border: 'none' }} />
             : (
               <iframe
+                ref={frameRef}
+                name={PREVIEW_FRAME_NAME}
                 key={nonce}
                 src={display}
                 title="App preview"

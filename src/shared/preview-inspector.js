@@ -94,8 +94,9 @@
   function b64(str) { return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
   function beacon(data, onOk, onFail) {
     // A HOST-PROVIDED CHANNEL WINS. Under Tauri there is none and the image beacon below is the
-    // only way out of a remote embedded webview (command IPC is ACL-denied there). Electron's
-    // embedded view gets a preload, so it installs `__operatorBeacon` and this defers to it.
+    // only way out of a remote embedded webview (command IPC is ACL-denied there). Electron injects
+    // this script into the Preview iframe with a bridge that installs `__operatorBeacon` (it posts to
+    // Operator's renderer; src/shared/preview-frame.ts), and this defers to it.
     if (typeof window.__operatorBeacon === 'function') { window.__operatorBeacon(data, onOk, onFail); return; }
     try {
       var im = new Image();
@@ -114,8 +115,8 @@
       selector: selector(el), tag: el.tagName.toLowerCase(),
       text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
       component: s.component, source: s.source, route: location.pathname, message: '',
-      // The element's box in page CSS px, and the page's emulated scale, for the note's screenshot
-      // crop (Operator captures it after the card is gone).
+      // The element's box in page CSS px, and the page's scale (the stage's), for the note's screenshot
+      // crop: Operator maps it through the stage to window px and captures after the card is gone.
       box: { x: r.left, y: r.top, w: r.width, h: r.height }, scale: scale,
     };
     // A REDLINE ANCHOR goes into the note, so "make this gap 24" arrives with the gap it has now.

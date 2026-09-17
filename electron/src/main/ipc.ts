@@ -269,7 +269,7 @@ export function registerIpc(d: Deps): void {
     // Screenshot crops for Preview notes, stored under ~/.operator/preview-shots/<project>/.
     previewShotCapture: (req) => capturePreviewShot(req, {
       window: d.getWindow,
-      inspect: { size: () => previewApi.size(), capture: (rect) => previewApi.capture(rect) },
+      hideInspector: () => previewApi.hideOutline(),
     }),
     previewShotImage: (project, id) => shotDataUrl(String(project), String(id)),
     previewShotDelete: (project, id) => deleteShot(String(project), String(id)),

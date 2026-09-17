@@ -1,6 +1,6 @@
 // Screenshot crops on Preview notes, renderer side: which rects to outline, and how a note's text
 // names its screenshot. The capture itself is in main (electron/src/main/preview-shots.ts), because
-// the renderer cannot read the pixels of a cross-origin iframe or of the native inspect view.
+// the renderer cannot read the pixels of a cross-origin iframe.
 import type { PreviewShotRequest } from '../../shared/types'
 import type { PreviewPick } from './preview-pick'
 
@@ -33,12 +33,30 @@ export function pickTargets(p: PreviewPick): Rect[] {
   return out
 }
 
+/** A page box (the iframe's viewport CSS px, which already reflect its scroll) → WINDOW px. The iframe
+ *  sits at the stage's top-left and is scaled from there by `scale` (a CSS transform), so a page
+ *  CSS px is `scale` window px from the stage's origin. */
+export function pageToStage(r: Rect, stage: { left: number; top: number }, scale: number | undefined): Rect {
+  const k = scale && scale > 0 ? scale : 1
+  return { x: stage.left + r.x * k, y: stage.top + r.y * k, w: r.w * k, h: r.h * k }
+}
+
 /** Build the capture request for an Inspect pick, or null when the pick carries no box (a shell
- *  whose inspector predates it). */
-export function pickShotRequest(p: PreviewPick, project: string, id: string, outline?: PreviewShotRequest['outline']): PreviewShotRequest | null {
-  const targets = pickTargets(p)
-  if (!targets.length) return null
-  return { source: 'inspect', project, id, targets, scale: p.scale, outline }
+ *  whose inspector predates it). Captured from the main window over the stage, the same path as an
+ *  Annotate note; `hideInspector` takes the page's own hover outline out of the picture first. */
+export function pickShotRequest(
+  p: PreviewPick, project: string, id: string,
+  stage: { left: number; top: number; width: number; height: number },
+  outline?: PreviewShotRequest['outline'],
+): PreviewShotRequest | null {
+  const boxes = pickTargets(p)
+  if (!boxes.length) return null
+  return {
+    source: 'window', project, id,
+    targets: boxes.map((b) => pageToStage(b, stage, p.scale)),
+    clip: { x: stage.left, y: stage.top, w: stage.width, h: stage.height },
+    outline, hideInspector: true,
+  }
 }
 
 /** The line a note carries for its screenshot. The path is ALSO attached as an image when the note

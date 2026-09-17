@@ -293,7 +293,6 @@ function boot(): void {
 
   installPreviewInspect(
     () => mainWindow,
-    (data) => { const w = win(); if (w) broadcast(w, 'onPreviewPick', data) },
     (anchored) => { const w = win(); if (w) broadcast(w, 'onPreviewAnchor', anchored) },
   )
   // Electron's default menu, rebuilt, plus the Preview's View-menu accelerators. See app-menu.ts.

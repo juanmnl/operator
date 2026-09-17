@@ -4418,8 +4418,9 @@ export function DashboardView() {
   // hosts the page in the native inspect view while they are on (and pauses them in Annotate).
   const redlinesOn = activeLayout?.tools.redlines ?? false
   const toggleRedlines = useCallback(() => patchLayout({ tools: { redlines: !redlinesOn } }), [patchLayout, redlinesOn])
-  // Whether a measurement anchor is set in the page, for ⌘K's "Clear measurement anchor". The main
-  // process reports false when the inspect view closes or navigates.
+  // Whether a measurement anchor is set in the page, for ⌘K's "Clear measurement anchor". The page
+  // reports it through the preview panel; the main process reports false when overlays close or the
+  // page navigates.
   const [previewAnchored, setPreviewAnchored] = useState(false)
   useEffect(() => {
     const unsub = window.operator.onPreviewAnchor?.((anchored) => setPreviewAnchored(anchored))
@@ -4793,6 +4794,7 @@ export function DashboardView() {
         onGridEditingChange={editGrid}
         redlines={{ on: redlinesOn }}
         onRedlinesToggle={toggleRedlines}
+        onAnchorChange={setPreviewAnchored}
       />
     )
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { annotationTargets, pickTargets, pickShotRequest, withScreenshot, shotProject, parseRgb, PIN_MARK, PIN_MARGIN } from './preview-shot'
+import { annotationTargets, pickTargets, pickShotRequest, pageToStage, withScreenshot, shotProject, parseRgb, PIN_MARK, PIN_MARGIN } from './preview-shot'
 import { composeMessage, shotPaths, type Annotation } from './annotations'
 
 const stage = { left: 300, top: 80, width: 400, height: 800 }
@@ -24,11 +24,30 @@ describe('Inspect picks', () => {
     expect(pickTargets({ box, anchorBox, measurement: '16px below Header' })).toEqual([box, anchorBox])
   })
 
-  it('builds an inspect capture request with the page scale, or none without a box', () => {
-    expect(pickShotRequest({ box: { x: 1, y: 2, w: 3, h: 4 }, scale: 0.5 }, 'p', 'pick-1')).toEqual({
-      source: 'inspect', project: 'p', id: 'pick-1', targets: [{ x: 1, y: 2, w: 3, h: 4 }], scale: 0.5, outline: undefined,
+  // The page is the stage's iframe (there is no inspect view since 2026-09-17), so a pick is captured
+  // from the main window like an Annotate note: its page box maps to window px through the stage.
+  const stage = { left: 300, top: 90, width: 640, height: 480 }
+
+  it('maps a page box to window px: the stage origin plus the box times the iframe scale', () => {
+    expect(pageToStage({ x: 100, y: 40, w: 200, h: 10 }, stage, 0.5)).toEqual({ x: 350, y: 110, w: 100, h: 5 })
+    // Fit, or a preset that fits: scale 1, just the offset.
+    expect(pageToStage({ x: 100, y: 40, w: 200, h: 10 }, stage, 1)).toEqual({ x: 400, y: 130, w: 200, h: 10 })
+    // A pick from an inspector that sends no scale, or a nonsense one, is unscaled.
+    expect(pageToStage({ x: 1, y: 2, w: 3, h: 4 }, stage, undefined)).toEqual({ x: 301, y: 92, w: 3, h: 4 })
+    expect(pageToStage({ x: 1, y: 2, w: 3, h: 4 }, stage, 0)).toEqual({ x: 301, y: 92, w: 3, h: 4 })
+  })
+
+  it('builds a window capture clipped to the stage, hiding the in-page outline, or none without a box', () => {
+    expect(pickShotRequest({ box: { x: 1, y: 2, w: 3, h: 4 }, scale: 0.5 }, 'p', 'pick-1', stage)).toEqual({
+      source: 'window', project: 'p', id: 'pick-1', targets: [{ x: 300.5, y: 91, w: 1.5, h: 2 }],
+      clip: { x: 300, y: 90, w: 640, h: 480 }, outline: undefined, hideInspector: true,
     })
-    expect(pickShotRequest({ message: 'old inspector' }, 'p', 'pick-1')).toBeNull()
+    expect(pickShotRequest({ message: 'old inspector' }, 'p', 'pick-1', stage)).toBeNull()
+  })
+
+  it('maps both boxes of a measurement note', () => {
+    const r = pickShotRequest({ box: { x: 10, y: 20, w: 30, h: 40 }, anchorBox: { x: 10, y: 80, w: 30, h: 10 }, scale: 1 }, 'p', 'pick-2', stage)
+    expect(r?.targets).toEqual([{ x: 310, y: 110, w: 30, h: 40 }, { x: 310, y: 170, w: 30, h: 10 }])
   })
 })
 

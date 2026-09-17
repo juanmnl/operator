@@ -4,17 +4,14 @@
 import { nativeImage, type BrowserWindow, type NativeImage } from 'electron'
 import type { PreviewShot, PreviewShotRequest } from '../../../src/shared/types'
 import {
-  chooseEncoding, cropRectIn, drawOutline, fitWidth, pageToView, prunePickShots, saveShot, toBitmapRect,
+  chooseEncoding, cropRectIn, drawOutline, fitWidth, prunePickShots, saveShot, toBitmapRect,
   unionRect, PICK_PREFIX, type Rect,
 } from './preview-shots'
 
 export interface CaptureSources {
   window: () => BrowserWindow | null
-  /** The inspect view: its size, and a capture of a rect in its own DIP. Null when it is not up. */
-  inspect: {
-    size: () => { width: number; height: number } | null
-    capture: (rect: Rect) => Promise<NativeImage | null>
-  }
+  /** Hide the in-page inspector's hover outline (the page is the preview iframe; preview-inspect.ts). */
+  hideInspector: () => Promise<void>
 }
 
 /** Let a frame or two paint first: the note card the user just clicked away is removed in the same
@@ -25,28 +22,16 @@ const THUMB_W = 240
 
 export async function capturePreviewShot(req: PreviewShotRequest, sources: CaptureSources): Promise<PreviewShot | null> {
   try {
-    let targets: Rect[]
-    let clip: Rect
-    let grab: (rect: Rect) => Promise<NativeImage | null>
-    if (req.source === 'inspect') {
-      const size = sources.inspect.size()
-      if (!size) return null
-      targets = req.targets.map((t) => pageToView(t, req.scale ?? 1))
-      clip = { x: 0, y: 0, w: size.width, h: size.height }
-      grab = sources.inspect.capture
-    } else {
-      const win = sources.window()
-      if (!win || !req.clip) return null
-      targets = req.targets
-      clip = req.clip
-      grab = (rect) => win.webContents.capturePage({ x: rect.x, y: rect.y, width: rect.w, height: rect.h })
-    }
-    // `margin` is in the request's units; an inspect page's CSS px are `scale` DIP on screen.
-    const margin = req.margin == null ? undefined : req.margin * (req.source === 'inspect' ? (req.scale ?? 1) : 1)
-    const crop = cropRectIn(unionRect(targets), clip, margin)
+    // The main window over the preview stage, for both kinds of note. Its capture includes the
+    // out-of-process iframe, which is the page in Electron (there is no separate inspect view).
+    const win = sources.window()
+    if (!win || !req.clip) return null
+    const targets: Rect[] = req.targets
+    const crop = cropRectIn(unionRect(targets), req.clip, req.margin ?? undefined)
     if (!crop) return null
+    if (req.hideInspector) await sources.hideInspector()
     await settle()
-    const shot = await grab(crop)
+    const shot: NativeImage = await win.webContents.capturePage({ x: crop.x, y: crop.y, width: crop.w, height: crop.h })
     if (!shot || shot.isEmpty()) return null
 
     // Device pixels: on a Retina display the image is twice the crop's DIP size.

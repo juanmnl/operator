@@ -6,7 +6,7 @@ import { layoutGrid, gridInk } from './layout-grid'
 import { measureBetween, formatPx, placeChip, describeRelation } from './redlines'
 import type { PreviewOverlayConfig } from './types'
 
-// The scripts that run inside the Preview's native inspect view, run here in jsdom. jsdom has no
+// The scripts that run inside the Preview page (injected into its iframe by Electron's main process), run here in jsdom. jsdom has no
 // layout (every box is 0×0), so this checks what needs none: that ⌥-click and Esc are taken from
 // the page and ordinary input is not, the anchor's lifecycle, and the hand-off to the inspector.
 // The geometry is tested in redlines.test.ts and layout-grid.test.ts.

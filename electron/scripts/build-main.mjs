@@ -47,8 +47,6 @@ copyFileSync(resolve(root, '..', 'src-tauri', 'icons', 'tray.png'), resolve(root
 const targets = [
   { entryPoints: [resolve(root, 'src/main/index.ts')], outfile: resolve(root, 'out/main/index.cjs') },
   { entryPoints: [resolve(root, 'src/preload/index.ts')], outfile: resolve(root, 'out/preload/index.cjs') },
-  // The embedded preview webview's own preload — see preview-inspect.ts for why it exists.
-  { entryPoints: [resolve(root, 'src/preload/inspector.ts')], outfile: resolve(root, 'out/preload/inspector.cjs') },
   // Service workers' preload — the Badging API stub; see preload/service-worker.ts.
   { entryPoints: [resolve(root, 'src/preload/service-worker.ts')], outfile: resolve(root, 'out/preload/service-worker.cjs') },
 ]

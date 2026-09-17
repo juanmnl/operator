@@ -35,11 +35,6 @@ describe('crop rect math', () => {
     expect(S.unionRect([])).toEqual({ x: 0, y: 0, w: 0, h: 0 })
   })
 
-  it('turns an inspect page box into view DIP with the emulated scale', () => {
-    expect(S.pageToView({ x: 100, y: 40, w: 200, h: 10 }, 0.5)).toEqual({ x: 50, y: 20, w: 100, h: 5 })
-    expect(S.pageToView({ x: 1, y: 2, w: 3, h: 4 }, 0)).toEqual({ x: 1, y: 2, w: 3, h: 4 })
-  })
-
   it('maps an outline into device pixels relative to the crop (Retina = 2)', () => {
     expect(S.toBitmapRect({ x: 100, y: 200, w: 50, h: 20 }, { x: 76, y: 176, w: 98, h: 68 }, 2)).toEqual({ x: 48, y: 48, w: 100, h: 40 })
   })

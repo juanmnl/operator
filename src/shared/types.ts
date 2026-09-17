@@ -398,18 +398,19 @@ export interface ReapPlan {
 
 /** Capture a screenshot crop for a Preview note (see electron/src/main/preview-shots.ts). */
 export interface PreviewShotRequest {
-  /** `window`: the main window (Annotate, the iframe). `inspect`: the native inspect view. */
-  source: 'window' | 'inspect'
+  /** The main window, over the preview stage. Annotate and Inspect notes both capture from it: in
+   *  Electron the page is always the stage's iframe. */
+  source: 'window'
   /** Folder under `~/.operator/preview-shots`: the project id. */
   project: string
   /** The note's id; Inspect notes use `pick-<uuid>`. */
   id: string
-  /** What to outline. `window`: window CSS px. `inspect`: the page's CSS px (converted with `scale`). */
+  /** What to outline, in window CSS px. */
   targets: Array<{ x: number; y: number; w: number; h: number }>
-  /** `inspect`: the page's emulated scale. */
-  scale?: number
-  /** `window`: the preview stage's rect; the crop never leaves it. */
+  /** The preview stage's rect; the crop never leaves it. */
   clip?: { x: number; y: number; w: number; h: number }
+  /** Hide the in-page inspector's hover outline before capturing (Inspect notes). */
+  hideInspector?: boolean
   /** Outline colour. */
   outline?: { r: number; g: number; b: number }
   /** Space around the targets, in the same units. Default 24; a point pin asks for more. */
@@ -492,11 +493,12 @@ export interface PreviewOverlayTokens {
 
 /** What the Preview's native inspect view does inside the page (`src/shared/preview-overlay.js`). */
 export interface PreviewOverlayConfig {
-  /** The stage's scale, applied as the view's device-emulation scale so the page lays out at the device
-   *  preset rather than at the stage's scaled width. */
+  /** The stage's scale. The page itself is scaled by the renderer (a CSS transform on the iframe in
+   *  Electron, device emulation of the native webview in Tauri); the scripts divide their own sizes
+   *  by it so a 1px line stays 1px on screen. */
   scale: number
-  /** The inspector's hover outline and click-to-compose. Off when the view only hosts redlines and
-   *  the grid. */
+  /** The inspector's hover outline and click-to-compose. Off when only redlines and the grid are
+   *  drawn. */
   inspect: boolean
   /** Draw redlines. False when they are off, or paused by Annotate. */
   redlines: boolean

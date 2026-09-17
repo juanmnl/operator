@@ -1,26 +1,31 @@
-// The preview inspector: an embedded webview on the user's own dev server, with a script
-// injected that highlights elements and lets them annotate one. Mirrors
-// `preview_inspect_open/move/close` in `lib.rs`.
+// The preview inspector, redlines and the layout grid, drawn INSIDE the Preview's own <iframe>.
+// Mirrors `preview_inspect_open/move/close` in `lib.rs` by API; the Tauri shell still uses a
+// native webview.
 //
-// THE BEACON IS GONE, AND THAT IS THE POINT. Tauri's version can't route command IPC from a
-// remote embedded webview — its ACL denies it — so the injected script encodes its payload into
-// an `<img src="operatorpick://ipc?d=<base64>">` and Rust registers a custom URI scheme to
-// catch it. Electron has no such restriction: a WebContentsView takes a preload, and the
-// preload can `ipcRenderer.send` directly. So the whole beacon/custom-scheme/1×1-GIF apparatus
-// collapses into one function call, and the script's `beacon()` is redirected onto it.
+// NO SECOND PAGE. Until 2026-09-17 this created a WebContentsView over the stage and loaded the
+// preview URL into it whenever Inspect or Redlines turned on (AppPreviewPanel `nativeHost`). That
+// was a second copy of the app: the iframe the user had been using stayed underneath, and the view
+// started again from the URL Operator had loaded. Toggling Redlines therefore reset the app's
+// in-app route, its state and its scroll position, and laid the page out under device emulation
+// (`screen.width` became the viewport, heights rounded differently). That was the reported
+// "turning Redlines on changes the layout" (dev/results/redlines-layout-shift-2026-09-17.md,
+// `probes/preview-host-parity.cjs`).
 //
-// The script itself is `src/shared/preview-inspector.js` — the SAME file the Rust `include_str!`s,
-// so a fix to the inspector lands in both shells.
+// The renderer cannot reach into the cross-origin iframe, but the main process can: the iframe is
+// a frame of the main window's webContents, and `WebFrameMain.executeJavaScript` runs in it. So the
+// same scripts (`src/shared/preview-inspector.js`, `src/shared/preview-overlay.js`) are injected
+// into the page the user is already looking at, and switching an overlay only reconfigures them.
+// The renderer scales the iframe with a CSS transform, which the scripts already account for with
+// `scale`, exactly as they did for the emulated view.
 //
-// THE VIEW ALSO HOSTS REDLINES AND THE LAYOUT GRID (Electron only). Nothing the renderer draws can
-// paint above this view, so while it is up those are drawn inside the page by
-// `src/shared/preview-overlay.js`, configured from the renderer through `configure`. The page is
-// zoomed to the stage's scale, so it lays out at the device preset instead of at the stage's
-// scaled width.
-import { BrowserWindow, WebContentsView, ipcMain, type NativeImage } from 'electron'
+// Picks and the redline anchor come back through `window.parent.postMessage`, which the renderer
+// accepts only from its own preview iframe (AppPreviewPanel). The main window's preload also runs
+// in this frame (badge block) and exposes nothing to it; that stays true.
+import { BrowserWindow, webFrameMain, type WebFrameMain } from 'electron'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { PreviewOverlayConfig } from '../../../src/shared/types'
+import { PREVIEW_BRIDGE_JS, PREVIEW_FRAME_NAME } from '../../../src/shared/preview-frame'
 import { OVERLAY_FNS_JS } from './overlay-fns'
 
 /** A script from `src/shared`, read once at module load so a failure is loud at boot, not on
@@ -42,163 +47,102 @@ function readShared(file: string): string {
 const INSPECTOR_JS = readShared('preview-inspector.js')
 const OVERLAY_JS = readShared('preview-overlay.js')
 
-/** Redirect the shared script's `beacon()` onto real IPC. The script calls
- *  `beacon(data, onOk, onFail)`; under Tauri that is an image request to a custom scheme,
- *  here it is a channel. Appended rather than edited into the file so the file stays exactly
- *  what Rust compiles in. */
-const BRIDGE_JS = `
-;(function () {
-  if (!window.__operatorPickBridge) return;
-  window.__operatorBeacon = function (data, onOk, onFail) {
-    try { window.__operatorPickBridge(JSON.stringify(data)); onOk && onOk() }
-    catch (e) { onFail && onFail() }
-  };
-})();
-`
-
-let view: WebContentsView | null = null
-
-/** Lay the page out at the device preset inside a smaller box: a 1280 preset in a 640px stage is
- *  scale 0.5, so the page gets a 1280px CSS viewport drawn at half size.
- *
- *  NOT `setZoomFactor`. Chromium keeps zoom per HOST in the session and ignores the port, and this
- *  view shares the default session with the main window. Zooming a lane's http://localhost:5173
- *  therefore also zoomed the dev build's own http://localhost:1420 window, and every localhost page
- *  opened after it (`probes/preview-zoom-isolation.cjs`: main window and a fresh window both at 0.5).
- *  Device emulation is per webContents: the same probe leaves both at 1, and the page still lays
- *  out at 1280 with a 100px element measuring 100. Scale 1 (Fit, or a preset that fits) turns it
- *  off, which returns the page to the box's own width. */
-function scalePage(v: WebContentsView, scale: number): void {
-  const { width, height } = v.getBounds()
-  if (!(scale > 0) || scale >= 1 || width <= 0 || height <= 0) {
-    v.webContents.disableDeviceEmulation()
-    return
-  }
-  const size = { width: Math.round(width / scale), height: Math.round(height / scale) }
-  v.webContents.enableDeviceEmulation({
-    screenPosition: 'desktop',
-    screenSize: size,
-    viewPosition: { x: 0, y: 0 },
-    deviceScaleFactor: 0,
-    viewSize: size,
-    scale,
-  })
+/** Every overlay off: what `close` leaves in the page instead of unloading it. */
+export function overlaysOff(config: PreviewOverlayConfig | null): PreviewOverlayConfig | null {
+  return config ? { ...config, inspect: false, redlines: false, grid: null } : null
 }
-/** The renderer's latest overlay configuration, applied again after every page load. */
+
+/** The preview iframe among a window's frames: a DIRECT child of the top frame, with our name.
+ *  Anything nested inside the previewed app (its own iframes) never matches. */
+export function isPreviewFrame(frame: { name: string; parent: unknown } | null | undefined, top: unknown): boolean {
+  return !!frame && frame.parent === top && frame.name === PREVIEW_FRAME_NAME
+}
+
+/** The renderer's latest overlay configuration, applied again after every load of the page. */
 let config: PreviewOverlayConfig | null = null
-/** Whether a redline anchor is set, as last reported to the renderer. */
-let anchored = false
+/** Whether the renderer has the overlays open (Inspect or Redlines). Off, the page is left alone. */
+let active = false
 
 export function installPreviewInspect(
   getWindow: () => BrowserWindow | null,
-  onPick: (data: string) => void,
   onAnchor: (anchored: boolean) => void,
 ): void {
-  const setAnchored = (value: boolean) => {
-    if (anchored === value) return
-    anchored = value
-    onAnchor(value)
-  }
-
-  ipcMain.on('operator-preview:pick', (_e, data: string) => onPick(data))
-  ipcMain.on('operator-preview:anchor', (_e, value: unknown) => setAnchored(value === true))
-
-  /** Push the configuration into the page: the page's scale first, then the overlay's settings. */
-  const apply = () => {
-    if (!view || !config) return
-    scalePage(view, config.scale)
-    void view.webContents
-      .executeJavaScript(`window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(config)})`)
-      .catch(() => { /* mid-navigation: did-finish-load applies it again */ })
-  }
-
-  const open = (url: string, x: number, y: number, w: number, h: number) => {
+  const previewFrame = (): WebFrameMain | undefined => {
     const win = getWindow()
-    if (!win) throw new Error('no main window')
-    if (view) { move(x, y, w, h); return }
-
-    view = new WebContentsView({
-      webPreferences: {
-        preload: join(__dirname, '..', 'preload', 'inspector.cjs'),
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
-        // Loads the (sandboxed) preload in the page's iframes too, for the badge stub. It grants
-        // no node access; see preload/inspector.ts.
-        nodeIntegrationInSubFrames: true,
-      },
-    })
-    // The user's dev server is arbitrary local code. It gets no node, no shared context with
-    // the app's renderer, and its own navigation is its business — but it must not be able to
-    // open windows in our app.
-    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    // A new document has no anchor, whatever the previous one had.
-    view.webContents.on('did-start-navigation', (details) => {
-      if (details.isMainFrame && !details.isSameDocument) setAnchored(false)
-    })
-    view.webContents.on('did-finish-load', () => {
-      void view?.webContents.executeJavaScript(INSPECTOR_JS + BRIDGE_JS + OVERLAY_FNS_JS + OVERLAY_JS)
-        .then(apply)
-        .catch((e) => { console.error('[inspector] injection failed:', e) })
-    })
-    win.contentView.addChildView(view)
-    move(x, y, w, h)
-    void view.webContents.loadURL(url)
+    if (!win || win.isDestroyed()) return undefined
+    const top = win.webContents.mainFrame
+    return top.frames.find((f) => isPreviewFrame(f, top))
   }
 
-  const move = (x: number, y: number, w: number, h: number) => {
-    if (!view) return
-    view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) })
-    // The emulated size is the box divided by the scale, so a new box needs a new emulation.
-    if (config) scalePage(view, config.scale)
+  /** Put the scripts in the page (each guards against running twice) and apply the configuration. */
+  const inject = (frame: WebFrameMain) => {
+    if (!config) return
+    const script = INSPECTOR_JS + PREVIEW_BRIDGE_JS + OVERLAY_FNS_JS + OVERLAY_JS
+      + `\n;window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(config)});`
+    void frame.executeJavaScript(script).catch(() => { /* mid-navigation: did-frame-finish-load injects again */ })
+  }
+
+  const apply = () => {
+    const frame = previewFrame()
+    if (frame && config) inject(frame)
+  }
+
+  let watched: BrowserWindow | null = null
+  const watch = () => {
+    const win = getWindow()
+    if (!win || win === watched) return
+    watched = win
+    // The page navigated or reloaded (HMR full reload, a link, the ⟳ button): a new document has
+    // none of the scripts and no anchor.
+    win.webContents.on('did-frame-finish-load', (_e, isMainFrame, processId, routingId) => {
+      if (isMainFrame || !active) return
+      const frame = webFrameMain.fromId(processId, routingId)
+      if (!isPreviewFrame(frame, win.webContents.mainFrame)) return
+      onAnchor(false)
+      inject(frame!)
+    })
+  }
+
+  // The page is loaded by the renderer's iframe; `url` and the rect are the native-view API's and
+  // are not needed here.
+  const open = () => {
+    watch()
+    active = true
+    apply()
   }
 
   const close = () => {
+    active = false
+    const off = overlaysOff(config)
     config = null
-    setAnchored(false)
-    if (!view) return
-    const win = getWindow()
-    try { win?.contentView.removeChildView(view) } catch { /* window already gone */ }
-    // `close()` on the webContents, not just removal: an orphaned view keeps its renderer
-    // process, and this one is running someone else's dev server.
-    try { view.webContents.close() } catch { /* already closing */ }
-    view = null
-  }
-
-  // Hidden, not closed. Nothing the renderer draws can paint above this view, including the
-  // full-window overlay a side-panel drag relies on for its mousemoves; closing it instead would
-  // reload the page and lose whatever the user had done in it.
-  const setVisible = (visible: boolean) => {
-    view?.setVisible(visible)
+    onAnchor(false)
+    const frame = previewFrame()
+    if (frame && off) {
+      void frame.executeJavaScript(`window.__operatorOverlay && window.__operatorOverlay.configure(${JSON.stringify(off)})`)
+        .catch(() => { /* page gone */ })
+    }
   }
 
   const configure = (next: PreviewOverlayConfig) => {
     config = next
-    apply()
+    if (active) apply()
   }
 
   const clearAnchor = () => {
-    void view?.webContents
-      .executeJavaScript('window.__operatorOverlay && window.__operatorOverlay.clearAnchor()')
+    void previewFrame()?.executeJavaScript('window.__operatorOverlay && window.__operatorOverlay.clearAnchor()')
       .catch(() => { /* no page to clear */ })
   }
 
-  // SCREENSHOTS for Inspect notes (preview-shot-capture.ts). The hover outline is hidden first so it
-  // is not in the picture; the crop's own outline is drawn afterwards.
-  const size = () => {
-    if (!view) return null
-    const { width, height } = view.getBounds()
-    return width > 0 && height > 0 ? { width, height } : null
-  }
-  const capture = async (rect: { x: number; y: number; w: number; h: number }): Promise<NativeImage | null> => {
-    if (!view) return null
-    await view.webContents
-      .executeJavaScript('window.__operatorInspector && window.__operatorInspector.hide && window.__operatorInspector.hide()')
+  // SCREENSHOTS for Inspect notes (preview-shot-capture.ts) are taken from the main window over the
+  // stage, like Annotate's. The hover outline lives in the page, so it is hidden first; the crop's own
+  // outline is drawn into the image afterwards.
+  const hideOutline = async () => {
+    await previewFrame()?.executeJavaScript('window.__operatorInspector && window.__operatorInspector.hide && window.__operatorInspector.hide()')
       .catch(() => { /* no page */ })
-    return view.webContents.capturePage({ x: rect.x, y: rect.y, width: rect.w, height: rect.h })
   }
 
-  previewApi = { open, move, close, setVisible, configure, clearAnchor, size, capture }
+  // The iframe moves and hides with the renderer's DOM, so these have nothing to do.
+  previewApi = { open, move: () => {}, close, setVisible: () => {}, configure, clearAnchor, hideOutline }
 }
 
 export let previewApi: {
@@ -208,6 +152,5 @@ export let previewApi: {
   setVisible: (visible: boolean) => void
   configure: (config: PreviewOverlayConfig) => void
   clearAnchor: () => void
-  size: () => { width: number; height: number } | null
-  capture: (rect: { x: number; y: number; w: number; h: number }) => Promise<NativeImage | null>
-} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {}, size: () => null, capture: async () => null }
+  hideOutline: () => Promise<void>
+} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {}, hideOutline: async () => {} }

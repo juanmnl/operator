@@ -1,10 +1,10 @@
 // SCREENSHOTS FOR PREVIEW NOTES. Every Annotate and Inspect note carries a crop of what the user
 // was looking at, so the agent gets the picture along with the location.
 //
-// WHERE THE PIXELS COME FROM. The renderer cannot read them: in Annotate the page is a cross-origin
-// iframe, and in Inspect it is a separate native view. Main can, with `capturePage(rect)`:
-//   - Annotate: the main window's webContents. Its capture includes the out-of-process iframe.
-//   - Inspect:  the inspect view's own webContents (see `previewApi.capture` in preview-inspect.ts).
+// WHERE THE PIXELS COME FROM. The renderer cannot read them: the page is a cross-origin iframe. Main
+// can, with the main window's `capturePage(rect)`, whose capture includes the out-of-process iframe.
+// Annotate and Inspect notes both use it; the renderer maps an Inspect pick's page box to window px
+// through the stage's rect and the iframe's scale (src/renderer/lib/preview-shot.ts `pageToStage`).
 //
 // Everything that is arithmetic or bytes is a pure function here and tested: the crop rect (margin,
 // clamping to the surface), the outline drawn into the bitmap, the output size cap and the
@@ -40,13 +40,6 @@ export function unionRect(rects: readonly Rect[]): Rect {
 /** A point pin as a box centred on it. */
 export function pinRect(x: number, y: number, size = PIN_BOX): Rect {
   return { x: x - size / 2, y: y - size / 2, w: size, h: size }
-}
-
-/** An element box in the inspect page's CSS px → the view's DIP. The page is emulated at the
- *  stage's scale (a 1280 preset in a 640 stage is 0.5), so a CSS px is `scale` DIP on screen. */
-export function pageToView(r: Rect, scale: number): Rect {
-  const k = scale > 0 ? scale : 1
-  return { x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k }
 }
 
 /** THE CROP: the targets plus a margin, clamped to the capture surface, in whole DIP.
