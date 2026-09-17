@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   describeOrigin, isPageMode, originKey, originLabel, pushOrigin, ORIGIN_STACK_MAX,
-  PAGE_MODES, type NavOrigin, type ViewState,
+  PAGE_MODES, type LaneRef, type NavOrigin, type ViewState,
 } from './nav-origin'
 
 // THE RULES BEHIND THE BACK CONTROL on a PageShell page. Held here rather than in the view
@@ -74,14 +74,25 @@ describe('describeOrigin', () => {
     expect(describeOrigin(view({ contentMode: 'tuning' }))).toMatchObject({ mode: 'tuning' })
   })
 
+  it('records a focused lane — the commonest origin there is', () => {
+    // You are in a lane and you hit Preferences from the rail's foot. The scope around the lane
+    // is still its project, and `contentMode` ranks a live lane above the project home.
+    expect(describeOrigin(view({ contentMode: 'localTerminal', projectId: 'p1', terminalId: 't3' })))
+      .toEqual({ projectId: 'p1', mode: 'project', projectTab: 'board', lane: { terminalId: 't3' } })
+  })
+
+  it('records a lane that belongs to no project', () => {
+    // A terminal opened on a bare folder. Restoring it sets no scope, which is correct.
+    expect(describeOrigin(view({ contentMode: 'localTerminal', projectId: null, terminalId: 't0' })))
+      .toMatchObject({ projectId: null, lane: { terminalId: 't0' } })
+  })
+
   it('refuses to name a view it could not restore', () => {
-    // A focused lane: a NavOrigin cannot name a pty, and "the project it belongs to" would be a
-    // guess — the one thing this control must never be.
-    expect(describeOrigin(view({ contentMode: 'localTerminal', projectId: 'p1' }))).toBeNull()
-    // A project mode with no project, and a folder page with no folder record: both unreachable
-    // in practice, both null rather than half a destination.
+    // A project mode with no project, a folder page with no folder record, a lane with no pty:
+    // all unreachable in practice, all null rather than half a destination.
     expect(describeOrigin(view({ contentMode: 'project', projectId: null }))).toBeNull()
     expect(describeOrigin(view({ contentMode: 'folderPrefs', folderPrefs: null }))).toBeNull()
+    expect(describeOrigin(view({ contentMode: 'localTerminal', projectId: 'p1', terminalId: null }))).toBeNull()
     expect(describeOrigin(view({ contentMode: 'something-new' }))).toBeNull()
   })
 })
@@ -111,6 +122,27 @@ describe('originLabel', () => {
     }, PROJECTS)
     expect(label).toBe('Project settings · mantel landing')
     expect(label).not.toMatch(/ ·| · /)
+  })
+
+  it("names a lane with the lane's own display name, never its id", () => {
+    const lane: NavOrigin = { projectId: 'p1', mode: 'project', projectTab: 'board', lane: { terminalId: 't3' } }
+    const live: LaneRef[] = [{ terminalId: 't3', name: 'Code' }]
+    expect(originLabel(lane, PROJECTS, live)).toBe('Code')
+  })
+
+  it('renders NO control when the lane is gone — never its project instead', () => {
+    // A lane can end, be closed, or have its worktree reaped while the user sits in settings.
+    // Falling back to "operator" would label the control with one destination and land on another.
+    const lane: NavOrigin = { projectId: 'p1', mode: 'project', projectTab: 'board', lane: { terminalId: 't3' } }
+    expect(originLabel(lane, PROJECTS, [])).toBeNull()
+    expect(originLabel(lane, PROJECTS, [{ terminalId: 't9', name: 'Review' }])).toBeNull()
+    // A live lane with no usable name is the same answer.
+    expect(originLabel(lane, PROJECTS, [{ terminalId: 't3', name: '  ' }])).toBeNull()
+  })
+
+  it('still names a project home by its project — the lane field is what changes the rule', () => {
+    const home: NavOrigin = { projectId: 'p1', mode: 'project', projectTab: 'board' }
+    expect(originLabel(home, PROJECTS, [{ terminalId: 't3', name: 'Code' }])).toBe('operator')
   })
 
   it('returns null rather than a label it cannot keep', () => {
@@ -148,6 +180,18 @@ describe('pushOrigin', () => {
 
   it('drops the chain when there is no origin — the new page gets NO control', () => {
     expect(pushOrigin([OVERVIEW], null, 'prefs')).toEqual([])
+  })
+
+  it('treats two lanes of one project as two places', () => {
+    const a: NavOrigin = { projectId: 'p1', mode: 'project', projectTab: 'board', lane: { terminalId: 't1' } }
+    const b: NavOrigin = { projectId: 'p1', mode: 'project', projectTab: 'board', lane: { terminalId: 't2' } }
+    expect(originKey(a)).toBe('lane:t1')
+    expect(originKey(b)).toBe('lane:t2')
+    expect(originKey(a)).not.toBe(originKey(b))
+    // …and neither is the project's home.
+    expect(originKey({ projectId: 'p1', mode: 'project', projectTab: 'board' })).toBe('project:p1')
+    // A chain from lane A to a settings page and on to lane B is three places, not a loop.
+    expect(pushOrigin([a], { projectId: null, mode: 'prefs', projectTab: 'board' }, 'lane:t2')).toEqual([a, { projectId: null, mode: 'prefs', projectTab: 'board' }])
   })
 
   it('treats two projects settings pages as two places', () => {
@@ -218,6 +262,20 @@ describe('the back control reaches every page', () => {
       expect(sourceOf(p), `${p} renders PageShell`).toContain('<PageShell')
       expect(sourceOf(p), `${p} must not carry its own back control`).not.toContain('data-page-back')
     }
+  })
+
+  // The existence guard is the whole job for a lane origin, and it cannot be unit-tested from
+  // here: it is a filter against the live terminal list inside the view. Held at the source so a
+  // refactor that names a lane from anything else has to argue with this test.
+  it('names a lane only from the live terminal list, by the one label ladder', () => {
+    const dash = stripComments(sourceOf('views/DashboardView.tsx'))
+    const memo = dash.slice(dash.indexOf('const backLanes'), dash.indexOf('const pageBack'))
+    expect(memo, 'backLanes must exist').not.toBe('')
+    // `contentMode` calls a lane on screen by this same test, so the two agree about what exists.
+    expect(memo).toContain('terminals.find')
+    // …and the words come from lib/session-label, not a second naming rule.
+    expect(memo).toContain('sessionLabel(')
+    expect(dash).toContain("from '../lib/session-label'")
   })
 
   // TWO VERBS NEVER SHARE A GLYPH. `‹` means "go back" in this app and nothing else, so the list

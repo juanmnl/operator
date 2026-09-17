@@ -17,9 +17,9 @@
 //
 // IT REUSES `ContinueTarget` (lib/workspace) rather than inventing a second "a view you can return
 // to". Two shapes for one idea is how the launcher's Continue offer and this control would start
-// disagreeing about what a view is. The three optional fields below are what a back control needs
-// and a launch offer never did: which gallery TAB, and which of the two pages that both report
-// `mode: 'prefs'` is meant.
+// disagreeing about what a view is. The four optional fields below are what a back control needs
+// and a launch offer never did: which gallery TAB; which of the two pages that both report
+// `mode: 'prefs'` is meant; and WHICH LANE, when the place you left was a focused one.
 
 import type { ContinueTarget } from './workspace'
 import type { GalleryTab } from '../components/dashboard/ProjectGallery'
@@ -32,7 +32,29 @@ export interface FolderPrefsOrigin {
   tab?: FolderPrefsTab
 }
 
-/** A view you can be sent back to. `ContinueTarget` plus the three things it never had to say. */
+/** A FOCUSED LANE, as a place.
+ *
+ *  The terminal id only. It is a per-RUN counter (`t0`, `t1`, … — see terminal_spawn) that repeats
+ *  every launch, which is the same reason `SavedSession.terminalId` is documented as stale after a
+ *  restart. So this must never be persisted, and the chain that holds it is in-memory and capped.
+ *  Within one run it is exactly right: it is what `contentMode` itself tests to decide whether a
+ *  lane is on screen, and it tells two lanes of one project apart.
+ *
+ *  No session id, no name. Both are resolved AT THE MOMENT the control renders or is pressed —
+ *  a name the user has since changed, or a session id that has since been replaced, would make
+ *  the control describe a lane that no longer reads that way. */
+export interface LaneOrigin {
+  terminalId: string
+}
+
+/** A live lane, named by the app's one label ladder (`lib/session-label`). The caller builds these
+ *  from what is ACTUALLY open; `originLabel` treats absence from this list as "the lane is gone". */
+export interface LaneRef {
+  terminalId: string
+  name: string
+}
+
+/** A view you can be sent back to. `ContinueTarget` plus the four things it never had to say. */
 export interface NavOrigin extends ContinueTarget {
   /** Which tab the gallery was on. Restoring the gallery without it drops you on `projects`,
    *  which is not the screen you left. */
@@ -43,6 +65,10 @@ export interface NavOrigin extends ContinueTarget {
   folderPrefs?: FolderPrefsOrigin
   /** Which tab Global settings was on. */
   globalPrefsTab?: FolderPrefsTab
+  /** Present = a focused LANE, not the project's home. `mode` is `'project'` for both (the lane's
+   *  project is still the scope to restore), so — as with `folderPrefs` — presence is what tells
+   *  them apart. */
+  lane?: LaneOrigin
 }
 
 /** The content modes that wear `PageShell` — the pages this control appears on. */
@@ -62,15 +88,18 @@ export interface ViewState {
   galleryTab: GalleryTab
   folderPrefs: FolderPrefsOrigin | null
   globalPrefsTab?: FolderPrefsTab
+  /** The pty that has focus. Set exactly when `contentMode` is `'localTerminal'`. */
+  terminalId?: string | null
 }
 
 /** The view on screen, as somewhere you could be returned to — or `null` when it is not a place
  *  this control can both NAME and RESTORE.
  *
- *  A focused lane (`localTerminal`) is the one deliberate null. `ContinueTarget` cannot name a
- *  pty, and falling back to "the project it belongs to" would be exactly the guess the rule above
- *  forbids: you would press a control labelled with a project name and land somewhere you had not
- *  been. So opening a settings page from a lane leaves the page with no back control. */
+ *  A FOCUSED LANE is a place, and it is the commonest origin there is: you are in a lane, you hit
+ *  Preferences or Global settings from the rail's foot. It carries the lane's terminal id and the
+ *  project scope around it. What it does NOT do is degrade — see `originLabel`: a lane that has
+ *  ended, been closed or had its worktree reaped is not replaced by its project, because pressing
+ *  a control labelled with a lane's name has to land on that lane or not be there at all. */
 export function describeOrigin(v: ViewState): NavOrigin | null {
   const base = { projectId: v.projectId, projectTab: v.projectTab }
   switch (v.contentMode) {
@@ -86,6 +115,10 @@ export function describeOrigin(v: ViewState): NavOrigin | null {
       return { ...base, mode: 'globalPrefs', globalPrefsTab: v.globalPrefsTab }
     case 'folderPrefs':
       return v.folderPrefs ? { ...base, mode: 'prefs', folderPrefs: v.folderPrefs } : null
+    case 'localTerminal':
+      // `mode: 'project'` — the scope to restore around the lane is still its project, and
+      // `contentMode` ranks a live lane above the project home, so the lane wins on arrival.
+      return v.terminalId ? { ...base, mode: 'project', lane: { terminalId: v.terminalId } } : null
     case 'agents':
       return { ...base, mode: 'agents' }
     case 'tuning':
@@ -101,7 +134,8 @@ export function describeOrigin(v: ViewState): NavOrigin | null {
 export function originKey(o: NavOrigin): string {
   switch (o.mode) {
     case 'gallery': return `gallery:${o.galleryTab ?? 'projects'}`
-    case 'project': return `project:${o.projectId ?? ''}`
+    // Two lanes of one project are two places, so the lane — not the project — is the key.
+    case 'project': return o.lane ? `lane:${o.lane.terminalId}` : `project:${o.projectId ?? ''}`
     case 'prefs': return o.folderPrefs ? `folderPrefs:${o.folderPrefs.projectPath}` : 'prefs'
     default: return o.mode
   }
@@ -111,7 +145,11 @@ export function originKey(o: NavOrigin): string {
  *
  *  A project that has since been forgotten returns null, and the caller renders nothing: a label
  *  is a promise about where the press lands, and there is no longer anywhere to land. */
-export function originLabel(o: NavOrigin, projects: ReadonlyArray<{ id: string; name: string }>): string | null {
+export function originLabel(
+  o: NavOrigin,
+  projects: ReadonlyArray<{ id: string; name: string }>,
+  lanes: readonly LaneRef[] = [],
+): string | null {
   switch (o.mode) {
     case 'gallery':
       switch (o.galleryTab) {
@@ -120,6 +158,14 @@ export function originLabel(o: NavOrigin, projects: ReadonlyArray<{ id: string; 
         default: return 'All projects'
       }
     case 'project': {
+      if (o.lane) {
+        // THE EXISTENCE GUARD, and the whole of it. A lane can end, be closed, or have its
+        // worktree reaped while the user sits in settings. Absent from the live list = no label,
+        // so no control — never the lane's PROJECT instead, which would be a control labelled
+        // with one destination that lands on another.
+        const name = lanes.find((l) => l.terminalId === o.lane!.terminalId)?.name.trim()
+        return name || null
+      }
       const name = projects.find((p) => p.id === o.projectId)?.name.trim()
       return name || null
     }

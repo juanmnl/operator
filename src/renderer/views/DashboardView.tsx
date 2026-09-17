@@ -65,7 +65,7 @@ import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened 
 import { DragRegion } from '../components/DragRegion'
 import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
 import { launchKind } from '../lib/launch-kind'
-import { describeOrigin, isPageMode, originKey, originLabel, pushOrigin, type NavOrigin } from '../lib/nav-origin'
+import { describeOrigin, isPageMode, originKey, originLabel, pushOrigin, type LaneRef, type NavOrigin } from '../lib/nav-origin'
 import { PageBackProvider } from '../components/settings/PageShell'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
 import { writesForDroppedPaths } from '../lib/paste-image'
@@ -4254,14 +4254,22 @@ export function DashboardView() {
   /** The last project you were IN, persisted as `Workspace.lastProjectId` so the offer survives a
    *  launch spent entirely on the overview. */
   const lastProjectRef = useRef<string | null>(null)
-  /** Land on a recorded view. Takes a `NavOrigin` — a `ContinueTarget` with the three extra facts
+  /** Land on a recorded view. Takes a `NavOrigin` — a `ContinueTarget` with the four extra facts
    *  a BACK control needs and the launch offer never did (which gallery tab; which of the two
-   *  pages that both report `mode: 'prefs'`; which tab of Global settings).
+   *  pages that both report `mode: 'prefs'`; which tab of Global settings; which lane).
    *
-   *  It now CLEARS what it used to leave standing. `activeFolderPrefs` outranks every flag below
-   *  in `contentMode`, so returning from the per-project settings page to the gallery set six
-   *  states and changed nothing on screen. Same for a stale terminal id, which would have pulled
-   *  a 'project' landing into `localTerminal`. */
+   *  IT CLEARS WHAT IT USED TO LEAVE STANDING, and the reason is the ORDER in `contentMode`. The
+   *  four flags below cover `prefs`, `agents`, `tuning` and `globalPrefs`, and setting them false
+   *  is enough to leave any of those. `activeFolderPrefs` is the fifth and LOWEST of the page
+   *  flags — but it still ranks above `localTerminal`, `project` and `gallery`, so leaving it set
+   *  pinned you to the per-project settings page: the old `applyView` set six states and changed
+   *  nothing on screen. A stale `activeTerminalId` is the same trap one rung down, turning a
+   *  'project' landing into `localTerminal`.
+   *
+   *  So both are cleared — EXCEPT when the target names a lane, which is the one view whose
+   *  restoration needs them. The session id is resolved here rather than recorded: a lane's
+   *  session object can be replaced while the user sits in settings, and `handleOpenProject`
+   *  already resolves it this way. */
   const applyView = useCallback((v: NavOrigin) => {
     setActiveProjectId(v.projectId)
     setProjectTab(v.projectTab)
@@ -4274,8 +4282,13 @@ export function DashboardView() {
     // Only when the target names one: a `ContinueTarget` from the launch plan doesn't, and
     // overwriting the tab with a default would move a screen nobody asked to move.
     if (v.galleryTab) setGalleryTab(v.galleryTab)
-    setActiveSessionId(null)
-    setActiveTerminalId(null)
+    if (v.lane) {
+      setActiveTerminalId(v.lane.terminalId)
+      setActiveSessionId(sessionsRef.current.find((x) => x.terminalId === v.lane!.terminalId)?.id ?? `local-${v.lane.terminalId}`)
+    } else {
+      setActiveSessionId(null)
+      setActiveTerminalId(null)
+    }
   }, [])
   const continueWhereYouWere = useCallback(() => {
     if (!continueTarget) return
@@ -4298,7 +4311,8 @@ export function DashboardView() {
     galleryTab,
     folderPrefs: activeFolderPrefs,
     globalPrefsTab,
-  }), [contentMode, activeProjectId, projectTab, galleryTab, activeFolderPrefs, globalPrefsTab])
+    terminalId: activeTerminalId,
+  }), [contentMode, activeProjectId, projectTab, galleryTab, activeFolderPrefs, globalPrefsTab, activeTerminalId])
   useEffect(() => { currentViewRef.current = currentView }, [currentView])
 
   // Cleared the moment you are no longer on a page that has a back control — by then you left by
@@ -4308,15 +4322,42 @@ export function DashboardView() {
     if (!isPageMode(contentMode) && originStack.length) setOriginStack([])
   }, [contentMode, originStack.length])
 
+  /** The lane the control would name, IF the top of the chain names one and it is still open.
+   *
+   *  THE EXISTENCE GUARD lives in this list. `contentMode` calls a lane on screen by exactly this
+   *  test — `terminals.some(t => t.id === activeTerminalId)` — so the control and the router agree
+   *  about what exists. A lane that ended, was closed, or had its worktree reaped drops out, the
+   *  label comes back null, and no control renders. It is NEVER replaced by the lane's project.
+   *
+   *  Built for the one lane that matters rather than for every open terminal: the chain names at
+   *  most one place at a time, and the rest would be work nothing reads.
+   *
+   *  The name comes from `lib/session-label`, the app's one label ladder — a user rename, then the
+   *  lane it was launched on, then its own first prompt, then the model. The same words the rail,
+   *  the palette and the dashboard use, so the control names the lane the way the user knows it. */
+  const backLanes = useMemo((): LaneRef[] => {
+    const tid = originStack[originStack.length - 1]?.lane?.terminalId
+    if (!tid) return []
+    const t = terminals.find((x) => x.id === tid)
+    if (!t) return []
+    const s = allSidebarSessions.find((x) => x.terminalId === tid)
+    const project = t.projectId ? projects.find((p) => p.id === t.projectId) : undefined
+    const role = t.roleId ? project?.roster?.find((r) => r.id === t.roleId) : undefined
+    const name = s
+      ? sessionLabel({ session: s, role, customName: customNames[s.id], fallback: s.projectName || 'Session' })
+      : (role?.name ?? 'Session')
+    return [{ terminalId: tid, name }]
+  }, [originStack, terminals, allSidebarSessions, projects, customNames])
+
   /** The control PageShell renders, or null for none. Null whenever there is no origin — a reload,
-   *  a page the launch plan restored straight into, or one opened from a focused lane (a pty is
-   *  not a place a `NavOrigin` can name). Never a control that guesses. */
+   *  or a page the launch plan restored straight into — and null again when the origin has since
+   *  stopped existing: a forgotten project, a lane that ended. Never a control that guesses. */
   const pageBack = useMemo(() => {
     const top = originStack[originStack.length - 1]
     if (!top) return null
-    const label = originLabel(top, projects)
-    // The project it names has been forgotten since. A label is a promise about where the press
-    // lands; with nowhere to land, no control.
+    const label = originLabel(top, projects, backLanes)
+    // The project it names has been forgotten since, or the lane it names has ended. A label is a
+    // promise about where the press lands; with nowhere to land, no control.
     if (!label) return null
     return {
       label,
@@ -4330,7 +4371,7 @@ export function DashboardView() {
         applyView(top)
       },
     }
-  }, [originStack, projects, applyView])
+  }, [originStack, projects, backLanes, applyView])
 
   // projectId → durable key of the agent last selected there. Kept in a ref because
   // `handleOpenProject` is a stable callback that reads refs by design, and this is exactly the
