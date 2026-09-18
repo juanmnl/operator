@@ -25,7 +25,7 @@ const CLAUDE_MD_POINTER = `# operator — Claude Code notes
 ## Obsidian project hub
 
 This project has a knowledge-hub note in the Obsidian vault, at:
-\`~/Work Vault/Operator/Operator.md\`
+\`~/Documents/Vaults/Work/Operator/Operator.md\`
 
 Read it for background and prior decisions before starting work here.`
 
