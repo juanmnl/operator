@@ -699,12 +699,24 @@ async function loadProvenance(): Promise<Map<string, ProvenanceRecord>> {
   return out
 }
 
-/** Directories with a live lane in them, from `sessions.json`.
+/** Is a `sessions.json` claim on `cwd` still backed by a running pty? `true` when main's pty table
+ *  has one in that directory, and ALSO when the table is not known in this process (the
+ *  `--mcp-serve` process, or before `setLivePtyCwds`): an unverifiable claim is kept, never dropped.
  *
- *  THE HONEST LIMITATION, restated from the audit so it is not lost: this is "sessions.json said
- *  so as of its last write", not a re-verification against the live process table. Verifying that
- *  would need per-pid `lsof`, which this project forbids for the TCC-prompt reason. It is
- *  therefore a FLOOR on what is live — which is the safe direction for it to be wrong in. */
+ *  G6 in dev/results/worktree-cleanup-audit-2026-09-25.md: a `terminalId` in `sessions.json` was
+ *  trusted on its own, and terminal ids restart every app run, so a claim written by a previous run
+ *  (`operator-db3d00`, claimed by `t20` since 2026-09-11) could never clear and blocked forever. */
+function claimIsLive(cwd: string): boolean {
+  const cwds = livePtyCwds?.()
+  return !cwds || !!ptyClaimOn(cwd, cwds)
+}
+
+/** Directories with a live lane in them: a `sessions.json` claim that main's pty table backs.
+ *
+ *  Where the pty table is known (main), a claim with no pty in its directory is stale and dropped.
+ *  Where it is not, this stays what it was: "sessions.json said so as of its last write", a FLOOR
+ *  on what is live — the safe direction to be wrong in. Per-pid `lsof` is never the answer here
+ *  (TCC prompt). */
 async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: Map<string, number> }> {
   const claims = new Map<string, string>()
   const lastActive = new Map<string, number>()
@@ -713,7 +725,7 @@ async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: 
     for (const s of Array.isArray(raw) ? raw : []) {
       const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown }
       if (typeof r?.cwd !== 'string') continue
-      if (typeof r.terminalId === 'string' && r.terminalId) claims.set(r.cwd, r.terminalId)
+      if (typeof r.terminalId === 'string' && r.terminalId && claimIsLive(r.cwd)) claims.set(r.cwd, r.terminalId)
       const at = typeof r.lastActiveAt === 'string' ? Date.parse(r.lastActiveAt) : NaN
       if (!Number.isNaN(at)) lastActive.set(r.cwd, Math.max(at, lastActive.get(r.cwd) ?? 0))
     }
@@ -948,8 +960,10 @@ export function checkAutoRemoval(trigger: string): Promise<void> {
  *  a lane that was just launched or resumed; `TerminalManager` knows every open pty's cwd now
  *  (Review M4). Set once from `index.ts`. Empty until then, which only ever removes a refusal the
  *  sessions file still makes. */
-let livePtyCwds: () => readonly string[] = () => []
-export function setLivePtyCwds(fn: () => readonly string[]): void { livePtyCwds = fn }
+let livePtyCwds: (() => readonly string[]) | null = null
+/** `null` un-wires it again (tests). While un-wired, `sessions.json` claims are trusted as before. */
+export function setLivePtyCwds(fn: (() => readonly string[]) | null): void { livePtyCwds = fn }
+const ptyCwdsNow = (): readonly string[] => livePtyCwds?.() ?? []
 
 /** A pty whose cwd is `path` or inside it. Pure given `cwds`. */
 export function ptyClaimOn(path: string, cwds: readonly string[]): string | undefined {
@@ -959,7 +973,7 @@ export function ptyClaimOn(path: string, cwds: readonly string[]): string | unde
 /** Is anything open in `path` RIGHT NOW: a pty in main, or a session record with a terminal. Asked
  *  per folder immediately before its removal, not once for the whole batch. */
 async function liveClaimNow(path: string): Promise<string | undefined> {
-  const pty = ptyClaimOn(path, livePtyCwds())
+  const pty = ptyClaimOn(path, ptyCwdsNow())
   if (pty) return `a terminal is open in ${pty}`
   const { claims } = await liveClaims()
   for (const [cwd, terminalId] of claims) {
@@ -1163,10 +1177,11 @@ export async function queueEndedSessions(): Promise<number> {
       const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown }
       if (typeof r?.cwd !== 'string' || typeof r.sourceCwd !== 'string') continue
       if (typeof r.worktreeBranch !== 'string' || !r.worktreeBranch) continue
-      // A `terminalId` means the roster believes a lane is open in it. At boot that belief is
-      // stale by definition — but it is the same floor the classifier uses, and erring toward
-      // "leave it alone" is the correct direction here too.
-      if (r.terminalId) continue
+      // A `terminalId` means the roster believes a lane is open in it. Kept only where main's pty
+      // table backs it (`claimIsLive`, the same test the classifier uses); a claim from a previous
+      // app run is an ended session like any other. This only QUEUES the removal; nothing drains
+      // an ended-session record automatically.
+      if (r.terminalId && claimIsLive(r.cwd)) continue
       if (!existsSync(r.cwd)) continue
       await queueRemoval({
         path: r.cwd,
@@ -1379,7 +1394,7 @@ export async function releaseWorktreeOnExit(terminalId: string, cwd: string | un
     else if (releaseBlocker(f)) why = releaseBlocker(f)!
     else {
       // The exiting pty is already marked exited, so only ANOTHER terminal open in it claims it.
-      const pty = ptyClaimOn(cwd, livePtyCwds())
+      const pty = ptyClaimOn(cwd, ptyCwdsNow())
       if (pty) why = `a terminal is still open in ${pty}`
     }
     if (why) {

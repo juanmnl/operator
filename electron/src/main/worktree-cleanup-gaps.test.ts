@@ -158,3 +158,63 @@ describe('dirtIsNonWork — against real git', () => {
     expect(await reap.dirtIsNonWork(lane.path, join(SANDBOX, 'no-such-repo'))).toBe(false)
   })
 })
+
+// ── (2) G6: a sessions.json claim counts only while main's pty table backs it ─────────────────────
+
+describe('stale sessions.json claims', () => {
+  const sessionsFile = () => join(process.env.OPERATOR_DIR!, 'sessions.json')
+  const writeSessions = (rows: unknown[]) => {
+    mkdirSync(process.env.OPERATOR_DIR!, { recursive: true })
+    writeFileSync(sessionsFile(), JSON.stringify(rows))
+  }
+  const record = (cwd: string, repo: string, over: Record<string, unknown> = {}) =>
+    ({ cwd, sourceCwd: repo, worktreeBranch: 'b', terminalId: 't20', lastActiveAt: '2026-09-11T10:00:00Z', ...over })
+
+  it('drops a claim no running pty backs, so the folder is no longer "a lane is open here"', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeSessions([record(lane.path, repo)])
+    reap.setLivePtyCwds(() => [])
+    try {
+      const f = await factsFor(lane.path)
+      expect(f.liveTerminalId).toBeUndefined()
+      expect((await entryFor(lane.path)).live).toBe(false)
+    } finally { reap.setLivePtyCwds(null) }
+  })
+
+  it('keeps the claim while a pty runs in that directory (or inside it)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeSessions([record(lane.path, repo)])
+    reap.setLivePtyCwds(() => [join(lane.path, 'docs')])
+    try {
+      expect((await factsFor(lane.path)).liveTerminalId).toBe('t20')
+    } finally { reap.setLivePtyCwds(null) }
+  })
+
+  it('keeps every claim where the pty table is not known (the --mcp-serve process)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeSessions([record(lane.path, repo)])
+    reap.setLivePtyCwds(null)
+    expect((await factsFor(lane.path)).liveTerminalId).toBe('t20')
+  })
+
+  it('queueEndedSessions queues a record whose claim is stale, and leaves a live or unverifiable one alone', async () => {
+    const repo = scratchRepo()
+    const stale = await wt.createWorktree(repo)
+    const running = await wt.createWorktree(repo)
+    writeSessions([record(stale.path, repo), record(running.path, repo, { terminalId: 't3' })])
+    const queued = async () => (await reap.loadPending()).map((p) => p.path)
+    reap.setLivePtyCwds(() => [running.path])
+    try {
+      await reap.queueEndedSessions()
+      expect(await queued()).toContain(stale.path)
+      expect(await queued()).not.toContain(running.path)
+    } finally { reap.setLivePtyCwds(null) }
+    // Un-wired: nothing with a terminal id is queued, as before.
+    for (const p of await queued()) await reap.clearPending(p)
+    await reap.queueEndedSessions()
+    expect(await queued()).toEqual([])
+  })
+})
