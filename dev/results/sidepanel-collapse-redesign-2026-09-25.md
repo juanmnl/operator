@@ -163,3 +163,19 @@ motion.
   be driven off a change in the rail's effective width instead of the ⌘B handler.
 - Grid terminal panes and the scratch shell are not in the mock fixture, so their single resize is
   argued from the code (both sit behind the pin or `suspendFit`), not measured.
+
+## Addendum: Electron dev app, read-only (2026-09-25, later)
+
+The Electron dev app came up on CDP 9340 (renderer on 1428, isolated OPERATOR_DIR, QA measuring in
+it). It runs code without this change, and it may not be restarted or driven during QA's run, so
+it was read over CDP only, with no toggles, navigation or project changes. What it shows at
+1100×720, dpr 2:
+
+- The rail has the baseline `transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1)`, and its column
+  is not fixed-width (no inner wrapper). There is no `SidePanelSlot`. So the "before" behaviour
+  measured in the harness is the code running in Electron.
+- No session is open (Worktrees page, 0 xterm panes), so a terminal refit cannot be observed there
+  without navigating.
+
+A real Electron before/after needs either a window in QA's run to toggle ⌘B and the panel in a
+session, or a second Electron instance on this branch (1431/9345). Launching that is the user's call.
