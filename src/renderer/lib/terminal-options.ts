@@ -163,6 +163,46 @@ export function scrollbackFor(active: boolean): number {
   return active ? ACTIVE_SCROLLBACK : INACTIVE_SCROLLBACK
 }
 
+/** The xterm 6 internals `resyncViewport` reaches. Checked against the installed 6.0.0 source
+ *  (`browser/Viewport.ts`) and both shipped bundles (`lib/xterm.js`, `lib/xterm.mjs`), where these
+ *  names survive unmangled. Optional throughout: an unopened terminal has no viewport. */
+type ViewportInternals = {
+  _core?: { _viewport?: { scrollToLine(line: number, disableSmoothScroll?: boolean): void; queueSync(ydisp?: number): void } }
+}
+
+/** Re-sync xterm's scroll viewport with the buffer after a `scrollback` change.
+ *
+ *  LOWERING `scrollback` TRIMS THE BUFFER SILENTLY. The option change resizes the buffers
+ *  (`BufferSet.ts:34`), and `Buffer.resize` drops the oldest lines and lowers `ybase`/`ydisp` to
+ *  match, but it fires neither `onResize` nor `onScroll`, the only two events the viewport syncs
+ *  on. The scrollable element keeps the old scroll height (about 10,000 lines) and the old scroll
+ *  position (the old bottom), while the buffer now holds about 2,000. Every wheel step then moves
+ *  that stale position, `_handleScroll` turns it into `scrollLines(+~8,000)` against the new
+ *  buffer, and `BufferService.scrollLines` clamps it to the bottom: the pane will not scroll up
+ *  until the lane prints a line or the grid resizes (dev/results/scrollback-freeze-2026-09-25.md).
+ *
+ *  The public API cannot repair it. `Terminal.scrollToBottom()` and `scrollToLine()` scroll
+ *  RELATIVE to `ydisp`, so with `ydisp` already at the bottom they are `scrollLines(0)` and leave
+ *  the stale position alone; `resize` to the same size returns early, and to a different size it
+ *  reaches the pty. So this calls the viewport directly, in this order:
+ *   1. `scrollToLine(viewportY, true)` puts the scroll position on the row the buffer shows, at
+ *      once. It fits inside the stale (larger) scroll height, and `_handleScroll` sees a zero
+ *      difference, so no lines are scrolled.
+ *   2. `queueSync()` resets the scroll height from the buffer on the next frame. The position
+ *      from step 1 is already valid under the new height, so nothing moves.
+ *  `queueSync(viewportY)` alone would not do it: it records `viewportY` as the latest position,
+ *  and `_sync` then skips `setScrollPosition` because the two are equal, which leaves the stale
+ *  position standing. */
+export function resyncViewport(term: object): void {
+  const viewport = (term as ViewportInternals)._core?._viewport
+  const buffer = (term as Partial<Pick<Terminal, 'buffer'>>).buffer
+  if (!viewport || !buffer) return
+  try {
+    viewport.scrollToLine(buffer.active.viewportY, true)
+    viewport.queueSync()
+  } catch { /* disposed */ }
+}
+
 /** The part of xterm's `Terminal` a pane's (de)activation touches. Narrow so the sequence can be
  *  tested against a recorder as well as a real terminal. */
 export type ActivatingTerminal = Pick<Terminal, 'options' | 'rows' | 'write' | 'scrollToBottom' | 'refresh' | 'focus' | 'blur'>
@@ -196,6 +236,10 @@ export function applyPaneActivation(
   // mid-navigation. Lowering the option TRIMS the buffer immediately, which is the whole
   // point; see INACTIVE_SCROLLBACK for what that costs and why it is the right trade.
   term.options.scrollback = scrollbackFor(active)
+  // Both directions. Hiding trims, and the viewport has to follow the trim then, not on the next
+  // activation, because an ended lane is never activated again. Showing only raises the limit and
+  // changes no lines; the resync there is cheap and repairs any drift left from while hidden.
+  resyncViewport(term)
 
   if (!active) {
     term.options.cursorBlink = false

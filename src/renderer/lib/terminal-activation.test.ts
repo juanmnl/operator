@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import { applyPaneActivation, ACTIVE_SCROLLBACK, INACTIVE_SCROLLBACK, type ActivatingTerminal } from './terminal-options'
 
@@ -116,6 +116,135 @@ describe('applyPaneActivation — against a real xterm', () => {
     await settled(t)
     expect(t.buffer.active.viewportY).toBe(t.buffer.active.baseY)
     expect(row(t, t.buffer.active.baseY + t.buffer.active.cursorY)).toBe('> prompt')
+    t.dispose()
+  })
+})
+
+// THE SCROLLBACK FREEZE (dev/results/scrollback-freeze-2026-09-25.md). Lowering `scrollback` on
+// hide trims the buffer without telling xterm's scroll viewport, which keeps the old scroll height
+// and position about 8,000 lines past the trimmed buffer. After that, a wheel-up moves the stale
+// position, xterm turns it into a scroll DOWN, and the buffer clamps it to the bottom: nothing
+// moves until the lane prints a line. These tests need the viewport, so the terminal is OPENED
+// into jsdom. That takes three shims jsdom lacks: `matchMedia`, a canvas context (null is enough
+// for the DOM renderer) and a character measurement (offsetWidth/offsetHeight on xterm's measure
+// span), without which every cell would be 0px tall and scroll positions would all be 0.
+describe('applyPaneActivation — the viewport follows the scrollback trim', () => {
+  const CELL_H = 16
+  const saved: { matchMedia?: typeof window.matchMedia; getContext?: unknown; ow?: PropertyDescriptor; oh?: PropertyDescriptor } = {}
+  beforeAll(() => {
+    saved.matchMedia = window.matchMedia
+    saved.getContext = HTMLCanvasElement.prototype.getContext
+    saved.ow = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+    saved.oh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    window.matchMedia = ((media: string) => ({
+      matches: false, media, onchange: null,
+      addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    HTMLCanvasElement.prototype.getContext = (() => null) as unknown as typeof HTMLCanvasElement.prototype.getContext
+    const measured = (el: HTMLElement) => el.classList.contains('xterm-char-measure-element')
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get(this: HTMLElement) { return measured(this) ? 8 * (this.textContent?.length ?? 0) : 0 } })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get(this: HTMLElement) { return measured(this) ? CELL_H : 0 } })
+  })
+  afterAll(() => {
+    window.matchMedia = saved.matchMedia!
+    HTMLCanvasElement.prototype.getContext = saved.getContext as typeof HTMLCanvasElement.prototype.getContext
+    if (saved.ow) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', saved.ow)
+    if (saved.oh) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved.oh)
+  })
+
+  type Scrollable = { getScrollDimensions(): { scrollHeight: number }; getScrollPosition(): { scrollTop: number } }
+  const scrollable = (t: Terminal) => (t as unknown as { _core: { _viewport: { _scrollableElement: Scrollable } } })._core._viewport._scrollableElement
+  /** The viewport's idea of the buffer, in rows, next to the buffer's own. Equal when in sync. */
+  const viewportState = (t: Terminal) => ({
+    scrollRows: scrollable(t).getScrollDimensions().scrollHeight / CELL_H,
+    bufferRows: t.buffer.active.length,
+    topRow: scrollable(t).getScrollPosition().scrollTop / CELL_H,
+    viewportY: t.buffer.active.viewportY,
+  })
+  // `queueSync` runs on xterm's next render frame; two frames covers it plus anything it queues.
+  const frames = async () => {
+    for (let i = 0; i < 2; i++) await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)))
+  }
+  const hooks = (active: () => boolean) => ({ fit: () => {}, takeHiddenOutput: () => '', isActive: active })
+
+  /** An opened, active pane holding `lines` lines of history, viewport settled. */
+  async function longPane(lines = 6000): Promise<Terminal> {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    const t = new Terminal({ cols: 40, rows: 6, scrollback: ACTIVE_SCROLLBACK })
+    t.open(el)
+    await new Promise<void>((r) => t.write(Array.from({ length: lines }, (_, i) => `line ${i}`).join('\r\n'), r))
+    await frames()
+    return t
+  }
+
+  it('is set up right: a long active pane starts with viewport and buffer in sync', async () => {
+    const t = await longPane()
+    expect(t.buffer.active.length).toBeGreaterThan(INACTIVE_SCROLLBACK)
+    const s = viewportState(t)
+    expect(s.scrollRows).toBe(s.bufferRows)
+    expect(s.topRow).toBe(s.viewportY)
+    t.dispose()
+  })
+
+  it('hide, then show: the wheel scrolls up at once instead of crossing ~8k lines of dead track', async () => {
+    const t = await longPane()
+    let active = false
+    applyPaneActivation(t, false, hooks(() => active))
+    await frames()
+    active = true
+    applyPaneActivation(t, true, hooks(() => active))
+    await new Promise<void>((r) => t.write('', r))
+    await frames()
+
+    const s = viewportState(t)
+    expect(s.bufferRows).toBeLessThanOrEqual(INACTIVE_SCROLLBACK + t.rows) // the memory trim still happened
+    expect(s.scrollRows).toBe(s.bufferRows)
+    expect(s.topRow).toBe(s.viewportY)
+    expect(t.buffer.active.viewportY).toBe(t.buffer.active.baseY) // opens at the bottom
+
+    const before = t.buffer.active.viewportY
+    t.scrollLines(-3) // what TerminalPane's wheel handler calls
+    await frames()
+    expect(t.buffer.active.viewportY).toBe(before - 3)
+    t.dispose()
+  })
+
+  it('an ENDED lane, trimmed on hide and never shown again, still scrolls', async () => {
+    // `active` requires `!ended`, so an ended lane never reaches the show path. Its repair has
+    // to happen on the hide.
+    const t = await longPane()
+    applyPaneActivation(t, false, hooks(() => false))
+    await frames()
+    const before = t.buffer.active.viewportY
+    t.scrollLines(-3)
+    await frames()
+    expect(t.buffer.active.viewportY).toBe(before - 3)
+    t.dispose()
+  })
+
+  it('a pane left scrolled up when hidden keeps its position and the viewport agrees with it', async () => {
+    const t = await longPane()
+    t.scrollLines(-500)
+    await frames()
+    applyPaneActivation(t, false, hooks(() => false))
+    await frames()
+    const s = viewportState(t)
+    expect(s.viewportY).toBeLessThan(t.buffer.active.baseY)
+    expect(s.scrollRows).toBe(s.bufferRows)
+    expect(s.topRow).toBe(s.viewportY)
+    t.scrollLines(-3)
+    await frames()
+    expect(t.buffer.active.viewportY).toBe(s.viewportY - 3)
+    t.dispose()
+  })
+
+  it('a short pane (under the trim) is left exactly where it was', async () => {
+    const t = await longPane(300)
+    const before = viewportState(t)
+    applyPaneActivation(t, false, hooks(() => false))
+    await frames()
+    expect(viewportState(t)).toEqual(before)
     t.dispose()
   })
 })
