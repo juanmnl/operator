@@ -384,6 +384,9 @@ export interface ReapEntry {
   removedWithoutGit: boolean
   /** Why the automatic rule WOULD remove it. Report only in stage 1. */
   wouldRemove?: string
+  /** Merged by squash or rebase: not an ancestor of the default branch, but `git cherry` finds every
+   *  commit's patch there. A label only; the class stays `unmerged`. */
+  mergedByPatch?: boolean
   /** Its provenance was written by the boot backfill. */
   backfilled?: boolean
 }

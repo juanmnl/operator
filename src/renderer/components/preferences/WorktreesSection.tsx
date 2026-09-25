@@ -602,7 +602,7 @@ function Row({ entry, last, showSize, checked, disabled, onToggle, onRescue }: {
           {baseName(entry.path)}
         </span>
         <span style={{ fontSize: 10, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {CLASS_LABEL[entry.cls]}{entry.backfilled ? ' (provenance backfilled)' : ''} · {unsavedLabel(entry)}
+          {entry.mergedByPatch ? 'Merged by squash or rebase' : CLASS_LABEL[entry.cls]}{entry.backfilled ? ' (provenance backfilled)' : ''} · {unsavedLabel(entry)}
         </span>
       </span>
       {entry.branch && (

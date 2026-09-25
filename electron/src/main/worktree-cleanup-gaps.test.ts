@@ -346,3 +346,54 @@ describe('rescueWorktree', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+// ── (5) G5: merged by squash or rebase is labelled, and only labelled ─────────────────────────────
+
+describe('merged-by-patch label', () => {
+  /** A lane with `n` commits of its own; returns their shas, oldest first. */
+  async function laneWithCommits(n: number) {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const shas: string[] = []
+    for (let i = 0; i < n; i++) {
+      writeFileSync(join(lane.path, `f${i}.md`), `change ${i}\n`)
+      git(lane.path, ['add', '-A']); git(lane.path, ['commit', '-qm', `c${i}`])
+      shas.push(git(lane.path, ['rev-parse', 'HEAD']))
+    }
+    return { repo, lane, shas }
+  }
+
+  it('labels a rebase-merged branch (its commits cherry-picked onto main), class unchanged', async () => {
+    const { repo, lane, shas } = await laneWithCommits(2)
+    writeFileSync(join(repo, 'unrelated.md'), 'main moved on\n')
+    git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'main moves'])
+    git(repo, ['cherry-pick', ...shas])
+    const e = await entryFor(lane.path)
+    expect(e.mergedByPatch).toBe(true)
+    expect(e.cls).toBe('unmerged')
+    expect(e.auto).toBe(false)
+    expect(e.reason).toMatch(/merged by squash or rebase/)
+  })
+
+  it('labels a single-commit squash merge', async () => {
+    const { repo, lane } = await laneWithCommits(1)
+    git(repo, ['merge', '-q', '--squash', lane.branch]); git(repo, ['commit', '-qm', 'squash'])
+    expect((await entryFor(lane.path)).mergedByPatch).toBe(true)
+  })
+
+  it('does not label a branch with a change main does not have', async () => {
+    const { repo, lane, shas } = await laneWithCommits(2)
+    git(repo, ['cherry-pick', shas[0]]) // only one of the two landed
+    const e = await entryFor(lane.path)
+    expect(e.mergedByPatch).toBeUndefined()
+    expect(e.reason).toMatch(/is not merged into the default branch/)
+  })
+
+  it('an ancestor-merged branch is plain merged, not "by patch"', async () => {
+    const { repo, lane } = await laneWithCommits(1)
+    git(repo, ['merge', '-q', '--ff-only', lane.branch])
+    const e = await entryFor(lane.path)
+    expect(e.cls).toBe('merged-clean')
+    expect(e.mergedByPatch).toBeUndefined()
+  })
+})

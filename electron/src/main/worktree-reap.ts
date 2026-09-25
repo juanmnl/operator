@@ -140,6 +140,10 @@ export interface WorktreeFacts {
   registered: boolean
   /** Branch is an ancestor of the source repo's default branch. `undefined` = could not tell. */
   merged?: boolean
+  /** Not an ancestor, but `git cherry <default> <branch>` lists no commit whose patch is missing
+   *  from the default branch: it was merged by squash or rebase. A LABEL ONLY (G5): the class stays
+   *  `unmerged`, so nothing about removal changes. */
+  mergedByPatch?: boolean
   /** The provenance record, if `worktree-provenance.json` has one for this path. */
   provenance?: { sourceRepo: string; createdAt: number; branch: string }
   /** The source repo still exists on disk. */
@@ -179,6 +183,8 @@ export interface ReapEntry {
   removedWithoutGit: boolean
   /** Set when the automatic rule WOULD take this directory; the sentence says why. Report only. */
   wouldRemove?: string
+  /** Merged by squash or rebase (every patch is in the default branch). Label only. */
+  mergedByPatch?: boolean
   backfilled?: boolean
 }
 
@@ -250,7 +256,9 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
       : 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
     case 'unmerged': return f.merged === undefined
       ? `Could not tell whether ${f.branch ?? 'this branch'} is merged.`
-      : `${f.branch ?? 'This branch'} is not merged into the default branch.`
+      : f.mergedByPatch
+        ? `${f.branch ?? 'This branch'} was merged by squash or rebase: every commit's change is already in the default branch. Not removed automatically.`
+        : `${f.branch ?? 'This branch'} is not merged into the default branch.`
     case 'unattributed': return 'No provenance record — Operator cannot prove it created this.'
     case 'debris': return 'Leftover from an interrupted worktree creation.'
     case 'dead-source-repo': return 'Its source repository no longer exists on disk; git cannot reason about it.'
@@ -356,6 +364,7 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       removedWithoutGit: !gitRepoFor(f),
       wouldRemove: wouldAutoRemove(f, now) ?? undefined,
       backfilled: f.backfilled,
+      ...(f.mergedByPatch ? { mergedByPatch: true } : {}),
     }
   })
   const auto = entries.filter((e) => e.auto)
@@ -778,6 +787,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   // of repos, and the merged set is a property of the repo.
   const mergedCache = new Map<string, Set<string> | null>()
   const registeredCache = new Map<string, Set<string> | null>()
+  const defaultCache = new Map<string, string | null>()
 
   const facts = await Promise.all(names.map(async (name): Promise<WorktreeFacts> => {
     const path = join(root, name)
@@ -811,6 +821,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
     }
 
     let merged: boolean | undefined
+    let mergedByPatch = false
     let registered = false
     if (sourceRepo && sourceRepoExists) {
       if (!registeredCache.has(sourceRepo)) registeredCache.set(sourceRepo, await registeredPaths(sourceRepo))
@@ -819,6 +830,10 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
         if (!mergedCache.has(sourceRepo)) mergedCache.set(sourceRepo, await mergedBranches(sourceRepo))
         const mergedSet = mergedCache.get(sourceRepo)
         merged = mergedSet && branch ? mergedSet.has(branch) : undefined
+        if (merged === false && branch && branch !== 'HEAD') {
+          if (!defaultCache.has(sourceRepo)) defaultCache.set(sourceRepo, await defaultBranchOf(sourceRepo))
+          mergedByPatch = await allPatchesIn(sourceRepo, defaultCache.get(sourceRepo) ?? null, branch)
+        }
       }
     }
 
@@ -847,6 +862,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       backfilled: prov?.createdBy === 'backfill',
       registered,
       merged,
+      mergedByPatch: mergedByPatch || undefined,
       provenance: prov ? { sourceRepo: prov.sourceRepo, createdAt: prov.createdAt, branch: prov.branch } : undefined,
       sourceRepoExists,
       liveTerminalId: claims.get(path),
@@ -915,6 +931,15 @@ async function mergedBranches(repo: string): Promise<Set<string> | null> {
   const out = await git(repo, ['branch', '--merged', base, '--format=%(refname:short)'])
   if (out == null) return null
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))
+}
+
+/** `git cherry <base> <branch>` names no commit with a `+`: every commit on the branch has an
+ *  equivalent patch in `base`. `false` on any doubt, including git failing. */
+async function allPatchesIn(repo: string, base: string | null, branch: string): Promise<boolean> {
+  if (!base) return false
+  const out = await git(repo, ['cherry', base, branch])
+  if (out == null) return false
+  return !out.split('\n').some((l) => l.startsWith('+'))
 }
 
 async function defaultBranchOf(repo: string): Promise<string | null> {
