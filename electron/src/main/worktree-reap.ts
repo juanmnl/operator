@@ -44,8 +44,9 @@ const execFileAsync = promisify(execFile)
  *  The reaper was built and landed dry-run-only on purpose: the plan it produces is a claim about
  *  34 GB of the user's work, and the right order is to look at the claim before acting on it. The
  *  Settings page renders the plan; the boot and quit triggers compute it and log it; nothing
- *  calls `removeWorktree` until this is flipped or a caller passes `dryRun: false` explicitly
- *  (which today only the Settings button does, and only when the user presses it).
+ *  calls `removeWorktree` until this is flipped or a caller passes `dryRun: false` explicitly:
+ *  the Settings buttons, on a press, and the boot retry of removals someone already started
+ *  (`drainPending(false, userStartedRemoval)` in `reconcileAtBoot`).
  *
  *  Flip to `true` after the plan has been reviewed on a real machine and the auto tier looks
  *  right. Nothing else needs to change. */
@@ -1068,11 +1069,23 @@ export async function clearPending(path: string): Promise<void> {
   if (next.length !== existing.length) await writePending(next)
 }
 
-/** Retry every removal that was requested and never finished.
+/** The reason `queueEndedSessions` writes. Boot reconciliation queued it; no person asked. */
+export const ENDED_SESSION_REASON = 'ended session with no open tab (boot reconciliation)'
+
+/** A removal someone STARTED — a lane close, a Settings removal, a lane's `worktree_done` — as
+ *  opposed to one boot reconciliation queued on its own. Only these are retried for real at boot
+ *  (G3): the person already asked, and the interruption is the only reason it did not happen.
+ *
+ *  Ended-session records stay report-only on purpose. At boot, every lane that was open at the last
+ *  quit looks ended (no pty yet), and those are the lanes the restore offer presents; removing their
+ *  folders would mark them "folder missing" in that offer. */
+export const userStartedRemoval = (e: PendingRemoval): boolean => e.reason !== ENDED_SESSION_REASON
+
+/** Retry every removal that was requested and never finished, or only those `which` accepts.
  *
  *  A record whose directory is already gone is simply dropped — the removal did happen, we just
  *  never got to clear the record, which is the ordinary outcome of the crash this exists for. */
-export async function drainPending(dryRun: boolean): Promise<{ removed: string[]; failed: string[]; held: string[]; pending: number }> {
+export async function drainPending(dryRun: boolean, which: (e: PendingRemoval) => boolean = () => true): Promise<{ removed: string[]; failed: string[]; held: string[]; pending: number }> {
   const list = await loadPending()
   const removed: string[] = []
   const failed: string[] = []
@@ -1080,10 +1093,12 @@ export async function drainPending(dryRun: boolean): Promise<{ removed: string[]
   // outlive its directory and later name a REATTACHED lane at the same deterministic path, so the
   // record is never enough on its own (Review L1).
   const held: string[] = []
-  const facts = dryRun ? new Map<string, WorktreeFacts>() : new Map((await gatherFacts()).map((f) => [f.path, f]))
+  // Facts for the records this run may act on, not for every worktree on disk.
+  const targets = dryRun ? [] : list.filter((e) => which(e) && existsSync(e.path)).map((e) => e.path)
+  const facts = new Map((targets.length ? await gatherFacts({ only: targets }) : []).map((f) => [f.path, f]))
   for (const entry of list) {
     if (!existsSync(entry.path)) { await clearPending(entry.path); continue }
-    if (dryRun) continue
+    if (dryRun || !which(entry)) continue
     const f = facts.get(entry.path)
     const claim = await liveClaimNow(entry.path)
     if (claim || !f || f.liveTerminalId || needsUnsavedConfirm(unsavedWorkOf(f))) {
@@ -1188,7 +1203,7 @@ export async function queueEndedSessions(): Promise<number> {
         sourceRepo: r.sourceCwd,
         branch: r.worktreeBranch,
         requestedAt: Date.now(),
-        reason: 'ended session with no open tab (boot reconciliation)',
+        reason: ENDED_SESSION_REASON,
       })
       queued++
     }
@@ -1205,14 +1220,18 @@ export async function reconcileAtBoot(): Promise<void> {
     void scheduleSweep()
     await backfillProvenanceAtBoot()
     const queued = await queueEndedSessions()
-    const drained = await drainPending(!AUTO_REAP_ON_TRIGGERS)
+    // FOR REAL, whatever `AUTO_REAP_ON_TRIGGERS` says, but only for removals someone started and
+    // an interruption stopped (G3). The live, unsaved-work and guard checks inside still apply to
+    // each one; anything they hold stays in the file.
+    const drained = await drainPending(false, userStartedRemoval)
     const result = await reap({ dryRun: !AUTO_REAP_ON_TRIGGERS })
     const gb = (n: number) => (n / 1024 ** 3).toFixed(2)
     console.error(
       `[reap] boot: ${result.plan.entries.length} worktrees, ${result.plan.auto.length} in the auto tier`
       + `${result.plan.sizesOmitted ? '' : ` (${gb(result.plan.autoBytes)} GB of ${gb(result.plan.totalBytes)} GB)`}`
-      + `, ${result.plan.asks.length} need a decision; ${queued} ended session(s) queued, ${drained.pending} pending`
-      + `${AUTO_REAP_ON_TRIGGERS ? `; removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
+      + `, ${result.plan.asks.length} need a decision; ${queued} ended session(s) queued; interrupted removals retried:`
+      + ` ${drained.removed.length} removed, ${drained.held.length} held, ${drained.failed.length} failed; ${drained.pending} pending`
+      + `${AUTO_REAP_ON_TRIGGERS ? `; auto tier removed ${result.removed.length}` : ' — auto tier DRY RUN'}`,
     )
   } catch (e) {
     console.error('[reap] boot reconciliation failed:', e)

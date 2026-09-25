@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -216,5 +216,59 @@ describe('stale sessions.json claims', () => {
     for (const p of await queued()) await reap.clearPending(p)
     await reap.queueEndedSessions()
     expect(await queued()).toEqual([])
+  })
+})
+
+// ── (3) G3: boot retries removals someone started, and only those ────────────────────────────────
+
+describe('boot retries interrupted removals', () => {
+  const branchExists = (repo: string, b: string) => { try { git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]); return true } catch { return false } }
+  const pendingPaths = async () => (await reap.loadPending()).map((p) => p.path)
+
+  it('removes an interrupted lane close at boot, keeps the branch, and clears the record', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    await reap.queueRemoval({ path: lane.path, sourceRepo: repo, branch: lane.branch, requestedAt: Date.now(), reason: 'lane close' })
+    reap.setLivePtyCwds(() => [])
+    try { await reap.reconcileAtBoot() } finally { reap.setLivePtyCwds(null) }
+    expect(existsSync(lane.path)).toBe(false)
+    expect(branchExists(repo, lane.branch)).toBe(true)
+    expect(await pendingPaths()).not.toContain(lane.path)
+  })
+
+  it('holds one with unsaved work, and one a pty is open in, and keeps their records', async () => {
+    const repo = scratchRepo()
+    const dirty = await wt.createWorktree(repo)
+    writeFileSync(join(dirty.path, 'notes.md'), 'only here\n')
+    const open = await wt.createWorktree(repo)
+    for (const l of [dirty, open]) {
+      await reap.queueRemoval({ path: l.path, sourceRepo: repo, branch: l.branch, requestedAt: Date.now(), reason: 'lane close' })
+    }
+    reap.setLivePtyCwds(() => [open.path])
+    try { await reap.reconcileAtBoot() } finally { reap.setLivePtyCwds(null) }
+    expect(existsSync(dirty.path)).toBe(true)
+    expect(existsSync(open.path)).toBe(true)
+    expect(await pendingPaths()).toEqual(expect.arrayContaining([dirty.path, open.path]))
+    for (const p of [dirty.path, open.path]) await reap.clearPending(p)
+  })
+
+  it('leaves an ended-session record queued by boot reconciliation alone', async () => {
+    const repo = scratchRepo()
+    const ended = await wt.createWorktree(repo)
+    await reap.queueRemoval({ path: ended.path, sourceRepo: repo, branch: ended.branch, requestedAt: Date.now(), reason: reap.ENDED_SESSION_REASON })
+    reap.setLivePtyCwds(() => [])
+    try { await reap.reconcileAtBoot() } finally { reap.setLivePtyCwds(null) }
+    expect(existsSync(ended.path)).toBe(true)
+    expect(await pendingPaths()).toContain(ended.path)
+    await reap.clearPending(ended.path)
+  })
+
+  it('quit still drains nothing', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    await reap.queueRemoval({ path: lane.path, sourceRepo: repo, branch: lane.branch, requestedAt: Date.now(), reason: 'lane close' })
+    await reap.reapOnQuit()
+    expect(existsSync(lane.path)).toBe(true)
+    await reap.clearPending(lane.path)
   })
 })

@@ -234,7 +234,8 @@ function boot(): void {
   // remaining removal trigger was a renderer-only tab the user never dismissed (defect #3).
   //
   // Not awaited: it shells out to git once per source repo and nothing about opening the window
-  // depends on it. It never throws, and while `AUTO_REAP_ON_TRIGGERS` is false it only reports.
+  // depends on it. It never throws. It removes only what someone already asked to remove and an
+  // interruption stopped; everything else it only reports while `AUTO_REAP_ON_TRIGGERS` is false.
   // Wired BEFORE the boot pass reads any claim: a `sessions.json` claim is trusted only where this
   // table backs it, and an un-wired table means "trust the file". `terminals` may be unset for the
   // first moments; the closure answers an empty table then, which is the truth at boot.
