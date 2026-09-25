@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import { applyPaneActivation, ACTIVE_SCROLLBACK, INACTIVE_SCROLLBACK, type ActivatingTerminal } from './terminal-options'
+import xtermPackage from '@xterm/xterm/package.json'
+import appPackage from '../../../package.json'
 
 /** A terminal that records every call and option write, and holds write callbacks until the test
  *  says the bytes have parsed — which is what real xterm does asynchronously. */
@@ -177,6 +179,27 @@ describe('applyPaneActivation — the viewport follows the scrollback trim', () 
     await frames()
     return t
   }
+
+  // THE CANARY. `resyncViewport` reaches xterm internals and returns quietly when they are missing,
+  // because a pane must not crash over a scroll repair. That quiet is also how a renamed internal
+  // would bring the freeze back with nothing failing, so this test is where it has to fail loudly.
+  it('CANARY: the xterm internals resyncViewport calls exist on a real opened Terminal', async () => {
+    const t = await longPane(10)
+    const viewport = (t as unknown as { _core?: { _viewport?: Record<string, unknown> } })._core?._viewport
+    expect(viewport, 'Terminal._core._viewport is gone: resyncViewport is now a no-op and the scrollback freeze is back').toBeDefined()
+    expect(typeof viewport!.scrollToLine, 'Viewport.scrollToLine is gone').toBe('function')
+    expect(typeof viewport!.queueSync, 'Viewport.queueSync is gone').toBe('function')
+    // The two-argument form: `scrollToLine(line, disableSmoothScroll)`. The one-argument
+    // `scrollToLine` on the public Terminal is RELATIVE and cannot do the repair.
+    expect((viewport!.scrollToLine as (...a: unknown[]) => void).length, 'Viewport.scrollToLine changed shape').toBe(2)
+    t.dispose()
+  })
+
+  it('CANARY: @xterm/xterm stays pinned to the exact version installed', () => {
+    // A caret range would let a minor release rename the internals above without anyone
+    // choosing to upgrade. Moving this pin is a deliberate act: bump both together, re-run.
+    expect(appPackage.dependencies['@xterm/xterm']).toBe(xtermPackage.version)
+  })
 
   it('is set up right: a long active pane starts with viewport and buffer in sync', async () => {
     const t = await longPane()
