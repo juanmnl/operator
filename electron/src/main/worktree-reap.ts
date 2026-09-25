@@ -21,7 +21,8 @@
 // silently skipped forever (that was defect #6) — it is surfaced as `unattributed` for a human
 // to stand in for the missing proof.
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { copyFile, lstat, mkdir, readFile, readdir, readlink, rename, stat, symlink, writeFile, unlink } from 'node:fs/promises'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
@@ -118,6 +119,9 @@ export interface WorktreeFacts {
    *  untracked root `node_modules` symlink. Such dirt does not count as unsaved. `undefined` or
    *  `false` whenever any entry is anything else, or the question could not be answered. */
   dirtIsNonWork?: boolean
+  /** The unsaved work was rescued (copied out with `rescueWorktree`) and has not changed since:
+   *  the rescue directory. Such work is PRESERVED and does not count as unsaved. */
+  rescuedTo?: string
   /** Commits on HEAD not reachable from any OTHER local branch or any remote-tracking branch.
    *  `undefined` when git could not answer. */
   unsavedCommits?: number
@@ -162,6 +166,8 @@ export interface ReapEntry {
   uncommitted?: number
   /** Every uncommitted file is a copy of one that exists elsewhere (or a node_modules link). */
   uncommittedIsNonWork?: boolean
+  /** Its unsaved work was rescued to this directory and has not changed since. */
+  rescuedTo?: string
   unsavedCommits?: number
   /** Git answered both unsaved-work questions. */
   unsavedKnown: boolean
@@ -276,6 +282,8 @@ export interface UnsavedWork {
   any: boolean
   /** The uncommitted files are all provably not work, so they are not counted in `any`. */
   uncommittedIsNonWork?: boolean
+  /** The unsaved work was rescued to this directory and is unchanged since; not counted in `any`. */
+  rescuedTo?: string
 }
 
 /** WHAT WOULD BE LOST. The user's rule: uncommitted changes, or commits not reachable from another
@@ -289,8 +297,14 @@ export function unsavedWorkOf(f: WorktreeFacts): UnsavedWork {
   const uncommitted = f.uncommittedCount
   const known = uncommitted !== undefined && f.unsavedCommits !== undefined
   const nonWork = !!f.dirtIsNonWork && (uncommitted ?? 0) > 0
-  const any = (nonWork ? 0 : uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0
-  return { uncommitted, unsavedCommits: f.unsavedCommits, known, any, ...(nonWork ? { uncommittedIsNonWork: true } : {}) }
+  // Rescued and unchanged since: every file and commit that would be lost has a copy under
+  // ~/.operator/rescued, so nothing here is the only copy any more.
+  const any = !f.rescuedTo && ((nonWork ? 0 : uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0)
+  return {
+    uncommitted, unsavedCommits: f.unsavedCommits, known, any,
+    ...(nonWork ? { uncommittedIsNonWork: true } : {}),
+    ...(f.rescuedTo ? { rescuedTo: f.rescuedTo } : {}),
+  }
 }
 
 /** Manual removal of this directory needs the explicit second confirmation. */
@@ -335,6 +349,7 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       live: !!f.liveTerminalId,
       uncommitted: unsaved.uncommitted,
       uncommittedIsNonWork: unsaved.uncommittedIsNonWork,
+      rescuedTo: unsaved.rescuedTo,
       unsavedCommits: unsaved.unsavedCommits,
       unsavedKnown: unsaved.known,
       needsUnsavedConfirm: entryNeedsConfirm(f),
@@ -752,10 +767,11 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   } catch {
     return []
   }
-  const [provenance, { claims, lastActive }, sizes] = await Promise.all([
+  const [provenance, { claims, lastActive }, sizes, rescues] = await Promise.all([
     loadProvenance(),
     liveClaims(),
     opts.withSizes ? sizesOf(names.map((n) => join(root, n)), !!opts.refreshSizes) : Promise.resolve(new Map<string, number>()),
+    loadRescues(),
   ])
 
   // One `git branch --merged` per SOURCE REPO, not per worktree: 107 directories share a handful
@@ -808,6 +824,11 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
 
     // Only asked of a dirty tree: a clean one has nothing to excuse.
     const nonWork = gitValid && status ? await dirtIsNonWork(path, sourceRepoExists ? sourceRepo : undefined) : false
+    // A rescue covers the work as it was when copied. Anything changed since (a new edit, a new
+    // commit, a file rewritten) changes the fingerprint, and the work counts as unsaved again.
+    const rescue = rescues.get(path)
+    const rescuedTo = gitValid && rescue && existsSync(rescue.dir) && (await workFingerprint(path, branch)) === rescue.fingerprint
+      ? rescue.dir : undefined
 
     const activity = [prov?.createdAt, headAt, lastActive.get(path)].filter((n): n is number => typeof n === 'number')
     return {
@@ -818,6 +839,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       dirty: !!status,
       uncommittedCount: status == null ? undefined : status.split('\n').filter(Boolean).length,
       dirtIsNonWork: nonWork || undefined,
+      rescuedTo,
       unsavedCommits,
       sourceRepoHint: sourceRepo,
       orphaned: !!(sourceRepo && sourceRepoExists && adminEntry && !registered && !existsSync(adminEntry)),
@@ -1011,6 +1033,129 @@ export async function removeSelected(paths: readonly string[], confirmedUnsaved:
     }
   }
   return result
+}
+
+// ── rescue: copy a worktree's unsaved work out, so removing it loses nothing ─────────────────
+//
+// The audit's class D holds work that exists nowhere else, some of it lane reports that never
+// reached the main checkout. Rescue copies that work to ~/.operator/rescued/<dir>-<date>/: every
+// uncommitted and untracked non-ignored file, a `git diff HEAD --binary` patch, and a bundle of
+// any commits no other branch or remote holds. The directory then counts as PRESERVED, so the
+// user can remove it without the unsaved-work step. Rescue removes nothing; the user still
+// presses remove, and a change after the rescue makes the work unsaved again.
+
+const rescuedRoot = () => join(operatorDir(), 'rescued')
+const rescueIndexFile = () => join(rescuedRoot(), 'index.json')
+
+export interface RescueRecord { path: string; dir: string; at: number; fingerprint: string }
+
+async function loadRescues(): Promise<Map<string, RescueRecord>> {
+  const out = new Map<string, RescueRecord>()
+  try {
+    const raw = JSON.parse(await readFile(rescueIndexFile(), 'utf8')) as RescueRecord[]
+    for (const r of Array.isArray(raw) ? raw : []) {
+      if (r && typeof r.path === 'string' && typeof r.dir === 'string' && typeof r.fingerprint === 'string') out.set(r.path, r)
+    }
+  } catch { /* none yet */ }
+  return out
+}
+
+/** One hash over everything a rescue copies: HEAD, the status, the tracked diff, the contents of
+ *  every untracked file, and the commits no other branch or remote holds. `null` when git cannot
+ *  answer any part, which never matches a record. */
+export async function workFingerprint(path: string, branch: string | undefined): Promise<string | null> {
+  const head = await git(path, ['rev-parse', 'HEAD'])
+  const status = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  const diff = await gitRaw(path, ['diff', 'HEAD', '--binary'])
+  const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
+  const commits = await git(path, ['rev-list', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+  if (head == null || status == null || diff == null || commits == null) return null
+  const untracked = parseStatusZ(status).filter((e) => e.xy === '??').map((e) => e.path)
+  let blobs = ''
+  for (let i = 0; i < untracked.length; i += 200) {
+    const ids = await git(path, ['hash-object', '--no-filters', '--', ...untracked.slice(i, i + 200)])
+    if (ids == null) return null
+    blobs += ids + '\n'
+  }
+  return createHash('sha256').update([head, status, diff, blobs, commits].join('\0')).digest('hex')
+}
+
+export interface RescueResult {
+  dir: string
+  /** Uncommitted and untracked files copied. */
+  files: number
+  /** Commits in `commits.bundle`; 0 when every commit is on another branch or a remote. */
+  commits: number
+  /** The rescue is recorded, so the directory now counts as preserved. False when the tree changed
+   *  while it was being copied: the copy is kept, but it does not stand in for the work. */
+  preserved: boolean
+}
+
+/** `<name>-<YYYY-MM-DD>` under the rescue root, suffixed `-2`, `-3`… if taken. Never reused. */
+function rescueDirFor(path: string, now: Date): string {
+  const day = now.toISOString().slice(0, 10)
+  const base = join(rescuedRoot(), `${basename(path)}-${day}`)
+  let dir = base
+  for (let n = 2; existsSync(dir); n++) dir = `${base}-${n}`
+  return dir
+}
+
+/** Copy a worktree's unsaved work out. Reads the worktree only; writes only under the rescue root. */
+export async function rescueWorktree(path: string, now = new Date()): Promise<RescueResult> {
+  const f = (await gatherFacts({ only: [path] }))[0]
+  if (!f) throw new Error(`${path} is not a directory under the worktree root.`)
+  if (!f.gitValid) throw new Error('git cannot read it, so there is no status or diff to rescue from.')
+  const before = await workFingerprint(path, f.branch)
+  const status = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  const diff = await gitRaw(path, ['diff', 'HEAD', '--binary'])
+  if (before == null || status == null || diff == null) throw new Error('git could not report what is unsaved in it.')
+
+  const dir = rescueDirFor(path, now)
+  await mkdir(join(dir, 'files'), { recursive: true })
+  const copied: string[] = []
+  for (const e of parseStatusZ(status)) {
+    const from = join(path, e.path)
+    const to = join(dir, 'files', e.path)
+    let st
+    try { st = await lstat(from) } catch { continue } // deleted: the patch records it
+    await mkdir(dirname(to), { recursive: true })
+    if (st.isSymbolicLink()) await symlink(await readlink(from), to)
+    else if (st.isFile()) await copyFile(from, to)
+    else continue
+    copied.push(e.path)
+  }
+  await writeFile(join(dir, 'changes.patch'), diff)
+
+  const exclude = f.branch && f.branch !== 'HEAD' ? [`--exclude=${f.branch}`] : []
+  const unsaved = (await git(path, ['rev-list', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])) ?? ''
+  const commits = unsaved.split('\n').filter(Boolean).length
+  if (commits) {
+    const out = await git(path, ['bundle', 'create', join(dir, 'commits.bundle'), 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+    if (out == null) throw new Error(`Copied the files to ${dir}, but git could not bundle the ${commits} unsaved commit(s). Nothing was recorded as preserved.`)
+  }
+  const manifest = {
+    source: path, sourceRepo: f.sourceRepoHint, branch: f.branch, head: (await git(path, ['rev-parse', 'HEAD'])) ?? undefined,
+    at: now.toISOString(), files: copied, patch: 'changes.patch', bundle: commits ? 'commits.bundle' : undefined, commits,
+  }
+  await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+  await writeFile(join(dir, 'README.md'), [
+    `# Rescued from ${basename(path)}`, '',
+    `Copied ${now.toISOString()} from ${path}${f.branch ? ` (branch ${f.branch})` : ''}.`, '',
+    '- `files/`: every uncommitted and untracked file, at its path in the worktree.',
+    '- `changes.patch`: `git diff HEAD --binary`; restore with `git apply changes.patch` on that HEAD.',
+    ...(commits ? [`- \`commits.bundle\`: ${commits} commit(s) no other branch or remote held; restore with \`git fetch <this dir>/commits.bundle HEAD\`.`] : []),
+    '',
+  ].join('\n'))
+
+  // Recorded only if nothing changed while copying; otherwise the copy may be a mix of two states.
+  const after = await workFingerprint(path, f.branch)
+  const preserved = after === before
+  if (preserved) {
+    const index = await loadRescues()
+    index.set(path, { path, dir, at: now.getTime(), fingerprint: before })
+    await writeFile(rescueIndexFile(), JSON.stringify([...index.values()], null, 2))
+  }
+  return { dir, files: copied.length, commits, preserved }
 }
 
 // ── the pending-removal record ───────────────────────────────────────────────────────────────

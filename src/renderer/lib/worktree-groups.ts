@@ -73,7 +73,15 @@ export function unsavedLabel(e: ReapEntry): string {
     parts.push(isDetached(e) ? `${n} on a detached HEAD, on no branch` : `${n} on no other branch or remote`)
   }
   if (e.removedWithoutGit) parts.push('git does not recognise it as a worktree')
+  if (e.rescuedTo && parts.length) parts.push(`rescued to ${e.rescuedTo.replace(/^.*\/\.operator\//, '~/.operator/')}`)
   return parts.length ? parts.join(' · ') : 'No unsaved work'
+}
+
+/** Rescue is offered where it can stand in for the work: git can read the folder and name what is
+ *  unsaved, nothing is open in it, and it has not already been rescued as it is now. */
+export function canRescue(e: ReapEntry): boolean {
+  return !e.live && e.unsavedKnown && !e.removedWithoutGit && !e.rescuedTo
+    && ((!!e.uncommitted && !e.uncommittedIsNonWork) || !!e.unsavedCommits)
 }
 
 /** The consequence sentence above the second confirmation, true for the rows actually listed.

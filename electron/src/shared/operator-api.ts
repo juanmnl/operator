@@ -111,6 +111,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   launchKind:             { delivery: 'invoke', impl: 'native' },
   worktreeReap:           { delivery: 'invoke', impl: 'native' },
   worktreeRemoveSelected: { delivery: 'invoke', impl: 'native' },
+  worktreeRescue:         { delivery: 'invoke', impl: 'native' },
   worktreeAutoRemovalCheck: { delivery: 'send', impl: 'native' },
   folderPrefsLoad:        { delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },
   folderPrefsLoadGlobal:  { delivery: 'invoke', impl: 'native', rust: 'folderprefs.rs' },

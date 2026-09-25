@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { DevServerProc, ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
-import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from '../../lib/worktree-groups'
+import { canRescue, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from '../../lib/worktree-groups'
 
 // Every directory under ~/.operator/worktrees, grouped by the repository it came from.
 //
@@ -13,6 +13,8 @@ import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConse
 // - "Remove selected": any rows the user ticks, except a row with a lane open in it. Rows with
 //   unsaved work (or where git cannot tell) need a second confirmation. Main re-checks all of it.
 // - "Remove N safe worktrees": the reaper's automatic tier, unchanged.
+// "Rescue" on a row removes nothing: it copies the row's unsaved work to ~/.operator/rescued, after
+// which removing it no longer needs the unsaved-work step. Removing is still a separate press.
 // "Would remove automatically" is a report. Nothing on this page, and no trigger, acts on it yet.
 
 const CLASS_LABEL: Record<ReapClass, string> = {
@@ -106,6 +108,22 @@ export function WorktreesSection() {
     }
   }, [load])
 
+  const runRescue = useCallback(async (path: string) => {
+    setBusy(true)
+    try {
+      const r = await window.operator.worktreeRescue(path)
+      const what = `${r.files} file${r.files === 1 ? '' : 's'}${r.commits ? ` and ${r.commits} commit${r.commits === 1 ? '' : 's'}` : ''}`
+      setOutcome(r.preserved
+        ? `Rescued ${what} from ${baseName(path)} to ${r.dir}. It can now be removed without the unsaved-work step.`
+        : `Copied ${what} from ${baseName(path)} to ${r.dir}, but it changed while being copied, so it still counts as unsaved. Rescue it again.`)
+      load()
+    } catch (e) {
+      setOutcome(`Could not rescue ${baseName(path)}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [load])
+
   const groups = groupWorktrees(plan?.entries ?? [])
   const showSize = !!plan && !plan.sizesOmitted
 
@@ -184,6 +202,7 @@ export function WorktreesSection() {
                       showSize={showSize}
                       checked={selected.has(r.path)}
                       disabled={busy}
+                      onRescue={() => runRescue(r.path)}
                       onToggle={() => setSelected((prev) => {
                         const next = new Set(prev)
                         if (next.has(r.path)) next.delete(r.path)
@@ -546,13 +565,14 @@ function DevServers() {
   )
 }
 
-function Row({ entry, last, showSize, checked, disabled, onToggle }: {
+function Row({ entry, last, showSize, checked, disabled, onToggle, onRescue }: {
   entry: ReapEntry
   last: boolean
   showSize: boolean
   checked: boolean
   disabled: boolean
   onToggle: () => void
+  onRescue: () => void
 }) {
   const selectable = isSelectable(entry)
   return (
@@ -589,6 +609,17 @@ function Row({ entry, last, showSize, checked, disabled, onToggle }: {
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {entry.branch}
         </span>
+      )}
+      {canRescue(entry) && (
+        // Inside the row's <label>: without preventDefault a press would also toggle the checkbox.
+        <button
+          onClick={(e) => { e.preventDefault(); onRescue() }}
+          disabled={disabled}
+          style={{ ...linkBtn, flexShrink: 0 }}
+          title="Copy its uncommitted and untracked files, a diff patch and any commits held nowhere else to ~/.operator/rescued. Removes nothing."
+        >
+          Rescue
+        </button>
       )}
       {showSize && (
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 0 60px', textAlign: 'right' }}>

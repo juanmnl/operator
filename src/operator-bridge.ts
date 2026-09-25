@@ -292,6 +292,7 @@ export function installBridge(): void {
     worktreeQuickList: async () => [],
     worktreeReap: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     worktreeRemoveSelected: async () => { throw new Error('The Tauri build has no worktree reaper.') },
+    worktreeRescue: async () => { throw new Error('The Tauri build has no worktree reaper.') },
     worktreeAutoRemovalCheck: () => {},
     setActiveSession: () => {},
     // Closes the splash and reveals the main window at its restored geometry. Was a no-op here

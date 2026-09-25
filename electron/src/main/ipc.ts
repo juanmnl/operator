@@ -30,7 +30,7 @@ import { capturePreviewShot } from './preview-shot-capture'
 import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
-import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList } from './worktree-reap'
+import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
 
 /** One per main process, i.e. per app run: see launch-kind.ts. Module scope, not per registration. */
@@ -290,6 +290,8 @@ export function registerIpc(d: Deps): void {
     launchKind: async () => launchTracker.claim(),
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
+    // Copies unsaved work out to ~/.operator/rescued; removes nothing (the user still presses remove).
+    worktreeRescue: (path) => rescueWorktree(String(path)),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.
     worktreeReap: async (dryRun, confirmedPaths) => {

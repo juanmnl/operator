@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -270,5 +270,79 @@ describe('boot retries interrupted removals', () => {
     await reap.reapOnQuit()
     expect(existsSync(lane.path)).toBe(true)
     await reap.clearPending(lane.path)
+  })
+})
+
+// ── (4) Rescue: copy the unsaved work out, then the folder counts as preserved ────────────────────
+
+describe('rescueWorktree', () => {
+  /** A lane with every kind of unsaved work: a tracked edit, a deletion, a unique untracked file in
+   *  a subdirectory, and a commit no other branch holds. */
+  async function busyLane() {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'committed-here.md'), 'a commit only this branch has\n')
+    git(lane.path, ['add', '-A']); git(lane.path, ['commit', '-qm', 'lane work'])
+    writeFileSync(join(lane.path, 'CLAUDE.md'), 'vault: ~/new\n')
+    rmSync(join(lane.path, 'docs', 'spec.md'))
+    mkdirSync(join(lane.path, 'dev', 'results'), { recursive: true })
+    writeFileSync(join(lane.path, 'dev', 'results', 'report.md'), 'a report that exists only here\n')
+    return { repo, lane }
+  }
+
+  it('copies files, a patch and a bundle, and the folder then needs no unsaved-work confirmation', async () => {
+    const { lane } = await busyLane()
+    expect((await entryFor(lane.path)).needsUnsavedConfirm).toBe(true)
+
+    const r = await reap.rescueWorktree(lane.path, new Date('2026-09-25T12:00:00Z'))
+    expect(r.dir).toBe(join(process.env.OPERATOR_DIR!, 'rescued', `${lane.path.split('/').pop()}-2026-09-25`))
+    expect(r).toMatchObject({ files: 2, commits: 1, preserved: true }) // CLAUDE.md + report.md; the deletion is in the patch
+    expect(readFileSync(join(r.dir, 'files', 'dev', 'results', 'report.md'), 'utf8')).toBe('a report that exists only here\n')
+    expect(readFileSync(join(r.dir, 'files', 'CLAUDE.md'), 'utf8')).toBe('vault: ~/new\n')
+    const patch = readFileSync(join(r.dir, 'changes.patch'), 'utf8')
+    expect(patch).toContain('+vault: ~/new')
+    expect(patch).toContain('deleted file mode')
+    // The bundle really holds the commit: git can list it.
+    expect(git(lane.path, ['bundle', 'list-heads', join(r.dir, 'commits.bundle')])).toMatch(/HEAD/)
+    expect(JSON.parse(readFileSync(join(r.dir, 'manifest.json'), 'utf8'))).toMatchObject({ source: lane.path, commits: 1 })
+
+    const e = await entryFor(lane.path)
+    expect(e.rescuedTo).toBe(r.dir)
+    expect(e.needsUnsavedConfirm).toBe(false)
+    // …and removal goes through without the unsaved-work confirmation; the rescue stays.
+    const removed = await reap.removeSelected([lane.path], [])
+    expect(removed.failed).toEqual([])
+    expect(existsSync(lane.path)).toBe(false)
+    expect(existsSync(join(r.dir, 'files', 'dev', 'results', 'report.md'))).toBe(true)
+  })
+
+  it('a change after the rescue makes the work unsaved again', async () => {
+    const { lane } = await busyLane()
+    await reap.rescueWorktree(lane.path)
+    expect((await entryFor(lane.path)).needsUnsavedConfirm).toBe(false)
+    writeFileSync(join(lane.path, 'dev', 'results', 'report.md'), 'edited after the rescue\n')
+    const e = await entryFor(lane.path)
+    expect(e.rescuedTo).toBeUndefined()
+    expect(e.needsUnsavedConfirm).toBe(true)
+    expect((await reap.removeSelected([lane.path], [])).failed).toHaveLength(1)
+    expect(existsSync(lane.path)).toBe(true)
+  })
+
+  it('never reuses a rescue directory', async () => {
+    const { lane } = await busyLane()
+    const day = new Date('2026-09-25T09:00:00Z')
+    const a = await reap.rescueWorktree(lane.path, day)
+    const b = await reap.rescueWorktree(lane.path, day)
+    expect(b.dir).toBe(`${a.dir}-2`)
+    expect(existsSync(join(a.dir, 'changes.patch'))).toBe(true)
+  })
+
+  it('refuses a folder git cannot read, and writes nothing', async () => {
+    const dir = join(process.env.OPERATOR_DIR!, 'worktrees', 'not-a-worktree')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'x.txt'), 'x')
+    await expect(reap.rescueWorktree(dir)).rejects.toThrow(/git cannot read it/)
+    expect(existsSync(join(process.env.OPERATOR_DIR!, 'rescued', 'not-a-worktree-2026-09-25'))).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
   })
 })
