@@ -15,13 +15,34 @@
 // `~/.operator/worktrees`, which is the same volume as the canonical root, so the fallback has no
 // case to serve. A rename that fails is reported to the caller as a failure instead; nothing is
 // deleted in place.
-import { mkdir, readdir, rename, rm, lstat } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, lstat, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { operatorDir } from './store'
 
 export const TRASH_DIR_NAME = '.operator-worktree-trash'
 
 export const trashRoot = (): string => join(operatorDir(), 'worktrees', TRASH_DIR_NAME)
+
+/** Where sweep failures are kept. They used to go to stderr only, which nobody reads in a packaged
+ *  app: two entries sat stuck in the trash for a week with no trace (G7). */
+export const trashLogFile = (): string => join(operatorDir(), 'worktree-trash.log')
+
+const TRASH_LOG_MAX_BYTES = 256 * 1024
+
+/** Append one line to the trash log, keeping it under `TRASH_LOG_MAX_BYTES` by dropping the older
+ *  half. Never throws: a log that cannot be written must not stop a sweep. */
+export async function logTrashFailure(line: string): Promise<void> {
+  try {
+    const file = trashLogFile()
+    await mkdir(operatorDir(), { recursive: true })
+    const size = await stat(file).then((st) => st.size, () => 0)
+    if (size > TRASH_LOG_MAX_BYTES) {
+      const kept = (await readFile(file, 'utf8')).slice(-TRASH_LOG_MAX_BYTES / 2)
+      await writeFile(file, kept.slice(kept.indexOf('\n') + 1))
+    }
+    await appendFile(file, `${new Date().toISOString()} ${line}\n`)
+  } catch { /* nothing to do */ }
+}
 
 let counter = 0
 
@@ -64,6 +85,7 @@ export async function sweepTrash(): Promise<SweepReport> {
     const st = await lstat(trashRoot())
     if (!st.isDirectory() || st.isSymbolicLink()) {
       console.error(`[worktree-trash] ${trashRoot()} is not a plain directory; not sweeping`)
+      await logTrashFailure(`${trashRoot()} is not a plain directory; not sweeping`)
       return report
     }
   } catch {
@@ -84,6 +106,7 @@ export async function sweepTrash(): Promise<SweepReport> {
     } catch (e) {
       report.failed++
       console.error(`[worktree-trash] could not delete ${name}:`, e)
+      await logTrashFailure(`could not delete ${join(trashRoot(), name)}: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
   if (report.deferred) console.error(`[worktree-trash] sweep stopped at ${SWEEP_MAX_DELETES}; ${report.deferred} left for the next run`)

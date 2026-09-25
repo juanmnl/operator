@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -395,5 +395,53 @@ describe('merged-by-patch label', () => {
     const e = await entryFor(lane.path)
     expect(e.cls).toBe('merged-clean')
     expect(e.mergedByPatch).toBeUndefined()
+  })
+})
+
+// ── (6) G7: debris goes through the plain-directory path, stray files are listed, sweep failures are kept
+
+describe('debris, stray files and the trash log', () => {
+  const root = () => join(process.env.OPERATOR_DIR!, 'worktrees')
+
+  it('the "safe" removal takes creation debris through the plain-directory path', async () => {
+    const dir = join(root(), '.tmpABCDEF-d96ee0')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'a.txt'), 'x') // an interrupted `worktree add`: tiny, no .git, no record
+    const plan = await reap.reapPlan()
+    const e = plan.entries.find((x) => x.path === dir)!
+    expect(e.cls).toBe('debris')
+    expect(e.auto).toBe(true)
+    const r = await reap.reap({ dryRun: false, confirmedPaths: [dir] })
+    expect(r.removed).toContain(dir)
+    expect(r.failed.find((f) => f.path === dir)).toBeUndefined()
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  it('lists files in the worktree root, and leaves them alone', async () => {
+    mkdirSync(root(), { recursive: true })
+    writeFileSync(join(root(), 'rv.log'), 'agent run log\n')
+    const plan = await reap.reapPlan()
+    expect(plan.strayFiles?.map((f) => f.path)).toContain(join(root(), 'rv.log'))
+    expect(plan.entries.some((x) => x.path === join(root(), 'rv.log'))).toBe(false)
+    await reap.reap({ dryRun: false, confirmedPaths: [join(root(), 'rv.log')] })
+    expect(existsSync(join(root(), 'rv.log'))).toBe(true)
+  })
+
+  it('writes a sweep failure to ~/.operator/worktree-trash.log, not only to stderr', async () => {
+    const trash = await import('./worktree-trash')
+    const stuck = join(trash.trashRoot(), 'wt-1789698715623-87f7be40')
+    mkdirSync(join(stuck, 'locked'), { recursive: true })
+    writeFileSync(join(stuck, 'locked', 'f'), 'x')
+    chmodSync(join(stuck, 'locked'), 0o500) // its file cannot be unlinked
+    try {
+      const report = await trash.sweepTrash()
+      expect(report.failed).toBe(1)
+      const log = readFileSync(trash.trashLogFile(), 'utf8')
+      expect(log).toContain('wt-1789698715623-87f7be40')
+      expect(log).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    } finally {
+      chmodSync(join(stuck, 'locked'), 0o700)
+      rmSync(stuck, { recursive: true, force: true })
+    }
   })
 })

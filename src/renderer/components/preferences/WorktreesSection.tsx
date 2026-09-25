@@ -216,6 +216,8 @@ export function WorktreesSection() {
             )
           })}
 
+          {!!plan.strayFiles?.length && <StrayFiles files={plan.strayFiles} />}
+
           {plan.entries.length === 0 && (
             <div style={{ ...boxStyle, padding: '10px 12px', fontSize: 11, color: 'var(--fg-muted)' }}>
               No worktrees on disk. Nothing to clean up.
@@ -358,6 +360,41 @@ function WouldRemove({ plan, showSize }: { plan: ReapPlan; showSize: boolean }) 
           Nothing matches the rule right now.
         </div>
       )}
+    </div>
+  )
+}
+
+/** Files sitting in the worktree root: agent run logs, `.DS_Store`. They are not worktrees, so they
+ *  are shown for what they are and left alone; removing them is a Finder or shell job. */
+function StrayFiles({ files }: { files: NonNullable<ReapPlan['strayFiles']> }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+          textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--fg)',
+        }}>Other files in the folder</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>{files.length}</span>
+      </div>
+      <p style={{ ...sectionDesc, margin: '0 0 6px' }}>
+        Not worktrees, so nothing here removes them. Delete them in Finder or a shell if you do not need them.
+      </p>
+      <div style={boxStyle}>
+        {files.map((f, i) => (
+          <div key={f.path} title={f.path} style={{
+            display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 12px',
+            borderBottom: i < files.length - 1 ? '1px solid var(--border)' : 'none',
+          }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg)', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {baseName(f.path)}
+            </span>
+            <span style={{ fontSize: 10, color: 'var(--fg-muted)', flexShrink: 0 }}>{new Date(f.modifiedAt).toLocaleDateString()}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)', flex: '0 0 60px', textAlign: 'right' }}>
+              {size(f.sizeBytes)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

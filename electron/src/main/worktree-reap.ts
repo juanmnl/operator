@@ -201,6 +201,30 @@ export interface ReapPlan {
   wouldRemove: ReapEntry[]
   /** The last report-only check a trigger ran, from `worktree-auto-check.json`. */
   lastCheck?: AutoCheckRecord
+  /** Files (not directories) sitting in the worktree root: agent run logs, `.DS_Store`. Listed so
+   *  they are visible; they are not worktrees and nothing here removes them (G7). */
+  strayFiles?: StrayFile[]
+}
+
+export interface StrayFile { path: string; sizeBytes: number; modifiedAt: number }
+
+/** Every non-directory entry directly in the worktree root. Never throws. */
+export async function strayFiles(): Promise<StrayFile[]> {
+  const root = worktreeRoot()
+  let names: string[]
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((d) => !d.isDirectory()).map((d) => d.name)
+  } catch {
+    return []
+  }
+  const out: StrayFile[] = []
+  for (const name of names.sort()) {
+    try {
+      const st = await lstat(join(root, name))
+      out.push({ path: join(root, name), sizeBytes: st.size, modifiedAt: st.mtimeMs })
+    } catch { /* gone since the listing */ }
+  }
+  return out
 }
 
 export interface AutoCheckRecord {
@@ -962,6 +986,7 @@ export async function reapPlan(opts: { withSizes?: boolean; refreshSizes?: boole
   const facts = await gatherFacts(opts)
   const plan = reapPlanFrom(facts, !opts.withSizes)
   try { plan.lastCheck = JSON.parse(await readFile(autoCheckFile(), 'utf8')) as AutoCheckRecord } catch { /* no check yet */ }
+  plan.strayFiles = await strayFiles()
   return plan
 }
 
@@ -1321,18 +1346,21 @@ export async function reap(opts: { dryRun?: boolean; withSizes?: boolean; confir
     if (confirmed && !confirmed.has(entry.path)) continue
     const claim = await liveClaimNow(entry.path)
     if (claim) { result.failed.push({ path: entry.path, error: `Refused: ${claim}.` }); continue }
-    if (!entry.sourceRepo) {
-      // Debris has no source repo and no git to remove it with; it is also the only class where
-      // that is expected. Everything else in the auto tier is attributable by construction.
-      result.failed.push({ path: entry.path, error: 'no source repo recorded' })
-      continue
-    }
     try {
-      if (entry.cls !== 'debris') {
-        const status = await git(entry.path, ['status', '--porcelain'])
-        if (status == null) throw new Error('git could not read it any more')
-        if (status) throw new Error('it has uncommitted changes since the plan was made')
+      if (entry.cls === 'debris') {
+        // Debris is git-invalid by definition, so there is no git to remove it with. It goes
+        // through the plain-directory path: the same guard, the nested-checkout walk and the
+        // trash (G7: `.tmpIBNq7t-d96ee0` sat in the tier for weeks, refused as "no source repo").
+        await removePlainDirectory(entry.path)
+        result.removed.push(entry.path)
+        result.bytesFreed += entry.sizeBytes
+        continue
       }
+      // Everything else in the auto tier is attributable by construction.
+      if (!entry.sourceRepo) throw new Error('no source repo recorded')
+      const status = await git(entry.path, ['status', '--porcelain'])
+      if (status == null) throw new Error('git could not read it any more')
+      if (status) throw new Error('it has uncommitted changes since the plan was made')
       await removeWorktree(entry.path, entry.sourceRepo)
       result.removed.push(entry.path)
       result.bytesFreed += entry.sizeBytes

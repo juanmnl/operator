@@ -403,6 +403,8 @@ export interface ReapPlan {
   wouldRemove: ReapEntry[]
   /** The last report-only check a trigger ran (boot, lane-exit, task-done). */
   lastCheck?: { trigger: string; at: number; entries: Array<{ path: string; reason: string }> }
+  /** Files (not directories) in the worktree root — agent logs, `.DS_Store`. Listed, not removed. */
+  strayFiles?: Array<{ path: string; sizeBytes: number; modifiedAt: number }>
 }
 
 /** Capture a screenshot crop for a Preview note (see electron/src/main/preview-shots.ts). */
