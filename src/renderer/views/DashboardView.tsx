@@ -30,7 +30,7 @@ import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
-import { ProjectRail } from '../components/sidebar/ProjectRail'
+import { ProjectRail, RAIL_W, RAIL_W_OPEN } from '../components/sidebar/ProjectRail'
 import { AppShell } from '../components/AppShell'
 import { TerminalSurface } from '../components/terminal/TerminalSurface'
 import { GridTerminalPane } from '../components/terminal/GridTerminalPane'
@@ -45,6 +45,8 @@ import { FooterReading } from '../components/session/FooterReading'
 import { usePlanLimits } from '../lib/plan-limits'
 import { TuningView } from '../components/tuning/TuningView'
 import { CanvasPanel } from '../components/session/CanvasPanel'
+import { SidePanelSlot } from '../components/session/SidePanelSlot'
+import { LAYOUT_MOVE_MS, LAYOUT_SETTLE_SLACK_MS, pinWidth, useReducedMotion } from '../lib/layout-motion'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
@@ -130,6 +132,8 @@ interface TerminalTab {
 const FOOTER_H = 34
 /** Default width (CSS px) of the right side panel (Plan / Diff). */
 const CONVERSATION_PANEL_W = 460
+/** The root row's gap: rail · card · side panel. */
+const ROW_GAP = 8
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
 // which surface it shows. Keyed by session id, persisted across reloads. The types and the
@@ -263,8 +267,8 @@ export function DashboardView() {
   const [activityViewingTerminalId, setActivityViewingTerminalId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
-  // Sidebar hide/show — persisted so it survives restarts. The collapse itself
-  // is a CSS width/opacity transition on the wrapper (see render).
+  // Sidebar hide/show — persisted so it survives restarts. The collapse itself is the rail's
+  // width transition; the content card follows it (see `layoutMove` below).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('operator.sidebarCollapsed') === '1' } catch { return false }
   })
@@ -322,10 +326,41 @@ export function DashboardView() {
     })
     return () => { clearTimeout(settle); unsub?.() }
   }, [])
+  // THE LAYOUT MOVE (lib/layout-motion): set by a user's ⌘B or panel toggle, cleared once the
+  // edge has settled. While it is set, every terminal holds its fit and the terminal/Preview stack
+  // is held at `pinW`, so the card's box can follow the moving edge without re-laying out, or
+  // resizing, anything heavy inside it. One refit when it clears. `rail`/`panel` say which edge is
+  // moving — the panel slot animates only on its own toggle, never on a lane switch.
+  const reducedMotion = useReducedMotion()
+  const [layoutMove, setLayoutMove] = useState<{ rail?: true; panel?: true; pinW: number | null } | null>(null)
+  const layoutMoveTimer = useRef(0)
+  // The terminal/Preview stack, measured when a move starts.
+  const stackRef = useRef<HTMLDivElement>(null)
+  const restartLayoutSettle = useCallback(() => {
+    clearTimeout(layoutMoveTimer.current)
+    layoutMoveTimer.current = window.setTimeout(() => setLayoutMove(null), LAYOUT_MOVE_MS + LAYOUT_SETTLE_SLACK_MS)
+  }, [])
+  const beginLayoutMove = useCallback((edge: 'rail' | 'panel', delta: number) => {
+    // Reduced motion: the edge jumps in one frame, so there is no "during" to protect and the
+    // terminal fits once off its ResizeObserver as it always has.
+    if (reducedMotion) return
+    const live = stackRef.current?.getBoundingClientRect().width ?? 0
+    setLayoutMove((m) => ({ ...m, [edge]: true, pinW: live > 0 ? pinWidth(m?.pinW ?? null, live, delta) : null }))
+    restartLayoutSettle()
+  }, [reducedMotion, restartLayoutSettle])
+  useEffect(() => () => clearTimeout(layoutMoveTimer.current), [])
   // Open/close the right side panel (Plan / Diff / Preview). Per-session (ref avoids a stale id).
+  // The panel's share of the row is its width plus the row's 8px gap (see `SidePanelSlot`).
+  const setPanelOpen = useCallback((open: boolean, patch: LayoutPatch = {}) => {
+    const sid = activeSessionIdRef.current
+    const cur = sid ? (sessionLayouts[sid]?.panelOpen ?? DEFAULT_LAYOUT.panelOpen) : false
+    if (sid && cur !== open) beginLayoutMove('panel', (open ? -1 : 1) * (panelWRef.current + ROW_GAP))
+    patchLayout({ ...patch, panelOpen: open })
+  }, [patchLayout, sessionLayouts, beginLayoutMove])
   const togglePanel = useCallback(() => {
-    patchLayout({ panelOpen: !(activeSessionIdRef.current ? sessionLayouts[activeSessionIdRef.current]?.panelOpen : false) })
-  }, [patchLayout, sessionLayouts])
+    const sid = activeSessionIdRef.current
+    setPanelOpen(!(sid ? sessionLayouts[sid]?.panelOpen : false))
+  }, [setPanelOpen, sessionLayouts])
   // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
   // footer. `shellStarted` keeps it MOUNTED after first open (so the shell +
   // scrollback survive close→reopen); `shellOpen` slides it up/down.
@@ -419,21 +454,17 @@ export function DashboardView() {
     return () => { cancelled = true; clearInterval(iv) }
   }, [activeTerminalId])
 
-  // True during the sidebar's 260ms width animation — the terminal suspends its fit
-  // while the content column animates, then fits once on settle. Without this the
-  // ghostty grid reflowed every frame of the collapse/expand → overprint corruption.
-  const [sidebarAnimating, setSidebarAnimating] = useState(false)
-  const sidebarAnimTimer = useRef(0)
+  // ⌘B. A layout move like the panel's: the terminals hold their fit while the content column
+  // follows the rail's edge, then fit once on settle. Without the hold the ghostty grid reflowed
+  // every frame of the collapse/expand → overprint corruption.
   const toggleSidebar = useCallback(() => {
+    beginLayoutMove('rail', (sidebarCollapsed ? -1 : 1) * (RAIL_W_OPEN - RAIL_W))
     setSidebarCollapsed((c) => {
       const next = !c
       try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
-    setSidebarAnimating(true)
-    clearTimeout(sidebarAnimTimer.current)
-    sidebarAnimTimer.current = window.setTimeout(() => setSidebarAnimating(false), 320)
-  }, [])
+  }, [beginLayoutMove, sidebarCollapsed])
 
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
     setToasts((prev) => [...prev, { ...message, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }])
@@ -4670,10 +4701,10 @@ export function DashboardView() {
       view('preview', 'Show Preview')
       actions.push(
         { id: 'toggle-panel', group: 'View', label: panelOpen ? 'Hide side panel' : 'Show side panel (Plan / Diff / Preview)', run: togglePanel },
-        { id: 'panel-plan', group: 'View', label: 'Side panel: Plan', run: () => { selectPanelTab('plan'); if (!panelOpen) togglePanel() } },
-        { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => { selectPanelTab('diff'); if (!panelOpen) togglePanel() } },
+        { id: 'panel-plan', group: 'View', label: 'Side panel: Plan', run: () => setPanelOpen(true, { panelTab: 'plan' }) },
+        { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => setPanelOpen(true, { panelTab: 'diff' }) },
         // One patch, so the move out of the main view and the open land together.
-        { id: 'panel-preview', group: 'View', label: 'Side panel: Preview', run: () => patchLayout({ panelTab: 'preview', panelOpen: true }) },
+        { id: 'panel-preview', group: 'View', label: 'Side panel: Preview', run: () => setPanelOpen(true, { panelTab: 'preview' }) },
         { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => { void handleCloseSession(activeSession) } },
       )
       if (mainView === 'preview' || previewInPanel) {
@@ -4794,7 +4825,7 @@ export function DashboardView() {
   }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
       gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
-      selectMainView, selectPanelTab, patchLayout, togglePanel, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
+      selectMainView, selectPanelTab, patchLayout, togglePanel, setPanelOpen, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
       installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
@@ -4920,7 +4951,9 @@ export function DashboardView() {
         panelW={panelW}
         // R1: every renderer surface that can open over the stage hides the native inspect view
         // while it is open. The picker and port editor are the component's own.
-        inspectHidden={resizingPanel || paletteOpen || !!quitRequest}
+        // A layout move slides the stage without resizing it, which the view's placement does not
+        // follow; hidden for the move, it is re-placed at the stage's settled rect when it shows.
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!layoutMove}
         grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
         onGridToggle={toggleGrid}
         onGridSpecChange={changeGridSpec}
@@ -4960,7 +4993,7 @@ export function DashboardView() {
        overlapping") was HORIZONTAL: at `RAIL_W = 60` the card's edge came within 7pt of the zoom
        button. It is 17 now. `dev/drive-rail-invariant.mjs` assertion TL gates both halves — the
        frame, and the gap — so neither can drift back without the driver saying so. */}
-    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: 8, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: ROW_GAP, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
           rail scrollers, which clip their overflow. */}
       {accentPicker && accentTarget && (
@@ -5336,7 +5369,7 @@ export function DashboardView() {
         {/* Terminal panes stay mounted across mode changes so xterm state persists.
             Hidden when reviewing diff, viewing activity, or in another content mode. */}
         {terminals.length > 0 && (
-          <div style={{
+          <div ref={stackRef} style={{
             flex: 1,
             minHeight: 0,
             position: 'relative',
@@ -5348,6 +5381,16 @@ export function DashboardView() {
               && activityViewingTerminalId !== activeTerminalId
               ? 'block' : 'none',
           }}>
+            {/* THE PIN. Every pane and the main-view Preview are `inset: 0` inside this box, and
+                during a layout move it is held at `pinW` — the wider of the move's two widths —
+                instead of following the card. So the moving edge covers or uncovers finished
+                content, the Preview iframe and the grid panes see one resize instead of one per
+                frame, and the stack's subtree is out of the per-frame layout. The card's own
+                `overflow: hidden` clips what is past its edge. */}
+            <div style={{
+              position: 'absolute', top: 0, bottom: 0, left: 0,
+              width: layoutMove?.pinW ?? '100%',
+            }}>
             {terminals.map((t) => (
               <div
                 key={t.id}
@@ -5387,7 +5430,7 @@ export function DashboardView() {
                     // doesn't grab focus/keystrokes; re-activates on switch back (its size is
                     // unchanged, so the activation fit is a no-op — no resize-hang risk).
                     active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
-                    suspendFit={resizingPanel || windowResizing || sidebarAnimating}
+                    suspendFit={resizingPanel || windowResizing || !!layoutMove}
                     // Hand every sniffed dev-server port to the backend, for EVERY pane
                     // (not just the active one) — a background lane's server is still its
                     // server, and the banner scrolls past exactly once. This is the only
@@ -5433,6 +5476,7 @@ export function DashboardView() {
                 {mainView === 'preview' && renderPreview(activeSession)}
               </div>
             )}
+            </div>
           </div>
         )}
 
@@ -5549,19 +5593,24 @@ export function DashboardView() {
             theme={currentTheme.xterm}
             open={shellOpen}
             bottom={FOOTER_H}
+            suspendFit={resizingPanel || windowResizing || !!layoutMove}
             onClose={closeShell}
           />
         )}
       </div>
 
       {/* Right side panel — the "working" surfaces (Plan / Diff / Preview). A sibling of the
-          content card so it sits to its right (the root row has gap: 8). Resizable via the
-          left-edge handle; opened/closed from the toolbar's panel button. */}
-      {contentMode === 'localTerminal' && panelOpen && activeSession && (
-        <div style={{
-          position: 'relative', width: panelW, flexShrink: 0, overflow: 'hidden',
-          background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)',
-        }}>
+          content card so it sits to its right. Resizable via the left-edge handle; opened/closed
+          from the toolbar's panel button, sliding in and out through `SidePanelSlot`. */}
+      <SidePanelSlot
+        open={contentMode === 'localTerminal' && panelOpen && !!activeSession}
+        width={panelW}
+        gap={ROW_GAP}
+        animate={!!layoutMove?.panel}
+        onMoveStart={restartLayoutSettle}
+        style={{ background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)' }}
+      >
+        {activeSession && (<>
           <div
             className={`panel-resize-handle${resizingPanel ? ' is-active' : ''}`}
             onMouseDown={startPanelResize}
@@ -5572,13 +5621,15 @@ export function DashboardView() {
             tabs={panelTabs}
             mode={effPanelTab}
             onSelectMode={selectPanelTab}
-            preview={previewInPanel ? renderPreview(activeSession) : undefined}
+            // Not `previewInPanel`, which turns false the moment the panel is told to close: the
+            // Preview has to stay in the panel while it slides out, or the panel leaves blank.
+            preview={effPanelTab === 'preview' && mainView !== 'preview' ? renderPreview(activeSession) : undefined}
             dispatched={activeSession?.projectId && isCoordinator(activeSession.roleId ?? '')
               ? dispatchedTasks(projects, activeSession.projectId, reports)
               : undefined}
           />
-        </div>
-      )}
+        </>)}
+      </SidePanelSlot>
 
       {/* Full-window capture overlay during a panel drag (iframes/xterm swallow mousemove). */}
       {resizingPanel && (
