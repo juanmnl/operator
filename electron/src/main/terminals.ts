@@ -92,6 +92,8 @@ interface Managed {
   sniffedPorts: Set<number>
   /** Claude Code version at spawn — see `SpawnOptions.claudeVersion`. */
   claudeVersion: string | null
+  /** The roster lane it was launched for, when it was one — names it in refusals. */
+  roleId?: string
   /** ms of the last pty chunk, for `activeWithin`. */
   lastActivityAt?: number
   /** Output waiting to be sent to the renderer — see `pty-batch.ts`. `history` is fed from the
@@ -326,7 +328,7 @@ export class TerminalManager {
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, out: this.outputFor(() => managed), exited: false }
+    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, roleId: o.roleId ?? undefined, out: this.outputFor(() => managed), exited: false }
     this.terminals.set(id, managed)
     if (cdpPort) this.cdpReserving.delete(cdpPort)
 
@@ -777,9 +779,10 @@ export class TerminalManager {
     return new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
   }
 
-  /** Id and cwd of every pty that has not exited — for the checkout watcher (checkout-health.ts). */
-  liveTerminals(): Array<{ id: string; cwd: string }> {
-    return [...this.terminals.values()].filter((t) => !t.exited).map((t) => ({ id: t.id, cwd: t.cwd }))
+  /** Id, cwd and lane of every pty that has not exited — for the checkout watcher
+   *  (checkout-health.ts) and the live-lane refusal on merge and discard (worktree.ts). */
+  liveTerminals(): Array<{ id: string; cwd: string; roleId?: string }> {
+    return [...this.terminals.values()].filter((t) => !t.exited).map((t) => ({ id: t.id, cwd: t.cwd, roleId: t.roleId }))
   }
 
   /** The cwd of every pty that has not exited, lanes and plain shells alike. Read by the worktree

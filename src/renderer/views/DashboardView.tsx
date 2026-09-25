@@ -5361,6 +5361,7 @@ export function DashboardView() {
               sourceRoot={tab.sourceCwd}
               onClose={() => setReviewingTerminalId(null)}
               onSessionEnded={handleSessionEnded}
+              terminalId={tab.id}
             />
           )
         })()}

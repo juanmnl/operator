@@ -149,6 +149,9 @@ describe('runCheck', () => {
   })
 })
 
+/** No terminal running anywhere: merge and discard behave as they always did. */
+const NO_LANES = { ptys: [] }
+
 // S3 acceptance: the operations S1's tests did not reach — merge, discard, and the diff shapes
 // the Plan/Diff panel renders. All on throwaway repos under the sandbox.
 describe('merge, discard, and the guards around them', () => {
@@ -158,7 +161,7 @@ describe('merge, discard, and the guards around them', () => {
     writeFileSync(join(lane.path, 'feature.txt'), 'work\n')
     await wt.commitAll(lane.path, 'lane work')
 
-    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES)
     expect(r.ok).toBe(true)
     // The work is on main…
     expect(git(repo, ['show', 'main:feature.txt'])).toBe('work')
@@ -172,7 +175,7 @@ describe('merge, discard, and the guards around them', () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)
     writeFileSync(join(repo, 'uncommitted.txt'), 'in the way\n')
-    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES)
     expect(r.ok).toBe(false)
     expect(r.message).toMatch(/uncommitted changes/)
   })
@@ -186,7 +189,7 @@ describe('merge, discard, and the guards around them', () => {
     writeFileSync(join(repo, 'a.txt'), 'main version\n')
     git(repo, ['commit', '-am', 'main edit'])
 
-    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main')
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES)
     expect(r.ok).toBe(false)
     expect(r.message).toMatch(/Merge failed/)
     // The repo must be usable afterwards — no MERGE_HEAD left behind.
@@ -200,7 +203,70 @@ describe('merge, discard, and the guards around them', () => {
     writeFileSync(join(lane.path, 'throwaway.txt'), 'x\n')
     await wt.commitAll(lane.path, 'work nobody wants')
 
-    await wt.discardBranch(lane.path, repo, lane.branch)
+    await wt.discardBranch(lane.path, repo, lane.branch, NO_LANES)
+    expect(await wt.pathExists(lane.path)).toBe(false)
+    expect(git(repo, ['branch', '--list', lane.branch])).toBe('')
+  })
+
+  // THE LIVE-LANE REFUSAL (dev/results/mantel-55da80-gutted-2026-09-25.md): merge and discard remove
+  // a worktree, and must not do it from under a lane that is running in it. Main's pty table decides.
+  it('REFUSES to merge while another lane runs in the worktree, names it, and changes nothing', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'feature.txt'), 'work\n')
+    await wt.commitAll(lane.path, 'lane work')
+    const before = git(repo, ['rev-parse', 'main'])
+
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', { ptys: [{ id: 't2', cwd: join(lane.path, 'apps'), roleId: 'code' }] })
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain('lane t2 (code) is running in')
+    expect(r.message).toContain(lane.branch)
+    expect(git(repo, ['rev-parse', 'main'])).toBe(before) // not merged
+    expect(await wt.pathExists(lane.path)).toBe(true)      // not removed
+  })
+
+  it('REFUSES to merge a branch that is checked out in a different worktree where a lane runs', async () => {
+    // The mantel shape: the branch being merged lives in some other lane's worktree.
+    const repo = scratchRepo()
+    const home = await wt.createWorktree(repo)
+    git(home.path, ['checkout', '-q', '-b', 'ops/nat-cool-cero'])
+    writeFileSync(join(home.path, 'fix.txt'), 'fix\n')
+    await wt.commitAll(home.path, 'the PR')
+    const other = await wt.createWorktree(repo)
+
+    const r = await wt.mergeBranch(other.path, repo, 'ops/nat-cool-cero', 'main', { ptys: [{ id: 't2', cwd: home.path }] })
+    expect(r.ok).toBe(false)
+    expect(r.message).toMatch(/lane t2 is running in .*ops\/nat-cool-cero checked out/)
+    expect(await wt.pathExists(home.path)).toBe(true)
+  })
+
+  it('merges when the only lane in it is the one being merged on purpose, or lanes run elsewhere', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'feature.txt'), 'work\n')
+    await wt.commitAll(lane.path, 'lane work')
+    const elsewhere = await wt.createWorktree(repo)
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', {
+      ptys: [{ id: 't4', cwd: lane.path }, { id: 't5', cwd: elsewhere.path }],
+      exceptTerminalId: 't4',
+    })
+    expect(r.ok).toBe(true)
+    expect(await wt.pathExists(lane.path)).toBe(false)
+  })
+
+  it('REFUSES to discard while another lane runs in the worktree, and keeps worktree and branch', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    await expect(wt.discardBranch(lane.path, repo, lane.branch, { ptys: [{ id: 't7', cwd: lane.path, roleId: 'design' }] }))
+      .rejects.toThrow(/Refused to discard .*lane t7 \(design\) is running in/)
+    expect(await wt.pathExists(lane.path)).toBe(true)
+    expect(git(repo, ['branch', '--list', lane.branch])).not.toBe('')
+  })
+
+  it('discards when the only lane in it is the one being discarded on purpose', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    await wt.discardBranch(lane.path, repo, lane.branch, { ptys: [{ id: 't7', cwd: lane.path }], exceptTerminalId: 't7' })
     expect(await wt.pathExists(lane.path)).toBe(false)
     expect(git(repo, ['branch', '--list', lane.branch])).toBe('')
   })

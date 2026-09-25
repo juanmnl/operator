@@ -658,7 +658,49 @@ export async function commitAll(path: string, message: string): Promise<string> 
   return git(path, ['rev-parse', 'HEAD'])
 }
 
-export async function mergeBranch(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string): Promise<{ ok: boolean; message?: string }> {
+/** A running terminal as main's pty table reports it (`TerminalManager.liveTerminals`). */
+export interface LivePty { id: string; cwd: string; roleId?: string }
+
+/** Who merge and discard must not pull a checkout out from under. `ptys` is main's pty table, never
+ *  `sessions.json`. `exceptTerminalId` is the one lane the caller is merging or discarding ON
+ *  PURPOSE and ends straight after (the session's own Diff panel); every other live lane blocks. */
+export interface LiveGuard { ptys: readonly LivePty[]; exceptTerminalId?: string }
+
+/** The first live terminal whose cwd is one of `paths` or inside it, other than the exempt one. Pure
+ *  given the paths (`containsPath` resolves symlinks). */
+export function liveLaneIn(paths: readonly string[], guard: LiveGuard): LivePty | undefined {
+  return guard.ptys.find((p) => p.id !== guard.exceptTerminalId && paths.some((path) => path && containsPath(path, p.cwd)))
+}
+
+/** The refusal, naming the lane. */
+export function liveLaneRefusal(verb: 'merge' | 'discard', lane: LivePty, branch: string): string {
+  const who = `lane ${lane.id}${lane.roleId ? ` (${lane.roleId})` : ''}`
+  return `Refused to ${verb} ${branch}: ${who} is running in ${lane.cwd}, which has ${branch} checked out, `
+    + `and ${verb === 'merge' ? 'merging' : 'discarding'} would remove that checkout from under it. Close that lane first.`
+}
+
+/** Every worktree of `sourceRoot` that has `branch` checked out, from git's own list. */
+async function checkoutsOf(sourceRoot: string, branch: string): Promise<string[]> {
+  const out = await gitOk(sourceRoot, ['worktree', 'list', '--porcelain'])
+  if (out == null) return []
+  return out.split(/\n\s*\n/)
+    .filter((block) => block.split('\n').some((l) => l.trim() === `branch refs/heads/${branch}`))
+    .map((block) => /^worktree (.+)$/m.exec(block)?.[1]?.trim())
+    .filter((p): p is string => !!p)
+}
+
+/** THE LIVE-LANE REFUSAL for merge and discard (dev/results/mantel-55da80-gutted-2026-09-25.md).
+ *  Both remove the worktree at `worktreePath`, and a branch can also be checked out in another
+ *  worktree than the one the caller named. Either one with a running terminal in it refuses. */
+async function liveLaneBlocking(worktreePath: string, sourceRoot: string, branch: string, guard: LiveGuard): Promise<LivePty | undefined> {
+  if (!guard.ptys.length) return undefined
+  return liveLaneIn([worktreePath, ...await checkoutsOf(sourceRoot, branch)], guard)
+}
+
+export async function mergeBranch(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, guard: LiveGuard): Promise<{ ok: boolean; message?: string }> {
+  // Before anything changes: a refused merge leaves the repo exactly as it was.
+  const lane = await liveLaneBlocking(worktreePath, sourceRoot, branch, guard)
+  if (lane) return { ok: false, message: liveLaneRefusal('merge', lane, branch) }
   let dirty: string
   try { dirty = await git(sourceRoot, ['status', '--porcelain']) } catch (e) { return { ok: false, message: String(e) } }
   if (dirty) return { ok: false, message: 'Source repo has uncommitted changes — commit or stash before merging.' }
@@ -680,7 +722,9 @@ export async function mergeBranch(worktreePath: string, sourceRoot: string, bran
   return { ok: true }
 }
 
-export async function discardBranch(worktreePath: string, sourceRoot: string, branch: string): Promise<void> {
+export async function discardBranch(worktreePath: string, sourceRoot: string, branch: string, guard: LiveGuard): Promise<void> {
+  const lane = await liveLaneBlocking(worktreePath, sourceRoot, branch, guard)
+  if (lane) throw new Error(liveLaneRefusal('discard', lane, branch))
   await removeWorktree(worktreePath, sourceRoot).catch(() => {})
   await gitOk(sourceRoot, ['branch', '-D', branch])
 }

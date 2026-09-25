@@ -310,9 +310,15 @@ export function registerIpc(d: Deps): void {
     worktreeCommit: async (path, message) => {
       try { return { ok: true, sha: await wt.commitAll(path, message) } } catch (e) { return { ok: false, error: String(e) } }
     },
-    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch) => wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch),
-    worktreeDiscard: async (worktreePath, sourceRoot, branch) => {
-      try { await wt.discardBranch(worktreePath, sourceRoot, branch); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+    // Refused while another lane runs in the worktree (main's pty table). `ownTerminalId` is the one
+    // lane the caller merges or discards on purpose and ends straight after: the session's Diff panel.
+    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch, ownTerminalId) =>
+      wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }),
+    worktreeDiscard: async (worktreePath, sourceRoot, branch, ownTerminalId) => {
+      try {
+        await wt.discardBranch(worktreePath, sourceRoot, branch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined })
+        return { ok: true }
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) } }
     },
     projectIdentity: async (path) => {
       const missing = !(await wt.pathExists(path))

@@ -24,9 +24,13 @@ interface DiffPanelProps {
   onClose: () => void
   /** Called after a successful merge or discard so the host can drop the session/tab. */
   onSessionEnded?: () => void
+  /** The lane this panel reviews. Main refuses to merge or discard while a lane runs in the
+   *  worktree; this one is exempt because `onSessionEnded` ends it straight after. Any other lane
+   *  still blocks. */
+  terminalId?: string
 }
 
-export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClose, onSessionEnded }: DiffPanelProps) {
+export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClose, onSessionEnded, terminalId }: DiffPanelProps) {
   const [data, setData] = useState<WorktreeDiff | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [busy, setBusy] = useState<null | 'commit' | 'merge' | 'discard'>(null)
@@ -69,7 +73,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
         return
       }
     }
-    const result = await window.operator.worktreeMerge(worktreePath, sourceRoot, branch, baseBranch)
+    const result = await window.operator.worktreeMerge(worktreePath, sourceRoot, branch, baseBranch, terminalId)
     setBusy(null)
     if (!result.ok) {
       setError(result.message || 'Merge failed')
@@ -82,7 +86,7 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
     if (!sourceRoot || !branch) return
     setBusy('discard')
     setError(null)
-    const result = await window.operator.worktreeDiscard(worktreePath, sourceRoot, branch)
+    const result = await window.operator.worktreeDiscard(worktreePath, sourceRoot, branch, terminalId)
     setBusy(null)
     if (!result.ok) {
       setError(result.error || 'Discard failed')
