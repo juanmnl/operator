@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react'
 // Preview. Measured before this module existed (dev/results/sidepanel-collapse-redesign-2026-09-25.md):
 // the rail animated `width` and the card re-laid out its whole subtree, terminal included, on every
 // one of ~15 frames, while its own rows re-truncated and re-centred; the panel had no animation at
-// all — the card and the terminal jumped by the panel's width in a single frame. The rule now: the
+// all — the card jumped by the panel's width in one frame, and in Electron the terminal refit ~170ms
+// later as a second jump. The rule now: the
 // card's BOX may move every frame (its toolbar and footer are two short rows that should follow the
 // edge), but the heavy content inside it is held at a fixed pixel width for the whole move and
 // resizes exactly once, after the edge has stopped.

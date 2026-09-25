@@ -11,7 +11,8 @@ import { LAYOUT_EASE, LAYOUT_MOVE_MS } from '../../lib/layout-motion'
 // Preview iframe never re-wrap or resize during the move; the window edge clips what has not
 // arrived yet. Anchored to the window edge instead, the moving edge uncovered the panel from its
 // right-hand end: line endings appeared before the tabs, and the gap only opened at the end. The
-// panel used to mount and unmount in one frame, the card and the terminal changing width together.
+// panel used to mount and unmount in one frame: in Electron the card jumped at once and the terminal
+// refit ~170ms later (its fit waits for pty output to go quiet), two separate jumps.
 //
 // The slot also owns the row's gap in front of the panel (`marginLeft: -gap`, width + gap), so a
 // slot at width 0 costs the row nothing and the card reaches the window edge exactly as it did

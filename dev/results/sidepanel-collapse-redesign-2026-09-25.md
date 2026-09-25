@@ -5,9 +5,11 @@ Branch `operator/57440`. Covers both collapsible surfaces: the left rail (`Proje
 
 ## How it was measured
 
-The Electron app's CDP port (9340) was not answering, so every number below comes from the Vite
-renderer's mock harness (`dev/mock.html`) in Playwright's **Chromium**, the same engine as the
-Electron shell. Probe: `dev/drive-panel-collapse-shift.mjs` (committed). For each toggle it records
+Two rigs. First the Vite renderer's mock harness (`dev/mock.html`) in Playwright's Chromium, the
+same engine as the Electron shell, which gives the full theme/width matrix. Then the real Electron
+dev app, running this branch with a live Claude Code lane, driven over CDP (section "Electron,
+real pty" below), which is where the pty and TUI numbers that matter come from. The two disagree
+on one baseline fact, the panel's refit timing, and Electron is the one to trust. Probe: `dev/drive-panel-collapse-shift.mjs` (committed). For each toggle it records
 700ms of frames from the moment of the key/click and reports:
 
 - how many frames the content card's width and left edge changed on;
@@ -41,10 +43,11 @@ What moved, in words:
   timer). Inside the rail, `collapsed` flipped at t=0, so the collapsed layout was drawn into a strip
   still 264 wide: the group headers re-centred as it narrowed (2 leaves). On expand, the 14 name and
   status leaves re-truncated and the right-aligned status column slid with the edge on every frame.
-- **Panel.** No animation. The panel mounted or unmounted in one frame, the card jumped by the
-  panel's width (468px), and the terminal refit in the same frame: one hard cut in which the card,
-  the toolbar chips, the footer, the terminal text (145↔85 cols) and the Preview (if shown in the
-  main view) all changed at once. The panel's contents, including a Preview iframe, were unmounted
+- **Panel.** No animation. The panel mounted or unmounted in one frame and the card jumped by the
+  panel's width (468px). In the harness the terminal refit in that same frame. In Electron, with a
+  live lane, opening was **two separate jumps**: the card at 12ms and the terminal refit at 182ms,
+  because the fit waits for pty output to go quiet. Either way the card, the toolbar chips, the
+  footer, the terminal text and the main-view Preview all changed without any transition. The panel's contents, including a Preview iframe, were unmounted
   on every close and rebuilt on every open.
 - **Reduced motion** was ignored: the rail animated identically with `prefers-reduced-motion: reduce`.
 - **Other terminals.** The scratch shell (`ShellSheet`) did not get `suspendFit`, so when it was
@@ -109,21 +112,27 @@ that is the mount, followed by the two-frame hold described below.
    so line endings showed before the tabs and the gap only opened at the end. The panel stays
    mounted through its close animation, and the Preview stays in it while it slides out (keyed on
    the tab, not on `previewInPanel`, which turns false at the moment the close starts).
-6. **The panel's animation clock starts after the mount has painted.** Mounting the panel is one
+6. **Settling is two steps.** Releasing the pin and lifting the fit hold in one render made
+   the pane fit twice: once from its ResizeObserver, once from its own settle effect. The two fits
+   landed one column apart because xterm measures its scrollbar per fit. The harness can't show
+   this; Electron did, on every rail expand (986→790px, then 790→798px 16ms later). Now the pin
+   is released first, while the hold is still on, and the hold lifts two frames later, after the
+   ResizeObserver has delivered. Electron now shows one fit per toggle.
+7. **The panel's animation clock starts after the mount has painted.** Mounting the panel is one
    long task (~150ms in the harness). A Web Animation created inside it had used most of its 260ms
    before the first frame, so the panel still opened with a single 370px jump. Playing it on the
    first `requestAnimationFrame` didn't fix that, because that callback runs inside the late frame,
    whose timeline time predates the long task. It is now held at its first keyframe and played two
    frames later. The slot then reports `onMoveStart`, and the settle timer restarts from that point,
    so the terminals are never released to refit while the edge is still moving.
-7. **Only a user's toggle animates.** ⌘B, the toolbar button and the three palette commands
+8. **Only a user's toggle animates.** ⌘B, the toolbar button and the three palette commands
    (`Side panel: Plan / Diff / Preview`, now routed through one `setPanelOpen`) animate. A lane
    switch that changes the panel state stays instant, because the incoming pane fits on activation
    and a slot still moving under it would make that fit land at a mid-move width.
-8. **The Preview's native inspect view is hidden during a move.** It is placed by the stage's rect,
+9. **The Preview's native inspect view is hidden during a move.** It is placed by the stage's rect,
    and a stage that slides without resizing does not re-place it. It already had a hide/show path
    that re-places it at the current rect when it shows (R1), and the move now uses that path.
-9. **`ShellSheet` takes `suspendFit`**, so the scratch shell stops resizing its pty on every frame of ⌘B.
+10. **`ShellSheet` takes `suspendFit`**, so the scratch shell stops resizing its pty on every frame of ⌘B.
 
 Tokens: nothing new is hardcoded. The surfaces keep `--bg-terminal` / `--radius-lg`, and the only
 new number, `ROW_GAP = 8`, names the root row's existing gap, which the row itself now reads.
@@ -150,11 +159,37 @@ motion.
 - Project Home during ⌘B: 0 of its 13 text blocks changed size in the mock, so the non-session
   modes were left as they are.
 
+## Electron, real pty (this branch vs 65ffdd2, same instance)
+
+A second Electron dev instance ran this branch (`electron/ npm run dev`, isolated `OPERATOR_DIR`
+in the scratchpad, renderer on 1431, CDP on 9345; QA's 9340 instance was not touched). The window
+was 1100×720 at dpr 2, dark theme. One scratch project held one Research (Sonnet) lane, left at
+Claude Code's folder-trust prompt: a live TUI that rewraps on SIGWINCH and makes no model calls. For
+the baseline, the four changed renderer files were checked out at 65ffdd2 in the same instance and
+the same lane re-measured, then restored. Probe: `dev/drive-panel-collapse-shift.mjs` with
+`CDP=http://127.0.0.1:9345`. Here the bridge is a Proxy over a frozen native object, so fits are
+read from xterm: `.xterm-screen` changes width exactly when a fit changes the column count.
+
+| Toggle | Before: terminal width Δ / fits | After: terminal width Δ / fits | Rail leaves moved (before → after) |
+|---|---|---|---|
+| Rail collapse | 15 frames / 1 fit @ 340ms | 0–1 / 1 fit @ 343–353ms | 1 → 0 |
+| Rail expand | 15 frames / 1 fit @ 330ms | 1 (at settle) / 1 fit @ 343–344ms | 8 → 0–1 |
+| Panel open | card cut @ 12ms, 1 fit @ 182ms | card animates 43→280ms, 1 fit @ 381ms | 0 → 0 |
+| Panel close | card cut @ 10ms, 1 fit @ 27ms | card animates 27→279ms, 1 fit @ 344–346ms | 0 → 0 |
+| Reduced motion | rail still animated 15 frames, fits @ 337–343ms | 1 step, 1 fit @ 17–32ms | — |
+
+After the settle fix (item 6 above), frame pacing during the panel close was a steady ~17ms over two
+runs. An earlier run, taken just after a Vite reload, painted only 8 frames and did not reproduce.
+Layout totals are the same order before and after (5–10ms per toggle). The one rail leaf that
+moved in one of two after-runs (0 in the other) is most likely a live label changing its text; it
+was not identified.
+Redraw activity before the fit in the TUI numbers is xterm's cursor blink.
+
 ## Not verified, and follow-ups
 
-- **Not GUI-verified in Electron.** CDP on 9340 was not up. The harness runs the real renderer
-  against a fake bridge in Chromium, and the real-app cost of one Claude Code TUI redraw and of the
-  xterm DOM rows is not in these numbers.
+- **Electron coverage is dark theme at one window size.** Light and 1000px were covered in the
+  harness only. Nothing in this change touches colour, so theme cannot change the counts. A real
+  Claude Code session mid-stream was not measured: the lane sat at the trust prompt.
 - **Narrow windows (existing, unchanged):** at 1000px with the rail expanded, the 460px panel leaves
   the card 244px and the terminal 29 columns. Nothing clamps the panel against a minimum terminal
   width. Worth a rule: the panel yields before the terminal drops below some column count.
@@ -164,18 +199,3 @@ motion.
 - Grid terminal panes and the scratch shell are not in the mock fixture, so their single resize is
   argued from the code (both sit behind the pin or `suspendFit`), not measured.
 
-## Addendum: Electron dev app, read-only (2026-09-25, later)
-
-The Electron dev app came up on CDP 9340 (renderer on 1428, isolated OPERATOR_DIR, QA measuring in
-it). It runs code without this change, and it may not be restarted or driven during QA's run, so
-it was read over CDP only, with no toggles, navigation or project changes. What it shows at
-1100×720, dpr 2:
-
-- The rail has the baseline `transition: width 0.26s cubic-bezier(0.4, 0, 0.2, 1)`, and its column
-  is not fixed-width (no inner wrapper). There is no `SidePanelSlot`. So the "before" behaviour
-  measured in the harness is the code running in Electron.
-- No session is open (Worktrees page, 0 xterm panes), so a terminal refit cannot be observed there
-  without navigating.
-
-A real Electron before/after needs either a window in QA's run to toggle ⌘B and the panel in a
-session, or a second Electron instance on this branch (1431/9345). Launching that is the user's call.

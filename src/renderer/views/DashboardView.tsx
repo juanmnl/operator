@@ -336,9 +336,22 @@ export function DashboardView() {
   const layoutMoveTimer = useRef(0)
   // The terminal/Preview stack, measured when a move starts.
   const stackRef = useRef<HTMLDivElement>(null)
+  // SETTLING IS TWO STEPS, so a terminal fits once. Releasing the pin changes the stack's width,
+  // which fires every pane's ResizeObserver; lifting `suspendFit` fires the pane's own settle fit.
+  // Done in one render, both ran and landed a column apart (xterm measures its scrollbar per fit):
+  // measured in Electron as 986→790 then 790→798px, 16ms apart, on every rail expand. So the pin
+  // goes first, while the hold is still on, and the hold lifts two frames later — after the
+  // ResizeObserver has delivered (rAF runs before layout within a frame, hence two).
+  const layoutSettleRaf = useRef(0)
   const restartLayoutSettle = useCallback(() => {
     clearTimeout(layoutMoveTimer.current)
-    layoutMoveTimer.current = window.setTimeout(() => setLayoutMove(null), LAYOUT_MOVE_MS + LAYOUT_SETTLE_SLACK_MS)
+    cancelAnimationFrame(layoutSettleRaf.current)
+    layoutMoveTimer.current = window.setTimeout(() => {
+      setLayoutMove((m) => (m ? { ...m, pinW: null } : m))
+      layoutSettleRaf.current = requestAnimationFrame(() => {
+        layoutSettleRaf.current = requestAnimationFrame(() => setLayoutMove(null))
+      })
+    }, LAYOUT_MOVE_MS + LAYOUT_SETTLE_SLACK_MS)
   }, [])
   const beginLayoutMove = useCallback((edge: 'rail' | 'panel', delta: number) => {
     // Reduced motion: the edge jumps in one frame, so there is no "during" to protect and the
@@ -348,7 +361,7 @@ export function DashboardView() {
     setLayoutMove((m) => ({ ...m, [edge]: true, pinW: live > 0 ? pinWidth(m?.pinW ?? null, live, delta) : null }))
     restartLayoutSettle()
   }, [reducedMotion, restartLayoutSettle])
-  useEffect(() => () => clearTimeout(layoutMoveTimer.current), [])
+  useEffect(() => () => { clearTimeout(layoutMoveTimer.current); cancelAnimationFrame(layoutSettleRaf.current) }, [])
   // Open/close the right side panel (Plan / Diff / Preview). Per-session (ref avoids a stale id).
   // The panel's share of the row is its width plus the row's 8px gap (see `SidePanelSlot`).
   const setPanelOpen = useCallback((open: boolean, patch: LayoutPatch = {}) => {

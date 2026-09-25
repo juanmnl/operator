@@ -12,6 +12,10 @@
 // Run: `npx vite --port 1431` then `node dev/drive-panel-collapse-shift.mjs`.
 // Env: MOCK_PORT, W (viewport width, default 1440), SCHEME (dark|light), REDUCED=1, SHOTS=dir,
 // TRACE=1 (per-frame card width and panel left in the output).
+// CDP=http://127.0.0.1:9345 drives a RUNNING Electron dev app instead of the mock: it attaches to
+// the page already on screen, which must have a lane open, and changes nothing but the toggles.
+// The bridge there is a Proxy over a frozen native object, so pty resizes are read from xterm
+// instead: `.xterm-screen` changes width exactly when a fit changes the column count.
 import { chromium } from 'playwright'
 
 const PORT = process.env.MOCK_PORT || 1431
@@ -21,12 +25,13 @@ const SCHEME = process.env.SCHEME || 'dark'
 const REDUCED = process.env.REDUCED === '1'
 const SHOTS = process.env.SHOTS || ''
 
-const b = await chromium.launch()
-const ctx = await b.newContext({
+const CDP = process.env.CDP || ''
+const b = CDP ? await chromium.connectOverCDP(CDP, { timeout: 10000 }) : await chromium.launch()
+const ctx = CDP ? b.contexts()[0] : await b.newContext({
   viewport: { width: W, height: H }, colorScheme: SCHEME,
   reducedMotion: REDUCED ? 'reduce' : 'no-preference',
 })
-await ctx.addInitScript((SCHEME) => {
+if (!CDP) await ctx.addInitScript((SCHEME) => {
   try {
     localStorage.removeItem('operator.sidebarCollapsed')
     localStorage.removeItem('operator.sessionLayouts')
@@ -49,12 +54,15 @@ await ctx.addInitScript((SCHEME) => {
   })
 }, SCHEME)
 
-const p = await ctx.newPage()
+const p = CDP ? ctx.pages().find((x) => /localhost/.test(x.url())) : await ctx.newPage()
 p.on('pageerror', (e) => console.log('ERR', String(e).slice(0, 200)))
 const cdp = await ctx.newCDPSession(p)
 await cdp.send('Performance.enable')
-await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
-await p.waitForTimeout(2500)
+if (CDP) await p.emulateMedia({ reducedMotion: REDUCED ? 'reduce' : 'no-preference' })
+else {
+  await p.goto(`http://localhost:${PORT}/dev/mock.html`, { waitUntil: 'load' })
+  await p.waitForTimeout(2500)
+}
 
 // Into a session: open the operator project, then ⌘1 for its first lane.
 if (!(await p.$('[data-toolbar-header="session"]'))) {
@@ -65,8 +73,8 @@ if (!(await p.$('[data-toolbar-header="session"]'))) {
 }
 if (!(await p.$('[data-toolbar-header="session"]'))) { console.log('FAIL could not reach a session'); await b.close(); process.exit(1) }
 
-// Some lines in the terminal so a rewrap would show.
-await p.evaluate(() => {
+// Some lines in the terminal so a rewrap would show (the mock only; a real lane has its own TUI).
+if (!CDP) await p.evaluate(() => {
   const line = 'The quick brown fox jumps over the lazy dog, and the rail collapses underneath it. '
   for (const id of ['t0', 't1', 't2', 't3']) window.__mockTerminalData?.(id, (line.repeat(3) + '\r\n').repeat(12))
 })
@@ -94,6 +102,19 @@ async function record(label, trigger, ms = 700) {
       const pan = q('[data-side-panel]') || q('[data-toolbar-header="panel"]')?.parentElement
       return pan ? Array.from(pan.querySelectorAll('p, li, span, div')).filter((e) => e.childElementCount === 0 && e.textContent.trim().length > 20).slice(0, 60) : []
     }
+    // Fits, read off xterm: the screen element's width is cols × cell width, so it changes on a
+    // fit that changed the column count and at no other time. And the TUI's redraw traffic: DOM
+    // mutations under the visible pane's rows, which is Claude Code repainting after a SIGWINCH.
+    window.__fits = []
+    window.__mutations = []
+    const screen = () => { const x = pane(); return x ? x.querySelector('.xterm-screen') : null }
+    let lastScreenW = screen()?.style.width ?? null
+    const rows = pane()?.querySelector('.xterm-rows')
+    window.__mo?.disconnect()
+    if (rows) {
+      window.__mo = new MutationObserver((m) => window.__mutations.push({ t: performance.now(), n: m.length }))
+      window.__mo.observe(rows, { childList: true, subtree: true, characterData: true })
+    }
     const frames = []
     const t0 = performance.now()
     window.__t0 = t0
@@ -105,6 +126,8 @@ async function record(label, trigger, ms = 700) {
     window.addEventListener('mousedown', mark, { capture: true, once: true })
     const tick = () => {
       const now = performance.now()
+      const sw = screen()?.style.width ?? null
+      if (sw !== lastScreenW) { window.__fits.push({ t: now, from: lastScreenW, to: sw }); lastScreenW = sw }
       const panelEl = q('[data-side-panel]') || q('[data-toolbar-header="panel"]')?.parentElement?.parentElement
       frames.push({
         t: Math.round(now - t0),
@@ -127,7 +150,7 @@ async function record(label, trigger, ms = 700) {
   await trigger()
   await p.waitForTimeout(ms + 150)
   const after = await metrics()
-  const { frames, resizes, t0: tRec, trig } = await p.evaluate(() => ({ frames: window.__frames, resizes: window.__ptyResizes, t0: window.__t0, trig: window.__tTrigger }))
+  const { frames, resizes, t0: tRec, trig, fits, muts } = await p.evaluate(() => ({ frames: window.__frames, resizes: window.__ptyResizes ?? [], t0: window.__t0, trig: window.__tTrigger, fits: window.__fits, muts: window.__mutations }))
   const t0 = trig ?? tRec
   const off = Math.round(t0 - tRec)
   for (const f of frames) f.t -= off
@@ -177,6 +200,9 @@ async function record(label, trigger, ms = 700) {
       return hit.size
     })(),
     ptyResizes: resizes.map((x) => ({ kind: x.kind, id: x.id, cols: x.cols, rows: x.rows, atMs: Math.round(x.t - t0) })),
+    xtermFits: fits.map((x) => ({ atMs: Math.round(x.t - t0), from: x.from, to: x.to })),
+    // TUI repaint after the toggle: how many mutation batches, and from when to when.
+    tuiRedraw: (() => { const m = muts.filter((x) => x.t >= t0); return m.length ? { batches: m.length, fromMs: Math.round(m[0].t - t0), toMs: Math.round(m[m.length - 1].t - t0) } : null })(),
     layouts: after.LayoutCount - before.LayoutCount,
     layoutMs: Math.round((after.LayoutDuration - before.LayoutDuration) * 1000),
     styleRecalcs: after.RecalcStyleCount - before.RecalcStyleCount,
@@ -205,4 +231,5 @@ if (SHOTS) {
   await p.keyboard.press('Meta+b'); await p.waitForTimeout(600)
 }
 await record('panel close', () => panelBtn().click())
+if (CDP) process.exit(0) // detach; never close the app
 await b.close()
