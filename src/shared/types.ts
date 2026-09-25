@@ -368,6 +368,9 @@ export interface ReapEntry {
   live: boolean
   /** Uncommitted files; absent when git could not read the directory. */
   uncommitted?: number
+  /** Every uncommitted file is provably not work: a byte-identical copy of a file in the source
+   *  checkout or on the default branch, or a root node_modules symlink. Not counted as unsaved. */
+  uncommittedIsNonWork?: boolean
   /** Commits on HEAD that no other local branch and no remote contains; absent when unknown. */
   unsavedCommits?: number
   unsavedKnown: boolean

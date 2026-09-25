@@ -58,6 +58,11 @@ describe('unsavedLabel', () => {
     expect(unsavedLabel(entry())).toBe('No unsaved work')
     expect(unsavedLabel(entry({ unsavedKnown: false, uncommitted: undefined, unsavedCommits: undefined }))).toMatch(/unknown/)
   })
+  it('says when every uncommitted file is a copy of one that exists elsewhere, and drops it from the loss sentence', () => {
+    const copies = entry({ uncommitted: 4, uncommittedIsNonWork: true })
+    expect(unsavedLabel(copies)).toBe('4 untracked, all copies of files that exist elsewhere')
+    expect(unsavedConsequence([copies])).not.toMatch(/Uncommitted files will be lost/)
+  })
 })
 
 describe('unsavedConsequence — the sentence above the second confirmation', () => {

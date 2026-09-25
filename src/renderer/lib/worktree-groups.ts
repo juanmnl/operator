@@ -63,7 +63,11 @@ export const isDetached = (e: ReapEntry): boolean => e.branch === 'HEAD'
 export function unsavedLabel(e: ReapEntry): string {
   if (!e.unsavedKnown) return 'Unsaved work unknown — git cannot read it'
   const parts: string[] = []
-  if (e.uncommitted) parts.push(`${e.uncommitted} uncommitted file${e.uncommitted === 1 ? '' : 's'}`)
+  if (e.uncommitted) {
+    parts.push(e.uncommittedIsNonWork
+      ? `${e.uncommitted} untracked, all copies of files that exist elsewhere`
+      : `${e.uncommitted} uncommitted file${e.uncommitted === 1 ? '' : 's'}`)
+  }
   if (e.unsavedCommits) {
     const n = `${e.unsavedCommits} commit${e.unsavedCommits === 1 ? '' : 's'}`
     parts.push(isDetached(e) ? `${n} on a detached HEAD, on no branch` : `${n} on no other branch or remote`)
@@ -76,7 +80,7 @@ export function unsavedLabel(e: ReapEntry): string {
  *  "Commits stay on their branches" is only said when it holds for every listed row (Review M3). */
 export function unsavedConsequence(rows: readonly ReapEntry[]): string {
   const out: string[] = []
-  if (rows.some((r) => r.uncommitted)) out.push('Uncommitted files will be lost.')
+  if (rows.some((r) => r.uncommitted && !r.uncommittedIsNonWork)) out.push('Uncommitted files will be lost.')
   const detached = rows.filter((r) => isDetached(r) && r.unsavedCommits)
   if (detached.length) {
     out.push(`${detached.length === 1 ? 'One folder has' : `${detached.length} folders have`} commits on a detached HEAD, on no branch. Those commits will be lost.`)

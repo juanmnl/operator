@@ -21,7 +21,7 @@
 // silently skipped forever (that was defect #6) — it is surfaced as `unattributed` for a human
 // to stand in for the missing proof.
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
@@ -112,6 +112,11 @@ export interface WorktreeFacts {
   dirty: boolean
   /** Lines of `git status --porcelain`. `undefined` when git could not read the directory. */
   uncommittedCount?: number
+  /** Every uncommitted entry is PROVABLY not work (see `isProvablyNonWork`): an untracked file
+   *  byte-identical to the same path in the source checkout or on the default branch, or an
+   *  untracked root `node_modules` symlink. Such dirt does not count as unsaved. `undefined` or
+   *  `false` whenever any entry is anything else, or the question could not be answered. */
+  dirtIsNonWork?: boolean
   /** Commits on HEAD not reachable from any OTHER local branch or any remote-tracking branch.
    *  `undefined` when git could not answer. */
   unsavedCommits?: number
@@ -154,6 +159,8 @@ export interface ReapEntry {
   repo?: string
   live: boolean
   uncommitted?: number
+  /** Every uncommitted file is a copy of one that exists elsewhere (or a node_modules link). */
+  uncommittedIsNonWork?: boolean
   unsavedCommits?: number
   /** Git answered both unsaved-work questions. */
   unsavedKnown: boolean
@@ -231,7 +238,9 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
   switch (cls) {
     case 'live-claimed': return `A lane is open here (${f.liveTerminalId}).`
     case 'merged-clean': return 'Merged and clean — safe to remove; the branch is kept.'
-    case 'merged-dirty': return 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
+    case 'merged-dirty': return f.dirtIsNonWork
+      ? 'Merged; its only uncommitted files are copies of files that exist elsewhere, or a node_modules link — select it to remove it.'
+      : 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
     case 'unmerged': return f.merged === undefined
       ? `Could not tell whether ${f.branch ?? 'this branch'} is merged.`
       : `${f.branch ?? 'This branch'} is not merged into the default branch.`
@@ -264,16 +273,23 @@ export interface UnsavedWork {
   known: boolean
   /** Uncommitted files or unsaved commits exist. */
   any: boolean
+  /** The uncommitted files are all provably not work, so they are not counted in `any`. */
+  uncommittedIsNonWork?: boolean
 }
 
 /** WHAT WOULD BE LOST. The user's rule: uncommitted changes, or commits not reachable from another
- *  branch or a remote, count as unsaved. A directory git cannot read is UNKNOWN, never "none". */
+ *  branch or a remote, count as unsaved. A directory git cannot read is UNKNOWN, never "none".
+ *
+ *  Uncommitted files that are PROVABLY not work do not count (`dirtIsNonWork`): a copy of a file
+ *  that exists byte for byte somewhere else loses nothing when this directory goes. A TRACKED file
+ *  edit always counts, however small; nothing here can prove it is not someone's change. */
 export function unsavedWorkOf(f: WorktreeFacts): UnsavedWork {
   if (!f.gitValid) return { known: false, any: false }
   const uncommitted = f.uncommittedCount
   const known = uncommitted !== undefined && f.unsavedCommits !== undefined
-  const any = (uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0
-  return { uncommitted, unsavedCommits: f.unsavedCommits, known, any }
+  const nonWork = !!f.dirtIsNonWork && (uncommitted ?? 0) > 0
+  const any = (nonWork ? 0 : uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0
+  return { uncommitted, unsavedCommits: f.unsavedCommits, known, any, ...(nonWork ? { uncommittedIsNonWork: true } : {}) }
 }
 
 /** Manual removal of this directory needs the explicit second confirmation. */
@@ -317,6 +333,7 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       repo: f.provenance?.sourceRepo ?? f.sourceRepoHint,
       live: !!f.liveTerminalId,
       uncommitted: unsaved.uncommitted,
+      uncommittedIsNonWork: unsaved.uncommittedIsNonWork,
       unsavedCommits: unsaved.unsavedCommits,
       unsavedKnown: unsaved.known,
       needsUnsavedConfirm: entryNeedsConfirm(f),
@@ -387,6 +404,116 @@ const git = async (cwd: string, args: string[]): Promise<string | null> => {
   } catch {
     return null
   }
+}
+
+/** Same as `git`, but returns stdout UNTRIMMED: `-z` output starts with a status column that may be
+ *  a space, and trimming it would corrupt the first entry. */
+const gitRaw = async (cwd: string, args: string[]): Promise<string | null> => {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
+// ── provably non-work dirt (G2 in dev/results/worktree-cleanup-audit-2026-09-25.md) ─────────────
+//
+// The audit found 22 merged directories (10.5 GB) that the unsaved-work step blocked although none
+// held work: brief and result files copied into a worktree byte for byte from the main checkout,
+// and old `node_modules` symlinks that `.gitignore`'s `node_modules/` does not match. Only these
+// two shapes are excused, because each can be PROVED to lose nothing. A tracked-file edit is never
+// excused, however trivial it looks (the audit's one-line CLAUDE.md vault edit stays unsaved).
+
+/** One entry of `git status --porcelain=v1 -z --untracked-files=all`. */
+export interface StatusEntry { xy: string; path: string }
+
+/** Parse `-z` porcelain v1. A rename or copy carries its source path as the NEXT field, which is
+ *  consumed so it is not read as an entry of its own. Pure. */
+export function parseStatusZ(out: string): StatusEntry[] {
+  const fields = out.split('\0')
+  const entries: StatusEntry[] = []
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]
+    if (f.length < 4) continue
+    const xy = f.slice(0, 2)
+    entries.push({ xy, path: f.slice(3) })
+    if (xy[0] === 'R' || xy[0] === 'C') i++
+  }
+  return entries
+}
+
+/** What is known about one untracked path, for the pure decision below. */
+export interface NonWorkProbe {
+  /** A symlink (at the worktree root, for `node_modules`). */
+  symlink: boolean
+  /** Byte-identical to the same path in the source checkout's working tree. */
+  sameAsSource: boolean
+  /** Byte-identical to the same path on the source repo's default branch. */
+  sameAsDefault: boolean
+}
+
+/** THE RULE, pure. Only an UNTRACKED entry can be non-work, and only as one of two proved shapes. */
+export function isProvablyNonWork(e: StatusEntry, probe: NonWorkProbe | undefined): boolean {
+  if (e.xy !== '??' || !probe) return false
+  if (e.path === 'node_modules' && probe.symlink) return true
+  if (probe.symlink) return false
+  return probe.sameAsSource || probe.sameAsDefault
+}
+
+/** Past this many untracked files the question is not worth the I/O, and the answer is "work". */
+const NON_WORK_MAX_FILES = 5000
+
+async function sameBytes(a: string, b: string): Promise<boolean> {
+  try {
+    const [sa, sb] = await Promise.all([lstat(a), lstat(b)])
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false
+    const [ba, bb] = await Promise.all([readFile(a), readFile(b)])
+    return ba.equals(bb)
+  } catch {
+    return false
+  }
+}
+
+/** Is every uncommitted entry in `path` provably not work? `false` on any doubt. Never throws. */
+export async function dirtIsNonWork(path: string, sourceRepo: string | undefined): Promise<boolean> {
+  if (!sourceRepo || !existsSync(sourceRepo)) return false
+  const out = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  if (out == null) return false
+  const entries = parseStatusZ(out)
+  if (!entries.length || entries.length > NON_WORK_MAX_FILES) return false
+  if (entries.some((e) => e.xy !== '??')) return false
+  const probes = new Map<string, NonWorkProbe>()
+  const needDefault: string[] = []
+  for (const e of entries) {
+    let symlink = false
+    try { symlink = (await lstat(join(path, e.path))).isSymbolicLink() } catch { return false }
+    const sameAsSource = !symlink && await sameBytes(join(path, e.path), join(sourceRepo, e.path))
+    probes.set(e.path, { symlink, sameAsSource, sameAsDefault: false })
+    if (!symlink && !sameAsSource) needDefault.push(e.path)
+  }
+  if (needDefault.length) {
+    // Blob ids on the default branch, and the files' own ids hashed WITHOUT filters, so equal ids
+    // mean equal bytes. Batched so a long list does not hit the argument limit.
+    const base = await defaultBranchOf(sourceRepo)
+    if (!base) return false
+    for (let i = 0; i < needDefault.length; i += 200) {
+      const batch = needDefault.slice(i, i + 200)
+      const tree = await gitRaw(sourceRepo, ['ls-tree', '-z', base, '--', ...batch])
+      const hashed = await git(path, ['hash-object', '--no-filters', '--', ...batch])
+      if (tree == null || hashed == null) return false
+      const onDefault = new Map<string, string>()
+      for (const rec of tree.split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.+)$/.exec(rec)
+        if (m) onDefault.set(m[2], m[1])
+      }
+      const ids = hashed.split('\n')
+      batch.forEach((p, j) => { if (onDefault.get(p) === ids[j]) probes.get(p)!.sameAsDefault = true })
+    }
+  }
+  return entries.every((e) => isProvablyNonWork(e, probes.get(e.path)))
 }
 
 /** `du -sk` over the worktree root's children in ONE call.
@@ -666,6 +793,9 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       }
     }
 
+    // Only asked of a dirty tree: a clean one has nothing to excuse.
+    const nonWork = gitValid && status ? await dirtIsNonWork(path, sourceRepoExists ? sourceRepo : undefined) : false
+
     const activity = [prov?.createdAt, headAt, lastActive.get(path)].filter((n): n is number => typeof n === 'number')
     return {
       path,
@@ -674,6 +804,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       branch,
       dirty: !!status,
       uncommittedCount: status == null ? undefined : status.split('\n').filter(Boolean).length,
+      dirtIsNonWork: nonWork || undefined,
       unsavedCommits,
       sourceRepoHint: sourceRepo,
       orphaned: !!(sourceRepo && sourceRepoExists && adminEntry && !registered && !existsSync(adminEntry)),
