@@ -24,6 +24,7 @@ import { createTray, type OperatorTray } from './tray'
 import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
 import { checkAutoRemoval, reconcileAtBoot, reapOnQuit, releaseWorktreeOnExit, setLivePtyCwds } from './worktree-reap'
+import { CheckoutWatcher } from './checkout-health'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
@@ -45,6 +46,7 @@ let tray: OperatorTray | null = null
 let trayPhase: TrayPhase = 'idle'
 let stopTrayAnim: (() => void) | null = null
 let sweepTimer: ReturnType<typeof setInterval> | null = null
+let checkouts: CheckoutWatcher | null = null
 let claudeVersion: ClaudeVersionWatcher | null = null
 
 /** How often the live app re-checks for its own leaked lanes. See the call site. */
@@ -224,7 +226,9 @@ function boot(): void {
   // Ten minutes because the cost is one `ps -E` pair (the expensive form — it dumps every
   // process's environment) and the thing being caught is a leak measured in hours and days, not
   // seconds. `unref` so a pending timer can never be what keeps the app from exiting.
-  sweepTimer = setInterval(() => { void terminals?.sweepAbandoned() }, ABANDONED_SWEEP_MS)
+  // The same sweep also looks for lanes whose checkout was removed outside Operator — the one
+  // chance to notice for a lane that has gone quiet (see checkout-health.ts).
+  sweepTimer = setInterval(() => { void terminals?.sweepAbandoned(); void checkouts?.sweep() }, ABANDONED_SWEEP_MS)
   sweepTimer.unref?.()
 
   // DEFECT #5: nothing at launch ever cross-referenced `~/.operator/worktrees` against
@@ -242,11 +246,20 @@ function boot(): void {
   setLivePtyCwds(() => terminals?.liveCwds() ?? [])
   void reconcileAtBoot()
 
+  checkouts = new CheckoutWatcher(
+    () => terminals?.liveTerminals() ?? [],
+    (list) => { const w = win(); if (w) broadcast(w, 'onCheckoutGone', list) },
+  )
   terminals = new TerminalManager(
-    (id, data) => { const w = win(); if (w) broadcast(w, 'onTerminalData', id, data) },
+    (id, data) => {
+      const w = win()
+      if (w) broadcast(w, 'onTerminalData', id, data)
+      checkouts?.noteActivity(id)
+    },
     (id, code, signal, selfExit, laneCwd) => {
       const w = win()
       if (w) broadcast(w, 'onTerminalExit', id, code, signal)
+      checkouts?.forget(id)
       // A lane that called worktree_done has its worktree removed now that it has ended.
       if (artifacts) void releaseWorktreeOnExit(id, laneCwd, artifacts)
       // Report-only: what the automatic worktree rule would take now that a lane ended on its own.
@@ -334,7 +347,7 @@ function boot(): void {
   claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
   claudeVersion.start()
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, getWindow: () => mainWindow })
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way

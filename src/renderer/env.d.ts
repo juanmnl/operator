@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -278,6 +278,10 @@ declare global {
       claudeVersion?: () => Promise<string | null>
       /** Pushed when the installed Claude Code version changes (main re-reads it once a minute). */
       onClaudeVersion?: (callback: (version: string | null) => void) => () => void
+      /** Lanes whose checkout was removed outside Operator (a `gh pr merge --delete-branch`, an
+       *  `rm`), as a full list each time it changes. Not repaired; shown on the lane. */
+      onCheckoutGone?: (callback: (list: GoneCheckout[]) => void) => () => void
+      checkoutGoneList?: () => Promise<GoneCheckout[]>
     }
   }
 }

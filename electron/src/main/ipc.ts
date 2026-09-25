@@ -30,6 +30,7 @@ import { capturePreviewShot } from './preview-shot-capture'
 import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
+import type { CheckoutWatcher } from './checkout-health'
 import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
 
@@ -57,6 +58,8 @@ export interface Deps {
   quit: QuitGuard
   /** The installed Claude Code version, watched in main (claude-version.ts). */
   claudeVersion: ClaudeVersionWatcher
+  /** Lanes whose checkout was removed outside Operator (checkout-health.ts). */
+  checkouts?: CheckoutWatcher
   getWindow: () => BrowserWindow | null
   /** The ONE question and the quit preparation the install needs — see `index.ts`. Passed in
    *  rather than imported, because `index.ts` already imports this module and a cycle between
@@ -168,6 +171,8 @@ export function registerIpc(d: Deps): void {
     terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
     claudeVersion: () => d.claudeVersion.resolve(),
+    // The current list, for a renderer that (re)loads after an `onCheckoutGone` event went out.
+    checkoutGoneList: () => d.checkouts?.list() ?? [],
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),

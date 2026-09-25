@@ -345,6 +345,17 @@ export interface DevServerProc {
   owner: 'live-lane' | 'dead-app' | 'abandoned-lane' | 'untagged'
 }
 
+/** A live lane whose checkout was removed outside Operator: its `.git` file is missing, or the git
+ *  admin entry it names is gone. See electron/src/main/checkout-health.ts. */
+export interface GoneCheckout {
+  terminalId: string
+  cwd: string
+  /** The branch last seen checked out there; absent when never seen healthy this run. */
+  branch?: string
+  why: string
+  since: number
+}
+
 /** How a worktree directory was classified by the reaper. See
  *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
 export type ReapClass =

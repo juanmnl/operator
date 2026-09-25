@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { launchWorkspace } from '../lib/lane-workspace'
@@ -27,6 +27,7 @@ import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orpha
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
+import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -3207,6 +3208,31 @@ export function DashboardView() {
   }, [terminals, forgetSavedSession, completeTerminalTasks, pushToast])
   handleCloseSessionRef.current = handleCloseSession
 
+  // A LANE'S CHECKOUT REMOVED OUTSIDE OPERATOR (electron/src/main/checkout-health.ts). Main sends the
+  // full list when it changes; a new entry is announced once, and the lane header keeps saying it
+  // for as long as it holds. Nothing is repaired.
+  const [goneCheckouts, setGoneCheckouts] = useState<GoneCheckout[]>([])
+  useEffect(() => {
+    let live = true
+    let prev: GoneCheckout[] = []
+    const apply = (list: GoneCheckout[], announce: boolean) => {
+      if (!live) return
+      if (announce) {
+        for (const g of newlyGone(prev, list)) {
+          const launched = terminalsRef.current.find((t) => t.id === g.terminalId)?.worktreeBranch
+          pushToast({ text: checkoutGoneLabel(g, launched), kind: 'error', detail: checkoutGoneDetail(g, launched) })
+        }
+      }
+      prev = list
+      setGoneCheckouts(list)
+    }
+    Promise.resolve(window.operator.checkoutGoneList?.())
+      .then((list) => { if (list) apply(list, false) })
+      .catch(() => { /* none known */ })
+    const off = window.operator.onCheckoutGone?.((list) => apply(list, true))
+    return () => { live = false; off?.() }
+  }, [pushToast])
+
   // CLAUDE CODE UPDATED UNDER A RUNNING LANE (lib/cli-update). Main records the version each pty was
   // spawned on and pushes the installed one when the `claude` link moves.
   const [installedClaudeVersion, setInstalledClaudeVersion] = useState<string | null>(null)
@@ -5293,6 +5319,10 @@ export function DashboardView() {
               onTogglePanel={togglePanel}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
+              checkoutGone={(() => {
+                const g = tab && goneCheckouts.find((x) => x.terminalId === tab.id)
+                return g ? { label: checkoutGoneLabel(g, tab.worktreeBranch), detail: checkoutGoneDetail(g, tab.worktreeBranch) } : null
+              })()}
               cliUpdate={tab && installedClaudeVersion && isOutOfDate(tab.claudeVersion, installedClaudeVersion) && !tab.ended
                 ? {
                   label: cliUpdateLabel(installedClaudeVersion),

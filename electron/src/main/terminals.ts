@@ -777,6 +777,11 @@ export class TerminalManager {
     return new Set([...this.terminals.values()].filter((t) => !t.exited).map((t) => t.id))
   }
 
+  /** Id and cwd of every pty that has not exited — for the checkout watcher (checkout-health.ts). */
+  liveTerminals(): Array<{ id: string; cwd: string }> {
+    return [...this.terminals.values()].filter((t) => !t.exited).map((t) => ({ id: t.id, cwd: t.cwd }))
+  }
+
   /** The cwd of every pty that has not exited, lanes and plain shells alike. Read by the worktree
    *  removal paths as the live claim that does not wait for `sessions.json`. */
   liveCwds(): string[] {
