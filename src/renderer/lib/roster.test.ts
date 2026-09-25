@@ -57,6 +57,13 @@ describe('roster', () => {
     expect(note).not.toContain('operated by Operator') // it doesn't refer to itself in 3rd person
   })
 
+  it('the coordinator is told how a merge with --delete-branch removes a lane\'s checkout', () => {
+    const roster = defaultRoster()
+    const note = orchestrationNote('Demo', roster.find((r) => r.id === 'operator')!, roster)
+    expect(note).toContain('`gh pr merge --delete-branch` also removes any linked worktree')
+    expect(note).toContain('git push origin --delete <branch>')
+  })
+
   it('a legacy roster keyed on the old "orchestrator" id still gets the Operator framing', () => {
     const legacy = [{ id: 'orchestrator', name: 'Orchestrator', model: 'fable', prompt: 'x' }, ...defaultRoster().filter((r) => r.id !== 'operator')]
     const note = orchestrationNote('Demo', legacy[0], legacy)
@@ -336,8 +343,10 @@ describe('orchestrationNote — the return path', () => {
     // Raised to 3400 on 2026-09-25 for the Infra preset: one more line in the coordinator's team
     // list took its note from 3261 to 3374. The same change lengthened the Code/Review/Design/QA
     // charters, so the guard now covers every preset's note, not just Code's (longest: Review, 3253).
+    // Raised to 3800 on 2026-09-25 for BRANCH_SAFETY_NOTE in the coordinator's note (it merges PRs,
+    // and `--delete-branch` gutted a lane's checkout twice): 3374 to 3764.
     for (const role of roster) {
-      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(3400)
+      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(3800)
     }
   })
 })

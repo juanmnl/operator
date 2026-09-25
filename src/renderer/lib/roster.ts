@@ -402,6 +402,24 @@ export const WORKTREE_DONE_NOTE =
   'When your task is done and your work is committed on your branch, call ' +
   '`mcp__operator__worktree_done`, then `mcp__operator__report`.\n'
 
+/** Branch hygiene that keeps one lane from deleting another's checkout.
+ *
+ *  dev/results/mantel-55da80-gutted-2026-09-25.md: a coordinator ran `gh pr merge N --squash
+ *  --delete-branch` from the main checkout while a Code lane had that PR's branch checked out in its
+ *  worktree. gh 2.100 then runs `git worktree remove` on that linked worktree; a dev server writing
+ *  into it made the removal fail halfway, leaving the lane in a directory with no `.git`. It
+ *  happened twice. The lane had switched to the PR branch with `git checkout -b` inside its own
+ *  worktree, which is what put its home directory in the merge's path.
+ *
+ *  Given to the coordinator (it merges) and to lanes that own a worktree (they branch). Lanes in the
+ *  shared checkout are already told not to commit or switch branches. */
+export const BRANCH_SAFETY_NOTE =
+  'Git: `gh pr merge --delete-branch` also removes any linked worktree that has that branch checked ' +
+  'out, another lane\u2019s included. If another lane may have it checked out, merge without ' +
+  '`--delete-branch` and delete only the remote branch (`git push origin --delete <branch>`). Start a ' +
+  'new feature branch in a fresh Operator worktree (a new lane), not with `git checkout -b` in an ' +
+  'existing one.\n'
+
 export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
@@ -418,6 +436,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `Your team for this project — the lanes you can delegate to:\n${team}\n` +
       charter +
       DISPATCH_PROTOCOL +
+      BRANCH_SAFETY_NOTE +
       REPLY_PROTOCOL +
       REPORT_INBOX +
       REPORT_TASK_STATUS
@@ -441,7 +460,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
     (opts.sharesMainCheckout ? SHARED_CHECKOUT_NOTE : '') +
-    (opts.ownWorktree ? WORKTREE_DONE_NOTE : '') +
+    (opts.ownWorktree ? WORKTREE_DONE_NOTE + BRANCH_SAFETY_NOTE : '') +
     REPLY_PROTOCOL +
     REPORT_ARTIFACTS +
     REPORT_TASK_STATUS
