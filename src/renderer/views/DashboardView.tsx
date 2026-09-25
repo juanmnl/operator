@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { launchWorkspace } from '../lib/lane-workspace'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, laneKey, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
@@ -852,7 +852,7 @@ export function DashboardView() {
       const raw = localStorage.getItem('operator.projects')
       // Legacy-coordinator migration on the seed too, so the pre-hydrate first paint
       // never flashes the old "Orchestrator" lane.
-      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator).map(migrateProjectEfforts) : []
+      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator).map(migrateProjectEfforts).map(migrateStockCharters) : []
     } catch { return [] }
   })
 
@@ -926,7 +926,7 @@ export function DashboardView() {
       // `OPERATOR-DISPATCH [lane] …` addresses a lane by id, so a project with no roster has
       // nothing to talk to and nothing that can create the others. Operator is the coordinator —
       // the lane that receives an intent and routes it — so it is the one lane worth seeding.
-      // The other five stay templates behind "+ Add agent" (lib/roster rolePresets).
+      // The other presets stay templates behind "+ Add agent" (lib/roster rolePresets).
       //
       // The empty state that brief added is still needed: a user can still delete their way to
       // zero, which is their decision to make.
@@ -2189,7 +2189,9 @@ export function DashboardView() {
         // …the effort-ladder migration runs FIRST of the three, so `clearSeededRoleFields` compares a
         // migrated `medium` against the migrated preset rather than a stale `normal` against it —
         // otherwise every operator/design lane keeps a pin that is now identical to its preset.
-        const reconciled = renamed.map(migrateProjectEfforts).map(clearSeededRoleFields).map(clearCoordinatorWorktree)
+        // …and a lane still carrying a superseded STOCK charter takes today's wording
+        // (`migrateStockCharters`); a customised charter is never touched.
+        const reconciled = renamed.map(migrateProjectEfforts).map(clearSeededRoleFields).map(clearCoordinatorWorktree).map(migrateStockCharters)
         const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
         // …and then, ONCE per install, the seeded-lane PRUNE: projects created before seeding was
         // removed still carry six lanes nobody asked for, so drop the ones that were never used and
