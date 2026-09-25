@@ -27,6 +27,7 @@ import { allocateCdpPort, cdpLaunchNote, isElectronProject } from './preview-cdp
 import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from './port-attribution'
 import { allocatePort, shouldReleaseCwdPort, provesOwnServer, DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
+import { OutputBatcher } from './pty-batch'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
  *  pane re-attaches after a renderer reload. Trimmed with the same hysteresis (let it reach
@@ -93,6 +94,10 @@ interface Managed {
   claudeVersion: string | null
   /** ms of the last pty chunk, for `activeWithin`. */
   lastActivityAt?: number
+  /** Output waiting to be sent to the renderer — see `pty-batch.ts`. `history` is fed from the
+   *  same flush, so it always equals what has been sent and a re-attach cannot replay bytes that
+   *  are about to arrive live. */
+  out: OutputBatcher
   exited: boolean
   /** A reap is in flight. `kill()` now runs for up to the grace period before it does its
    *  bookkeeping, so the map entry is still present in that window and a second `kill(id)` —
@@ -321,7 +326,7 @@ export class TerminalManager {
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, exited: false }
+    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, out: this.outputFor(() => managed), exited: false }
     this.terminals.set(id, managed)
     if (cdpPort) this.cdpReserving.delete(cdpPort)
 
@@ -339,20 +344,21 @@ export class TerminalManager {
           shellPid: p.pid, appPid: process.pid, startedAt: new Date().toISOString(),
         })
       }
-      // The transport is base64 all the way, matching `TerminalDataPayload`: the renderer's
-      // `onTerminalData` does atob → bytes → STREAMING TextDecoder, which is what stitches a
-      // multibyte character split across two pty reads. Handing it a JS string here would
-      // have node-pty do that decode with its own boundary rules and quietly change the
-      // bytes the terminal sees.
+      // The transport is base64 all the way, matching `TerminalDataPayload`. `chunk` is already a
+      // decoded string: node-pty's default `encoding: 'utf8'` puts a StringDecoder on the pty
+      // socket, and that decoder holds back a multibyte character split across two reads until
+      // the rest arrives. So `Buffer.from(chunk, 'utf8')` gives back the original bytes for any
+      // valid UTF-8, and only invalid sequences come out as U+FFFD, which is what the renderer's
+      // TextDecoder would have made of them too.
       p.onData((chunk) => {
-        const buf = Buffer.from(chunk, 'utf8')
         managed.lastActivityAt = Date.now()
-        this.pushHistory(managed, buf)
-        this.onData(id, buf.toString('base64'))
+        managed.out.push(Buffer.from(chunk, 'utf8'))
       })
       p.onExit(({ exitCode, signal }) => {
         managed.exited = true
         managed.pty = null
+        // Everything the process printed goes out BEFORE its exit does.
+        managed.out.close()
         this.onExit(id, exitCode, signal ?? 0, !managed.killing, managed.cwd)
       })
     }
@@ -374,7 +380,7 @@ export class TerminalManager {
    *  is no startup banner wrapped to the wrong width to protect. */
   spawnShell(cwd: string): string {
     const id = this.nextId()
-    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), claudeVersion: null, exited: false }
+    const managed: Managed = { id, cwd, pty: null, pending: null, history: [], historyBytes: 0, sniffedPorts: new Set(), claudeVersion: null, out: this.outputFor(() => managed), exited: false }
     this.terminals.set(id, managed)
     const shell = loginShell()
     const p = ptySpawn(shell, ['-il'], {
@@ -383,14 +389,13 @@ export class TerminalManager {
     })
     managed.pty = p
     p.onData((chunk) => {
-      const buf = Buffer.from(chunk, 'utf8')
       managed.lastActivityAt = Date.now()
-      this.pushHistory(managed, buf)
-      this.onData(id, buf.toString('base64'))
+      managed.out.push(Buffer.from(chunk, 'utf8'))
     })
     p.onExit(({ exitCode, signal }) => {
       managed.exited = true
       managed.pty = null
+      managed.out.close()
       // A plain shell is not a lane; its exit is never a worktree trigger.
       this.onExit(id, exitCode, signal ?? 0, false)
     })
@@ -437,6 +442,9 @@ export class TerminalManager {
     const t = this.terminals.get(id)
     if (!t) return
     if (t.killing) return t.killing
+    // Send what the lane already printed before anything is signalled: the kill ends in an exit
+    // event, and output must not trail it.
+    t.out.flush()
     const done = this.reapAndForget(t, snapshot)
     t.killing = done
     return done
@@ -773,6 +781,16 @@ export class TerminalManager {
    *  removal paths as the live claim that does not wait for `sessions.json`. */
   liveCwds(): string[] {
     return [...this.terminals.values()].filter((t) => !t.exited).map((t) => t.cwd)
+  }
+
+  /** A terminal's output batcher. Takes a getter because the `Managed` it feeds is still being
+   *  built when this is called. One flush is one history entry and one renderer message. */
+  private outputFor(t: () => Managed): OutputBatcher {
+    return new OutputBatcher((buf) => {
+      const m = t()
+      this.pushHistory(m, buf)
+      this.onData(m.id, buf.toString('base64'))
+    })
   }
 
   private pushHistory(t: Managed, buf: Buffer): void {
