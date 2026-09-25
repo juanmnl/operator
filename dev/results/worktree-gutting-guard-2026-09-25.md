@@ -66,3 +66,34 @@ The new `electron/src/main/checkout-health.ts` holds a `CheckoutWatcher` in main
 - **Review's other recommendation:** add the live-pty refusal (`ptyClaimOn`) to `mergeBranch` and `discardBranch` (`worktree.ts`). Those paths can rename a live lane's cwd from the review UI. Not in this brief; recommended for Code.
 - **Existing mantel lanes:** the mantel coordinator's own memory or recipe (`| tail -1` hid gh's message). The launch note reaches it on its next launch only.
 - **Bare `git worktree prune` by lanes** (Review recommendation 4). Not added to the note, to keep the note short.
+
+## (3) Live-lane refusal on merge and discard — added after report #1553
+
+This is the guard recommended above, as its own commit. Nothing earlier was rewritten.
+
+**What changed.** `mergeBranch` and `discardBranch` (`electron/src/main/worktree.ts`) now take a required `LiveGuard`: main's pty table from `TerminalManager.liveTerminals()`, never `sessions.json`. They refuse when a running terminal's cwd is in either of two places:
+- the worktree being removed;
+- any worktree that `git worktree list --porcelain` shows with that branch checked out. This is the mantel shape, where the branch lived in another lane's worktree.
+
+The message names the lane:
+
+> Refused to merge <branch>: lane t2 (code) is running in <cwd>, which has <branch> checked out, and merging would remove that checkout from under it. Close that lane first.
+
+A refused merge runs before any git command, so nothing changes. `TerminalManager` now keeps each pty's `roleId` so the lane can be named.
+
+**One exemption, and why.** The session's own Diff panel merges or discards the lane it is reviewing while that lane is running, then ends it (`onSessionEnded` kills the pty). Refusing that would make its Merge and Discard buttons always fail. So `worktreeMerge` and `worktreeDiscard` take an optional `ownTerminalId`: the Diff panel passes its tab's id, and only that terminal is exempt. Any other lane in the worktree still blocks. The Task board's merge already requires the lane to be closed (`canMerge = !laneLive`) and passes no id.
+
+**Tests** (`electron/src/main/worktree.test.ts`, 5 new; existing calls pass an empty table):
+- a merge is refused with another lane running inside the worktree; the lane is named, main is unmerged and the directory stays;
+- a merge is refused when the branch is checked out in a different worktree where a lane runs;
+- a merge goes through when the only lane inside is the exempt one and another lane runs elsewhere;
+- a discard is refused with a named lane, keeping both the worktree and the branch;
+- a discard goes through when the only lane is the exempt one.
+
+Disabling the guard fails the 3 refusal tests.
+
+**Verification.**
+- `electron`: typecheck exit 0; vitest 42 files, **743 passed**.
+- Root: tsc exit 0; vitest 102 files, **1529 passed**.
+- One run of `worktree.test.ts` failed the unrelated `node_modules` clone time-cap test ("expected 'the 0s launch cap was reached' to match /timed out/"). It passed on 3 immediate re-runs and in the full run. It is timing-dependent and not touched by this change.
+- Not verified in the running app.
