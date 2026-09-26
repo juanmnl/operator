@@ -117,5 +117,9 @@ const CLASS_LABEL: Record<ReapClass, string> = {
  *  claimed to be a leftover (Review finding 2). */
 export function classLabel(e: ReapEntry): string {
   if (e.cls === 'debris' && !e.auto) return 'Small folder, not a worktree'
+  // Merged by patch is a NOTE on the class, never a replacement for it (Review finding 8): on a live
+  // or unattributed row the class is the reason it cannot be removed. Only "Not merged", which it
+  // contradicts, gives way.
+  if (e.mergedByPatch) return e.cls === 'unmerged' ? 'Merged by squash or rebase' : `${CLASS_LABEL[e.cls]} · merged by squash or rebase`
   return CLASS_LABEL[e.cls]
 }

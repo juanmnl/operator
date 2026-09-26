@@ -112,4 +112,9 @@ describe('classLabel', () => {
     expect(classLabel(entry({ cls: 'debris', auto: false }))).toBe('Small folder, not a worktree')
     expect(classLabel(entry({ cls: 'live-claimed' }))).toBe('A lane is open here')
   })
+  it('adds "merged by squash or rebase" to the class, and replaces only "Not merged" (Review finding 8)', () => {
+    expect(classLabel(entry({ cls: 'unmerged', mergedByPatch: true }))).toBe('Merged by squash or rebase')
+    expect(classLabel(entry({ cls: 'live-claimed', mergedByPatch: true }))).toBe('A lane is open here · merged by squash or rebase')
+    expect(classLabel(entry({ cls: 'unattributed', mergedByPatch: true }))).toBe('No provenance record · merged by squash or rebase')
+  })
 })
