@@ -187,9 +187,10 @@ declare global {
       runCheck: (cwd: string, command: string) => Promise<{ ok: boolean; code?: number; output: string }>
       worktreeCommit: (path: string, message: string) => Promise<{ ok: boolean; sha?: string; error?: string }>
       /** Refused while a lane other than `ownTerminalId` runs in the worktree that has `branch`
-       *  checked out. Pass `ownTerminalId` only for the lane being merged on purpose, which the
-       *  caller then ends. */
-      worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, ownTerminalId?: string) => Promise<{ ok: boolean; message?: string }>
+       *  checked out. `ownTerminalId` is the lane being merged on purpose: main STOPS it, after every
+       *  refusal has passed, then commits the worktree (`commitMessage`) and merges. A refusal leaves
+       *  it running. */
+      worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, ownTerminalId?: string, commitMessage?: string) => Promise<{ ok: boolean; message?: string }>
       worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string, ownTerminalId?: string) => Promise<{ ok: boolean; error?: string }>
       agentsList: (projectPath?: string) => Promise<AgentDefinition[]>
       agentSave: (def: AgentDefinition, originalPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>

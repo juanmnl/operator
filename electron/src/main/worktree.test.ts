@@ -171,13 +171,116 @@ describe('merge, discard, and the guards around them', () => {
     expect(await wt.pathExists(lane.path)).toBe(false)
   })
 
-  it('REFUSES to merge when the source repo is dirty', async () => {
+  it('REFUSES to merge when the source repo has a TRACKED change', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)
-    writeFileSync(join(repo, 'uncommitted.txt'), 'in the way\n')
+    writeFileSync(join(repo, 'a.txt'), 'edited in the main checkout\n') // a.txt is tracked
     const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES)
     expect(r.ok).toBe(false)
-    expect(r.message).toMatch(/uncommitted changes/)
+    expect(r.message).toMatch(/uncommitted changes \(a\.txt\)/)
+  })
+
+  // REVIEW N1: every refusal runs BEFORE the lane is stopped. `stopLane` is a spy standing in for
+  // main's `terminals.kill(ownTerminalId)`; a refused merge must never call it.
+  describe('refusals leave the lane running (Review N1)', () => {
+    const spyStop = () => { const s = { calls: 0, stopLane: async () => { s.calls++ } }; return s }
+    async function laneWithWork(repo: string, file = 'feature.txt') {
+      const lane = await wt.createWorktree(repo)
+      mkdirSync(join(lane.path, file, '..'), { recursive: true })
+      writeFileSync(join(lane.path, file), 'work\n')
+      await wt.commitAll(lane.path, 'lane work')
+      return lane
+    }
+
+    it('another live lane in the worktree: refused, the lane being merged is not stopped', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      const stop = spyStop()
+      const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main',
+        { ptys: [{ id: 't2', cwd: lane.path }, { id: 't9', cwd: lane.path }], exceptTerminalId: 't2' }, stop)
+      expect(r.ok).toBe(false)
+      expect(r.message).toContain('lane t9')
+      expect(stop.calls).toBe(0)
+    })
+
+    it('a tracked change in the source repo: refused, not stopped', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      writeFileSync(join(repo, 'a.txt'), 'edited\n')
+      const stop = spyStop()
+      expect((await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES, stop)).ok).toBe(false)
+      expect(stop.calls).toBe(0)
+    })
+
+    it('a missing branch: refused, not stopped', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      const stop = spyStop()
+      const r = await wt.mergeBranch(lane.path, repo, 'no-such-branch', 'main', NO_LANES, stop)
+      expect(r.message).toMatch(/Branch no-such-branch does not exist/)
+      expect(stop.calls).toBe(0)
+    })
+
+    it('an untracked source file at a path the branch writes: refused, not stopped', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo, 'dev/results/r.md')
+      mkdirSync(join(repo, 'dev', 'results'), { recursive: true })
+      writeFileSync(join(repo, 'dev', 'results', 'r.md'), 'the main checkout\'s own copy\n')
+      const stop = spyStop()
+      const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES, stop)
+      expect(r.ok).toBe(false)
+      expect(r.message).toMatch(/would overwrite untracked file in the source repo: dev\/results\/r\.md/)
+      expect(stop.calls).toBe(0)
+      expect(readFileSync(join(repo, 'dev', 'results', 'r.md'), 'utf8')).toBe('the main checkout\'s own copy\n')
+    })
+
+    it('an untracked source file at a path the worktree has UNCOMMITTED (to be committed): refused', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      writeFileSync(join(lane.path, 'notes.md'), 'lane notes\n') // uncommitted in the worktree
+      writeFileSync(join(repo, 'notes.md'), 'main checkout notes\n') // untracked in the source
+      const stop = spyStop()
+      const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES, { ...stop, commitMessage: 'c' })
+      expect(r.message).toMatch(/untracked file in the source repo: notes\.md/)
+      expect(stop.calls).toBe(0)
+    })
+
+    it('an untracked source file the merge does NOT touch no longer blocks it; the lane is stopped, then committed', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      mkdirSync(join(repo, 'dev', 'results'), { recursive: true })
+      writeFileSync(join(repo, 'dev', 'results', 'unrelated.md'), 'Review\'s own report\n')
+      // The lane's last write lands as it is being stopped: it must still be committed and merged.
+      const stop = { calls: 0, stopLane: async () => { stop.calls++; writeFileSync(join(lane.path, 'last.txt'), 'written as it stopped\n') } }
+      const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES, { ...stop, commitMessage: 'session changes' })
+      expect(r.ok).toBe(true)
+      expect(stop.calls).toBe(1)
+      expect(git(repo, ['show', 'main:last.txt'])).toBe('written as it stopped')
+      expect(git(repo, ['log', '-1', '--format=%s', `main^2`])).toBe('session changes')
+      expect(readFileSync(join(repo, 'dev', 'results', 'unrelated.md'), 'utf8')).toBe('Review\'s own report\n')
+    })
+
+    it('discard with a scratch shell open in the worktree: refused, the lane is not stopped, nothing removed', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      const stop = spyStop()
+      await expect(wt.discardBranch(lane.path, repo, lane.branch,
+        { ptys: [{ id: 't2', cwd: lane.path, roleId: 'code' }, { id: 't3', cwd: join(lane.path, 'apps') }], exceptTerminalId: 't2' }, stop))
+        .rejects.toThrow(/lane t3 is running in/)
+      expect(stop.calls).toBe(0)
+      expect(await wt.pathExists(lane.path)).toBe(true)
+      expect(git(repo, ['branch', '--list', lane.branch])).not.toBe('')
+    })
+
+    it('discard stops the lane only once nothing refuses, and before the folder goes', async () => {
+      const repo = scratchRepo()
+      const lane = await laneWithWork(repo)
+      let existedAtStop = false
+      await wt.discardBranch(lane.path, repo, lane.branch, { ptys: [{ id: 't2', cwd: lane.path }], exceptTerminalId: 't2' },
+        { stopLane: async () => { existedAtStop = existsSync(lane.path) } })
+      expect(existedAtStop).toBe(true)
+      expect(await wt.pathExists(lane.path)).toBe(false)
+    })
   })
 
   it('ABORTS a conflicting merge and leaves the repo clean, not mid-conflict', async () => {

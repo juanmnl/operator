@@ -1,19 +1,15 @@
-// The Diff panel's Merge and Discard, as ordered steps with the calls injected, so the ORDER is
-// testable without rendering the panel.
+// The Diff panel's Merge and Discard, with the bridge calls injected so the panel's part is testable
+// without rendering it.
 //
-// Review finding 1 (dev/results/review-d91080-2026-09-25.md): the panel merged its own lane while
-// that lane was still running, committed only what the diff showed when the panel mounted, and
-// killed the lane afterwards. A file the agent wrote in between was in the directory that the merge
-// moved to the trash. So: the lane is stopped FIRST, the worktree's status is read AFTER that, and
-// everything uncommitted is committed before the merge. Main also keeps the worktree if anything is
-// still uncommitted after the merge (worktree.ts `mergeBranch`).
+// THE ORDER LIVES IN MAIN (Review N1). Merge must stop the lane before committing, so nothing it
+// writes afterwards is left behind (Review finding 1), and it must stop the lane only once nothing
+// can refuse: a refused merge (another lane in the worktree, a dirty source repo, a missing branch)
+// used to stop the lane for nothing. Only main can do both in one step, so the panel passes its
+// lane's id and main runs refusals, then the stop, then the commit, then the merge
+// (`mergeBranch` in electron/src/main/worktree.ts). Discard is the same.
 
 export interface LaneMergeCalls {
-  /** Stop the lane's process tree; resolves when it is gone. */
-  kill: (terminalId: string) => Promise<void>
-  status: (path: string) => Promise<{ changes: number; valid: boolean }>
-  commit: (path: string, message: string) => Promise<{ ok: boolean; error?: string }>
-  merge: (path: string, sourceRoot: string, branch: string, baseBranch: string, ownTerminalId?: string) => Promise<{ ok: boolean; message?: string }>
+  merge: (path: string, sourceRoot: string, branch: string, baseBranch: string, ownTerminalId?: string, commitMessage?: string) => Promise<{ ok: boolean; message?: string }>
   discard: (path: string, sourceRoot: string, branch: string, ownTerminalId?: string) => Promise<{ ok: boolean; error?: string }>
 }
 
@@ -28,27 +24,21 @@ export interface LaneRef {
 
 export type StepResult = { ok: true; message?: string } | { ok: false; error: string }
 
+/** The lane's id goes to main only while it runs: main stops that terminal, after its refusals. */
+const ownId = (lane: LaneRef) => (lane.laneRunning ? lane.terminalId : undefined)
+
 export async function mergeLane(calls: LaneMergeCalls, lane: LaneRef, baseBranch: string, commitMessage: string): Promise<StepResult> {
-  // 1. Nothing can write into the worktree from here on.
-  if (lane.terminalId && lane.laneRunning) await calls.kill(lane.terminalId)
-  // 2. What is uncommitted NOW, not what the panel showed when it opened.
-  const st = await calls.status(lane.worktreePath)
-  if (st.valid && st.changes > 0) {
-    const c = await calls.commit(lane.worktreePath, commitMessage)
-    if (!c.ok) return { ok: false, error: c.error || 'Commit failed' }
-  }
-  const r = await calls.merge(lane.worktreePath, lane.sourceRoot, lane.branch, baseBranch, lane.terminalId)
+  const r = await calls.merge(lane.worktreePath, lane.sourceRoot, lane.branch, baseBranch, ownId(lane), commitMessage)
   return r.ok ? { ok: true, message: r.message } : { ok: false, error: r.message || 'Merge failed' }
 }
 
 export async function discardLane(calls: LaneMergeCalls, lane: LaneRef): Promise<StepResult> {
-  if (lane.terminalId && lane.laneRunning) await calls.kill(lane.terminalId)
-  const r = await calls.discard(lane.worktreePath, lane.sourceRoot, lane.branch, lane.terminalId)
+  const r = await calls.discard(lane.worktreePath, lane.sourceRoot, lane.branch, ownId(lane))
   return r.ok ? { ok: true } : { ok: false, error: r.error || 'Discard failed' }
 }
 
 /** The confirmation Discard shows first: it deletes the branch, and the lane may be running. */
 export function discardConfirmText(branch: string, laneRunning: boolean): string {
   return `Delete branch ${branch} and its worktree? Commits only on that branch are lost.`
-    + (laneRunning ? ' The lane is still running; it will be stopped first.' : '')
+    + (laneRunning ? ' The lane is still running; it will be stopped once nothing refuses the discard.' : '')
 }

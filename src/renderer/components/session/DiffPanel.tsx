@@ -34,10 +34,7 @@ interface DiffPanelProps {
 }
 
 const laneCalls: LaneMergeCalls = {
-  kill: (id) => window.operator.terminalKill(id),
-  status: (path) => window.operator.worktreeStatus(path),
-  commit: (path, message) => window.operator.worktreeCommit(path, message),
-  merge: (path, source, branch, base, own) => window.operator.worktreeMerge(path, source, branch, base, own),
+  merge: (path, source, branch, base, own, message) => window.operator.worktreeMerge(path, source, branch, base, own, message),
   discard: (path, source, branch, own) => window.operator.worktreeDiscard(path, source, branch, own),
 }
 
@@ -71,8 +68,8 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
     reload()
   }
 
-  // The lane is stopped before anything is read or committed, and everything uncommitted at that
-  // moment is committed — not what the diff showed when the panel opened (lib/lane-merge).
+  // Main checks every refusal first, then stops the lane, commits what the worktree holds at that
+  // moment (not what the diff showed when the panel opened) and merges (lib/lane-merge).
   const handleMerge = async () => {
     if (!canMerge || !sourceRoot || !branch || !baseBranch) return
     setBusy('merge')

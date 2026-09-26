@@ -312,11 +312,17 @@ export function registerIpc(d: Deps): void {
     },
     // Refused while another lane runs in the worktree (main's pty table). `ownTerminalId` is the one
     // lane the caller merges or discards on purpose and ends straight after: the session's Diff panel.
-    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch, ownTerminalId) =>
-      wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }),
+    // That lane is STOPPED by main, and only after every refusal has passed (Review N1).
+    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch, ownTerminalId, commitMessage) =>
+      wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }, {
+        stopLane: ownTerminalId ? () => d.terminals.kill(String(ownTerminalId)) : undefined,
+        commitMessage: typeof commitMessage === 'string' && commitMessage.trim() ? commitMessage : undefined,
+      }),
     worktreeDiscard: async (worktreePath, sourceRoot, branch, ownTerminalId) => {
       try {
-        await wt.discardBranch(worktreePath, sourceRoot, branch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined })
+        await wt.discardBranch(worktreePath, sourceRoot, branch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }, {
+          stopLane: ownTerminalId ? () => d.terminals.kill(String(ownTerminalId)) : undefined,
+        })
         return { ok: true }
       } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) } }
     },
