@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { ArtifactStore } from './chat-store'
 import { evaluateWorktreeDone } from './worktree-reap'
+import { COORDINATOR_ROLE_IDS } from '../../../src/renderer/lib/dispatch'
 
 const PROTOCOL_VERSION = '2024-11-05'
 
@@ -231,7 +232,10 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       }
       const taskId = typeof args.taskId === 'string' ? args.taskId : null
       const artifactsJson = Array.isArray(args.artifacts) ? JSON.stringify(args.artifacts) : '[]'
-      const id = store.insertReport(at, caller.terminalId, caller.projectId, caller.roleId, taskId, summary, artifactsJson)
+      // Addressed: a lane's report is for its project's coordinator. `to_role` was never written, so
+      // a report had a project but no addressee (X3). The coordinator's own report names nobody.
+      const toRole = caller.roleId && !COORDINATOR_ROLE_IDS.includes(caller.roleId) ? 'operator' : null
+      const id = store.insertReport(at, caller.terminalId, caller.projectId, caller.roleId, taskId, summary, artifactsJson, toRole)
       // CLAIMS ONLY THE INSERT. The old wording — "you do not need to relay it" — asserted that
       // someone would read this, and for the whole life of the Electron shell nobody could: there
       // was no UI consumer at all, so a landed report was exactly as invisible as a lost one. A

@@ -140,3 +140,21 @@ describe('dispatch — refusals that never reach the app', () => {
     expect(store.openDispatches().length).toBe(before)
   })
 })
+
+// X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): `to_role` was never written, so a
+// report had a project but no addressee.
+describe('report — addressed to the project\'s coordinator', () => {
+  it('a lane\'s report is written with to_role = operator; the coordinator\'s own names nobody', async () => {
+    const saved = process.env.OPERATOR_ROLE_ID
+    try {
+      process.env.OPERATOR_ROLE_ID = 'design'
+      await call('report', { summary: 'design finished' })
+      expect(store.listReports(1)[0]).toMatchObject({ summary: 'design finished', toRole: 'operator', projectId: 'p1', roleId: 'design' })
+      process.env.OPERATOR_ROLE_ID = 'operator'
+      await call('report', { summary: 'coordinator note' })
+      expect(store.listReports(1)[0].toRole).toBeUndefined()
+    } finally {
+      process.env.OPERATOR_ROLE_ID = saved
+    }
+  })
+})

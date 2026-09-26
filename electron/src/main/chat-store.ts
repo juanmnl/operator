@@ -437,17 +437,17 @@ export class ArtifactStore {
    *  the silence this whole plane exists to remove. A null-project row is the one case where
    *  showing it to the wrong coordinator beats showing it to nobody.
    *
-   *  Omitting `projectId` keeps the old unscoped behaviour, for a caller that genuinely has no
-   *  project to scope by (there is none in the app today; the parameter is optional so a bridge
-   *  that cannot supply it degrades to what it did before rather than returning nothing). */
+   *  NO PROJECT, NO QUEUE (X3 in dev/results/lane-instances-and-message-mixing-2026-09-25.md). A
+   *  caller with no project used to get the UNSCOPED queue: a coordinator tab that had lost its stamp
+   *  announced every project's reports into its own composer, and because delivery is stamped once,
+   *  their real coordinators then never heard of them. It now gets nothing; the caller logs it. */
   undeliveredFor(role: string, limit: number, projectId?: string | null): ArtifactReport[] {
-    const scope = projectId ? ' AND (project_id = ? OR project_id IS NULL)' : ''
-    const params: unknown[] = projectId ? [role, projectId, limit] : [role, limit]
+    if (!projectId) return []
     const rows = this.db.prepare(
       `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
-         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL)${scope}
+         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND (project_id = ? OR project_id IS NULL)
         ORDER BY id ASC LIMIT ?`,
-    ).all(...params) as Array<Record<string, unknown>>
+    ).all(role, projectId, limit) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
   }
 
@@ -459,12 +459,12 @@ export class ArtifactStore {
    *  queue would have announced. `delivered_at` gets the time of the expiry, like any delivery; the
    *  row stays readable in the Comms log. */
   expireUndelivered(role: string, before: string, at: string, projectId?: string | null): number {
-    const scope = projectId ? ' AND (project_id = ? OR project_id IS NULL)' : ''
-    const params: unknown[] = projectId ? [at, role, before, projectId] : [at, role, before]
+    // No project, nothing expired: unscoped, this marked other projects' reports delivered unseen (X3).
+    if (!projectId) return 0
     const r = this.db.prepare(
       `UPDATE reports SET delivered_at = ?
-        WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND at < ?${scope}`,
-    ).run(...params)
+        WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND at < ? AND (project_id = ? OR project_id IS NULL)`,
+    ).run(at, role, before, projectId)
     return Number(r.changes)
   }
 
