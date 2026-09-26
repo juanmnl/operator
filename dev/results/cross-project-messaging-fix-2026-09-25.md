@@ -62,3 +62,44 @@ Brief: Research's Part 1B in `dev/results/lane-instances-and-message-mixing-2026
 
 - **Logging a SendMessage whose target belongs to another project** (Research's recommendation 5, second half). `DeliveryEvent` is parsed, but mapping a bus target to a project needs the name scheme above to be live first. Recommended as a follow-up.
 - **X7** (a dedupe store shared across projects), **X8** (global role defaults) and **X9** (the coordinator known by role id). Research rated them non-mixing or informational, and they were not in this brief.
+
+## Review fixes (report #1567, `dev/results/review-xproject-devports-2026-09-25.md`)
+
+All are new commits on `operator/d91080-xproject`; nothing was rewritten.
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **A1 (blocker):** `<slug>-<role>` plus a "starts with `<slug>-`" rule read the lanes of mantel-landing, Operator-landing and Fastrack-landing as mantel, operator and fastrack lanes | Names are `<slug>--<role id>`, plus `--<n>` for further instances. `slugify` collapses every run of other characters into one `-`, so no slug contains `--`, and `parseBusName` splits a name into exactly slug, role and instance. The launch note now says: use a ListAgents name only when its part before the first `--` is exactly this project's slug; never match by prefix. `sameProject` compares by equality. | 4489e61 |
+| A2: a slug changed when another project's name started or stopped clashing with it | The slug always carries a 4-hex hash of the project id (`mantel-3f1a`), so it depends on that project alone | 4489e61 |
+| A3: restored and restarted fan-out sessions reused instance 1 | A restart uses the tab's `fanIndex`. **Restore still uses 1**, because saved sessions do not record the instance; the bus lists duplicates with a `[ref]`, so nothing is misdelivered. | 4489e61 |
+| A4: `to_role = 'operator'` would never reach a coordinator keyed `orchestrator` | The queue and its expiry accept every coordinator id when asked for a coordinator (`addresseesOf`) | 5b93b93 |
+| A5: routing compared directories as strings, so a moved project stopped routing to its own lanes | `tabRunsIn` refuses a tab only when its directory lies inside ANOTHER known project's path and that is the most specific match. A directory that matches no project, which is what a moved project looks like, keeps the label. Case-insensitive. Callers pass every other project's path. | b6c7ae6 |
+| A6: older lanes now file unstamped reports | No change. This is the intended trade-off (a missing stamp is better than a wrong one), and Review agrees. | — |
+| A7: the X2 key only changes the human-submit reset | No change. Every counting call already has a project, so X2 is a guard for a path that does not charge budgets today. Harmless. | — |
+| B1 (dev-ports branch): `npm run dev` ignores `OPERATOR_DEV_PORT` | **Not done here.** It is on `operator/d91080-dev-ports`, which Review called merge-ready, and this brief is the xproject branch. Recommended follow-up there: `OPERATOR_ELECTRON_PORT`, then `OPERATOR_DEV_PORT`, then 1610. | — |
+
+**Where names are built and parsed:**
+- **Built:** `laneBusName` in `lib/bus-name.ts`, called at DashboardView's launch, restore and restart paths; the restart name goes through `restartLaunchOptions`.
+- **Parsed:** only `parseBusName` / `sameProject`. Nothing else in the code reads bus names; Operator addresses sessions by session id (`session-bus.ts`).
+- **Stated:** in `busNote`, in `lib/roster.ts`.
+
+**Tests added or changed:**
+- **`bus-name.test.ts`:**
+  - the three `-landing` pairs are different projects when parsed and compared by equality, and even the raw prefix no longer overlaps;
+  - no slug contains `--`, including for inputs with `--`;
+  - a slug with digits and dashes (`web27 v2-beta`) and a role id with a dash (`design-qa`) parse back exactly, with instance 3;
+  - derived and malformed names do not parse;
+  - a slug is stable when a same-named project is added;
+  - the note states the exact-match rule and no prefix rule.
+- **`chat-store.test.ts`:** an `orchestrator` coordinator receives and expires `operator`-addressed reports.
+- **`dispatch.test.ts`:**
+  - a tab running in another project is refused;
+  - a moved project's lane is kept;
+  - comparison is case-insensitive;
+  - nested projects are decided by the most specific path;
+  - a `-landing` sibling path is refused.
+
+**Verification:**
+- Root: `tsc --noEmit` exit 0; vitest 104 files, **1559 passed**.
+- `electron`: typecheck exit 0; vitest 42 files, **771 passed**.
+- Still not verified in the running app, and no `claude` was launched to see a name on the bus.
