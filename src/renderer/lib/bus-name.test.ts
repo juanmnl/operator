@@ -32,7 +32,7 @@ describe('lane names on the session bus (X1)', () => {
   it('is passed to the CLI as --name, without swallowing the prompt', () => {
     const args = buildArgs({ sessionName: 'mantel-design', initialPrompt: 'do the thing' }, 'uuid')
     expect(args.slice(args.indexOf('--name'), args.indexOf('--name') + 2)).toEqual(['--name', 'mantel-design'])
-    expect(args.at(-1)).toBe('do the thing')
+    expect(args[args.length - 1]).toBe('do the thing')
     expect(buildArgs({}, 'uuid')).not.toContain('--name')
   })
 
