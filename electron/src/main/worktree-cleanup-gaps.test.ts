@@ -294,6 +294,27 @@ describe('boot retries interrupted removals', () => {
     await reap.clearPending(ended.path)
   })
 
+  it('an ARMED quit drains removals someone started and never an ended-session record (Review finding 4)', async () => {
+    // Both are clean, with their one commit also on a second branch: no unsaved work, and unmerged,
+    // so the auto-tier reap leaves them alone and only the drain decides.
+    const repo = scratchRepo()
+    const lanes = [await wt.createWorktree(repo), await wt.createWorktree(repo)]
+    for (const l of lanes) {
+      writeFileSync(join(l.path, 'x.md'), `${l.branch}\n`)
+      git(l.path, ['add', '-A']); git(l.path, ['commit', '-qm', 'c'])
+      git(l.path, ['branch', `${l.branch}-copy`])
+    }
+    const [closed, ended] = lanes
+    await reap.queueRemoval({ path: closed.path, sourceRepo: repo, branch: closed.branch, requestedAt: Date.now(), reason: 'lane close' })
+    await reap.queueRemoval({ path: ended.path, sourceRepo: repo, branch: ended.branch, requestedAt: Date.now(), reason: reap.ENDED_SESSION_REASON })
+    reap.setLivePtyCwds(() => [])
+    try { await reap.reapOnQuit(true) } finally { reap.setLivePtyCwds(null) }
+    expect(existsSync(closed.path)).toBe(false)
+    expect(existsSync(ended.path)).toBe(true)
+    expect((await reap.loadPending()).map((p) => p.path)).toContain(ended.path)
+    await reap.clearPending(ended.path)
+  })
+
   it('quit still drains nothing', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)

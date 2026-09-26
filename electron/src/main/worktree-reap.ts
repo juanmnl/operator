@@ -51,7 +51,10 @@ const execFileAsync = promisify(execFile)
  *  (`drainPending(false, userStartedRemoval)` in `reconcileAtBoot`).
  *
  *  Flip to `true` after the plan has been reviewed on a real machine and the auto tier looks
- *  right. Nothing else needs to change. */
+ *  right. It arms the auto-tier reap at boot and quit, and the quit drain of removals someone
+ *  started. It does NOT drain ended-session records (`ENDED_SESSION_REASON`): at boot every lane
+ *  open at the last quit looks ended, and removing their folders would make the restore offer call
+ *  them missing. That needs its own answer before anything drains those records. */
 const AUTO_REAP_ON_TRIGGERS = false
 
 const worktreeRoot = () => join(operatorDir(), 'worktrees')
@@ -1486,13 +1489,16 @@ export async function reconcileAtBoot(): Promise<void> {
  *
  *  Bounded by the caller's teardown deadline: an app that cannot be quit is worse than a
  *  worktree that survives one more launch, and boot will find it again anyway. */
-export async function reapOnQuit(): Promise<void> {
+export async function reapOnQuit(armed = AUTO_REAP_ON_TRIGGERS): Promise<void> {
   try {
-    const drained = await drainPending(!AUTO_REAP_ON_TRIGGERS)
-    const result = await reap({ dryRun: !AUTO_REAP_ON_TRIGGERS })
+    // Only removals someone started, as at boot: never the ended-session records boot queues for
+    // every lane open at the last quit (Review finding 4). `armed` is the switch above; a parameter
+    // only so the armed path can be tested.
+    const drained = await drainPending(!armed, userStartedRemoval)
+    const result = await reap({ dryRun: !armed })
     console.error(
       `[reap] quit: ${result.plan.auto.length} in the auto tier, ${drained.pending} pending`
-      + `${AUTO_REAP_ON_TRIGGERS ? `, removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
+      + `${armed ? `, removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
     )
   } catch (e) {
     console.error('[reap] quit reap failed:', e)
