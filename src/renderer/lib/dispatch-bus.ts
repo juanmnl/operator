@@ -327,3 +327,24 @@ export function takeSend(book: SendBook, terminalId: string, to: string, now: nu
   if (!q.length) book.delete(key)
   return hit
 }
+
+/** WHO SENT A BUS DISPATCH: project and role from the REQUEST, which the lane's MCP server stamped
+ *  from its own spawn environment; the tab only fills a gap, and only when it is the same project.
+ *
+ *  X5 in dev/results/lane-instances-and-message-mixing-2026-09-25.md: the project came from the
+ *  request but the role from the tab (`srcTab?.roleId ?? r.roleId`), and the tab was found by
+ *  terminal id, which restarts every run. A request left from a previous run whose terminal id now
+ *  belongs to another lane got that lane's role under the old lane's project. Pure. */
+export function dispatchSender<T extends { id: string; projectId?: string; roleId?: string }>(
+  r: { terminalId: string; projectId?: string | null; roleId?: string | null },
+  tabs: readonly T[],
+): { projectId?: string; fromRoleId: string; srcTab?: T } {
+  const tab = tabs.find((t) => t.id === r.terminalId)
+  // The tab speaks for this request only if it does not contradict what the request says.
+  const srcTab = tab && (!r.projectId || tab.projectId === r.projectId) && (!r.roleId || tab.roleId === r.roleId) ? tab : undefined
+  return {
+    projectId: r.projectId ?? srcTab?.projectId,
+    fromRoleId: r.roleId ?? srcTab?.roleId ?? 'unknown',
+    srcTab,
+  }
+}

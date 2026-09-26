@@ -22,7 +22,7 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
+import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
@@ -1510,8 +1510,9 @@ export function DashboardView() {
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
 
       const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
-      const srcTab = tabs.find((t) => t.id === r.terminalId)
-      const project = projs.find((p) => p.id === (r.projectId || srcTab?.projectId))
+      // The reply's own project first; the emitting tab only when it agrees with it (X5).
+      const { projectId: replyProject, srcTab } = dispatchSender({ terminalId: r.terminalId, projectId: r.projectId || undefined }, tabs)
+      const project = projs.find((p) => p.id === replyProject)
       const roster = project?.roster ?? []
       // Who spoke: the emitting terminal's lane, exactly as dispatch attributes its sender.
       const from = roster.find((role) => role.id === srcTab?.roleId)
@@ -1663,8 +1664,8 @@ export function DashboardView() {
       const addresses = new Map(open.addresses.map((a) => [a.sessionId, a.address]))
       const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
       for (const r of open.requests) {
-        const srcTab = tabs.find((t) => t.id === r.terminalId)
-        const projectId = r.projectId ?? srcTab?.projectId
+        // The request's own stamps first; the tab only when it agrees with them (X5).
+        const { projectId, fromRoleId } = dispatchSender(r, tabs)
         const project = projs.find((p) => p.id === projectId)
         if (!project || !projectId) {
           await window.operator.answerDispatch(r.id, {
@@ -1683,8 +1684,8 @@ export function DashboardView() {
           {
             lane: r.lane,
             task: r.body,
-            fromRoleId: srcTab?.roleId ?? r.roleId ?? 'unknown',
-            fromLabel: (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))?.name ?? 'Operator',
+            fromRoleId,
+            fromLabel: (project.roster ?? []).find((x) => x.id === fromRoleId)?.name ?? 'Operator',
             projectId,
           },
           {
@@ -1704,7 +1705,6 @@ export function DashboardView() {
         // The action puts the human back in the loop from the toast, and a toast with an action
         // stays until dismissed. Not for the kill switch, which the user turned on themselves.
         if (verdict.outcome === 'refused' && verdict.brake && verdict.brake !== 'paused') {
-          const fromRoleId = srcTab?.roleId ?? r.roleId ?? 'unknown'
           const fromName = (project.roster ?? []).find((x) => x.id === fromRoleId)?.name ?? fromRoleId
           toast({
             text: `${fromName} was stopped from dispatching to ${r.lane}`,
@@ -1724,11 +1724,11 @@ export function DashboardView() {
         // button delivers either. `deliverDispatchRef` is what approval runs, and it does not
         // care which transport asked.
         if (verdict.held) {
-          const from = (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))
+          const from = (project.roster ?? []).find((x) => x.id === fromRoleId)
           const preview = r.body.length > 60 ? r.body.slice(0, 60) + '…' : r.body
           dispatchRef.current.logDispatch(projectId, {
             id: `bus-${r.id}`, at: new Date().toISOString(),
-            fromRoleId: srcTab?.roleId ?? r.roleId, toRoleId: verdict.held.toRoleId,
+            fromRoleId, toRoleId: verdict.held.toRoleId,
             task: r.body, outcome: 'pending-approval',
           })
           toast({
@@ -1811,7 +1811,9 @@ export function DashboardView() {
   const deliverDispatchRef = useRef<(a: { id: string; roleToken: string; task: string; terminalId?: string; projectId: string; approving?: boolean }) => void>(() => {})
   deliverDispatchRef.current = ({ id, roleToken, task, terminalId, projectId, approving }) => {
       const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast, logDispatch: log } = dispatchRef.current
-      const srcTab = tabs.find((t) => t.id === terminalId)
+      // The sending tab, unless it is stamped with ANOTHER project: terminal ids restart every run, so
+      // an id alone can name a different lane than the one that asked (X5).
+      const srcTab = tabs.find((t) => t.id === terminalId && (!t.projectId || t.projectId === projectId))
       const project = projs.find((p) => p.id === projectId)
       // NEVER A SILENT RETURN. This line used to be `if (!project) return` with nothing before
       // it: no log row, no toast, no trace anywhere. It is the "2/9 dispatches vanished

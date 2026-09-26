@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../shared/types'
 import { emptyDeliveryState, HOP_LIMIT, LANE_SEND_LIMIT, type DeliveryState } from './agent-delivery'
+import { dispatchSender } from './dispatch-bus'
 import {
   resolveDispatch, readDeliveryResult, trackSend, takeSend, SEND_CONFIRM_TTL_MS,
   type BusLane, type DispatchContext, type SendBook,
@@ -364,5 +365,28 @@ describe('the send book — which SendMessage result belongs to which dispatch',
     trackSend(b, 't-op', 'uds:/a.sock', entry('task-1'))
     takeSend(b, 't-op', 'uds:/a.sock', 1_000)
     expect(b.size).toBe(0)
+  })
+})
+
+// X5 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): the sender's project came from
+// the request and its role from whatever tab now has that terminal id.
+describe('dispatchSender — the request speaks for itself', () => {
+  const tabs = [{ id: 't3', projectId: 'mantel', roleId: 'code' }]
+
+  it('takes project and role from the request, not from a tab of another project with the same id', () => {
+    // A request left from a previous run: t3 was uwazi's design then, and is mantel's code now.
+    const s = dispatchSender({ terminalId: 't3', projectId: 'uwazi', roleId: 'design' }, tabs)
+    expect(s).toEqual({ projectId: 'uwazi', fromRoleId: 'design', srcTab: undefined })
+  })
+
+  it('never borrows the role of a tab stamped with another project', () => {
+    const s = dispatchSender({ terminalId: 't3', projectId: 'uwazi' }, tabs)
+    expect(s.fromRoleId).toBe('unknown')
+    expect(s.srcTab).toBeUndefined()
+  })
+
+  it('fills a gap from the tab only when the tab agrees with the request', () => {
+    expect(dispatchSender({ terminalId: 't3', projectId: 'mantel' }, tabs)).toMatchObject({ projectId: 'mantel', fromRoleId: 'code' })
+    expect(dispatchSender({ terminalId: 't3' }, tabs)).toMatchObject({ projectId: 'mantel', fromRoleId: 'code' })
   })
 })
