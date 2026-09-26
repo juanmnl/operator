@@ -5,6 +5,7 @@ import {
   DEV_INSTANCE_RANGES, DEV_RENDERER_DEFAULT_PORT, INSTALLED_RANGES, isDevInstance, portRangesFor, rangesOverlap,
 } from './port-ranges'
 import { allocatePort, PORT_BASE, type PortAllocDeps } from './port-alloc'
+import { DEV_RENDERER_FALLBACK_PORT, rendererPort } from '../../scripts/renderer-port.mjs'
 import { allocateCdpPort, CDP_PORT_BASE } from './preview-cdp-port'
 
 const DEFAULT = '/Users/x/.operator'
@@ -34,13 +35,16 @@ describe('the windows never overlap', () => {
     }
   })
 
-  it('npm run dev\'s own renderer default is outside every window, and dev.mjs and vite.config.ts agree on it', () => {
+  it('npm run dev\'s own renderer default is outside every window, and dev.mjs and vite.config.ts use the one resolver', () => {
+    expect(DEV_RENDERER_FALLBACK_PORT).toBe(DEV_RENDERER_DEFAULT_PORT)
     for (const r of [INSTALLED_RANGES.dev, INSTALLED_RANGES.cdp, DEV_INSTANCE_RANGES.dev, DEV_INSTANCE_RANGES.cdp]) {
       expect(rangesOverlap(r, { base: DEV_RENDERER_DEFAULT_PORT, max: DEV_RENDERER_DEFAULT_PORT })).toBe(false)
     }
     const root = join(__dirname, '..', '..')
     for (const file of ['scripts/dev.mjs', 'vite.config.ts']) {
-      expect(readFileSync(join(root, file), 'utf8'), file).toContain(`OPERATOR_ELECTRON_PORT) || ${DEV_RENDERER_DEFAULT_PORT}`)
+      const src = readFileSync(join(root, file), 'utf8')
+      expect(src, file).toContain('rendererPort(process.env)')
+      expect(src, file).not.toMatch(/OPERATOR_ELECTRON_PORT\)\s*\|\|/) // no second, inline resolution
     }
   })
 
@@ -79,5 +83,22 @@ describe('allocation from a dev instance\'s windows', () => {
     expect(await allocateCdpPort(new Set(), async () => true, base, max)).toBe(9540)
     expect(await allocateCdpPort(new Set([9540]), async (p) => p !== 9541, base, max)).toBe(9542)
     expect(await allocateCdpPort(new Set(), async (p) => p < base, base, max)).toBeUndefined()
+  })
+})
+
+// Review B1 (dev/results/review-xproject-devports-2026-09-25.md): `npm run dev` ignored the lane's
+// leased port, so two lanes starting dev builds both reached for 1610 and the second failed.
+describe('npm run dev\'s renderer port', () => {
+  it('prefers OPERATOR_ELECTRON_PORT, then the lane\'s OPERATOR_DEV_PORT, then 1610', () => {
+    expect(rendererPort({ OPERATOR_ELECTRON_PORT: '1455', OPERATOR_DEV_PORT: '1624' })).toBe(1455)
+    expect(rendererPort({ OPERATOR_DEV_PORT: '1624' })).toBe(1624)
+    expect(rendererPort({})).toBe(1610)
+  })
+
+  it('skips a value that is not a port number', () => {
+    for (const bad of ['', ' ', 'abc', '0', '70000', '14.5', '-1']) {
+      expect(rendererPort({ OPERATOR_ELECTRON_PORT: bad, OPERATOR_DEV_PORT: '1624' }), bad).toBe(1624)
+    }
+    expect(rendererPort({ OPERATOR_ELECTRON_PORT: ' 1455 ' })).toBe(1455)
   })
 })

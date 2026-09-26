@@ -66,3 +66,22 @@ This needs no per-process inspection and no `lsof`.
 
 - **The boot reapers of a dev instance** (`reapOrphanedDevServers`, the live-app sweep) that share the machine with the installed app. These are gated on leases and `OPERATOR_APP_PID`, not on port windows. Not in this brief.
 - **Lanes already running** keep the ports they were given.
+
+## Follow-up: Review B1, `npm run dev` now uses the lane's leased port
+
+`scripts/dev.mjs` and `vite.config.ts` resolve the renderer port through one function, `rendererPort()` in `electron/scripts/renderer-port.mjs`:
+1. `OPERATOR_ELECTRON_PORT`;
+2. then `OPERATOR_DEV_PORT`, the port Operator leased to the lane running the build;
+3. then 1610.
+
+A value that is not a port number (empty, non-numeric, 0, above 65535, fractional) is skipped. `strictPort` is kept, so a taken port still fails loudly.
+
+Before this, two lanes each starting a dev build both reached for 1610 and the second failed.
+
+**Tests:**
+- in `port-ranges.test.ts`: the order of precedence, and that invalid values are skipped;
+- a check that both files call `rendererPort(process.env)` and have no second, inline resolution.
+
+**Also checked:**
+- `node --check scripts/dev.mjs` passes;
+- `vite build --config vite.config.ts` into a scratch directory succeeds, so Vite's config loader accepts the import.

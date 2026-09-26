@@ -17,8 +17,9 @@ npm install          # also rebuilds node-pty against Electron's ABI
 npm run dev          # Vite + esbuild --watch + Electron
 ```
 
-`npm run dev` needs a free port. It defaults to 1610 and **refuses to start** if something else
-holds it — on a machine running several projects, the port you assumed was yours is often
+`npm run dev` needs a free port: `OPERATOR_ELECTRON_PORT` if set, else the port Operator leased to
+the lane running it (`OPERATOR_DEV_PORT`), else 1610 (`scripts/renderer-port.mjs`). It **refuses to
+start** if something else holds it — on a machine running several projects, the port you assumed was yours is often
 somebody else's dev server, and a bench that quietly loads the wrong app produces a clean,
 meaningless number. Override with `OPERATOR_ELECTRON_PORT`.
 
