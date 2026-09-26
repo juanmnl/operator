@@ -138,6 +138,10 @@ export interface WorktreeFacts {
   backfilled?: boolean
   /** Listed by `git worktree list` in its source repo. */
   registered: boolean
+  /** The directory has the exact shape an interrupted `git worktree add` leaves: a `.git` pointer
+   *  to an admin entry that does not exist, plus at most one regular file. Only debris of this shape
+   *  is in the one-press tier (Review finding 2); any other small non-git folder may be someone's. */
+  interruptedCreate?: boolean
   /** Branch is an ancestor of the source repo's default branch. `undefined` = could not tell. */
   merged?: boolean
   /** Not an ancestor, but `git cherry <default> <branch>` lists no commit whose patch is missing
@@ -284,7 +288,9 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
         ? `${f.branch ?? 'This branch'} was merged by squash or rebase: every commit's change is already in the default branch. Not removed automatically.`
         : `${f.branch ?? 'This branch'} is not merged into the default branch.`
     case 'unattributed': return 'No provenance record — Operator cannot prove it created this.'
-    case 'debris': return 'Leftover from an interrupted worktree creation.'
+    case 'debris': return f.interruptedCreate
+      ? 'Leftover from an interrupted worktree creation.'
+      : 'A small folder git does not recognise and Operator has no record of. It may be someone\u2019s; select it to remove it, with confirmation.'
     case 'dead-source-repo': return 'Its source repository no longer exists on disk; git cannot reason about it.'
     case 'corrupt': return 'Not a valid git worktree any more.'
   }
@@ -298,7 +304,9 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
 function isAuto(cls: ReapClass, f: WorktreeFacts): boolean {
   if (f.guardReason) return false
   if (f.liveTerminalId) return false
-  if (cls === 'debris') return true
+  // Only the proved shape. Anything else small and git-less could be a lane's own scratch folder,
+  // and goes through Settings selection with the plain-path confirmation (Review finding 2).
+  if (cls === 'debris') return !!f.interruptedCreate
   // Merged and clean, and no unsaved work by the user's definition. A merged branch's commits are
   // on the default branch already; the check is here so the tier cannot drift from the rule.
   // A failed `git status` leaves `dirty` false and the count undefined; that is unknown, not clean.
@@ -899,6 +907,9 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   // DEBRIS NEEDS A REAL SIZE. Measure just the candidates the size question decides (git-invalid,
   // unattributed, unregistered) when sizes were not collected, or when the full `du` missed one.
   // A size that still cannot be read stays unknown, and `classify` then never calls it debris.
+  for (const f of facts) {
+    if (!f.gitValid && !f.provenance && !f.registered) f.interruptedCreate = await hasInterruptedCreateShape(f.path)
+  }
   const candidates = facts.filter((f) => !sizes.has(f.path) && !f.gitValid && !f.provenance && !f.registered)
   const measured = await duOf(candidates.map((f) => f.path)).catch(() => new Map<string, number>())
   for (const f of facts) {
@@ -907,6 +918,23 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
     else f.sizeBytes = bytes
   }
   return facts
+}
+
+/** `.git` is a regular file naming an admin entry that does not exist, and besides it there is at
+ *  most one entry, a regular file. That is what `git worktree add` leaves when it is interrupted
+ *  (`.tmpIBNq7t-d96ee0`: a pointer and one stray file). Never throws; any doubt answers false. */
+export async function hasInterruptedCreateShape(path: string): Promise<boolean> {
+  try {
+    const entries = await readdir(path, { withFileTypes: true })
+    const dotGit = entries.find((e) => e.name === '.git')
+    if (!dotGit?.isFile()) return false
+    const admin = gitdirFromGitFile(await readFile(join(path, '.git'), 'utf8'), path)
+    if (!admin || existsSync(admin)) return false
+    const rest = entries.filter((e) => e.name !== '.git')
+    return rest.length <= 1 && rest.every((e) => e.isFile())
+  } catch {
+    return false
+  }
 }
 
 /** THE HOME OVERVIEW'S FIRST PAINT. Every folder under the worktree root with its source repo, whether

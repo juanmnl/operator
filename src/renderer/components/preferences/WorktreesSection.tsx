@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import type { DevServerProc, ReapClass, ReapEntry, ReapPlan } from '../../../shared/types'
+import type { DevServerProc, ReapEntry, ReapPlan } from '../../../shared/types'
 import { sectionHeader, sectionDesc } from '../settings/PageShell'
-import { canRescue, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from '../../lib/worktree-groups'
+import { canRescue, classLabel, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from '../../lib/worktree-groups'
 
 // Every directory under ~/.operator/worktrees, grouped by the repository it came from.
 //
@@ -17,16 +17,6 @@ import { canRescue, groupWorktrees, isSelectable, pruneSelection, toggleGroup, u
 // which removing it no longer needs the unsaved-work step. Removing is still a separate press.
 // "Would remove automatically" is a report. Nothing on this page, and no trigger, acts on it yet.
 
-const CLASS_LABEL: Record<ReapClass, string> = {
-  'merged-clean': 'Merged and clean',
-  'merged-dirty': 'Merged, uncommitted changes',
-  'debris': 'Creation debris',
-  'unmerged': 'Not merged',
-  'unattributed': 'No provenance record',
-  'corrupt': 'Not a valid worktree',
-  'dead-source-repo': 'Source repo is gone',
-  'live-claimed': 'A lane is open here',
-}
 
 const TRIGGER_LABEL: Record<string, string> = {
   boot: 'app start',
@@ -639,7 +629,7 @@ function Row({ entry, last, showSize, checked, disabled, onToggle, onRescue }: {
           {baseName(entry.path)}
         </span>
         <span style={{ fontSize: 10, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {entry.mergedByPatch ? 'Merged by squash or rebase' : CLASS_LABEL[entry.cls]}{entry.backfilled ? ' (provenance backfilled)' : ''} · {unsavedLabel(entry)}
+          {entry.mergedByPatch ? 'Merged by squash or rebase' : classLabel(entry)}{entry.backfilled ? ' (provenance backfilled)' : ''} · {unsavedLabel(entry)}
         </span>
       </span>
       {entry.branch && (

@@ -403,18 +403,46 @@ describe('merged-by-patch label', () => {
 describe('debris, stray files and the trash log', () => {
   const root = () => join(process.env.OPERATOR_DIR!, 'worktrees')
 
-  it('the "safe" removal takes creation debris through the plain-directory path', async () => {
+  it('the "safe" removal takes creation debris of the interrupted-create shape through the plain path', async () => {
     const dir = join(root(), '.tmpABCDEF-d96ee0')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'a.txt'), 'x') // an interrupted `worktree add`: tiny, no .git, no record
+    // What an interrupted `worktree add` leaves: a pointer to an admin entry that never got made,
+    // and one stray file.
+    writeFileSync(join(dir, '.git'), `gitdir: ${join(SANDBOX, 'gone-repo', '.git', 'worktrees', 'x')}\n`)
+    writeFileSync(join(dir, 'a.txt'), 'x')
+    expect(await reap.hasInterruptedCreateShape(dir)).toBe(true)
     const plan = await reap.reapPlan()
     const e = plan.entries.find((x) => x.path === dir)!
     expect(e.cls).toBe('debris')
     expect(e.auto).toBe(true)
     const r = await reap.reap({ dryRun: false, confirmedPaths: [dir] })
     expect(r.removed).toContain(dir)
-    expect(r.failed.find((f) => f.path === dir)).toBeUndefined()
     expect(existsSync(dir)).toBe(false)
+  })
+
+  it('never takes a small non-git folder of any other shape in the one-press removal (Review finding 2)', async () => {
+    // A lane's own scratch folder: notes, no .git pointer. Small, git-less, unrecorded — and not ours.
+    const notes = join(root(), 'mantel-55da80-notes')
+    mkdirSync(notes, { recursive: true })
+    writeFileSync(join(notes, 'plan.md'), 'notes\n')
+    writeFileSync(join(notes, 'fix.patch'), 'diff\n')
+    // A pointer to a missing admin entry, but with more than one file beside it.
+    const busy = join(root(), '.tmpBUSY-000000')
+    mkdirSync(busy, { recursive: true })
+    writeFileSync(join(busy, '.git'), `gitdir: ${join(SANDBOX, 'gone-repo', '.git', 'worktrees', 'y')}\n`)
+    writeFileSync(join(busy, 'a.txt'), 'x'); writeFileSync(join(busy, 'b.txt'), 'y')
+    for (const d of [notes, busy]) expect(await reap.hasInterruptedCreateShape(d)).toBe(false)
+    const plan = await reap.reapPlan()
+    for (const d of [notes, busy]) {
+      const e = plan.entries.find((x) => x.path === d)!
+      expect(e.cls).toBe('debris')
+      expect(e.auto).toBe(false)
+      expect(e.needsUnsavedConfirm).toBe(true)
+    }
+    const r = await reap.reap({ dryRun: false, confirmedPaths: [notes, busy] })
+    expect(r.removed).toEqual([])
+    expect(existsSync(notes) && existsSync(busy)).toBe(true)
+    rmSync(notes, { recursive: true, force: true }); rmSync(busy, { recursive: true, force: true })
   })
 
   it('lists files in the worktree root, and leaves them alone', async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ReapEntry } from '../../shared/types'
-import { canRescue, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from './worktree-groups'
+import { canRescue, classLabel, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from './worktree-groups'
 
 const entry = (over: Partial<ReapEntry> = {}): ReapEntry => ({
   path: '/w/repo-1', cls: 'merged-clean', sizeBytes: 100, auto: true, reason: '',
@@ -103,5 +103,13 @@ describe('canRescue — where the Rescue action is offered', () => {
   it('the row says where it was rescued to', () => {
     expect(unsavedLabel(entry({ uncommitted: 2, rescuedTo: '/Users/x/.operator/rescued/w-2026-09-25' })))
       .toBe('2 uncommitted files · rescued to ~/.operator/rescued/w-2026-09-25')
+  })
+})
+
+describe('classLabel', () => {
+  it('calls debris creation debris only when it is in the automatic tier', () => {
+    expect(classLabel(entry({ cls: 'debris', auto: true }))).toBe('Creation debris')
+    expect(classLabel(entry({ cls: 'debris', auto: false }))).toBe('Small folder, not a worktree')
+    expect(classLabel(entry({ cls: 'live-claimed' }))).toBe('A lane is open here')
   })
 })
