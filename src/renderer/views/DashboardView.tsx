@@ -28,6 +28,7 @@ import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { laneBusName, projectSlug } from '../lib/bus-name'
+import { useRefocusOnActivate, type ActivationView } from '../lib/use-refocus-on-activate'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
@@ -4383,6 +4384,19 @@ export function DashboardView() {
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return 'project'
     return 'gallery'
   }, [prefsViewActive, agentsViewActive, tuningViewActive, globalPrefsActive, activeFolderPrefs, activeTerminalId, terminals, activeProjectId, projects])
+
+  // KEYBOARD FOCUS ON APP ACTIVATION (lib/use-refocus-on-activate, rules in lib/refocus). A lane counts as
+  // on screen only when its terminal is what you see: the session view, the terminal main view, a live
+  // tab, and neither the activity timeline nor the diff review laid over it. The board and settings
+  // offer their own primary input instead (`data-primary-input`).
+  const activationViewRef = useRef<ActivationView>({})
+  {
+    const tab = terminals.find((t) => t.id === activeTerminalId)
+    const onScreen = contentMode === 'localTerminal' && mainView === 'terminal' && !!tab && !tab.ended
+      && activityViewingTerminalId !== activeTerminalId && reviewingTerminalId !== activeTerminalId
+    activationViewRef.current = { laneOnScreen: onScreen ? tab!.id : undefined }
+  }
+  useRefocusOnActivate(() => activationViewRef.current)
 
   // ── WHERE YOU WERE ────────────────────────────────────────────────────────────────────────
   // Written on CHANGE, never only at quit. An app that records your place solely on a clean

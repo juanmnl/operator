@@ -25,6 +25,7 @@ import { reapOrphanedDevServers } from './reap'
 import { releaseLeasesOf } from './leases'
 import { checkAutoRemoval, reconcileAtBoot, reapOnQuit, releaseWorktreeOnExit, setLivePtyCwds } from './worktree-reap'
 import { CheckoutWatcher } from './checkout-health'
+import { onAppActivated, onWindowFocused } from './activation'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
@@ -123,6 +124,8 @@ function createWindow(): BrowserWindow {
   installNavigationGuards(win)
   startBench(win)
   win.on('resize', () => broadcast(win, 'onWindowResize'))
+  // Activation → page focus → the renderer picks the element (activation.ts, src/renderer/lib/refocus).
+  win.on('focus', () => onWindowFocused(win, () => broadcast(win, 'onWindowActivated')))
   win.on('closed', () => { mainWindow = null })
 
   if (DEV_URL) void win.loadURL(DEV_URL)
@@ -401,7 +404,10 @@ if (process.argv.includes('--mcp-serve')) {
 
   app.whenReady().then(boot)
 
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow() })
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
+    else onAppActivated(mainWindow)
+  })
 
   // Closing the last window must NOT end the app on macOS — and must not end the lanes.
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

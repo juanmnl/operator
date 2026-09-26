@@ -282,6 +282,9 @@ declare global {
       claudeVersion?: () => Promise<string | null>
       /** Pushed when the installed Claude Code version changes (main re-reads it once a minute). */
       onClaudeVersion?: (callback: (version: string | null) => void) => () => void
+      /** The app or its window was activated (Cmd-Tab, the Dock, a click on the window). Main has
+       *  already focused the web contents; the renderer decides which element (lib/refocus). */
+      onWindowActivated?: (callback: () => void) => () => void
       /** Lanes whose checkout was removed outside Operator (a `gh pr merge --delete-branch`, an
        *  `rm`), as a full list each time it changes. Not repaired; shown on the lane. */
       onCheckoutGone?: (callback: (list: GoneCheckout[]) => void) => () => void
