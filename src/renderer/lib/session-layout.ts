@@ -98,8 +98,9 @@ export function coerceLayouts(raw: unknown): Record<string, SessionLayout> {
 // --- Side panel width -------------------------------------------------------------------------
 // ONE width for every tab (the user's call, 2026-09-14): switching Plan ⇄ Diff ⇄ Preview never
 // resizes the panel, so the Console never refits on a tab switch. The tab only decides what the
-// resize handle may reach while the user is dragging it. Nothing resizes the panel on its own to
-// meet these bounds; the preview scales to whatever width it gets.
+// resize handle may reach while the user is dragging it. The one thing that changes the width the
+// panel is DRAWN at is the console's minimum (`placePanel` below); the stored width is left alone,
+// so a wider window gives it back. The preview scales to whatever width it gets.
 
 /** Narrowest a drag may make the panel on a reading tab (Plan, Diff). */
 export const PANEL_MIN_W = 300
@@ -126,4 +127,42 @@ export function clampPanelW(w: number, bounds: { min: number; max: number }): nu
 /** Double-click on the resize handle: split the row in half, within the tab's drag bounds. */
 export function halfPanelW(tab: PanelTab, rowW: number): number {
   return clampPanelW(rowW / 2, panelDragBounds(tab, rowW))
+}
+
+// --- The console's minimum, and where the panel goes when it cannot be met -------------------
+
+/** Fewest terminal columns the side panel may leave the Console.
+ *
+ *  Claude Code's own number. Its session header draws the Clawd mascot only at `columns >= 70` and
+ *  drops it below; the cwd beside it is truncated to `columns - 11 - <model label>`. Its other
+ *  width rules apply only to wider layouts (key hints shorten below 90, a launcher layout changes
+ *  at 120), so 70 is where Claude Code stops removing things from its main screen. Read from the
+ *  installed 2.1.283 binary on 2026-09-25. Before this rule, a 460px panel beside an expanded rail
+ *  left a 1000px window's terminal 29 columns wide. */
+export const MIN_CONSOLE_COLS = 70
+
+/** The card's horizontal width that is not terminal cells: the pane's 6px padding on each side
+ *  plus xterm's scrollbar gutter, rounded up. Measured in the Electron shell: an 812px card fits a
+ *  790px screen (101 columns). */
+export const CONSOLE_CHROME_W = 24
+
+/** The narrowest card that still gives the terminal `MIN_CONSOLE_COLS` columns. */
+export function consoleMinWidth(cellW: number): number {
+  return Math.ceil(MIN_CONSOLE_COLS * cellW) + CONSOLE_CHROME_W
+}
+
+export type PanelPlacement = { mode: 'dock' | 'overlay'; width: number }
+
+/** How the side panel sits in a row `rowW` wide (card + gap + panel), for a panel the user sized
+ *  to `wantW`:
+ *   - DOCKED at `wantW` when the card beside it keeps `minConsoleW`;
+ *   - DOCKED NARROWER, down to `minPanelW`, when only that fits;
+ *   - OVER THE CONSOLE (a drawer at `wantW`, never wider than the row) when not even the panel's
+ *     minimum fits. The terminal keeps its full width, so opening and closing it never refits
+ *     the pty, and it narrows no further than the console's minimum by construction. */
+export function placePanel(o: { wantW: number; rowW: number; gap: number; minPanelW: number; minConsoleW: number }): PanelPlacement {
+  const room = Math.floor(o.rowW - o.gap - o.minConsoleW)
+  if (room >= o.wantW) return { mode: 'dock', width: o.wantW }
+  if (room >= o.minPanelW) return { mode: 'dock', width: room }
+  return { mode: 'overlay', width: Math.max(0, Math.min(o.wantW, Math.floor(o.rowW))) }
 }

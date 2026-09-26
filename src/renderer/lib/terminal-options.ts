@@ -15,6 +15,28 @@ import { isLightBackground } from './terminal'
 export const TERMINAL_FONT_FAMILY =
   "'Operator Symbols', 'Operator Dingbats', 'Operator Legacy', 'Operator Emoji', 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace"
 
+/** The terminal's font size (px). One constant, so layout that has to reason in columns — the
+ *  side panel's console minimum — measures the same cell the terminal draws. */
+export const TERMINAL_FONT_SIZE = 13
+
+let cellWidthCache: number | null = null
+/** Width of one terminal cell in CSS px, measured the way xterm measures it: the advance of a
+ *  character in the terminal's font at its size. Falls back to 7.8 (SF Mono at 13px) where there
+ *  is no canvas (tests). Cached: the font and the size never change at runtime. */
+export function terminalCellWidth(): number {
+  if (cellWidthCache != null) return cellWidthCache
+  try {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return 7.8
+    ctx.font = `${TERMINAL_FONT_SIZE}px ${TERMINAL_FONT_FAMILY}`
+    const w = ctx.measureText('W'.repeat(32)).width / 32
+    if (w > 0) cellWidthCache = w
+    return w > 0 ? w : 7.8
+  } catch {
+    return 7.8
+  }
+}
+
 const OPTION_IS_META_KEY = 'operator.terminal.macOptionIsMeta'
 
 /** Whether ⌥ acts as Meta/Alt (sends ESC sequences) instead of composing
@@ -356,7 +378,7 @@ export function buildTerminalOptions(
   return {
     theme,
     fontFamily: TERMINAL_FONT_FAMILY,
-    fontSize: 13,
+    fontSize: TERMINAL_FONT_SIZE,
     // 1.2 gives breathing room; xterm rounds the cell to an integer device pixel.
     lineHeight: 1.2,
     // Real SF Mono weights under the DOM renderer; 600 keeps bold distinct as

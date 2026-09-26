@@ -8,11 +8,14 @@ import { TerminalSurface } from './TerminalSurface'
 // session's path, for shell work outside the Claude session. The shell + scrollback
 // persist across close→reopen (only hidden, kept mounted); the pty is killed when
 // this unmounts (session switched/closed). `bottom` clears the footer beneath it.
-export function ShellSheet({ cwd, theme, open, bottom = 0, onClose }: {
+export function ShellSheet({ cwd, theme, open, bottom = 0, suspendFit, onClose }: {
   cwd: string
   theme: ITheme
   open: boolean
   bottom?: number
+  /** Held during a panel drag or a rail/panel move, like the lane panes: the sheet spans the
+   *  card, so without it the shell refit (and resized its pty) on every frame of ⌘B. */
+  suspendFit?: boolean
   onClose: () => void
 }) {
   const [termId, setTermId] = useState<string | null>(null)
@@ -91,7 +94,7 @@ export function ShellSheet({ cwd, theme, open, bottom = 0, onClose }: {
           // Tight inset (8px ≈ one cell, which read as a wide leading space). 4px on
           // the sides matches the grid pane; a little top breathing room under the header.
           <div style={{ position: 'absolute', top: 6, left: 4, right: 4, bottom: 4 }}>
-            <TerminalSurface terminalId={termId} theme={theme} active={open} />
+            <TerminalSurface terminalId={termId} theme={theme} active={open} suspendFit={suspendFit} />
           </div>
         ) : (
           <div style={{ padding: 14, fontSize: 12, color: 'var(--fg-muted)' }}>Starting shell…</div>

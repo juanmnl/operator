@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { rand, hashSeed, gridPointsInDisc } from '../../lib/random'
 import { isWideGrapheme } from '../../lib/lane-initial'
 import { beaconLevel } from '../../../shared/beacon'
+import { useReducedMotion } from '../../lib/layout-motion'
 
 export type WaveStatus = 'running' | 'compacting' | 'error' | 'idle' | 'ended' | 'waiting' | 'asking'
 
@@ -393,21 +394,6 @@ export function beaconInk(elapsed: number): { alpha: number; mix: number } {
 
 /** `REST_OP`, for the tests that hold the beacon's trough to it. */
 export const STATUS_WAVE_REST_OP = REST_OP
-
-/** Whether the user asked the OS for less motion. Follows changes live. */
-function useReducedMotion(): boolean {
-  const query = '(prefers-reduced-motion: reduce)'
-  const [reduced, setReduced] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches)
-  useEffect(() => {
-    if (typeof matchMedia !== 'function') return
-    const mq = matchMedia(query)
-    const on = () => setReduced(mq.matches)
-    on()
-    mq.addEventListener?.('change', on)
-    return () => mq.removeEventListener?.('change', on)
-  }, [])
-  return reduced
-}
 
 /** Where one dot is in its own breath: 0 at the trough, 1 at the peak, eased exactly as the
  *  keyframe's `ease-in-out` eased it. Pure, and exported because it IS the animation now — the

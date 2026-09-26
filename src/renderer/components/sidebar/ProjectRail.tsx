@@ -21,6 +21,7 @@ import { resolveLaneInitials } from '../../lib/lane-initial'
 import { FOOT_BOX, FOOT_GAP, footCellStyle, footLabelStyle } from './foot-cell'
 import { ROW_INSET_L } from './rail-metrics'
 import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../lib/rail-foot'
+import { layoutTransition, useReducedMotion } from '../../lib/layout-motion'
 
 // THE LEFT SURFACE. One component, two widths — there is no rail and no panel any more.
 //
@@ -81,12 +82,12 @@ import { footDisclosureLabel, readFootExpanded, writeFootExpanded } from '../../
  *  SAME 14pt cluster. (An `LSMinimumSystemVersion 10.15` override does NOT bring the small
  *  buttons back — probed. The style mask is not the lever either; `hidden` and `hiddenInset`
  *  differ only in origin.) */
-const RAIL_W = 70
+export const RAIL_W = 70
 /** Expanded. NOT forced by anything any more — the constant-x invariant that fixed it at
  *  2 × the axis was retired on 2026-08-04 (see `ROW_INSET_L`), and 264 outlived it as a value the
  *  name column was already tuned to. It does NOT follow `RAIL_W`: expanded content starts at
  *  `ROW_INSET_L`, not on the axis, so widening the collapsed strip leaves this alone. */
-const RAIL_W_OPEN = 264
+export const RAIL_W_OPEN = 264
 /** ZERO. There is nothing left for the content to be inset FROM.
  *
  *  This was 8 while the rail had a right-hand seam: the visible column ended at that line, so the
@@ -189,6 +190,9 @@ const SESSION_DRAG_TYPE = 'text/session'
 export interface ProjectRailProps {
   /** ⌘B, and forced true at the gallery. The width IS the state; nothing unmounts. */
   collapsed: boolean
+  /** False snaps the strip to its width with no transition — a layout move cancelled by a lane
+   *  switch ends on the spot, so the incoming lane's fit lands at the settled width. */
+  animate?: boolean
   projects: Project[]
   activities: Record<string, ProjectActivity>
   /** Null at the gallery — no group is open, so no group shows its idle lanes. */
@@ -264,7 +268,7 @@ export interface ProjectRailProps {
 }
 
 export function ProjectRail({
-  collapsed, projects, activities, activeProjectId,
+  collapsed, animate = true, projects, activities, activeProjectId,
   onOpenProject, onOpenProjectHome, projectHomeActive,
   onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive, closingIds,
   planLimits, planNow,
@@ -282,6 +286,7 @@ export function ProjectRail({
   // React state there can lag a frame behind on a fast drag.
   const dragRef = useRef<string | null>(null)
   const expanded = !collapsed
+  const reducedMotion = useReducedMotion()
 
   // THE USER'S ORDER, not a computed one. An activity comparator recomputed on every change
   // cannot coexist with dragging — it undoes the drag the moment an agent starts or stops, which
@@ -348,15 +353,26 @@ export function ProjectRail({
       style={{
       width: collapsed ? RAIL_W : RAIL_W_OPEN,
       flexShrink: 0, height: '100%',
-      display: 'flex', flexDirection: 'column',
+      display: 'flex',
       background: 'var(--bg-sidebar)',
       // NO RULE ON EITHER EDGE, IN ANY STATE. The left never had one (the window pad paints this
       // same colour, so the strip dissolves into the window); the right one is deleted with the
       // panel it was separating. The surviving vertical line in this corner of the app is the
       // content card's, and it begins below the drag band.
       boxSizing: 'border-box', userSelect: 'none', overflow: 'hidden',
-      transition: 'width 260ms cubic-bezier(0.4, 0, 0.2, 1)',
+      transition: layoutTransition('width', reducedMotion || !animate),
     }}>
+      {/* THE STRIP IS A CLIP; THE COLUMN INSIDE IT HAS A FIXED WIDTH. The strip's width is what
+          animates, and the column is laid out once at the width of the state it is going TO and
+          left-anchored — so the moving edge covers or uncovers finished rows and nothing in here
+          is re-laid out per frame. When the column was `width: 100%` of the animating strip, every
+          frame re-truncated the names, slid the right-aligned status column with the edge, and
+          re-centred the group headers across a strip still 264 wide after `collapsed` had already
+          flipped. */}
+      <div style={{
+        width: collapsed ? RAIL_W : RAIL_W_OPEN, flexShrink: 0, height: '100%',
+        display: 'flex', flexDirection: 'column',
+      }}>
       {/* The strip is the leftmost thing on screen, so IT hosts the macOS traffic lights: 40px of
           bare titlebar, still draggable, nothing drawn in it. 40 is the VERTICAL half of the same
           clearance `RAIL_W` is the horizontal half of, and it did not have to move with it: the
@@ -642,6 +658,7 @@ export function ProjectRail({
         installState={installState}
         onInstallUpdate={onInstallUpdate}
       />
+      </div>
     </div>
   )
 }
