@@ -87,7 +87,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
   // intercept keys (let the textarea commit the composed text through onData).
   const isComposingRef = useRef(false)
   // Latest `active` without making it a dep of the construction effect (which must
-  // not re-run on activation). Used by the window-focus refocus guard.
+  // not re-run on activation). Read by the fit, repaint and activation paths below.
   const activeRef = useRef(active)
   activeRef.current = active
   // Latest onDevServerDetected without making it an effect dep (would re-subscribe
@@ -277,13 +277,10 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     }
     textarea?.addEventListener('paste', onPaste, { capture: true })
 
-    // Refocus when the window regains focus (or the tab becomes visible after the
-    // idle webview reload) while this pane is active, so typing lands without a
-    // click. activeRef avoids making `active` a dependency of this effect.
-    const refocusIfActive = () => { if (activeRef.current) termRef.current?.focus() }
-    window.addEventListener('focus', refocusIfActive)
-    const onVisibility = () => { if (document.visibilityState === 'visible') refocusIfActive() }
-    document.addEventListener('visibilitychange', onVisibility)
+    // Refocus on app or window activation is NOT done here any more: one app-level hook decides what
+    // gets focus (lib/use-refocus-on-activate, rules in lib/refocus). A per-pane listener could only
+    // see its own `active` flag, which stays true for the selected lane while the board or settings
+    // is on screen, and so could pull focus out of the board's composer or a dialog.
 
     // Composer-ghost probe, OFF unless `operator.terminal.ghostProbe` is '1' in localStorage —
     // with the flag unset nothing here runs: no listener, no global, no cost. When it is on,
@@ -623,8 +620,6 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       textarea?.removeEventListener('compositionstart', onCompositionStart)
       textarea?.removeEventListener('compositionend', onCompositionEnd)
       textarea?.removeEventListener('paste', onPaste, { capture: true } as EventListenerOptions)
-      window.removeEventListener('focus', refocusIfActive)
-      document.removeEventListener('visibilitychange', onVisibility)
       disposeProbe?.()
       unregisterTerminal(terminalId)
       term.dispose()

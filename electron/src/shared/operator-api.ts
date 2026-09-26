@@ -49,6 +49,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   terminalList:         { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   claudeVersion:        { delivery: 'invoke', impl: 'native' },
   onClaudeVersion:      { delivery: 'event',  impl: 'native' },
+  onWindowActivated:    { delivery: 'event',  impl: 'native' },
   onCheckoutGone:       { delivery: 'event',  impl: 'native' },
   checkoutGoneList:     { delivery: 'invoke', impl: 'native' },
   terminalHistory:      { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },

@@ -1185,6 +1185,10 @@ function TaskComposer({ roles, liveRoles, onAdd, onCancel, hero, autoFocus }: {
       border: '1px solid var(--border)', padding: '2px 2px 6px', textAlign: 'left',
     }}>
       <textarea
+        // The board's primary input, focused when the app is activated with the board on screen
+        // (lib/use-refocus-on-activate). Only the empty board's hero composer: the inline one opens on
+        // demand, and one the user was typing in is restored as a text field anyway.
+        data-primary-input={hero ? '' : undefined}
         ref={ref}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
