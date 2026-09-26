@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { layoutTransition, pinWidth } from './layout-motion'
+import { layoutTransition, moveFor, pinWidth, type LayoutMove } from './layout-motion'
 
 describe('pinWidth — the heavy content holds the wider of a move\'s two widths', () => {
   it('a narrowing move (rail expands, panel opens) holds the START width', () => {
@@ -30,5 +30,26 @@ describe('layoutTransition', () => {
   it('is none under reduced motion, so the toggle is one frame', () => {
     expect(layoutTransition('width', true)).toBe('none')
     expect(layoutTransition('width', false)).toBe('width 260ms cubic-bezier(0.4, 0, 0.2, 1)')
+  })
+})
+
+describe('moveFor — a move belongs to the lane it started on', () => {
+  const move: LayoutMove = { panel: true, pinW: 1140, sid: 's-a', tid: 't-a' }
+
+  it('is the move while that lane is still active', () => {
+    expect(moveFor(move, 's-a', 't-a')).toBe(move)
+  })
+
+  it('is no move once another lane is active, so its activation fit sees no pin and no hold', () => {
+    expect(moveFor(move, 's-b', 't-b')).toBeNull()
+  })
+
+  it('is no move after a session change on the same terminal, or a terminal change in the same session', () => {
+    expect(moveFor(move, 's-b', 't-a')).toBeNull()
+    expect(moveFor(move, 's-a', 't-b')).toBeNull()
+  })
+
+  it('is no move when there is none', () => {
+    expect(moveFor(null, 's-a', 't-a')).toBeNull()
   })
 })

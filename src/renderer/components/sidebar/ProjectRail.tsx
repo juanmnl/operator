@@ -190,6 +190,9 @@ const SESSION_DRAG_TYPE = 'text/session'
 export interface ProjectRailProps {
   /** ⌘B, and forced true at the gallery. The width IS the state; nothing unmounts. */
   collapsed: boolean
+  /** False snaps the strip to its width with no transition — a layout move cancelled by a lane
+   *  switch ends on the spot, so the incoming lane's fit lands at the settled width. */
+  animate?: boolean
   projects: Project[]
   activities: Record<string, ProjectActivity>
   /** Null at the gallery — no group is open, so no group shows its idle lanes. */
@@ -265,7 +268,7 @@ export interface ProjectRailProps {
 }
 
 export function ProjectRail({
-  collapsed, projects, activities, activeProjectId,
+  collapsed, animate = true, projects, activities, activeProjectId,
   onOpenProject, onOpenProjectHome, projectHomeActive,
   onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive, closingIds,
   planLimits, planNow,
@@ -357,7 +360,7 @@ export function ProjectRail({
       // panel it was separating. The surviving vertical line in this corner of the app is the
       // content card's, and it begins below the drag band.
       boxSizing: 'border-box', userSelect: 'none', overflow: 'hidden',
-      transition: layoutTransition('width', reducedMotion),
+      transition: layoutTransition('width', reducedMotion || !animate),
     }}>
       {/* THE STRIP IS A CLIP; THE COLUMN INSIDE IT HAS A FIXED WIDTH. The strip's width is what
           animates, and the column is laid out once at the width of the state it is going TO and

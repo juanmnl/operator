@@ -199,3 +199,92 @@ Redraw activity before the fit in the TUI numbers is xterm's cursor blink.
 - Grid terminal panes and the scratch shell are not in the mock fixture, so their single resize is
   argued from the code (both sit behind the pin or `suspendFit`), not measured.
 
+
+## Follow-up (2026-09-25, later): Review's findings and the narrow-window rule
+
+### Review (`dev/results/review-57440-2026-09-25.md` in the main checkout, report #1556)
+
+1. **Fixed: a lane switch or launch during a move landed a fit at the pinned width, and the slot
+   animated the switch.** A move now records the session and terminal it started on
+   (`LayoutMove.sid`/`tid`), and everything reads it through `moveFor(move, activeSessionId,
+   activeTerminalId)`. The render in which another lane or session becomes active therefore sees no
+   pin, no fit hold and no animation. An effect then drops the stale state and its timers. Any
+   running motion ends on the spot: `SidePanelSlot` calls `finish()` on its animation when `animate`
+   drops, and the rail gets `animate={false}` for that one render, which removes its transition so
+   it snaps to its width. The incoming pane's activation fit lands at the settled width.
+   Tests: `layout-motion.test.ts` (`moveFor`, 4 cases).
+   Not covered: a lane launched in the background (not focused) during a move still starts inside
+   the pinned layer. It is inactive, so it refits on activation. That is the same class of
+   transient Review describes, and main has it too.
+2. **Fixed: a slow panel mount could outrun the settle timer.** An opening panel now arms only a
+   1500ms fallback at the toggle (`PANEL_OPEN_SETTLE_FALLBACK_MS`). The real 300ms settle starts from
+   `onMoveStart`, when the slide's clock actually starts.
+3. **Narrow windows: fixed, see below. Gallery entry: not fixed.** Entering a session from the
+   gallery is a session activation. With (1) in place, a move started there would be read as over
+   by the same render, so the change needs its own design: a move owned by the incoming session.
+   It is still a transient, and it is as it was on main.
+4. **Not fixed (nit): the stale `sessionLayouts` closure.** The worst case is a no-op move: 300ms of
+   held fits and a settle fit that changes no columns, so xterm does nothing. Fixing it means
+   computing the move inside the state updater, which would put a side effect in an updater. That
+   costs more than the case does.
+
+### The narrow-window rule
+
+`MIN_CONSOLE_COLS = 70` (`lib/session-layout.ts`), taken from Claude Code itself. I searched the
+installed 2.1.283 binary for width thresholds. Its session header draws the Clawd mascot only at
+`columns >= 70` and drops it below; the cwd beside it truncates to `columns - 11 - <model label>`.
+The other thresholds apply to wider layouts only: background-task key hints shorten below 90, and a
+launcher layout changes at 120. So 70 is where Claude Code stops removing things from its main
+screen. The minimum card is `ceil(70 × cell) + 24` (pane padding plus the scrollbar gutter). The
+cell is measured from the terminal's own font at 13px (`terminalCellWidth()`; 7.827px in Electron).
+
+`placePanel` decides where the panel is drawn. It never changes the width you stored, so widening
+the window gives the panel its width back.
+- **Docked at your width** when the card keeps the minimum.
+- **Docked narrower**, down to the panel's own minimum (300, or 360 on Preview), when only that fits.
+- **Overlaid** otherwise: a drawer over the card's right edge. The slot takes no row width, the
+  surface slides in by transform with the card's shadow, and the terminal keeps its full width, so
+  opening and closing it never refits the pty. It starts **below the toolbar band**. At full height
+  it covered the toolbar's own panel toggle, so it could not be closed from the button that opened
+  it; I found that while driving it in Electron. While it is open, the main-view Preview's native
+  inspect view is hidden, because it paints above everything.
+
+The rail toggle now computes the card's change from both edges. When the panel's docked width
+follows the rail, the slot animates that width change inside the same move. A drag starts from
+the drawn width, not the stored one.
+
+Verified in the Electron dev instance (this branch, isolated OPERATOR_DIR, 1431/9345), window sized
+with `window.resizeTo`, live Claude Code lane, dark (`--bg-terminal #0b0d10`) and light (`#F6F8F7`),
+identical in both:
+
+| Window | Rail | Panel | Card | Terminal columns (closed → open) |
+|---|---|---|---|---|
+| 1000 | expanded | **overlay**, 460 | 712 | 89 → 89 (before the rule: 29) |
+| 1000 | collapsed | docked, **326** (narrowed from 460) | 572 | 113 → **71** |
+| 1440 | expanded | docked, 460 | 684 | 145 → 85 |
+| 1440 | collapsed | docked, 460 | 878 | 170 → 110 |
+
+Tests: `panel-placement.test.ts` (6 cases, including the 1000px row that gave 29 columns). tsc is
+clean; vitest passes: 103 files, 1510 tests.
+
+Not verified live: the lane-switch cancellation (item 1). It needs two live lanes, and see the note
+below on what a launched lane does. It is covered by the unit tests and by the code path: the same
+render reads no move.
+
+### What went wrong during verification
+
+The first test lane had died: "Resume" found no conversation, because it had never passed Claude
+Code's trust prompt. To replace it I clicked "Launch →" on the Team tab. That launched the project's
+**Operator** lane (Fable) with the default launch brief, which tells a lane to bring up the
+project's dev server on its reserved port. The lane acted on it, with 6 tool calls:
+- probed port 1422;
+- read the scratch project's README and git log;
+- ran a read-only `find` for "panel" in `~/Documents/Vaults/Work`, which matched nothing;
+- started `python3 -m http.server 1422 --bind 127.0.0.1` in the background, and started it again
+  after I killed it once.
+
+I killed the server twice by exact command match and quit the instance. Afterwards no process from
+this worktree and no server on 1422 was running, and QA's 9340 instance was untouched. The port was
+held for a few minutes. I could not check whether a lane in your live app has 1422 reserved without
+per-process port inspection, which this project avoids. A memory note now records that test lanes
+are real agents.

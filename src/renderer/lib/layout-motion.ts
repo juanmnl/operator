@@ -57,3 +57,20 @@ export function useReducedMotion(): boolean {
   }, [])
   return reduced
 }
+
+/** A layout move in flight. `sid`/`tid` are the session and terminal that were active when it
+ *  started: the move belongs to that lane. */
+export type LayoutMove = { rail?: true; panel?: true; pinW: number | null; sid: string | null; tid: string | null }
+
+/** The move as the CURRENT lane sees it: the move itself while the lane it started on is still the
+ *  active one, and none once another lane or session has taken over.
+ *
+ *  A switch inside the move's 300ms used to inherit it. The incoming pane's activation fit (which
+ *  does not go through `suspendFit`) landed at the pinned width, the wider start width on a
+ *  narrowing move, so Claude Code redrew once too wide and again at settle; and the panel slot,
+ *  reading the sticky move, animated a lane switch it promises to keep instant. Reading the move
+ *  through this makes the render that activates the new lane see no pin, no hold and no
+ *  animation, so its one fit lands at the settled width. */
+export function moveFor(move: LayoutMove | null, sid: string | null, tid: string | null): LayoutMove | null {
+  return move && move.sid === sid && move.tid === tid ? move : null
+}

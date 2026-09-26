@@ -46,7 +46,9 @@ import { usePlanLimits } from '../lib/plan-limits'
 import { TuningView } from '../components/tuning/TuningView'
 import { CanvasPanel } from '../components/session/CanvasPanel'
 import { SidePanelSlot } from '../components/session/SidePanelSlot'
-import { LAYOUT_MOVE_MS, LAYOUT_SETTLE_SLACK_MS, pinWidth, useReducedMotion } from '../lib/layout-motion'
+import { terminalCellWidth } from '../lib/terminal-options'
+import { TOOLBAR_BAND_H } from '../lib/chrome'
+import { LAYOUT_MOVE_MS, LAYOUT_SETTLE_SLACK_MS, moveFor, pinWidth, useReducedMotion, type LayoutMove } from '../lib/layout-motion'
 import { ProjectView } from '../components/session/ProjectView'
 import { AppPreviewPanel } from '../components/session/AppPreviewPanel'
 import { DiffPanel } from '../components/session/DiffPanel'
@@ -74,6 +76,7 @@ import { writesForDroppedPaths } from '../lib/paste-image'
 import { paneVisibility } from '../lib/pane-visibility'
 import {
   applyLayout, coerceLayouts, panelDragBounds, clampPanelW, halfPanelW, DEFAULT_LAYOUT, PANEL_MIN_W,
+  PREVIEW_PANEL_MIN_W, consoleMinWidth, placePanel,
   type MainView, type PanelTab, type SessionLayout, type LayoutPatch,
 } from '../lib/session-layout'
 import { applyGridPreset, coerceGridSpec, DEFAULT_GRID_SPEC, type GridSpec } from '../../shared/layout-grid'
@@ -134,6 +137,11 @@ const FOOTER_H = 34
 const CONVERSATION_PANEL_W = 460
 /** The root row's gap: rail · card · side panel. */
 const ROW_GAP = 8
+/** The root row's padding on every side. */
+const ROOT_PAD = 8
+/** The settle timer's first arming for an opening panel; `onMoveStart` replaces it with the real
+ *  one when the slide starts. Only a slot that never plays (unmounted mid-toggle) waits this out. */
+const PANEL_OPEN_SETTLE_FALLBACK_MS = 1500
 
 // Per-session Canvas layout — each session remembers whether its panel is open and
 // which surface it shows. Keyed by session id, persisted across reloads. The types and the
@@ -306,6 +314,32 @@ export function DashboardView() {
     try { const v = parseInt(localStorage.getItem('operator.canvasWidth') || '', 10); return v >= PANEL_MIN_W ? v : CONVERSATION_PANEL_W } catch { return CONVERSATION_PANEL_W }
   })
   const panelWRef = useRef(panelW); panelWRef.current = panelW
+  // WHERE THE PANEL IS DRAWN (lib/session-layout `placePanel`): at the user's width when the
+  // Console beside it keeps MIN_CONSOLE_COLS, narrower when only that fits, over the Console when
+  // not even the panel's minimum fits. Computed from the window's width rather than measured, so a
+  // ⌘B or a panel toggle can know the card's END width at the moment it starts (the pin needs it).
+  const [winW, setWinW] = useState(() => window.innerWidth)
+  useEffect(() => {
+    const on = () => setWinW(window.innerWidth)
+    window.addEventListener('resize', on)
+    return () => window.removeEventListener('resize', on)
+  }, [])
+  const minConsoleW = useMemo(() => consoleMinWidth(terminalCellWidth()), [])
+  /** Card + gap + panel, for the rail at a given width. */
+  const rowWFor = useCallback((railCollapsed: boolean) => (
+    winW - 2 * ROOT_PAD - (railCollapsed ? RAIL_W : RAIL_W_OPEN) - ROW_GAP
+  ), [winW])
+  const placeFor = useCallback((railCollapsed: boolean) => placePanel({
+    wantW: panelW, rowW: rowWFor(railCollapsed), gap: ROW_GAP,
+    minPanelW: effPanelTab === 'preview' ? PREVIEW_PANEL_MIN_W : PANEL_MIN_W, minConsoleW,
+  }), [panelW, rowWFor, effPanelTab, minConsoleW])
+  /** The content card's width for a rail state and a panel state. An overlaid panel takes none. */
+  const cardWFor = useCallback((railCollapsed: boolean, open: boolean) => {
+    const place = placeFor(railCollapsed)
+    return rowWFor(railCollapsed) - (open && place.mode === 'dock' ? place.width + ROW_GAP : 0)
+  }, [placeFor, rowWFor])
+  const panelPlace = placeFor(sidebarCollapsed)
+  const panelPlaceRef = useRef(panelPlace); panelPlaceRef.current = panelPlace
   const panelTabRef = useRef(effPanelTab); panelTabRef.current = effPanelTab
   // The content card, measured at the start of a panel drag: card + panel = the row they share.
   const cardRef = useRef<HTMLDivElement>(null)
@@ -330,9 +364,11 @@ export function DashboardView() {
   // edge has settled. While it is set, every terminal holds its fit and the terminal/Preview stack
   // is held at `pinW`, so the card's box can follow the moving edge without re-laying out, or
   // resizing, anything heavy inside it. One refit when it clears. `rail`/`panel` say which edge is
-  // moving — the panel slot animates only on its own toggle, never on a lane switch.
+  // moving. A move belongs to the lane it started on (`moveFor`): the render in which another lane
+  // or session becomes active reads it as over, and the effect below then clears it.
   const reducedMotion = useReducedMotion()
-  const [layoutMove, setLayoutMove] = useState<{ rail?: true; panel?: true; pinW: number | null } | null>(null)
+  const [layoutMove, setLayoutMove] = useState<LayoutMove | null>(null)
+  const activeMove = moveFor(layoutMove, activeSessionId, activeTerminalId)
   const layoutMoveTimer = useRef(0)
   // The terminal/Preview stack, measured when a move starts.
   const stackRef = useRef<HTMLDivElement>(null)
@@ -343,7 +379,7 @@ export function DashboardView() {
   // goes first, while the hold is still on, and the hold lifts two frames later — after the
   // ResizeObserver has delivered (rAF runs before layout within a frame, hence two).
   const layoutSettleRaf = useRef(0)
-  const restartLayoutSettle = useCallback(() => {
+  const restartLayoutSettle = useCallback((ms: number = LAYOUT_MOVE_MS + LAYOUT_SETTLE_SLACK_MS) => {
     clearTimeout(layoutMoveTimer.current)
     cancelAnimationFrame(layoutSettleRaf.current)
     layoutMoveTimer.current = window.setTimeout(() => {
@@ -351,25 +387,43 @@ export function DashboardView() {
       layoutSettleRaf.current = requestAnimationFrame(() => {
         layoutSettleRaf.current = requestAnimationFrame(() => setLayoutMove(null))
       })
-    }, LAYOUT_MOVE_MS + LAYOUT_SETTLE_SLACK_MS)
+    }, ms)
   }, [])
-  const beginLayoutMove = useCallback((edge: 'rail' | 'panel', delta: number) => {
+  /** `settleMs` is the settle timer's first arming. An opening panel passes a long fallback and
+   *  the real settle starts from `SidePanelSlot`'s `onMoveStart`: armed at the toggle, a mount
+   *  slower than ~270ms let the hold lift before the slide had even begun (Review, finding 2). */
+  const beginLayoutMove = useCallback((edge: 'rail' | 'panel', delta: number, settleMs?: number) => {
     // Reduced motion: the edge jumps in one frame, so there is no "during" to protect and the
     // terminal fits once off its ResizeObserver as it always has.
     if (reducedMotion) return
     const live = stackRef.current?.getBoundingClientRect().width ?? 0
-    setLayoutMove((m) => ({ ...m, [edge]: true, pinW: live > 0 ? pinWidth(m?.pinW ?? null, live, delta) : null }))
-    restartLayoutSettle()
-  }, [reducedMotion, restartLayoutSettle])
+    const sid = activeSessionId, tid = activeTerminalId
+    setLayoutMove((m) => {
+      const own = moveFor(m, sid, tid)
+      return { ...own, [edge]: true, pinW: live > 0 ? pinWidth(own?.pinW ?? null, live, delta) : null, sid, tid }
+    })
+    restartLayoutSettle(settleMs)
+  }, [reducedMotion, restartLayoutSettle, activeSessionId, activeTerminalId])
   useEffect(() => () => { clearTimeout(layoutMoveTimer.current); cancelAnimationFrame(layoutSettleRaf.current) }, [])
+  // A lane or session switch ends the move: the render that switched already reads no move (see
+  // `activeMove`), so this only drops the stale state and its timers.
+  useEffect(() => {
+    if (!layoutMove || activeMove) return
+    clearTimeout(layoutMoveTimer.current)
+    cancelAnimationFrame(layoutSettleRaf.current)
+    setLayoutMove(null)
+  }, [layoutMove, activeMove])
   // Open/close the right side panel (Plan / Diff / Preview). Per-session (ref avoids a stale id).
-  // The panel's share of the row is its width plus the row's 8px gap (see `SidePanelSlot`).
+  // The card changes by the panel's docked share of the row, or not at all when it overlays.
   const setPanelOpen = useCallback((open: boolean, patch: LayoutPatch = {}) => {
     const sid = activeSessionIdRef.current
     const cur = sid ? (sessionLayouts[sid]?.panelOpen ?? DEFAULT_LAYOUT.panelOpen) : false
-    if (sid && cur !== open) beginLayoutMove('panel', (open ? -1 : 1) * (panelWRef.current + ROW_GAP))
+    if (sid && cur !== open) {
+      const delta = cardWFor(sidebarCollapsed, open) - cardWFor(sidebarCollapsed, cur)
+      beginLayoutMove('panel', delta, open ? PANEL_OPEN_SETTLE_FALLBACK_MS : undefined)
+    }
     patchLayout({ ...patch, panelOpen: open })
-  }, [patchLayout, sessionLayouts, beginLayoutMove])
+  }, [patchLayout, sessionLayouts, beginLayoutMove, cardWFor, sidebarCollapsed])
   const togglePanel = useCallback(() => {
     const sid = activeSessionIdRef.current
     setPanelOpen(!(sid ? sessionLayouts[sid]?.panelOpen : false))
@@ -400,8 +454,10 @@ export function DashboardView() {
   const startPanelResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     const startX = e.clientX
-    const startW = panelWRef.current
-    const rowW = (cardRef.current?.offsetWidth ?? 0) + startW
+    // From the width the panel is DRAWN at, which `placePanel` may have narrowed: starting from the
+    // stored width made the first move of a drag jump by the difference.
+    const startW = panelPlaceRef.current.width
+    const rowW = (cardRef.current?.offsetWidth ?? 0) + (panelPlaceRef.current.mode === 'dock' ? startW : 0)
     const persist = (w: number) => { try { localStorage.setItem('operator.canvasWidth', String(w)) } catch { /* ignore */ } }
     // Double-click = split the row in half. Read off the second mousedown's `detail` rather than
     // an `onDoubleClick`: the first click mounts the full-window drag overlay, which can end up as
@@ -471,13 +527,15 @@ export function DashboardView() {
   // follows the rail's edge, then fit once on settle. Without the hold the ghostty grid reflowed
   // every frame of the collapse/expand → overprint corruption.
   const toggleSidebar = useCallback(() => {
-    beginLayoutMove('rail', (sidebarCollapsed ? -1 : 1) * (RAIL_W_OPEN - RAIL_W))
+    // The panel's docked width can change with the rail (`placePanel`), so the card's change is
+    // computed from both, not just the rail's 194px.
+    beginLayoutMove('rail', cardWFor(!sidebarCollapsed, panelOpen) - cardWFor(sidebarCollapsed, panelOpen))
     setSidebarCollapsed((c) => {
       const next = !c
       try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
-  }, [beginLayoutMove, sidebarCollapsed])
+  }, [beginLayoutMove, sidebarCollapsed, cardWFor, panelOpen])
 
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
     setToasts((prev) => [...prev, { ...message, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }])
@@ -4938,6 +4996,9 @@ export function DashboardView() {
   // THE PREVIEW, built for whichever slot holds it: the main overlay or the side panel's Preview
   // tab. `applyLayout` keeps it to one slot at a time. Moving slots remounts it, so the page
   // reloads, at the same address because the pin and the path are persisted.
+  // An overlaid panel covers the right of the Console, including a main-view Preview's stage, so
+  // the stage's native inspect view (which paints above everything) hides while it is open.
+  const panelOverlaid = contentMode === 'localTerminal' && panelOpen && panelPlace.mode === 'overlay'
   const renderPreview = (session: AgentSession) => {
     // The reserved port is only the starting hint — AppPreviewPanel asks the
     // backend which ports this session is ACTUALLY serving on and picks (or
@@ -4961,12 +5022,12 @@ export function DashboardView() {
         onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
         annotate={previewAnnotate}
         onAnnotateChange={setPreviewAnnotate}
-        panelW={panelW}
+        panelW={panelPlace.width}
         // R1: every renderer surface that can open over the stage hides the native inspect view
         // while it is open. The picker and port editor are the component's own.
         // A layout move slides the stage without resizing it, which the view's placement does not
         // follow; hidden for the move, it is re-placed at the stage's settled rect when it shows.
-        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!layoutMove}
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!activeMove || panelOverlaid}
         grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
         onGridToggle={toggleGrid}
         onGridSpecChange={changeGridSpec}
@@ -5006,7 +5067,7 @@ export function DashboardView() {
        overlapping") was HORIZONTAL: at `RAIL_W = 60` the card's edge came within 7pt of the zoom
        button. It is 17 now. `dev/drive-rail-invariant.mjs` assertion TL gates both halves — the
        frame, and the gap — so neither can drift back without the driver saying so. */}
-    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: 8, gap: ROW_GAP, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', width: '100%', height: '100vh', background: 'var(--bg-sidebar)', padding: ROOT_PAD, gap: ROW_GAP, boxSizing: 'border-box' }}>
       {/* Agent colour picker (right-click an orb). Rendered here, outside the sidebar and
           rail scrollers, which clip their overflow. */}
       {accentPicker && accentTarget && (
@@ -5044,6 +5105,8 @@ export function DashboardView() {
           keeps the theme toggle, Preferences and both `.claude` shortcuts on screen at 60px. */}
       <ProjectRail
         collapsed={contentMode === 'gallery' || sidebarCollapsed}
+        // A move cancelled by a lane switch snaps the strip to its end width (see `moveFor`).
+        animate={!(layoutMove && !activeMove)}
         // THE PLAN READING, only while no session is open. The session footer owns it otherwise,
         // and two readings of the same three limits on screen at once would invite the reader to
         // look for a difference between them. Null is the hide: the rail draws nothing rather
@@ -5402,7 +5465,7 @@ export function DashboardView() {
                 `overflow: hidden` clips what is past its edge. */}
             <div style={{
               position: 'absolute', top: 0, bottom: 0, left: 0,
-              width: layoutMove?.pinW ?? '100%',
+              width: activeMove?.pinW ?? '100%',
             }}>
             {terminals.map((t) => (
               <div
@@ -5443,7 +5506,7 @@ export function DashboardView() {
                     // doesn't grab focus/keystrokes; re-activates on switch back (its size is
                     // unchanged, so the activation fit is a no-op — no resize-hang risk).
                     active={t.id === activeTerminalId && !t.ended && mainView === 'terminal'}
-                    suspendFit={resizingPanel || windowResizing || !!layoutMove}
+                    suspendFit={resizingPanel || windowResizing || !!activeMove}
                     // Hand every sniffed dev-server port to the backend, for EVERY pane
                     // (not just the active one) — a background lane's server is still its
                     // server, and the banner scrolls past exactly once. This is the only
@@ -5606,7 +5669,7 @@ export function DashboardView() {
             theme={currentTheme.xterm}
             open={shellOpen}
             bottom={FOOTER_H}
-            suspendFit={resizingPanel || windowResizing || !!layoutMove}
+            suspendFit={resizingPanel || windowResizing || !!activeMove}
             onClose={closeShell}
           />
         )}
@@ -5617,9 +5680,11 @@ export function DashboardView() {
           from the toolbar's panel button, sliding in and out through `SidePanelSlot`. */}
       <SidePanelSlot
         open={contentMode === 'localTerminal' && panelOpen && !!activeSession}
-        width={panelW}
+        width={panelPlace.width}
         gap={ROW_GAP}
-        animate={!!layoutMove?.panel}
+        overlay={panelPlace.mode === 'overlay'}
+        overlayTop={TOOLBAR_BAND_H}
+        animate={!!activeMove}
         onMoveStart={restartLayoutSettle}
         style={{ background: 'var(--bg-terminal)', borderRadius: 'var(--radius-lg)' }}
       >
