@@ -202,10 +202,29 @@ describe('orphanTabs', () => {
 // Design and handed that mantel session.
 describe('a tab is a project\'s lane only if it runs in that project', () => {
   const uwazi = '/Users/x/Developer/huridocs/uwazi_app'
-  it('skips a tab labelled with the project whose pty runs elsewhere', () => {
-    const tabs = [{ id: 't4', projectId: 'uwazi', roleId: 'design', cwd: '/Users/x/Developer/mantel' }]
-    expect(pickLaneTab(tabs, 'uwazi', 'design', uwazi)).toBeUndefined()
-    expect(routeDispatch('design', [{ id: 'design', name: 'Design' }], tabs, 'uwazi', uwazi).kind).toBe('queue')
+  const mantel = '/Users/x/Developer/mantel'
+  it('skips a tab labelled with the project whose pty runs in ANOTHER project', () => {
+    const tabs = [{ id: 't4', projectId: 'uwazi', roleId: 'design', cwd: mantel }]
+    const paths = { own: uwazi, others: [mantel] }
+    expect(pickLaneTab(tabs, 'uwazi', 'design', paths)).toBeUndefined()
+    expect(routeDispatch('design', [{ id: 'design', name: 'Design' }], tabs, 'uwazi', paths).kind).toBe('queue')
+  })
+
+  it('keeps a lane whose project was MOVED, whose directory matches no project (review A5)', () => {
+    const moved = { id: 't6', projectId: 'uwazi', roleId: 'design', cwd: '/Users/x/old-place/uwazi_app' }
+    expect(pickLaneTab([moved], 'uwazi', 'design', { own: uwazi, others: [mantel] })).toBe(moved)
+  })
+
+  it('compares case-insensitively, as the default macOS volume does', () => {
+    expect(tabRunsIn({ cwd: '/Users/x/Developer/HURIDOCS/uwazi_app' }, { own: uwazi, others: [mantel] })).toBe(true)
+    expect(tabRunsIn({ cwd: '/Users/x/Developer/MANTEL/src' }, { own: uwazi, others: [mantel] })).toBe(false)
+  })
+
+  it('a project nested in another: the most specific path decides', () => {
+    const outer = '/Users/x/Developer/mono', inner = '/Users/x/Developer/mono/apps/site'
+    expect(tabRunsIn({ cwd: `${inner}/src` }, { own: outer, others: [inner] })).toBe(false) // runs in the inner project
+    expect(tabRunsIn({ cwd: `${inner}/src` }, { own: inner, others: [outer] })).toBe(true)
+    expect(tabRunsIn({ cwd: `${outer}/lib` }, { own: outer, others: [inner] })).toBe(true)
   })
 
   it('accepts a main-checkout lane under the project path and a worktree lane whose source is the project', () => {
@@ -216,7 +235,8 @@ describe('a tab is a project\'s lane only if it runs in that project', () => {
   })
 
   it('does not treat a sibling directory with a shared prefix as inside', () => {
-    expect(tabRunsIn({ cwd: `${uwazi}-old` }, uwazi)).toBe(false)
+    expect(tabRunsIn({ cwd: `${uwazi}-old` }, { own: `${uwazi}-old-other`, others: [uwazi] })).toBe(true) // matches nothing
+    expect(tabRunsIn({ cwd: `${uwazi}-landing` }, { own: uwazi, others: [`${uwazi}-landing`] })).toBe(false)
   })
 
   it('gives a tab with no directory, or a caller with no project path, the benefit of the doubt', () => {

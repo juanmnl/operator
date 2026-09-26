@@ -73,6 +73,9 @@ export interface BusLane extends RoutableTab {
 
 export interface DispatchContext {
   project: Project | undefined
+  /** Every other project's path, so a lane labelled with this project but running in another is
+   *  never picked (`tabRunsIn`). */
+  otherProjectPaths?: readonly string[]
   lanes: readonly BusLane[]
   /** Bus addresses by Claude session uuid, from `session-bus`. */
   addresses: ReadonlyMap<string, string>
@@ -96,7 +99,7 @@ export function resolveDispatch(
   // inside it, so a lane cannot reach another project's fleet through Operator. (A lane can still
   // call `SendMessage` with a free-form name and reach anything on the bus; that is outside
   // Operator's hands and is noted rather than pretended away.)
-  const route = routeDispatch(req.lane, roster, [...ctx.lanes], req.projectId, ctx.project?.path)
+  const route = routeDispatch(req.lane, roster, [...ctx.lanes], req.projectId, { own: ctx.project?.path, others: ctx.otherProjectPaths })
 
   if (route.kind === 'unassigned') {
     return {
