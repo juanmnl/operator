@@ -210,6 +210,14 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     store.close()
   })
 
+  it('a coordinator still keyed \'orchestrator\' gets reports addressed to \'operator\' (review A4)', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'to-role-legacy.db'))
+    store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'p', 'design', null, 'for the coordinator', '[]', 'operator')
+    expect(store.undeliveredFor('orchestrator', 10, 'p').map((r) => r.summary)).toEqual(['for the coordinator'])
+    expect(store.expireUndelivered('orchestrator', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:01.000Z', 'p')).toBe(1)
+    store.close()
+  })
+
   it('a report addressed to the coordinator is still in the coordinator\'s queue, and in no other role\'s', () => {
     const store = new ArtifactStore(join(SANDBOX, 'to-role.db'))
     store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'p', 'design', null, 'for operator', '[]', 'operator')

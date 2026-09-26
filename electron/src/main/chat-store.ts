@@ -13,6 +13,7 @@ import { percentile } from './usage'
 
 // The renderer's own types — see the note in transcript.ts.
 import type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent, ToolOutputStats } from '../../../src/shared/types'
+import { COORDINATOR_ROLE_IDS } from '../../../src/renderer/lib/dispatch'
 export type { NarrationEntry, ProjectReply, ArtifactReport, ArtifactStatusEvent }
 
 const SCHEMA_VERSION = 1
@@ -243,6 +244,13 @@ function rowToReport(r: Record<string, unknown>): ArtifactReport {
   }
 }
 
+/** The `to_role` values a queue for `role` accepts. A coordinator answers to EVERY coordinator id: a
+ *  lane's report is addressed `operator`, and a coordinator still keyed by the pre-rename
+ *  `orchestrator` id would otherwise never be told (review-xproject-devports, A4). */
+function addresseesOf(role: string): string[] {
+  return (COORDINATOR_ROLE_IDS as readonly string[]).includes(role) ? [...COORDINATOR_ROLE_IDS] : [role]
+}
+
 export class ArtifactStore {
   private readonly db: Database.Database
 
@@ -443,11 +451,13 @@ export class ArtifactStore {
    *  their real coordinators then never heard of them. It now gets nothing; the caller logs it. */
   undeliveredFor(role: string, limit: number, projectId?: string | null): ArtifactReport[] {
     if (!projectId) return []
+    const roles = addresseesOf(role)
     const rows = this.db.prepare(
       `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
-         FROM reports WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND (project_id = ? OR project_id IS NULL)
+         FROM reports WHERE delivered_at IS NULL AND (to_role IN (${roles.map(() => '?').join(', ')}) OR to_role IS NULL)
+          AND (project_id = ? OR project_id IS NULL)
         ORDER BY id ASC LIMIT ?`,
-    ).all(role, projectId, limit) as Array<Record<string, unknown>>
+    ).all(...roles, projectId, limit) as Array<Record<string, unknown>>
     return rows.map(rowToReport)
   }
 
@@ -461,10 +471,12 @@ export class ArtifactStore {
   expireUndelivered(role: string, before: string, at: string, projectId?: string | null): number {
     // No project, nothing expired: unscoped, this marked other projects' reports delivered unseen (X3).
     if (!projectId) return 0
+    const roles = addresseesOf(role)
     const r = this.db.prepare(
       `UPDATE reports SET delivered_at = ?
-        WHERE delivered_at IS NULL AND (to_role = ? OR to_role IS NULL) AND at < ? AND (project_id = ? OR project_id IS NULL)`,
-    ).run(at, role, before, projectId)
+        WHERE delivered_at IS NULL AND (to_role IN (${roles.map(() => '?').join(', ')}) OR to_role IS NULL) AND at < ?
+          AND (project_id = ? OR project_id IS NULL)`,
+    ).run(at, ...roles, before, projectId)
     return Number(r.changes)
   }
 
