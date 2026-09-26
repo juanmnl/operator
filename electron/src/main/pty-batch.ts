@@ -12,6 +12,12 @@
 // FLUSH_MS rather than waiting for a pause. Bytes are concatenated in arrival order and never
 // split or re-encoded, so the renderer receives the same byte stream in fewer pieces.
 //
+// EXCEPT A READ AFTER A QUIET SPELL, which goes out at once (Review finding 9). With nothing
+// buffered and nothing sent in the last FLUSH_MS, a read is almost always a keystroke's echo or a
+// redraw after a pause, and holding it for a full window added up to 16 ms to typing latency. Reads
+// that follow it within the window are batched as before, so sustained output still costs about
+// one message per window.
+//
 // ORDER AGAINST EXIT is the caller's half: it must `close()` before it reports the exit, and
 // `flush()` before it starts killing the process, so no output arrives after, or is lost with,
 // the exit event.
@@ -27,11 +33,14 @@ export const FLUSH_BYTES = 64 * 1024
 export interface BatchTimers {
   set: (fn: () => void, ms: number) => unknown
   clear: (handle: unknown) => void
+  /** Epoch ms; for "was the terminal quiet". Defaults to `Date.now`. */
+  now?: () => number
 }
 
 const realTimers: BatchTimers = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (h) => clearTimeout(h as NodeJS.Timeout),
+  now: () => Date.now(),
 }
 
 export class OutputBatcher {
@@ -39,6 +48,8 @@ export class OutputBatcher {
   private bytes = 0
   private timer: unknown = null
   private closed = false
+  /** When the last message went out; -Infinity before the first, so a first read is sent at once. */
+  private lastSentAt = -Infinity
 
   constructor(
     private readonly sink: (data: Buffer) => void,
@@ -49,14 +60,21 @@ export class OutputBatcher {
 
   push(chunk: Buffer): void {
     if (!chunk.length) return
+    // Quiet before this read: nothing waiting, no timer, nothing sent within the window. Send it
+    // now. Nothing is buffered, so this cannot overtake earlier bytes.
+    const quiet = this.chunks.length === 0 && this.timer === null && this.now() - this.lastSentAt >= this.flushMs
     this.chunks.push(chunk)
     this.bytes += chunk.length
     // After `close()` there is no timer left to wait for: pass each read straight through, in order.
-    if (this.closed || this.bytes >= this.flushBytes) {
+    if (this.closed || quiet || this.bytes >= this.flushBytes) {
       this.flush()
       return
     }
     if (this.timer === null) this.timer = this.timers.set(() => { this.timer = null; this.flush() }, this.flushMs)
+  }
+
+  private now(): number {
+    return (this.timers.now ?? Date.now)()
   }
 
   /** Send whatever is buffered now, as one message. A no-op when nothing is. */
@@ -69,6 +87,7 @@ export class OutputBatcher {
     const data = this.chunks.length === 1 ? this.chunks[0] : Buffer.concat(this.chunks, this.bytes)
     this.chunks = []
     this.bytes = 0
+    this.lastSentAt = this.now()
     this.sink(data)
   }
 
