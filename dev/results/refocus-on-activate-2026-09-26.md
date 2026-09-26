@@ -57,3 +57,33 @@ For each path in the table, with a lane on screen, a board on screen, a settings
 
 - Grid terminal panes (`GridTerminalPane`) are not in the terminal registry, so rule 3 does nothing for them. The Electron build never mounts them (`grid: false`).
 - Only the empty board's composer is marked as a primary input. Other views have none, so rule 5 applies.
+
+## Review fixes (report #1574, `dev/results/review-refocus-2026-09-26.md`) — 9b1884a
+
+| Finding | Fix |
+|---|---|
+| **1 (High):** after using the Preview, every click back into Operator had focus pulled into the iframe a frame later | The hook no longer acts on the page's own `window` 'focus', which also fires when focus leaves an iframe. The only activations are main's `onWindowActivated` (BrowserWindow 'focus' or app 'activate') and the document becoming visible after hidden. An element is remembered only when the **app** lost focus: `document.hasFocus()` is false after the blur settles, which it is not when focus moved into an iframe. The iframe itself is never remembered. |
+| **2 (Medium):** a remembered text field overrode a click made on returning | A `pointerdown`/`keydown` after the activation means the user chose, so nothing changes. And anything other than the body that has focus is kept, so a click that landed on the terminal keeps it even if the IPC arrives after the click. |
+| **3 (Low–medium):** returning closed an open menu and moved focus off controls | Any focused element other than the body is kept: menus, tabs, buttons, checkboxes. Only when focus is on the body or nowhere does the hook act, trying in order a restore, then the lane's terminal, then the primary input. |
+| 4 (Low): a keystroke in the first frame can be lost | **Not changed.** The decision still runs a frame after activation, so it follows the platform's own focus restore. At most one frame, the same as before this branch. |
+| 5 (Unverified): `webContents.focus()` and the out-of-process Preview frame | **Not changed; still to check live.** If `webContents.focus()` moves focus out of the iframe on activation, focus ends on the body or the iframe element. With the iframe no longer remembered, a lane on screen then gets focus. That is the lane, not the Preview: acceptable, but worth seeing. |
+
+The event handling is now a controller with the DOM injected (`src/renderer/lib/refocus-controller.ts`); the hook only wires it to the real document.
+
+**Tests:**
+- **`refocus-controller.test.ts` (7):**
+  - Finding 1:
+    - a Preview round-trip with no app switch records nothing and refocuses nothing, and the click on the terminal stands;
+    - a stray activation right after a click out of the Preview changes nothing;
+    - the app losing focus while the Preview had it does not remember the iframe; on return the lane gets focus.
+  - Finding 2:
+    - Cmd-Tab away from the commit message, come back by clicking the terminal: the terminal keeps focus, whether the click comes before or after main's signal;
+    - with no click and focus on the body, the field is restored once and not again at the next activation.
+  - Finding 3: a focused menu item is kept.
+- **`refocus.test.ts`**, rewritten to the new rules: any element other than the body is kept; a user action keeps; restore, terminal and primary input apply only from the body; a hidden lane's terminal counts as nothing.
+- **Mutation check:** putting back the old rule, which kept only text fields, dialogs and the iframe and ignored user action, fails 6 of these tests.
+
+**Verification:**
+- Root: `tsc --noEmit` exit 0; vitest 109 files, **1598 passed**.
+- `electron`: typecheck exit 0; vitest 45 files, **790 passed**.
+- **Still code only.** To confirm live: findings 1 and 2 as Review describes them (click inside the Preview, then click the terminal and type; Cmd-Tab from a text field and come back by clicking the terminal), and finding 5.
