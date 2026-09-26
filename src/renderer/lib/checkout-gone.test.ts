@@ -23,6 +23,7 @@ describe('checkout-gone', () => {
     const d = checkoutGoneDetail(g({ branch: 'feat/puerta-home' }))
     expect(d).toContain('mantel-55da80: its .git file is missing')
     expect(d).toContain('commits on branch feat/puerta-home are not')
+    expect(d).toContain('may be gone') // not known: a non-forced removal refuses a dirty tree (Review finding 10)
     expect(d).toContain('Nothing is repaired automatically')
   })
 })

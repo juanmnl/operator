@@ -28,5 +28,6 @@ export function checkoutGoneDetail(g: GoneCheckout, launchBranch?: string): stri
   const b = goneBranch(g, launchBranch)
   return `${baseName(g.cwd)}: ${g.why}. Something outside Operator removed it, often `
     + '`gh pr merge --delete-branch` for a branch checked out there. '
-    + `Files not committed there are gone; commits on ${b ? `branch ${b}` : 'its branch'} are not. Nothing is repaired automatically.`
+    // "may be": whether the remover forced it (and so took uncommitted files) is not known here.
+    + `Files not committed there may be gone; commits on ${b ? `branch ${b}` : 'its branch'} are not. Nothing is repaired automatically.`
 }
