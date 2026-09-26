@@ -143,6 +143,16 @@ describe('dirtIsNonWork — against real git', () => {
     expect(await reap.dirtIsNonWork(mixed.path, repo)).toBe(false)
   })
 
+  it('a same-size file with different bytes is work, not a copy (Review: missing test)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    mkdirSync(join(repo, 'dev'), { recursive: true })
+    writeFileSync(join(repo, 'dev', 'r.md'), 'aaaa\n')
+    mkdirSync(join(lane.path, 'dev'), { recursive: true })
+    writeFileSync(join(lane.path, 'dev', 'r.md'), 'bbbb\n') // same length, different content
+    expect(await reap.dirtIsNonWork(lane.path, repo)).toBe(false)
+  })
+
   it('a symlink that is not the root node_modules is work', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)

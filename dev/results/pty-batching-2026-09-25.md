@@ -75,3 +75,7 @@ So there is no bug and no behaviour change; only the comment was rewritten. The 
 - `electron`: `npm run typecheck` exit 0; vitest 40 files, 695 tests passed (681 + 14).
 - Root: `tsc --noEmit` exit 0; vitest 101 files, 1519 tests passed.
 - Not verified in the running app: the Electron app was not launched. The next check is a lane streaming output in the dev app. Its output should look the same, and the renderer should receive about one message per 16 ms per busy lane.
+
+## Update 2026-09-25: leading-edge flush (6306d93, Review finding 9)
+
+A read that arrives after a quiet spell (nothing buffered, no timer, nothing sent in the last 16 ms) is now sent at once, so keystroke echo has no added delay. The paced workload rises from 77 to **155 msg/s** (still 3.5× fewer than 540 unbatched). The flood is unchanged at about 243 msg/s. Details: `review-d91080-fixes-2026-09-25.md`.
