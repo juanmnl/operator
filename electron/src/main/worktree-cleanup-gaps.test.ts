@@ -315,6 +315,23 @@ describe('boot retries interrupted removals', () => {
     await reap.clearPending(ended.path)
   })
 
+  it('a lane close replaces the ended-session record boot queued for the same folder (Review finding 5)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    const rec = (reason: string) => ({ path: lane.path, sourceRepo: repo, branch: lane.branch, requestedAt: Date.now(), reason })
+    await reap.queueRemoval(rec(reap.ENDED_SESSION_REASON))
+    await reap.queueRemoval(rec('lane close'))
+    const mine = (await reap.loadPending()).filter((p) => p.path === lane.path)
+    expect(mine.map((p) => p.reason)).toEqual(['lane close'])
+    // …and never the other way round: boot does not demote a removal someone started.
+    await reap.queueRemoval(rec(reap.ENDED_SESSION_REASON))
+    expect((await reap.loadPending()).filter((p) => p.path === lane.path).map((p) => p.reason)).toEqual(['lane close'])
+    // So an interrupted close of a lane that lived across a restart is retried at the next boot.
+    reap.setLivePtyCwds(() => [])
+    try { await reap.reconcileAtBoot() } finally { reap.setLivePtyCwds(null) }
+    expect(existsSync(lane.path)).toBe(false)
+  })
+
   it('quit still drains nothing', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)

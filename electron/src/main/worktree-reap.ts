@@ -1298,11 +1298,17 @@ async function writePending(list: PendingRemoval[]): Promise<void> {
   }
 }
 
-/** Record the INTENT to remove, before anything is attempted. Idempotent per path. */
+/** Record the INTENT to remove, before anything is attempted. Idempotent per path, with one
+ *  exception: a removal someone started REPLACES an ended-session record boot queued for the same
+ *  path. Otherwise a lane that lived across a restart kept the boot record, and an interrupted close
+ *  of it was never retried, because boot skips that reason (Review finding 5). */
 export async function queueRemoval(entry: PendingRemoval): Promise<void> {
   const existing = await loadPending()
-  if (existing.some((e) => e.path === entry.path)) return
-  await writePending([...existing, entry])
+  const at = existing.findIndex((e) => e.path === entry.path)
+  if (at === -1) { await writePending([...existing, entry]); return }
+  if (!userStartedRemoval(existing[at]) && userStartedRemoval(entry)) {
+    await writePending(existing.map((e, i) => (i === at ? entry : e)))
+  }
 }
 
 export async function clearPending(path: string): Promise<void> {
