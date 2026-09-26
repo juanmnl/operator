@@ -60,7 +60,8 @@ describe('roster', () => {
   it('the coordinator is told how a merge with --delete-branch removes a lane\'s checkout', () => {
     const roster = defaultRoster()
     const note = orchestrationNote('Demo', roster.find((r) => r.id === 'operator')!, roster)
-    expect(note).toContain('`gh pr merge --delete-branch` also removes any linked worktree')
+    expect(note).toContain('`gh pr merge --delete-branch` removes the worktree')
+    expect(note).toContain('Never pass `--delete-branch`')
     expect(note).toContain('git push origin --delete <branch>')
   })
 

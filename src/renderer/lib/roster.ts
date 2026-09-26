@@ -413,12 +413,14 @@ export const WORKTREE_DONE_NOTE =
  *
  *  Given to the coordinator (it merges) and to lanes that own a worktree (they branch). Lanes in the
  *  shared checkout are already told not to commit or switch branches. */
+// A RULE, not a judgement (Review finding 6): every worktree lane has its own branch checked out, so
+// "if another lane may have it" is always true for a lane's own PR.
 export const BRANCH_SAFETY_NOTE =
-  'Git: `gh pr merge --delete-branch` also removes any linked worktree that has that branch checked ' +
-  'out, another lane\u2019s included. If another lane may have it checked out, merge without ' +
-  '`--delete-branch` and delete only the remote branch (`git push origin --delete <branch>`). Start a ' +
-  'new feature branch in a fresh Operator worktree (a new lane), not with `git checkout -b` in an ' +
-  'existing one.\n'
+  'Git: `gh pr merge --delete-branch` removes the worktree that has the merged branch checked out, ' +
+  'a running lane\u2019s included, and every worktree lane has its branch checked out. Never pass ' +
+  '`--delete-branch`; after merging, delete only the remote branch (`git push origin --delete ' +
+  '<branch>`). Start a new feature branch in a fresh Operator worktree (a new lane), not with ' +
+  '`git checkout -b` in an existing one.\n'
 
 export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
