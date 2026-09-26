@@ -5439,7 +5439,7 @@ export function DashboardView() {
                     // what the delivery brakes measure the absence of. Typing to a braked coordinator
                     // used to change nothing; only a board Send → did.
                     onHumanSubmit={() => {
-                      if (t.roleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(t.projectId, t.roleId))
+                      if (t.roleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(t.projectId, t.roleId, t.id))
                     }}
                   />
                 )}

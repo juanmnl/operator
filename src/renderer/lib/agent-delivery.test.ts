@@ -30,9 +30,29 @@ describe('laneKey — a lane is its project and its role', () => {
     from: laneKey(projectId, 'operator'), to: laneKey(projectId, 'code'), now: later, state, ...labels,
   })).decision
 
-  it('keeps two projects\' coordinators apart, and a session outside a project keeps its role', () => {
+  it('keeps two projects\' coordinators apart', () => {
     expect(laneKey('p1', 'operator')).not.toBe(laneKey('p2', 'operator'))
-    expect(laneKey(undefined, 'operator')).toBe('operator')
+  })
+
+  // X2 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): the bare role made every
+  // unstamped tab, in every project, share one budget and one reset.
+  it('keys a session outside any project by its own id, never by the bare role', () => {
+    expect(laneKey(undefined, 'design', 't4')).not.toBe(laneKey(undefined, 'design', 't9'))
+    expect(laneKey(undefined, 'design', 't4')).not.toBe('design')
+    expect(laneKey(null, 'design', 't4')).not.toBe(laneKey('p1', 'design'))
+  })
+
+  it('two unstamped tabs of the same role neither share a budget nor reset each other', () => {
+    const a = laneKey(undefined, 'design', 't4'), b = laneKey(undefined, 'design', 't9')
+    let state = emptyDeliveryState()
+    for (let i = 0; i < LANE_SEND_LIMIT; i++) {
+      state = evaluateDelivery({ ...base(), from: a, to: `${a}-peer${i}`, fromLabel: 'D', toLabel: 'X', now: T0 + i * 60_000, state }).state
+    }
+    const sendFrom = (from: string, st: DeliveryState) =>
+      evaluateDelivery({ ...base(), from, to: 'unscoped:t1/code', fromLabel: 'D', toLabel: 'C', now: T0 + 3_600_000, state: st }).decision.kind
+    expect(sendFrom(a, state)).toBe('block')
+    expect(sendFrom(b, state)).toBe('deliver') // the other tab's budget is untouched
+    expect(resetChainFor(state, b)).toBe(state) // resetting the other tab changes nothing for this one
   })
 
   it('a budget spent in one project leaves the same role in another project free', () => {
