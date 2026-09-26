@@ -30,7 +30,8 @@ import { capturePreviewShot } from './preview-shot-capture'
 import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
-import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList } from './worktree-reap'
+import type { CheckoutWatcher } from './checkout-health'
+import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree, stampSessionClaims } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
 
 /** One per main process, i.e. per app run: see launch-kind.ts. Module scope, not per registration. */
@@ -57,6 +58,8 @@ export interface Deps {
   quit: QuitGuard
   /** The installed Claude Code version, watched in main (claude-version.ts). */
   claudeVersion: ClaudeVersionWatcher
+  /** Lanes whose checkout was removed outside Operator (checkout-health.ts). */
+  checkouts?: CheckoutWatcher
   getWindow: () => BrowserWindow | null
   /** The ONE question and the quit preparation the install needs — see `index.ts`. Passed in
    *  rather than imported, because `index.ts` already imports this module and a cycle between
@@ -168,6 +171,8 @@ export function registerIpc(d: Deps): void {
     terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
     claudeVersion: () => d.claudeVersion.resolve(),
+    // The current list, for a renderer that (re)loads after an `onCheckoutGone` event went out.
+    checkoutGoneList: () => d.checkouts?.list() ?? [],
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
@@ -290,6 +295,8 @@ export function registerIpc(d: Deps): void {
     launchKind: async () => launchTracker.claim(),
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
+    // Copies unsaved work out to ~/.operator/rescued; removes nothing (the user still presses remove).
+    worktreeRescue: (path) => rescueWorktree(String(path)),
     // The one button. `dryRun` defaults to TRUE everywhere in this module; the Settings button is
     // the only caller that ever passes false, and only on a press.
     worktreeReap: async (dryRun, confirmedPaths) => {
@@ -303,9 +310,21 @@ export function registerIpc(d: Deps): void {
     worktreeCommit: async (path, message) => {
       try { return { ok: true, sha: await wt.commitAll(path, message) } } catch (e) { return { ok: false, error: String(e) } }
     },
-    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch) => wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch),
-    worktreeDiscard: async (worktreePath, sourceRoot, branch) => {
-      try { await wt.discardBranch(worktreePath, sourceRoot, branch); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+    // Refused while another lane runs in the worktree (main's pty table). `ownTerminalId` is the one
+    // lane the caller merges or discards on purpose and ends straight after: the session's Diff panel.
+    // That lane is STOPPED by main, and only after every refusal has passed (Review N1).
+    worktreeMerge: (worktreePath, sourceRoot, branch, baseBranch, ownTerminalId, commitMessage) =>
+      wt.mergeBranch(worktreePath, sourceRoot, branch, baseBranch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }, {
+        stopLane: ownTerminalId ? () => d.terminals.kill(String(ownTerminalId)) : undefined,
+        commitMessage: typeof commitMessage === 'string' && commitMessage.trim() ? commitMessage : undefined,
+      }),
+    worktreeDiscard: async (worktreePath, sourceRoot, branch, ownTerminalId) => {
+      try {
+        await wt.discardBranch(worktreePath, sourceRoot, branch, { ptys: d.terminals.liveTerminals(), exceptTerminalId: ownTerminalId ?? undefined }, {
+          stopLane: ownTerminalId ? () => d.terminals.kill(String(ownTerminalId)) : undefined,
+        })
+        return { ok: true }
+      } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) } }
     },
     projectIdentity: async (path) => {
       const missing = !(await wt.pathExists(path))
@@ -405,7 +424,11 @@ export function registerIpc(d: Deps): void {
     terminalResize: (id, cols, rows) => d.terminals.resize(id, cols, rows),
     noteSessionPort: (id, port) => d.terminals.noteSessionPort(id, port),
     worktreeAutoRemovalCheck: (trigger) => { void checkAutoRemoval(String(trigger)) },
-    saveSessions: (sessions) => { void store.saveSessions(sessions) },
+    // Claims this process owns carry its pid, so another Operator on the same store keeps them.
+    saveSessions: (sessions) => {
+      const own = new Set(d.terminals.liveTerminals().map((t) => t.id))
+      void store.saveSessions(Array.isArray(sessions) ? stampSessionClaims(sessions, own, process.pid) : sessions)
+    },
     saveProjects: (projects) => { void store.saveProjects(projects) },
     saveRoleDefaults: (defaults) => { void store.saveRoleDefaults(defaults) },
     setActiveSession: () => {},

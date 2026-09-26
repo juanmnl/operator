@@ -91,9 +91,11 @@ interface SessionToolbarProps {
   /** CLAUDE CODE UPDATED UNDER THIS LANE. Present only when the lane was spawned on an older
    *  version than the one installed now; `canRestart` is the between-turns gate (lib/cli-update). */
   cliUpdate?: { label: string; canRestart: boolean; onRestart: () => void } | null
+  /** This lane's checkout was removed outside Operator (lib/checkout-gone). Shown, never repaired. */
+  checkoutGone?: { label: string; detail: string } | null
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar, cliUpdate }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar, cliUpdate, checkoutGone }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -488,6 +490,20 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
           ) : effortLevel && (
             <span style={{ ...chipBase, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>
               {effortLevel}
+            </span>
+          )}
+
+          {/* The lane's checkout was removed from under it (a `gh pr merge --delete-branch`, an `rm`).
+              A statement, not a control: nothing here repairs it. Red ink on the border colour, no
+              fill and no opacity, like the other chips. */}
+          {checkoutGone && (
+            <span
+              data-checkout-gone
+              role="status"
+              title={checkoutGone.detail}
+              style={{ ...chipBase, border: '1px solid var(--border)', color: 'var(--red)' }}
+            >
+              {checkoutGone.label}
             </span>
           )}
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { WorktreeDiff } from '../../../shared/types'
 import { DiffBody } from './DiffBody'
+import { discardConfirmText, discardLane, mergeLane, type LaneMergeCalls } from '../../lib/lane-merge'
 
 // The Review surface: the same diff every other surface shows, plus the verbs that are
 // genuinely this panel's own — commit, merge into base, discard the branch.
@@ -24,13 +25,25 @@ interface DiffPanelProps {
   onClose: () => void
   /** Called after a successful merge or discard so the host can drop the session/tab. */
   onSessionEnded?: () => void
+  /** The lane this panel reviews. Main refuses to merge or discard while a lane runs in the
+   *  worktree; this one is exempt because `onSessionEnded` ends it straight after. Any other lane
+   *  still blocks. */
+  terminalId?: string
+  /** That lane's process is still running: Merge and Discard stop it first (lib/lane-merge). */
+  laneRunning?: boolean
 }
 
-export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClose, onSessionEnded }: DiffPanelProps) {
+const laneCalls: LaneMergeCalls = {
+  merge: (path, source, branch, base, own, message) => window.operator.worktreeMerge(path, source, branch, base, own, message),
+  discard: (path, source, branch, own) => window.operator.worktreeDiscard(path, source, branch, own),
+}
+
+export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClose, onSessionEnded, terminalId, laneRunning = false }: DiffPanelProps) {
   const [data, setData] = useState<WorktreeDiff | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [busy, setBusy] = useState<null | 'commit' | 'merge' | 'discard'>(null)
   const [error, setError] = useState<string | null>(null)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   const reload = useCallback(async () => {
     setData(await window.operator.worktreeDiff(worktreePath))
@@ -55,24 +68,25 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
     reload()
   }
 
+  // Main checks every refusal first, then stops the lane, commits what the worktree holds at that
+  // moment (not what the diff showed when the panel opened) and merges (lib/lane-merge).
   const handleMerge = async () => {
     if (!canMerge || !sourceRoot || !branch || !baseBranch) return
     setBusy('merge')
     setError(null)
-    // Auto-commit pending changes first so the merge has something coherent to consume.
-    if (hasChanges) {
-      const message = commitMessage.trim() || `Operator session changes on ${branch}`
-      const c = await window.operator.worktreeCommit(worktreePath, message)
-      if (!c.ok) {
-        setBusy(null)
-        setError(c.error || 'Commit failed')
-        return
-      }
-    }
-    const result = await window.operator.worktreeMerge(worktreePath, sourceRoot, branch, baseBranch)
+    const message = commitMessage.trim() || `Operator session changes on ${branch}`
+    const r = await mergeLane(laneCalls, { worktreePath, sourceRoot, branch, terminalId, laneRunning }, baseBranch, message)
     setBusy(null)
-    if (!result.ok) {
-      setError(result.message || 'Merge failed')
+    if (!r.ok) {
+      setError(r.error)
+      reload()
+      return
+    }
+    // Merged, but main kept the worktree because something is still uncommitted there: say so and
+    // leave the session open rather than closing it over a folder the user needs to look at.
+    if (r.message) {
+      setError(r.message)
+      reload()
       return
     }
     onSessionEnded?.()
@@ -80,12 +94,13 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
 
   const handleDiscard = async () => {
     if (!sourceRoot || !branch) return
+    setConfirmDiscard(false)
     setBusy('discard')
     setError(null)
-    const result = await window.operator.worktreeDiscard(worktreePath, sourceRoot, branch)
+    const r = await discardLane(laneCalls, { worktreePath, sourceRoot, branch, terminalId, laneRunning })
     setBusy(null)
-    if (!result.ok) {
-      setError(result.error || 'Discard failed')
+    if (!r.ok) {
+      setError(r.error)
       return
     }
     onSessionEnded?.()
@@ -170,13 +185,25 @@ export function DiffPanel({ worktreePath, branch, baseBranch, sourceRoot, onClos
             {busy === 'merge' ? 'Merging…' : `Merge → ${baseBranch || 'base'}`}
           </button>
           <button
-            onClick={handleDiscard}
-            disabled={!sourceRoot || !branch || !!busy}
+            onClick={() => setConfirmDiscard(true)}
+            disabled={!sourceRoot || !branch || !!busy || confirmDiscard}
             style={actionBtn('var(--color-error)', false)}
             title="Delete branch and close session"
           >
             {busy === 'discard' ? 'Discarding…' : 'Discard'}
           </button>
+        </div>
+      )}
+      {confirmDiscard && branch && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', flexShrink: 0,
+          padding: '8px 14px', borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--fg)',
+        }}>
+          <span style={{ flex: '1 1 240px' }}>{discardConfirmText(branch, laneRunning)}</span>
+          <button onClick={handleDiscard} disabled={!!busy} style={actionBtn('var(--color-error)', false)}>
+            Delete {branch}
+          </button>
+          <button onClick={() => setConfirmDiscard(false)} style={actionBtn('var(--fg)', false)}>Cancel</button>
         </div>
       )}
       {error && (

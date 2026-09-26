@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Role } from '../../shared/types'
 import { launchWorkspace } from './lane-workspace'
 import { resolveAgentConfig } from './model-config'
-import { orchestrationNote, rolePresets, SHARED_CHECKOUT_NOTE, WORKTREE_DONE_NOTE } from './roster'
+import { BRANCH_SAFETY_NOTE, orchestrationNote, rolePresets, SHARED_CHECKOUT_NOTE, WORKTREE_DONE_NOTE } from './roster'
 
 const role = (over: Partial<Role> & { id: string }): Role => ({ name: over.id, ...over })
 
@@ -80,7 +80,17 @@ describe('the worktree_done line in the launch brief', () => {
     expect(WORKTREE_DONE_NOTE).toMatch(/committed on your branch, call `mcp__operator__worktree_done`, then `mcp__operator__report`/)
   })
 
+  // Raised from 3300 to 3700 on 2026-09-25 for one stated addition, BRANCH_SAFETY_NOTE (a lane's
+  // `gh pr merge --delete-branch` or `git checkout -b` gutted another lane's checkout twice): 3615.
   it('keeps a Code lane note under the size guard', () => {
-    expect(orchestrationNote('proj', byId('code'), roster, { ownWorktree: true }).length).toBeLessThan(3300)
+    expect(orchestrationNote('proj', byId('code'), roster, { ownWorktree: true }).length).toBeLessThan(3700)
+  })
+
+  it('tells a worktree lane, and not a shared-checkout lane, how merging and branching remove checkouts', () => {
+    expect(orchestrationNote('proj', byId('code'), roster, { ownWorktree: true })).toContain(BRANCH_SAFETY_NOTE)
+    expect(orchestrationNote('proj', byId('research'), roster, { sharesMainCheckout: true })).not.toContain(BRANCH_SAFETY_NOTE)
+    expect(BRANCH_SAFETY_NOTE).toContain('--delete-branch')
+    expect(BRANCH_SAFETY_NOTE).toContain('git push origin --delete <branch>')
+    expect(BRANCH_SAFETY_NOTE).toContain('git checkout -b')
   })
 })

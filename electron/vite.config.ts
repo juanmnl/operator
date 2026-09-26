@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { rendererPort } from './scripts/renderer-port.mjs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -21,7 +22,9 @@ export default defineConfig({
   // resolve against the filesystem root and every chunk 404s.
   base: './',
   server: {
-    port: Number(process.env.OPERATOR_ELECTRON_PORT) || 1450,
+    // The same resolution as scripts/dev.mjs (scripts/renderer-port.mjs): OPERATOR_ELECTRON_PORT, then
+    // the lane's leased OPERATOR_DEV_PORT, then 1610.
+    port: rendererPort(process.env),
     strictPort: true,
     fs: { allow: [repoRoot] },
     watch: {

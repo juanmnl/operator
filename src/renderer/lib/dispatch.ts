@@ -76,7 +76,7 @@ export type DispatchRoute<T extends RoutableTab> =
   | { kind: 'send'; role: Role; tab: T }
   /** The role is defined but has no live lane → queue for it. */
   | { kind: 'queue'; role: Role }
-  /** The roster has no such lane, but the token names one of the six TEMPLATES → add the
+  /** The roster has no such lane, but the token names one of the preset TEMPLATES → add the
    *  lane from its preset, then run the task on it. The dispatch is the demand. */
   | { kind: 'create'; role: Role }
   /** No such role, and no preset by that name → unassigned backlog. */
@@ -94,7 +94,7 @@ export function routeDispatch<T extends RoutableTab>(
 ): DispatchRoute<T> {
   const token = roleToken.toLowerCase()
   const role = roster.find((r) => r.id === roleToken || r.name.toLowerCase() === token)
-  // No such lane YET. If the token names one of the six templates, the dispatch itself is the
+  // No such lane YET. If the token names one of the preset templates, the dispatch itself is the
   // demand — create the lane from its preset and run the task on it. That keeps an unattended
   // orchestration run working against an empty roster without reintroducing auto-seeding: a
   // lane only appears because work was explicitly addressed to it. A token that matches no

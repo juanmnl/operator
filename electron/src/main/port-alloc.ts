@@ -28,9 +28,12 @@
 // forbidden in this codebase; a bind of our own asks the kernel about a socket we are opening,
 // not about anyone else's file descriptors.
 
-/** The port window, unchanged: the same 1420..1520 the Rust side scans. */
-export const PORT_BASE = 1420
-export const PORT_MAX = 1520
+import { INSTALLED_RANGES, type PortRange } from './port-ranges'
+
+/** The INSTALLED app's window, the same 1420..1520 the Rust side scans. A dev instance allocates
+ *  from its own window instead (`range` below; the numbers live in port-ranges.ts). */
+export const PORT_BASE = INSTALLED_RANGES.dev.base
+export const PORT_MAX = INSTALLED_RANGES.dev.max
 
 export interface PortAllocDeps {
   /** Can we bind this port on both loopbacks right now? False = somebody holds it. */
@@ -48,6 +51,8 @@ export interface PortAllocDeps {
   onEmptyScan?(ports: readonly number[], isExcluded: (port: number) => boolean): Promise<number | undefined>
   /** Reset the v6-failure tally for one scan. See `beginPortScan`. */
   beginScan?(): void
+  /** The window to allocate from (port-ranges.ts). Defaults to the installed app's. */
+  range?: PortRange
 }
 
 export interface PortAllocResult {
@@ -108,7 +113,7 @@ export async function allocatePort(
     const leased = await deps.leased()
     const taken = new Set(portsByCwd.values())
     const fallback = await deps.onEmptyScan(
-      windowPorts(portsByCwd),
+      windowPorts(portsByCwd, deps.range ?? INSTALLED_RANGES.dev),
       (p) => leased.has(p) || taken.has(p),
     )
     if (fallback !== undefined) {
@@ -124,10 +129,10 @@ export async function allocatePort(
 
 /** The candidates a scan would have considered — the window minus what this process already
  *  holds. Handed to `onEmptyScan` so the retry covers the same set. */
-function windowPorts(portsByCwd: Map<string, number>): number[] {
+function windowPorts(portsByCwd: Map<string, number>, { base, max }: PortRange): number[] {
   const taken = new Set(portsByCwd.values())
   const out: number[] = []
-  for (let p = PORT_BASE; p <= PORT_MAX; p++) if (!taken.has(p)) out.push(p)
+  for (let p = base; p <= max; p++) if (!taken.has(p)) out.push(p)
   return out
 }
 
@@ -139,7 +144,8 @@ async function scan(portsByCwd: Map<string, number>, deps: PortAllocDeps): Promi
   // ONE read of the lease file for the whole scan, not one per candidate: this runs on the spawn
   // path, and re-reading a JSON file a hundred times is a visible pause before a lane appears.
   const leased = await deps.leased()
-  for (let p = PORT_BASE; p <= PORT_MAX; p++) {
+  const { base, max } = deps.range ?? INSTALLED_RANGES.dev
+  for (let p = base; p <= max; p++) {
     if (taken.has(p) || leased.has(p)) continue
     // LAST, because it is the only check that costs a syscall pair. The two above have already
     // removed every port we know about, so in the ordinary case this binds once and succeeds.

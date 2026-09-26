@@ -345,6 +345,17 @@ export interface DevServerProc {
   owner: 'live-lane' | 'dead-app' | 'abandoned-lane' | 'untagged'
 }
 
+/** A live lane whose checkout was removed outside Operator: its `.git` file is missing, or the git
+ *  admin entry it names is gone. See electron/src/main/checkout-health.ts. */
+export interface GoneCheckout {
+  terminalId: string
+  cwd: string
+  /** The branch last seen checked out there; absent when never seen healthy this run. */
+  branch?: string
+  why: string
+  since: number
+}
+
 /** How a worktree directory was classified by the reaper. See
  *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
 export type ReapClass =
@@ -368,6 +379,12 @@ export interface ReapEntry {
   live: boolean
   /** Uncommitted files; absent when git could not read the directory. */
   uncommitted?: number
+  /** Every uncommitted file is provably not work: a byte-identical copy of a file in the source
+   *  checkout or on the default branch, or a root node_modules symlink. Not counted as unsaved. */
+  uncommittedIsNonWork?: boolean
+  /** Its unsaved work was rescued to this directory (~/.operator/rescued/…) and is unchanged since,
+   *  so it counts as preserved. */
+  rescuedTo?: string
   /** Commits on HEAD that no other local branch and no remote contains; absent when unknown. */
   unsavedCommits?: number
   unsavedKnown: boolean
@@ -378,6 +395,9 @@ export interface ReapEntry {
   removedWithoutGit: boolean
   /** Why the automatic rule WOULD remove it. Report only in stage 1. */
   wouldRemove?: string
+  /** Merged by squash or rebase: not an ancestor of the default branch, but `git cherry` finds every
+   *  commit's patch there. A label only; the class stays `unmerged`. */
+  mergedByPatch?: boolean
   /** Its provenance was written by the boot backfill. */
   backfilled?: boolean
 }
@@ -394,6 +414,8 @@ export interface ReapPlan {
   wouldRemove: ReapEntry[]
   /** The last report-only check a trigger ran (boot, lane-exit, task-done). */
   lastCheck?: { trigger: string; at: number; entries: Array<{ path: string; reason: string }> }
+  /** Files (not directories) in the worktree root — agent logs, `.DS_Store`. Listed, not removed. */
+  strayFiles?: Array<{ path: string; sizeBytes: number; modifiedAt: number }>
 }
 
 /** Capture a screenshot crop for a Preview note (see electron/src/main/preview-shots.ts). */

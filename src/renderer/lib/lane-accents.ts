@@ -8,7 +8,7 @@
 // themes (see lib/lane-color).
 import { defaultRoster } from './roster'
 
-/** The six default lane accents, taken from the roster itself so the picker can never
+/** The default lane accents, one per preset, taken from the roster itself so the picker can never
  *  drift from the colours a fresh project is seeded with. */
 export const DEFAULT_LANE_ACCENTS: string[] = defaultRoster()
   .map((r) => r.accent)

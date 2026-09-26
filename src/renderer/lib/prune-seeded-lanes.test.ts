@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import type { Project, Role, SavedSession } from '../../shared/types'
-import { rolePresets, NO_COMMISSIONING, DEFAULT_ROLE_PROMPTS } from './roster'
+import { rolePresets, NO_COMMISSIONING, DEFAULT_ROLE_PROMPTS, LEGACY_ROLE_CHARTERS, migrateStockCharters } from './roster'
 import { clearSeededRoleFields } from './model-config'
 import { isStockLane, laneHasHistory, stockPrompts, seededIdleLaneCounts, pruneSeededIdleLanes } from './prune-seeded-lanes'
 
 /** A lane exactly as seeding left it. */
 const seeded = (id: string, over: Partial<Role> = {}): Role => ({ ...rolePresets().find((r) => r.id === id)!, ...over })
+
+/** The roster the seeder wrote before 2026-07-28: these six, never Infra (a later preset). */
+const SEEDED_IDS = ['operator', 'research', 'code', 'review', 'design', 'qa']
+const seededSix = (): Role[] => SEEDED_IDS.map((id) => seeded(id))
 
 const project = (roster: Role[], over: Partial<Project> = {}): Project =>
   ({ id: 'p', path: '/p', name: 'p', createdAt: '', lastActiveAt: '', roster, ...over })
@@ -25,9 +29,11 @@ describe('isStockLane', () => {
   })
 
   it('accepts the charter as it read before NO_COMMISSIONING was appended', () => {
-    const legacy = DEFAULT_ROLE_PROMPTS.code.slice(0, -NO_COMMISSIONING.length)
-    expect(legacy).not.toBe(DEFAULT_ROLE_PROMPTS.code)
-    expect(isStockLane(seeded('code', { prompt: legacy }))).toBe(true)
+    const legacy = DEFAULT_ROLE_PROMPTS.research.slice(0, -NO_COMMISSIONING.length)
+    expect(legacy).not.toBe(DEFAULT_ROLE_PROMPTS.research)
+    expect(isStockLane(seeded('research', { prompt: legacy }))).toBe(true)
+    // For a charter the 2026-09-25 rewrite replaced, that older form is the frozen body.
+    expect(isStockLane(seeded('code', { prompt: LEGACY_ROLE_CHARTERS.code[0] }))).toBe(true)
   })
 
   it('accepts both retired coordinator charters, under either coordinator id', () => {
@@ -110,7 +116,7 @@ describe('pruneSeededIdleLanes', () => {
   it('reduces a project whose six lanes were all seeded and never used to just Operator', () => {
     // Was "empties … to []" before the floor landed (dev/briefs/operator-is-the-floor.md): the
     // migration must never leave a project with no coordinator and therefore no entry point.
-    const before = [project(rolePresets())]
+    const before = [project(seededSix())]
     const out = pruneSeededIdleLanes(before, [])
     expect(out.lanes).toBe(5)
     expect(out.touched).toBe(1)
@@ -118,7 +124,7 @@ describe('pruneSeededIdleLanes', () => {
   })
 
   it('keeps every lane with history, and every lane the user edited', () => {
-    const p = project(rolePresets(), {
+    const p = project(seededSix(), {
       tasks: [{ id: 't1', text: 'x', status: 'queued', createdAt: '', roleId: 'review' }],
     })
     p.roster = p.roster!.map((r) => (r.id === 'design' ? { ...r, accent: '#abcdef' } : r))
@@ -139,7 +145,7 @@ describe('pruneSeededIdleLanes', () => {
   })
 
   it('is idempotent — a second run finds nothing left to drop', () => {
-    const first = pruneSeededIdleLanes([project(rolePresets())], [])
+    const first = pruneSeededIdleLanes([project(seededSix())], [])
     const second = pruneSeededIdleLanes(first.projects, [])
     expect(second.lanes).toBe(0)
     expect(second.projects).toBe(first.projects)
@@ -151,7 +157,7 @@ describe('pruneSeededIdleLanes', () => {
   })
 
   it('counts exactly what it would remove, before removing it', () => {
-    const projects = [project(rolePresets()), project(rolePresets(), { id: 'q' })]
+    const projects = [project(seededSix()), project(seededSix(), { id: 'q' })]
     const counts = seededIdleLaneCounts(projects, [])
     const out = pruneSeededIdleLanes(projects, [])
     expect(counts).toEqual({ lanes: out.lanes, projects: out.touched })
@@ -164,7 +170,7 @@ describe('pruneSeededIdleLanes', () => {
 // lane by id, so an empty roster has no entry point and nothing that can create the others.
 describe('the coordinator is never pruned', () => {
   it('takes an all-stock six-lane project to exactly ONE lane, not zero', () => {
-    const out = pruneSeededIdleLanes([project(rolePresets())], [])
+    const out = pruneSeededIdleLanes([project(seededSix())], [])
     expect(out.projects[0].roster!.map((r) => r.id)).toEqual(['operator'])
     expect(out.lanes).toBe(5) // five went; the floor stayed
   })
@@ -198,7 +204,7 @@ describe('the coordinator is never pruned', () => {
   })
 
   it('COUNTS what it will actually do — a toast promising more than it removes is worse than none', () => {
-    const projects = [project(rolePresets()), project(rolePresets(), { id: 'q' })]
+    const projects = [project(seededSix()), project(seededSix(), { id: 'q' })]
     const counts = seededIdleLaneCounts(projects, [])
     const out = pruneSeededIdleLanes(projects, [])
     expect(counts).toEqual({ lanes: out.lanes, projects: out.touched })
@@ -206,9 +212,41 @@ describe('the coordinator is never pruned', () => {
   })
 
   it('is still idempotent with the floor in place', () => {
-    const first = pruneSeededIdleLanes([project(rolePresets())], [])
+    const first = pruneSeededIdleLanes([project(seededSix())], [])
     const second = pruneSeededIdleLanes(first.projects, [])
     expect(second.lanes).toBe(0)
     expect(second.projects).toBe(first.projects)
+  })
+})
+
+// The 2026-09-25 rewrite of the Code/Review/Design/QA charters. Stored rosters still carry the old
+// wording until `migrateStockCharters` runs on hydrate, and the prune must reach the same verdict
+// on a lane either way: an old stock charter is still something the seeder wrote, not the user.
+describe('charters the 2026-09-25 rewrite replaced', () => {
+  const withOldCharters = (): Role[] =>
+    seededSix().map((r) => (LEGACY_ROLE_CHARTERS[r.id] ? { ...r, prompt: LEGACY_ROLE_CHARTERS[r.id][0] + NO_COMMISSIONING } : r))
+
+  it('still counts as stock, with and without NO_COMMISSIONING', () => {
+    for (const [id, bodies] of Object.entries(LEGACY_ROLE_CHARTERS)) {
+      for (const body of bodies) {
+        expect(isStockLane(seeded(id, { prompt: body + NO_COMMISSIONING })), id).toBe(true)
+        expect(isStockLane(seeded(id, { prompt: body })), id).toBe(true)
+      }
+    }
+  })
+
+  it('prunes an old-charter project exactly as it prunes the migrated one', () => {
+    const old = project(withOldCharters())
+    const migrated = migrateStockCharters(old)
+    expect(migrated).not.toBe(old)
+    const a = pruneSeededIdleLanes([old], [])
+    const b = pruneSeededIdleLanes([migrated], [])
+    expect(a.lanes).toBe(5)
+    expect(b.lanes).toBe(5)
+    expect(a.projects[0].roster!.map((r) => r.id)).toEqual(['operator'])
+  })
+
+  it('does not mistake one role\'s old charter for another\'s', () => {
+    expect(isStockLane(seeded('review', { prompt: LEGACY_ROLE_CHARTERS.code[0] + NO_COMMISSIONING }))).toBe(false)
   })
 })

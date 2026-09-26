@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
-import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
+import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { launchWorkspace } from '../lib/lane-workspace'
 import { emptyDeliveryState, evaluateDelivery, deliveryPrefix, resetChainFor, laneKey, chatterPausedFrom, CHATTER_KEY, DELIVER_MAX_CHARS, type DeliveryState } from '../lib/agent-delivery'
 import {
@@ -27,6 +27,7 @@ import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orpha
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
+import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
@@ -852,7 +853,7 @@ export function DashboardView() {
       const raw = localStorage.getItem('operator.projects')
       // Legacy-coordinator migration on the seed too, so the pre-hydrate first paint
       // never flashes the old "Orchestrator" lane.
-      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator).map(migrateProjectEfforts) : []
+      return raw ? (JSON.parse(raw) as Project[]).map(migrateLegacyCoordinator).map(migrateProjectEfforts).map(migrateStockCharters) : []
     } catch { return [] }
   })
 
@@ -926,7 +927,7 @@ export function DashboardView() {
       // `OPERATOR-DISPATCH [lane] …` addresses a lane by id, so a project with no roster has
       // nothing to talk to and nothing that can create the others. Operator is the coordinator —
       // the lane that receives an intent and routes it — so it is the one lane worth seeding.
-      // The other five stay templates behind "+ Add agent" (lib/roster rolePresets).
+      // The other presets stay templates behind "+ Add agent" (lib/roster rolePresets).
       //
       // The empty state that brief added is still needed: a user can still delete their way to
       // zero, which is their decision to make.
@@ -2189,7 +2190,9 @@ export function DashboardView() {
         // …the effort-ladder migration runs FIRST of the three, so `clearSeededRoleFields` compares a
         // migrated `medium` against the migrated preset rather than a stale `normal` against it —
         // otherwise every operator/design lane keeps a pin that is now identical to its preset.
-        const reconciled = renamed.map(migrateProjectEfforts).map(clearSeededRoleFields).map(clearCoordinatorWorktree)
+        // …and a lane still carrying a superseded STOCK charter takes today's wording
+        // (`migrateStockCharters`); a customised charter is never touched.
+        const reconciled = renamed.map(migrateProjectEfforts).map(clearSeededRoleFields).map(clearCoordinatorWorktree).map(migrateStockCharters)
         const rewrites = reconciled.filter((p, i) => p !== renamed[i]).length
         // …and then, ONCE per install, the seeded-lane PRUNE: projects created before seeding was
         // removed still carry six lanes nobody asked for, so drop the ones that were never used and
@@ -3204,6 +3207,31 @@ export function DashboardView() {
     setActiveFolderPrefs(null)
   }, [terminals, forgetSavedSession, completeTerminalTasks, pushToast])
   handleCloseSessionRef.current = handleCloseSession
+
+  // A LANE'S CHECKOUT REMOVED OUTSIDE OPERATOR (electron/src/main/checkout-health.ts). Main sends the
+  // full list when it changes; a new entry is announced once, and the lane header keeps saying it
+  // for as long as it holds. Nothing is repaired.
+  const [goneCheckouts, setGoneCheckouts] = useState<GoneCheckout[]>([])
+  useEffect(() => {
+    let live = true
+    let prev: GoneCheckout[] = []
+    const apply = (list: GoneCheckout[], announce: boolean) => {
+      if (!live) return
+      if (announce) {
+        for (const g of newlyGone(prev, list)) {
+          const launched = terminalsRef.current.find((t) => t.id === g.terminalId)?.worktreeBranch
+          pushToast({ text: checkoutGoneLabel(g, launched), kind: 'error', detail: checkoutGoneDetail(g, launched) })
+        }
+      }
+      prev = list
+      setGoneCheckouts(list)
+    }
+    Promise.resolve(window.operator.checkoutGoneList?.())
+      .then((list) => { if (list) apply(list, false) })
+      .catch(() => { /* none known */ })
+    const off = window.operator.onCheckoutGone?.((list) => apply(list, true))
+    return () => { live = false; off?.() }
+  }, [pushToast])
 
   // CLAUDE CODE UPDATED UNDER A RUNNING LANE (lib/cli-update). Main records the version each pty was
   // spawned on and pushes the installed one when the `claude` link moves.
@@ -5291,6 +5319,10 @@ export function DashboardView() {
               onTogglePanel={togglePanel}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
+              checkoutGone={(() => {
+                const g = tab && goneCheckouts.find((x) => x.terminalId === tab.id)
+                return g ? { label: checkoutGoneLabel(g, tab.worktreeBranch), detail: checkoutGoneDetail(g, tab.worktreeBranch) } : null
+              })()}
               cliUpdate={tab && installedClaudeVersion && isOutOfDate(tab.claudeVersion, installedClaudeVersion) && !tab.ended
                 ? {
                   label: cliUpdateLabel(installedClaudeVersion),
@@ -5329,6 +5361,8 @@ export function DashboardView() {
               sourceRoot={tab.sourceCwd}
               onClose={() => setReviewingTerminalId(null)}
               onSessionEnded={handleSessionEnded}
+              terminalId={tab.id}
+              laneRunning={!tab.ended}
             />
           )
         })()}

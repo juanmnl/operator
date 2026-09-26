@@ -3,9 +3,9 @@ import { ACCENT_SWATCHES, DEFAULT_LANE_ACCENTS, normalizeHex, sameAccent } from 
 import { parseSessionAccents, withSessionAccent, suggestedAccent, saveSessionAccent, loadSessionAccents, SESSION_ACCENTS_KEY } from './session-accents'
 
 describe('lane-accents', () => {
-  it('offers the six default lane accents first, then the extension', () => {
-    expect(DEFAULT_LANE_ACCENTS).toHaveLength(6)
-    expect(ACCENT_SWATCHES.slice(0, 6)).toEqual(DEFAULT_LANE_ACCENTS)
+  it('offers the default lane accents first, one per preset, then the extension', () => {
+    expect(DEFAULT_LANE_ACCENTS).toHaveLength(7)
+    expect(ACCENT_SWATCHES.slice(0, 7)).toEqual(DEFAULT_LANE_ACCENTS)
     // No duplicates — a repeated swatch would read as two different choices.
     expect(new Set(ACCENT_SWATCHES).size).toBe(ACCENT_SWATCHES.length)
   })

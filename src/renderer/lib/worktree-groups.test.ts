@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ReapEntry } from '../../shared/types'
-import { groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from './worktree-groups'
+import { canRescue, classLabel, groupWorktrees, isSelectable, pruneSelection, toggleGroup, unsavedConsequence, unsavedLabel } from './worktree-groups'
 
 const entry = (over: Partial<ReapEntry> = {}): ReapEntry => ({
   path: '/w/repo-1', cls: 'merged-clean', sizeBytes: 100, auto: true, reason: '',
@@ -58,6 +58,11 @@ describe('unsavedLabel', () => {
     expect(unsavedLabel(entry())).toBe('No unsaved work')
     expect(unsavedLabel(entry({ unsavedKnown: false, uncommitted: undefined, unsavedCommits: undefined }))).toMatch(/unknown/)
   })
+  it('says when every uncommitted file is a copy of one that exists elsewhere, and drops it from the loss sentence', () => {
+    const copies = entry({ uncommitted: 4, uncommittedIsNonWork: true })
+    expect(unsavedLabel(copies)).toBe('4 untracked, all copies of files that exist elsewhere')
+    expect(unsavedConsequence([copies])).not.toMatch(/Uncommitted files will be lost/)
+  })
 })
 
 describe('unsavedConsequence — the sentence above the second confirmation', () => {
@@ -77,5 +82,39 @@ describe('unsavedConsequence — the sentence above the second confirmation', ()
     const text = unsavedConsequence([entry({ unsavedKnown: false, uncommitted: undefined, unsavedCommits: undefined, removedWithoutGit: true })])
     expect(text).toMatch(/deleted outright/)
     expect(text).not.toMatch(/stay on/)
+  })
+})
+
+describe('canRescue — where the Rescue action is offered', () => {
+  it('offers it for readable folders with real unsaved work', () => {
+    expect(canRescue(entry({ uncommitted: 2 }))).toBe(true)
+    expect(canRescue(entry({ unsavedCommits: 1 }))).toBe(true)
+  })
+  it('not for a live lane, an unreadable folder, a plain-directory removal, or one already rescued', () => {
+    expect(canRescue(entry({ uncommitted: 2, live: true }))).toBe(false)
+    expect(canRescue(entry({ uncommitted: 2, unsavedKnown: false }))).toBe(false)
+    expect(canRescue(entry({ uncommitted: 2, removedWithoutGit: true }))).toBe(false)
+    expect(canRescue(entry({ uncommitted: 2, rescuedTo: '/Users/x/.operator/rescued/w-2026-09-25' }))).toBe(false)
+  })
+  it('not when there is nothing to rescue, or only copies of files that exist elsewhere', () => {
+    expect(canRescue(entry())).toBe(false)
+    expect(canRescue(entry({ uncommitted: 3, uncommittedIsNonWork: true }))).toBe(false)
+  })
+  it('the row says where it was rescued to', () => {
+    expect(unsavedLabel(entry({ uncommitted: 2, rescuedTo: '/Users/x/.operator/rescued/w-2026-09-25' })))
+      .toBe('2 uncommitted files · rescued to ~/.operator/rescued/w-2026-09-25')
+  })
+})
+
+describe('classLabel', () => {
+  it('calls debris creation debris only when it is in the automatic tier', () => {
+    expect(classLabel(entry({ cls: 'debris', auto: true }))).toBe('Creation debris')
+    expect(classLabel(entry({ cls: 'debris', auto: false }))).toBe('Small folder, not a worktree')
+    expect(classLabel(entry({ cls: 'live-claimed' }))).toBe('A lane is open here')
+  })
+  it('adds "merged by squash or rebase" to the class, and replaces only "Not merged" (Review finding 8)', () => {
+    expect(classLabel(entry({ cls: 'unmerged', mergedByPatch: true }))).toBe('Merged by squash or rebase')
+    expect(classLabel(entry({ cls: 'live-claimed', mergedByPatch: true }))).toBe('A lane is open here · merged by squash or rebase')
+    expect(classLabel(entry({ cls: 'unattributed', mergedByPatch: true }))).toBe('No provenance record · merged by squash or rebase')
   })
 })

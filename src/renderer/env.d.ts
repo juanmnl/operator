@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -158,6 +158,9 @@ declare global {
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose
        *  unsaved work was confirmed separately; main re-checks everything before acting. */
       worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>
+      /** Copy a worktree's unsaved work (uncommitted and untracked files, a diff patch, a bundle of
+       *  commits held nowhere else) to ~/.operator/rescued/<dir>-<date>/. Removes nothing. */
+      worktreeRescue: (path: string) => Promise<{ dir: string; files: number; commits: number; preserved: boolean; skipped: string[] }>
       /** Report-only: record what the automatic worktree rule would remove after `trigger`. */
       worktreeAutoRemovalCheck?: (trigger: string) => void
       /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a
@@ -183,8 +186,12 @@ declare global {
       branchDiff: (sourceRoot: string, branch: string, baseBranch: string) => Promise<WorktreeDiff>
       runCheck: (cwd: string, command: string) => Promise<{ ok: boolean; code?: number; output: string }>
       worktreeCommit: (path: string, message: string) => Promise<{ ok: boolean; sha?: string; error?: string }>
-      worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string) => Promise<{ ok: boolean; message?: string }>
-      worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string) => Promise<{ ok: boolean; error?: string }>
+      /** Refused while a lane other than `ownTerminalId` runs in the worktree that has `branch`
+       *  checked out. `ownTerminalId` is the lane being merged on purpose: main STOPS it, after every
+       *  refusal has passed, then commits the worktree (`commitMessage`) and merges. A refusal leaves
+       *  it running. */
+      worktreeMerge: (worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, ownTerminalId?: string, commitMessage?: string) => Promise<{ ok: boolean; message?: string }>
+      worktreeDiscard: (worktreePath: string, sourceRoot: string, branch: string, ownTerminalId?: string) => Promise<{ ok: boolean; error?: string }>
       agentsList: (projectPath?: string) => Promise<AgentDefinition[]>
       agentSave: (def: AgentDefinition, originalPath?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
       agentDelete: (path: string) => Promise<{ ok: boolean; error?: string }>
@@ -275,6 +282,10 @@ declare global {
       claudeVersion?: () => Promise<string | null>
       /** Pushed when the installed Claude Code version changes (main re-reads it once a minute). */
       onClaudeVersion?: (callback: (version: string | null) => void) => () => void
+      /** Lanes whose checkout was removed outside Operator (a `gh pr merge --delete-branch`, an
+       *  `rm`), as a full list each time it changes. Not repaired; shown on the lane. */
+      onCheckoutGone?: (callback: (list: GoneCheckout[]) => void) => () => void
+      checkoutGoneList?: () => Promise<GoneCheckout[]>
     }
   }
 }

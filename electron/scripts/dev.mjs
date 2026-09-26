@@ -6,10 +6,12 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { rendererPort } from './renderer-port.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
-const PORT = Number(process.env.OPERATOR_ELECTRON_PORT) || 1450
+// OPERATOR_ELECTRON_PORT, then the lane's leased OPERATOR_DEV_PORT, then 1610 (scripts/renderer-port.mjs).
+const PORT = rendererPort(process.env)
 // Which page the window opens on: the app, or the measurement bench (`PAGE=bench.html?...`).
 const PAGE = process.env.OPERATOR_ELECTRON_PAGE || 'index.html'
 const URL_ = `http://localhost:${PORT}/${PAGE}`

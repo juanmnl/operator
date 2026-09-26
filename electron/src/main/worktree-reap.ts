@@ -21,7 +21,8 @@
 // silently skipped forever (that was defect #6) — it is surfaced as `unattributed` for a human
 // to stand in for the missing proof.
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { copyFile, lstat, mkdir, readFile, readdir, readlink, rename, stat, symlink, writeFile, unlink } from 'node:fs/promises'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve as resolvePath } from 'node:path'
 import { promisify } from 'node:util'
@@ -36,6 +37,7 @@ import {
 // so the backfill's callers and tests keep one import site.
 export { gitdirFromGitFile, provePairing, type FileReader }
 import { TRASH_DIR_NAME, scheduleSweep } from './worktree-trash'
+import { isPidAlive } from './reap'
 
 const execFileAsync = promisify(execFile)
 
@@ -44,11 +46,15 @@ const execFileAsync = promisify(execFile)
  *  The reaper was built and landed dry-run-only on purpose: the plan it produces is a claim about
  *  34 GB of the user's work, and the right order is to look at the claim before acting on it. The
  *  Settings page renders the plan; the boot and quit triggers compute it and log it; nothing
- *  calls `removeWorktree` until this is flipped or a caller passes `dryRun: false` explicitly
- *  (which today only the Settings button does, and only when the user presses it).
+ *  calls `removeWorktree` until this is flipped or a caller passes `dryRun: false` explicitly:
+ *  the Settings buttons, on a press, and the boot retry of removals someone already started
+ *  (`drainPending(false, userStartedRemoval)` in `reconcileAtBoot`).
  *
  *  Flip to `true` after the plan has been reviewed on a real machine and the auto tier looks
- *  right. Nothing else needs to change. */
+ *  right. It arms the auto-tier reap at boot and quit, and the quit drain of removals someone
+ *  started. It does NOT drain ended-session records (`ENDED_SESSION_REASON`): at boot every lane
+ *  open at the last quit looks ended, and removing their folders would make the restore offer call
+ *  them missing. That needs its own answer before anything drains those records. */
 const AUTO_REAP_ON_TRIGGERS = false
 
 const worktreeRoot = () => join(operatorDir(), 'worktrees')
@@ -112,6 +118,14 @@ export interface WorktreeFacts {
   dirty: boolean
   /** Lines of `git status --porcelain`. `undefined` when git could not read the directory. */
   uncommittedCount?: number
+  /** Every uncommitted entry is PROVABLY not work (see `isProvablyNonWork`): an untracked file
+   *  byte-identical to the same path in the source checkout or on the default branch, or an
+   *  untracked root `node_modules` symlink. Such dirt does not count as unsaved. `undefined` or
+   *  `false` whenever any entry is anything else, or the question could not be answered. */
+  dirtIsNonWork?: boolean
+  /** The unsaved work was rescued (copied out with `rescueWorktree`) and has not changed since:
+   *  the rescue directory. Such work is PRESERVED and does not count as unsaved. */
+  rescuedTo?: string
   /** Commits on HEAD not reachable from any OTHER local branch or any remote-tracking branch.
    *  `undefined` when git could not answer. */
   unsavedCommits?: number
@@ -128,8 +142,16 @@ export interface WorktreeFacts {
   backfilled?: boolean
   /** Listed by `git worktree list` in its source repo. */
   registered: boolean
+  /** The directory has the exact shape an interrupted `git worktree add` leaves: a `.git` pointer
+   *  to an admin entry that does not exist, plus at most one regular file. Only debris of this shape
+   *  is in the one-press tier (Review finding 2); any other small non-git folder may be someone's. */
+  interruptedCreate?: boolean
   /** Branch is an ancestor of the source repo's default branch. `undefined` = could not tell. */
   merged?: boolean
+  /** Not an ancestor, but `git cherry <default> <branch>` lists no commit whose patch is missing
+   *  from the default branch: it was merged by squash or rebase. A LABEL ONLY (G5): the class stays
+   *  `unmerged`, so nothing about removal changes. */
+  mergedByPatch?: boolean
   /** The provenance record, if `worktree-provenance.json` has one for this path. */
   provenance?: { sourceRepo: string; createdAt: number; branch: string }
   /** The source repo still exists on disk. */
@@ -154,6 +176,10 @@ export interface ReapEntry {
   repo?: string
   live: boolean
   uncommitted?: number
+  /** Every uncommitted file is a copy of one that exists elsewhere (or a node_modules link). */
+  uncommittedIsNonWork?: boolean
+  /** Its unsaved work was rescued to this directory and has not changed since. */
+  rescuedTo?: string
   unsavedCommits?: number
   /** Git answered both unsaved-work questions. */
   unsavedKnown: boolean
@@ -165,6 +191,8 @@ export interface ReapEntry {
   removedWithoutGit: boolean
   /** Set when the automatic rule WOULD take this directory; the sentence says why. Report only. */
   wouldRemove?: string
+  /** Merged by squash or rebase (every patch is in the default branch). Label only. */
+  mergedByPatch?: boolean
   backfilled?: boolean
 }
 
@@ -181,6 +209,30 @@ export interface ReapPlan {
   wouldRemove: ReapEntry[]
   /** The last report-only check a trigger ran, from `worktree-auto-check.json`. */
   lastCheck?: AutoCheckRecord
+  /** Files (not directories) sitting in the worktree root: agent run logs, `.DS_Store`. Listed so
+   *  they are visible; they are not worktrees and nothing here removes them (G7). */
+  strayFiles?: StrayFile[]
+}
+
+export interface StrayFile { path: string; sizeBytes: number; modifiedAt: number }
+
+/** Every non-directory entry directly in the worktree root. Never throws. */
+export async function strayFiles(): Promise<StrayFile[]> {
+  const root = worktreeRoot()
+  let names: string[]
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((d) => !d.isDirectory()).map((d) => d.name)
+  } catch {
+    return []
+  }
+  const out: StrayFile[] = []
+  for (const name of names.sort()) {
+    try {
+      const st = await lstat(join(root, name))
+      out.push({ path: join(root, name), sizeBytes: st.size, modifiedAt: st.mtimeMs })
+    } catch { /* gone since the listing */ }
+  }
+  return out
 }
 
 export interface AutoCheckRecord {
@@ -231,12 +283,18 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
   switch (cls) {
     case 'live-claimed': return `A lane is open here (${f.liveTerminalId}).`
     case 'merged-clean': return 'Merged and clean — safe to remove; the branch is kept.'
-    case 'merged-dirty': return 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
+    case 'merged-dirty': return f.dirtIsNonWork
+      ? 'Merged; its only uncommitted files are copies of files that exist elsewhere, or a node_modules link — select it to remove it.'
+      : 'Merged, with uncommitted changes — not removed automatically; select it to remove it, with confirmation.'
     case 'unmerged': return f.merged === undefined
       ? `Could not tell whether ${f.branch ?? 'this branch'} is merged.`
-      : `${f.branch ?? 'This branch'} is not merged into the default branch.`
+      : f.mergedByPatch
+        ? `${f.branch ?? 'This branch'} was merged by squash or rebase: every commit's change is already in the default branch. Not removed automatically.`
+        : `${f.branch ?? 'This branch'} is not merged into the default branch.`
     case 'unattributed': return 'No provenance record — Operator cannot prove it created this.'
-    case 'debris': return 'Leftover from an interrupted worktree creation.'
+    case 'debris': return f.interruptedCreate
+      ? 'Leftover from an interrupted worktree creation.'
+      : 'A small folder git does not recognise and Operator has no record of. It may be someone\u2019s; select it to remove it, with confirmation.'
     case 'dead-source-repo': return 'Its source repository no longer exists on disk; git cannot reason about it.'
     case 'corrupt': return 'Not a valid git worktree any more.'
   }
@@ -250,7 +308,9 @@ function describe(cls: ReapClass, f: WorktreeFacts): string {
 function isAuto(cls: ReapClass, f: WorktreeFacts): boolean {
   if (f.guardReason) return false
   if (f.liveTerminalId) return false
-  if (cls === 'debris') return true
+  // Only the proved shape. Anything else small and git-less could be a lane's own scratch folder,
+  // and goes through Settings selection with the plain-path confirmation (Review finding 2).
+  if (cls === 'debris') return !!f.interruptedCreate
   // Merged and clean, and no unsaved work by the user's definition. A merged branch's commits are
   // on the default branch already; the check is here so the tier cannot drift from the rule.
   // A failed `git status` leaves `dirty` false and the count undefined; that is unknown, not clean.
@@ -264,16 +324,31 @@ export interface UnsavedWork {
   known: boolean
   /** Uncommitted files or unsaved commits exist. */
   any: boolean
+  /** The uncommitted files are all provably not work, so they are not counted in `any`. */
+  uncommittedIsNonWork?: boolean
+  /** The unsaved work was rescued to this directory and is unchanged since; not counted in `any`. */
+  rescuedTo?: string
 }
 
 /** WHAT WOULD BE LOST. The user's rule: uncommitted changes, or commits not reachable from another
- *  branch or a remote, count as unsaved. A directory git cannot read is UNKNOWN, never "none". */
+ *  branch or a remote, count as unsaved. A directory git cannot read is UNKNOWN, never "none".
+ *
+ *  Uncommitted files that are PROVABLY not work do not count (`dirtIsNonWork`): a copy of a file
+ *  that exists byte for byte somewhere else loses nothing when this directory goes. A TRACKED file
+ *  edit always counts, however small; nothing here can prove it is not someone's change. */
 export function unsavedWorkOf(f: WorktreeFacts): UnsavedWork {
   if (!f.gitValid) return { known: false, any: false }
   const uncommitted = f.uncommittedCount
   const known = uncommitted !== undefined && f.unsavedCommits !== undefined
-  const any = (uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0
-  return { uncommitted, unsavedCommits: f.unsavedCommits, known, any }
+  const nonWork = !!f.dirtIsNonWork && (uncommitted ?? 0) > 0
+  // Rescued and unchanged since: every file and commit that would be lost has a copy under
+  // ~/.operator/rescued, so nothing here is the only copy any more.
+  const any = !f.rescuedTo && ((nonWork ? 0 : uncommitted ?? (f.dirty ? 1 : 0)) > 0 || (f.unsavedCommits ?? 0) > 0)
+  return {
+    uncommitted, unsavedCommits: f.unsavedCommits, known, any,
+    ...(nonWork ? { uncommittedIsNonWork: true } : {}),
+    ...(f.rescuedTo ? { rescuedTo: f.rescuedTo } : {}),
+  }
 }
 
 /** Manual removal of this directory needs the explicit second confirmation. */
@@ -317,12 +392,15 @@ export function reapPlanFrom(facts: readonly WorktreeFacts[], sizesOmitted = fal
       repo: f.provenance?.sourceRepo ?? f.sourceRepoHint,
       live: !!f.liveTerminalId,
       uncommitted: unsaved.uncommitted,
+      uncommittedIsNonWork: unsaved.uncommittedIsNonWork,
+      rescuedTo: unsaved.rescuedTo,
       unsavedCommits: unsaved.unsavedCommits,
       unsavedKnown: unsaved.known,
       needsUnsavedConfirm: entryNeedsConfirm(f),
       removedWithoutGit: !gitRepoFor(f),
       wouldRemove: wouldAutoRemove(f, now) ?? undefined,
       backfilled: f.backfilled,
+      ...(f.mergedByPatch ? { mergedByPatch: true } : {}),
     }
   })
   const auto = entries.filter((e) => e.auto)
@@ -387,6 +465,116 @@ const git = async (cwd: string, args: string[]): Promise<string | null> => {
   } catch {
     return null
   }
+}
+
+/** Same as `git`, but returns stdout UNTRIMMED: `-z` output starts with a status column that may be
+ *  a space, and trimming it would corrupt the first entry. */
+const gitRaw = async (cwd: string, args: string[]): Promise<string | null> => {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
+// ── provably non-work dirt (G2 in dev/results/worktree-cleanup-audit-2026-09-25.md) ─────────────
+//
+// The audit found 22 merged directories (10.5 GB) that the unsaved-work step blocked although none
+// held work: brief and result files copied into a worktree byte for byte from the main checkout,
+// and old `node_modules` symlinks that `.gitignore`'s `node_modules/` does not match. Only these
+// two shapes are excused, because each can be PROVED to lose nothing. A tracked-file edit is never
+// excused, however trivial it looks (the audit's one-line CLAUDE.md vault edit stays unsaved).
+
+/** One entry of `git status --porcelain=v1 -z --untracked-files=all`. */
+export interface StatusEntry { xy: string; path: string }
+
+/** Parse `-z` porcelain v1. A rename or copy carries its source path as the NEXT field, which is
+ *  consumed so it is not read as an entry of its own. Pure. */
+export function parseStatusZ(out: string): StatusEntry[] {
+  const fields = out.split('\0')
+  const entries: StatusEntry[] = []
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]
+    if (f.length < 4) continue
+    const xy = f.slice(0, 2)
+    entries.push({ xy, path: f.slice(3) })
+    if (xy[0] === 'R' || xy[0] === 'C') i++
+  }
+  return entries
+}
+
+/** What is known about one untracked path, for the pure decision below. */
+export interface NonWorkProbe {
+  /** A symlink (at the worktree root, for `node_modules`). */
+  symlink: boolean
+  /** Byte-identical to the same path in the source checkout's working tree. */
+  sameAsSource: boolean
+  /** Byte-identical to the same path on the source repo's default branch. */
+  sameAsDefault: boolean
+}
+
+/** THE RULE, pure. Only an UNTRACKED entry can be non-work, and only as one of two proved shapes. */
+export function isProvablyNonWork(e: StatusEntry, probe: NonWorkProbe | undefined): boolean {
+  if (e.xy !== '??' || !probe) return false
+  if (e.path === 'node_modules' && probe.symlink) return true
+  if (probe.symlink) return false
+  return probe.sameAsSource || probe.sameAsDefault
+}
+
+/** Past this many untracked files the question is not worth the I/O, and the answer is "work". */
+const NON_WORK_MAX_FILES = 5000
+
+async function sameBytes(a: string, b: string): Promise<boolean> {
+  try {
+    const [sa, sb] = await Promise.all([lstat(a), lstat(b)])
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false
+    const [ba, bb] = await Promise.all([readFile(a), readFile(b)])
+    return ba.equals(bb)
+  } catch {
+    return false
+  }
+}
+
+/** Is every uncommitted entry in `path` provably not work? `false` on any doubt. Never throws. */
+export async function dirtIsNonWork(path: string, sourceRepo: string | undefined): Promise<boolean> {
+  if (!sourceRepo || !existsSync(sourceRepo)) return false
+  const out = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  if (out == null) return false
+  const entries = parseStatusZ(out)
+  if (!entries.length || entries.length > NON_WORK_MAX_FILES) return false
+  if (entries.some((e) => e.xy !== '??')) return false
+  const probes = new Map<string, NonWorkProbe>()
+  const needDefault: string[] = []
+  for (const e of entries) {
+    let symlink = false
+    try { symlink = (await lstat(join(path, e.path))).isSymbolicLink() } catch { return false }
+    const sameAsSource = !symlink && await sameBytes(join(path, e.path), join(sourceRepo, e.path))
+    probes.set(e.path, { symlink, sameAsSource, sameAsDefault: false })
+    if (!symlink && !sameAsSource) needDefault.push(e.path)
+  }
+  if (needDefault.length) {
+    // Blob ids on the default branch, and the files' own ids hashed WITHOUT filters, so equal ids
+    // mean equal bytes. Batched so a long list does not hit the argument limit.
+    const base = await defaultBranchOf(sourceRepo)
+    if (!base) return false
+    for (let i = 0; i < needDefault.length; i += 200) {
+      const batch = needDefault.slice(i, i + 200)
+      const tree = await gitRaw(sourceRepo, ['ls-tree', '-z', base, '--', ...batch])
+      const hashed = await git(path, ['hash-object', '--no-filters', '--', ...batch])
+      if (tree == null || hashed == null) return false
+      const onDefault = new Map<string, string>()
+      for (const rec of tree.split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.+)$/.exec(rec)
+        if (m) onDefault.set(m[2], m[1])
+      }
+      const ids = hashed.split('\n')
+      batch.forEach((p, j) => { if (onDefault.get(p) === ids[j]) probes.get(p)!.sameAsDefault = true })
+    }
+  }
+  return entries.every((e) => isProvablyNonWork(e, probes.get(e.path)))
 }
 
 /** `du -sk` over the worktree root's children in ONE call.
@@ -572,21 +760,48 @@ async function loadProvenance(): Promise<Map<string, ProvenanceRecord>> {
   return out
 }
 
-/** Directories with a live lane in them, from `sessions.json`.
+/** Is a `sessions.json` claim on `cwd` still backed by a running pty? `true` when main's pty table
+ *  has one in that directory, and ALSO when the table is not known in this process (the
+ *  `--mcp-serve` process, or before `setLivePtyCwds`): an unverifiable claim is kept, never dropped.
  *
- *  THE HONEST LIMITATION, restated from the audit so it is not lost: this is "sessions.json said
- *  so as of its last write", not a re-verification against the live process table. Verifying that
- *  would need per-pid `lsof`, which this project forbids for the TCC-prompt reason. It is
- *  therefore a FLOOR on what is live — which is the safe direction for it to be wrong in. */
+ *  G6 in dev/results/worktree-cleanup-audit-2026-09-25.md: a `terminalId` in `sessions.json` was
+ *  trusted on its own, and terminal ids restart every app run, so a claim written by a previous run
+ *  (`operator-db3d00`, claimed by `t20` since 2026-09-11) could never clear and blocked forever. */
+function claimIsLive(cwd: string, appPid?: unknown): boolean {
+  // WRITTEN BY ANOTHER OPERATOR THAT IS STILL RUNNING (Review finding 3): a second instance on the
+  // same ~/.operator cannot see that one's ptys, so its claims are kept rather than judged against a
+  // table they were never in. Only a claim whose writer is gone, or is this process, is tested here.
+  if (typeof appPid === 'number' && appPid !== process.pid && isPidAlive(appPid)) return true
+  const cwds = livePtyCwds?.()
+  return !cwds || !!ptyClaimOn(cwd, cwds)
+}
+
+/** Stamp `appPid` on every `sessions.json` record whose terminal is one of THIS process's live ptys,
+ *  so another Operator on the same store can tell a live instance's claim from a dead one's
+ *  (`leases.ts` records `appPid` for the same reason). Records it does not own keep whatever they
+ *  carry. Pure. */
+export function stampSessionClaims(records: readonly unknown[], ownLiveTerminalIds: ReadonlySet<string>, pid: number): unknown[] {
+  return records.map((s) => {
+    const r = s as { terminalId?: unknown } | null
+    return r && typeof r.terminalId === 'string' && ownLiveTerminalIds.has(r.terminalId) ? { ...r, appPid: pid } : s
+  })
+}
+
+/** Directories with a live lane in them: a `sessions.json` claim that main's pty table backs.
+ *
+ *  Where the pty table is known (main), a claim with no pty in its directory is stale and dropped.
+ *  Where it is not, this stays what it was: "sessions.json said so as of its last write", a FLOOR
+ *  on what is live — the safe direction to be wrong in. Per-pid `lsof` is never the answer here
+ *  (TCC prompt). */
 async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: Map<string, number> }> {
   const claims = new Map<string, string>()
   const lastActive = new Map<string, number>()
   try {
     const raw = JSON.parse(await readFile(join(operatorDir(), 'sessions.json'), 'utf8')) as unknown[]
     for (const s of Array.isArray(raw) ? raw : []) {
-      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown }
+      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown; appPid?: unknown }
       if (typeof r?.cwd !== 'string') continue
-      if (typeof r.terminalId === 'string' && r.terminalId) claims.set(r.cwd, r.terminalId)
+      if (typeof r.terminalId === 'string' && r.terminalId && claimIsLive(r.cwd, r.appPid)) claims.set(r.cwd, r.terminalId)
       const at = typeof r.lastActiveAt === 'string' ? Date.parse(r.lastActiveAt) : NaN
       if (!Number.isNaN(at)) lastActive.set(r.cwd, Math.max(at, lastActive.get(r.cwd) ?? 0))
     }
@@ -612,16 +827,18 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   } catch {
     return []
   }
-  const [provenance, { claims, lastActive }, sizes] = await Promise.all([
+  const [provenance, { claims, lastActive }, sizes, rescues] = await Promise.all([
     loadProvenance(),
     liveClaims(),
     opts.withSizes ? sizesOf(names.map((n) => join(root, n)), !!opts.refreshSizes) : Promise.resolve(new Map<string, number>()),
+    loadRescues(),
   ])
 
   // One `git branch --merged` per SOURCE REPO, not per worktree: 107 directories share a handful
   // of repos, and the merged set is a property of the repo.
   const mergedCache = new Map<string, Set<string> | null>()
   const registeredCache = new Map<string, Set<string> | null>()
+  const defaultCache = new Map<string, string | null>()
 
   const facts = await Promise.all(names.map(async (name): Promise<WorktreeFacts> => {
     const path = join(root, name)
@@ -655,6 +872,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
     }
 
     let merged: boolean | undefined
+    let mergedByPatch = false
     let registered = false
     if (sourceRepo && sourceRepoExists) {
       if (!registeredCache.has(sourceRepo)) registeredCache.set(sourceRepo, await registeredPaths(sourceRepo))
@@ -663,8 +881,20 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
         if (!mergedCache.has(sourceRepo)) mergedCache.set(sourceRepo, await mergedBranches(sourceRepo))
         const mergedSet = mergedCache.get(sourceRepo)
         merged = mergedSet && branch ? mergedSet.has(branch) : undefined
+        if (merged === false && branch && branch !== 'HEAD') {
+          if (!defaultCache.has(sourceRepo)) defaultCache.set(sourceRepo, await defaultBranchOf(sourceRepo))
+          mergedByPatch = await allPatchesIn(sourceRepo, defaultCache.get(sourceRepo) ?? null, branch)
+        }
       }
     }
+
+    // Only asked of a dirty tree: a clean one has nothing to excuse.
+    const nonWork = gitValid && status ? await dirtIsNonWork(path, sourceRepoExists ? sourceRepo : undefined) : false
+    // A rescue covers the work as it was when copied. Anything changed since (a new edit, a new
+    // commit, a file rewritten) changes the fingerprint, and the work counts as unsaved again.
+    const rescue = rescues.get(path)
+    const rescuedTo = gitValid && rescue && existsSync(rescue.dir) && (await workFingerprint(path, branch)) === rescue.fingerprint
+      ? rescue.dir : undefined
 
     const activity = [prov?.createdAt, headAt, lastActive.get(path)].filter((n): n is number => typeof n === 'number')
     return {
@@ -674,6 +904,8 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       branch,
       dirty: !!status,
       uncommittedCount: status == null ? undefined : status.split('\n').filter(Boolean).length,
+      dirtIsNonWork: nonWork || undefined,
+      rescuedTo,
       unsavedCommits,
       sourceRepoHint: sourceRepo,
       orphaned: !!(sourceRepo && sourceRepoExists && adminEntry && !registered && !existsSync(adminEntry)),
@@ -681,6 +913,7 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
       backfilled: prov?.createdBy === 'backfill',
       registered,
       merged,
+      mergedByPatch: mergedByPatch || undefined,
       provenance: prov ? { sourceRepo: prov.sourceRepo, createdAt: prov.createdAt, branch: prov.branch } : undefined,
       sourceRepoExists,
       liveTerminalId: claims.get(path),
@@ -693,6 +926,9 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
   // DEBRIS NEEDS A REAL SIZE. Measure just the candidates the size question decides (git-invalid,
   // unattributed, unregistered) when sizes were not collected, or when the full `du` missed one.
   // A size that still cannot be read stays unknown, and `classify` then never calls it debris.
+  for (const f of facts) {
+    if (!f.gitValid && !f.provenance && !f.registered) f.interruptedCreate = await hasInterruptedCreateShape(f.path)
+  }
   const candidates = facts.filter((f) => !sizes.has(f.path) && !f.gitValid && !f.provenance && !f.registered)
   const measured = await duOf(candidates.map((f) => f.path)).catch(() => new Map<string, number>())
   for (const f of facts) {
@@ -701,6 +937,23 @@ export async function gatherFacts(opts: { withSizes?: boolean; refreshSizes?: bo
     else f.sizeBytes = bytes
   }
   return facts
+}
+
+/** `.git` is a regular file naming an admin entry that does not exist, and besides it there is at
+ *  most one entry, a regular file. That is what `git worktree add` leaves when it is interrupted
+ *  (`.tmpIBNq7t-d96ee0`: a pointer and one stray file). Never throws; any doubt answers false. */
+export async function hasInterruptedCreateShape(path: string): Promise<boolean> {
+  try {
+    const entries = await readdir(path, { withFileTypes: true })
+    const dotGit = entries.find((e) => e.name === '.git')
+    if (!dotGit?.isFile()) return false
+    const admin = gitdirFromGitFile(await readFile(join(path, '.git'), 'utf8'), path)
+    if (!admin || existsSync(admin)) return false
+    const rest = entries.filter((e) => e.name !== '.git')
+    return rest.length <= 1 && rest.every((e) => e.isFile())
+  } catch {
+    return false
+  }
 }
 
 /** THE HOME OVERVIEW'S FIRST PAINT. Every folder under the worktree root with its source repo, whether
@@ -751,6 +1004,15 @@ async function mergedBranches(repo: string): Promise<Set<string> | null> {
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))
 }
 
+/** `git cherry <base> <branch>` names no commit with a `+`: every commit on the branch has an
+ *  equivalent patch in `base`. `false` on any doubt, including git failing. */
+async function allPatchesIn(repo: string, base: string | null, branch: string): Promise<boolean> {
+  if (!base) return false
+  const out = await git(repo, ['cherry', base, branch])
+  if (out == null) return false
+  return !out.split('\n').some((l) => l.startsWith('+'))
+}
+
 async function defaultBranchOf(repo: string): Promise<string | null> {
   const named = (await git(repo, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']))?.split('/').pop()
   for (const name of [named, 'main', 'master'].filter((n): n is string => !!n)) {
@@ -771,6 +1033,7 @@ export async function reapPlan(opts: { withSizes?: boolean; refreshSizes?: boole
   const facts = await gatherFacts(opts)
   const plan = reapPlanFrom(facts, !opts.withSizes)
   try { plan.lastCheck = JSON.parse(await readFile(autoCheckFile(), 'utf8')) as AutoCheckRecord } catch { /* no check yet */ }
+  plan.strayFiles = await strayFiles()
   return plan
 }
 
@@ -817,8 +1080,10 @@ export function checkAutoRemoval(trigger: string): Promise<void> {
  *  a lane that was just launched or resumed; `TerminalManager` knows every open pty's cwd now
  *  (Review M4). Set once from `index.ts`. Empty until then, which only ever removes a refusal the
  *  sessions file still makes. */
-let livePtyCwds: () => readonly string[] = () => []
-export function setLivePtyCwds(fn: () => readonly string[]): void { livePtyCwds = fn }
+let livePtyCwds: (() => readonly string[]) | null = null
+/** `null` un-wires it again (tests). While un-wired, `sessions.json` claims are trusted as before. */
+export function setLivePtyCwds(fn: (() => readonly string[]) | null): void { livePtyCwds = fn }
+const ptyCwdsNow = (): readonly string[] => livePtyCwds?.() ?? []
 
 /** A pty whose cwd is `path` or inside it. Pure given `cwds`. */
 export function ptyClaimOn(path: string, cwds: readonly string[]): string | undefined {
@@ -828,7 +1093,7 @@ export function ptyClaimOn(path: string, cwds: readonly string[]): string | unde
 /** Is anything open in `path` RIGHT NOW: a pty in main, or a session record with a terminal. Asked
  *  per folder immediately before its removal, not once for the whole batch. */
 async function liveClaimNow(path: string): Promise<string | undefined> {
-  const pty = ptyClaimOn(path, livePtyCwds())
+  const pty = ptyClaimOn(path, ptyCwdsNow())
   if (pty) return `a terminal is open in ${pty}`
   const { claims } = await liveClaims()
   for (const [cwd, terminalId] of claims) {
@@ -865,6 +1130,137 @@ export async function removeSelected(paths: readonly string[], confirmedUnsaved:
     }
   }
   return result
+}
+
+// ── rescue: copy a worktree's unsaved work out, so removing it loses nothing ─────────────────
+//
+// The audit's class D holds work that exists nowhere else, some of it lane reports that never
+// reached the main checkout. Rescue copies that work to ~/.operator/rescued/<dir>-<date>/: every
+// uncommitted and untracked non-ignored file, a `git diff HEAD --binary` patch, and a bundle of
+// any commits no other branch or remote holds. The directory then counts as PRESERVED, so the
+// user can remove it without the unsaved-work step. Rescue removes nothing; the user still
+// presses remove, and a change after the rescue makes the work unsaved again.
+
+const rescuedRoot = () => join(operatorDir(), 'rescued')
+const rescueIndexFile = () => join(rescuedRoot(), 'index.json')
+
+export interface RescueRecord { path: string; dir: string; at: number; fingerprint: string }
+
+async function loadRescues(): Promise<Map<string, RescueRecord>> {
+  const out = new Map<string, RescueRecord>()
+  try {
+    const raw = JSON.parse(await readFile(rescueIndexFile(), 'utf8')) as RescueRecord[]
+    for (const r of Array.isArray(raw) ? raw : []) {
+      if (r && typeof r.path === 'string' && typeof r.dir === 'string' && typeof r.fingerprint === 'string') out.set(r.path, r)
+    }
+  } catch { /* none yet */ }
+  return out
+}
+
+/** One hash over everything a rescue copies: HEAD, the status, the tracked diff, the contents of
+ *  every untracked file, and the commits no other branch or remote holds. `null` when git cannot
+ *  answer any part, which never matches a record. */
+export async function workFingerprint(path: string, branch: string | undefined): Promise<string | null> {
+  const head = await git(path, ['rev-parse', 'HEAD'])
+  const status = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  const diff = await gitRaw(path, ['diff', 'HEAD', '--binary'])
+  const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
+  const commits = await git(path, ['rev-list', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+  if (head == null || status == null || diff == null || commits == null) return null
+  // A directory entry (`nested/`, a nested repository) cannot be hashed as a file; its name is in the
+  // status already, and a rescue never counts it as copied (Review finding 7).
+  const untracked = parseStatusZ(status).filter((e) => e.xy === '??' && !e.path.endsWith('/')).map((e) => e.path)
+  let blobs = ''
+  for (let i = 0; i < untracked.length; i += 200) {
+    const ids = await git(path, ['hash-object', '--no-filters', '--', ...untracked.slice(i, i + 200)])
+    if (ids == null) return null
+    blobs += ids + '\n'
+  }
+  return createHash('sha256').update([head, status, diff, blobs, commits].join('\0')).digest('hex')
+}
+
+export interface RescueResult {
+  dir: string
+  /** Uncommitted and untracked files copied. */
+  files: number
+  /** Commits in `commits.bundle`; 0 when every commit is on another branch or a remote. */
+  commits: number
+  /** The rescue is recorded, so the directory now counts as preserved. False when the tree changed
+   *  while it was being copied, or when something could not be copied (see `skipped`): the copy is
+   *  kept, but it does not stand in for the work. */
+  preserved: boolean
+  /** Status entries that are directories (a dirty submodule, a nested repository) and were NOT
+   *  copied. Any of these means the rescue is not a complete copy (Review finding 7). */
+  skipped: string[]
+}
+
+/** `<name>-<YYYY-MM-DD>` under the rescue root, suffixed `-2`, `-3`… if taken. Never reused. */
+function rescueDirFor(path: string, now: Date): string {
+  const day = now.toISOString().slice(0, 10)
+  const base = join(rescuedRoot(), `${basename(path)}-${day}`)
+  let dir = base
+  for (let n = 2; existsSync(dir); n++) dir = `${base}-${n}`
+  return dir
+}
+
+/** Copy a worktree's unsaved work out. Reads the worktree only; writes only under the rescue root. */
+export async function rescueWorktree(path: string, now = new Date()): Promise<RescueResult> {
+  const f = (await gatherFacts({ only: [path] }))[0]
+  if (!f) throw new Error(`${path} is not a directory under the worktree root.`)
+  if (!f.gitValid) throw new Error('git cannot read it, so there is no status or diff to rescue from.')
+  const before = await workFingerprint(path, f.branch)
+  const status = await gitRaw(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  const diff = await gitRaw(path, ['diff', 'HEAD', '--binary'])
+  if (before == null || status == null || diff == null) throw new Error('git could not report what is unsaved in it.')
+
+  const dir = rescueDirFor(path, now)
+  await mkdir(join(dir, 'files'), { recursive: true })
+  const copied: string[] = []
+  const skipped: string[] = []
+  for (const e of parseStatusZ(status)) {
+    const from = join(path, e.path)
+    const to = join(dir, 'files', e.path)
+    let st
+    try { st = await lstat(from) } catch { continue } // deleted: the patch records it
+    await mkdir(dirname(to), { recursive: true })
+    if (st.isSymbolicLink()) await symlink(await readlink(from), to)
+    else if (st.isFile()) await copyFile(from, to)
+    else { skipped.push(e.path); continue }
+    copied.push(e.path)
+  }
+  await writeFile(join(dir, 'changes.patch'), diff)
+
+  const exclude = f.branch && f.branch !== 'HEAD' ? [`--exclude=${f.branch}`] : []
+  const unsaved = (await git(path, ['rev-list', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])) ?? ''
+  const commits = unsaved.split('\n').filter(Boolean).length
+  if (commits) {
+    const out = await git(path, ['bundle', 'create', join(dir, 'commits.bundle'), 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
+    if (out == null) throw new Error(`Copied the files to ${dir}, but git could not bundle the ${commits} unsaved commit(s). Nothing was recorded as preserved.`)
+  }
+  const manifest = {
+    source: path, sourceRepo: f.sourceRepoHint, branch: f.branch, head: (await git(path, ['rev-parse', 'HEAD'])) ?? undefined,
+    at: now.toISOString(), files: copied, patch: 'changes.patch', bundle: commits ? 'commits.bundle' : undefined, commits,
+  }
+  await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+  await writeFile(join(dir, 'README.md'), [
+    `# Rescued from ${basename(path)}`, '',
+    `Copied ${now.toISOString()} from ${path}${f.branch ? ` (branch ${f.branch})` : ''}.`, '',
+    '- `files/`: every uncommitted and untracked file, at its path in the worktree.',
+    '- `changes.patch`: `git diff HEAD --binary`; restore with `git apply changes.patch` on that HEAD.',
+    ...(commits ? [`- \`commits.bundle\`: ${commits} commit(s) no other branch or remote held; restore with \`git fetch <this dir>/commits.bundle HEAD\`.`] : []),
+    '',
+  ].join('\n'))
+
+  // Recorded only if nothing changed while copying; otherwise the copy may be a mix of two states.
+  const after = await workFingerprint(path, f.branch)
+  // A directory entry was not copied, so the copy cannot stand in for the work.
+  const preserved = after === before && skipped.length === 0
+  if (preserved) {
+    const index = await loadRescues()
+    index.set(path, { path, dir, at: now.getTime(), fingerprint: before })
+    await writeFile(rescueIndexFile(), JSON.stringify([...index.values()], null, 2))
+  }
+  return { dir, files: copied.length, commits, preserved, skipped }
 }
 
 // ── the pending-removal record ───────────────────────────────────────────────────────────────
@@ -910,11 +1306,17 @@ async function writePending(list: PendingRemoval[]): Promise<void> {
   }
 }
 
-/** Record the INTENT to remove, before anything is attempted. Idempotent per path. */
+/** Record the INTENT to remove, before anything is attempted. Idempotent per path, with one
+ *  exception: a removal someone started REPLACES an ended-session record boot queued for the same
+ *  path. Otherwise a lane that lived across a restart kept the boot record, and an interrupted close
+ *  of it was never retried, because boot skips that reason (Review finding 5). */
 export async function queueRemoval(entry: PendingRemoval): Promise<void> {
   const existing = await loadPending()
-  if (existing.some((e) => e.path === entry.path)) return
-  await writePending([...existing, entry])
+  const at = existing.findIndex((e) => e.path === entry.path)
+  if (at === -1) { await writePending([...existing, entry]); return }
+  if (!userStartedRemoval(existing[at]) && userStartedRemoval(entry)) {
+    await writePending(existing.map((e, i) => (i === at ? entry : e)))
+  }
 }
 
 export async function clearPending(path: string): Promise<void> {
@@ -923,11 +1325,23 @@ export async function clearPending(path: string): Promise<void> {
   if (next.length !== existing.length) await writePending(next)
 }
 
-/** Retry every removal that was requested and never finished.
+/** The reason `queueEndedSessions` writes. Boot reconciliation queued it; no person asked. */
+export const ENDED_SESSION_REASON = 'ended session with no open tab (boot reconciliation)'
+
+/** A removal someone STARTED — a lane close, a Settings removal, a lane's `worktree_done` — as
+ *  opposed to one boot reconciliation queued on its own. Only these are retried for real at boot
+ *  (G3): the person already asked, and the interruption is the only reason it did not happen.
+ *
+ *  Ended-session records stay report-only on purpose. At boot, every lane that was open at the last
+ *  quit looks ended (no pty yet), and those are the lanes the restore offer presents; removing their
+ *  folders would mark them "folder missing" in that offer. */
+export const userStartedRemoval = (e: PendingRemoval): boolean => e.reason !== ENDED_SESSION_REASON
+
+/** Retry every removal that was requested and never finished, or only those `which` accepts.
  *
  *  A record whose directory is already gone is simply dropped — the removal did happen, we just
  *  never got to clear the record, which is the ordinary outcome of the crash this exists for. */
-export async function drainPending(dryRun: boolean): Promise<{ removed: string[]; failed: string[]; held: string[]; pending: number }> {
+export async function drainPending(dryRun: boolean, which: (e: PendingRemoval) => boolean = () => true): Promise<{ removed: string[]; failed: string[]; held: string[]; pending: number }> {
   const list = await loadPending()
   const removed: string[] = []
   const failed: string[] = []
@@ -935,10 +1349,12 @@ export async function drainPending(dryRun: boolean): Promise<{ removed: string[]
   // outlive its directory and later name a REATTACHED lane at the same deterministic path, so the
   // record is never enough on its own (Review L1).
   const held: string[] = []
-  const facts = dryRun ? new Map<string, WorktreeFacts>() : new Map((await gatherFacts()).map((f) => [f.path, f]))
+  // Facts for the records this run may act on, not for every worktree on disk.
+  const targets = dryRun ? [] : list.filter((e) => which(e) && existsSync(e.path)).map((e) => e.path)
+  const facts = new Map((targets.length ? await gatherFacts({ only: targets }) : []).map((f) => [f.path, f]))
   for (const entry of list) {
     if (!existsSync(entry.path)) { await clearPending(entry.path); continue }
-    if (dryRun) continue
+    if (dryRun || !which(entry)) continue
     const f = facts.get(entry.path)
     const claim = await liveClaimNow(entry.path)
     if (claim || !f || f.liveTerminalId || needsUnsavedConfirm(unsavedWorkOf(f))) {
@@ -991,18 +1407,21 @@ export async function reap(opts: { dryRun?: boolean; withSizes?: boolean; confir
     if (confirmed && !confirmed.has(entry.path)) continue
     const claim = await liveClaimNow(entry.path)
     if (claim) { result.failed.push({ path: entry.path, error: `Refused: ${claim}.` }); continue }
-    if (!entry.sourceRepo) {
-      // Debris has no source repo and no git to remove it with; it is also the only class where
-      // that is expected. Everything else in the auto tier is attributable by construction.
-      result.failed.push({ path: entry.path, error: 'no source repo recorded' })
-      continue
-    }
     try {
-      if (entry.cls !== 'debris') {
-        const status = await git(entry.path, ['status', '--porcelain'])
-        if (status == null) throw new Error('git could not read it any more')
-        if (status) throw new Error('it has uncommitted changes since the plan was made')
+      if (entry.cls === 'debris') {
+        // Debris is git-invalid by definition, so there is no git to remove it with. It goes
+        // through the plain-directory path: the same guard, the nested-checkout walk and the
+        // trash (G7: `.tmpIBNq7t-d96ee0` sat in the tier for weeks, refused as "no source repo").
+        await removePlainDirectory(entry.path)
+        result.removed.push(entry.path)
+        result.bytesFreed += entry.sizeBytes
+        continue
       }
+      // Everything else in the auto tier is attributable by construction.
+      if (!entry.sourceRepo) throw new Error('no source repo recorded')
+      const status = await git(entry.path, ['status', '--porcelain'])
+      if (status == null) throw new Error('git could not read it any more')
+      if (status) throw new Error('it has uncommitted changes since the plan was made')
       await removeWorktree(entry.path, entry.sourceRepo)
       result.removed.push(entry.path)
       result.bytesFreed += entry.sizeBytes
@@ -1029,20 +1448,21 @@ export async function queueEndedSessions(): Promise<number> {
     if (!Array.isArray(raw)) return 0
     let queued = 0
     for (const s of raw) {
-      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown }
+      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown; appPid?: unknown }
       if (typeof r?.cwd !== 'string' || typeof r.sourceCwd !== 'string') continue
       if (typeof r.worktreeBranch !== 'string' || !r.worktreeBranch) continue
-      // A `terminalId` means the roster believes a lane is open in it. At boot that belief is
-      // stale by definition — but it is the same floor the classifier uses, and erring toward
-      // "leave it alone" is the correct direction here too.
-      if (r.terminalId) continue
+      // A `terminalId` means the roster believes a lane is open in it. Kept only where main's pty
+      // table backs it (`claimIsLive`, the same test the classifier uses); a claim from a previous
+      // app run is an ended session like any other. This only QUEUES the removal; nothing drains
+      // an ended-session record automatically.
+      if (r.terminalId && claimIsLive(r.cwd, r.appPid)) continue
       if (!existsSync(r.cwd)) continue
       await queueRemoval({
         path: r.cwd,
         sourceRepo: r.sourceCwd,
         branch: r.worktreeBranch,
         requestedAt: Date.now(),
-        reason: 'ended session with no open tab (boot reconciliation)',
+        reason: ENDED_SESSION_REASON,
       })
       queued++
     }
@@ -1059,14 +1479,18 @@ export async function reconcileAtBoot(): Promise<void> {
     void scheduleSweep()
     await backfillProvenanceAtBoot()
     const queued = await queueEndedSessions()
-    const drained = await drainPending(!AUTO_REAP_ON_TRIGGERS)
+    // FOR REAL, whatever `AUTO_REAP_ON_TRIGGERS` says, but only for removals someone started and
+    // an interruption stopped (G3). The live, unsaved-work and guard checks inside still apply to
+    // each one; anything they hold stays in the file.
+    const drained = await drainPending(false, userStartedRemoval)
     const result = await reap({ dryRun: !AUTO_REAP_ON_TRIGGERS })
     const gb = (n: number) => (n / 1024 ** 3).toFixed(2)
     console.error(
       `[reap] boot: ${result.plan.entries.length} worktrees, ${result.plan.auto.length} in the auto tier`
       + `${result.plan.sizesOmitted ? '' : ` (${gb(result.plan.autoBytes)} GB of ${gb(result.plan.totalBytes)} GB)`}`
-      + `, ${result.plan.asks.length} need a decision; ${queued} ended session(s) queued, ${drained.pending} pending`
-      + `${AUTO_REAP_ON_TRIGGERS ? `; removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
+      + `, ${result.plan.asks.length} need a decision; ${queued} ended session(s) queued; interrupted removals retried:`
+      + ` ${drained.removed.length} removed, ${drained.held.length} held, ${drained.failed.length} failed; ${drained.pending} pending`
+      + `${AUTO_REAP_ON_TRIGGERS ? `; auto tier removed ${result.removed.length}` : ' — auto tier DRY RUN'}`,
     )
   } catch (e) {
     console.error('[reap] boot reconciliation failed:', e)
@@ -1079,13 +1503,16 @@ export async function reconcileAtBoot(): Promise<void> {
  *
  *  Bounded by the caller's teardown deadline: an app that cannot be quit is worse than a
  *  worktree that survives one more launch, and boot will find it again anyway. */
-export async function reapOnQuit(): Promise<void> {
+export async function reapOnQuit(armed = AUTO_REAP_ON_TRIGGERS): Promise<void> {
   try {
-    const drained = await drainPending(!AUTO_REAP_ON_TRIGGERS)
-    const result = await reap({ dryRun: !AUTO_REAP_ON_TRIGGERS })
+    // Only removals someone started, as at boot: never the ended-session records boot queues for
+    // every lane open at the last quit (Review finding 4). `armed` is the switch above; a parameter
+    // only so the armed path can be tested.
+    const drained = await drainPending(!armed, userStartedRemoval)
+    const result = await reap({ dryRun: !armed })
     console.error(
       `[reap] quit: ${result.plan.auto.length} in the auto tier, ${drained.pending} pending`
-      + `${AUTO_REAP_ON_TRIGGERS ? `, removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
+      + `${armed ? `, removed ${result.removed.length}` : ' — DRY RUN, nothing removed'}`,
     )
   } catch (e) {
     console.error('[reap] quit reap failed:', e)
@@ -1248,7 +1675,7 @@ export async function releaseWorktreeOnExit(terminalId: string, cwd: string | un
     else if (releaseBlocker(f)) why = releaseBlocker(f)!
     else {
       // The exiting pty is already marked exited, so only ANOTHER terminal open in it claims it.
-      const pty = ptyClaimOn(cwd, livePtyCwds())
+      const pty = ptyClaimOn(cwd, ptyCwdsNow())
       if (pty) why = `a terminal is still open in ${pty}`
     }
     if (why) {

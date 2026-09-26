@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, rolePresets, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, DEFAULT_ROLE_PROMPTS, ROSTER_MODELS } from './roster'
+import { defaultRoster, rolePresets, presetFor, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, migrateStockCharters, legacyStockCharters, DEFAULT_ROLE_PROMPTS, LEGACY_ROLE_CHARTERS, NO_COMMISSIONING, ROSTER_MODELS } from './roster'
 import type { Project, Role } from '../../shared/types'
 
 describe('roster', () => {
@@ -57,6 +57,14 @@ describe('roster', () => {
     expect(note).not.toContain('operated by Operator') // it doesn't refer to itself in 3rd person
   })
 
+  it('the coordinator is told how a merge with --delete-branch removes a lane\'s checkout', () => {
+    const roster = defaultRoster()
+    const note = orchestrationNote('Demo', roster.find((r) => r.id === 'operator')!, roster)
+    expect(note).toContain('`gh pr merge --delete-branch` removes the worktree')
+    expect(note).toContain('Never pass `--delete-branch`')
+    expect(note).toContain('git push origin --delete <branch>')
+  })
+
   it('a legacy roster keyed on the old "orchestrator" id still gets the Operator framing', () => {
     const legacy = [{ id: 'orchestrator', name: 'Orchestrator', model: 'fable', prompt: 'x' }, ...defaultRoster().filter((r) => r.id !== 'operator')]
     const note = orchestrationNote('Demo', legacy[0], legacy)
@@ -65,12 +73,12 @@ describe('roster', () => {
 
   it('reorderRoles moves a lane before/after another', () => {
     const ids = (rs: ReturnType<typeof defaultRoster>) => rs.map((r) => r.id)
-    const roster = defaultRoster() // operator, research, code, review, design, qa
+    const roster = defaultRoster() // operator, research, code, review, design, qa, infra
     // Drag DOWNWARD: the target index must be recomputed after the removal, or the
     // moved lane lands one slot short of the drop line.
-    expect(ids(reorderRoles(roster, 'operator', 'code', 'after'))).toEqual(['research', 'code', 'operator', 'review', 'design', 'qa'])
+    expect(ids(reorderRoles(roster, 'operator', 'code', 'after'))).toEqual(['research', 'code', 'operator', 'review', 'design', 'qa', 'infra'])
     // Drag UPWARD.
-    expect(ids(reorderRoles(roster, 'qa', 'research', 'before'))).toEqual(['operator', 'qa', 'research', 'code', 'review', 'design'])
+    expect(ids(reorderRoles(roster, 'qa', 'research', 'before'))).toEqual(['operator', 'qa', 'research', 'code', 'review', 'design', 'infra'])
   })
 
   /// The lost-edit bug: the board built its next roster from the props snapshot it had
@@ -333,8 +341,13 @@ describe('orchestrationNote — the return path', () => {
     // Raised to 3300 on 2026-09-16 for one stated addition: the coordinator charter's Plan-tab
     // sentence (keep drafted steps in TaskCreate/TaskUpdate, not in chat) took the coordinator
     // note from 3097 to 3261. The lane note did not change.
-    for (const role of [op, code]) {
-      expect(orchestrationNote('proj', role, roster).length).toBeLessThan(3300)
+    // Raised to 3400 on 2026-09-25 for the Infra preset: one more line in the coordinator's team
+    // list took its note from 3261 to 3374. The same change lengthened the Code/Review/Design/QA
+    // charters, so the guard now covers every preset's note, not just Code's (longest: Review, 3253).
+    // Raised to 3800 on 2026-09-25 for BRANCH_SAFETY_NOTE in the coordinator's note (it merges PRs,
+    // and `--delete-branch` gutted a lane's checkout twice): 3374 to 3764.
+    for (const role of roster) {
+      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(3800)
     }
   })
 })
@@ -451,5 +464,117 @@ describe('orchestrationNote — the artifact plane is asked for', () => {
     const n = orchestrationNote('proj', custom, roster)
     expect(n).toContain('my own charter, nothing else')
     expect(n).toContain('operator__report')
+  })
+})
+
+// THE INFRA PRESET, and the charter rewrite that shipped with it (2026-09-25).
+describe('the Infra preset', () => {
+  const infra = () => rolePresets().find((r) => r.id === 'infra')!
+
+  it('is the LAST preset, so existing roster order and the accent palette keep their positions', () => {
+    expect(rolePresets()[rolePresets().length - 1].id).toBe('infra')
+    expect(infra()).toMatchObject({ name: 'Infra', model: 'opus', effort: 'high', useWorktree: true })
+  })
+
+  it('has an accent no other preset uses', () => {
+    const accents = rolePresets().map((r) => r.accent?.toLowerCase())
+    expect(new Set(accents).size).toBe(accents.length)
+  })
+
+  it('opens its charter with the purpose line the coordinator routes by', () => {
+    // laneSummary shows the first sentence (≤ 90 chars) in the coordinator's team list.
+    const note = orchestrationNote('proj', rolePresets()[0], rolePresets())
+    expect(note).toContain('"Infra" (id: infra, Opus) — Own build, CI, release and environment — make it reproducible, never surprising.')
+  })
+
+  it('holds outward-facing and irreversible steps behind the user\'s go-ahead, and does not commission', () => {
+    const c = infra().prompt!
+    for (const act of ['push', 'tag', 'publish a release', 'deploy', 'rotate or regenerate keys', 'delete remote resources']) {
+      expect(c).toContain(act)
+    }
+    expect(c).toContain('explicit go-ahead')
+    expect(c).toContain('Dry-run or read before')
+    expect(c).toContain('exact commands you ran and their output')
+    expect(c.endsWith(NO_COMMISSIONING)).toBe(true)
+  })
+
+  it('is reachable by dispatch token, by id or name', () => {
+    expect(presetFor('infra')?.id).toBe('infra')
+    expect(presetFor('Infra')?.id).toBe('infra')
+  })
+})
+
+describe('worker charters say how lanes actually run', () => {
+  const firstSentence = (id: string) => DEFAULT_ROLE_PROMPTS[id].split(/(?<=[.!?])\s/)[0]
+
+  it('keeps each first sentence a purpose line — the rewrite added to the body, not the opening', () => {
+    for (const id of Object.keys(LEGACY_ROLE_CHARTERS)) {
+      expect(firstSentence(id), id).toBe(LEGACY_ROLE_CHARTERS[id][0].split(/(?<=[.!?])\s/)[0])
+    }
+  })
+
+  it('Review is told it cannot see a worktree and what to review instead', () => {
+    expect(DEFAULT_ROLE_PROMPTS.review).toContain('cannot see a lane’s worktree')
+    expect(DEFAULT_ROLE_PROMPTS.review).toContain('git diff main...<branch>')
+  })
+
+  it('Code commits with a why and states test output; Design verifies in the app; QA says how', () => {
+    expect(DEFAULT_ROLE_PROMPTS.code).toContain('Commit your work on your branch')
+    expect(DEFAULT_ROLE_PROMPTS.code).toContain('results with their output')
+    expect(DEFAULT_ROLE_PROMPTS.design).toContain('Verify in the running app')
+    expect(DEFAULT_ROLE_PROMPTS.design).toContain('which themes and states you actually checked')
+    expect(DEFAULT_ROLE_PROMPTS.qa).toContain('tests run, app driven, or code read')
+    expect(DEFAULT_ROLE_PROMPTS.qa).toContain('Never claim GUI verification you did not do')
+  })
+
+  it('leaves the Operator and Research charters as they were', () => {
+    expect(LEGACY_ROLE_CHARTERS.operator).toBeUndefined()
+    expect(LEGACY_ROLE_CHARTERS.research).toBeUndefined()
+  })
+})
+
+// Charters are PERSISTED per project, so the rewrite above reaches a stored lane only through
+// this migration. Stock text is upgraded; anything the user wrote is not.
+describe('migrateStockCharters', () => {
+  const base = (roster: Role[]): Project => ({ id: 'p', path: '/p', name: 'P', createdAt: 't', lastActiveAt: 't', roster })
+  const lane = (id: string, prompt?: string): Role => ({ id, name: id, prompt })
+
+  it('upgrades every old stock charter, with or without NO_COMMISSIONING, to today\'s text', () => {
+    for (const id of Object.keys(LEGACY_ROLE_CHARTERS)) {
+      for (const old of legacyStockCharters(id)) {
+        const m = migrateStockCharters(base([lane(id, old)]))
+        expect(m.roster![0].prompt, id).toBe(DEFAULT_ROLE_PROMPTS[id])
+      }
+    }
+  })
+
+  it('keeps everything else on the lane', () => {
+    const r: Role = { id: 'code', name: 'Builder', model: 'sonnet', accent: '#123456', prompt: LEGACY_ROLE_CHARTERS.code[0] + NO_COMMISSIONING }
+    const m = migrateStockCharters(base([r]))
+    expect(m.roster![0]).toEqual({ ...r, prompt: DEFAULT_ROLE_PROMPTS.code })
+  })
+
+  it('never touches a customised charter, a custom lane, a missing charter, or Operator/Research', () => {
+    const roster = [
+      lane('code', LEGACY_ROLE_CHARTERS.code[0] + ' Also: always use tabs.'), // edited stock text
+      lane('my-lane', LEGACY_ROLE_CHARTERS.code[0] + NO_COMMISSIONING),        // custom id, stock-looking text
+      lane('review'),                                                          // no charter at all
+      lane('operator', 'my own coordinator charter'),
+      lane('research', DEFAULT_ROLE_PROMPTS.research),
+    ]
+    const p = base(roster)
+    expect(migrateStockCharters(p)).toBe(p) // same reference: nothing to do
+  })
+
+  it('does not apply one role\'s old charter to another role', () => {
+    const p = base([lane('review', LEGACY_ROLE_CHARTERS.code[0] + NO_COMMISSIONING)])
+    expect(migrateStockCharters(p)).toBe(p)
+  })
+
+  it('is idempotent and reference-preserving once migrated', () => {
+    const once = migrateStockCharters(base([lane('qa', LEGACY_ROLE_CHARTERS.qa[0] + NO_COMMISSIONING), lane('design', DEFAULT_ROLE_PROMPTS.design)]))
+    expect(migrateStockCharters(once)).toBe(once)
+    const bare: Project = { id: 'p', path: '/p', name: 'P', createdAt: 't', lastActiveAt: 't' }
+    expect(migrateStockCharters(bare)).toBe(bare)
   })
 })

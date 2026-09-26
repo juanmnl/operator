@@ -658,14 +658,130 @@ export async function commitAll(path: string, message: string): Promise<string> 
   return git(path, ['rev-parse', 'HEAD'])
 }
 
-export async function mergeBranch(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string): Promise<{ ok: boolean; message?: string }> {
-  let dirty: string
-  try { dirty = await git(sourceRoot, ['status', '--porcelain']) } catch (e) { return { ok: false, message: String(e) } }
-  if (dirty) return { ok: false, message: 'Source repo has uncommitted changes — commit or stash before merging.' }
+/** A running terminal as main's pty table reports it (`TerminalManager.liveTerminals`). */
+export interface LivePty { id: string; cwd: string; roleId?: string }
 
+/** Who merge and discard must not pull a checkout out from under. `ptys` is main's pty table, never
+ *  `sessions.json`. `exceptTerminalId` is the one lane the caller is merging or discarding ON
+ *  PURPOSE and ends straight after (the session's own Diff panel); every other live lane blocks. */
+export interface LiveGuard { ptys: readonly LivePty[]; exceptTerminalId?: string }
+
+/** The first live terminal whose cwd is one of `paths` or inside it, other than the exempt one. Pure
+ *  given the paths (`containsPath` resolves symlinks). */
+export function liveLaneIn(paths: readonly string[], guard: LiveGuard): LivePty | undefined {
+  return guard.ptys.find((p) => p.id !== guard.exceptTerminalId && paths.some((path) => path && containsPath(path, p.cwd)))
+}
+
+/** The refusal, naming the lane. */
+export function liveLaneRefusal(verb: 'merge' | 'discard', lane: LivePty, branch: string): string {
+  const who = `lane ${lane.id}${lane.roleId ? ` (${lane.roleId})` : ''}`
+  return `Refused to ${verb} ${branch}: ${who} is running in ${lane.cwd}, which has ${branch} checked out, `
+    + `and ${verb === 'merge' ? 'merging' : 'discarding'} would remove that checkout from under it. Close that lane first.`
+}
+
+/** Every worktree of `sourceRoot` that has `branch` checked out, from git's own list. */
+async function checkoutsOf(sourceRoot: string, branch: string): Promise<string[]> {
+  const out = await gitOk(sourceRoot, ['worktree', 'list', '--porcelain'])
+  if (out == null) return []
+  return out.split(/\n\s*\n/)
+    .filter((block) => block.split('\n').some((l) => l.trim() === `branch refs/heads/${branch}`))
+    .map((block) => /^worktree (.+)$/m.exec(block)?.[1]?.trim())
+    .filter((p): p is string => !!p)
+}
+
+/** THE LIVE-LANE REFUSAL for merge and discard (dev/results/mantel-55da80-gutted-2026-09-25.md).
+ *  Both remove the worktree at `worktreePath`, and a branch can also be checked out in another
+ *  worktree than the one the caller named. Either one with a running terminal in it refuses. */
+async function liveLaneBlocking(worktreePath: string, sourceRoot: string, branch: string, guard: LiveGuard): Promise<LivePty | undefined> {
+  if (!guard.ptys.length) return undefined
+  return liveLaneIn([worktreePath, ...await checkoutsOf(sourceRoot, branch)], guard)
+}
+
+/** `git` without trimming: `-z` status output starts with a status column that may be a space. */
+const gitRawOk = async (cwd: string, args: string[]): Promise<string | null> =>
+  execFileAsync('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 }).then((r) => r.stdout, () => null)
+
+/** `status --porcelain=v1 -z`: each entry's XY and path; a rename's source path is skipped. */
+function statusEntries(out: string): Array<{ xy: string; path: string }> {
+  const fields = out.split('\0')
+  const entries: Array<{ xy: string; path: string }> = []
+  for (let i = 0; i < fields.length; i++) {
+    if (fields[i].length < 4) continue
+    const xy = fields[i].slice(0, 2)
+    entries.push({ xy, path: fields[i].slice(3) })
+    if (xy[0] === 'R' || xy[0] === 'C') i++
+  }
+  return entries
+}
+
+/** Every path a merge of `branch` would write into the source checkout, plus the worktree's
+ *  uncommitted files when they are about to be committed into it. `null` when git cannot say. */
+async function pathsTheMergeWrites(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, withPending: boolean): Promise<Set<string> | null> {
+  const committed = await gitOk(sourceRoot, ['diff', '--name-only', '--no-renames', `${baseBranch}...${branch}`])
+  if (committed == null) return null
+  const paths = new Set(committed.split('\n').filter(Boolean))
+  if (withPending && worktreePath && existsSync(worktreePath)) {
+    const pending = await gitRawOk(worktreePath, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'])
+    if (pending == null) return null
+    for (const e of statusEntries(pending)) paths.add(e.path)
+  }
+  return paths
+}
+
+/** Why the source checkout is in no state to take this merge; `null` when it is.
+ *
+ *  A TRACKED change blocks, as before: `git merge` would mix it into the merge result. An UNTRACKED
+ *  file blocks only when the merge would write that same path (Review, N1 "related"): the main
+ *  checkout of this project always holds untracked `dev/results` files that no lane touches, and
+ *  counting them refused nearly every merge. */
+async function sourceBlocksMerge(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, withPending: boolean): Promise<string | null> {
+  const status = await gitRawOk(sourceRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  if (status == null) return `git could not read the status of ${sourceRoot}.`
+  const entries = statusEntries(status)
+  const tracked = entries.filter((e) => e.xy !== '??')
+  if (tracked.length) {
+    return `Source repo has uncommitted changes (${tracked.slice(0, 3).map((e) => e.path).join(', ')}${tracked.length > 3 ? ', …' : ''}) — commit or stash before merging.`
+  }
+  const untracked = entries.filter((e) => e.xy === '??').map((e) => e.path)
+  if (!untracked.length) return null
+  const writes = await pathsTheMergeWrites(worktreePath, sourceRoot, branch, baseBranch, withPending)
+  if (writes == null) return 'git could not list what the merge would write, so the untracked files in the source repo cannot be ruled out.'
+  const clash = untracked.filter((p) => writes.has(p))
+  return clash.length
+    ? `The merge would overwrite untracked file${clash.length === 1 ? '' : 's'} in the source repo: ${clash.slice(0, 3).join(', ')}${clash.length > 3 ? ', …' : ''}. Move or commit ${clash.length === 1 ? 'it' : 'them'} first.`
+    : null
+}
+
+/** What a merge or discard does to the lane being merged on purpose, AFTER every refusal has passed
+ *  (Review N1): stop it, so nothing more is written into the worktree. Absent = no lane to stop.
+ *  `commitMessage` asks for the worktree's uncommitted files to be committed after the stop and
+ *  before the merge; without it nothing is committed (the caller did its own). */
+export interface LaneStop { stopLane?: () => Promise<void>; commitMessage?: string }
+
+export async function mergeBranch(worktreePath: string, sourceRoot: string, branch: string, baseBranch: string, guard: LiveGuard, lane: LaneStop = {}): Promise<{ ok: boolean; message?: string }> {
+  // EVERY REFUSAL FIRST (Review N1). A refused merge leaves the repo exactly as it was, and leaves
+  // the lane being merged running and untouched: it is stopped only once nothing can refuse.
+  const blocking = await liveLaneBlocking(worktreePath, sourceRoot, branch, guard)
+  if (blocking) return { ok: false, message: liveLaneRefusal('merge', blocking, branch) }
+  for (const ref of [branch, baseBranch]) {
+    if (await gitOk(sourceRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${ref}`]) == null) {
+      return { ok: false, message: `Branch ${ref} does not exist in ${sourceRoot}.` }
+    }
+  }
+  const blocked = await sourceBlocksMerge(worktreePath, sourceRoot, branch, baseBranch, lane.commitMessage !== undefined)
+  if (blocked) return { ok: false, message: blocked }
   const current = await gitOk(sourceRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])
   if (current && current !== baseBranch) {
     try { await git(sourceRoot, ['checkout', baseBranch]) } catch (e) { return { ok: false, message: `Could not switch to ${baseBranch}: ${e}` } }
+  }
+
+  // Nothing refuses from here on. Stop the lane, then commit what the worktree holds NOW — anything it
+  // wrote up to the moment it stopped — so the merge takes all of it (Review finding 1).
+  if (lane.stopLane) await lane.stopLane()
+  if (lane.commitMessage !== undefined && worktreePath && existsSync(worktreePath)) {
+    try { await commitAll(worktreePath, lane.commitMessage) } catch (e) {
+      return { ok: false, message: `Commit failed: ${e}` }
+    }
   }
   try {
     await git(sourceRoot, ['merge', '--no-ff', '-m', `Merge ${branch}`, branch])
@@ -674,13 +790,30 @@ export async function mergeBranch(worktreePath: string, sourceRoot: string, bran
     await gitOk(sourceRoot, ['merge', '--abort'])
     return { ok: false, message: `Merge failed: ${e}` }
   }
+  // KEEP A WORKTREE THAT STILL HOLDS UNCOMMITTED WORK (Review finding 1). The merge took only what
+  // was committed; removing the directory now would send anything written since into the trash. A
+  // status git cannot read counts as uncommitted.
+  if (worktreePath && existsSync(worktreePath)) {
+    const left = await gitOk(worktreePath, ['status', '--porcelain'])
+    if (left == null || left) {
+      const n = left ? left.split('\n').filter(Boolean).length : undefined
+      return {
+        ok: true,
+        message: `Merged ${branch} into ${baseBranch}. The worktree was kept, because ${n === undefined ? 'git could not read its status' : `it has ${n} uncommitted file${n === 1 ? '' : 's'}`}: ${worktreePath}`,
+      }
+    }
+  }
   // Best-effort: the merge is what the caller asked for and it succeeded; a worktree that
   // refuses to be removed (the guard above) must not turn that into a failure.
   await removeWorktree(worktreePath, sourceRoot).catch(() => {})
   return { ok: true }
 }
 
-export async function discardBranch(worktreePath: string, sourceRoot: string, branch: string): Promise<void> {
+export async function discardBranch(worktreePath: string, sourceRoot: string, branch: string, guard: LiveGuard, lane: LaneStop = {}): Promise<void> {
+  // Refusal first; the lane being discarded is stopped only once nothing can refuse (Review N1).
+  const blocking = await liveLaneBlocking(worktreePath, sourceRoot, branch, guard)
+  if (blocking) throw new Error(liveLaneRefusal('discard', blocking, branch))
+  if (lane.stopLane) await lane.stopLane()
   await removeWorktree(worktreePath, sourceRoot).catch(() => {})
   await gitOk(sourceRoot, ['branch', '-D', branch])
 }

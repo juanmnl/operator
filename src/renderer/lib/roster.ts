@@ -198,8 +198,8 @@ const REPORT_INBOX =
 
 /** Appended to every NON-coordinator charter — EXPORTED because the one-time seeded-lane prune
  *  (lib/prune-seeded-lanes) has to recognise the charter as it read *before* this clause was
- *  appended, and deriving that by stripping the suffix beats freezing a second copy of six
- *  paragraphs. The belt to the router's braces: the enforcement
+ *  appended, and deriving that by stripping the suffix beats freezing a second copy of every
+ *  charter. The belt to the router's braces: the enforcement
  *  that matters is `dispatchNeedsApproval` (lib/dispatch), because charter text is advisory and
  *  models route around it — Research's charter already said "never change code" and it obeyed
  *  that literally, then wrote an implementation brief and dispatched Code to build it. Saying the
@@ -221,36 +221,106 @@ export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
   code:
     'Implement the task, nothing more. Read the surrounding code first and match its idiom — naming, ' +
     'comment density, error handling; no drive-by refactors. Run the project’s typecheck and tests ' +
-    'before calling anything done, and report exactly what changed and why, plus anything you ' +
+    'before calling anything done, and state the results with their output. Commit your work on your ' +
+    'branch with a message that says why. Report exactly what changed and why, plus anything you ' +
     'deliberately left out.' + NO_COMMISSIONING,
   review:
-    'Review adversarially — find real defects, don’t fix them unless asked. Read the full diff plus ' +
-    'enough surrounding code to judge it: edge cases, races, security, regressions, misleading names. ' +
-    'Rank findings by severity with file:line and a concrete failure scenario for each. If an area is ' +
-    'clean, say what you checked so silence isn’t ambiguous.' + NO_COMMISSIONING,
+    'Review adversarially — find real defects, don’t fix them unless asked. You run in the main ' +
+    'checkout and cannot see a lane’s worktree, so review the branch, commit or diff your brief names ' +
+    '(`git diff main...<branch>`); if it names none, say so rather than reviewing whatever is checked ' +
+    'out. Read the full diff plus enough surrounding code to judge it: edge cases, races, security, ' +
+    'regressions, misleading names. Rank findings by severity with file:line and a concrete failure ' +
+    'scenario for each. If an area is clean, say what you checked so silence isn’t ambiguous.' + NO_COMMISSIONING,
   design:
     'Own UI/UX quality. Reuse the project’s design system — its variables, spacing, and components — ' +
     'and never hardcode values that tokens already define. Propose the plan (what/where/why) before big ' +
-    'visual changes; implement small polish directly. Verify both light and dark themes plus empty, ' +
-    'loading, and overflow states.' + NO_COMMISSIONING,
+    'visual changes; implement small polish directly. Verify in the running app (Preview or a ' +
+    'screenshot), not only by reading code, across light and dark themes plus empty, loading, and ' +
+    'overflow states, and state which themes and states you actually checked.' + NO_COMMISSIONING,
   qa:
+    'Verify behavior, don’t assume it. Reproduce issues first and write down exact steps, then add ' +
+    'automated tests that fail before the fix and pass after — in the shared checkout, specify them ' +
+    'instead of editing files. Probe what the happy path misses: empty input, rapid repeats, ' +
+    'cancellation, restart. Finish with a pass/fail rundown of everything you exercised, saying for ' +
+    'each how (tests run, app driven, or code read), and precise repros for anything broken. Never ' +
+    'claim GUI verification you did not do.' + NO_COMMISSIONING,
+  infra:
+    'Own build, CI, release and environment — make it reproducible, never surprising. That covers ' +
+    'build and packaging, CI workflows, the release and updater pipeline, dev servers and ports, env ' +
+    'vars, dependencies and scripts. Dry-run or read before you change anything. Never push, tag, ' +
+    'publish a release, deploy, rotate or regenerate keys, delete remote resources, or take any other ' +
+    'outward-facing or irreversible step unless the brief gives the user’s explicit go-ahead for it. ' +
+    'Report the exact commands you ran and their output.' + NO_COMMISSIONING,
+}
+
+/** Worker charters as they read BEFORE the 2026-09-25 rewrite — the body only, without
+ *  NO_COMMISSIONING. Frozen here because each change was a rewrite, not an addition, so the old
+ *  text cannot be derived from today's. Two readers: `migrateStockCharters` upgrades a lane still
+ *  carrying one of them, and the seeded-lane prune (lib/prune-seeded-lanes) still recognises them
+ *  as stock. A later rewrite of any worker charter appends the text it replaced here. */
+export const LEGACY_ROLE_CHARTERS: Record<string, string[]> = {
+  code: [
+    'Implement the task, nothing more. Read the surrounding code first and match its idiom — naming, ' +
+    'comment density, error handling; no drive-by refactors. Run the project’s typecheck and tests ' +
+    'before calling anything done, and report exactly what changed and why, plus anything you ' +
+    'deliberately left out.',
+  ],
+  review: [
+    'Review adversarially — find real defects, don’t fix them unless asked. Read the full diff plus ' +
+    'enough surrounding code to judge it: edge cases, races, security, regressions, misleading names. ' +
+    'Rank findings by severity with file:line and a concrete failure scenario for each. If an area is ' +
+    'clean, say what you checked so silence isn’t ambiguous.',
+  ],
+  design: [
+    'Own UI/UX quality. Reuse the project’s design system — its variables, spacing, and components — ' +
+    'and never hardcode values that tokens already define. Propose the plan (what/where/why) before big ' +
+    'visual changes; implement small polish directly. Verify both light and dark themes plus empty, ' +
+    'loading, and overflow states.',
+  ],
+  qa: [
     'Verify behavior, don’t assume it. Reproduce issues first and write down exact steps, then add ' +
     'automated tests that fail before the fix and pass after. Probe what the happy path misses: empty ' +
     'input, rapid repeats, cancellation, restart. Finish with a pass/fail rundown of everything you ' +
-    'exercised and precise repros for anything broken.' + NO_COMMISSIONING,
+    'exercised and precise repros for anything broken.',
+  ],
+}
+
+/** Every superseded stock wording of a worker charter, verbatim: each legacy body both with and
+ *  without NO_COMMISSIONING, because that clause was appended in an earlier, separate edit. */
+export function legacyStockCharters(roleId: string): string[] {
+  return (LEGACY_ROLE_CHARTERS[roleId] ?? []).flatMap((body) => [body + NO_COMMISSIONING, body])
+}
+
+/** Upgrade every lane still carrying a superseded STOCK charter to today's text.
+ *
+ *  Charters are persisted per project, so a rewrite of `DEFAULT_ROLE_PROMPTS` reaches only lanes
+ *  added after it. A lane whose prompt is exactly an old stock wording never had it chosen by
+ *  anyone — the preset wrote it — so it takes the new one. Anything else (a customised charter, a
+ *  custom lane, no charter at all) is left exactly as it is. Returns the same object when there is
+ *  nothing to do, like the other hydrate migrations, so it is idempotent and free to re-run. */
+export function migrateStockCharters(p: Project): Project {
+  const roster = p.roster
+  if (!roster?.length) return p
+  let changed = false
+  const next = roster.map((r) => {
+    if (r.prompt === undefined || !legacyStockCharters(r.id).includes(r.prompt)) return r
+    changed = true
+    return { ...r, prompt: DEFAULT_ROLE_PROMPTS[r.id] }
+  })
+  return changed ? { ...p, roster: next } : p
 }
 
 // Sensible starting roster seeded on project creation — the user's own framing:
 // Fable orchestrates, Sonnet researches, Opus writes code. Fully editable afterwards.
 // (Ids are stable, human-readable, and unique within a fresh roster — safe as React keys.)
-/** The six lane TEMPLATES. These are good defaults — tuned model, effort, accent and charter
+/** The lane TEMPLATES. These are good defaults — tuned model, effort, accent and charter
  *  per role — and they remain exactly that: templates. Nothing seeds them into a project any
  *  more (2026-07-28: a new project arrives with an EMPTY roster and grows on demand), so this
  *  is the menu behind "+ Add agent" and the source a dispatch creates a lane from. */
 export function rolePresets(): Role[] {
   return [
     // Orchestrator: fast coordination. Research: strong reading, cheaper for breadth. The rest
-    // pin the most capable model where quality matters most (code / review / design), Sonnet
+    // pin the most capable model where quality matters most (code / review / design / infra), Sonnet
     // for QA's higher-volume test work. All editable per project.
     //
     // `useWorktree` lives HERE as of the one-altitude collapse. It used to be the one field the
@@ -260,7 +330,8 @@ export function rolePresets(): Role[] {
     // them can't collide in one checkout: Code and Design (Design implements and commits here).
     // Research, Review and QA read and verify, so they work in the main checkout where the work
     // actually is. Research was ON until 2026-09-16; that made every research question a worktree
-    // for Settings to clean up. A custom lane falls to `HARD_FALLBACK` (off) until switched on.
+    // for Settings to clean up. Infra writes build and CI files, so it isolates like Code.
+    // A custom lane falls to `HARD_FALLBACK` (off) until switched on.
     // THE COORDINATOR RUNS IN THE REPO ITSELF, and this is `false` as a matter of rule rather
     // than taste — see `resolveAgentConfig`, which enforces it over a persisted pin. A coordinator
     // in a worktree is on a branch of its own, so the work it merges, the branches it reaps and
@@ -274,18 +345,21 @@ export function rolePresets(): Role[] {
     { id: 'review', name: 'Review', model: 'opus', effort: 'high', useWorktree: false, accent: '#ff9f45', prompt: DEFAULT_ROLE_PROMPTS.review },
     { id: 'design', name: 'Design', model: 'opus', effort: 'medium', useWorktree: true, accent: '#ff7ac6', prompt: DEFAULT_ROLE_PROMPTS.design },
     { id: 'qa', name: 'QA', model: 'sonnet', effort: 'high', useWorktree: false, accent: '#ffd43b', prompt: DEFAULT_ROLE_PROMPTS.qa },
+    // Infra's teal measures ΔE*ab ≥ 39.7 from each of the other six raw and ≥ 14.4 after the light
+    // themes' --lane-ink-blend (the six sit ≥ 34.4 / ≥ 11.4 from each other), and clears 5.7:1 as text.
+    { id: 'infra', name: 'Infra', model: 'opus', effort: 'high', useWorktree: true, accent: '#2dd4bf', prompt: DEFAULT_ROLE_PROMPTS.infra },
   ]
 }
 
 /** The full preset set as a roster. NOT used for seeding — kept because the lane-accent
- *  palette and the roster tests both want the canonical six in order. */
+ *  palette and the roster tests both want the canonical set in order. */
 export function defaultRoster(): Role[] {
   return rolePresets()
 }
 
 /** A preset matching a dispatch token — by id or by name, case-insensitively, the same way
  *  `routeDispatch` matches real lanes. Returns a fresh copy, so a created lane can be edited
- *  without mutating the template. `undefined` for anything that isn't one of the six: a typo
+ *  without mutating the template. `undefined` for anything that isn't a preset: a typo
  *  like `[cod]` must NOT invent a junk lane. */
 export function presetFor(token: string): Role | undefined {
   const t = token.trim().toLowerCase()
@@ -328,6 +402,26 @@ export const WORKTREE_DONE_NOTE =
   'When your task is done and your work is committed on your branch, call ' +
   '`mcp__operator__worktree_done`, then `mcp__operator__report`.\n'
 
+/** Branch hygiene that keeps one lane from deleting another's checkout.
+ *
+ *  dev/results/mantel-55da80-gutted-2026-09-25.md: a coordinator ran `gh pr merge N --squash
+ *  --delete-branch` from the main checkout while a Code lane had that PR's branch checked out in its
+ *  worktree. gh 2.100 then runs `git worktree remove` on that linked worktree; a dev server writing
+ *  into it made the removal fail halfway, leaving the lane in a directory with no `.git`. It
+ *  happened twice. The lane had switched to the PR branch with `git checkout -b` inside its own
+ *  worktree, which is what put its home directory in the merge's path.
+ *
+ *  Given to the coordinator (it merges) and to lanes that own a worktree (they branch). Lanes in the
+ *  shared checkout are already told not to commit or switch branches. */
+// A RULE, not a judgement (Review finding 6): every worktree lane has its own branch checked out, so
+// "if another lane may have it" is always true for a lane's own PR.
+export const BRANCH_SAFETY_NOTE =
+  'Git: `gh pr merge --delete-branch` removes the worktree that has the merged branch checked out, ' +
+  'a running lane\u2019s included, and every worktree lane has its branch checked out. Never pass ' +
+  '`--delete-branch`; after merging, delete only the remote branch (`git push origin --delete ' +
+  '<branch>`). Start a new feature branch in a fresh Operator worktree (a new lane), not with ' +
+  '`git checkout -b` in an existing one.\n'
+
 export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
@@ -344,6 +438,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `Your team for this project — the lanes you can delegate to:\n${team}\n` +
       charter +
       DISPATCH_PROTOCOL +
+      BRANCH_SAFETY_NOTE +
       REPLY_PROTOCOL +
       REPORT_INBOX +
       REPORT_TASK_STATUS
@@ -367,7 +462,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `it on its own. So don't plan around it: recommend the work to the coordinator instead, do ` +
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
     (opts.sharesMainCheckout ? SHARED_CHECKOUT_NOTE : '') +
-    (opts.ownWorktree ? WORKTREE_DONE_NOTE : '') +
+    (opts.ownWorktree ? WORKTREE_DONE_NOTE + BRANCH_SAFETY_NOTE : '') +
     REPLY_PROTOCOL +
     REPORT_ARTIFACTS +
     REPORT_TASK_STATUS

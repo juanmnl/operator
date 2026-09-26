@@ -1,5 +1,5 @@
 import type { Project, Role, SavedSession } from '../../shared/types'
-import { isCoordinator, NO_COMMISSIONING, rolePresets } from './roster'
+import { isCoordinator, legacyStockCharters, NO_COMMISSIONING, rolePresets } from './roster'
 
 // THE ONE-TIME PRUNE of seeded-but-never-used lanes.
 //
@@ -56,6 +56,8 @@ export function stockPrompts(roleId: string): string[] {
   const out = [prompt]
   // Every worker charter gained NO_COMMISSIONING in one edit; the text before it is the rest.
   if (prompt.endsWith(NO_COMMISSIONING)) out.push(prompt.slice(0, -NO_COMMISSIONING.length))
+  // …and the wordings the 2026-09-25 rewrite replaced, with and without that clause.
+  out.push(...legacyStockCharters(roleId))
   if (isCoordinator(roleId)) out.push(...LEGACY_COORDINATOR_CHARTERS)
   return out
 }

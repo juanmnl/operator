@@ -98,11 +98,20 @@ describe('classify — the seven states the audit measured, plus corrupt', () =>
 })
 
 describe('reapPlanFrom — what the button acts on', () => {
+  it('keeps debris OUT of auto unless it has the interrupted-create shape (Review finding 2)', () => {
+    const scratch = safe({ path: '/w/lane-notes', gitValid: false, sizeBytes: 300 * 1024, provenance: undefined, registered: false })
+    const plan = reapPlanFrom([scratch])
+    expect(plan.entries[0].cls).toBe('debris')
+    expect(plan.entries[0].auto).toBe(false)
+    expect(plan.entries[0].needsUnsavedConfirm).toBe(true) // plain path, second confirmation
+    expect(plan.entries[0].reason).toMatch(/may be someone/)
+  })
+
   it('puts merged-clean and debris in auto, and nothing else', () => {
     const plan = reapPlanFrom([
       safe({ path: '/w/clean' }),
       safe({ path: '/w/dirty', dirty: true }),
-      safe({ path: '/w/debris', gitValid: false, sizeBytes: 4096, provenance: undefined, registered: false }),
+      safe({ path: '/w/debris', gitValid: false, sizeBytes: 4096, provenance: undefined, registered: false, interruptedCreate: true }),
       safe({ path: '/w/unmerged', merged: false }),
       safe({ path: '/w/unattributed', provenance: undefined }),
       safe({ path: '/w/live', liveTerminalId: 't1' }),
@@ -189,7 +198,7 @@ describe('the audit snapshot, replayed through the classifier', () => {
     // The el-encanto shape: 500 MB, merged, one modified CLAUDE.md.
     safe({ path: '/w/one-line-dirty', dirty: true, sizeBytes: 550 * 1024 ** 2 }),
     // `.tmpIBNq7t-d96ee0` — one stray a.txt, no provenance, unregistered, git-invalid.
-    safe({ path: '/w/.tmpIBNq7t-d96ee0', gitValid: false, sizeBytes: 8 * 1024, provenance: undefined, registered: false }),
+    safe({ path: '/w/.tmpIBNq7t-d96ee0', gitValid: false, sizeBytes: 8 * 1024, provenance: undefined, registered: false, interruptedCreate: true }),
     // uwazi_2026-* — source repo gone from disk entirely.
     safe({ path: '/w/uwazi_2026-a', gitValid: false, sourceRepoExists: false, sizeBytes: 118 * 1024 ** 2 }),
   ]
