@@ -35,6 +35,27 @@ export interface RoutableTab {
   ended?: boolean
   /** The lane's last activity, used ONLY to break a duplicate tie deterministically. */
   lastActivityAt?: string
+  /** Where its pty runs, and for a worktree lane the repo the worktree came from. Checked against
+   *  the project's path, so a tab LABELLED with a project it does not run in is never picked. */
+  cwd?: string
+  sourceCwd?: string
+}
+
+const within = (path: string, root: string): boolean => {
+  const p = path.replace(/\/+$/, ''), r = root.replace(/\/+$/, '')
+  return p === r || p.startsWith(r + '/')
+}
+
+/** Does this tab run in the project at `projectPath`? Its own directory, or for a worktree lane its
+ *  source repo, must be inside it. A tab that states no directory is given the benefit of the doubt
+ *  (older tabs): refusing it would silently queue work that routes today. Pure.
+ *
+ *  X6 in dev/results/lane-instances-and-message-mixing-2026-09-25.md: routing trusted the tab's
+ *  project LABEL alone, so a tab labelled (uwazi, design) while its pty ran in mantel would be picked
+ *  as uwazi's Design and handed that mantel session's address. */
+export function tabRunsIn(t: { cwd?: string; sourceCwd?: string }, projectPath: string | undefined): boolean {
+  if (!projectPath || (!t.cwd && !t.sourceCwd)) return true
+  return (!!t.cwd && within(t.cwd, projectPath)) || (!!t.sourceCwd && within(t.sourceCwd, projectPath))
 }
 
 /** THE resolution of "which terminal is this role's lane", used by dispatch routing and by the
@@ -46,10 +67,11 @@ export interface RoutableTab {
  *  than left to `find()`'s array order, which is whatever the reattach happened to produce.
  *  Most recently ACTIVE wins: of several live lanes on one role, the one that spoke last is the
  *  one the user is actually working with. Ties fall to the latest in input order. */
-export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string): T | undefined {
+export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string, projectPath?: string): T | undefined {
   let best: T | undefined
   for (const t of tabs) {
     if (t.projectId !== projectId || t.roleId !== roleId || t.ended) continue
+    if (!tabRunsIn(t, projectPath)) continue
     if (!best) { best = t; continue }
     // >= so a later tab wins an exact tie (and an undefined timestamp loses to a real one).
     if ((t.lastActivityAt ?? '') >= (best.lastActivityAt ?? '')) best = t
@@ -91,6 +113,8 @@ export function routeDispatch<T extends RoutableTab>(
   roster: Role[],
   tabs: T[],
   projectId: string,
+  /** The project's path: a tab that runs elsewhere is not its lane (`tabRunsIn`, X6). */
+  projectPath?: string,
 ): DispatchRoute<T> {
   const token = roleToken.toLowerCase()
   const role = roster.find((r) => r.id === roleToken || r.name.toLowerCase() === token)
@@ -104,7 +128,7 @@ export function routeDispatch<T extends RoutableTab>(
     const preset = presetFor(roleToken)
     return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
   }
-  const tab = pickLaneTab(tabs, projectId, role.id)
+  const tab = pickLaneTab(tabs, projectId, role.id, projectPath)
   return tab ? { kind: 'send', role, tab } : { kind: 'queue', role }
 }
 

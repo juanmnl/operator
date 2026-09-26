@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs } from './dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs, tabRunsIn } from './dispatch'
 import type { Role } from '../../shared/types'
 
 const roster: Role[] = [
@@ -194,5 +194,33 @@ describe('orphanTabs', () => {
 
   it('is empty in the healthy case', () => {
     expect(orphanTabs([tab({ projectId: 'p', roleId: 'code' })])).toEqual([])
+  })
+})
+
+// X6 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): routing trusted a tab's project
+// LABEL alone, so a tab labelled uwazi/design whose pty runs in mantel would be picked as uwazi's
+// Design and handed that mantel session.
+describe('a tab is a project\'s lane only if it runs in that project', () => {
+  const uwazi = '/Users/x/Developer/huridocs/uwazi_app'
+  it('skips a tab labelled with the project whose pty runs elsewhere', () => {
+    const tabs = [{ id: 't4', projectId: 'uwazi', roleId: 'design', cwd: '/Users/x/Developer/mantel' }]
+    expect(pickLaneTab(tabs, 'uwazi', 'design', uwazi)).toBeUndefined()
+    expect(routeDispatch('design', [{ id: 'design', name: 'Design' }], tabs, 'uwazi', uwazi).kind).toBe('queue')
+  })
+
+  it('accepts a main-checkout lane under the project path and a worktree lane whose source is the project', () => {
+    const main = { id: 't1', projectId: 'uwazi', roleId: 'design', cwd: `${uwazi}/` }
+    const wt = { id: 't2', projectId: 'uwazi', roleId: 'code', cwd: '/Users/x/.operator/worktrees/uwazi_app-464540', sourceCwd: uwazi }
+    expect(pickLaneTab([main], 'uwazi', 'design', uwazi)).toBe(main)
+    expect(pickLaneTab([wt], 'uwazi', 'code', uwazi)).toBe(wt)
+  })
+
+  it('does not treat a sibling directory with a shared prefix as inside', () => {
+    expect(tabRunsIn({ cwd: `${uwazi}-old` }, uwazi)).toBe(false)
+  })
+
+  it('gives a tab with no directory, or a caller with no project path, the benefit of the doubt', () => {
+    expect(tabRunsIn({}, uwazi)).toBe(true)
+    expect(tabRunsIn({ cwd: '/elsewhere' }, undefined)).toBe(true)
   })
 })

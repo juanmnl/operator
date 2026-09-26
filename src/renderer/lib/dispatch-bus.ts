@@ -96,7 +96,7 @@ export function resolveDispatch(
   // inside it, so a lane cannot reach another project's fleet through Operator. (A lane can still
   // call `SendMessage` with a free-form name and reach anything on the bus; that is outside
   // Operator's hands and is noted rather than pretended away.)
-  const route = routeDispatch(req.lane, roster, [...ctx.lanes], req.projectId)
+  const route = routeDispatch(req.lane, roster, [...ctx.lanes], req.projectId, ctx.project?.path)
 
   if (route.kind === 'unassigned') {
     return {

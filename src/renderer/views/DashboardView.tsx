@@ -1843,7 +1843,7 @@ export function DashboardView() {
       }
       const roster = project.roster ?? []
       const d = { id, role: roleToken, task }
-      const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
+      const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id, project.path)
       const routedRole = route.kind === 'unassigned' ? undefined : route.role
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
       // A bus request's id is `bus-<n>` (the launch and approval paths both carry it through), so
@@ -1978,7 +1978,7 @@ export function DashboardView() {
       if (dispatchNeedsApproval(srcTab?.roleId)) {
         const roster = project.roster ?? []
         // Resolved only to NAME the target for the UI; no side effect runs here.
-        const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
+        const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id, project.path)
         const toRole = route.kind === 'unassigned' ? undefined : route.role
         const from = roster.find((r) => r.id === srcTab?.roleId)
         const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
@@ -2748,7 +2748,7 @@ export function DashboardView() {
     // Work went into them and the answers came back where nothing was looking.
     // `pickLaneTab` is the SAME resolution dispatch uses, so a reused lane and a dispatched
     // one can never disagree about which terminal is the lane.
-    const existing = pickLaneTab(withActivity(terminalsRef.current), project.id, role.id)
+    const existing = pickLaneTab(withActivity(terminalsRef.current), project.id, role.id, project.path)
     if (existing) {
       const joined = prompt?.trim()
       if (joined) void submitQueue.submit(existing.id, joined)
