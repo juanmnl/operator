@@ -37,6 +37,7 @@ import {
 // so the backfill's callers and tests keep one import site.
 export { gitdirFromGitFile, provePairing, type FileReader }
 import { TRASH_DIR_NAME, scheduleSweep } from './worktree-trash'
+import { isPidAlive } from './reap'
 
 const execFileAsync = promisify(execFile)
 
@@ -763,9 +764,24 @@ async function loadProvenance(): Promise<Map<string, ProvenanceRecord>> {
  *  G6 in dev/results/worktree-cleanup-audit-2026-09-25.md: a `terminalId` in `sessions.json` was
  *  trusted on its own, and terminal ids restart every app run, so a claim written by a previous run
  *  (`operator-db3d00`, claimed by `t20` since 2026-09-11) could never clear and blocked forever. */
-function claimIsLive(cwd: string): boolean {
+function claimIsLive(cwd: string, appPid?: unknown): boolean {
+  // WRITTEN BY ANOTHER OPERATOR THAT IS STILL RUNNING (Review finding 3): a second instance on the
+  // same ~/.operator cannot see that one's ptys, so its claims are kept rather than judged against a
+  // table they were never in. Only a claim whose writer is gone, or is this process, is tested here.
+  if (typeof appPid === 'number' && appPid !== process.pid && isPidAlive(appPid)) return true
   const cwds = livePtyCwds?.()
   return !cwds || !!ptyClaimOn(cwd, cwds)
+}
+
+/** Stamp `appPid` on every `sessions.json` record whose terminal is one of THIS process's live ptys,
+ *  so another Operator on the same store can tell a live instance's claim from a dead one's
+ *  (`leases.ts` records `appPid` for the same reason). Records it does not own keep whatever they
+ *  carry. Pure. */
+export function stampSessionClaims(records: readonly unknown[], ownLiveTerminalIds: ReadonlySet<string>, pid: number): unknown[] {
+  return records.map((s) => {
+    const r = s as { terminalId?: unknown } | null
+    return r && typeof r.terminalId === 'string' && ownLiveTerminalIds.has(r.terminalId) ? { ...r, appPid: pid } : s
+  })
 }
 
 /** Directories with a live lane in them: a `sessions.json` claim that main's pty table backs.
@@ -780,9 +796,9 @@ async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: 
   try {
     const raw = JSON.parse(await readFile(join(operatorDir(), 'sessions.json'), 'utf8')) as unknown[]
     for (const s of Array.isArray(raw) ? raw : []) {
-      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown }
+      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown; appPid?: unknown }
       if (typeof r?.cwd !== 'string') continue
-      if (typeof r.terminalId === 'string' && r.terminalId && claimIsLive(r.cwd)) claims.set(r.cwd, r.terminalId)
+      if (typeof r.terminalId === 'string' && r.terminalId && claimIsLive(r.cwd, r.appPid)) claims.set(r.cwd, r.terminalId)
       const at = typeof r.lastActiveAt === 'string' ? Date.parse(r.lastActiveAt) : NaN
       if (!Number.isNaN(at)) lastActive.set(r.cwd, Math.max(at, lastActive.get(r.cwd) ?? 0))
     }
@@ -1415,14 +1431,14 @@ export async function queueEndedSessions(): Promise<number> {
     if (!Array.isArray(raw)) return 0
     let queued = 0
     for (const s of raw) {
-      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown }
+      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown; appPid?: unknown }
       if (typeof r?.cwd !== 'string' || typeof r.sourceCwd !== 'string') continue
       if (typeof r.worktreeBranch !== 'string' || !r.worktreeBranch) continue
       // A `terminalId` means the roster believes a lane is open in it. Kept only where main's pty
       // table backs it (`claimIsLive`, the same test the classifier uses); a claim from a previous
       // app run is an ended session like any other. This only QUEUES the removal; nothing drains
       // an ended-session record automatically.
-      if (r.terminalId && claimIsLive(r.cwd)) continue
+      if (r.terminalId && claimIsLive(r.cwd, r.appPid)) continue
       if (!existsSync(r.cwd)) continue
       await queueRemoval({
         path: r.cwd,

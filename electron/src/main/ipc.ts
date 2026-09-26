@@ -31,7 +31,7 @@ import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
 import type { CheckoutWatcher } from './checkout-health'
-import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree } from './worktree-reap'
+import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree, stampSessionClaims } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
 
 /** One per main process, i.e. per app run: see launch-kind.ts. Module scope, not per registration. */
@@ -418,7 +418,11 @@ export function registerIpc(d: Deps): void {
     terminalResize: (id, cols, rows) => d.terminals.resize(id, cols, rows),
     noteSessionPort: (id, port) => d.terminals.noteSessionPort(id, port),
     worktreeAutoRemovalCheck: (trigger) => { void checkAutoRemoval(String(trigger)) },
-    saveSessions: (sessions) => { void store.saveSessions(sessions) },
+    // Claims this process owns carry its pid, so another Operator on the same store keeps them.
+    saveSessions: (sessions) => {
+      const own = new Set(d.terminals.liveTerminals().map((t) => t.id))
+      void store.saveSessions(Array.isArray(sessions) ? stampSessionClaims(sessions, own, process.pid) : sessions)
+    },
     saveProjects: (projects) => { void store.saveProjects(projects) },
     saveRoleDefaults: (defaults) => { void store.saveRoleDefaults(defaults) },
     setActiveSession: () => {},

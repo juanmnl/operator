@@ -200,6 +200,37 @@ describe('stale sessions.json claims', () => {
     expect((await factsFor(lane.path)).liveTerminalId).toBe('t20')
   })
 
+  // Review finding 3: a second Operator on the same ~/.operator cannot see the first one's ptys.
+  it('keeps a claim written by ANOTHER live Operator, and drops one whose writer is dead', async () => {
+    const repo = scratchRepo()
+    const other = await wt.createWorktree(repo)
+    const dead = await wt.createWorktree(repo)
+    const DEAD_PID = 99_999_999 // above any real pid, so never alive
+    writeSessions([
+      record(other.path, repo, { terminalId: 't1', appPid: process.ppid }), // the test runner's parent: alive, not us
+      record(dead.path, repo, { terminalId: 't2', appPid: DEAD_PID }),
+    ])
+    reap.setLivePtyCwds(() => [])
+    try {
+      expect((await factsFor(other.path)).liveTerminalId).toBe('t1')
+      expect((await factsFor(dead.path)).liveTerminalId).toBeUndefined()
+      await reap.queueEndedSessions()
+      const queued = (await reap.loadPending()).map((p) => p.path)
+      expect(queued).not.toContain(other.path)
+      expect(queued).toContain(dead.path)
+      for (const p of queued) await reap.clearPending(p)
+    } finally { reap.setLivePtyCwds(null) }
+  })
+
+  it('stampSessionClaims stamps only this process\'s live terminals and leaves the rest as written', () => {
+    const rows = [{ terminalId: 't1', cwd: '/a' }, { terminalId: 't9', cwd: '/b', appPid: 42 }, { cwd: '/c' }]
+    expect(reap.stampSessionClaims(rows, new Set(['t1']), 777)).toEqual([
+      { terminalId: 't1', cwd: '/a', appPid: 777 },
+      { terminalId: 't9', cwd: '/b', appPid: 42 },
+      { cwd: '/c' },
+    ])
+  })
+
   it('queueEndedSessions queues a record whose claim is stale, and leaves a live or unverifiable one alone', async () => {
     const repo = scratchRepo()
     const stale = await wt.createWorktree(repo)
