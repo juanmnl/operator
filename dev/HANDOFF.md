@@ -1,118 +1,98 @@
-# Handoff — 2026-09-17 (evening)
+# Handoff — 2026-09-26
 
-`main` = `f1780de` (pushed). **0.26.0 published** (`electron-v0.26.0`, run 35290271734 green).
-Verified end to end: `operator-releases` v0.26.0 is Latest and not a draft, six assets;
-`latest.json` serves 0.26.0 for `darwin-aarch64` with a 408-char signature; `latest-mac.yml` serves
-0.26.0; `Operator.app.tar.gz` was re-downloaded and hashes to the published `63af0d1a…`.
+`main` = `f0ec1e8` (pushed). **0.27.0 published** (`electron-v0.27.0`, lightweight, run `36259557739`
+green: test and release jobs). Verified: `operator-releases` v0.27.0 is not a draft or pre-release and has six
+assets (dmg, zip, `Operator.app.tar.gz`, `latest.json`, `latest-mac.yml`, `SHA256SUMS.txt`); `latest.json`
+serves 0.27.0 for `darwin-aarch64` with a 408-char signature; `latest-mac.yml` serves 0.27.0.
 
-**Nothing in 0.24.0, 0.25.0 or 0.26.0 has been verified in the running app.** Three releases deep.
-Everything below is tests, typechecks, probes and source reading.
+0.27.0 is also the first update FROM a build that contains the 0.23.0
+updater fix to reach a user who updated through 0.26.0, so check `~/.operator/updater.log` for
+`requested by Squirrel.Mac` before the restart prompt.
 
-## What shipped in 0.26.0
+## Verification state
 
-Two navigation dead ends, both found by reading source after Juan hit them.
+- **GUI-verified by Juan:** refocus on activation, including Cmd-Tab away while typing in the
+  Preview and back.
+- **Everything else in 0.27.0, and all of 0.24.0-0.26.0, is verified by tests, typecheck and review
+  only.** Worth trying by hand: Diff panel Merge on a running lane, Settings → Worktrees (Rescue,
+  labels, the one-press safe removal), side panel and rail collapse, scrolling up in a long idle lane
+  after switching away and back, the Add agent menu.
+- Tests on `main` before the release commit: root tsc and electron typecheck clean; electron 790,
+  renderer 1598.
 
-**A way back out of every full-page view** (`operator/ba0200`, `348a38b` + `6a984a6`):
+## What shipped in 0.27.0 (release notes: `electron/release-notes/0.27.0.md`)
 
-- New pure `src/renderer/lib/nav-origin.ts`: `describeOrigin` / `originLabel` / `originKey` /
-  `pushOrigin`. `NavOrigin extends ContinueTarget` so there is one definition of "a view you can
-  return to", plus four optional fields it never needed (gallery tab; which of the two pages that
-  both report `mode: 'prefs'`; the Global settings tab; the lane).
-- The control lives in `PageShell` and arrives by `PageBackContext`, not a prop threaded through
-  `PrefsView` / `AgentsHubView` / `TuningView`. All five page modes inherit it from one provider.
-- It is a **chain** (capped at 8, in-memory only), because the rail's foot reaches Preferences,
-  Global settings and Agents from each other, so `gallery → prefs → globals` is an ordinary path
-  and one slot would leave those two pages each claiming to be the other's origin.
-- `BACK_BTN` extracted to `lib/chrome.ts` and shared with `ProjectGallery` (its local `backBtn` is
-  gone), so the gallery's back button and this one cannot drift.
-- Lane-as-origin: `LaneOrigin = { terminalId }` on `NavOrigin.lane` with `mode: 'project'`. No name
-  and no session id are recorded — the name resolves at render through `sessionLabel`
-  (`lib/session-label`, called with the same arguments as `paletteActions`), the session id resolves
-  in `applyView` from `sessionsRef`. `originKey` is `lane:<terminalId>`, so two lanes of one project
-  are two places.
-- **The existence guard:** `backLanes` filters the named lane against `terminals` — the same
-  `terminals.some(...)` test `contentMode` uses — so control and router cannot disagree about what
-  exists. Lane gone → no label → no control, never a fallback to the lane's project. Absent origin
-  renders nothing at all.
-- **Fixed a real pre-existing bug in `applyView`:** it set six states but left `activeFolderPrefs`,
-  `activeSessionId` and `activeTerminalId` standing, so returning from the per-project settings page
-  to the gallery changed nothing on screen (gallery ranks *below* folderPrefs in `contentMode`).
+Branches merged 2026-09-25/26, each reviewed adversarially by the Review lane until merge-ready.
+Reviews and results are in `dev/results/*-2026-09-25.md` and `*-2026-09-26.md`.
 
-**The global Environment tab is a doorway** (`operator/eda0c0`, `9366fbd`):
+- **Scrollback freeze** (`80be6da`). Hiding a pane lowers `scrollback` 10,000 → 2,000; xterm 6 trims
+  the buffer without firing the events its viewport syncs on, so the viewport sat ~8k lines past the
+  buffer. `resyncViewport` in `lib/terminal-options.ts` calls xterm privates
+  (`_core._viewport.scrollToLine` + `queueSync`). **`@xterm/xterm` is pinned to 6.0.0** for that
+  reason, with a canary test (`9b2bbae`). Don't unpin without re-checking those names.
+- **pty batching** (`electron/src/main/pty-batch.ts`). One IPC message per 16 ms or 64 KB; a read
+  after a quiet spell is sent at once (keystroke echo). Flush on exit and kill. Measured 540 → 155
+  msg/s on a paced four-shell workload.
+- **Worktree cleanup** (`worktree-reap.ts`, from the audit `worktree-cleanup-audit-2026-09-25.md`):
+  provably non-work dirt ignored (byte-identical untracked copies, root `node_modules` symlink;
+  tracked edits still count); `sessions.json` claims kept only when a live pty backs them or another
+  live Operator pid wrote them; interrupted user-started removals drained at boot and quit;
+  ended-session records never drained; Rescue action copies unsaved files + patch to
+  `~/.operator/rescued/`; squash/rebase-merged label; debris enters the one-press tier only with the
+  interrupted-creation shape. `AUTO_REAP_ON_TRIGGERS` is still false.
+- **Gutted checkouts.** Cause of mantel lane t2's gutted `mantel-55da80`: the mantel coordinator's
+  `gh pr merge --squash --delete-branch`; gh 2.100 runs `git worktree remove` on a linked worktree
+  that has the branch checked out, and the lane's Vite made it fail halfway
+  (`mantel-55da80-gutted-2026-09-25.md`). Now: `BRANCH_SAFETY_NOTE` in the launch note,
+  `checkout-health.ts` detects a live lane in a checkout with no `.git`, and merge/discard refuse
+  while another live pty is in the worktree; the Diff panel stops its own lane only after the
+  refusals, and keeps a worktree still dirty after the merge.
+- **Cross-project messaging** (`lib/bus-name.ts`). Every lane is launched with
+  `claude --name <slug>--<role>`; verified on CLI 2.1.283 that this sets the session descriptor's
+  `name` with `nameSource: "user"`. Matching is by exact slug (the `-` version let `mantel-landing`
+  read as `mantel`). Unstamped tabs get their own brake key; no unscoped report announce/expire; the
+  MCP caller is matched on terminal id plus session or cwd. **The mantel/uwazi misroute Juan saw
+  left no trace on disk**; the most likely path was a lane picking a session by prefix on the
+  machine-wide bus, which the naming closes.
+- **Side panel and rail** (`SidePanelSlot.tsx`, `lib/layout-motion.ts`): the content no longer
+  re-lays out during the move, the terminal fits once after it, and the panel yields before the
+  console drops below 70 columns. Add agent menu placement (`lib/menu-placement.ts`, shared
+  `PopMenu`).
+- **Refocus on activation** (`electron/src/main/activation.ts`, `lib/refocus.ts`,
+  `lib/refocus-controller.ts`).
+- **Infra lane preset** and corrected Code/Review/Design/QA charters; lanes still carrying the old
+  stock text are migrated at load.
+- **Dev instances use their own port windows** (`electron/src/main/port-ranges.ts`), and
+  `npm run dev` takes `OPERATOR_ELECTRON_PORT`, then `OPERATOR_DEV_PORT`, then 1610.
 
-- `EnvironmentSection`'s `project === null` branch listed nothing and said "Open a project's
-  settings" without a way to do it. It now lists every project with `tildePath` and a count
-  (`3 variables` / `none set`), each row calling `onOpenFolderPrefs(path, name, 'Environment')`.
-- `envDoorwayRows` is exported and pure, sorts by count descending, stable among equals.
-- Two optional props through `FolderPreferencesView`; the DashboardView change is two lines at the
-  `globalPrefs` render site. The project's own page is untouched.
-- Shelved projects are listed like any other — hiding them from a list whose purpose is
-  reachability would recreate the defect in miniature.
+## In flight
 
-Merged as `594a072` with build CI green on the merge *before* tagging. Post-merge: root tsc 0,
-electron tsc 0, renderer 101 files / 1495 tests, electron 681 tests, `npm run build` clean.
+- **Lanes as profiles** (several live instances of one lane per project). Plan:
+  `dev/results/lane-profiles-plan-2026-09-25.md`, 12 steps, each mergeable alone; step 7 is the
+  first that lets a second instance exist. **Code is on steps 1-3** (identity module, stamping
+  `instance`, store columns) on a new branch from `main`; no branch had appeared when this was
+  written. Code was told the merged name format is `<slug>--<role>`, so instance n≥2 needs a suffix
+  that parses unambiguously (e.g. `<slug>--<role>--<n>`). Step 12 (UI) needs Design's answers to the
+  plan's §4 questions, not yet dispatched.
+- **Renderer memory (1.26 GB live) is unexplained.** QA's baseline
+  (`dev/results/perf-baseline-2026-09-25.md`) rules out xterm buffers and JS heap in the harness.
+  The heap-snapshot run with real lanes was approved twice and never ran; the dev instance it needed
+  has since exited. Next step, if wanted: a heap snapshot of the real app.
 
-## Owed by Juan (GUI)
+## Worktrees
 
-Carried forward, plus this release. Items 1–4 are still owed from 0.24.0/0.25.0.
+`~/.operator/worktrees` held 18.7 GB on 2026-09-25; about 12.4 GB (31 dirs) was safe to remove, listed
+in `worktree-cleanup-audit-2026-09-25.md` (List 1). Nothing was removed; Juan removes them through
+Settings → Worktrees, which in 0.27.0 no longer asks about the non-work dirt. Six lane reports that
+existed only in old worktrees were copied into `dev/results/` (`b4938a7`).
 
-1. Update in-app to 0.26.0. 0.23.0's updater fix has now had one real test (the 0.25.0 install); if
-   it misbehaves, install the DMG by hand.
-2. Launch lands on the home overview; a renderer respawn does not.
-3. Preview: Redlines on a navigated/scrolled page, Inspect → CSS controls → Send, note screenshots,
-   an attached Electron app.
-4. Settings → Worktrees: groups, the confirm, the would-remove list. Then decide whether to arm
-   automatic removal.
-5. **New — the back control.** From the home overview → a project's Worktrees row action → press
-   `‹ Worktree overview` and check it returns to the overview *tab*, not the projects list. Then
-   from a focused lane → rail foot → Preferences, and check the control is labelled with the lane's
-   name. Then close that lane from elsewhere while sitting in settings and check the control
-   *disappears* rather than pointing at a dead pty.
-6. **New — the Environment doorway.** Global settings → Environment lists your 16 projects; a row
-   opens that project's own Environment tab.
+## Gotchas learned this session
 
-## Open
-
-- **Env variables have never been set on any project.** Verified: the `env` key is absent from all
-  16 records in `~/.operator/projects.json` and from every backup checked back to 2026-09-11. Not
-  cleared — never written, which is consistent with the discoverability defect 0.26.0 fixes. The
-  `RAILWAY` strings in `projects.json` are task and dispatch text, not values.
-- **`RAILWAY_TOKEN` for mantel is still unset, and setting it is a decision, not a chore.** It would
-  land as plaintext in `projects.json`. v1 is config-only by design; the `{name, secret}` `EnvEntry`
-  shape is reserved and unimplemented (Keychain-backed secrets, S4–S7). Decide plaintext vs
-  Keychain before setting it.
-- **The release workflow still uploads every asset in one `gh release create`**, which deletes the
-  whole release if one upload fails. It did **not** fail on this cut, but the workflow is unchanged,
-  so the 0.25.0 failure mode stands. Recovery that worked: create the release empty, then
-  `gh release upload --clobber` per file with retries. Worth changing in `electron.yml`.
-- **Back control, known residue:** a one-frame race if a lane dies between the render that drew the
-  control and the press (backstopped by `contentMode`'s own liveness test, pre-existing); a lane with
-  no session object and no role labels as the generic `Session`; nothing is persisted, so a reload
-  starts with an empty chain and no control (by design — terminal ids are a per-run counter, so a
-  persisted chain would name last run's lane); going back leaves no forward trail.
-- `CLAUDE.md` is **modified and uncommitted** — a one-line fix repointing the hub note to
-  `~/Documents/Vaults/Work/Operator/Operator.md` after the vault move. Kept out of the release
-  commit deliberately. Worth committing on its own.
-- `operator/eda0c0` and `operator/ba0200` are merged into `main` but their worktrees are still on
-  disk (`~/.operator/worktrees/operator-{eda0c0,ba0200}`). 19 worktrees, 17GB total — candidates for
-  the cleanup page.
-- Worktree stage 2 (arming automatic removal) waits on Juan reading the report-only list. Orphans
-  whose unsaved state git cannot read stay manual-only, and that rule is not enforced in code yet.
-- 15 existing projects still carry the old coordinator charter; only new projects get the "keep your
-  steps in the task list, not in chat" line. `visual language` has no charter at all.
-- CSS controls on React 19 give the source file but no line (`_debugSource` is gone; the fallback
-  parses `_debugStack`), untested against a real React 19 app.
-- Pages that refuse to be framed (`X-Frame-Options`) can no longer be inspected.
-- The Tauri shell still swaps hosts for overlays (the bug fixed for Electron).
-- Not done from the research: CDP-native inspection (`DOM.getBoxModel`, `Overlay.highlightNode`),
-  native macOS apps (ScreenCaptureKit + AX, needs a signed Swift helper and two TCC grants).
-
-## Notes
-
-Lane reports for this round are tracked: `dev/results/global-env-doorway.md`,
-`dev/results/pageshell-back-affordance.md`, `dev/results/pageshell-back-lane-origin.md`. Earlier
-rounds (`dev/results/*-2026-09-16.md`, `*-2026-09-17.md`) remain untracked. Hub note updated through
-the 0.26.0 release.
-
-One discrepancy worth knowing if you read the lane reports: `pageshell-back-lane-origin.md` says
-`nav-origin.test.ts` has 31 tests; it runs 32. A count slip, not a failure.
+- **Launching a dev instance of Operator:** use `electron/` `npm run dev`, never the root `npm run dev`
+  (that is the Tauri-era Vite config). Always set `OPERATOR_DIR` to a scratch dir: the boot and quit
+  reapers act on whatever `~/.operator` they are given, including the live app's lanes.
+- **Test lanes are real agents.** Design's test lane in a dev instance searched the vault and started
+  an HTTP server on 1422. Don't leave test lanes running unattended.
+- **Late reports.** `mcp__operator__report` announcements arrive oldest-first, often long after the
+  work was acted on from the result file. Check the commit is already merged before acting.
+- **Merges into `main` are Juan's** (run via `!`); pushes and tags are done on his explicit go-ahead.

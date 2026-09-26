@@ -1,0 +1,13 @@
+import { chromium, BASE, r } from './lib.mjs'
+const b = await chromium.launch()
+const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } }); const p = await ctx.newPage(); const cdp = await ctx.newCDPSession(p)
+await p.goto(`${BASE}/mock-nomin/dev/mock.html`); await p.waitForTimeout(4000)
+await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start')
+await p.waitForTimeout(10000)
+const { profile } = await cdp.send('Profiler.stop')
+const self = new Map(); const dt = profile.timeDeltas; const idIdx = new Map(profile.nodes.map(n => [n.id, n]))
+profile.samples.forEach((id, i) => { const n = idIdx.get(id); const k = `${n.callFrame.functionName || '(anon)'} ${n.callFrame.url.split('/').pop()}:${n.callFrame.lineNumber}`; self.set(k, (self.get(k) || 0) + dt[i]) })
+const tot = [...self.values()].reduce((a, b) => a + b, 0)
+console.log('total sampled ms in 10s window:', r(tot / 1000))
+for (const [k, v] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(String(r(v / 1000)).padStart(7), 'ms', k)
+await b.close()
