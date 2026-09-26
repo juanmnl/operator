@@ -41,6 +41,11 @@ export function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): 
   // channel. The flag takes the full ladder, `max` included (see lib/effort).
   if (o.effort) args.push('--effort', String(o.effort))
   if (o.allowedTools) args.push('--allowedTools', ...String(o.allowedTools).split(/\s+/).filter(Boolean))
+  // THE SESSION'S NAME ON THE MACHINE-WIDE SESSION BUS (lib/bus-name): `<project-slug>-<role>`, so
+  // `ListAgents` shows which project and lane a session is, instead of `<cwd>-<2 hex>`. `--name`
+  // takes a required value, so it cannot swallow the prompt the way `--remote-control` could.
+  const busName = typeof o.sessionName === 'string' ? o.sessionName.trim() : ''
+  if (busName) args.push('--name', busName)
   // REMOTE CONTROL'S NAME — what the Claude phone app lists this session as. Only for a lane
   // whose role has it on; the settings file is what actually turns the bridge on or off (see
   // `buildSessionSettings`), and this only decides what it is called.

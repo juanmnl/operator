@@ -27,6 +27,7 @@ import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orpha
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
+import { laneBusName, projectSlug } from '../lib/bus-name'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
@@ -2661,6 +2662,9 @@ export function DashboardView() {
       // lane's environment, which is what lets its MCP server stamp a report with who filed it
       // rather than looking up a terminal id that several sessions share.
       if (opts?.roleId) launchOptions.roleId = opts.roleId
+      // Its name on the machine-wide session bus: project and lane, `-2`… for a fan-out's extra
+      // sessions (lib/bus-name). Without a role there is no lane to name, and the CLI derives one.
+      if (opts?.roleId) launchOptions.sessionName = laneBusName(proj, opts.roleId, projectsRef.current, count > 1 ? i + 1 : 1)
       // REMOTE CONTROL, resolved through the same cascade as model and effort. The boolean drives
       // the settings file (which is what turns the bridge on, and must be written explicitly
       // `false` — absent inherits an org default that is currently ON, which is why the phone
@@ -2782,7 +2786,7 @@ export function DashboardView() {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote), and, when it
     // shares the main checkout, that it must leave git state and tracked files alone.
     const note = project.roster
-      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree })
+      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree, busPrefix: projectSlug(project, projectsRef.current) })
       : undefined
     const tabs = await handleLaunchSession(
       project.path,
@@ -3045,6 +3049,8 @@ export function DashboardView() {
     // Same reply-scoping stamp as the launch path.
     launchOptions.projectId = saved.projectId ?? proj.id
     if (saved.roleId) launchOptions.roleId = saved.roleId
+    const namedProject = projectsRef.current.find((p) => p.id === (saved.projectId ?? proj.id))
+    if (saved.roleId && namedProject) launchOptions.sessionName = laneBusName(namedProject, saved.roleId, projectsRef.current)
     // REMOTE CONTROL, through the same role cascade the launch path uses. Missing here it fell
     // through to `o.remoteControl === true` → false in ipc.ts, so every RESTORED lane wrote
     // `remoteControlAtStartup: false` — including the coordinator, which is the one lane the
@@ -3281,9 +3287,10 @@ export function DashboardView() {
       claudeSessionId,
       {
         // `--append-system-prompt` belongs to the process, so the lane's note is sent again.
-        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster) : undefined,
+        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster, { busPrefix: projectSlug(project, projectsRef.current) }) : undefined,
         remoteControl: rc.remoteControl,
         remoteControlName: rc.remoteControlName,
+        sessionName: project && tab.roleId ? laneBusName(project, tab.roleId, projectsRef.current) : undefined,
       },
     )
 
