@@ -2666,7 +2666,7 @@ export function DashboardView() {
       if (opts?.roleId) launchOptions.roleId = opts.roleId
       // Its name on the machine-wide session bus: project and lane, `-2`… for a fan-out's extra
       // sessions (lib/bus-name). Without a role there is no lane to name, and the CLI derives one.
-      if (opts?.roleId) launchOptions.sessionName = laneBusName(proj, opts.roleId, projectsRef.current, count > 1 ? i + 1 : 1)
+      if (opts?.roleId) launchOptions.sessionName = laneBusName(proj, opts.roleId, count > 1 ? i + 1 : 1)
       // REMOTE CONTROL, resolved through the same cascade as model and effort. The boolean drives
       // the settings file (which is what turns the bridge on, and must be written explicitly
       // `false` — absent inherits an org default that is currently ON, which is why the phone
@@ -2788,7 +2788,7 @@ export function DashboardView() {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote), and, when it
     // shares the main checkout, that it must leave git state and tracked files alone.
     const note = project.roster
-      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree, busPrefix: projectSlug(project, projectsRef.current) })
+      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree, busSlug: projectSlug(project) })
       : undefined
     const tabs = await handleLaunchSession(
       project.path,
@@ -3052,7 +3052,7 @@ export function DashboardView() {
     launchOptions.projectId = saved.projectId ?? proj.id
     if (saved.roleId) launchOptions.roleId = saved.roleId
     const namedProject = projectsRef.current.find((p) => p.id === (saved.projectId ?? proj.id))
-    if (saved.roleId && namedProject) launchOptions.sessionName = laneBusName(namedProject, saved.roleId, projectsRef.current)
+    if (saved.roleId && namedProject) launchOptions.sessionName = laneBusName(namedProject, saved.roleId)
     // REMOTE CONTROL, through the same role cascade the launch path uses. Missing here it fell
     // through to `o.remoteControl === true` → false in ipc.ts, so every RESTORED lane wrote
     // `remoteControlAtStartup: false` — including the coordinator, which is the one lane the
@@ -3289,10 +3289,10 @@ export function DashboardView() {
       claudeSessionId,
       {
         // `--append-system-prompt` belongs to the process, so the lane's note is sent again.
-        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster, { busPrefix: projectSlug(project, projectsRef.current) }) : undefined,
+        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster, { busSlug: projectSlug(project) }) : undefined,
         remoteControl: rc.remoteControl,
         remoteControlName: rc.remoteControlName,
-        sessionName: project && tab.roleId ? laneBusName(project, tab.roleId, projectsRef.current) : undefined,
+        sessionName: project && tab.roleId ? laneBusName(project, tab.roleId, tab.fanIndex ?? 1) : undefined,
       },
     )
 
