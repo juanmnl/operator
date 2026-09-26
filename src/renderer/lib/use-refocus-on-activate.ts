@@ -1,19 +1,13 @@
 import { useEffect } from 'react'
-import { classifyFocus, refocusTarget } from './refocus'
+import { createRefocusController } from './refocus-controller'
 import { getTerminal } from './terminal-registry'
 
-// App activation → focus, for the whole window, in ONE place (lib/refocus has the rules).
+// App activation → keyboard focus, for the whole window, in ONE place. The rules are in lib/refocus,
+// the event handling in lib/refocus-controller; this only wires them to the real DOM.
 //
-// It used to be a `window` 'focus' listener in every mounted TerminalPane, which had two faults:
-//   - it relied on the renderer's own 'focus' event, and main never focused the web contents or
-//     told the renderer the app had been activated (see `onWindowActivated` in electron/src/main);
-//   - every pane decided for itself from its `active` flag, which is true for the selected lane even
-//     when the board or settings is on screen, so coming back could move focus from the board's
-//     composer (or a dialog) into a hidden terminal.
-//
-// Three triggers, coalesced into one decision per frame: the renderer's window 'focus', the
-// document becoming visible, and main's `onWindowActivated` (sent on BrowserWindow 'focus' and app
-// 'activate'). The decision runs a frame later, after the platform has restored whatever it restores.
+// It replaced a `window` 'focus' listener in every mounted TerminalPane, which relied on an event main
+// never guaranteed and let the selected lane's HIDDEN pane take focus while the board or settings was
+// showing.
 
 /** What the view on screen is, read at the moment of activation. */
 export interface ActivationView {
@@ -34,45 +28,33 @@ function primaryInput(): HTMLElement | null {
 
 export function useRefocusOnActivate(view: () => ActivationView): void {
   useEffect(() => {
-    // What had focus when the window lost it. A WeakRef-free plain ref: the element is checked for
-    // `isConnected` before any use, so a removed one is never focused.
-    let remembered: Element | null = null
-    let queued = false
-
-    const onBlur = () => { remembered = document.activeElement }
-
-    const apply = () => {
-      queued = false
-      const current = document.activeElement
-      const { laneOnScreen } = view()
-      const input = primaryInput()
-      const plan = refocusTarget({
-        current: classifyFocus(current as HTMLElement | null),
-        remembered: remembered ? { kind: classifyFocus(remembered as HTMLElement), usable: visible(remembered) } : undefined,
-        laneOnScreen,
-        hasPrimaryInput: !!input,
-      })
-      try {
-        if (plan.kind === 'restore') (remembered as HTMLElement).focus()
-        else if (plan.kind === 'terminal') getTerminal(plan.terminalId)?.focus()
-        else if (plan.kind === 'primary-input') input?.focus()
-      } catch { /* an element torn down between the check and the focus */ }
-    }
-
-    const onActivate = () => {
-      if (queued) return
-      queued = true
-      requestAnimationFrame(apply)
-    }
-    const onVisibility = () => { if (document.visibilityState === 'visible') onActivate() }
-
+    const c = createRefocusController<HTMLElement>({
+      activeElement: () => document.activeElement as HTMLElement | null,
+      hasFocus: () => document.hasFocus(),
+      now: () => performance.now(),
+      defer: (fn) => { setTimeout(fn, 0) },
+      nextFrame: (fn) => { requestAnimationFrame(fn) },
+      isUsable: visible,
+      laneOnScreen: () => view().laneOnScreen,
+      primaryInput,
+      focusElement: (el) => el.focus(),
+      focusTerminal: (id) => getTerminal(id)?.focus(),
+    })
+    const onBlur = () => c.onWindowBlur()
+    const onInput = () => c.onUserInput()
+    // Hidden → visible is an activation; visible → hidden is not.
+    const onVisibility = () => { if (document.visibilityState === 'visible') c.onActivated() }
     window.addEventListener('blur', onBlur)
-    window.addEventListener('focus', onActivate)
+    window.addEventListener('pointerdown', onInput, { capture: true })
+    window.addEventListener('keydown', onInput, { capture: true })
     document.addEventListener('visibilitychange', onVisibility)
-    const offMain = window.operator.onWindowActivated?.(onActivate)
+    // main's activation signal. Where there is none (a bridge without it), there is no activation to
+    // act on: the page's own 'focus' also fires for iframe focus changes and must not be used.
+    const offMain = window.operator.onWindowActivated?.(() => c.onActivated())
     return () => {
       window.removeEventListener('blur', onBlur)
-      window.removeEventListener('focus', onActivate)
+      window.removeEventListener('pointerdown', onInput, { capture: true } as EventListenerOptions)
+      window.removeEventListener('keydown', onInput, { capture: true } as EventListenerOptions)
       document.removeEventListener('visibilitychange', onVisibility)
       offMain?.()
     }

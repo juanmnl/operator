@@ -2,12 +2,22 @@
 // the window). Pure, so the decision is testable without a window.
 //
 // The rules, in order:
-//   1. Never take focus from a text field, a dialog, or an embedded page (the Preview) the user was
-//      in before they switched away: if one is focused now (Chromium restored it) or was focused when
-//      the window lost focus and is still on screen, that element keeps or gets focus back.
-//   2. A lane is on screen: its terminal input.
-//   3. Another view is on screen with a primary input (the board's task composer): that input.
-//   4. Otherwise nothing: focus stays wherever the platform put it.
+//   1. If the user has clicked or typed since the app was activated, they chose: change nothing.
+//   2. If ANY element other than the page body has focus, keep it: a text field, a dialog, the
+//      Preview's page, a menu, a tab, a button, or the terminal the click landed in. Moving focus off a
+//      control would close an open menu (they dismiss on focus leaving) and override a choice.
+//   3. Focus is on the body or nowhere, so the platform restored nothing useful:
+//        a. the text field, dialog or embedded page the user was in when the app lost focus, if it is
+//           still on screen;
+//        b. else the terminal of the lane on screen;
+//        c. else the view's primary input (the empty board's task composer);
+//        d. else nothing.
+// A terminal input that has focus while its lane is NOT on screen (the board or settings is showing)
+// counts as the body: it is hidden, and typing into it would be typing blind.
+//
+// dev/results/review-refocus-2026-09-26.md: the first version restored a remembered element whenever
+// the focused one was not a text field, so a click on the terminal, or anywhere after using the
+// Preview, was pulled back to the remembered field or into the iframe a frame later.
 
 /** What kind of element held focus. */
 export type FocusKind =
@@ -20,8 +30,10 @@ export type FocusKind =
   /** An embedded page (the Preview's iframe). Its own focused element is invisible from here, and may
    *  be a field in the app being previewed, so it is treated like a text field: never taken from. */
   | 'embedded'
-  /** Anything else: a button, the body, nothing. */
+  /** Any other focused control: a button, a tab, a menu item, a checkbox. */
   | 'other'
+  /** The page body, or nothing: focus is nowhere in particular. */
+  | 'none'
 
 const TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'password', 'number'])
 
@@ -35,9 +47,9 @@ export interface FocusableLike {
 }
 
 export function classifyFocus(el: FocusableLike | null | undefined): FocusKind {
-  if (!el || !el.tagName) return 'other'
+  if (!el || !el.tagName) return 'none'
   const tag = el.tagName.toLowerCase()
-  if (tag === 'body' || tag === 'html') return 'other'
+  if (tag === 'body' || tag === 'html') return 'none'
   if (el.classList?.contains('xterm-helper-textarea')) return 'terminal'
   if (tag === 'iframe') return 'embedded'
   if (el.closest?.('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')) return 'dialog'
@@ -47,19 +59,20 @@ export function classifyFocus(el: FocusableLike | null | undefined): FocusKind {
 }
 
 export type RefocusPlan =
-  /** Leave focus where it is: a field or dialog the user was using already has it. */
+  /** Leave focus where it is. */
   | { kind: 'keep' }
-  /** Put focus back on the element that had it when the window lost focus. */
+  /** Put focus back on the element that had it when the app lost focus. */
   | { kind: 'restore' }
   | { kind: 'terminal'; terminalId: string }
   | { kind: 'primary-input' }
-  | { kind: 'none' }
 
 export interface RefocusInput {
   /** What holds focus now, after the platform restored what it restores. */
   current: FocusKind
-  /** What held focus when the window lost it, and whether that element is still connected and
-   *  visible. `undefined` when nothing was recorded. */
+  /** The user clicked or typed after the activation: whatever they did is their choice. */
+  userActedSinceActivation?: boolean
+  /** What held focus when the APP lost focus (not when focus moved into an iframe), and whether that
+   *  element is still connected and visible. `undefined` when nothing was recorded. */
   remembered?: { kind: FocusKind; usable: boolean }
   /** The terminal id of the lane on screen, when a lane is on screen (not a board, not settings). */
   laneOnScreen?: string
@@ -68,10 +81,13 @@ export interface RefocusInput {
 }
 
 export function refocusTarget(s: RefocusInput): RefocusPlan {
-  const typing = (k: FocusKind) => k === 'text-field' || k === 'dialog' || k === 'embedded'
-  if (typing(s.current)) return { kind: 'keep' }
-  if (s.remembered && typing(s.remembered.kind) && s.remembered.usable) return { kind: 'restore' }
+  if (s.userActedSinceActivation) return { kind: 'keep' }
+  // A terminal input focused while no lane is on screen is hidden: as good as nothing.
+  const current = s.current === 'terminal' && !s.laneOnScreen ? 'none' : s.current
+  if (current !== 'none') return { kind: 'keep' }
+  const worthRestoring = (k: FocusKind) => k === 'text-field' || k === 'dialog' || k === 'embedded'
+  if (s.remembered && worthRestoring(s.remembered.kind) && s.remembered.usable) return { kind: 'restore' }
   if (s.laneOnScreen) return { kind: 'terminal', terminalId: s.laneOnScreen }
   if (s.hasPrimaryInput) return { kind: 'primary-input' }
-  return { kind: 'none' }
+  return { kind: 'keep' }
 }

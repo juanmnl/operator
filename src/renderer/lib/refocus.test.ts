@@ -29,50 +29,48 @@ describe('classifyFocus', () => {
   it('the Preview\'s iframe is an embedded page', () => {
     expect(classifyFocus(el('IFRAME'))).toBe('embedded')
   })
-  it('the body or nothing is other', () => {
-    expect(classifyFocus(el('BODY'))).toBe('other')
-    expect(classifyFocus(null)).toBe('other')
+  it('the body or nothing is none', () => {
+    expect(classifyFocus(el('BODY'))).toBe('none')
+    expect(classifyFocus(null)).toBe('none')
   })
 })
 
 describe('refocusTarget — what to focus when the app is activated', () => {
-  it('a lane on screen, nothing else in the way: its terminal', () => {
-    expect(refocusTarget({ current: 'other', laneOnScreen: 't3', hasPrimaryInput: false })).toEqual({ kind: 'terminal', terminalId: 't3' })
-    // Its own input restored by the platform is still "the terminal": focus it again, harmlessly.
-    expect(refocusTarget({ current: 'terminal', laneOnScreen: 't3', hasPrimaryInput: false })).toEqual({ kind: 'terminal', terminalId: 't3' })
+  it('focus on the body with a lane on screen: its terminal', () => {
+    expect(refocusTarget({ current: 'none', laneOnScreen: 't3', hasPrimaryInput: false })).toEqual({ kind: 'terminal', terminalId: 't3' })
   })
 
-  it('never takes focus from the Preview\'s page, which may hold a field of the app being previewed', () => {
-    expect(refocusTarget({ current: 'embedded', laneOnScreen: 't3', hasPrimaryInput: false })).toEqual({ kind: 'keep' })
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'embedded', usable: true }, laneOnScreen: 't3', hasPrimaryInput: false }))
-      .toEqual({ kind: 'restore' })
+  it('keeps ANY element other than the body: field, dialog, Preview, menu, button, the terminal itself', () => {
+    for (const current of ['text-field', 'dialog', 'embedded', 'other', 'terminal'] as const) {
+      expect(refocusTarget({ current, remembered: { kind: 'text-field', usable: true }, laneOnScreen: 't3', hasPrimaryInput: true }), current)
+        .toEqual({ kind: 'keep' })
+    }
   })
 
-  it('never takes focus from a text field or dialog that already has it', () => {
-    expect(refocusTarget({ current: 'text-field', laneOnScreen: 't3', hasPrimaryInput: true })).toEqual({ kind: 'keep' })
-    expect(refocusTarget({ current: 'dialog', laneOnScreen: 't3', hasPrimaryInput: true })).toEqual({ kind: 'keep' })
+  it('the user clicked or typed after coming back: nothing changes, whatever was remembered (review 2)', () => {
+    expect(refocusTarget({ current: 'none', userActedSinceActivation: true, remembered: { kind: 'text-field', usable: true }, laneOnScreen: 't3', hasPrimaryInput: true }))
+      .toEqual({ kind: 'keep' })
   })
 
-  it('restores the text field or dialog the user was typing in when they switched away', () => {
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'text-field', usable: true }, laneOnScreen: 't3', hasPrimaryInput: false }))
-      .toEqual({ kind: 'restore' })
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'dialog', usable: true }, hasPrimaryInput: true }))
-      .toEqual({ kind: 'restore' })
+  it('focus on the body: restores the field, dialog or Preview the user was in when the app lost focus', () => {
+    for (const kind of ['text-field', 'dialog', 'embedded'] as const) {
+      expect(refocusTarget({ current: 'none', remembered: { kind, usable: true }, laneOnScreen: 't3', hasPrimaryInput: false }), kind)
+        .toEqual({ kind: 'restore' })
+    }
   })
 
-  it('does not restore one that is gone or hidden since; falls through to the view', () => {
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'text-field', usable: false }, laneOnScreen: 't3', hasPrimaryInput: false }))
+  it('does not restore one that is gone or hidden since, nor a remembered button or terminal', () => {
+    expect(refocusTarget({ current: 'none', remembered: { kind: 'text-field', usable: false }, laneOnScreen: 't3', hasPrimaryInput: false }))
       .toEqual({ kind: 'terminal', terminalId: 't3' })
-  })
-
-  it('a remembered terminal or button is not restored over the current view\'s choice', () => {
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'terminal', usable: true }, hasPrimaryInput: true })).toEqual({ kind: 'primary-input' })
-    expect(refocusTarget({ current: 'other', remembered: { kind: 'other', usable: true }, laneOnScreen: 't1', hasPrimaryInput: false }))
-      .toEqual({ kind: 'terminal', terminalId: 't1' })
+    expect(refocusTarget({ current: 'none', remembered: { kind: 'other', usable: true }, hasPrimaryInput: true })).toEqual({ kind: 'primary-input' })
   })
 
   it('a non-terminal view: its primary input if it has one, else nothing', () => {
-    expect(refocusTarget({ current: 'other', hasPrimaryInput: true })).toEqual({ kind: 'primary-input' })
-    expect(refocusTarget({ current: 'other', hasPrimaryInput: false })).toEqual({ kind: 'none' })
+    expect(refocusTarget({ current: 'none', hasPrimaryInput: true })).toEqual({ kind: 'primary-input' })
+    expect(refocusTarget({ current: 'none', hasPrimaryInput: false })).toEqual({ kind: 'keep' })
+  })
+
+  it('a hidden lane\'s terminal holding focus while the board shows counts as nothing', () => {
+    expect(refocusTarget({ current: 'terminal', hasPrimaryInput: true })).toEqual({ kind: 'primary-input' })
   })
 })
