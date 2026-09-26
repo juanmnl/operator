@@ -1,6 +1,6 @@
-import { useRef } from 'react'
-import type { ReactNode } from 'react'
+import { useMemo, useRef, type ReactNode, type RefObject } from 'react'
 import { useDismiss } from '../lib/use-dismiss'
+import { useMenuPlacement } from '../lib/menu-placement'
 
 // ONE popover menu, shared, and a second implementation of it is how an app ends up with two
 // menus that drift. Positioned `absolute` against the nearest positioned ancestor.
@@ -26,6 +26,16 @@ export function PopMenu({ title, items, footer, placement = 'up', onClose }: {
   onClose: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
+  // `placement` is the PREFERRED side. The menu takes the other one when only that has room, and
+  // caps its height (scrolling inside) when neither does — the fix made for the Team tab's
+  // "+ Add agent" menu, whose top ran under the project header (lib/menu-placement). The anchor is
+  // the positioned ancestor this menu is placed against: its trigger's wrapper.
+  // Read lazily: the panel does not exist yet when this renders the first time.
+  const anchorRef = useMemo<RefObject<HTMLElement | null>>(() => ({
+    get current() { return (panelRef.current?.offsetParent as HTMLElement | null) ?? null },
+  }), [])
+  const place = useMenuPlacement(true, anchorRef, panelRef, placement === 'down' ? 'below' : 'above', { gap: 6 })
+  const side = place?.side ?? (placement === 'down' ? 'below' : 'above')
   // The full dismissal contract — outside pointer-down, Escape (with focus returned to the
   // trigger), focus leaving, and scroll. It was doing none of them: the menu only closed when you
   // picked something, so clicking anywhere else left it open over the feed.
@@ -36,9 +46,9 @@ export function PopMenu({ title, items, footer, placement = 'up', onClose }: {
       data-no-drag
       style={{
         position: 'absolute', zIndex: 20, maxWidth: 260,
-        ...(placement === 'down'
-          ? { top: 'calc(100% + 6px)', right: 0, minWidth: 160 }
-          : { left: 12, right: 12, bottom: 'calc(100% - 6px)', marginBottom: 6 }),
+        // Horizontal anchoring stays with `placement`; the vertical side is the measured one.
+        ...(placement === 'down' ? { right: 0, minWidth: 160 } : { left: 12, right: 12 }),
+        ...(side === 'below' ? { top: 'calc(100% + 6px)' } : { bottom: 'calc(100% + 6px)' }),
         borderRadius: 10, border: '1px solid var(--border)',
         // AN OPAQUE SURFACE. This was `--overlay-medium`, which is a translucent TINT token — 12%
         // white on the dark palettes, 10% black on the light ones — meant for washing something
@@ -54,6 +64,8 @@ export function PopMenu({ title, items, footer, placement = 'up', onClose }: {
         // now composite against nothing and cost a filter pass for no pixels.
         boxShadow: '0 10px 32px rgba(0,0,0,0.35)', overflow: 'hidden',
         fontFamily: 'var(--font-body)',
+        // After `overflow`, which would otherwise reset the vertical axis to hidden.
+        ...(place ? { maxHeight: place.maxHeight, overflowY: 'auto' as const } : {}),
       }}
     >
       <div style={{ fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-muted)', padding: '8px 12px 4px', fontFamily: 'var(--font-mono)' }}>{title}</div>

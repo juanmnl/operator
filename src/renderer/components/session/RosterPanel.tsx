@@ -8,6 +8,7 @@ import {
 } from '../../lib/model-config'
 import { queuedCountsByRole } from '../../lib/task-lifecycle'
 import { EFFORT_OPTIONS } from '../../lib/effort'
+import { useMenuPlacement } from '../../lib/menu-placement'
 
 /** How long the add-lane control is highlighted when a request from OUTSIDE this panel can't
  *  be answered by opening something — long enough to catch the eye, short enough not to read
@@ -1122,6 +1123,7 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // Start at whatever we mounted with, so the value alone never opens the menu — only a CHANGE
   // does. Matters for the empty roster, which renders the preset cards instead of this control:
@@ -1154,12 +1156,17 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
     const t = setTimeout(() => setFlash(false), FLASH_MS)
     return () => clearTimeout(t)
   }, [flash, openNonce])
-  // Scroll the MENU, not the control that is about to open it: the call above runs in the same
-  // tick as `setOpen(true)`, before the menu exists. A layout effect after open targets the
-  // real thing, and it opens upward — so the control alone being in view isn't enough.
+  // THE MENU OPENS WHERE THERE IS ROOM (lib/menu-placement). It always opened upward, and this
+  // control sits at the foot of the Team tab's scroller, under the project header: once the preset
+  // list grew, the menu's top ran past the scroller's top edge — under the header, where no amount
+  // of scrolling reaches — and the first presets could be neither seen nor clicked. Scrolling the
+  // menu into view could not fix that, since nothing can scroll above a scroller's top. Now the
+  // trigger is brought into view first, then the menu takes the side with room inside the visible
+  // part of the scroller, or the roomier side with a height cap, and scrolls inside itself.
   useLayoutEffect(() => {
-    if (open) menuRef.current?.scrollIntoView({ block: 'nearest' })
+    if (open) buttonRef.current?.scrollIntoView({ block: 'nearest' })
   }, [open])
+  const place = useMenuPlacement(open, buttonRef, menuRef, 'above')
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
@@ -1172,6 +1179,7 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button
+        ref={buttonRef}
         data-add-agent
         data-add-lane-flash={flash ? 'true' : undefined}
         className={flash ? 'roster-add-flash' : undefined}
@@ -1190,8 +1198,10 @@ function AddAgentControl({ presets, onAddPreset, onAddBlank, openNonce = 0 }: {
         + Add agent
       </button>
       {open && (
-        <div ref={menuRef} style={{
-          position: 'absolute', bottom: ROW_H + 4, left: 0, zIndex: 40, minWidth: 240, maxHeight: 300, overflowY: 'auto',
+        <div ref={menuRef} data-add-agent-menu={place?.side ?? 'measuring'} style={{
+          position: 'absolute', left: 0, zIndex: 40, minWidth: 240, overflowY: 'auto', boxSizing: 'border-box',
+          ...((place?.side ?? 'above') === 'above' ? { bottom: ROW_H + 4 } : { top: ROW_H + 4 }),
+          ...(place ? { maxHeight: place.maxHeight } : {}),
           borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--bg-surface)',
           boxShadow: '0 10px 32px rgba(0,0,0,0.35)', padding: '3px 0',
         }}>
