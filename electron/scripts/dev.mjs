@@ -9,7 +9,9 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
-const PORT = Number(process.env.OPERATOR_ELECTRON_PORT) || 1450
+// 1610: outside the installed app's lane windows AND a dev instance's (src/main/port-ranges.ts,
+// DEV_RENDERER_DEFAULT_PORT). 1450 sat inside 1420-1520, where the installed app hands out lane ports.
+const PORT = Number(process.env.OPERATOR_ELECTRON_PORT) || 1610
 // Which page the window opens on: the app, or the measurement bench (`PAGE=bench.html?...`).
 const PAGE = process.env.OPERATOR_ELECTRON_PAGE || 'index.html'
 const URL_ = `http://localhost:${PORT}/${PAGE}`

@@ -6,13 +6,16 @@
 // OPERATOR_CDP_PORT, and its launch note tells the agent the one-line opt-in the app needs. This is the
 // same shape as OPERATOR_DEV_PORT: a verified-free port, stated at spawn, read by the app.
 //
-// Its own window, away from the dev-server window (1420..1520) and from Chrome's customary 9222, so a
-// dev server and a debugging port can never be handed the same number.
+// Its own window, away from the dev-server window and from Chrome's customary 9222, so a dev server
+// and a debugging port can never be handed the same number. The windows, for the installed app and
+// for a dev instance, live in port-ranges.ts.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { INSTALLED_RANGES } from './port-ranges'
 
-export const CDP_PORT_BASE = 9340
-export const CDP_PORT_MAX = 9440
+/** The INSTALLED app's CDP window. A dev instance passes its own (`allocateCdpPort`'s base/max). */
+export const CDP_PORT_BASE = INSTALLED_RANGES.cdp.base
+export const CDP_PORT_MAX = INSTALLED_RANGES.cdp.max
 
 /** Does this parsed package.json depend on Electron (dependencies or devDependencies)? Pure. */
 export function dependsOnElectron(pkg: unknown): boolean {

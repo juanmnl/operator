@@ -14,6 +14,7 @@ import { spawn as ptySpawn, type IPty } from 'node-pty'
 import { randomUUID } from 'node:crypto'
 import { loginShell } from './login-shell'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { buildArgs, mcpConfigArg } from '../../../src/renderer/lib/launch-args'
 import { app } from 'electron'
 import {
@@ -28,6 +29,8 @@ import { attributePort, evidenceSnapshot, ownDeepPids, type SessionPort } from '
 import { allocatePort, shouldReleaseCwdPort, provesOwnServer, DEV_SERVER_RE, OPERATOR_BINARY_RE } from './port-alloc'
 import { writeSessionSettings, type SkillMode } from './session-settings'
 import { OutputBatcher } from './pty-batch'
+import { portRangesFor, type PortRanges } from './port-ranges'
+import { operatorDir } from './store'
 
 /** Same cap as `HISTORY_CAP` in lib.rs — 256KB of retained output per pty, replayed when a
  *  pane re-attaches after a renderer reload. Trimmed with the same hysteresis (let it reach
@@ -113,6 +116,12 @@ type DataSink = (id: string, base64: string) => void
  *  `laneCwd` is the directory a LANE was spawned in; undefined for a plain shell. */
 type ExitSink = (id: string, exitCode: number, signal: number, selfExit: boolean, laneCwd?: string) => void
 
+/** The windows this process hands out: the installed app's, or a dev instance's (port-ranges.ts).
+ *  Read per allocation, not at import: `app.isPackaged` and OPERATOR_DIR are what they are at run time. */
+export function activePortRanges(): PortRanges {
+  return portRangesFor({ isPackaged: app.isPackaged, operatorDir: operatorDir(), defaultOperatorDir: join(homedir(), '.operator') })
+}
+
 export class TerminalManager {
   private readonly terminals = new Map<string, Managed>()
   private readonly portsByCwd = new Map<string, number>()
@@ -156,6 +165,7 @@ export class TerminalManager {
       sharedHolderIsOurs: (p) => this.sharedHolderIsOurs(cwd, p),
       onEmptyScan: retryScanWithoutV6,
       beginScan: beginPortScan,
+      range: activePortRanges().dev,
     })
     if (displaced !== undefined) {
       // Visible on purpose. This is the 2026-09-05 failure being caught rather than repeated —
@@ -643,7 +653,8 @@ export class TerminalManager {
     const run = this.allocGate.then(async () => {
       const inUse = new Set([...this.terminals.values()].filter((t) => !t.exited && t.cdpPort).map((t) => t.cdpPort!))
       for (const p of this.cdpReserving) inUse.add(p)
-      const port = await allocateCdpPort(inUse, isPortFree)
+      const { cdp } = activePortRanges()
+      const port = await allocateCdpPort(inUse, isPortFree, cdp.base, cdp.max)
       if (port) this.cdpReserving.add(port)
       return port
     })

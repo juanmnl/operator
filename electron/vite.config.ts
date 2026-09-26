@@ -21,7 +21,8 @@ export default defineConfig({
   // resolve against the filesystem root and every chunk 404s.
   base: './',
   server: {
-    port: Number(process.env.OPERATOR_ELECTRON_PORT) || 1450,
+    // Keep in step with scripts/dev.mjs and DEV_RENDERER_DEFAULT_PORT (src/main/port-ranges.ts).
+    port: Number(process.env.OPERATOR_ELECTRON_PORT) || 1610,
     strictPort: true,
     fs: { allow: [repoRoot] },
     watch: {
