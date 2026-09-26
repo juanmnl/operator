@@ -210,6 +210,19 @@ describe('merge, discard, and the guards around them', () => {
 
   // THE LIVE-LANE REFUSAL (dev/results/mantel-55da80-gutted-2026-09-25.md): merge and discard remove
   // a worktree, and must not do it from under a lane that is running in it. Main's pty table decides.
+  it('merges what is committed but KEEPS a worktree that still has uncommitted work (Review finding 1)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'feature.txt'), 'work\n')
+    await wt.commitAll(lane.path, 'lane work')
+    writeFileSync(join(lane.path, 'written-after.ts'), 'the agent kept going\n') // not committed
+    const r = await wt.mergeBranch(lane.path, repo, lane.branch, 'main', NO_LANES)
+    expect(r.ok).toBe(true)
+    expect(r.message).toMatch(/worktree was kept, because it has 1 uncommitted file/)
+    expect(git(repo, ['show', 'main:feature.txt'])).toBe('work')
+    expect(readFileSync(join(lane.path, 'written-after.ts'), 'utf8')).toBe('the agent kept going\n')
+  })
+
   it('REFUSES to merge while another lane runs in the worktree, names it, and changes nothing', async () => {
     const repo = scratchRepo()
     const lane = await wt.createWorktree(repo)

@@ -716,6 +716,19 @@ export async function mergeBranch(worktreePath: string, sourceRoot: string, bran
     await gitOk(sourceRoot, ['merge', '--abort'])
     return { ok: false, message: `Merge failed: ${e}` }
   }
+  // KEEP A WORKTREE THAT STILL HOLDS UNCOMMITTED WORK (Review finding 1). The merge took only what
+  // was committed; removing the directory now would send anything written since into the trash. A
+  // status git cannot read counts as uncommitted.
+  if (worktreePath && existsSync(worktreePath)) {
+    const left = await gitOk(worktreePath, ['status', '--porcelain'])
+    if (left == null || left) {
+      const n = left ? left.split('\n').filter(Boolean).length : undefined
+      return {
+        ok: true,
+        message: `Merged ${branch} into ${baseBranch}. The worktree was kept, because ${n === undefined ? 'git could not read its status' : `it has ${n} uncommitted file${n === 1 ? '' : 's'}`}: ${worktreePath}`,
+      }
+    }
+  }
   // Best-effort: the merge is what the caller asked for and it succeeded; a worktree that
   // refuses to be removed (the guard above) must not turn that into a failure.
   await removeWorktree(worktreePath, sourceRoot).catch(() => {})

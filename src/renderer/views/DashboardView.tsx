@@ -5362,6 +5362,7 @@ export function DashboardView() {
               onClose={() => setReviewingTerminalId(null)}
               onSessionEnded={handleSessionEnded}
               terminalId={tab.id}
+              laneRunning={!tab.ended}
             />
           )
         })()}
