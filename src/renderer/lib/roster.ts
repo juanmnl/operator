@@ -422,7 +422,18 @@ export const BRANCH_SAFETY_NOTE =
   '<branch>`). Start a new feature branch in a fresh Operator worktree (a new lane), not with ' +
   '`git checkout -b` in an existing one.\n'
 
-export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean } = {}): string {
+/** How to address another session without reaching the wrong project (lib/bus-name). The session
+ *  bus is machine-wide, so `ListAgents` lists every project's sessions; a lane that picks one by a
+ *  guessed prefix can message another project (lane-instances-and-message-mixing, X1). */
+export function busNote(slug: string): string {
+  return `Sessions in this project are named \`${slug}--<role>\` on Claude Code's session bus, which every ` +
+    `project on this machine shares. Reach a lane of this project through \`mcp__operator__dispatch\` or ` +
+    `OPERATOR-REPLY. Send with SendMessage only to an address Operator returned, or to a ListAgents name ` +
+    `whose part before the first \`--\` is exactly \`${slug}\`. Never match a session by prefix: a name ` +
+    `that only starts with it belongs to another project.\n`
+}
+
+export function orchestrationNote(projectName: string, role: Role, roster: Role[], opts: { sharesMainCheckout?: boolean; ownWorktree?: boolean; busSlug?: string } = {}): string {
   const siblings = roster.filter((r) => r.id !== role.id)
   // The lane's standing charter (Role.prompt) rides along so the agent knows HOW its
   // role works, not just which lane it is.
@@ -438,6 +449,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       `Your team for this project — the lanes you can delegate to:\n${team}\n` +
       charter +
       DISPATCH_PROTOCOL +
+      (opts.busSlug ? busNote(opts.busSlug) : '') +
       BRANCH_SAFETY_NOTE +
       REPLY_PROTOCOL +
       REPORT_INBOX +
@@ -463,6 +475,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
     `your own role's work yourself, and stay scoped to it when a task is handed to you.\n` +
     (opts.sharesMainCheckout ? SHARED_CHECKOUT_NOTE : '') +
     (opts.ownWorktree ? WORKTREE_DONE_NOTE + BRANCH_SAFETY_NOTE : '') +
+    (opts.busSlug ? busNote(opts.busSlug) : '') +
     REPLY_PROTOCOL +
     REPORT_ARTIFACTS +
     REPORT_TASK_STATUS

@@ -50,6 +50,15 @@ export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, 
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
 }
 
+/** A coordinator tab with no project asked for the report queue. Logged ONCE per role and process:
+ *  the renderer polls every few seconds, and the point is to see that it happens, not how often. */
+const unscopedAnnounceSeen = new Set<string>()
+function noteUnscopedAnnounce(role: string): void {
+  if (unscopedAnnounceSeen.has(role)) return
+  unscopedAnnounceSeen.add(role)
+  console.error(`[reports] a '${role}' tab with no project asked for the report queue; nothing announced or expired, so no other project's reports are taken`)
+}
+
 export interface Deps {
   terminals: TerminalManager
   transcript: Transcript
@@ -190,16 +199,18 @@ export function registerIpc(d: Deps): void {
     // `projectId` is the RECEIVING session's, not the report's: `artifacts.db` is one store for
     // every project on this machine, so an unscoped queue announces another repo's work into
     // this coordinator's composer — and because `markReportDelivered` stamps exclusively, the
-    // real owner is then never told at all. Undefined = unscoped, the pre-scoping behaviour.
-    artifactUndelivered: async (role, limit, projectId) => d.artifacts.undeliveredFor(
-      String(role), Number(limit) || 10, projectId ? String(projectId) : null,
-    ),
+    // real owner is then never told at all. No project = nothing, and it is logged once (X3).
+    artifactUndelivered: async (role, limit, projectId) => {
+      if (!projectId) { noteUnscopedAnnounce(String(role)); return [] }
+      return d.artifacts.undeliveredFor(String(role), Number(limit) || 10, String(projectId))
+    },
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
     // Reports filed before `before` are marked delivered without being announced; see
     // `expireUndelivered`. Scoped like `artifactUndelivered`.
-    artifactExpireUndelivered: async (role, before, projectId) => d.artifacts.expireUndelivered(
-      String(role), String(before), new Date().toISOString(), projectId ? String(projectId) : null,
-    ),
+    artifactExpireUndelivered: async (role, before, projectId) => {
+      if (!projectId) { noteUnscopedAnnounce(String(role)); return 0 }
+      return d.artifacts.expireUndelivered(String(role), String(before), new Date().toISOString(), String(projectId))
+    },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
 

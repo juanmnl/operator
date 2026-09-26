@@ -22,11 +22,12 @@ import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
-import { resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
+import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
+import { laneBusName, projectSlug } from '../lib/bus-name'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
 import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
@@ -1611,8 +1612,9 @@ export function DashboardView() {
       try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen, r.id].slice(-500))) } catch { /* */ }
 
       const { terminals: tabs, projects: projs, pushToast: toast, logDispatch: log } = dispatchRef.current
-      const srcTab = tabs.find((t) => t.id === r.terminalId)
-      const project = projs.find((p) => p.id === (r.projectId || srcTab?.projectId))
+      // The reply's own project first; the emitting tab only when it agrees with it (X5).
+      const { projectId: replyProject, srcTab } = dispatchSender({ terminalId: r.terminalId, projectId: r.projectId || undefined }, tabs)
+      const project = projs.find((p) => p.id === replyProject)
       const roster = project?.roster ?? []
       // Who spoke: the emitting terminal's lane, exactly as dispatch attributes its sender.
       const from = roster.find((role) => role.id === srcTab?.roleId)
@@ -1764,8 +1766,8 @@ export function DashboardView() {
       const addresses = new Map(open.addresses.map((a) => [a.sessionId, a.address]))
       const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
       for (const r of open.requests) {
-        const srcTab = tabs.find((t) => t.id === r.terminalId)
-        const projectId = r.projectId ?? srcTab?.projectId
+        // The request's own stamps first; the tab only when it agrees with them (X5).
+        const { projectId, fromRoleId } = dispatchSender(r, tabs)
         const project = projs.find((p) => p.id === projectId)
         if (!project || !projectId) {
           await window.operator.answerDispatch(r.id, {
@@ -1784,12 +1786,13 @@ export function DashboardView() {
           {
             lane: r.lane,
             task: r.body,
-            fromRoleId: srcTab?.roleId ?? r.roleId ?? 'unknown',
-            fromLabel: (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))?.name ?? 'Operator',
+            fromRoleId,
+            fromLabel: (project.roster ?? []).find((x) => x.id === fromRoleId)?.name ?? 'Operator',
             projectId,
           },
           {
             project,
+            otherProjectPaths: projs.filter((x) => x.id !== projectId).map((x) => x.path),
             lanes,
             addresses,
             brakes: deliveryStateRef.current,
@@ -1805,7 +1808,6 @@ export function DashboardView() {
         // The action puts the human back in the loop from the toast, and a toast with an action
         // stays until dismissed. Not for the kill switch, which the user turned on themselves.
         if (verdict.outcome === 'refused' && verdict.brake && verdict.brake !== 'paused') {
-          const fromRoleId = srcTab?.roleId ?? r.roleId ?? 'unknown'
           const fromName = (project.roster ?? []).find((x) => x.id === fromRoleId)?.name ?? fromRoleId
           toast({
             text: `${fromName} was stopped from dispatching to ${r.lane}`,
@@ -1825,11 +1827,11 @@ export function DashboardView() {
         // button delivers either. `deliverDispatchRef` is what approval runs, and it does not
         // care which transport asked.
         if (verdict.held) {
-          const from = (project.roster ?? []).find((x) => x.id === (srcTab?.roleId ?? r.roleId))
+          const from = (project.roster ?? []).find((x) => x.id === fromRoleId)
           const preview = r.body.length > 60 ? r.body.slice(0, 60) + '…' : r.body
           dispatchRef.current.logDispatch(projectId, {
             id: `bus-${r.id}`, at: new Date().toISOString(),
-            fromRoleId: srcTab?.roleId ?? r.roleId, toRoleId: verdict.held.toRoleId,
+            fromRoleId, toRoleId: verdict.held.toRoleId,
             task: r.body, outcome: 'pending-approval',
           })
           toast({
@@ -1912,7 +1914,9 @@ export function DashboardView() {
   const deliverDispatchRef = useRef<(a: { id: string; roleToken: string; task: string; terminalId?: string; projectId: string; approving?: boolean }) => void>(() => {})
   deliverDispatchRef.current = ({ id, roleToken, task, terminalId, projectId, approving }) => {
       const { terminals: tabs, projects: projs, addProjectTask: addTask, addRunningTask: addRunning, pushToast: toast, logDispatch: log } = dispatchRef.current
-      const srcTab = tabs.find((t) => t.id === terminalId)
+      // The sending tab, unless it is stamped with ANOTHER project: terminal ids restart every run, so
+      // an id alone can name a different lane than the one that asked (X5).
+      const srcTab = tabs.find((t) => t.id === terminalId && (!t.projectId || t.projectId === projectId))
       const project = projs.find((p) => p.id === projectId)
       // NEVER A SILENT RETURN. This line used to be `if (!project) return` with nothing before
       // it: no log row, no toast, no trace anywhere. It is the "2/9 dispatches vanished
@@ -1942,7 +1946,7 @@ export function DashboardView() {
       }
       const roster = project.roster ?? []
       const d = { id, role: roleToken, task }
-      const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
+      const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id, { own: project.path, others: projs.filter((x) => x.id !== project.id).map((x) => x.path) })
       const routedRole = route.kind === 'unassigned' ? undefined : route.role
       const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
       // A bus request's id is `bus-<n>` (the launch and approval paths both carry it through), so
@@ -2077,7 +2081,7 @@ export function DashboardView() {
       if (dispatchNeedsApproval(srcTab?.roleId)) {
         const roster = project.roster ?? []
         // Resolved only to NAME the target for the UI; no side effect runs here.
-        const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id)
+        const route = routeDispatch(d.role, roster, withActivityRef.current(tabs), project.id, { own: project.path, others: projs.filter((x) => x.id !== project.id).map((x) => x.path) })
         const toRole = route.kind === 'unassigned' ? undefined : route.role
         const from = roster.find((r) => r.id === srcTab?.roleId)
         const preview = d.task.length > 60 ? d.task.slice(0, 60) + '…' : d.task
@@ -2763,6 +2767,9 @@ export function DashboardView() {
       // lane's environment, which is what lets its MCP server stamp a report with who filed it
       // rather than looking up a terminal id that several sessions share.
       if (opts?.roleId) launchOptions.roleId = opts.roleId
+      // Its name on the machine-wide session bus: project and lane, `-2`… for a fan-out's extra
+      // sessions (lib/bus-name). Without a role there is no lane to name, and the CLI derives one.
+      if (opts?.roleId) launchOptions.sessionName = laneBusName(proj, opts.roleId, count > 1 ? i + 1 : 1)
       // REMOTE CONTROL, resolved through the same cascade as model and effort. The boolean drives
       // the settings file (which is what turns the bridge on, and must be written explicitly
       // `false` — absent inherits an org default that is currently ON, which is why the phone
@@ -2844,7 +2851,7 @@ export function DashboardView() {
     // Work went into them and the answers came back where nothing was looking.
     // `pickLaneTab` is the SAME resolution dispatch uses, so a reused lane and a dispatched
     // one can never disagree about which terminal is the lane.
-    const existing = pickLaneTab(withActivity(terminalsRef.current), project.id, role.id)
+    const existing = pickLaneTab(withActivity(terminalsRef.current), project.id, role.id, { own: project.path, others: projectsRef.current.filter((x) => x.id !== project.id).map((x) => x.path) })
     if (existing) {
       const joined = prompt?.trim()
       if (joined) void submitQueue.submit(existing.id, joined)
@@ -2884,7 +2891,7 @@ export function DashboardView() {
     // Auto-awareness: tell the agent its lane + its siblings (see orchestrationNote), and, when it
     // shares the main checkout, that it must leave git state and tracked files alone.
     const note = project.roster
-      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree })
+      ? orchestrationNote(project.name, role, project.roster, { sharesMainCheckout: workspace.sharesMainCheckout, ownWorktree: workspace.ownWorktree, busSlug: projectSlug(project) })
       : undefined
     const tabs = await handleLaunchSession(
       project.path,
@@ -3147,6 +3154,8 @@ export function DashboardView() {
     // Same reply-scoping stamp as the launch path.
     launchOptions.projectId = saved.projectId ?? proj.id
     if (saved.roleId) launchOptions.roleId = saved.roleId
+    const namedProject = projectsRef.current.find((p) => p.id === (saved.projectId ?? proj.id))
+    if (saved.roleId && namedProject) launchOptions.sessionName = laneBusName(namedProject, saved.roleId)
     // REMOTE CONTROL, through the same role cascade the launch path uses. Missing here it fell
     // through to `o.remoteControl === true` → false in ipc.ts, so every RESTORED lane wrote
     // `remoteControlAtStartup: false` — including the coordinator, which is the one lane the
@@ -3383,9 +3392,10 @@ export function DashboardView() {
       claudeSessionId,
       {
         // `--append-system-prompt` belongs to the process, so the lane's note is sent again.
-        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster) : undefined,
+        orchestrationNote: role && project?.roster ? orchestrationNote(project.name, role, project.roster, { busSlug: projectSlug(project) }) : undefined,
         remoteControl: rc.remoteControl,
         remoteControlName: rc.remoteControlName,
+        sessionName: project && tab.roleId ? laneBusName(project, tab.roleId, tab.fanIndex ?? 1) : undefined,
       },
     )
 
@@ -5551,7 +5561,7 @@ export function DashboardView() {
                     // what the delivery brakes measure the absence of. Typing to a braked coordinator
                     // used to change nothing; only a board Send → did.
                     onHumanSubmit={() => {
-                      if (t.roleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(t.projectId, t.roleId))
+                      if (t.roleId) deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(t.projectId, t.roleId, t.id))
                     }}
                   />
                 )}

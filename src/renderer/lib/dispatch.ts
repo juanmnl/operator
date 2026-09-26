@@ -35,6 +35,46 @@ export interface RoutableTab {
   ended?: boolean
   /** The lane's last activity, used ONLY to break a duplicate tie deterministically. */
   lastActivityAt?: string
+  /** Where its pty runs, and for a worktree lane the repo the worktree came from. Checked against
+   *  the project's path, so a tab LABELLED with a project it does not run in is never picked. */
+  cwd?: string
+  sourceCwd?: string
+}
+
+/** Case-insensitive, like the default macOS volume, and ignoring a trailing slash. */
+const norm = (p: string): string => p.replace(/\/+$/, '').toLowerCase()
+const within = (path: string, root: string): boolean => {
+  const p = norm(path), r = norm(root)
+  return p === r || p.startsWith(r + '/')
+}
+
+/** Where a project lives, for `tabRunsIn`: this project's path and every other project's. */
+export interface ProjectPaths { own?: string; others?: readonly string[] }
+
+/** May this tab be treated as a lane of the project it is labelled with? Pure.
+ *
+ *  X6 in dev/results/lane-instances-and-message-mixing-2026-09-25.md: routing trusted the tab's
+ *  project LABEL alone, so a tab labelled (uwazi, design) while its pty ran in mantel would be picked
+ *  as uwazi's Design and handed that mantel session's address.
+ *
+ *  REFUSED ONLY WHEN THE TAB PROVABLY RUNS IN ANOTHER PROJECT: its directory (or a worktree lane's
+ *  source repo) lies inside another known project's path, and that path is the most specific match.
+ *  Anything else keeps the label: a tab with no directory, and one whose directory matches no project
+ *  at all, which is what a project whose path was moved or edited while its lanes run looks like.
+ *  Requiring a match with the project's own path instead (the first version) stopped routing to
+ *  those lanes and made the reuse check launch a second one (review-xproject-devports, A5). */
+export function tabRunsIn(t: { cwd?: string; sourceCwd?: string }, paths: ProjectPaths | string | undefined): boolean {
+  const { own, others = [] } = typeof paths === 'string' ? { own: paths } : paths ?? {}
+  const dirs = [t.cwd, t.sourceCwd].filter((d): d is string => !!d)
+  if (!dirs.length) return true
+  // The most specific project path containing one of the tab's directories decides.
+  let best: { length: number; own: boolean } | undefined
+  for (const [root, isOwn] of [...(own ? [[own, true] as const] : []), ...others.map((o) => [o, false] as const)]) {
+    if (!dirs.some((d) => within(d, root))) continue
+    const length = norm(root).length
+    if (!best || length > best.length) best = { length, own: isOwn }
+  }
+  return !best || best.own
 }
 
 /** THE resolution of "which terminal is this role's lane", used by dispatch routing and by the
@@ -46,10 +86,11 @@ export interface RoutableTab {
  *  than left to `find()`'s array order, which is whatever the reattach happened to produce.
  *  Most recently ACTIVE wins: of several live lanes on one role, the one that spoke last is the
  *  one the user is actually working with. Ties fall to the latest in input order. */
-export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string): T | undefined {
+export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string, projectPath?: ProjectPaths | string): T | undefined {
   let best: T | undefined
   for (const t of tabs) {
     if (t.projectId !== projectId || t.roleId !== roleId || t.ended) continue
+    if (!tabRunsIn(t, projectPath)) continue
     if (!best) { best = t; continue }
     // >= so a later tab wins an exact tie (and an undefined timestamp loses to a real one).
     if ((t.lastActivityAt ?? '') >= (best.lastActivityAt ?? '')) best = t
@@ -91,6 +132,9 @@ export function routeDispatch<T extends RoutableTab>(
   roster: Role[],
   tabs: T[],
   projectId: string,
+  /** Where this project and the others live: a tab that runs in another project is not its lane
+   *  (`tabRunsIn`, X6). */
+  projectPath?: ProjectPaths | string,
 ): DispatchRoute<T> {
   const token = roleToken.toLowerCase()
   const role = roster.find((r) => r.id === roleToken || r.name.toLowerCase() === token)
@@ -104,7 +148,7 @@ export function routeDispatch<T extends RoutableTab>(
     const preset = presetFor(roleToken)
     return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
   }
-  const tab = pickLaneTab(tabs, projectId, role.id)
+  const tab = pickLaneTab(tabs, projectId, role.id, projectPath)
   return tab ? { kind: 'send', role, tab } : { kind: 'queue', role }
 }
 

@@ -129,7 +129,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
       { at: '2026-08-20T09:00:00Z', summary: 'less ancient' },
     ])
     const store = new ArtifactStore(path)
-    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    expect(store.undeliveredFor('operator', 10, 'p')).toEqual([])
     // …and the rows are still there to read. Not announced is not deleted.
     expect(store.listReports(10).map((r) => r.summary)).toEqual(['less ancient', 'ancient history'])
     store.close()
@@ -160,7 +160,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     offline.close()
 
     const next = new ArtifactStore(path)
-    expect(next.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed while closed'])
+    expect(next.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['filed while closed'])
     next.close()
   })
 
@@ -170,12 +170,12 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     const path = join(SANDBOX, 'announce-retry.db')
     const store = new ArtifactStore(path)
     store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'announce me', '[]')
-    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
-    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['announce me'])
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['announce me'])
     store.close()
 
     const next = new ArtifactStore(path)
-    expect(next.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['announce me'])
+    expect(next.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['announce me'])
     next.close()
   })
 
@@ -195,6 +195,37 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     store.close()
   })
 
+  // X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): a caller with no project got
+  // the UNSCOPED queue, announced other projects' reports and, delivery being stamped once, took
+  // them from their real coordinators.
+  it('with NO project, announces nothing and expires nothing, and other projects keep their reports', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'no-project.db'))
+    store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'uwazi', 'design', null, 'uwazi design report', '[]', 'operator')
+    store.insertReport('2026-09-05T19:01:00.000Z', 't2', 'mantel', 'code', null, 'mantel code report', '[]', 'operator')
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    expect(store.undeliveredFor('operator', 10, null)).toEqual([])
+    expect(store.expireUndelivered('operator', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:01.000Z', null)).toBe(0)
+    expect(store.undeliveredFor('operator', 10, 'uwazi').map((r) => r.summary)).toEqual(['uwazi design report'])
+    expect(store.undeliveredFor('operator', 10, 'mantel').map((r) => r.summary)).toEqual(['mantel code report'])
+    store.close()
+  })
+
+  it('a coordinator still keyed \'orchestrator\' gets reports addressed to \'operator\' (review A4)', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'to-role-legacy.db'))
+    store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'p', 'design', null, 'for the coordinator', '[]', 'operator')
+    expect(store.undeliveredFor('orchestrator', 10, 'p').map((r) => r.summary)).toEqual(['for the coordinator'])
+    expect(store.expireUndelivered('orchestrator', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:01.000Z', 'p')).toBe(1)
+    store.close()
+  })
+
+  it('a report addressed to the coordinator is still in the coordinator\'s queue, and in no other role\'s', () => {
+    const store = new ArtifactStore(join(SANDBOX, 'to-role.db'))
+    store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'p', 'design', null, 'for operator', '[]', 'operator')
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.toRole)).toEqual(['operator'])
+    expect(store.undeliveredFor('code', 10, 'p')).toEqual([])
+    store.close()
+  })
+
   it('marking delivered removes it from the queue and touches NOTHING else', () => {
     const store = new ArtifactStore(join(SANDBOX, 'delivered-only.db'))
     const id = store.insertReport('2026-08-25T10:05:00Z', 't1', 'p', 'code', null, 'announced', '[]')
@@ -203,7 +234,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
     // Announced is not read: the Inbox must still count this one unread.
     expect(row.ackedAt).toBeUndefined()
-    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    expect(store.undeliveredFor('operator', 10, 'p')).toEqual([])
     store.close()
   })
 
@@ -226,16 +257,16 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
 
     // Handle A — the app. Runs the migration.
     const app = new ArtifactStore(path)
-    expect(app.undeliveredFor('operator', 10)).toEqual([])
+    expect(app.undeliveredFor('operator', 10, 'p')).toEqual([])
     // …and its caller files a report immediately afterwards, exactly in the window.
     app.insertReport('2026-08-25T02:00:00Z', 't9', 'p', 'code', null, 'filed in the window', '[]')
 
     // Handle B — a lane's MCP server, opening the SAME file while A is still open.
     const lane = new ArtifactStore(path)
     // B's constructor must have found the version stamped and left the new row alone.
-    expect(lane.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed in the window'])
+    expect(lane.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['filed in the window'])
     // And A agrees, reading through its own handle.
-    expect(app.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed in the window'])
+    expect(app.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['filed in the window'])
 
     // History is still delivered, and still readable.
     expect(app.listReports(10).map((r) => r.summary)).toEqual(['filed in the window', 'history'])
@@ -259,7 +290,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     raw.close()
 
     const store = new ArtifactStore(path)
-    expect(store.undeliveredFor('operator', 10).map((r) => r.summary)).toEqual(['filed after the migration'])
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['filed after the migration'])
     expect(store.listReports(1)[0].deliveredAt).toBeUndefined()
     store.close()
   })
@@ -280,9 +311,9 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
       .toEqual(['ours', 'unattributable'])
     expect(store.undeliveredFor('operator', 10, 'uwazi-app-d9bb8dcc').map((r) => r.summary))
       .toEqual(['theirs', 'unattributable'])
-    // No project asked for = the pre-scoping behaviour, not an empty queue.
-    expect(store.undeliveredFor('operator', 10).map((r) => r.summary))
-      .toEqual(['theirs', 'ours', 'unattributable'])
+    // No project asked for = NOTHING (X3). It used to be the unscoped queue, which announced
+    // another project's reports and, delivery being stamped once, took them from their owner.
+    expect(store.undeliveredFor('operator', 10)).toEqual([])
     store.close()
   })
 
@@ -296,7 +327,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     expect(row.ackedAt).toBeUndefined()
     // Still delivered — it WAS announced, and saying otherwise would announce it again.
     expect(row.deliveredAt).toBe('2026-08-25T10:06:00Z')
-    expect(store.undeliveredFor('operator', 10)).toEqual([])
+    expect(store.undeliveredFor('operator', 10, 'p')).toEqual([])
     store.close()
   })
 })

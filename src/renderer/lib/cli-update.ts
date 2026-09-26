@@ -91,7 +91,7 @@ export const AUTO_RESTART_TICK_MS = 30_000
 export function restartLaunchOptions(
   lane: { model?: string; effort?: string; permissionMode?: string; projectId?: string; roleId?: string },
   claudeSessionId: string,
-  extra: { orchestrationNote?: string; remoteControl: boolean; remoteControlName?: string },
+  extra: { orchestrationNote?: string; remoteControl: boolean; remoteControlName?: string; sessionName?: string },
 ): Record<string, unknown> {
   const o: Record<string, unknown> = { resumeSessionId: claudeSessionId }
   if (lane.permissionMode && lane.permissionMode !== 'default') o.permissionMode = lane.permissionMode
@@ -102,6 +102,8 @@ export function restartLaunchOptions(
   if (extra.orchestrationNote) o.orchestrationNote = extra.orchestrationNote
   o.remoteControl = extra.remoteControl
   if (extra.remoteControlName) o.remoteControlName = extra.remoteControlName
+  // The same bus name it launched with (lib/bus-name), so a restart does not fall back to `<cwd>-<hex>`.
+  if (extra.sessionName) o.sessionName = extra.sessionName
   return o
 }
 

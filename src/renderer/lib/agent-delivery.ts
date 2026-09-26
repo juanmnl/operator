@@ -119,9 +119,14 @@ export const emptyDeliveryState = (): DeliveryState => ({ chainHop: {}, laneSend
  *  send budget and one set of pair chains. On 2026-09-14 mantel (9 sends), uwazi_app (10) and
  *  operator (4) added up to the limit and all three coordinators were refused within 16 minutes
  *  (`dev/results/agent-comms-audit-2026-09-14.md`). Scoped by project, a lane's budget measures what
- *  that lane said. A session outside any project keeps the bare role. */
-export const laneKey = (projectId: string | null | undefined, roleId: string): string =>
-  projectId ? `${projectId}/${roleId}` : roleId
+ *  that lane said.
+ *
+ *  A SESSION OUTSIDE ANY PROJECT IS KEYED BY ITSELF, never by its bare role (X2 in
+ *  dev/results/lane-instances-and-message-mixing-2026-09-25.md). The bare role made every unstamped
+ *  tab across every project share one `design` budget and one `resetChainFor`. Such a caller passes
+ *  its own terminal or session id; without one, the key still carries a marker no project key can. */
+export const laneKey = (projectId: string | null | undefined, roleId: string, ownId?: string): string =>
+  projectId ? `${projectId}/${roleId}` : `unscoped:${ownId ?? '?'}/${roleId}`
 
 const pairKey = (from: string, to: string) => `${from}>${to}`
 

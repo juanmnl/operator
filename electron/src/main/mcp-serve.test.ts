@@ -140,3 +140,64 @@ describe('dispatch — refusals that never reach the app', () => {
     expect(store.openDispatches().length).toBe(before)
   })
 })
+
+// X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): `to_role` was never written, so a
+// report had a project but no addressee.
+describe('report — addressed to the project\'s coordinator', () => {
+  it('a lane\'s report is written with to_role = operator; the coordinator\'s own names nobody', async () => {
+    const saved = process.env.OPERATOR_ROLE_ID
+    try {
+      process.env.OPERATOR_ROLE_ID = 'design'
+      await call('report', { summary: 'design finished' })
+      expect(store.listReports(1)[0]).toMatchObject({ summary: 'design finished', toRole: 'operator', projectId: 'p1', roleId: 'design' })
+      process.env.OPERATOR_ROLE_ID = 'operator'
+      await call('report', { summary: 'coordinator note' })
+      expect(store.listReports(1)[0].toRole).toBeUndefined()
+    } finally {
+      process.env.OPERATOR_ROLE_ID = saved
+    }
+  })
+})
+
+// X4: the fallback identity used to be the FIRST sessions.json row with the terminal id.
+describe('callerFromSessions — terminal id AND the lane\'s own session or directory', () => {
+  // `t2` under three projects, as the live file had it: stale rows from earlier runs.
+  const rows = [
+    { terminalId: 't2', projectId: 'uwazi', roleId: 'design', cwd: '/w/uwazi_app', claudeSessionId: 'aaa' },
+    { terminalId: 't2', projectId: 'el-encanto', roleId: 'code', cwd: '/w/el-encanto', claudeSessionId: 'bbb' },
+    { terminalId: 't2', projectId: 'mantel', roleId: 'code', cwd: '/w/mantel', claudeSessionId: 'ccc' },
+  ]
+  const none = { projectId: null, roleId: null }
+
+  it('picks the row this lane actually is, by its Claude session id, not the first with its terminal id', async () => {
+    const { callerFromSessions } = await import('./mcp-serve')
+    expect(callerFromSessions('t2', none, rows, { claudeSessionId: 'ccc', cwd: '/elsewhere' })).toEqual({ projectId: 'mantel', roleId: 'code' })
+  })
+
+  it('or by its directory', async () => {
+    const { callerFromSessions } = await import('./mcp-serve')
+    expect(callerFromSessions('t2', none, rows, { cwd: '/w/el-encanto/' })).toEqual({ projectId: 'el-encanto', roleId: 'code' })
+  })
+
+  it('stamps nothing when nothing corroborates the terminal id', async () => {
+    const { callerFromSessions } = await import('./mcp-serve')
+    expect(callerFromSessions('t2', none, rows, { cwd: '/w/somewhere-else' })).toEqual({ projectId: null, roleId: null })
+  })
+
+  it('refuses to stamp a field the corroborated rows disagree on', async () => {
+    const { callerFromSessions } = await import('./mcp-serve')
+    const shared = [
+      { terminalId: 't5', projectId: 'mantel', roleId: 'design', cwd: '/w/shared' },
+      { terminalId: 't5', projectId: 'uwazi', roleId: 'design', cwd: '/w/shared' },
+    ]
+    const r = callerFromSessions('t5', none, shared, { cwd: '/w/shared' })
+    expect(r.projectId).toBeNull()
+    expect(r.roleId).toBe('design') // they agree on this one
+    expect(r.ambiguous).toMatch(/disagree on its project/)
+  })
+
+  it('keeps what the environment already said, and narrows by it', async () => {
+    const { callerFromSessions } = await import('./mcp-serve')
+    expect(callerFromSessions('t2', { projectId: 'uwazi', roleId: null }, rows, { cwd: '/w/uwazi_app' })).toEqual({ projectId: 'uwazi', roleId: 'design' })
+  })
+})
