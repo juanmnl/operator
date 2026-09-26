@@ -1167,7 +1167,9 @@ export async function workFingerprint(path: string, branch: string | undefined):
   const exclude = branch && branch !== 'HEAD' ? [`--exclude=${branch}`] : []
   const commits = await git(path, ['rev-list', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
   if (head == null || status == null || diff == null || commits == null) return null
-  const untracked = parseStatusZ(status).filter((e) => e.xy === '??').map((e) => e.path)
+  // A directory entry (`nested/`, a nested repository) cannot be hashed as a file; its name is in the
+  // status already, and a rescue never counts it as copied (Review finding 7).
+  const untracked = parseStatusZ(status).filter((e) => e.xy === '??' && !e.path.endsWith('/')).map((e) => e.path)
   let blobs = ''
   for (let i = 0; i < untracked.length; i += 200) {
     const ids = await git(path, ['hash-object', '--no-filters', '--', ...untracked.slice(i, i + 200)])
@@ -1184,8 +1186,12 @@ export interface RescueResult {
   /** Commits in `commits.bundle`; 0 when every commit is on another branch or a remote. */
   commits: number
   /** The rescue is recorded, so the directory now counts as preserved. False when the tree changed
-   *  while it was being copied: the copy is kept, but it does not stand in for the work. */
+   *  while it was being copied, or when something could not be copied (see `skipped`): the copy is
+   *  kept, but it does not stand in for the work. */
   preserved: boolean
+  /** Status entries that are directories (a dirty submodule, a nested repository) and were NOT
+   *  copied. Any of these means the rescue is not a complete copy (Review finding 7). */
+  skipped: string[]
 }
 
 /** `<name>-<YYYY-MM-DD>` under the rescue root, suffixed `-2`, `-3`… if taken. Never reused. */
@@ -1210,6 +1216,7 @@ export async function rescueWorktree(path: string, now = new Date()): Promise<Re
   const dir = rescueDirFor(path, now)
   await mkdir(join(dir, 'files'), { recursive: true })
   const copied: string[] = []
+  const skipped: string[] = []
   for (const e of parseStatusZ(status)) {
     const from = join(path, e.path)
     const to = join(dir, 'files', e.path)
@@ -1218,7 +1225,7 @@ export async function rescueWorktree(path: string, now = new Date()): Promise<Re
     await mkdir(dirname(to), { recursive: true })
     if (st.isSymbolicLink()) await symlink(await readlink(from), to)
     else if (st.isFile()) await copyFile(from, to)
-    else continue
+    else { skipped.push(e.path); continue }
     copied.push(e.path)
   }
   await writeFile(join(dir, 'changes.patch'), diff)
@@ -1246,13 +1253,14 @@ export async function rescueWorktree(path: string, now = new Date()): Promise<Re
 
   // Recorded only if nothing changed while copying; otherwise the copy may be a mix of two states.
   const after = await workFingerprint(path, f.branch)
-  const preserved = after === before
+  // A directory entry was not copied, so the copy cannot stand in for the work.
+  const preserved = after === before && skipped.length === 0
   if (preserved) {
     const index = await loadRescues()
     index.set(path, { path, dir, at: now.getTime(), fingerprint: before })
     await writeFile(rescueIndexFile(), JSON.stringify([...index.values()], null, 2))
   }
-  return { dir, files: copied.length, commits, preserved }
+  return { dir, files: copied.length, commits, preserved, skipped }
 }
 
 // ── the pending-removal record ───────────────────────────────────────────────────────────────

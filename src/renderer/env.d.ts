@@ -160,7 +160,7 @@ declare global {
       worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>
       /** Copy a worktree's unsaved work (uncommitted and untracked files, a diff patch, a bundle of
        *  commits held nowhere else) to ~/.operator/rescued/<dir>-<date>/. Removes nothing. */
-      worktreeRescue: (path: string) => Promise<{ dir: string; files: number; commits: number; preserved: boolean }>
+      worktreeRescue: (path: string) => Promise<{ dir: string; files: number; commits: number; preserved: boolean; skipped: string[] }>
       /** Report-only: record what the automatic worktree rule would remove after `trigger`. */
       worktreeAutoRemovalCheck?: (trigger: string) => void
       /** Remove the plan's automatic tier. `dryRun` defaults to TRUE; pass `false` only from a

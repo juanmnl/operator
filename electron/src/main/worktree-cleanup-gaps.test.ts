@@ -397,6 +397,23 @@ describe('rescueWorktree', () => {
     expect(existsSync(lane.path)).toBe(true)
   })
 
+  it('does not mark a folder preserved when a status entry is a directory it could not copy (Review finding 7)', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'notes.md'), 'only here\n')
+    // A nested repository: git status shows it as one directory entry, `?? nested/`.
+    const nested = join(lane.path, 'nested')
+    mkdirSync(nested)
+    git(nested, ['init', '-q']); writeFileSync(join(nested, 'work.txt'), 'nested work\n')
+    const r = await reap.rescueWorktree(lane.path)
+    expect(r.preserved).toBe(false)
+    expect(r.skipped).toEqual(['nested/'])
+    expect(r.files).toBe(1) // notes.md was still copied
+    const e = await entryFor(lane.path)
+    expect(e.rescuedTo).toBeUndefined()
+    expect(e.needsUnsavedConfirm).toBe(true)
+  })
+
   it('never reuses a rescue directory', async () => {
     const { lane } = await busyLane()
     const day = new Date('2026-09-25T09:00:00Z')

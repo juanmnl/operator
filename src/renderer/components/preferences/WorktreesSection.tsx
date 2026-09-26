@@ -105,7 +105,9 @@ export function WorktreesSection() {
       const what = `${r.files} file${r.files === 1 ? '' : 's'}${r.commits ? ` and ${r.commits} commit${r.commits === 1 ? '' : 's'}` : ''}`
       setOutcome(r.preserved
         ? `Rescued ${what} from ${baseName(path)} to ${r.dir}. It can now be removed without the unsaved-work step.`
-        : `Copied ${what} from ${baseName(path)} to ${r.dir}, but it changed while being copied, so it still counts as unsaved. Rescue it again.`)
+        : r.skipped.length
+          ? `Copied ${what} from ${baseName(path)} to ${r.dir}, but could not copy ${r.skipped.join(', ')} (a submodule or nested repository), so it still counts as unsaved.`
+          : `Copied ${what} from ${baseName(path)} to ${r.dir}, but it changed while being copied, so it still counts as unsaved. Rescue it again.`)
       load()
     } catch (e) {
       setOutcome(`Could not rescue ${baseName(path)}: ${e instanceof Error ? e.message : String(e)}`)
