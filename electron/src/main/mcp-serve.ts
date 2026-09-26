@@ -70,22 +70,58 @@ function resolveCaller(): Caller {
     const raw = JSON.parse(readFileSync(join(process.env.OPERATOR_DIR || join(homedir(), '.operator'), 'sessions.json'), 'utf8'))
     const list: unknown = Array.isArray(raw) ? raw : (raw as Record<string, unknown>)?.sessions
     if (Array.isArray(list)) {
-      const hit = list.find((s) => {
-        const row = s as Record<string, unknown>
-        if (row?.terminalId !== terminalId) return false
-        // Narrowed by what the environment already told us. With neither variable set this is
-        // the old first-match-wins lookup, which is all an older lane can be given.
-        if (projectId && row.projectId !== projectId) return false
-        if (roleId && row.roleId !== roleId) return false
-        return true
-      }) as Record<string, unknown> | undefined
-      if (hit) {
-        projectId = projectId ?? (typeof hit.projectId === 'string' ? hit.projectId : null)
-        roleId = roleId ?? (typeof hit.roleId === 'string' ? hit.roleId : null)
-      }
+      const found = callerFromSessions(terminalId, { projectId, roleId }, list, {
+        // This process is a child of the lane's own `claude`, which exports its session id to it;
+        // and it runs in the lane's directory, which a lane of this build also states at spawn.
+        claudeSessionId: (process.env.CLAUDE_CODE_SESSION_ID ?? '').trim() || undefined,
+        cwd: (process.env.OPERATOR_LANE_CWD ?? '').trim() || process.cwd(),
+      })
+      if (found.ambiguous) console.error(`[mcp] ${terminalId}: ${found.ambiguous} — not stamping it`)
+      projectId = found.projectId
+      roleId = found.roleId
     }
   } catch { /* no snapshot yet — terminal id alone is enough */ }
   return { terminalId, projectId, roleId }
+}
+
+/** THE FALLBACK IDENTITY, for a lane whose environment does not say its project and role (one
+ *  launched by an older build, still running). Pure.
+ *
+ *  X4 in dev/results/lane-instances-and-message-mixing-2026-09-25.md: this used to take the FIRST
+ *  `sessions.json` row with the caller's terminal id. Terminal ids restart at `t0` every run, so one
+ *  id sits in rows of several projects (`t2` under three), and the first match stamped reports and
+ *  dispatches with another project. A row now counts only when the terminal id matches AND the row
+ *  is corroborated by the caller's Claude session id or its directory. If the corroborated rows
+ *  disagree on a field, that field is left null (and `ambiguous` says so): an unstamped report is
+ *  visible and unattributed; a mis-stamped one is announced to the wrong project. */
+export function callerFromSessions(
+  terminalId: string,
+  known: { projectId: string | null; roleId: string | null },
+  rows: readonly unknown[],
+  identity: { claudeSessionId?: string; cwd?: string },
+): { projectId: string | null; roleId: string | null; ambiguous?: string } {
+  const norm = (p: string) => p.replace(/\/+$/, '')
+  const matches = rows.filter((s) => {
+    const row = s as Record<string, unknown>
+    if (row?.terminalId !== terminalId) return false
+    if (known.projectId && row.projectId !== known.projectId) return false
+    if (known.roleId && row.roleId !== known.roleId) return false
+    const bySession = !!identity.claudeSessionId && row.claudeSessionId === identity.claudeSessionId
+    const byCwd = !!identity.cwd && typeof row.cwd === 'string' && norm(row.cwd) === norm(identity.cwd)
+    return bySession || byCwd
+  }) as Array<Record<string, unknown>>
+  const one = (field: 'projectId' | 'roleId'): { value: string | null; clash: boolean } => {
+    const values = new Set(matches.map((r) => (typeof r[field] === 'string' ? r[field] as string : null)).filter((v): v is string => !!v))
+    return values.size === 1 ? { value: [...values][0], clash: false } : { value: null, clash: values.size > 1 }
+  }
+  const project = known.projectId ? { value: known.projectId, clash: false } : one('projectId')
+  const role = known.roleId ? { value: known.roleId, clash: false } : one('roleId')
+  const clashes = [project.clash && 'project', role.clash && 'role'].filter(Boolean)
+  return {
+    projectId: project.value,
+    roleId: role.value,
+    ...(clashes.length ? { ambiguous: `sessions.json rows matching this lane disagree on its ${clashes.join(' and ')}` } : {}),
+  }
 }
 
 const textResult = (text: string) => ({ content: [{ type: 'text', text }] })
