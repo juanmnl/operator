@@ -502,6 +502,16 @@ export class ArtifactStore {
       .map((row) => ({ id: row.id, branch: row.branch, sourceRepo: row.source_repo }))
   }
 
+  /** Every open release in this app run: lanes that called worktree_done and are still running.
+   *  The renderer reads this to retire such a lane when work is dispatched to its role. */
+  pendingReleases(appPid: string): Array<{ terminalId: string; projectId: string | null; path: string }> {
+    return (this.db.prepare(
+      `SELECT terminal_id, project_id, path FROM worktree_release
+        WHERE app_pid = ? AND handled_at IS NULL ORDER BY id`,
+    ).all(appPid) as Array<{ terminal_id: string; project_id: string | null; path: string }>)
+      .map((row) => ({ terminalId: row.terminal_id, projectId: row.project_id, path: row.path }))
+  }
+
   markReleaseHandled(id: number, at: string, outcome: string): void {
     this.db.prepare(`UPDATE worktree_release SET handled_at = ?, outcome = ? WHERE id = ? AND handled_at IS NULL`).run(at, outcome, id)
   }

@@ -1,4 +1,5 @@
 import { presetFor } from './roster'
+import { isBetweenTurns } from './comms'
 import type { Role } from '../../shared/types'
 
 // Pure dispatch-routing logic, extracted from DashboardView's onOrchestratorDispatch
@@ -39,6 +40,11 @@ export interface RoutableTab {
    *  the project's path, so a tab LABELLED with a project it does not run in is never picked. */
   cwd?: string
   sourceCwd?: string
+  /** The tracked session's phase (`running` | `compacting` | `waiting` | `asking` | `idle`), or
+   *  undefined when no transcript has been seen. Read only for a released lane. */
+  phase?: string
+  /** This lane called `worktree_done` and main holds an open release for it (`markReleased`). */
+  released?: boolean
 }
 
 /** Case-insensitive, like the default macOS volume, and ignoring a trailing slash. */
@@ -115,6 +121,12 @@ export function orphanTabs<T extends RoutableTab>(tabs: T[]): T[] {
 export type DispatchRoute<T extends RoutableTab> =
   /** A live lane for the target role exists → type the task in. */
   | { kind: 'send'; role: Role; tab: T }
+  /** The role's live lane released its worktree and is between turns → end that session the way
+   *  a user's close does, then launch a fresh lane with the task as its opening brief. */
+  | { kind: 'retire'; role: Role; tab: T }
+  /** The role's live lane released its worktree but is still mid-turn → nothing is sent and
+   *  nothing is ended; the dispatcher retries once the lane is idle. */
+  | { kind: 'finishing'; role: Role; tab: T }
   /** The role is defined but has no live lane → queue for it. */
   | { kind: 'queue'; role: Role }
   /** The roster has no such lane, but the token names one of the preset TEMPLATES → add the
@@ -149,7 +161,31 @@ export function routeDispatch<T extends RoutableTab>(
     return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
   }
   const tab = pickLaneTab(tabs, projectId, role.id, projectPath)
-  return tab ? { kind: 'send', role, tab } : { kind: 'queue', role }
+  if (!tab) return { kind: 'queue', role }
+  // A LANE THAT RELEASED ITS WORKTREE IS FINISHED, and new work must not go into it: it runs in a
+  // directory that is removed when it ends, and its brief tells it never to branch again there.
+  // Only the release record qualifies (`markReleased`); nothing else ends a lane from here.
+  // An unknown phase counts as busy: a lane Operator cannot see is never ended.
+  if (tab.released) return isBetweenTurns(tab.phase) ? { kind: 'retire', role, tab } : { kind: 'finishing', role, tab }
+  return { kind: 'send', role, tab }
+}
+
+/** Stamp `released` on the tabs main holds an open `worktree_done` release for. Pure.
+ *
+ *  Matched on terminal id AND directory: the rows are already scoped to this app run, and the
+ *  directory check keeps a row from marking a tab that is not the lane that released it. Only a
+ *  worktree lane (its own branch, a directory other than its source repo) can qualify. */
+export function markReleased<T extends RoutableTab & { worktreeBranch?: string }>(
+  tabs: readonly T[],
+  releases: ReadonlyArray<{ terminalId: string; projectId?: string | null; path: string }>,
+): T[] {
+  return tabs.map((t) => {
+    const worktreeLane = !!t.worktreeBranch && !!t.cwd && !!t.sourceCwd && norm(t.cwd) !== norm(t.sourceCwd)
+    const released = worktreeLane && releases.some((r) => (
+      r.terminalId === t.id && norm(r.path) === norm(t.cwd!) && (!r.projectId || r.projectId === t.projectId)
+    ))
+    return released ? { ...t, released: true } : t
+  })
 }
 
 /** Names of the lanes currently RUNNING in a project (excluding one tab, usually the

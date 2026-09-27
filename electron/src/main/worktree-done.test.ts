@@ -207,3 +207,41 @@ describe('release on exit', () => {
     await expect(reap.removeWorktreeDurably(lane.path, repo)).resolves.toBeUndefined()
   })
 })
+
+// Dispatch retires an idle released lane and launches a fresh one of the same role
+// (src/renderer/lib/dispatch.ts `routeDispatch`). The renderer learns which lanes released from
+// this list, and the fresh lane must never land in the directory the old one is giving up.
+describe('retire and relaunch', () => {
+  it('lists an open release for this app run only, and drops it once the exit settles it', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    const mine = () => store.pendingReleases(String(process.pid)).filter((r) => r.path === lane.path)
+    expect(mine()).toEqual([{ terminalId: 't4', projectId: 'p1', path: lane.path }])
+    expect(store.pendingReleases('999999').some((r) => r.path === lane.path)).toBe(false)
+    await reap.releaseWorktreeOnExit('t4', lane.path, store)
+    expect(mine()).toEqual([])
+  })
+
+  it('the relaunched lane gets a NEW worktree, and the old lane exiting removes only its own', async () => {
+    const repo = scratchRepo()
+    const released = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(released.path)).isError).not.toBe(true)
+    // The fresh launch runs while the old session is still being torn down: its release is open.
+    const fresh = await wt.createWorktree(repo, undefined, 'code')
+    expect(fresh.path).not.toBe(released.path)
+    expect(fresh.branch).not.toBe(released.branch)
+    expect(await reap.releaseWorktreeOnExit('t4', released.path, store)).toBe('removed')
+    expect(existsSync(released.path)).toBe(false)
+    expect(existsSync(fresh.path)).toBe(true)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === fresh.path)).toBe(false)
+  })
+
+  it('even a request to reuse the released branch cannot land in the released directory while it exists', async () => {
+    const repo = scratchRepo()
+    const released = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(released.path)).isError).not.toBe(true)
+    const again = await wt.createWorktree(repo, released.branch, 'code')
+    expect(again.path).not.toBe(released.path)
+  })
+})

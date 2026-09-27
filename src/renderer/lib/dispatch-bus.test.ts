@@ -390,3 +390,39 @@ describe('dispatchSender — the request speaks for itself', () => {
     expect(dispatchSender({ terminalId: 't3' }, tabs)).toMatchObject({ projectId: 'mantel', fromRoleId: 'code' })
   })
 })
+
+describe('resolveDispatch — a lane that released its worktree', () => {
+  const releasedCode = (phase: string | undefined) => lane('code', { released: true, phase })
+
+  it('answers `launching` for an idle released lane: Operator retires it and starts a fresh one', () => {
+    const { verdict, brakes } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode('waiting'), lane('review')] }))
+    expect(verdict.outcome).toBe('launching')
+    expect(verdict.reason).toMatch(/released its worktree and is idle/)
+    expect(verdict.to).toBeUndefined()
+    // A launch is not a message: nothing charged.
+    expect(brakes).toEqual(emptyDeliveryState())
+  })
+
+  it('refuses a busy released lane, says to retry when idle, and charges nothing', () => {
+    for (const phase of ['running', 'compacting', 'asking', undefined]) {
+      const { verdict, brakes } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode(phase)] }))
+      expect(verdict.outcome, String(phase)).toBe('refused')
+      expect(verdict.reason).toMatch(/still finishing its turn.*Retry this dispatch once it is idle/)
+      expect(verdict.reason).toMatch(/Do not ask the user to close it/)
+      expect(verdict.brake).toBeUndefined()
+      expect(verdict.held).toBeUndefined()
+      expect(brakes).toEqual(emptyDeliveryState())
+    }
+  })
+
+  it('still HOLDS a non-coordinator\'s dispatch to a released lane — the authority gate comes first', () => {
+    const { verdict } = resolveDispatch(req('code', { fromRoleId: 'review' }), ctx({ lanes: [releasedCode('waiting')] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.held?.toRoleId).toBe('code')
+  })
+
+  it('sends as before to a lane with no release', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [lane('code', { phase: 'waiting' })] }))
+    expect(verdict.outcome).toBe('send')
+  })
+})

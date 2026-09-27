@@ -141,6 +141,8 @@ declare global {
         addresses: Array<{ sessionId: string; address: string }>
       }>
       answerDispatch: (id: number, verdict: { outcome: string; address?: string; text?: string; taskId?: string; reason?: string }) => Promise<void>
+      /** Lanes in this app run that called `worktree_done` and have not ended yet. */
+      pendingReleases: () => Promise<Array<{ terminalId: string; projectId: string | null; path: string }>>
       /** Everything the Tuning page reads, for a 1/7/30-day window, in one call. */
       getTuning: (days: number) => Promise<TuningData>
       devServerList: () => Promise<DevServerProc[]>

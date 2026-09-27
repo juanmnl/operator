@@ -26,3 +26,22 @@ export function launchWorkspace(
   const coordinator = isCoordinator(roleId)
   return { useWorktree, sharesMainCheckout: !useWorktree && !coordinator, ownWorktree: useWorktree && !coordinator }
 }
+
+/** The suspended record a launch resumes, if any: this role's most recent one in this project.
+ *  Most recent wins if a role somehow has several — same rule as `pickLaneTab`.
+ *
+ *  None when the launch REPLACES a lane the dispatch path just retired (`replacing`): that lane
+ *  gave its worktree up with `worktree_done`, and the dispatch asks for a fresh lane on a new
+ *  branch, not an older thread reattached to its old one. Without a record, `worktreeCreate` gets
+ *  no branch to reuse and makes a new worktree. Pure. */
+export function suspendedToResume<S extends { projectId?: string; roleId?: string; suspendedAt?: string; claudeSessionId?: string; lastActiveAt: string }>(
+  saved: readonly S[],
+  projectId: string,
+  roleId: string,
+  replacing?: string,
+): S | undefined {
+  if (replacing) return undefined
+  return saved
+    .filter((s) => s.projectId === projectId && s.roleId === roleId && s.suspendedAt && s.claudeSessionId)
+    .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))[0]
+}

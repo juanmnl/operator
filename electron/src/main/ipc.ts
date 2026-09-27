@@ -396,6 +396,9 @@ export function registerIpc(d: Deps): void {
     answerDispatch: async (id, verdict) => {
       d.artifacts.answerDispatch(Number(id), verdict as { outcome: string })
     },
+    // Scoped to this run: terminal ids restart at t0 every run, so a row from an earlier run
+    // would name whichever lane holds that id now.
+    pendingReleases: async () => d.artifacts.pendingReleases(String(process.pid)),
     getTuning: async (days) => {
       const n = Number(days) || 7
       // ONE WINDOW FOR BOTH HALVES, computed once here.

@@ -91,11 +91,13 @@ describe('the launch note tells lanes how to address sessions (X1)', () => {
   it('keeps the note as a real launch builds it under a size guard', () => {
     // RAISED DELIBERATELY for the bus note (X1). Measured as launched, with the bus slug and the
     // lane's own workspace lines; the longest is Infra.
+    // Raised to 4400 on 2026-09-27 for RETIRE_NOTE and the retry clause in the coordinator's note
+    // (roster.test.ts says why); the coordinator is now the longest. Lane notes did not change.
     for (const role of roster) {
       const n = orchestrationNote('mantel', role, roster, {
         busSlug: slug, ownWorktree: role.useWorktree === true, sharesMainCheckout: role.useWorktree === false && role.id !== 'operator',
       })
-      expect(n.length, role.id).toBeLessThan(4300)
+      expect(n.length, role.id).toBeLessThan(4400)
     }
   })
 

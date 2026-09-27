@@ -157,14 +157,35 @@ export function resolveDispatch(
   // failure. A launch is not a message: nothing is delivered to a peer, Operator starts a lane
   // and hands it an opening brief, and the hop budget that exists to stop lanes talking in
   // circles has nothing to count.
-  if (route.kind === 'queue' || route.kind === 'create') {
+  //
+  // A RETIRE IS A LAUNCH TOO: the live lane released its worktree with `worktree_done` and is
+  // between turns, so Operator ends that session and starts a fresh one. The caller's launch path
+  // (`deliverDispatchRef`) routes it again and does both.
+  if (route.kind === 'queue' || route.kind === 'create' || route.kind === 'retire') {
     return {
       brakes: ctx.brakes,
       verdict: {
         outcome: 'launching',
         reason: route.kind === 'create'
           ? `${targetRoleId} is not on the roster; Operator is adding it from its preset and launching it with this task as its opening brief`
-          : `${targetRoleId} is not running; Operator is launching it with this task as its opening brief`,
+          : route.kind === 'retire'
+            ? `${targetRoleId} released its worktree and is idle; Operator is ending that session and launching a fresh ${targetRoleId} lane with this task as its opening brief`
+            : `${targetRoleId} is not running; Operator is launching it with this task as its opening brief`,
+      },
+    }
+  }
+
+  // RELEASED BUT MID-TURN. Refused rather than held: a hold would have to outlive a renderer
+  // respawn and fire when the lane goes quiet, and a lane that never does would keep it forever.
+  // Nothing was sent, so nothing is charged against the sender's budget.
+  if (route.kind === 'finishing') {
+    return {
+      brakes: ctx.brakes,
+      verdict: {
+        outcome: 'refused',
+        reason: `${targetRoleId} released its worktree and is still finishing its turn. Nothing was sent. `
+          + `Retry this dispatch once it is idle: Operator then ends that session and launches a fresh `
+          + `${targetRoleId} lane with your task. Do not ask the user to close it.`,
       },
     }
   }

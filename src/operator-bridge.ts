@@ -280,6 +280,8 @@ export function installBridge(): void {
     // nothing can open a dispatch request there; an empty list is the truthful answer.
     openDispatches: async () => ({ requests: [], addresses: [] }),
     answerDispatch: async () => {},
+    // NOT IMPLEMENTED on the Tauri backend: no lane there can call `worktree_done`.
+    pendingReleases: async () => [],
     // NOT IMPLEMENTED on the Tauri backend — the Tuning page's capture is Electron-only. An
     // empty window reads correctly as "nothing ran", and the page's own empty state says so.
     getTuning: async (days: number) => ({

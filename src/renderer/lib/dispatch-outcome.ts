@@ -79,6 +79,9 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip 
     // a user who reads "delivered" while the lane sits idle has no way to find out otherwise.
     case 'undelivered':
       return { label: 'sent · never started', tone: 'warn' }
+    // Never sent: the lane had released its worktree and was mid-turn. The coordinator retries.
+    case 'finishing':
+      return { label: 'not delivered · lane finishing', tone: 'warn' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }

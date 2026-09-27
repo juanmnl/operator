@@ -127,7 +127,7 @@ const DISPATCH_PROTOCOL =
   'resolves the lane and applies the brakes, then answers JSON. On `send`, call `SendMessage` ' +
   'with its `to` and `text`; on `launching` it starts that lane with your task as its ' +
   'brief and you send nothing — either way the work starts. On `refused` nothing was sent: read ' +
-  '`reason`, and retry only for a bad lane name. If no lane fits, do it yourself. Fallback:\n' +
+  '`reason`, and retry only for a bad lane name or if it says to. If no lane fits, do it yourself. Fallback:\n' +
   'OPERATOR-DISPATCH [<lane-id>] <task>\n'
 
 const REPLY_PROTOCOL =
@@ -422,6 +422,13 @@ export const BRANCH_SAFETY_NOTE =
   '<branch>`). Start a new feature branch in a fresh Operator worktree (a new lane), not with ' +
   '`git checkout -b` in an existing one.\n'
 
+/** Coordinator only. BRANCH_SAFETY_NOTE says new work needs a fresh lane, and a coordinator that
+ *  had no way to end the old one asked the user to close it and waited (mantel, 2026-09-26/27).
+ *  Dispatch now retires a lane that called `worktree_done` and launches a fresh one (lib/dispatch). */
+export const RETIRE_NOTE =
+  'A new lane needs only a dispatch: Operator ends a lane that called `worktree_done` and launches ' +
+  'a fresh one. Never ask the user to close it.\n'
+
 /** How to address another session without reaching the wrong project (lib/bus-name). The session
  *  bus is machine-wide, so `ListAgents` lists every project's sessions; a lane that picks one by a
  *  guessed prefix can message another project (lane-instances-and-message-mixing, X1). */
@@ -451,6 +458,7 @@ export function orchestrationNote(projectName: string, role: Role, roster: Role[
       DISPATCH_PROTOCOL +
       (opts.busSlug ? busNote(opts.busSlug) : '') +
       BRANCH_SAFETY_NOTE +
+      RETIRE_NOTE +
       REPLY_PROTOCOL +
       REPORT_INBOX +
       REPORT_TASK_STATUS
