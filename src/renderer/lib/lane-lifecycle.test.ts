@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  laneCloseDecision, planLaneCloses, type LaneSnapshot, type LaneClosePolicy,
+  laneCloseDecision, planLaneCloses, releasedClosePlan, type LaneSnapshot, type LaneClosePolicy,
   DEFAULT_KEEP_WARM_MINUTES, DEFAULT_QUIET_MINUTES,
   doneStampsFrom, DONE_SIGNAL_MAX_AGE_MS,
 } from './lane-lifecycle'
@@ -209,5 +209,27 @@ describe('a report-only lane, end to end through the close policy', () => {
     const v = laneCloseDecision(lane, NOW, { keepWarmMs: 10 * 60_000, quietMs: 6 * 60 * 60_000 })
     expect(v.close).toBe(false)
     expect(v.why).toContain('still open')
+  })
+})
+
+describe('releasedClosePlan', () => {
+  // M2: main's release rule decides a released lane's directory: never the renderer's WIP
+  // snapshot and removal. An automatic close (idle) finishes tasks before the pty ends.
+  it('a released lane: the renderer never snapshots or removes it', () => {
+    expect(releasedClosePlan({ released: true, auto: false }).rendererRemovesWorktree).toBe(false)
+    expect(releasedClosePlan({ released: true, auto: true }).rendererRemovesWorktree).toBe(false)
+  })
+  it('an automatic close of a released lane finishes its tasks before the kill; a user close kills first', () => {
+    expect(releasedClosePlan({ released: true, auto: true }).finishBeforeKill).toBe(true)
+    expect(releasedClosePlan({ released: true, auto: false }).finishBeforeKill).toBe(false)
+  })
+  // M4: never suspended, so the next dispatch cannot resume the released branch.
+  it('a released lane is never suspended, whatever the lifecycle reason', () => {
+    expect(releasedClosePlan({ released: true, auto: true, reason: 'reported-done' }).suspend).toBeUndefined()
+    expect(releasedClosePlan({ released: true, auto: true, reason: 'went-quiet' }).suspend).toBeUndefined()
+  })
+  it('an unreleased lane closes exactly as before', () => {
+    expect(releasedClosePlan({ released: false, auto: true, reason: 'reported-done' }))
+      .toEqual({ finishBeforeKill: false, rendererRemovesWorktree: true, suspend: 'reported-done' })
   })
 })

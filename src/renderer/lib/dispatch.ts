@@ -45,6 +45,10 @@ export interface RoutableTab {
   phase?: string
   /** This lane called `worktree_done` and main holds an open release for it (`markReleased`). */
   released?: boolean
+  /** Something happened at this lane in the last few seconds that the transcript may not show
+   *  yet: a keystroke, a transcript record, a submission awaiting its turn. Read only for a
+   *  released lane, which is then not retired until it has been quiet for a moment. */
+  settling?: boolean
 }
 
 /** Case-insensitive, like the default macOS volume, and ignoring a trailing slash. */
@@ -125,8 +129,9 @@ export type DispatchRoute<T extends RoutableTab> =
    *  a user's close does, then launch a fresh lane with the task as its opening brief. */
   | { kind: 'retire'; role: Role; tab: T }
   /** The role's live lane released its worktree but is still mid-turn → nothing is sent and
-   *  nothing is ended; the dispatcher retries once the lane is idle. */
-  | { kind: 'finishing'; role: Role; tab: T }
+   *  nothing is ended; Operator tells the dispatcher once the lane is idle (lib/retire-watch).
+   *  `unseen`: Operator has no phase for it at all, so it can neither end it nor watch it. */
+  | { kind: 'finishing'; role: Role; tab: T; unseen: boolean }
   /** The role is defined but has no live lane → queue for it. */
   | { kind: 'queue'; role: Role }
   /** The roster has no such lane, but the token names one of the preset TEMPLATES → add the
@@ -165,10 +170,29 @@ export function routeDispatch<T extends RoutableTab>(
   // A LANE THAT RELEASED ITS WORKTREE IS FINISHED, and new work must not go into it: it runs in a
   // directory that is removed when it ends, and its brief tells it never to branch again there.
   // Only the release record qualifies (`markReleased`); nothing else ends a lane from here.
-  // An unknown phase counts as busy: a lane Operator cannot see is never ended.
-  if (tab.released) return isBetweenTurns(tab.phase) ? { kind: 'retire', role, tab } : { kind: 'finishing', role, tab }
+  // An unknown phase is never ended: a lane Operator cannot see is reported as unseen instead.
+  if (tab.released) {
+    if (!tab.phase) return { kind: 'finishing', role, tab, unseen: true }
+    return isBetweenTurns(tab.phase) && !tab.settling
+      ? { kind: 'retire', role, tab }
+      : { kind: 'finishing', role, tab, unseen: false }
+  }
   return { kind: 'send', role, tab }
 }
+
+/** The live lane a launch should reuse instead of spawning. None when the launch REPLACES a lane
+ *  the dispatch path just retired: that dispatch asked for a fresh lane, and any other live tab on
+ *  the role (a duplicate, possibly released or mid-turn itself) is not one. Pure. */
+export function reusableLane<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string, projectPath?: ProjectPaths | string, replacing?: string): T | undefined {
+  return replacing ? undefined : pickLaneTab(tabs, projectId, roleId, projectPath)
+}
+
+/** How long a released lane must have been quiet before a dispatch retires it. The transcript
+ *  shows a prompt about a second after it is submitted, and the phase is a one-second snapshot,
+ *  so a lane that did anything in the last few seconds may be taking work Operator cannot see yet
+ *  (review L2). A keystroke gets longer: a person mid-sentence has not submitted anything. */
+export const RETIRE_ACTIVITY_QUIET_MS = 3_000
+export const RETIRE_TYPING_QUIET_MS = 10_000
 
 /** Stamp `released` on the tabs main holds an open `worktree_done` release for. Pure.
  *
@@ -186,6 +210,14 @@ export function markReleased<T extends RoutableTab & { worktreeBranch?: string }
     ))
     return released ? { ...t, released: true } : t
   })
+}
+
+/** `markReleased` for one tab, as a yes/no. */
+export function isReleased(
+  tab: RoutableTab & { worktreeBranch?: string },
+  releases: ReadonlyArray<{ terminalId: string; projectId?: string | null; path: string }>,
+): boolean {
+  return markReleased([tab], releases)[0].released === true
 }
 
 /** Names of the lanes currently RUNNING in a project (excluding one tab, usually the

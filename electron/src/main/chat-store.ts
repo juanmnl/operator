@@ -504,12 +504,33 @@ export class ArtifactStore {
 
   /** Every open release in this app run: lanes that called worktree_done and are still running.
    *  The renderer reads this to retire such a lane when work is dispatched to its role. */
-  pendingReleases(appPid: string): Array<{ terminalId: string; projectId: string | null; path: string }> {
+  pendingReleases(appPid: string): Array<{ terminalId: string; projectId: string | null; path: string; at: string }> {
     return (this.db.prepare(
-      `SELECT terminal_id, project_id, path FROM worktree_release
+      `SELECT terminal_id, project_id, path, at FROM worktree_release
         WHERE app_pid = ? AND handled_at IS NULL ORDER BY id`,
-    ).all(appPid) as Array<{ terminal_id: string; project_id: string | null; path: string }>)
-      .map((row) => ({ terminalId: row.terminal_id, projectId: row.project_id, path: row.path }))
+    ).all(appPid) as Array<{ terminal_id: string; project_id: string | null; path: string; at: string }>)
+      .map((row) => ({ terminalId: row.terminal_id, projectId: row.project_id, path: row.path, at: row.at }))
+  }
+
+  /** Cancel this lane's open releases that are OLDER than `promptAt`: it took new work after
+   *  `worktree_done`, so its directory is in use again and must not be removed at exit, and
+   *  dispatch must not retire it. The lane calls `worktree_done` again when that work is done.
+   *  Returns how many rows it settled. */
+  cancelReleasesBefore(terminalId: string, appPid: string, promptAt: string, at: string): number {
+    const r = this.db.prepare(
+      `UPDATE worktree_release SET handled_at = ?, outcome = 'cancelled: new work after release'
+        WHERE terminal_id = ? AND app_pid = ? AND handled_at IS NULL AND at < ?`,
+    ).run(at, terminalId, appPid, promptAt)
+    return Number(r.changes)
+  }
+
+  /** Cancel every open release for this lane in this run: Operator itself typed work into it. */
+  cancelReleases(terminalId: string, appPid: string, at: string): number {
+    const r = this.db.prepare(
+      `UPDATE worktree_release SET handled_at = ?, outcome = 'cancelled: new work after release'
+        WHERE terminal_id = ? AND app_pid = ? AND handled_at IS NULL`,
+    ).run(at, terminalId, appPid)
+    return Number(r.changes)
   }
 
   markReleaseHandled(id: number, at: string, outcome: string): void {

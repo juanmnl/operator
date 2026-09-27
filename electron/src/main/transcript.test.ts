@@ -150,3 +150,41 @@ describe('contextTokens — the MAIN thread only', () => {
     expect(t.contextTokens).toBe(790_000)
   })
 })
+
+// The newest real prompt, by transcript timestamp: main cancels a `worktree_done` release that new
+// work arrived after (index.ts, `cancelReleasesBefore`). Review 2026-09-27, H1.
+describe('Track.lastPromptAt', () => {
+  const track = () => new Track('t0', { claudeSessionId: 's0', cwd: '/tmp', permissionMode: null, projectId: 'p1' })
+  const user = (text: string, timestamp: string, extra: Record<string, unknown> = {}) =>
+    ({ type: 'user', timestamp, message: { role: 'user', content: text }, ...extra })
+
+  it('is the newest real user turn', () => {
+    const t = track()
+    t.apply(user('first', '2026-09-27T10:00:00.000Z'))
+    t.apply(user('second', '2026-09-27T10:05:00.000Z'))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:05:00.000Z')
+  })
+
+  it('counts a mid-turn enqueue, which leaves no user turn at all', () => {
+    const t = track()
+    t.apply(user('first', '2026-09-27T10:00:00.000Z'))
+    t.apply({ type: 'queue-operation', operation: 'enqueue', content: 'more work', timestamp: '2026-09-27T10:07:00.000Z' })
+    expect(t.lastPromptAt).toBe('2026-09-27T10:07:00.000Z')
+  })
+
+  it('ignores injected turns, sidechains and tool results', () => {
+    const t = track()
+    t.apply(user('real', '2026-09-27T10:00:00.000Z'))
+    t.apply(user('<task-notification>done</task-notification>', '2026-09-27T11:00:00.000Z'))
+    t.apply(user('subagent prompt', '2026-09-27T11:00:00.000Z', { isSidechain: true }))
+    t.apply({ type: 'user', timestamp: '2026-09-27T11:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] } })
+    expect(t.lastPromptAt).toBe('2026-09-27T10:00:00.000Z')
+  })
+
+  it('never moves backwards on an older record', () => {
+    const t = track()
+    t.apply(user('late', '2026-09-27T10:05:00.000Z'))
+    t.apply(user('early', '2026-09-27T10:00:00.000Z'))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:05:00.000Z')
+  })
+})

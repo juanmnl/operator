@@ -282,6 +282,7 @@ export function installBridge(): void {
     answerDispatch: async () => {},
     // NOT IMPLEMENTED on the Tauri backend: no lane there can call `worktree_done`.
     pendingReleases: async () => [],
+    cancelRelease: async () => {},
     // NOT IMPLEMENTED on the Tauri backend — the Tuning page's capture is Electron-only. An
     // empty window reads correctly as "nothing ran", and the page's own empty state says so.
     getTuning: async (days: number) => ({

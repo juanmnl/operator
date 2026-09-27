@@ -19,6 +19,7 @@
 import type { Project, Role } from '../../shared/types'
 import { evaluateDelivery, deliveryPrefix, laneKey, type BlockReason, type DeliveryState } from './agent-delivery'
 import { routeDispatch, dispatchNeedsApproval, type RoutableTab } from './dispatch'
+import { finishingReason, watchFor, type FinishingWatch } from './retire-watch'
 
 /** What a lane is told to do next. */
 export type DispatchOutcome = 'send' | 'launching' | 'refused'
@@ -48,10 +49,13 @@ export interface DispatchVerdict {
    *  dispatch was recorded for the user to approve, and Operator delivers it itself if they do.
    *  The caller writes the `pending-approval` record from this; it never reaches the wire, which
    *  is enforced by `mcp-serve` naming the five wire fields explicitly. */
-  held?: { toRoleId?: string; toLabel?: string }
+  held?: { toRoleId?: string; toLabel?: string; retires?: boolean }
   /** Which brake refused it, on a brake refusal, so the caller can show the user and offer the
    *  reset. Internal, like `held`. */
   brake?: BlockReason
+  /** Set on a `finishing` refusal (the target released its worktree and is mid-turn), so the
+   *  caller can open the watch that sends the one idle message (lib/retire-watch). Internal. */
+  finishing?: { roleId: string; roleName: string; laneTerminalId: string; unseen: boolean }
 }
 
 export interface DispatchRequest {
@@ -82,6 +86,8 @@ export interface DispatchContext {
   brakes: DeliveryState
   chatterPaused: boolean
   now: number
+  /** Open `finishing` watches, so a repeat refusal says the message was already promised. */
+  finishing?: ReadonlyMap<string, FinishingWatch>
 }
 
 /** Decide what happens to one dispatch, and return the new brake state with it.
@@ -138,7 +144,8 @@ export function resolveDispatch(
       brakes: ctx.brakes,
       verdict: {
         outcome: 'refused',
-        held: { toRoleId: targetRoleId, toLabel },
+        // Approving it would END the target's released lane (route `retire`); the approval UI says so.
+        held: { toRoleId: targetRoleId, toLabel, retires: route.kind === 'retire' },
         reason: `held for approval: only the coordinator dispatches work directly. Your task for `
           + `"${toLabel ?? targetRoleId}" is in this project's dispatch log awaiting the user's `
           + `approval and has NOT been delivered. Do not retry — recommend it in your report.`,
@@ -176,16 +183,18 @@ export function resolveDispatch(
   }
 
   // RELEASED BUT MID-TURN. Refused rather than held: a hold would have to outlive a renderer
-  // respawn and fire when the lane goes quiet, and a lane that never does would keep it forever.
-  // Nothing was sent, so nothing is charged against the sender's budget.
+  // respawn. The caller opens a watch that sends ONE message when the lane is idle, so the
+  // dispatcher waits for that instead of polling (lib/retire-watch). A repeat while the watch is
+  // open says so. Nothing was sent, so nothing is charged against the sender's budget.
   if (route.kind === 'finishing') {
+    const roleName = route.role.name
+    const open = watchFor(ctx.finishing ?? new Map(), req.projectId, targetRoleId, route.tab.id)
     return {
       brakes: ctx.brakes,
       verdict: {
         outcome: 'refused',
-        reason: `${targetRoleId} released its worktree and is still finishing its turn. Nothing was sent. `
-          + `Retry this dispatch once it is idle: Operator then ends that session and launches a fresh `
-          + `${targetRoleId} lane with your task. Do not ask the user to close it.`,
+        reason: finishingReason(roleName, { unseen: route.unseen, repeat: !!open, refusals: open ? open.refusals + 1 : undefined }),
+        finishing: { roleId: targetRoleId, roleName, laneTerminalId: route.tab.id, unseen: route.unseen },
       },
     }
   }

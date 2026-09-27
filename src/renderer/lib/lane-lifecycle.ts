@@ -252,3 +252,24 @@ export function doneStampsFrom(
   }
   return out
 }
+
+/** How a lane is closed, given whether it released its worktree with `worktree_done`. Pure.
+ *
+ *  A RELEASED LANE's directory is decided by main on pty exit, by the rule the lane was told:
+ *  removed if clean, kept if anything is unsaved. So the renderer never snapshots or removes it
+ *  (review M2). An AUTOMATIC close of one (a dispatch retiring it, or this lifecycle) happens only
+ *  when it is idle, so its tasks are finished while the directory exists and the pty ends after:
+ *  killing first let main delete the directory under the diff capture and verification gate.
+ *  And it is never SUSPENDED: a suspended record would resume the released thread on its old,
+ *  often merged, branch (review M4). A user's close of a busy released lane still kills first. */
+export function releasedClosePlan(o: { released: boolean; auto: boolean; reason?: LaneCloseReason }): {
+  finishBeforeKill: boolean
+  rendererRemovesWorktree: boolean
+  suspend: LaneCloseReason | undefined
+} {
+  return {
+    finishBeforeKill: o.released && o.auto,
+    rendererRemovesWorktree: !o.released,
+    suspend: o.released ? undefined : o.reason,
+  }
+}

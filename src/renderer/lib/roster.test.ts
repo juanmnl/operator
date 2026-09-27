@@ -346,11 +346,12 @@ describe('orchestrationNote — the return path', () => {
     // charters, so the guard now covers every preset's note, not just Code's (longest: Review, 3253).
     // Raised to 3800 on 2026-09-25 for BRANCH_SAFETY_NOTE in the coordinator's note (it merges PRs,
     // and `--delete-branch` gutted a lane's checkout twice): 3374 to 3764.
-    // Raised to 4000 on 2026-09-27 for RETIRE_NOTE (coordinators asked the user to close a lane
-    // that had called `worktree_done`; dispatch now retires it) and the matching retry clause in
-    // DISPATCH_PROTOCOL: 3764 to 3938. Lane notes did not change.
+    // Raised to 4200 on 2026-09-27 for RETIRE_NOTE (coordinators asked the user to close a lane
+    // that had called `worktree_done`; dispatch now retires it, and a busy one is refused with an
+    // idle message to follow): 3764 to 4008. Lane notes did not change. The headroom is ~190
+    // because the note grows with the project name (review L5 measured +23 for a 27-char name).
     for (const role of roster) {
-      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(4000)
+      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(4200)
     }
   })
 })

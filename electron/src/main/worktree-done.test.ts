@@ -217,7 +217,7 @@ describe('retire and relaunch', () => {
     const lane = await wt.createWorktree(repo, undefined, 'code')
     expect((await callDone(lane.path)).isError).not.toBe(true)
     const mine = () => store.pendingReleases(String(process.pid)).filter((r) => r.path === lane.path)
-    expect(mine()).toEqual([{ terminalId: 't4', projectId: 'p1', path: lane.path }])
+    expect(mine()).toMatchObject([{ terminalId: 't4', projectId: 'p1', path: lane.path }])
     expect(store.pendingReleases('999999').some((r) => r.path === lane.path)).toBe(false)
     await reap.releaseWorktreeOnExit('t4', lane.path, store)
     expect(mine()).toEqual([])
@@ -235,6 +235,47 @@ describe('retire and relaunch', () => {
     expect(existsSync(released.path)).toBe(false)
     expect(existsSync(fresh.path)).toBe(true)
     expect(store.pendingReleases(String(process.pid)).some((r) => r.path === fresh.path)).toBe(false)
+  })
+
+  // H1: a lane that takes new work after worktree_done is working again. Its release is cancelled
+  // (by main on the prompt, or by the renderer when it types work in), so dispatch does not retire
+  // it and its directory is not removed at exit.
+  it('a prompt AFTER the release cancels it: not pending, and the directory survives the exit', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    const [row] = store.openReleases('t4', lane.path, String(process.pid))
+    const before = new Date(Date.parse(new Date().toISOString()) - 60_000).toISOString()
+    expect(store.cancelReleasesBefore('t4', String(process.pid), before, new Date().toISOString())).toBe(0)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === lane.path)).toBe(true)
+    const after = new Date(Date.now() + 1_000).toISOString()
+    // Other tests here leave t4 rows open in the same store; this one must be among those settled.
+    expect(store.cancelReleasesBefore('t4', String(process.pid), after, new Date().toISOString())).toBeGreaterThanOrEqual(1)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === lane.path)).toBe(false)
+    expect(store.releaseOutcome(row.id)?.outcome).toBe('cancelled: new work after release')
+    expect(await reap.releaseWorktreeOnExit('t4', lane.path, store)).toBe('none')
+    expect(existsSync(lane.path)).toBe(true)
+  })
+
+  it('a cancel touches only this lane in this run', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    const later = new Date(Date.now() + 1_000).toISOString()
+    expect(store.cancelReleasesBefore('t5', String(process.pid), later, later)).toBe(0)
+    expect(store.cancelReleases('t4', '999999', later)).toBe(0)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === lane.path)).toBe(true)
+    expect(store.cancelReleases('t4', String(process.pid), later)).toBeGreaterThanOrEqual(1)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === lane.path)).toBe(false)
+  })
+
+  it('a second worktree_done after cancelled work opens a new release', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo, undefined, 'code')
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    store.cancelReleases('t4', String(process.pid), new Date().toISOString())
+    expect((await callDone(lane.path)).isError).not.toBe(true)
+    expect(store.pendingReleases(String(process.pid)).some((r) => r.path === lane.path)).toBe(true)
   })
 
   it('even a request to reuse the released branch cannot land in the released directory while it exists', async () => {

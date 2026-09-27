@@ -399,6 +399,8 @@ export function registerIpc(d: Deps): void {
     // Scoped to this run: terminal ids restart at t0 every run, so a row from an earlier run
     // would name whichever lane holds that id now.
     pendingReleases: async () => d.artifacts.pendingReleases(String(process.pid)),
+    // Operator typed work into this lane: the release no longer describes it.
+    cancelRelease: async (terminalId) => { d.artifacts.cancelReleases(String(terminalId), String(process.pid), new Date().toISOString()) },
     getTuning: async (days) => {
       const n = Number(days) || 7
       // ONE WINDOW FOR BOTH HALVES, computed once here.

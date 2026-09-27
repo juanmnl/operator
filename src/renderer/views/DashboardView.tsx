@@ -14,7 +14,7 @@ import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
-import { planLaneCloses, laneClosePolicy, type LaneSnapshot, type LaneCloseReason, doneStampsFrom } from '../lib/lane-lifecycle'
+import { planLaneCloses, laneClosePolicy, releasedClosePlan, type LaneSnapshot, type LaneCloseReason, doneStampsFrom } from '../lib/lane-lifecycle'
 import { pruneSavedSessions } from '../lib/session-prune'
 import { pruneSeededIdleLanes } from '../lib/prune-seeded-lanes'
 import { IDLE, installPressed, installProgressed, installFailed, type InstallState } from '../lib/update-install'
@@ -23,14 +23,16 @@ import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, orphanTabs, markReleased, COORDINATOR_ROLE_IDS } from '../lib/dispatch'
+import { routeDispatch, liveLaneNames, reusableLane, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, COORDINATOR_ROLE_IDS, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
+import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
+import { typedWithin } from '../lib/lane-keystrokes'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { laneBusName, projectSlug } from '../lib/bus-name'
 import { useRefocusOnActivate, type ActivationView } from '../lib/use-refocus-on-activate'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
-import { submitQueue, onUndeliveredSubmission, composerLines } from '../lib/submit-queue'
+import { submitQueue, onUndeliveredSubmission, onSubmission, composerLines } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail, RAIL_W, RAIL_W_OPEN } from '../components/sidebar/ProjectRail'
@@ -1071,18 +1073,35 @@ export function DashboardView() {
   /** Main's open `worktree_release` rows for this run, refreshed by the poll below and read
    *  fresh by the bus tick before it routes. Stale only toward "not released", which routes the
    *  way it did before retiring existed. */
-  const pendingReleasesRef = useRef<Array<{ terminalId: string; projectId: string | null; path: string }>>([])
+  const pendingReleasesRef = useRef<Array<{ terminalId: string; projectId: string | null; path: string; at: string }>>([])
+  /** Releases Operator cancelled itself by typing work into the lane, by terminal → when. A poll
+   *  answered before main applied the cancel would otherwise bring the row back. */
+  const cancelledReleasesRef = useRef(new Map<string, string>())
+  /** Lanes being retired right now. Routing treats them as ended, so a second dispatch in the
+   *  same moment joins the relaunch instead of retiring (or typing into) the same lane again. */
+  const retiringRef = useRef(new Set<string>())
+  /** Open `finishing` watches (lib/retire-watch). */
+  const finishingRef = useRef<WatchBook>(new Map())
   /** Tabs stamped with their session's last activity, so `pickLaneTab` can break a duplicate
-   *  tie by recency rather than by whatever order reattach produced; and with the phase and the
-   *  release record `routeDispatch` needs to retire a lane that called `worktree_done`. */
-  const withActivity = (tabs: TerminalTab[]) => markReleased(tabs.map((t) => {
-    const session = sessionsRef.current.find((s) => s.terminalId === t.id)
-    return {
-      ...t,
-      lastActivityAt: session?.lastActivityAt,
-      phase: session && session.status !== 'ended' ? session.phase : undefined,
-    }
-  }), pendingReleasesRef.current)
+   *  tie by recency rather than by whatever order reattach produced; and with what
+   *  `routeDispatch` needs to retire a lane that called `worktree_done`: its phase, whether it
+   *  settled, the release record, and whether a retire of it is already under way. */
+  const withActivity = (tabs: TerminalTab[]) => {
+    const now = Date.now()
+    return markReleased(tabs.map((t) => {
+      const session = sessionsRef.current.find((s) => s.terminalId === t.id)
+      const activeAt = session?.lastActivityAt ? Date.parse(session.lastActivityAt) : NaN
+      return {
+        ...t,
+        ended: t.ended || retiringRef.current.has(t.id),
+        lastActivityAt: session?.lastActivityAt,
+        phase: session && session.status !== 'ended' ? session.phase : undefined,
+        settling: typedWithin(t.id, RETIRE_TYPING_QUIET_MS, now)
+          || !!submitQueue.pending(t.id)
+          || (!Number.isNaN(activeAt) && now - activeAt < RETIRE_ACTIVITY_QUIET_MS),
+      }
+    }), pendingReleasesRef.current)
+  }
 
   /** The live lanes of one project, as lib/task-lifecycle wants them. */
   const liveLanesOf = (projectId: string): LiveLane[] => terminalsRef.current
@@ -1526,7 +1545,7 @@ export function DashboardView() {
   /** Per-project liveness, and the per-lane close path — both declared far below the shelve and
    *  close actions that need them, so they arrive through refs assigned on render. */
   const activitiesRef = useRef<Record<string, ProjectActivity>>({})
-  const handleCloseSessionRef = useRef<(s: AgentSession, suspend?: LaneCloseReason) => Promise<void>>(async () => {})
+  const handleCloseSessionRef = useRef<(s: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }) => Promise<boolean>>(async () => false)
   /** `focusTerminal` is declared much further down, so the undelivered toast reaches it the
    *  same way the exit handler reaches its own late sibling — through a ref assigned on render. */
   const focusTerminalRef = useRef<(id: string) => void>(() => {})
@@ -1607,13 +1626,45 @@ export function DashboardView() {
     let stopped = false
     const refresh = () => {
       window.operator.pendingReleases?.()
-        .then((rows) => { if (!stopped) pendingReleasesRef.current = rows ?? [] })
+        .then((rows) => { if (!stopped) pendingReleasesRef.current = liveReleases(rows ?? []) })
         .catch(() => { /* keep the last read */ })
     }
     refresh()
     const t = window.setInterval(refresh, 4000)
     return () => { stopped = true; clearInterval(t) }
   }, [])
+  /** Drop rows Operator already cancelled locally; a later `worktree_done` is a new row and stays. */
+  const liveReleases = (rows: Array<{ terminalId: string; projectId: string | null; path: string; at: string }>) =>
+    rows.filter((r) => { const c = cancelledReleasesRef.current.get(r.terminalId); return !c || r.at > c })
+  // WORK TYPED INTO A RELEASED LANE CANCELS ITS RELEASE, whoever typed it: a dispatch, the board's
+  // Send or Start all, a Launch that reuses the lane, a reply. Main also cancels it when the lane's
+  // transcript shows the prompt, which covers a person typing into the terminal; this covers the
+  // second before that, so the lane is never retired with work it was just handed.
+  useEffect(() => {
+    onSubmission((id) => {
+      if (!pendingReleasesRef.current.some((r) => r.terminalId === id)) return
+      cancelledReleasesRef.current.set(id, new Date().toISOString())
+      pendingReleasesRef.current = pendingReleasesRef.current.filter((r) => r.terminalId !== id)
+      void window.operator.cancelRelease?.(id)?.catch(() => { /* main also cancels on the prompt */ })
+    })
+  }, [])
+  // THE ONE MESSAGE a `finishing` refusal promised (lib/retire-watch): when the lane is idle, took
+  // new work, ended, or the watch timed out. To the dispatchers; to the user when an approval
+  // opened it.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      const book = finishingRef.current
+      if (!book.size) return
+      for (const { watch, signal } of dueSignals(book, withActivityRef.current(terminalsRef.current), Date.now())) {
+        clearWatch(book, watch.projectId, watch.roleId)
+        const line = signalLine(watch, signal)
+        const live = watch.notify.filter((id) => terminalsRef.current.some((x) => x.id === id && !x.ended))
+        if (live.length) for (const id of live) void submitQueue.submit(id, line)
+        else pushToast({ text: `${watch.roleName}: ${signal === 'idle' ? 'idle now' : signal === 'took-work' ? 'working again' : signal === 'ended' ? 'ended' : 'still busy'}`, detail: `${line.replace('[Operator] ', '')} A held dispatch to it can be approved again.`, kind: 'info' })
+      }
+    }, 2000)
+    return () => clearInterval(t)
+  }, [pushToast])
   const dispatchRef = useRef({ terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject })
   dispatchRef.current = { terminals, projects, addProjectTask, addRunningTask, pushToast, logDispatch, updateProject }
   // handleLaunchRole is declared further down; the subscription reaches it through a ref.
@@ -1787,10 +1838,12 @@ export function DashboardView() {
       if (stopped || !open.requests.length) return
       // Fresh, not the 4s cache: a lane that called `worktree_done` a moment ago must be retired,
       // not sent new work in the directory it just gave up.
-      try { pendingReleasesRef.current = await window.operator.pendingReleases() } catch { /* keep the last read */ }
+      try { pendingReleasesRef.current = liveReleases(await window.operator.pendingReleases()) } catch { /* keep the last read */ }
       const addresses = new Map(open.addresses.map((a) => [a.sessionId, a.address]))
-      const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
       for (const r of open.requests) {
+        // Read per request, not once per tick: an earlier request in this loop may have retired a
+        // lane or launched one, and `answerDispatch` awaits between them (review L3).
+        const { terminals: tabs, projects: projs, pushToast: toast } = dispatchRef.current
         // The request's own stamps first; the tab only when it agrees with them (X5).
         const { projectId, fromRoleId } = dispatchSender(r, tabs)
         const project = projs.find((p) => p.id === projectId)
@@ -1823,8 +1876,17 @@ export function DashboardView() {
             brakes: deliveryStateRef.current,
             chatterPaused: chatterPausedRef.current,
             now: Date.now(),
+            finishing: finishingRef.current,
           },
         )
+        // Refused because the lane is finishing: open (or extend) the watch that sends the one
+        // idle message the reason promised, to this caller.
+        if (verdict.finishing) {
+          noteFinishing(finishingRef.current, {
+            projectId, roleId: verdict.finishing.roleId, roleName: verdict.finishing.roleName,
+            laneTerminalId: verdict.finishing.laneTerminalId, notify: r.terminalId, now: Date.now(), unseen: verdict.finishing.unseen,
+          })
+        }
         deliveryStateRef.current = brakes
         let taskId: string | undefined
 
@@ -1859,9 +1921,10 @@ export function DashboardView() {
             fromRoleId, toRoleId: verdict.held.toRoleId,
             task: r.body, outcome: 'pending-approval',
           })
+          const target = verdict.held.toLabel ?? verdict.held.toRoleId
           toast({
-            text: `${from?.name ?? 'A lane'} wants to dispatch to ${verdict.held.toLabel ?? verdict.held.toRoleId}`,
-            detail: `Needs your approval — see Dispatches. ${preview}`,
+            text: `${from?.name ?? 'A lane'} wants to dispatch to ${target}`,
+            detail: `Needs your approval — see Dispatches.${verdict.held.retires ? ` Approving it now ends ${target}'s released lane and starts a fresh one.` : ''} ${preview}`,
             kind: 'info',
           })
         }
@@ -2014,12 +2077,26 @@ export function DashboardView() {
         record('sent')
         toast({ text: `Dispatched to ${role.name}`, kind: 'info', detail: preview })
       } else if (route.kind === 'finishing') {
-        // Released its worktree, still mid-turn. Not ended and not typed into: the dispatcher
-        // retries once the lane is idle, and that retry takes the retire branch below.
-        const note = `${route.role.name} released its worktree and is still finishing its turn, so nothing was sent.`
-        record('finishing', note)
-        toast({ text: `${route.role.name} is finishing — not dispatched`, kind: 'info', detail: preview })
-        feedback(`${note} Dispatch again once it is idle: Operator then ends that session and launches a fresh "${route.role.name}" lane with your task. Do not ask the user to close it.`)
+        // Released its worktree, still mid-turn. Not ended and not typed into. A watch sends ONE
+        // message when the lane is idle (lib/retire-watch); a repeat while it is open types
+        // nothing, because a note typed into the dispatcher starts its next turn, and that turn
+        // dispatching again was a loop with no human in it (review M1).
+        const out = finishingDelivery(finishingRef.current, {
+          projectId: project.id, roleId: route.role.id, roleName: route.role.name, laneTerminalId: route.tab.id,
+          unseen: route.unseen, approving: !!approving, dispatcher: srcTab?.id, now: Date.now(),
+        })
+        // AN APPROVAL (or Retry, or Assign) KEEPS ITS RECORD: overwriting it with `finishing`
+        // took the card out of Waiting with no button left (review M3). The watch tells the
+        // user with a toast when it can be approved again.
+        if (!out.record) {
+          toast({ text: `${route.role.name} is still finishing — not delivered`, kind: 'info', detail: `It stays in Waiting; Operator will tell you when it can be approved again. ${preview}` })
+          return
+        }
+        record(out.record.outcome, out.record.note)
+        if (out.feedback) {
+          toast({ text: `${route.role.name} is finishing — not dispatched`, kind: 'info', detail: preview })
+          feedback(out.feedback)
+        }
       } else if (route.kind === 'queue' || route.kind === 'create' || route.kind === 'retire') {
         // Idle lane → LAUNCH it with the task as its opening brief (the user asked for
         // dispatches to start the agent, not park work in the queue). If the launch fails,
@@ -2029,13 +2106,15 @@ export function DashboardView() {
         // exactly as the user's close ends it (no suspend, so nothing resumes it later), which
         // lets main's on-exit release remove the worktree; the fresh lane gets a new one.
         const { role } = route
-        const retiring = route.kind === 'retire' ? route.tab : undefined
         const key = `${project.id}:${role.id}`
+        const inflight = launchingLanesRef.current.get(key)
+        // A retire already joined to a launch in flight retires nothing itself: that launch is
+        // the fresh lane.
+        const retiring = route.kind === 'retire' && !inflight ? route.tab : undefined
         const trackOrQueue = (tab: TerminalTab | undefined) => {
           if (tab) addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase }, source)
           else addTask(project.id, d.task, role.id, source)
         }
-        const inflight = launchingLanesRef.current.get(key)
         if (inflight) {
           // This lane is already spawning from a moments-ago dispatch — hand the task to
           // that same session once it's live instead of fanning out a sibling.
@@ -2044,23 +2123,50 @@ export function DashboardView() {
             trackOrQueue(tab)
           })
         } else {
+          // Marked before anything awaits, so routing sees it as gone from this moment on.
+          if (retiring) {
+            retiringRef.current.add(retiring.id)
+            clearWatch(finishingRef.current, project.id, role.id)
+          }
           const launch = (async () => {
-            if (retiring) {
-              const session = sessionsRef.current.find((s) => s.terminalId === retiring.id)
-              // Never launch a second lane beside one that is still running: without its session
-              // there is nothing to close, so the task goes to the queue instead.
-              if (!session) { trackOrQueue(undefined); return undefined }
-              await handleCloseSessionRef.current(session)
+            try {
+              if (retiring) {
+                const session = sessionsRef.current.find((s) => s.terminalId === retiring.id)
+                // Never launch a second lane beside one that is still running: without its session
+                // there is nothing to close, so the task goes to the queue instead.
+                if (!session) { retiringRef.current.delete(retiring.id); trackOrQueue(undefined); return undefined }
+                // CLOSED BESIDE THE LAUNCH, not before it. The close finishes the lane's tasks while
+                // its directory still exists (diff capture, verification gate) and only then ends
+                // the pty, so main's release rule decides the directory (review M2). That can take
+                // minutes; the fresh lane does not wait for it, and routing already treats this one
+                // as gone. If the lane took new work in the meantime the close is abandoned.
+                void handleCloseSessionRef.current(session, undefined, { auto: true })
+                  .then((closed) => {
+                    if (!closed) toast({ text: `${role.name} took new work — left running`, kind: 'info', detail: 'It was being retired after releasing its worktree, and got a prompt before it ended. It runs beside the fresh lane.' })
+                  })
+                  .catch((e) => toast({ text: `Could not end ${role.name}'s released lane`, kind: 'error', detail: String(e) }))
+                  .finally(() => retiringRef.current.delete(retiring.id))
+              }
+              const tab = await launchRoleRef.current?.(project, role, d.task, false, { focus: false, replacing: retiring?.id })
+              trackOrQueue(tab)
+              return tab
+            } catch (e) {
+              // THE TASK SURVIVES A FAILED LAUNCH, and so do the dispatches that joined it: they
+              // resolve to no tab and queue their own task (review L1).
+              console.warn('[dispatch] launch failed', e)
+              toast({ text: `Could not launch ${role.name}`, kind: 'error', detail: `The task was queued instead. ${String(e)}` })
+              trackOrQueue(undefined)
+              return undefined
             }
-            const tab = await launchRoleRef.current?.(project, role, d.task, false, { focus: false, replacing: retiring?.id })
-            trackOrQueue(tab)
-            return tab
           })()
           launchingLanesRef.current.set(key, launch)
           void launch.finally(() => launchingLanesRef.current.delete(key))
         }
         record('launched')
-        toast({ text: retiring ? `Relaunching ${role.name}` : `Launching ${role.name}`, kind: 'info', detail: preview })
+        toast({
+          text: retiring ? (approving ? `Approved — ending ${role.name}'s released lane and relaunching it` : `Relaunching ${role.name}`) : `Launching ${role.name}`,
+          kind: 'info', detail: preview,
+        })
         feedback(route.kind === 'create'
           ? `This project had no "${role.name}" lane, so Operator CREATED one from its template and is launching it now with your task as its opening brief.`
           : route.kind === 'retire'
@@ -2138,7 +2244,7 @@ export function DashboardView() {
         }
         toast({
           text: `${from?.name ?? 'A lane'} wants to dispatch to ${toRole?.name ?? d.role}`,
-          detail: `Needs your approval — see Dispatches. ${preview}`,
+          detail: `Needs your approval — see Dispatches.${route.kind === 'retire' ? ` Approving it now ends ${route.role.name}'s released lane and starts a fresh one.` : ''} ${preview}`,
           kind: 'info',
         })
         return
@@ -2897,10 +3003,9 @@ export function DashboardView() {
     // Work went into them and the answers came back where nothing was looking.
     // `pickLaneTab` is the SAME resolution dispatch uses, so a reused lane and a dispatched
     // one can never disagree about which terminal is the lane.
-    // `replacing` is a lane the dispatch path has just closed; the ref can still hold its tab until
-    // the next render, and reusing it would type the brief into a dead pty.
-    const candidates = withActivity(terminalsRef.current).filter((t) => t.id !== opts?.replacing)
-    const existing = pickLaneTab(candidates, project.id, role.id, { own: project.path, others: projectsRef.current.filter((x) => x.id !== project.id).map((x) => x.path) })
+    // `replacing` is a lane the dispatch path is retiring: that dispatch asked for a FRESH lane, so
+    // nothing is reused, not even another live tab on the role (review H2) (lib/dispatch).
+    const existing = reusableLane(withActivity(terminalsRef.current), project.id, role.id, { own: project.path, others: projectsRef.current.filter((x) => x.id !== project.id).map((x) => x.path) }, opts?.replacing)
     if (existing) {
       const joined = prompt?.trim()
       if (joined) void submitQueue.submit(existing.id, joined)
@@ -3288,25 +3393,49 @@ export function DashboardView() {
    *  needs to bring the lane back with `--resume` on its own branch. If "close" ever means
    *  "gone" here, task-scoped lanes are wrong. A close the USER asks for keeps its old meaning
    *  and forgets the record. */
-  const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason) => {
+  const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<boolean> => {
     const terminalId = session.terminalId
-    if (!terminalId) return
+    if (!terminalId) return false
     const tab = terminals.find((t) => t.id === terminalId)
-    // Kill the pty first so any in-flight git operations on the worktree die.
-    await window.operator.terminalKill(terminalId)
-    delete doneReportsRef.current[terminalId]
-    // Its running tasks → done: capture their diff summary and run the verification
-    // gate while the dir still exists. NOT awaited here (a check can take minutes) —
-    // worktree removal is CHAINED behind it instead, so close stays snappy and the
-    // dir survives until the capture + check finish.
-    const finishTasks = tab?.projectId
+    // A LANE THAT CALLED `worktree_done` has its directory decided by MAIN, on pty exit, by the
+    // release rule the lane was told: removed if clean, KEPT if anything is unsaved. The snapshot
+    // and removal below would override that, committing the unsaved files as WIP on a branch that
+    // may already be merged and removing the directory anyway (review M2).
+    const released = !!tab && isReleased(tab, pendingReleasesRef.current)
+    const plan = releasedClosePlan({ released, auto: !!opts?.auto, reason: suspend })
+    suspend = plan.suspend
+    const finish = () => (tab?.projectId
       ? completeTerminalTasks(terminalId, tab.roleId, tab.projectId, laneOf(tab), suspend === 'went-quiet' ? 'abandoned' : 'done')
-      : Promise.resolve()
+      : Promise.resolve())
+    let finishTasks: Promise<void>
+    if (plan.finishBeforeKill) {
+      // AUTOMATIC CLOSE OF A RELEASED LANE (a dispatch retiring it, or the lifecycle). It is idle,
+      // so there are no git operations to kill first: its tasks are finished while the directory
+      // still exists, and only then does the pty end and main remove the directory. Killing first
+      // let main delete it under the diff capture and the verification gate.
+      await finish().catch(() => { /* the close goes on; the task record says what it could */ })
+      // It may have taken work while that ran. Then it is not finished, and it is left running.
+      const still = await window.operator.pendingReleases()
+        .then((rows) => isReleased(tab!, liveReleases(rows)), () => false)
+      if (!still) return false
+      await window.operator.terminalKill(terminalId)
+      finishTasks = Promise.resolve()
+    } else {
+      // Kill the pty first so any in-flight git operations on the worktree die.
+      await window.operator.terminalKill(terminalId)
+      // Its running tasks → done: capture their diff summary and run the verification
+      // gate while the dir still exists. NOT awaited here (a check can take minutes) —
+      // worktree removal is CHAINED behind it instead, so close stays snappy and the
+      // dir survives until the capture + check finish.
+      finishTasks = finish()
+    }
+    delete doneReportsRef.current[terminalId]
     // If this was a worktree session, clean up the worktree directory afterwards.
     // Branch is intentionally left intact — user may want to merge or review later.
     // A lane in the main checkout has neither field, and `cwd === sourceCwd` is refused as well:
     // the directory removal must never be pointed at the project itself (main refuses it too).
-    if (tab?.worktreeBranch && tab?.sourceCwd && tab.cwd !== tab.sourceCwd) {
+    // Not for a released lane: main's release rule decides its directory (above).
+    if (plan.rendererRemovesWorktree && tab?.worktreeBranch && tab?.sourceCwd && tab.cwd !== tab.sourceCwd) {
       void finishTasks.then(async () => {
         // SNAPSHOT FIRST, UNCONDITIONALLY. `worktree remove` takes uncommitted edits with it, and
         // with lanes now closing on their own that is no longer a directory the user chose to
@@ -3363,6 +3492,7 @@ export function DashboardView() {
     // Leave the session's settings view when its session is closed, so the main
     // area returns to the workspace instead of staying stuck in settings.
     setActiveFolderPrefs(null)
+    return true
   }, [terminals, forgetSavedSession, completeTerminalTasks, pushToast])
   handleCloseSessionRef.current = handleCloseSession
 
@@ -3558,6 +3688,19 @@ export function DashboardView() {
         if (!session) continue
         const name = projectsRef.current.find((p) => p.id === lane.projectId)?.roster?.find((r) => r.id === lane.roleId)?.name
           ?? lane.roleId ?? 'A lane'
+        // A dispatch is already retiring it.
+        if (retiringRef.current.has(lane.terminalId)) continue
+        // A LANE THAT RELEASED ITS WORKTREE IS ENDED, NOT SUSPENDED. A suspended record carries
+        // its branch, and the next dispatch would resume the released thread in a worktree
+        // reattached to that branch, which is often merged by then (review M4). Ended, the next
+        // dispatch launches a fresh lane in a new worktree, as the coordinator's brief says.
+        const tab = terminalsRef.current.find((t) => t.id === lane.terminalId)
+        const released = !!tab && isReleased(tab, pendingReleasesRef.current)
+        if (released) {
+          void handleCloseSessionRef.current(session, undefined, { auto: true })
+          pushToast({ text: `Closed ${name} — released its worktree`, kind: 'info', detail: 'Ended, not suspended: the next dispatch to it starts a fresh lane in a new worktree.' })
+          continue
+        }
         void handleCloseSessionRef.current(session, reason)
         // TWO OUTCOMES, SAID DIFFERENTLY — silence must never read as success. The reported one
         // is routine housekeeping; the quiet one is a lane that never called `task_status`, and

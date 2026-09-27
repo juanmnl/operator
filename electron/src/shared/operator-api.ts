@@ -107,6 +107,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   openDispatches:         { delivery: 'invoke', impl: 'native' },
   answerDispatch:         { delivery: 'invoke', impl: 'native' },
   pendingReleases:        { delivery: 'invoke', impl: 'native' },
+  cancelRelease:          { delivery: 'invoke', impl: 'native' },
   getTuning:              { delivery: 'invoke', impl: 'native' },
   devServerList:          { delivery: 'invoke', impl: 'native' },
   devServerKill:          { delivery: 'invoke', impl: 'native' },
