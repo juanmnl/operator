@@ -424,11 +424,13 @@ export const BRANCH_SAFETY_NOTE =
 
 /** Coordinator only. BRANCH_SAFETY_NOTE says new work needs a fresh lane, and a coordinator that
  *  had no way to end the old one asked the user to close it and waited (mantel, 2026-09-26/27).
- *  Dispatch now retires a lane that called `worktree_done` and launches a fresh one (lib/dispatch). */
+ *  Dispatch now retires a lane that called `worktree_done` and launches a fresh one (lib/dispatch).
+ *  A reply does not cancel a release (shared/prompt-kind), so work sent as a reply would leave the
+ *  lane retirable mid-task: hence the "never a reply" sentence (review round 3, R3-2). */
 export const RETIRE_NOTE =
   'A new lane needs only a dispatch: Operator ends a lane that called `worktree_done` and launches ' +
-  'a fresh one. If it is still busy you are refused and messaged once it is idle; dispatch again then. ' +
-  'Never ask the user to close it.\n'
+  'a fresh one. If it is busy you are refused and messaged once it is idle; dispatch again then. ' +
+  'Follow-up work for such a lane is a dispatch, never a reply. Never ask the user to close it.\n'
 
 /** How to address another session without reaching the wrong project (lib/bus-name). The session
  *  bus is machine-wide, so `ListAgents` lists every project's sessions; a lane that picks one by a

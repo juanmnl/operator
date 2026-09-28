@@ -246,3 +246,17 @@ describe('afterRetireClose', () => {
     expect(afterRetireClose('unconfirmed')).toBe('leave-queued')
   })
 })
+
+// R3-3: a release is also settled when the pty exits, so `took-work` can be a lane that died
+// during the close. Never type the task into a dead pty: launch instead.
+describe('afterRetireClose with a dead old lane', () => {
+  it('launches whatever the close said, once the old lane is gone', () => {
+    expect(afterRetireClose('took-work', false)).toBe('launch')
+    expect(afterRetireClose('unconfirmed', false)).toBe('launch')
+    expect(afterRetireClose('closed', false)).toBe('launch')
+  })
+  it('a live lane keeps the round-2 answers', () => {
+    expect(afterRetireClose('took-work', true)).toBe('send-to-old-lane')
+    expect(afterRetireClose('unconfirmed', true)).toBe('leave-queued')
+  })
+})

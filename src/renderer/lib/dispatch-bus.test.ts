@@ -496,3 +496,23 @@ describe('resolveDispatch — a REPLY', () => {
     expect(resolveDispatch(req('code'), ctx()).verdict.text).toBe('[Operator · message from Operator] do the thing')
   })
 })
+
+// R3-1: a reply is labelled with its sender's name. A caller with no roster role must not reach a
+// lane labelled "reply from Operator".
+describe('resolveDispatch — a REPLY from a caller with no roster role', () => {
+  const reply = (o: Partial<Parameters<typeof resolveDispatch>[0]>) => req('code', { kind: 'reply', task: 'hi', ...o })
+
+  it('is refused, for an unknown role and for a role no longer on the roster', () => {
+    for (const fromRoleId of ['unknown', 'design']) {
+      const { verdict, brakes } = resolveDispatch(reply({ fromRoleId, fromLabel: 'Operator' }), ctx())
+      expect(verdict.outcome, fromRoleId).toBe('refused')
+      expect(verdict.reason).toMatch(/cannot tell which lane of this project you are/)
+      expect(verdict.text).toBeUndefined()
+      expect(brakes).toEqual(emptyDeliveryState())
+    }
+  })
+
+  it('a roster lane still replies', () => {
+    expect(resolveDispatch(reply({ fromRoleId: 'review', fromLabel: 'Review' }), ctx()).verdict.outcome).toBe('send')
+  })
+})

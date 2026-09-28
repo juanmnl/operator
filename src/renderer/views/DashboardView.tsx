@@ -98,6 +98,9 @@ type UpsertIntent = 'user' | 'background'
 /** What closing a lane came to. `took-work` and `unconfirmed` happen only on an automatic close of
  *  a released lane, which then leaves it running (see `handleCloseSession`). */
 type CloseOutcome = 'closed' | 'took-work' | 'unconfirmed'
+/** What a dispatch launch came to. `old-lane`: a retire whose lane took work first, so the task
+ *  went into that lane. `not-retired`: a retire that could not end its lane. `failed`: no lane. */
+type LaunchResult = { tab?: TerminalTab; via: 'launch' | 'old-lane' | 'not-retired' | 'failed' }
 
 interface TerminalTab {
   id: string
@@ -2009,7 +2012,10 @@ export function DashboardView() {
     return () => { stopped = true; clearInterval(t) }
   }, [])
 
-  const launchingLanesRef = useRef(new Map<string, Promise<TerminalTab | undefined>>())
+  /** A dispatch-launched lane in flight, per (project, role), and what it came to: the lane that
+   *  took the task and how. A retire can end without a launch, and a dispatch that joined it has to
+   *  follow the task, not assume a fresh lane (review round 3, R3-4). */
+  const launchingLanesRef = useRef(new Map<string, Promise<LaunchResult>>())
 
   // DELIVERY, split out of the subscription so an APPROVAL can run the exact same path. A
   // pending dispatch that delivered through a second, near-identical code path would be a
@@ -2131,12 +2137,28 @@ export function DashboardView() {
           if (tab) addRunning(project.id, d.task, role.id, tab.id, { cwd: tab.cwd, sourceCwd: tab.sourceCwd, worktreeBranch: tab.worktreeBranch, worktreeBase: tab.worktreeBase }, source)
           else addTask(project.id, d.task, role.id, source)
         }
+        // RECORDED BEFORE THE LAUNCH STARTS: the retire corrects this record from inside the launch,
+        // and one of its branches does so before its first await.
+        // A retire writes `retiring` first (review round 3, R3-6): if the renderer respawns while
+        // the old lane is being ended, the record says what is true, that the task is queued.
+        record(retiring ? 'retiring' : 'launched')
         if (inflight) {
           // This lane is already spawning from a moments-ago dispatch — hand the task to
-          // that same session once it's live instead of fanning out a sibling.
-          void inflight.then((tab) => {
+          // that same session once it's live instead of fanning out a sibling. It follows what
+          // that launch came to, and its record and dispatcher are told the same (R3-4).
+          void inflight.then(({ tab, via }) => {
             if (tab) void submitQueue.submit(tab.id, d.task)
             trackOrQueue(tab)
+            if (via === 'old-lane') {
+              setDispatchOutcome(project.id, id, 'sent', role.id)
+              feedback(`"${role.name}" took new work before Operator could end it, so NO fresh lane was started. Your task was sent into that lane.`)
+            } else if (via === 'not-retired') {
+              setDispatchOutcome(project.id, id, 'not-retired', role.id)
+              feedback(`Operator could not end "${role.name}", so NO fresh lane was started. Your task is queued on the board for ${role.name}; do not dispatch it again.`)
+            } else if (via === 'failed') {
+              setDispatchOutcome(project.id, id, 'queued', role.id)
+              feedback(`"${role.name}" could not be launched. Your task is queued on the board for ${role.name}.`)
+            }
           })
         } else {
           // Marked before anything awaits, so routing sees it as gone from this moment on.
@@ -2148,7 +2170,7 @@ export function DashboardView() {
           // launch and a renderer respawn (review round 2, R2-6): it sits on the board until a
           // lane takes it.
           let queuedId: string | undefined
-          const launch = (async () => {
+          const launch = (async (): Promise<LaunchResult> => {
             try {
               if (retiring) {
                 queuedId = addTask(project.id, d.task, role.id, source)
@@ -2157,9 +2179,9 @@ export function DashboardView() {
                 // there is nothing to close, and the task stays queued.
                 if (!session) {
                   retiringRef.current.delete(retiring.id)
-                  setDispatchOutcome(project.id, id, 'queued', role.id)
+                  setDispatchOutcome(project.id, id, 'not-retired', role.id)
                   feedback(`Operator could not find the session of "${role.name}", so it was not ended and NO fresh lane was started. Your task is queued on the board for ${role.name}; do not dispatch it again.`)
-                  return undefined
+                  return { via: 'not-retired' }
                 }
                 // CLOSED FIRST, LAUNCHED ONLY AFTER (review round 2, R2-4). The close finishes the
                 // lane's tasks while its directory still exists (diff capture, verification gate),
@@ -2176,43 +2198,51 @@ export function DashboardView() {
                 } finally {
                   retiringRef.current.delete(retiring.id)
                 }
-                const next = afterRetireClose(closed)
+                // A release is also settled when the pty EXITS, so a lane the user closed or that
+                // crashed during the close reads as `took-work`. It is gone: launch (R3-3).
+                const oldTab = terminalsRef.current.find((t) => t.id === retiring.id)
+                const oldSession = sessionsRef.current.find((s) => s.terminalId === retiring.id)
+                const alive = !!oldTab && !oldTab.ended && oldSession?.status !== 'ended'
+                const next = afterRetireClose(closed, alive)
                 if (next === 'send-to-old-lane') {
                   // It is a working lane again, so the task goes where a dispatch to it would go now.
                   void submitQueue.submit(retiring.id, d.task)
                   if (queuedId) markTasksRunning(project.id, [queuedId], retiring.id, laneOf(retiring))
-                  // The record said `launched` when the retire began; say what happened.
                   setDispatchOutcome(project.id, id, 'sent', role.id)
                   toast({ text: `${role.name} took new work — not retired`, kind: 'info', detail: `No fresh lane was started; the task was sent into that lane. ${preview}` })
                   feedback(`"${role.name}" took new work before Operator could end it, so it was NOT retired and NO fresh lane was started. Your task was sent into that lane instead.`)
-                  return undefined
+                  return { tab: oldTab, via: 'old-lane' }
                 }
                 if (next === 'leave-queued') {
-                  setDispatchOutcome(project.id, id, 'queued', role.id)
+                  setDispatchOutcome(project.id, id, 'not-retired', role.id)
                   toast({ text: `Could not confirm ${role.name}'s state — not retired`, kind: 'error', detail: `No fresh lane was started; the task is queued for ${role.name}. ${preview}` })
                   feedback(`Operator could not confirm the state of "${role.name}", so it was left running and NO fresh lane was started. Your task is queued on the board for ${role.name}; do not dispatch it again.`)
-                  return undefined
+                  return { via: 'not-retired' }
                 }
                 const tab = await launchRoleRef.current?.(project, role, d.task, false, { focus: false, replacing: retiring.id })
                 if (tab && queuedId) markTasksRunning(project.id, [queuedId], tab.id, laneOf(tab))
-                return tab
+                // The record said `retiring` while the old lane was ended. Now it launched, or the
+                // launch failed and the task stays queued with no lane running.
+                setDispatchOutcome(project.id, id, tab ? 'launched' : 'queued', role.id)
+                return tab ? { tab, via: 'launch' } : { via: 'failed' }
               }
               const tab = await launchRoleRef.current?.(project, role, d.task, false, { focus: false })
               trackOrQueue(tab)
-              return tab
+              if (!tab) setDispatchOutcome(project.id, id, 'queued', role.id)
+              return tab ? { tab, via: 'launch' } : { via: 'failed' }
             } catch (e) {
               // THE TASK SURVIVES A FAILED LAUNCH, and so do the dispatches that joined it: they
               // resolve to no tab and queue their own task (review L1).
               console.warn('[dispatch] launch failed', e)
               toast({ text: `Could not launch ${role.name}`, kind: 'error', detail: `The task was queued instead. ${String(e)}` })
               if (!queuedId) trackOrQueue(undefined)
-              return undefined
+              setDispatchOutcome(project.id, id, 'queued', role.id)
+              return { via: 'failed' }
             }
           })()
           launchingLanesRef.current.set(key, launch)
           void launch.finally(() => launchingLanesRef.current.delete(key))
         }
-        record('launched')
         toast({
           text: retiring ? (approving ? `Approved — ending ${role.name}'s released lane and relaunching it` : `Relaunching ${role.name}`) : `Launching ${role.name}`,
           kind: 'info', detail: preview,

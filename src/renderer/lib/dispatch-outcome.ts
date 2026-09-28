@@ -48,13 +48,15 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip 
       return { label: 'delivered', tone: 'accent' }
     case 'queued':
       // NOT "queued · behind current task", which is what this said and what nothing does.
-      // The only writer is the reply path, when `evaluateDelivery` blocks with reason `queued`:
+      // Written by the reply path, when `evaluateDelivery` blocks with reason `queued`:
       // `"X" isn't running, and a message never starts a lane. Nothing was sent.` Nothing is
       // queued, nothing is behind anything, and nothing retries — so the agent was being told
       // (by REPLY_PROTOCOL) that its message was DROPPED while the human was shown that it was
       // waiting its turn, for the same event. The legacy dispatch records that also carry this
       // outcome ("lane idle, pre-auto-launch, or a failed launch") were equally undelivered, so
-      // one honest label covers both. `warn`, with the other outcomes that never arrived.
+      // one honest label covers both. `warn`, with the other outcomes that never arrived. Also
+      // written now for a dispatch that joined a launch which failed: the lane was not running,
+      // and the task is on the board. A retire that could not end its lane has its own outcome.
       return { label: 'not delivered · lane wasn’t running', tone: 'warn' }
     case 'pending-approval':
       return { label: 'held · needs your approval', tone: 'warn' }
@@ -82,6 +84,12 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip 
     // Never sent: the lane had released its worktree and was mid-turn. The coordinator retries.
     case 'finishing':
       return { label: 'not delivered · lane finishing', tone: 'warn' }
+    // The retire's two fallbacks (review round 3, R3-6). Both leave the task on the board, and the
+    // lane WAS running, so neither may borrow `queued`'s "lane wasn't running".
+    case 'retiring':
+      return { label: 'queued · ending the released lane first', tone: 'warn' }
+    case 'not-retired':
+      return { label: 'queued · lane could not be ended', tone: 'warn' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }

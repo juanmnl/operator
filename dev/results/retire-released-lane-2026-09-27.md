@@ -3,8 +3,9 @@
 Branch `operator/917d80`, from `main` @ fe6029e. Separate from the lanes-as-profiles steps.
 First commit 8cc53fd. Review's findings
 (`dev/results/retire-released-lane-review-2026-09-27.md` in the main checkout) are fixed in the
-second commit (5406dfd), and its Round 2 findings in the third. See "Review fixes" and "Round 2
-fixes" at the end; where they differ from the sections above, the later section wins.
+second commit (5406dfd), its Round 2 findings in the third (8a9ca5a), and Round 3 in the fourth.
+See "Review fixes", "Round 2 fixes" and "Round 3 fixes" at the end; where they differ from the
+sections above, the later section wins.
 Brief: retire an idle lane whose worktree was already released (`worktree_done`) and launch a
 fresh one on dispatch, instead of coordinators asking the user to close it.
 
@@ -446,3 +447,86 @@ enqueue → dequeue → user sequence counts at the user record.
   is two IPC round trips.
 - A user close of a released lane now waits one IPC round trip, for the fresh release read,
   before the kill.
+
+## Round 3 fixes (fourth commit, on 8a9ca5a)
+
+R3-5 (the lifecycle-close vs dispatch window) is accepted as-is by the coordinator and left alone.
+
+### R3-1: a bus reply from a caller with no roster role is refused
+
+- `resolveDispatch` refuses a reply whose `fromRoleId` is not on the project's roster ("Operator
+  cannot tell which lane of this project you are…"). This covers `unknown` and a role that has
+  been removed.
+- Such a reply is therefore never labelled with the tick's default name, "Operator". This matches
+  the OPERATOR-REPLY sentinel, which already requires a roster role.
+- Nothing is charged to the brakes.
+- Tests (`dispatch-bus.test.ts`):
+  - `unknown` and an off-roster role are both refused, with no text and no brake charge;
+  - a roster lane still replies.
+
+### R3-2: follow-up work for a released lane is a dispatch
+
+- RETIRE_NOTE (coordinator only) gains: "Follow-up work for such a lane is a dispatch, never a
+  reply." Its busy sentence is trimmed by a word to make room.
+- Measured: coordinator 4063 (`roster.test.ts` guard 4200) and 4514 with the bus note
+  (`bus-name.test.ts` guard 4600). Both guard comments carry the new numbers.
+- Test (`roster.test.ts`): the sentence is in the coordinator's note and not in a worktree lane's.
+
+### R3-3: a lane that died during the close is not `took-work`
+
+- After the close, the retire checks the old lane is still live: its tab exists, is not ended,
+  and its session is not ended.
+- `afterRetireClose(outcome, oldLaneAlive)` returns `launch` when the old lane is gone, whatever
+  the close said. The task is never typed into a dead pty, and the record never says `sent` for
+  it.
+- Tests (`lane-lifecycle.test.ts`):
+  - a dead lane launches on `took-work`, `unconfirmed` and `closed`;
+  - a live lane keeps the round-2 answers.
+
+### R3-4: dispatches that joined a retire follow what it came to
+
+- The in-flight launch now resolves to `LaunchResult` `{ tab?, via }`, where `via` is `launch`,
+  `old-lane`, `not-retired` or `failed`.
+- A dispatch that joined it does the following for each result:
+
+  | `via` | Joiner's task | Joiner's record | Joiner's dispatcher |
+  |---|---|---|---|
+  | `old-lane` | Sent into the old lane (which took work) | `sent` | Told the task went into that lane |
+  | `not-retired` | Queued on the board | `not-retired` | Told not to dispatch again |
+  | `failed` | Queued on the board | `queued` | Told the role could not be launched |
+
+- Component code in `DashboardView`; the chips it writes are tested (below).
+
+### R3-6: truthful records for the retire's fallbacks
+
+- New outcomes (`src/shared/types.ts`), with chips in `dispatch-outcome.ts`:
+  - `retiring`: "queued · ending the released lane first";
+  - `not-retired`: "queued · lane could not be ended".
+- A retire records `retiring` at routing time, before the launch starts. After a renderer respawn
+  mid-retire the record says the task is queued, which is true.
+- It becomes `launched` once the fresh lane is up, `sent` if the task went into the old lane,
+  `not-retired` if the lane could not be ended, or `queued` if the launch failed (the old lane is
+  gone by then).
+- A failed ordinary launch now also corrects its record from `launched` to `queued`.
+- The `queued` chip comment is corrected: it no longer says the reply path is its only writer.
+- **Ordering bug found and fixed:** in round 2, the "no session" branch corrected the record before
+  `record('launched')` appended it, so the correction was lost. The record is now written before
+  the launch starts.
+- Test (`dispatch-outcome.test.ts`): `retiring` and `not-retired` say "queued" and a reason, never
+  "wasn't running".
+
+### Results
+
+- Typecheck: root `tsc --noEmit` clean; `electron npm run typecheck` clean.
+- Root suite: 112 files, 1663 tests passed.
+- Electron suite: 45 files, 802 tests passed.
+
+### Still not covered
+
+- Nothing was run in the app. Still needed: one retire; one `finishing` → idle message →
+  re-dispatch; one coordinator reply to a released lane, which must stay released.
+- R3-4 and the R3-6 record sequencing are component code. Their pure parts are tested: the chips
+  and `afterRetireClose`.
+- R3-5, left by decision.
+- A joiner's task is added only when the in-flight launch resolves, as before this branch. A
+  respawn during a retire loses joiners' tasks but not the first dispatch's.

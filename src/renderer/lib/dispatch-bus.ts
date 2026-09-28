@@ -137,6 +137,20 @@ export function resolveDispatch(
   // authority gate exists so a lane cannot commission work; a reply commissions nothing, and an
   // approved held reply would have been delivered as a dispatch, which is a task.
   if (req.kind === 'reply') {
+    // ONLY A LANE ON THE ROSTER may reply (review round 3, R3-1). The reply is labelled with the
+    // sender's name, and a caller with no role (a session outside the roster, a lane whose role was
+    // removed) would otherwise be labelled with the tick's default, "Operator": the coordinator's
+    // name and authority. The OPERATOR-REPLY sentinel already requires a roster role.
+    if (!roster.some((r) => r.id === req.fromRoleId)) {
+      return {
+        brakes: ctx.brakes,
+        verdict: {
+          outcome: 'refused',
+          reason: `Operator cannot tell which lane of this project you are, so it will not deliver a reply `
+            + `labelled as anyone. Nothing was sent.`,
+        },
+      }
+    }
     const live = route.kind === 'send' || route.kind === 'retire' || route.kind === 'finishing' ? route.tab : undefined
     if (!live) {
       return {

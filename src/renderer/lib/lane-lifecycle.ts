@@ -281,6 +281,13 @@ export function releasedClosePlan(o: { released: boolean; auto: boolean; reason?
  *  coordinator had been told the old one ended. A lane that took work is a working lane again, so
  *  the task goes into it, as a dispatch to it would now. An unconfirmed close touches nothing and
  *  the task stays queued on the board. */
-export function afterRetireClose(outcome: 'closed' | 'took-work' | 'unconfirmed'): 'launch' | 'send-to-old-lane' | 'leave-queued' {
-  return outcome === 'closed' ? 'launch' : outcome === 'took-work' ? 'send-to-old-lane' : 'leave-queued'
+export function afterRetireClose(
+  outcome: 'closed' | 'took-work' | 'unconfirmed',
+  /** Is the old lane's pty still live? A release is also settled when the pty EXITS, so a lane the
+   *  user closed, or that crashed, during the close reads as `took-work`. Typing the task into it
+   *  would lose it (review round 3, R3-3). A dead lane is as good as closed: launch. */
+  oldLaneAlive = true,
+): 'launch' | 'send-to-old-lane' | 'leave-queued' {
+  if (outcome === 'closed' || !oldLaneAlive) return 'launch'
+  return outcome === 'took-work' ? 'send-to-old-lane' : 'leave-queued'
 }

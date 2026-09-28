@@ -92,7 +92,8 @@ describe('the launch note tells lanes how to address sessions (X1)', () => {
     // RAISED DELIBERATELY for the bus note (X1). Measured as launched, with the bus slug and the
     // lane's own workspace lines.
     // Raised to 4600 on 2026-09-27 for RETIRE_NOTE in the coordinator's note (roster.test.ts says
-    // why): the coordinator is now the longest, at 4459. Lane notes did not change (Infra 4207).
+    // why): the coordinator is now the longest, at 4514 after the round-3 reply sentence. Lane notes
+    // did not change (Infra 4207).
     for (const role of roster) {
       const n = orchestrationNote('mantel', role, roster, {
         busSlug: slug, ownWorktree: role.useWorktree === true, sharesMainCheckout: role.useWorktree === false && role.id !== 'operator',
