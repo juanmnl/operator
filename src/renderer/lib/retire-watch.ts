@@ -31,41 +31,48 @@ export interface FinishingWatch {
   refusals: number
   /** Operator had no phase for the lane at all when the watch opened. */
   unseen?: boolean
+  /** An approval by the user is waiting on this lane too, so the user is told with a toast even
+   *  when dispatchers are also being told (review round 2, R2-7). Sticky once set. */
+  toastUser?: boolean
 }
 
 export type WatchBook = Map<string, FinishingWatch>
 
-const key = (projectId: string, roleId: string) => `${projectId}:${roleId}`
+// ONE WATCH PER LANE, not per role (review round 2, R2-7): a refusal against a second lane of the
+// same role used to replace the first watch, and the first watch's dispatchers never got the
+// message they were promised.
+const key = (projectId: string, roleId: string, laneTerminalId: string) => `${projectId}:${roleId}:${laneTerminalId}`
 
-/** The open watch for this role's lane, if any. */
+/** The open watch on this lane, if any. */
 export function watchFor(book: ReadonlyMap<string, FinishingWatch>, projectId: string, roleId: string, laneTerminalId: string): FinishingWatch | undefined {
-  const w = book.get(key(projectId, roleId))
-  return w && w.laneTerminalId === laneTerminalId ? w : undefined
+  return book.get(key(projectId, roleId, laneTerminalId))
 }
 
 /** Record a `finishing` refusal. `repeat` is true when a watch on the same lane was already open,
  *  and the caller then sends no new note: the one message is already promised. */
 export function noteFinishing(
   book: WatchBook,
-  r: { projectId: string; roleId: string; roleName: string; laneTerminalId: string; notify?: string; now: number; unseen?: boolean },
+  r: { projectId: string; roleId: string; roleName: string; laneTerminalId: string; notify?: string; now: number; unseen?: boolean; approving?: boolean },
 ): { repeat: boolean; watch: FinishingWatch } {
   const open = watchFor(book, r.projectId, r.roleId, r.laneTerminalId)
   if (open) {
     open.refusals += 1
     if (r.notify && !open.notify.includes(r.notify)) open.notify.push(r.notify)
+    if (r.approving) open.toastUser = true
     return { repeat: true, watch: open }
   }
   const watch: FinishingWatch = {
     projectId: r.projectId, roleId: r.roleId, roleName: r.roleName, laneTerminalId: r.laneTerminalId,
     notify: r.notify ? [r.notify] : [], since: r.now, refusals: 1, unseen: r.unseen,
+    ...(r.approving ? { toastUser: true } : {}),
   }
-  book.set(key(r.projectId, r.roleId), watch)
+  book.set(key(r.projectId, r.roleId, r.laneTerminalId), watch)
   return { repeat: false, watch }
 }
 
-/** Drop the role's watch: its lane was retired, so nothing is left to announce. */
-export function clearWatch(book: WatchBook, projectId: string, roleId: string): void {
-  book.delete(key(projectId, roleId))
+/** Drop the watch on this lane: it was retired or its message went out. */
+export function clearWatch(book: WatchBook, projectId: string, roleId: string, laneTerminalId: string): void {
+  book.delete(key(projectId, roleId, laneTerminalId))
 }
 
 export type WatchSignal = 'idle' | 'took-work' | 'ended' | 'timeout'
@@ -136,7 +143,7 @@ export function finishingDelivery(
 ): { record?: { outcome: 'finishing'; note: string }; feedback?: string; reason: string } {
   const { repeat, watch } = noteFinishing(book, {
     projectId: r.projectId, roleId: r.roleId, roleName: r.roleName, laneTerminalId: r.laneTerminalId,
-    notify: r.approving ? undefined : r.dispatcher, now: r.now, unseen: r.unseen,
+    notify: r.approving ? undefined : r.dispatcher, now: r.now, unseen: r.unseen, approving: r.approving,
   })
   const reason = finishingReason(r.roleName, { unseen: r.unseen, repeat, refusals: watch.refusals })
   if (r.approving) return { reason }

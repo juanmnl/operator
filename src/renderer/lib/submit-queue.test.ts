@@ -980,14 +980,15 @@ describe('attachImages — a note screenshot goes out with its note', () => {
 describe('onSubmit', () => {
   it('announces every submission at enqueue time, before anything is written', async () => {
     const clock = fakeClock()
-    const seen: Array<{ id: string; writesBefore: number }> = []
+    const seen: Array<{ id: string; text: string; writesBefore: number }> = []
     const writes: string[] = []
     const q = createSubmitQueue({
       write: (_id, data) => writes.push(data), ...clock,
-      onSubmit: (id) => seen.push({ id, writesBefore: writes.length }),
+      // The TEXT too, so the listener can tell work from a reply or a notice (R2-3).
+      onSubmit: (id, text) => seen.push({ id, text, writesBefore: writes.length }),
     })
     const done = q.submit('t1', 'A')
-    expect(seen).toEqual([{ id: 't1', writesBefore: 0 }])
+    expect(seen).toEqual([{ id: 't1', text: 'A', writesBefore: 0 }])
     await done
     await q.submit('t2', 'B')
     expect(seen.map((s) => s.id)).toEqual(['t1', 't2'])

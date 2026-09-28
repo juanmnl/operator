@@ -273,3 +273,14 @@ export function releasedClosePlan(o: { released: boolean; auto: boolean; reason?
     suspend: o.released ? undefined : o.reason,
   }
 }
+
+/** What a dispatch's retire does once the old lane's close has answered. Pure.
+ *
+ *  The fresh lane is launched ONLY after a confirmed close (review round 2, R2-4): launching
+ *  beside the close left two live lanes on the role whenever the close was abandoned, while the
+ *  coordinator had been told the old one ended. A lane that took work is a working lane again, so
+ *  the task goes into it, as a dispatch to it would now. An unconfirmed close touches nothing and
+ *  the task stays queued on the board. */
+export function afterRetireClose(outcome: 'closed' | 'took-work' | 'unconfirmed'): 'launch' | 'send-to-old-lane' | 'leave-queued' {
+  return outcome === 'closed' ? 'launch' : outcome === 'took-work' ? 'send-to-old-lane' : 'leave-queued'
+}

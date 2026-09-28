@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  laneCloseDecision, planLaneCloses, releasedClosePlan, type LaneSnapshot, type LaneClosePolicy,
+  laneCloseDecision, planLaneCloses, releasedClosePlan, afterRetireClose, type LaneSnapshot, type LaneClosePolicy,
   DEFAULT_KEEP_WARM_MINUTES, DEFAULT_QUIET_MINUTES,
   doneStampsFrom, DONE_SIGNAL_MAX_AGE_MS,
 } from './lane-lifecycle'
@@ -231,5 +231,18 @@ describe('releasedClosePlan', () => {
   it('an unreleased lane closes exactly as before', () => {
     expect(releasedClosePlan({ released: false, auto: true, reason: 'reported-done' }))
       .toEqual({ finishBeforeKill: false, rendererRemovesWorktree: true, suspend: 'reported-done' })
+  })
+})
+
+// R2-4: the fresh lane launches only after a confirmed close; never beside a lane left running.
+describe('afterRetireClose', () => {
+  it('launches only after the old lane closed', () => {
+    expect(afterRetireClose('closed')).toBe('launch')
+  })
+  it('a lane that took work keeps it and gets the task; nothing is launched', () => {
+    expect(afterRetireClose('took-work')).toBe('send-to-old-lane')
+  })
+  it('an unconfirmed close launches nothing and leaves the task queued', () => {
+    expect(afterRetireClose('unconfirmed')).toBe('leave-queued')
   })
 })

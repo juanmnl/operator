@@ -151,12 +151,18 @@ describe('contextTokens — the MAIN thread only', () => {
   })
 })
 
-// The newest real prompt, by transcript timestamp: main cancels a `worktree_done` release that new
-// work arrived after (index.ts, `cancelReleasesBefore`). Review 2026-09-27, H1.
+// The newest WORK prompt, stamped when the lane TOOK IT UP: main cancels a `worktree_done` release
+// that new work arrived after (index.ts, `cancelReleasesBefore`). Review 2026-09-27, H1 and round 2
+// (R2-2, R2-3). Record shapes are taken from real transcripts (2026-09-25/27): an idle lane writes
+// enqueue → dequeue (no content) → user; a mid-turn lane writes enqueue → … → remove (with the
+// content) → a `queued_command` attachment.
 describe('Track.lastPromptAt', () => {
   const track = () => new Track('t0', { claudeSessionId: 's0', cwd: '/tmp', permissionMode: null, projectId: 'p1' })
   const user = (text: string, timestamp: string, extra: Record<string, unknown> = {}) =>
     ({ type: 'user', timestamp, message: { role: 'user', content: text }, ...extra })
+  const q = (operation: string, timestamp: string, content?: string) =>
+    ({ type: 'queue-operation', operation, timestamp, sessionId: 's0', ...(content === undefined ? {} : { content }) })
+  const bus = (inner: string) => `<cross-session-message from="uds:/tmp/cc-socks/1.sock" from-name="p--operator" from-mode="prompting">\n${inner}\n</cross-session-message>`
 
   it('is the newest real user turn', () => {
     const t = track()
@@ -165,17 +171,44 @@ describe('Track.lastPromptAt', () => {
     expect(t.lastPromptAt).toBe('2026-09-27T10:05:00.000Z')
   })
 
-  it('counts a mid-turn enqueue, which leaves no user turn at all', () => {
+  // R2-2: queued BEFORE worktree_done (T1), taken up AFTER it (T3). The enqueue must not count;
+  // the take-up must, so a release at T2 is cancelled.
+  it('a mid-turn prompt counts when it is taken up (`remove`), not when it was enqueued', () => {
     const t = track()
-    t.apply(user('first', '2026-09-27T10:00:00.000Z'))
-    t.apply({ type: 'queue-operation', operation: 'enqueue', content: 'more work', timestamp: '2026-09-27T10:07:00.000Z' })
-    expect(t.lastPromptAt).toBe('2026-09-27T10:07:00.000Z')
+    t.apply(user('task A', '2026-09-27T10:00:00.000Z'))
+    t.apply(q('enqueue', '2026-09-27T10:01:00.000Z', bus('[Operator · message from Operator] task B')))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:00:00.000Z')
+    // worktree_done is called here, at 10:02.
+    t.apply(q('remove', '2026-09-27T10:03:00.000Z', bus('[Operator · message from Operator] task B')))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:03:00.000Z')
+    expect(t.lastPromptAt > '2026-09-27T10:02:00.000Z').toBe(true)
+  })
+
+  it('an idle delivery counts at its user record; the contentless dequeue adds nothing', () => {
+    const t = track()
+    t.apply(q('enqueue', '2026-09-27T10:00:00.000Z', bus('[Operator · message from Operator] build it')))
+    t.apply(q('dequeue', '2026-09-27T10:00:00.030Z'))
+    expect(t.lastPromptAt).toBe('')
+    t.apply(user(`Another Claude session sent a message:\n${bus('[Operator · message from Operator] build it')}`, '2026-09-27T10:00:00.045Z'))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:00:00.045Z')
+  })
+
+  // R2-3: "merged, thanks" to a lane that just released must leave it released.
+  it('replies and Operator notices are not work, on the pty, in the queue or over the bus', () => {
+    const t = track()
+    t.apply(user('real', '2026-09-27T10:00:00.000Z'))
+    t.apply(user('[Operator · reply from Operator] merged, thanks', '2026-09-27T11:00:00.000Z'))
+    t.apply(user('[Operator] Code is idle now.', '2026-09-27T11:01:00.000Z'))
+    t.apply(user(`Another Claude session sent a message:\n${bus('[Operator · reply from Operator] merged')}`, '2026-09-27T11:02:00.000Z'))
+    t.apply(q('remove', '2026-09-27T11:03:00.000Z', bus('[Operator · reply from Review] looks good')))
+    expect(t.lastPromptAt).toBe('2026-09-27T10:00:00.000Z')
   })
 
   it('ignores injected turns, sidechains and tool results', () => {
     const t = track()
     t.apply(user('real', '2026-09-27T10:00:00.000Z'))
     t.apply(user('<task-notification>done</task-notification>', '2026-09-27T11:00:00.000Z'))
+    t.apply(q('remove', '2026-09-27T11:00:00.000Z', '<task-notification>x</task-notification>'))
     t.apply(user('subagent prompt', '2026-09-27T11:00:00.000Z', { isSidechain: true }))
     t.apply({ type: 'user', timestamp: '2026-09-27T11:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] } })
     expect(t.lastPromptAt).toBe('2026-09-27T10:00:00.000Z')

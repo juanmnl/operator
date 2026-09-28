@@ -18,17 +18,37 @@ describe('noteFinishing', () => {
     expect(watchFor(book, 'p1', 'code', 't1')?.notify).toEqual(['op', 'op2'])
   })
 
-  it('a different lane on the role starts a new watch', () => {
+  // R2-7: one watch per LANE. A second lane of the role used to replace the first watch, and its
+  // dispatchers never got their message.
+  it('a different lane on the role gets its own watch, and the first one is kept', () => {
     const book: WatchBook = new Map()
-    noteFinishing(book, { ...base, now: 0 })
-    expect(noteFinishing(book, { ...base, laneTerminalId: 't9', now: 1 }).repeat).toBe(false)
+    noteFinishing(book, { ...base, notify: 'op', now: 0 })
+    expect(noteFinishing(book, { ...base, laneTerminalId: 't9', notify: 'op2', now: 1 }).repeat).toBe(false)
+    expect(watchFor(book, 'p1', 'code', 't1')?.notify).toEqual(['op'])
+    expect(watchFor(book, 'p1', 'code', 't9')?.notify).toEqual(['op2'])
+    const lanes = [{ id: 't1', released: true, phase: 'waiting' }, { id: 't9', released: true, phase: 'running' }]
+    expect(dueSignals(book, lanes, 2).map((d) => [d.watch.laneTerminalId, d.signal])).toEqual([['t1', 'idle']])
   })
 
-  it('clearWatch drops it (the lane was retired)', () => {
+  it('clearWatch drops that lane\'s watch only', () => {
     const book: WatchBook = new Map()
     noteFinishing(book, { ...base, now: 0 })
-    clearWatch(book, 'p1', 'code')
-    expect(book.size).toBe(0)
+    noteFinishing(book, { ...base, laneTerminalId: 't9', now: 0 })
+    clearWatch(book, 'p1', 'code', 't1')
+    expect([...book.values()].map((w) => w.laneTerminalId)).toEqual(['t9'])
+  })
+
+  // R2-7: an approval merged into a coordinator's open watch still reaches the user.
+  it('an approval marks the watch to toast the user, even when a dispatcher is also told', () => {
+    const book: WatchBook = new Map()
+    noteFinishing(book, { ...base, notify: 'op', now: 0 })
+    expect(watchFor(book, 'p1', 'code', 't1')?.toastUser).toBeUndefined()
+    noteFinishing(book, { ...base, now: 1, approving: true })
+    const w = watchFor(book, 'p1', 'code', 't1')!
+    expect(w.toastUser).toBe(true)
+    expect(w.notify).toEqual(['op'])
+    noteFinishing(book, { ...base, notify: 'op', now: 2 })
+    expect(w.toastUser).toBe(true)
   })
 })
 
@@ -98,11 +118,11 @@ describe('finishingDelivery — the sentinel and approval path', () => {
 
   // M3: an approval keeps its record so the card stays in Waiting with its buttons, and the
   // watch tells the user (nobody to type into).
-  it('an approval records nothing and opens a watch with no dispatcher to tell', () => {
+  it('an approval records nothing and opens a watch that toasts the user', () => {
     const book: WatchBook = new Map()
     const out = finishingDelivery(book, { ...r, approving: true })
     expect(out.record).toBeUndefined()
     expect(out.feedback).toBeUndefined()
-    expect(watchFor(book, 'p1', 'code', 't1')?.notify).toEqual([])
+    expect(watchFor(book, 'p1', 'code', 't1')).toMatchObject({ notify: [], toastUser: true })
   })
 })

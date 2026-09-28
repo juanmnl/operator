@@ -3,8 +3,8 @@
 Branch `operator/917d80`, from `main` @ fe6029e. Separate from the lanes-as-profiles steps.
 First commit 8cc53fd. Review's findings
 (`dev/results/retire-released-lane-review-2026-09-27.md` in the main checkout) are fixed in the
-commit after it; see "Review fixes" at the end, which supersedes the busy-case and not-covered
-sections below where they differ.
+second commit (5406dfd), and its Round 2 findings in the third. See "Review fixes" and "Round 2
+fixes" at the end; where they differ from the sections above, the later section wins.
 Brief: retire an idle lane whose worktree was already released (`worktree_done`) and launch a
 fresh one on dispatch, instead of coordinators asking the user to close it.
 
@@ -284,7 +284,7 @@ A lane is retired only if nothing was delivered to it after its release. There a
   - `RETIRE_NOTE` now says a busy lane means a refusal and one message when idle, then dispatch
     again.
   - Guards, measured: coordinator 4008 (`roster.test.ts` 4000 → 4200) and 4459 with the bus note
-    (`bus-name.test.ts` 4400 → 4600). Both leave room for longer project names.
+    (`bus-name.test.ts` 4400 → 4600). Both guards use fixed fixture names.
   - The stale "the longest is Infra" comment is corrected.
 
 ### Results
@@ -308,3 +308,141 @@ A lane is retired only if nothing was delivered to it after its release. There a
 - **Older suspended records** saved before this change still resume on their branch.
 - **Human Send / Start all still find the lane with `terminals.find`.** They are not routed
   through the resolver, but their submissions now cancel the release, which is what H1 needed.
+
+## Round 2 fixes (third commit, on 5406dfd)
+
+### R2-1 (High): a bus reply never retires, launches or is refused as finishing
+
+- The bus tick passes the request kind (`dispatch` / `reply`) into `resolveDispatch`
+  (`DispatchRequest.kind`).
+- A reply goes to the role's live lane whether it is released, busy or neither. With no live lane
+  it is refused: "A reply never starts a lane". It never produces `launching`, a retire, or a
+  `finishing` watch.
+- A reply is sent with a new prefix, `[Operator · reply from X]`, from `src/shared/prompt-kind.ts`.
+  The OPERATOR-REPLY pty path uses the same prefix.
+- **Changed as a consequence:** a bus reply from a non-coordinator is no longer held for approval.
+  It goes through the brakes, like the OPERATOR-REPLY sentinel always has. A held reply, once
+  approved, was delivered by `deliverDispatchRef` as a dispatch, which is a task, and that is the
+  defect this finding describes.
+- This also fixes the older problem Review noted, that a reply to a lane that isn't running
+  launched it.
+- The brake refusal path for replies is unchanged.
+- Tests (`dispatch-bus.test.ts`, "a REPLY"):
+  - reply to an idle released lane: `send` with the reply prefix;
+  - reply to a busy released lane: `send`, no watch;
+  - reply to a lane that isn't running, or a preset that isn't on the roster: refused;
+  - reply from a non-coordinator: sent, not held;
+  - replies stay subject to the brakes;
+  - a dispatch keeps its message prefix.
+
+### R2-3: only real work cancels a release
+
+- `isWorkPrompt` (`src/shared/prompt-kind.ts`) is used by both main and the renderer. It returns
+  false for Operator notices (`[Operator] …`) and for replies (`[Operator · reply from X] …`),
+  including when they arrive inside Claude Code's `<cross-session-message>` wrapper.
+- Everything else counts as work: a person typing, a dispatch (bare on the sentinel path,
+  `[Operator · message from X]` over the bus), and a message from an unknown source. An unknown
+  source errs toward keeping the lane.
+- Applied in main to user turns and `remove` records (`transcript.ts`), and in the renderer's
+  submission hook, which now receives the text (`submit-queue.ts` `onSubmit(id, text)`).
+- Tests:
+  - `src/shared/prompt-kind.test.ts`, with wrapper shapes from real transcripts;
+  - `transcript.test.ts`, replies and notices on the pty, in the queue and over the bus;
+  - `submit-queue.test.ts`, the text reaches the hook.
+
+### R2-2: a prompt counts when the lane takes it up
+
+Checked against real transcripts in `~/.claude/projects`, over the last 20 days:
+- 2447 `enqueue`, 1336 `dequeue`, 1093 `remove`.
+- Idle lane: `enqueue`, then `dequeue` (no content), then the `user` record.
+- Mid-turn: `enqueue`, and later `remove` carrying the content at the moment the lane pulls the
+  prompt into the running turn, followed by a `queued_command` attachment.
+
+So `lastPromptAt` is now set:
+- by the `user` record (idle), or
+- by the `remove` record's timestamp (mid-turn),
+
+and never by the `enqueue`. A prompt queued before `worktree_done` and taken up after it has a
+take-up time later than the release, and cancels it.
+
+Test (`transcript.test.ts`): enqueue at 10:01, release at 10:02, remove at 10:03. The enqueue
+leaves `lastPromptAt` at the earlier turn; the remove moves it to 10:03. The idle
+enqueue → dequeue → user sequence counts at the user record.
+
+### R2-4: the fresh lane is launched only after the old one is confirmed closed
+
+- The retire now:
+  1. queues the task;
+  2. awaits the close (finish tasks, re-read the release, kill);
+  3. launches, only if the close answered `closed`.
+- `handleCloseSession` returns `closed` | `took-work` | `unconfirmed`. An unreadable re-read is
+  `unconfirmed`, not "took work".
+- `afterRetireClose` (`lane-lifecycle.ts`) maps the outcome to what happens next:
+
+  | Close outcome | What happens |
+  |---|---|
+  | `closed` | The fresh lane launches. The queued task is marked running on it. |
+  | `took-work` | Nothing launches. The task is sent into that lane, which is now an ordinary working lane, and marked running there. The record becomes `sent`. The dispatcher and the user are told. |
+  | `unconfirmed` | Nothing launches. The task stays queued and the record becomes `queued`. The dispatcher is told not to dispatch it again. |
+
+- The `retire` feedback and the bus reason now say the lane is being ended first, and that nothing
+  launches if it takes work.
+- Two live lanes on the role can no longer come out of a retire.
+- The cost is latency: when the old lane has running tasks with a check command, the fresh lane
+  starts after those checks.
+- Test: `lane-lifecycle.test.ts` `afterRetireClose`. The sequencing itself is component code.
+
+### R2-5: the lifecycle's close of a released lane
+
+- It registers the lane in `retiringRef` for the duration of the close, so a dispatch in that
+  window routes as if the lane were gone instead of starting a second close.
+- The "Closed … released its worktree" toast is shown only when the close answers `closed`.
+- Component code; no unit test.
+
+### R2-6: renderer respawn in the middle of a retire
+
+- With close-before-launch, a respawn during the close cannot leave two lanes.
+- The retire's task is queued in the project (persisted) before the close starts, so a respawn,
+  a failed close or a failed launch leaves it on the board instead of losing it.
+- The watch is still in memory; the refusal text covers that.
+
+### R2-7: watch bookkeeping
+
+- Watches are keyed per lane (project, role, terminal). A refusal against another lane of the
+  role opens its own watch and leaves the first in place.
+- An approval sets a sticky `toastUser` on the watch. The user gets the toast even when a
+  coordinator on the same watch is told as well.
+- Tests (`retire-watch.test.ts`):
+  - two lanes of one role keep separate watches, and only the idle one signals;
+  - `clearWatch` removes one lane's watch only;
+  - an approval merged into a coordinator's watch sets `toastUser`, and it stays set.
+
+### Also from the round-1 re-check
+
+- `handleCloseSession` reads the release fresh from main, falling back to the cache. A user close
+  moments after `worktree_done` no longer takes the snapshot-and-remove path.
+- The guard comment no longer claims headroom for real project names.
+
+### Results
+
+- Typecheck: root `tsc --noEmit` clean; `electron npm run typecheck` clean.
+- Root suite: 112 files, 1657 tests passed.
+- Electron suite: 45 files, 802 tests passed.
+
+### Still not covered
+
+- Nothing was run in the app. Needed:
+  - one retire;
+  - one `finishing` → idle message → re-dispatch;
+  - one coordinator reply to a released lane;
+  - one reply that crosses a `worktree_done` mid-turn.
+- R2-4, R2-5 and R2-6 are component sequencing, tested only through their pure decisions.
+- An unconfirmed retire records `queued`, whose chip reads "not delivered · lane wasn't running".
+  The lane was running. The record is right that nothing was delivered; the chip's wording is
+  not.
+- A lifecycle close in progress makes a dispatch route `queue` and launch a fresh lane. If that
+  close is then abandoned (the lane took work in the few hundred milliseconds of the re-read), the
+  role briefly has two lanes. The lifecycle closes only lanes with no running tasks, so that window
+  is two IPC round trips.
+- A user close of a released lane now waits one IPC round trip, for the fresh release read,
+  before the kill.

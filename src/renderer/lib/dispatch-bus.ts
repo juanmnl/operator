@@ -20,6 +20,7 @@ import type { Project, Role } from '../../shared/types'
 import { evaluateDelivery, deliveryPrefix, laneKey, type BlockReason, type DeliveryState } from './agent-delivery'
 import { routeDispatch, dispatchNeedsApproval, type RoutableTab } from './dispatch'
 import { finishingReason, watchFor, type FinishingWatch } from './retire-watch'
+import { replyPrefix } from '../../shared/prompt-kind'
 
 /** What a lane is told to do next. */
 export type DispatchOutcome = 'send' | 'launching' | 'refused'
@@ -67,6 +68,10 @@ export interface DispatchRequest {
   fromLabel: string
   /** Which project this is scoped to. A lane may never address outside it. */
   projectId: string
+  /** `mcp__operator__dispatch` or `mcp__operator__reply`; both write the same request table.
+   *  Absent reads as a dispatch. A reply is a MESSAGE: it goes to a live lane or nowhere, and never
+   *  launches, retires or opens a `finishing` watch (review round 2, R2-1). */
+  kind?: 'dispatch' | 'reply'
 }
 
 /** A lane as the router sees it, plus the two facts the bus needs. `RoutableTab`'s own shape is
@@ -123,6 +128,25 @@ export function resolveDispatch(
   }
   const targetRoleId = route.role.id
 
+  // A REPLY IS NOT WORK, so it has none of work's routes. It goes to the role's live lane, released
+  // or not, and a released lane stays released (`isWorkPrompt`). With no live lane it is refused:
+  // "dropped if the lane isn't running" is what REPLY_PROTOCOL promises, and launching a lane with
+  // "merged, thanks" as its brief (or retiring one for it) was the defect.
+  //
+  // NOT HELD FOR APPROVAL, like the OPERATOR-REPLY sentinel, which only the brakes govern. The
+  // authority gate exists so a lane cannot commission work; a reply commissions nothing, and an
+  // approved held reply would have been delivered as a dispatch, which is a task.
+  if (req.kind === 'reply') {
+    const live = route.kind === 'send' || route.kind === 'retire' || route.kind === 'finishing' ? route.tab : undefined
+    if (!live) {
+      return {
+        brakes: ctx.brakes,
+        verdict: { outcome: 'refused', reason: `${targetRoleId} is not running. A reply never starts a lane. Nothing was sent.` },
+      }
+    }
+    return sendTo(live as BusLane, req, ctx, targetRoleId, roster, replyPrefix(req.fromLabel))
+  }
+
   // AUTHORITY GATE, and it belongs here rather than only on the sentinel path. Only the
   // coordinator commissions work unsupervised; every other lane's dispatch is recorded
   // `pending-approval` and delivered by Operator only if the user approves it. The bus path
@@ -176,7 +200,7 @@ export function resolveDispatch(
         reason: route.kind === 'create'
           ? `${targetRoleId} is not on the roster; Operator is adding it from its preset and launching it with this task as its opening brief`
           : route.kind === 'retire'
-            ? `${targetRoleId} released its worktree and is idle; Operator is ending that session and launching a fresh ${targetRoleId} lane with this task as its opening brief`
+            ? `${targetRoleId} released its worktree and is idle; Operator is ending that session and will then launch a fresh ${targetRoleId} lane with this task as its opening brief. If it takes new work before it ends, Operator tells you and launches nothing`
             : `${targetRoleId} is not running; Operator is launching it with this task as its opening brief`,
       },
     }
@@ -199,6 +223,19 @@ export function resolveDispatch(
     }
   }
 
+  return sendTo(route.tab as BusLane, req, ctx, targetRoleId, roster, deliveryPrefix(req.fromLabel))
+}
+
+/** The one path that is actually a message: brakes, then the lane's bus address, then the text.
+ *  Shared by a dispatch to a live lane and by a reply. */
+function sendTo(
+  lane: BusLane,
+  req: DispatchRequest,
+  ctx: DispatchContext,
+  targetRoleId: string,
+  roster: Role[],
+  prefix: string,
+): { verdict: DispatchVerdict; brakes: DeliveryState } {
   // THE BRAKES, on the one path that is actually a message, and before anything is created: a
   // board entry for a message that was never delivered is the same lie as a delivered-looking
   // dispatch that vanished, told the other way round.
@@ -221,7 +258,6 @@ export function resolveDispatch(
     }
   }
 
-  const lane = route.tab as BusLane
   const to = lane?.claudeSessionId ? ctx.addresses.get(lane.claudeSessionId) : undefined
   if (!to) {
     // ON THE ROSTER AND RUNNING, but not on the bus — it has not finished starting, or it exited
@@ -247,7 +283,7 @@ export function resolveDispatch(
   return {
     brakes: evaluated.state,
     verdict: {
-      outcome: 'send', to, text: `${deliveryPrefix(req.fromLabel)}${text}`,
+      outcome: 'send', to, text: `${prefix}${text}`,
       target: { roleId: targetRoleId, terminalId: lane.id },
     },
   }

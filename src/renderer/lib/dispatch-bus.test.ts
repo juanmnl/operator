@@ -452,3 +452,47 @@ describe('resolveDispatch — a lane that released its worktree', () => {
     expect(verdict.outcome).toBe('send')
   })
 })
+
+// R2-1: `mcp__operator__reply` shares the request table with dispatch. A reply is a message: it
+// never launches, retires or opens a finishing watch, and it is marked as a reply.
+describe('resolveDispatch — a REPLY', () => {
+  const reply = (laneTok: string, o: Partial<Parameters<typeof resolveDispatch>[0]> = {}) => req(laneTok, { kind: 'reply', task: 'merged, thanks', ...o })
+
+  it('to an idle RELEASED lane is sent to it as a reply, not a retire', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('code', { released: true, phase: 'waiting' })] }))
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.to).toBe('uds:/tmp/cc-socks/2001.sock')
+    expect(verdict.text).toBe('[Operator · reply from Operator] merged, thanks')
+  })
+
+  it('to a BUSY released lane is sent too, with no finishing watch', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('code', { released: true, phase: 'running' })] }))
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.finishing).toBeUndefined()
+  })
+
+  it('to a lane that is not running is refused: a reply never starts a lane', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('review')] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.reason).toMatch(/A reply never starts a lane/)
+    // Nor for a preset the roster lacks.
+    expect(resolveDispatch(reply('design'), ctx()).verdict.outcome).toBe('refused')
+  })
+
+  it('from a non-coordinator is delivered under the brakes, not held: a reply commissions nothing', () => {
+    const { verdict } = resolveDispatch(reply('code', { fromRoleId: 'review', fromLabel: 'Review' }), ctx())
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.held).toBeUndefined()
+    expect(verdict.text).toBe('[Operator · reply from Review] merged, thanks')
+  })
+
+  it('is still subject to the brakes', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ chatterPaused: true }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.brake).toBe('paused')
+  })
+
+  it('a DISPATCH keeps the message prefix', () => {
+    expect(resolveDispatch(req('code'), ctx()).verdict.text).toBe('[Operator · message from Operator] do the thing')
+  })
+})
