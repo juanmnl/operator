@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs, tabRunsIn } from './dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs, tabRunsIn, markReleased, isReleased, reusableLane } from './dispatch'
 import type { Role } from '../../shared/types'
 
 const roster: Role[] = [
@@ -242,5 +242,122 @@ describe('a tab is a project\'s lane only if it runs in that project', () => {
   it('gives a tab with no directory, or a caller with no project path, the benefit of the doubt', () => {
     expect(tabRunsIn({}, uwazi)).toBe(true)
     expect(tabRunsIn({ cwd: '/elsewhere' }, undefined)).toBe(true)
+  })
+})
+
+// A worktree lane that called `worktree_done` keeps running, idle, in a directory removed when it
+// ends; its brief forbids branching again there. Dispatching to its role retires it (idle) or
+// refuses (mid-turn). Only the release record qualifies.
+describe('routeDispatch — a lane that released its worktree', () => {
+  const released = (phase: string | undefined, o: Partial<RoutableTab> = {}) =>
+    tab({ id: 't1', roleId: 'code', released: true, phase, ...o })
+
+  it('RETIRES an idle released lane (between turns) so a fresh one is launched', () => {
+    for (const phase of ['waiting', 'idle']) {
+      const r = routeDispatch('code', roster, [released(phase)], 'p1')
+      expect(r.kind, phase).toBe('retire')
+      if (r.kind === 'retire') { expect(r.tab.id).toBe('t1'); expect(r.role.id).toBe('code') }
+    }
+  })
+
+  it('never ends a BUSY released lane: mid-turn, compacting or asking is `finishing`', () => {
+    for (const phase of ['running', 'compacting', 'asking']) {
+      const r = routeDispatch('code', roster, [released(phase)], 'p1')
+      expect(r.kind, phase).toBe('finishing')
+      if (r.kind === 'finishing') expect(r.unseen).toBe(false)
+    }
+  })
+
+  it('an UNSEEN released lane (no phase) is `finishing` and marked unseen, never retired', () => {
+    const r = routeDispatch('code', roster, [released(undefined)], 'p1')
+    expect(r.kind).toBe('finishing')
+    if (r.kind === 'finishing') expect(r.unseen).toBe(true)
+  })
+
+  // L2 / H1: something happened in the last few seconds the transcript may not show yet.
+  it('an idle released lane that is still SETTLING is not retired yet', () => {
+    expect(routeDispatch('code', roster, [released('waiting', { settling: true })], 'p1').kind).toBe('finishing')
+  })
+
+  // L3: a lane a retire is already under way for reads as ended, so the next dispatch launches
+  // (and joins that relaunch) instead of retiring it twice.
+  it('a lane being retired (marked ended) routes to a launch', () => {
+    expect(routeDispatch('code', roster, [released('waiting', { ended: true })], 'p1').kind).toBe('queue')
+  })
+
+  it('leaves a lane WITHOUT a release unchanged, whatever its phase', () => {
+    for (const phase of ['waiting', 'idle', 'running', undefined]) {
+      expect(routeDispatch('code', roster, [tab({ id: 't1', roleId: 'code', phase })], 'p1').kind).toBe('send')
+    }
+  })
+
+  it('never touches another project\'s released lane', () => {
+    const other = released('waiting', { projectId: 'p2' })
+    expect(routeDispatch('code', roster, [other], 'p1').kind).toBe('queue')
+    // And a dispatch in p2 to its own released lane does not reach p1's live one.
+    const mine = tab({ id: 't9', roleId: 'code' })
+    const r = routeDispatch('code', roster, [mine, other], 'p2')
+    expect(r.kind).toBe('retire')
+    if (r.kind === 'retire') expect(r.tab.id).toBe('t1')
+    expect(routeDispatch('code', roster, [mine, other], 'p1').kind).toBe('send')
+  })
+
+  it('an ENDED released lane is no lane at all: the role is launched as before', () => {
+    expect(routeDispatch('code', roster, [released('waiting', { ended: true })], 'p1').kind).toBe('queue')
+  })
+})
+
+describe('markReleased', () => {
+  type WtTab = RoutableTab & { worktreeBranch?: string }
+  const wtLane = (o: Partial<WtTab> = {}): WtTab => ({
+    id: 't1', projectId: 'p1', roleId: 'code', cwd: '/wt/proj-abc', sourceCwd: '/src/proj', worktreeBranch: 'operator/abc', ...o,
+  })
+  const row = (o: Partial<{ terminalId: string; projectId: string | null; path: string }> = {}) =>
+    ({ terminalId: 't1', projectId: 'p1', path: '/wt/proj-abc', ...o })
+
+  it('marks the worktree lane whose terminal AND directory match an open release', () => {
+    expect(markReleased([wtLane()], [row()])[0].released).toBe(true)
+    // Trailing slash and case differences are the same directory, as elsewhere in routing.
+    expect(markReleased([wtLane()], [row({ path: '/WT/proj-abc/' })])[0].released).toBe(true)
+    expect(markReleased([wtLane()], [row({ projectId: null })])[0].released).toBe(true)
+  })
+
+  it('does not mark on a terminal id alone, a directory alone, or another project', () => {
+    expect(markReleased([wtLane()], [row({ path: '/wt/proj-other' })])[0].released).toBeUndefined()
+    expect(markReleased([wtLane()], [row({ terminalId: 't2' })])[0].released).toBeUndefined()
+    expect(markReleased([wtLane()], [row({ projectId: 'p2' })])[0].released).toBeUndefined()
+  })
+
+  it('never marks a lane in the main checkout, even with a matching row', () => {
+    const main = wtLane({ cwd: '/src/proj', sourceCwd: '/src/proj' })
+    expect(markReleased([main], [row({ path: '/src/proj' })])[0].released).toBeUndefined()
+    const noBranch = wtLane({ worktreeBranch: undefined })
+    expect(markReleased([noBranch], [row()])[0].released).toBeUndefined()
+  })
+
+  it('leaves the other tabs as they were', () => {
+    const other = wtLane({ id: 't2', cwd: '/wt/proj-def' })
+    const out = markReleased([wtLane(), other], [row()])
+    expect(out[1]).toBe(other)
+  })
+})
+
+// H2: the relaunch for a retired lane must never type its brief into another live tab of the role.
+describe('reusableLane', () => {
+  const dup = tab({ id: 't2', roleId: 'code', lastActivityAt: '2026-09-27T10:00:00Z' })
+  it('reuses the live lane on a normal launch', () => {
+    expect(reusableLane([dup], 'p1', 'code')?.id).toBe('t2')
+  })
+  it('reuses NOTHING when replacing a retired lane, even with a duplicate live on the role', () => {
+    const dupReleased = tab({ id: 't3', roleId: 'code', released: true, phase: 'waiting' })
+    expect(reusableLane([dup, dupReleased], 'p1', 'code', undefined, 't1')).toBeUndefined()
+  })
+})
+
+describe('isReleased', () => {
+  it('answers markReleased for one tab', () => {
+    const t = { id: 't1', projectId: 'p1', cwd: '/wt/a', sourceCwd: '/src', worktreeBranch: 'operator/a' }
+    expect(isReleased(t, [{ terminalId: 't1', path: '/wt/a' }])).toBe(true)
+    expect(isReleased(t, [])).toBe(false)
   })
 })

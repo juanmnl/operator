@@ -14,6 +14,7 @@ import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom, bracketedPaste } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 import { submitQueue } from '../../lib/submit-queue'
+import { noteKeystroke } from '../../lib/lane-keystrokes'
 import { createHiddenOutputBuffer, type HiddenOutputBuffer } from '../../lib/hidden-output'
 
 // Claude Code's composer-divider ornaments (👀/👣 and newer cycled pictographs) are
@@ -243,7 +244,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (isComposingRef.current) return true
       // App chords are declined below and emit no bytes, so they are not typing INTO the lane.
       if (e.type === 'keydown' && e.metaKey && isAppChord(e)) return false
-      if (e.type === 'keydown') disarmRescue()
+      if (e.type === 'keydown') { disarmRescue(); noteKeystroke(terminalId) }
       return true
     })
 

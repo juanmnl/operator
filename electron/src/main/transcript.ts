@@ -22,6 +22,7 @@ import { parseDispatches, parseReplies, directiveId } from './directives'
 // derived rather than restated, and that has to include the payload shapes: a session this
 // module builds must satisfy the same `AgentSession` the UI destructures.
 import type { AgentSession, NarrationEntry, ActivityEntry, TodoItem } from '../../../src/shared/types'
+import { isWorkPrompt } from '../../../src/shared/prompt-kind'
 
 /** Narration entries retained per session in the LIVE payload. The durable history is the chat
  *  store's job; this is the tail the UI renders without a query. */
@@ -60,6 +61,9 @@ export function sendMessageAddress(name: string, input: unknown): string | null 
  *  without this made it the weaker of the two. Keyed by `to`, which is the address Operator
  *  handed the lane. */
 export interface DeliveryEvent { sessionId: string; terminalId: string; to: string; result: string; ts: string }
+/** The newest real prompt a lane has taken, by its transcript timestamp. Main uses it to cancel a
+ *  `worktree_done` release that new work arrived after (see `cancelReleasesBefore`). */
+export interface PromptEvent { terminalId: string; at: string }
 
 const nowIso = () => new Date().toISOString()
 
@@ -174,6 +178,14 @@ export class Track {
   lastUsageMsgId: string | null = null
   lastStopReason: string | null = null
   lastWasUserPrompt = false
+  /** Transcript timestamp of the newest WORK prompt, taken at the moment the lane TOOK IT UP: a
+   *  main-thread user turn, or a queued prompt's `remove` (consumed mid-turn). Not the `enqueue`:
+   *  a prompt queued before `worktree_done` and taken up after it is new work after the release
+   *  (review round 2, R2-2). Injected turns, Operator's notices and replies are excluded
+   *  (`isWorkPrompt`, R2-3). ISO, so it compares as a string. */
+  lastPromptAt = ''
+  /** The value last emitted as a `prompt` event, so each new prompt is announced once. */
+  emittedPromptAt = ''
   /** Between a `compact_boundary` record and the next REAL record. See `applySystem`. */
   compacting = false
   /** When the boundary landed, for the ceiling below. */
@@ -240,6 +252,7 @@ export class Track {
     this.lastUsageMsgId = null
     this.lastStopReason = null
     this.lastWasUserPrompt = false
+    this.lastPromptAt = ''
     this.compacting = false
     this.compactingSinceMs = 0
     this.contextTokens = 0
@@ -369,14 +382,30 @@ export class Track {
 
   /** A prompt typed into a mid-turn lane leaves ONLY this — never a `user` turn — which is why
    *  the delivery loop has to read it. Treating its absence as "undelivered" produced 52 false
-   *  reports out of 62. */
+   *  reports out of 62.
+   *
+   *  WHEN THE LANE TAKES IT UP, as measured in real transcripts (2026-09-25/27): an idle lane
+   *  writes `enqueue`, then `dequeue` (no content), then the `user` record, which `applyUser`
+   *  counts. A mid-turn lane writes `enqueue`, and later `remove` carrying the same content,
+   *  at the point it pulls the prompt into the running turn (followed by a `queued_command`
+   *  attachment). So the `remove` is the take-up time. */
   private applyQueueOp(v: Record<string, unknown>, ts: string): void {
+    if (v.operation === 'remove') {
+      const taken = v.content
+      if (typeof taken === 'string' && taken.trim() && !isInjectedTurn(taken) && isWorkPrompt(taken)) this.notePrompt(ts)
+      return
+    }
     if (v.operation !== 'enqueue') return
     const text = v.content
     if (typeof text !== 'string' || !text.trim() || isInjectedTurn(text)) return
     this.queued.push({ kind: 'queued', text: cap(text, PROMPT_TEXT_CAP), timestamp: ts || nowIso(), images: [] })
     if (this.queued.length > QUEUED_CAP) this.queued.splice(0, this.queued.length - QUEUED_CAP)
     this.dirty = true
+  }
+
+  private notePrompt(ts: string): void {
+    const at = ts || nowIso()
+    if (at > this.lastPromptAt) this.lastPromptAt = at
   }
 
   private applyUser(v: Record<string, unknown>): void {
@@ -445,6 +474,7 @@ export class Track {
       if (line) { this.summary = line; this.dirty = true }
     }
     if (injected) return
+    if (isWorkPrompt(text)) this.notePrompt(typeof v.timestamp === 'string' ? v.timestamp : '')
     this.pushNarration({
       kind: 'user',
       text: cap(text, PROMPT_TEXT_CAP),
@@ -729,6 +759,10 @@ export class Transcript extends EventEmitter {
       for (const d of t.pendingDispatches.splice(0)) this.emit('dispatch', d)
       for (const r of t.pendingReplies.splice(0)) this.emit('reply', r)
       for (const d of t.pendingDeliveries.splice(0)) this.emit('delivery', d)
+      if (t.lastPromptAt && t.lastPromptAt !== t.emittedPromptAt) {
+        t.emittedPromptAt = t.lastPromptAt
+        this.emit('prompt', { terminalId: t.terminalId, at: t.lastPromptAt } satisfies PromptEvent)
+      }
 
       if (!alive) { t.ended = true; t.dirty = true }
 

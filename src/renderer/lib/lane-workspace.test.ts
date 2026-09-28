@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Role } from '../../shared/types'
-import { launchWorkspace } from './lane-workspace'
+import { launchWorkspace, suspendedToResume } from './lane-workspace'
 import { resolveAgentConfig } from './model-config'
 import { BRANCH_SAFETY_NOTE, orchestrationNote, rolePresets, SHARED_CHECKOUT_NOTE, WORKTREE_DONE_NOTE } from './roster'
 
@@ -92,5 +92,25 @@ describe('the worktree_done line in the launch brief', () => {
     expect(BRANCH_SAFETY_NOTE).toContain('--delete-branch')
     expect(BRANCH_SAFETY_NOTE).toContain('git push origin --delete <branch>')
     expect(BRANCH_SAFETY_NOTE).toContain('git checkout -b')
+  })
+})
+
+describe('suspendedToResume', () => {
+  const saved = [
+    { key: 'a', projectId: 'p1', roleId: 'code', suspendedAt: '2026-09-26T10:00:00Z', claudeSessionId: 'c-a', worktreeBranch: 'operator/aaa', lastActiveAt: '2026-09-26T10:00:00Z' },
+    { key: 'b', projectId: 'p1', roleId: 'code', suspendedAt: '2026-09-26T11:00:00Z', claudeSessionId: 'c-b', worktreeBranch: 'operator/bbb', lastActiveAt: '2026-09-26T11:00:00Z' },
+    { key: 'c', projectId: 'p2', roleId: 'code', suspendedAt: '2026-09-26T12:00:00Z', claudeSessionId: 'c-c', worktreeBranch: 'operator/ccc', lastActiveAt: '2026-09-26T12:00:00Z' },
+    { key: 'd', projectId: 'p1', roleId: 'code', claudeSessionId: 'c-d', lastActiveAt: '2026-09-26T13:00:00Z' },
+  ]
+
+  it('resumes the most recent suspended record of this role in this project', () => {
+    expect(suspendedToResume(saved, 'p1', 'code')?.key).toBe('b')
+  })
+
+  // A retired lane is replaced by a FRESH one: no record, so the worktree is created new rather
+  // than reattached to an older branch.
+  it('resumes nothing when the launch replaces a retired lane', () => {
+    expect(suspendedToResume(saved, 'p1', 'code', 't7')).toBeUndefined()
+    expect(launchWorkspace('code', true, suspendedToResume(saved, 'p1', 'code', 't7'))).toMatchObject({ useWorktree: true, ownWorktree: true })
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { defaultRoster, rolePresets, presetFor, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, migrateStockCharters, legacyStockCharters, DEFAULT_ROLE_PROMPTS, LEGACY_ROLE_CHARTERS, NO_COMMISSIONING, ROSTER_MODELS } from './roster'
+import { defaultRoster, rolePresets, presetFor, roleIdFrom, modelFamilyLabel, orchestrationNote, stripDispatchLines, reorderRoles, orderByRoster, patchRoleIn, removeRoleFrom, migrateLegacyCoordinator, migrateStockCharters, legacyStockCharters, DEFAULT_ROLE_PROMPTS, LEGACY_ROLE_CHARTERS, NO_COMMISSIONING, ROSTER_MODELS, RETIRE_NOTE } from './roster'
 import type { Project, Role } from '../../shared/types'
 
 describe('roster', () => {
@@ -346,8 +346,12 @@ describe('orchestrationNote — the return path', () => {
     // charters, so the guard now covers every preset's note, not just Code's (longest: Review, 3253).
     // Raised to 3800 on 2026-09-25 for BRANCH_SAFETY_NOTE in the coordinator's note (it merges PRs,
     // and `--delete-branch` gutted a lane's checkout twice): 3374 to 3764.
+    // Raised to 4200 on 2026-09-27 for RETIRE_NOTE (coordinators asked the user to close a lane
+    // that had called `worktree_done`; dispatch now retires it, and a busy one is refused with an
+    // idle message to follow): 3764 to 4008, then 4063 with "follow-up work is a dispatch, never a
+    // reply" (review round 3, R3-2). Lane notes did not change.
     for (const role of roster) {
-      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(3800)
+      expect(orchestrationNote('proj', role, roster).length, role.id).toBeLessThan(4200)
     }
   })
 })
@@ -576,5 +580,17 @@ describe('migrateStockCharters', () => {
     expect(migrateStockCharters(once)).toBe(once)
     const bare: Project = { id: 'p', path: '/p', name: 'P', createdAt: 't', lastActiveAt: 't' }
     expect(migrateStockCharters(bare)).toBe(bare)
+  })
+})
+
+// R3-2: a reply does not cancel a release (shared/prompt-kind), so follow-up work for a released
+// lane has to be sent as a dispatch. Coordinator only.
+describe('RETIRE_NOTE', () => {
+  it('tells the coordinator follow-up work for a released lane is a dispatch, never a reply', () => {
+    const roster = rolePresets()
+    const op = roster.find((r) => r.id === 'operator')!
+    expect(RETIRE_NOTE).toMatch(/Follow-up work for such a lane is a dispatch, never a reply/)
+    expect(orchestrationNote('proj', op, roster)).toContain(RETIRE_NOTE)
+    expect(orchestrationNote('proj', roster.find((r) => r.id === 'code')!, roster, { ownWorktree: true })).not.toContain(RETIRE_NOTE)
   })
 })

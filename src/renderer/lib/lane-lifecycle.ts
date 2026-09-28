@@ -252,3 +252,42 @@ export function doneStampsFrom(
   }
   return out
 }
+
+/** How a lane is closed, given whether it released its worktree with `worktree_done`. Pure.
+ *
+ *  A RELEASED LANE's directory is decided by main on pty exit, by the rule the lane was told:
+ *  removed if clean, kept if anything is unsaved. So the renderer never snapshots or removes it
+ *  (review M2). An AUTOMATIC close of one (a dispatch retiring it, or this lifecycle) happens only
+ *  when it is idle, so its tasks are finished while the directory exists and the pty ends after:
+ *  killing first let main delete the directory under the diff capture and verification gate.
+ *  And it is never SUSPENDED: a suspended record would resume the released thread on its old,
+ *  often merged, branch (review M4). A user's close of a busy released lane still kills first. */
+export function releasedClosePlan(o: { released: boolean; auto: boolean; reason?: LaneCloseReason }): {
+  finishBeforeKill: boolean
+  rendererRemovesWorktree: boolean
+  suspend: LaneCloseReason | undefined
+} {
+  return {
+    finishBeforeKill: o.released && o.auto,
+    rendererRemovesWorktree: !o.released,
+    suspend: o.released ? undefined : o.reason,
+  }
+}
+
+/** What a dispatch's retire does once the old lane's close has answered. Pure.
+ *
+ *  The fresh lane is launched ONLY after a confirmed close (review round 2, R2-4): launching
+ *  beside the close left two live lanes on the role whenever the close was abandoned, while the
+ *  coordinator had been told the old one ended. A lane that took work is a working lane again, so
+ *  the task goes into it, as a dispatch to it would now. An unconfirmed close touches nothing and
+ *  the task stays queued on the board. */
+export function afterRetireClose(
+  outcome: 'closed' | 'took-work' | 'unconfirmed',
+  /** Is the old lane's pty still live? A release is also settled when the pty EXITS, so a lane the
+   *  user closed, or that crashed, during the close reads as `took-work`. Typing the task into it
+   *  would lose it (review round 3, R3-3). A dead lane is as good as closed: launch. */
+  oldLaneAlive = true,
+): 'launch' | 'send-to-old-lane' | 'leave-queued' {
+  if (outcome === 'closed' || !oldLaneAlive) return 'launch'
+  return outcome === 'took-work' ? 'send-to-old-lane' : 'leave-queued'
+}

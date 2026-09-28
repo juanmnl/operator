@@ -6,6 +6,7 @@ import type { GridRun, GridUpdate } from '../../../shared/types'
 import { TERMINAL_FONT_FAMILY } from '../../lib/terminal-options'
 import { findUrlAtColumn } from '../../lib/terminal'
 import { submitQueue } from '../../lib/submit-queue'
+import { noteKeystroke } from '../../lib/lane-keystrokes'
 
 // Grid terminal pane — our own terminal (the non-native path). The pty bytes are
 // parsed into a grid by alacritty in Rust (src-tauri/src/gridterm.rs); this pane
@@ -323,6 +324,7 @@ export function GridTerminalPane({ terminalId, theme, active }: { terminalId: st
     // back to life without the guard.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === 'keydown' && submitQueue.pending(terminalId)) submitQueue.cancelNudge(terminalId, 'typing')
+      if (e.type === 'keydown') noteKeystroke(terminalId)
       return true
     })
     term.onData((d) => {

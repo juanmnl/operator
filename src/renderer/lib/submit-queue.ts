@@ -182,6 +182,10 @@ export interface SubmitQueueDeps {
    *  re-sends itself unattended is how you get the same work done twice. The caller's job is to
    *  make it visible; see DashboardView, which marks the DispatchRecord `undelivered`. */
   onUndelivered?: (id: string, text: string) => void
+  /** Called when a submission is ENQUEUED, before anything is written: the lane is about to get
+   *  a prompt. DashboardView cancels a `worktree_done` release here, so a lane that is being
+   *  handed work is never retired in the gap before its transcript shows the turn. */
+  onSubmit?: (id: string, text: string) => void
 }
 
 export interface SubmitQueue {
@@ -339,6 +343,7 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
     },
 
     submit(id, text) {
+      try { deps.onSubmit?.(id, text) } catch { /* a listener must never block a submission */ }
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev
         .then(async () => {
@@ -483,9 +488,17 @@ export function onUndeliveredSubmission(fn: (id: string, text: string) => void) 
   undeliveredHandler = fn
 }
 
+/** Where the app-wide queue announces a submission. Installed by DashboardView, for the same
+ *  reason as `onUndeliveredSubmission`. */
+let submitHandler: ((id: string, text: string) => void) | undefined
+export function onSubmission(fn: (id: string, text: string) => void) {
+  submitHandler = fn
+}
+
 /** The app-wide queue. Terminal writes already go through an ordered per-terminal write
  *  queue in the bridge (byte ordering); this adds the SUBMISSION spacing on top. */
 export const submitQueue = createSubmitQueue({
   write: (id, data) => window.operator.terminalWrite(id, data),
   onUndelivered: (id, text) => undeliveredHandler?.(id, text),
+  onSubmit: (id, text) => submitHandler?.(id, text),
 })

@@ -90,3 +90,14 @@ describe('chipForOutcome — derived, never invented', () => {
     }
   })
 })
+
+// R3-6: the retire's fallbacks leave the task queued while the lane WAS running, so they must not
+// borrow `queued`'s "lane wasn't running".
+describe('chipForOutcome — the retire outcomes', () => {
+  it('each says the task is queued and why, never that the lane was not running', () => {
+    expect(chipForOutcome('finishing')).toEqual({ label: 'not delivered · lane finishing', tone: 'warn' })
+    expect(chipForOutcome('retiring')).toEqual({ label: 'queued · ending the released lane first', tone: 'warn' })
+    expect(chipForOutcome('not-retired')).toEqual({ label: 'queued · lane could not be ended', tone: 'warn' })
+    for (const o of ['retiring', 'not-retired'] as const) expect(chipForOutcome(o).label).not.toMatch(/wasn.t running/)
+  })
+})

@@ -677,6 +677,16 @@ export interface DispatchRecord {
     // no turn ever appeared in the target's transcript, so the task is sitting in its composer.
     // The one outcome that is a MEASUREMENT rather than a decision — see lib/delivery-confirm.
     | 'undelivered'
+    // The target lane had released its worktree (`worktree_done`) and was still mid-turn, so
+    // nothing was sent and it was not ended. The dispatcher is told to retry once it is idle.
+    | 'finishing'
+    // A RETIRE IN PROGRESS: the task is queued on the board while the released lane is ended, and
+    // this becomes `launched` once the fresh lane is up. Written first so a renderer respawn
+    // mid-retire leaves a record that says what is true: the task is queued.
+    | 'retiring'
+    // The released lane could not be ended (its state could not be confirmed), so no fresh lane
+    // was launched and the task is queued on the board for that role.
+    | 'not-retired'
   /** THE BRAKE'S OWN SENTENCE, when one stopped this. `evaluateDelivery`'s `block()` already
    *  writes these as prose to a human — "…so that pair is suspended for 5 minutes. Other lanes
    *  are unaffected." — and until now they were shown NOWHERE. Persisted rather than regenerated:

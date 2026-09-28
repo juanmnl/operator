@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Project } from '../../shared/types'
 import { emptyDeliveryState, HOP_LIMIT, LANE_SEND_LIMIT, type DeliveryState } from './agent-delivery'
 import { dispatchSender } from './dispatch-bus'
+import { noteFinishing, type WatchBook } from './retire-watch'
 import {
   resolveDispatch, readDeliveryResult, trackSend, takeSend, SEND_CONFIRM_TTL_MS,
   type BusLane, type DispatchContext, type SendBook,
@@ -388,5 +389,130 @@ describe('dispatchSender — the request speaks for itself', () => {
   it('fills a gap from the tab only when the tab agrees with the request', () => {
     expect(dispatchSender({ terminalId: 't3', projectId: 'mantel' }, tabs)).toMatchObject({ projectId: 'mantel', fromRoleId: 'code' })
     expect(dispatchSender({ terminalId: 't3' }, tabs)).toMatchObject({ projectId: 'mantel', fromRoleId: 'code' })
+  })
+})
+
+describe('resolveDispatch — a lane that released its worktree', () => {
+  const releasedCode = (phase: string | undefined, o: Partial<BusLane> = {}) => lane('code', { released: true, phase, ...o })
+
+  it('answers `launching` for an idle released lane: Operator retires it and starts a fresh one', () => {
+    const { verdict, brakes } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode('waiting'), lane('review')] }))
+    expect(verdict.outcome).toBe('launching')
+    expect(verdict.reason).toMatch(/released its worktree and is idle/)
+    expect(verdict.to).toBeUndefined()
+    // A launch is not a message: nothing charged.
+    expect(brakes).toEqual(emptyDeliveryState())
+  })
+
+  it('refuses a busy released lane, promises one idle message, charges nothing, and names the lane to watch', () => {
+    for (const phase of ['running', 'compacting', 'asking']) {
+      const { verdict, brakes } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode(phase)] }))
+      expect(verdict.outcome, phase).toBe('refused')
+      expect(verdict.reason).toMatch(/still finishing its turn.*Operator will message you once when it is idle/)
+      expect(verdict.reason).toMatch(/do not ask the user to close it/)
+      expect(verdict.finishing).toEqual({ roleId: 'code', roleName: 'Code', laneTerminalId: 't-code', unseen: false })
+      expect(verdict.brake).toBeUndefined()
+      expect(verdict.held).toBeUndefined()
+      expect(brakes).toEqual(emptyDeliveryState())
+    }
+  })
+
+  // M1: the second call while the watch is open is told it was already refused, not invited back.
+  it('a REPEAT while the watch is open says the message is already promised', () => {
+    const book: WatchBook = new Map()
+    noteFinishing(book, { projectId: 'p1', roleId: 'code', roleName: 'Code', laneTerminalId: 't-code', notify: 't-operator', now: 1 })
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode('running')], finishing: book }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.reason).toMatch(/already refused \(2 times\).*Do not dispatch to it again before then/)
+  })
+
+  it('a lane settling after activity is not retired yet: it is `finishing`', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode('waiting', { settling: true })] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.finishing?.unseen).toBe(false)
+  })
+
+  it('an UNSEEN released lane (no phase) is never ended, and the reason promises one message instead', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [releasedCode(undefined)] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.finishing?.unseen).toBe(true)
+    expect(verdict.reason).toMatch(/cannot read its state, so it will not end it/)
+  })
+
+  it('still HOLDS a non-coordinator\'s dispatch to a released lane, and says approving it would end that lane', () => {
+    const { verdict } = resolveDispatch(req('code', { fromRoleId: 'review' }), ctx({ lanes: [releasedCode('waiting')] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.held).toMatchObject({ toRoleId: 'code', retires: true })
+    const busy = resolveDispatch(req('code', { fromRoleId: 'review' }), ctx({ lanes: [releasedCode('running')] })).verdict
+    expect(busy.held?.retires).toBe(false)
+  })
+
+  it('sends as before to a lane with no release', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [lane('code', { phase: 'waiting' })] }))
+    expect(verdict.outcome).toBe('send')
+  })
+})
+
+// R2-1: `mcp__operator__reply` shares the request table with dispatch. A reply is a message: it
+// never launches, retires or opens a finishing watch, and it is marked as a reply.
+describe('resolveDispatch — a REPLY', () => {
+  const reply = (laneTok: string, o: Partial<Parameters<typeof resolveDispatch>[0]> = {}) => req(laneTok, { kind: 'reply', task: 'merged, thanks', ...o })
+
+  it('to an idle RELEASED lane is sent to it as a reply, not a retire', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('code', { released: true, phase: 'waiting' })] }))
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.to).toBe('uds:/tmp/cc-socks/2001.sock')
+    expect(verdict.text).toBe('[Operator · reply from Operator] merged, thanks')
+  })
+
+  it('to a BUSY released lane is sent too, with no finishing watch', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('code', { released: true, phase: 'running' })] }))
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.finishing).toBeUndefined()
+  })
+
+  it('to a lane that is not running is refused: a reply never starts a lane', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ lanes: [lane('review')] }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.reason).toMatch(/A reply never starts a lane/)
+    // Nor for a preset the roster lacks.
+    expect(resolveDispatch(reply('design'), ctx()).verdict.outcome).toBe('refused')
+  })
+
+  it('from a non-coordinator is delivered under the brakes, not held: a reply commissions nothing', () => {
+    const { verdict } = resolveDispatch(reply('code', { fromRoleId: 'review', fromLabel: 'Review' }), ctx())
+    expect(verdict.outcome).toBe('send')
+    expect(verdict.held).toBeUndefined()
+    expect(verdict.text).toBe('[Operator · reply from Review] merged, thanks')
+  })
+
+  it('is still subject to the brakes', () => {
+    const { verdict } = resolveDispatch(reply('code'), ctx({ chatterPaused: true }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.brake).toBe('paused')
+  })
+
+  it('a DISPATCH keeps the message prefix', () => {
+    expect(resolveDispatch(req('code'), ctx()).verdict.text).toBe('[Operator · message from Operator] do the thing')
+  })
+})
+
+// R3-1: a reply is labelled with its sender's name. A caller with no roster role must not reach a
+// lane labelled "reply from Operator".
+describe('resolveDispatch — a REPLY from a caller with no roster role', () => {
+  const reply = (o: Partial<Parameters<typeof resolveDispatch>[0]>) => req('code', { kind: 'reply', task: 'hi', ...o })
+
+  it('is refused, for an unknown role and for a role no longer on the roster', () => {
+    for (const fromRoleId of ['unknown', 'design']) {
+      const { verdict, brakes } = resolveDispatch(reply({ fromRoleId, fromLabel: 'Operator' }), ctx())
+      expect(verdict.outcome, fromRoleId).toBe('refused')
+      expect(verdict.reason).toMatch(/cannot tell which lane of this project you are/)
+      expect(verdict.text).toBeUndefined()
+      expect(brakes).toEqual(emptyDeliveryState())
+    }
+  })
+
+  it('a roster lane still replies', () => {
+    expect(resolveDispatch(reply({ fromRoleId: 'review', fromLabel: 'Review' }), ctx()).verdict.outcome).toBe('send')
   })
 })
