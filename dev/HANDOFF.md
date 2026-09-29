@@ -1,16 +1,12 @@
-# Handoff — 2026-09-28
+# Handoff — 2026-09-29
 
-`main` = `8d607ce` (pushed). **0.27.1 published** (`electron-v0.27.1`, lightweight, run `36464485209`
-green). Verified: `operator-releases` v0.27.1 is not a draft and has six assets (dmg, zip,
-`Operator.app.tar.gz`, `latest.json`, `latest-mac.yml`, `SHA256SUMS.txt`); `latest-mac.yml` and
-`latest.json` at `releases/latest/download/` both serve 0.27.1, `latest.json` with a signature for
-`darwin-aarch64`.
+`main` = `f988145` (pushed). Nothing to release: the only commit since `electron-v0.27.1` is the
+2026-09-28 handoff.
 
-Juan has **not installed 0.27.1 yet**. It is the first update through 0.27.0's updater: check
-`~/.operator/updater.log` for `requested by Squirrel.Mac` before the restart prompt. Installing quits
-the app, which stops every lane in every project (the dialog names busy ones; "Not now" installs at the
-next quit). Conversations resume with `--resume`, but lanes restart on their own only if Settings →
-"Resume on launch" is on, and then only for the last project.
+**0.27.1 is installed on Juan's machine.** The update went through 0.27.0's updater on 2026-09-28 at
+23:58 local: `~/.operator/updater.log` shows `requested by Squirrel.Mac`, `quitAndInstall(0.27.1)`, and
+the app relaunched 2 s later. That is the first update the new updater has installed. Juan saw the
+restart as a crash; it was not one (no crash reports).
 
 ## Verification state
 
@@ -56,16 +52,30 @@ Review, four rounds: `dev/results/retire-released-lane-review-2026-09-27.md`.
 
 ## In flight
 
+- **Research lane is working on the umbra scrollback freeze.** Juan saw scrollback freeze again on
+  0.27.1 in umbra's coordinator pane. 0.27.0's `resyncViewport` runs only on pane hide/show, so the
+  task is to find the path it does not cover (scrollback cap trims during long output, pty batching,
+  alt-screen, resize, non-active project, renderer respawn). Task `6815af4f`. Output:
+  `dev/results/scrollback-freeze-again-2026-09-29.md`. No report yet. Asked Juan whether switching
+  project and back unfreezes it, and whether the session was long; no answer yet.
+- **Missing input rules: not reproduced** (report #1746, `dev/results/terminal-missing-input-rules-2026-09-29.md`,
+  uncommitted until now). The `─` rules above and below the `❯` prompt were blank on screen in a
+  uwazi_app lane. Research replayed real Claude 2.1.284 streams at 25-120 cols with chunking and
+  resizes: rules are present in the buffer, the DOM and Chromium's pixels. The screenshot footer read
+  `← for agents` (subagents/background tasks running), a state Research could not capture. Leading
+  guess: Claude omits the rules in that state. Next sighting: Juan enables the ghost probe
+  (`localStorage.setItem('operator.terminal.ghostProbe','1')` in DevTools, View → Reload), then
+  Ctrl+Alt+Shift+G without clicking the pane, and pastes the output. Research's harness is in
+  `dev/results/_scratch/` (untracked, ~1 MB of captures; delete once the freeze task is done).
 - **Lanes as profiles, steps 1-3 — brief written, NOT sent.** Brief:
   `dev/results/lane-profiles-steps-1-3-brief-2026-09-28.md` (dispatch with its absolute path). Plan: `dev/results/lane-profiles-plan-2026-09-25.md`.
   The earlier Code lane that had steps 1-3 was gone with no branch, so the work starts from zero.
   The brief corrects the plan: session names are `<slug>--<role>` with `--<n>` for n ≥ 2
   (`lib/bus-name.ts`), 0.27.1's retire routing must stay unchanged, and the plan's line numbers are
   stale. Output: `dev/results/lane-profiles-steps-1-3-2026-09-28.md`.
-  - **Blocked on a fresh Code lane.** The only Code lane (`operator-78f2--code`) is the released
-    917d80 lane, and the running app is 0.27.0, so a dispatch would type into it. Either Juan closes
-    it (safe: everything is in `main`), or installs 0.27.1 and the dispatch retires it (which is also
-    GUI check 1 above).
+  - **Ready to dispatch.** 0.27.1 is installed, so a dispatch to Code retires the released 917d80
+    lane and launches a fresh one. That is also GUI check 1 above; watch that it happens. Not sent
+    yet: Juan has not said go.
   - Step 12 (UI) needs Design's answers to the plan's §4 questions, not yet dispatched.
 - **Settings → Worktrees: "Remove selected" is out of view.** The button sits below every group, so
   ticking rows looks like it does nothing. Offered Juan a sticky action bar while anything is ticked;
@@ -82,7 +92,7 @@ Unchanged from 2026-09-26: about 12.4 GB of `~/.operator/worktrees` is safe to r
 
 - **Reports live in `~/.operator/artifacts.db`**, table `reports` (not `chat.db`):
   `sqlite3 -line ~/.operator/artifacts.db "select summary from reports where id=N"`.
-- **Launching a dev instance of Operator:** `electron/` `npm run dev` with `OPERATOR_DIR` set to a
+- **Launching a dev instance of Operator:** (2026-09-29: started on 1420 with CDP 9340; it quit cleanly about 40 s later, cause not established — watch for it) `electron/` `npm run dev` with `OPERATOR_DIR` set to a
   scratch dir; `OPERATOR_ELECTRON_PORT` picks the Vite port (strict), `OPERATOR_CDP_PORT` opens CDP.
   Never the root `npm run dev` (Tauri-era).
 - **Test lanes are real agents.** Don't leave them running unattended.
