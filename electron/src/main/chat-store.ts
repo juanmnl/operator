@@ -461,23 +461,27 @@ export class ArtifactStore {
     return rows.map(rowToReport)
   }
 
-  /** Mark reports filed before `before` delivered WITHOUT announcing them, and return how many.
+  /** Undelivered reports filed before `before`, oldest first — the ones the announce pass folds
+   *  into one summary line instead of announcing one by one.
    *
    *  The announce queue had no age limit, so a report filed while no coordinator was idle waited
    *  until one was — nine days, for operator #623 — and was then typed in ahead of the new ones.
-   *  Same filter as `undeliveredFor` (role, project scope), so it expires exactly the rows that
-   *  queue would have announced. `delivered_at` gets the time of the expiry, like any delivery; the
-   *  row stays readable in the Comms log. */
-  expireUndelivered(role: string, before: string, at: string, projectId?: string | null): number {
-    // No project, nothing expired: unscoped, this marked other projects' reports delivered unseen (X3).
-    if (!projectId) return 0
+   *  This used to mark them delivered right here and type nothing, which lost Design's #1789
+   *  without a trace (2026-10-02). It now only reads: the caller types the summary and marks each
+   *  row delivered after the line has gone in, the same order as a single announcement. Same filter
+   *  as `undeliveredFor` (role, project scope), so these are exactly the rows that queue would have
+   *  announced. */
+  staleUndeliveredFor(role: string, before: string, projectId?: string | null): ArtifactReport[] {
+    // No project, nothing: unscoped, this took other projects' reports (X3).
+    if (!projectId) return []
     const roles = addresseesOf(role)
-    const r = this.db.prepare(
-      `UPDATE reports SET delivered_at = ?
-        WHERE delivered_at IS NULL AND (to_role IN (${roles.map(() => '?').join(', ')}) OR to_role IS NULL) AND at < ?
-          AND (project_id = ? OR project_id IS NULL)`,
-    ).run(at, ...roles, before, projectId)
-    return Number(r.changes)
+    const rows = this.db.prepare(
+      `SELECT id, at, terminal_id, project_id, role_id, task_id, summary, artifacts, to_role, delivered_at, acked_at
+         FROM reports WHERE delivered_at IS NULL AND (to_role IN (${roles.map(() => '?').join(', ')}) OR to_role IS NULL) AND at < ?
+          AND (project_id = ? OR project_id IS NULL)
+        ORDER BY id ASC`,
+    ).all(...roles, before, projectId) as Array<Record<string, unknown>>
+    return rows.map(rowToReport)
   }
 
   /** Record that a lane released its worktree for removal when its pty ends. One open row per

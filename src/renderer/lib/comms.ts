@@ -1,5 +1,6 @@
 import type { AgentSession, ArtifactReport, DispatchRecord } from '../../shared/types'
 import { chipForOutcome, type OutcomeChip } from './dispatch-outcome'
+import { COORDINATOR_ROLE_IDS } from './dispatch'
 
 // THE COMMS RECORD — what was sent, what came back, and what was blocked by which brake. Pure,
 // so the timeline is one tested function rather than three filters spread across a component.
@@ -203,12 +204,13 @@ export function reportsForTask(taskId: string, reports: readonly ArtifactReport[
  *  cap standing in for a receipt — so this announces and points, and the text stays where it can
  *  be read without a delivery race: on the task if the lane named one, in the project's Comms
  *  timeline either way. */
-/** How old an unannounced report may be and still be typed into a coordinator. Older ones are
- *  marked delivered without being announced and stay in the Comms log (the announce pass in
- *  DashboardView). Twelve hours covers a report filed overnight; the 2026-09-14 backlog was days. */
+/** How old an unannounced report may be and still be announced on its own line. Older ones are
+ *  folded into ONE summary line (`staleSummary`) and then marked delivered, so a nine-day backlog
+ *  does not come back as nine days of lines (the announce pass in DashboardView). Twelve hours
+ *  covers a report filed overnight; the 2026-09-14 backlog was days. */
 export const REPORT_ANNOUNCE_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
-/** The ISO cutoff for `artifactExpireUndelivered`: reports filed before it are not announced. */
+/** The ISO cutoff for `artifactStaleUndelivered`: reports filed before it are summarised, not announced one by one. */
 export function announceCutoff(now: number): string {
   return new Date(now - REPORT_ANNOUNCE_MAX_AGE_MS).toISOString()
 }
@@ -251,4 +253,68 @@ export function isBetweenTurns(phase: string | null | undefined): boolean {
 export function canAnnounceTo(session: Pick<AgentSession, 'status' | 'phase'> | undefined): boolean {
   if (!session || session.status === 'ended') return false
   return isBetweenTurns(session.phase)
+}
+
+/** The tab fields the announce pass reads. */
+export interface AnnounceTab { id: string; roleId?: string; projectId?: string }
+
+/** Why the announce pass does NOT serve this tab right now, or `null` when it should.
+ *
+ *  `not a coordinator` is the common case and is never logged; the others are what the announce
+ *  log records when a coordinator's reports wait (2026-10-02: nothing said why t2 went unserved
+ *  for four hours while idle). */
+export function announceSkip(
+  tab: AnnounceTab,
+  sessions: readonly Pick<AgentSession, 'terminalId' | 'status' | 'phase'>[],
+  inFlight: ReadonlySet<string>,
+): string | null {
+  if (!COORDINATOR_ROLE_IDS.includes((tab.roleId ?? '').toLowerCase())) return 'not a coordinator'
+  // BETWEEN TURNS ONLY — see `canAnnounceTo`.
+  const session = sessions.find((s) => s.terminalId === tab.id)
+  if (!canAnnounceTo(session)) return session ? `phase ${session.status === 'ended' ? 'ended' : session.phase}` : 'no session'
+  if (inFlight.has(tab.id)) return 'in flight'
+  return null
+}
+
+/** The coordinators one announce pass serves: EVERY idle coordinator not already being served.
+ *
+ *  It used to be one per pass — a single app-wide `announcingRef` plus a `break` after the first
+ *  tab that passed the gates — so with several idle coordinators only the first in tab order was
+ *  served, and coordinators later in the list waited for the next pass or were never reached
+ *  (lane-signal-back research, 2026-10-02: mantel went from 65% of reports announced within five
+ *  minutes to 14% once two coordinators were opened ahead of it). The in-flight set is per tab,
+ *  so one coordinator's slow `submit` (up to 30 s a line) holds only that coordinator. */
+export function coordinatorsToAnnounce<T extends AnnounceTab>(
+  terminals: readonly T[],
+  sessions: readonly Pick<AgentSession, 'terminalId' | 'status' | 'phase'>[],
+  inFlight: ReadonlySet<string>,
+): T[] {
+  return terminals.filter((tab) => announceSkip(tab, sessions, inFlight) === null)
+}
+
+/** How often the announce pass re-runs on its own, besides on a session, tab or report change.
+ *  A report that lands while its coordinator is already idle changes no session, so without a
+ *  timer it waited for an unrelated update; on 2026-10-02 that was the next Mac wake, hours later. */
+export const ANNOUNCE_TICK_MS = 5_000
+
+/** How many report ids `staleSummary` lists before it says "and N more". */
+export const STALE_SUMMARY_MAX_IDS = 20
+
+/** The one line a coordinator gets in place of reports too old to announce one by one.
+ *
+ *  Expiry used to mark them delivered and type NOTHING, so a coordinator that was starved or
+ *  asleep for twelve hours lost the report without a trace (Design's #1789, 2026-10-02). One line
+ *  keeps what the cutoff was for — no backlog replayed as a wall of lines — and still tells the
+ *  coordinator which lanes reported and where the text is. Grouped by lane, oldest first. */
+export function staleSummary(reports: readonly ArtifactReport[]): string {
+  const byLane = new Map<string, number[]>()
+  for (const r of [...reports].sort((a, b) => a.id - b.id).slice(0, STALE_SUMMARY_MAX_IDS)) {
+    const lane = r.roleId || r.terminalId || 'unknown lane'
+    byLane.set(lane, [...(byLane.get(lane) ?? []), r.id])
+  }
+  const listed = [...byLane].map(([lane, ids]) => `${lane} ${ids.map((id) => `#${id}`).join(' ')}`).join('; ')
+  const more = reports.length > STALE_SUMMARY_MAX_IDS ? ` and ${reports.length - STALE_SUMMARY_MAX_IDS} more` : ''
+  const n = reports.length
+  const hours = REPORT_ANNOUNCE_MAX_AGE_MS / 3_600_000
+  return `[Operator] ${n} ${n === 1 ? 'report' : 'reports'} older than ${hours} h ${n === 1 ? 'was' : 'were'} not announced while you were busy or away: ${listed}${more} — full text in the Comms log`
 }

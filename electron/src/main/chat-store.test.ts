@@ -179,32 +179,37 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     next.close()
   })
 
-  it('EXPIRES reports older than the cutoff: marked delivered, out of the queue, still listed', () => {
+  it('lists reports older than the cutoff as STALE, and leaves them undelivered until marked', () => {
     // Audit 2026-09-14: operator #623 waited nine days and was then announced ahead of new work.
+    // 2026-10-02: expiry marked #1789 delivered and typed nothing; reading no longer marks.
     const store = new ArtifactStore(join(SANDBOX, 'expire-old.db'))
     store.insertReport('2026-09-05T19:37:08.673Z', 't1', 'p', 'research', null, 'nine days old', '[]')
     store.insertReport('2026-09-14T14:14:18.284Z', 't1', 'p', 'design', null, 'fresh', '[]')
     store.insertReport('2026-09-05T19:40:00.000Z', 't1', 'other', 'code', null, 'another project', '[]')
-    expect(store.expireUndelivered('operator', '2026-09-14T02:00:00.000Z', '2026-09-14T14:15:00.000Z', 'p')).toBe(1)
+    const stale = store.staleUndeliveredFor('operator', '2026-09-14T02:00:00.000Z', 'p')
+    expect(stale.map((r) => r.summary)).toEqual(['nine days old'])
+    // Reading is not delivering.
+    expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['nine days old', 'fresh'])
+    // Another project's backlog is that project's coordinator's.
+    expect(store.staleUndeliveredFor('operator', '2026-09-14T02:00:00.000Z', 'other').map((r) => r.summary)).toEqual(['another project'])
+    store.markReportDelivered(stale[0].id, '2026-09-14T14:15:00.000Z')
     expect(store.undeliveredFor('operator', 10, 'p').map((r) => r.summary)).toEqual(['fresh'])
-    // Another project's backlog is that project's coordinator's to expire.
-    expect(store.undeliveredFor('operator', 10, 'other').map((r) => r.summary)).toEqual(['another project'])
     expect(store.listReports(10).find((r) => r.summary === 'nine days old')?.deliveredAt).toBe('2026-09-14T14:15:00.000Z')
-    // Nothing left to expire the second time.
-    expect(store.expireUndelivered('operator', '2026-09-14T02:00:00.000Z', '2026-09-14T14:16:00.000Z', 'p')).toBe(0)
+    // Nothing stale the second time.
+    expect(store.staleUndeliveredFor('operator', '2026-09-14T02:00:00.000Z', 'p')).toEqual([])
     store.close()
   })
 
   // X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): a caller with no project got
   // the UNSCOPED queue, announced other projects' reports and, delivery being stamped once, took
   // them from their real coordinators.
-  it('with NO project, announces nothing and expires nothing, and other projects keep their reports', () => {
+  it('with NO project, announces nothing and lists nothing stale, and other projects keep their reports', () => {
     const store = new ArtifactStore(join(SANDBOX, 'no-project.db'))
     store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'uwazi', 'design', null, 'uwazi design report', '[]', 'operator')
     store.insertReport('2026-09-05T19:01:00.000Z', 't2', 'mantel', 'code', null, 'mantel code report', '[]', 'operator')
     expect(store.undeliveredFor('operator', 10)).toEqual([])
     expect(store.undeliveredFor('operator', 10, null)).toEqual([])
-    expect(store.expireUndelivered('operator', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:01.000Z', null)).toBe(0)
+    expect(store.staleUndeliveredFor('operator', '2026-09-25T00:00:00.000Z', null)).toEqual([])
     expect(store.undeliveredFor('operator', 10, 'uwazi').map((r) => r.summary)).toEqual(['uwazi design report'])
     expect(store.undeliveredFor('operator', 10, 'mantel').map((r) => r.summary)).toEqual(['mantel code report'])
     store.close()
@@ -214,7 +219,7 @@ describe('ArtifactStore — the one-time delivered backfill', () => {
     const store = new ArtifactStore(join(SANDBOX, 'to-role-legacy.db'))
     store.insertReport('2026-09-05T19:00:00.000Z', 't1', 'p', 'design', null, 'for the coordinator', '[]', 'operator')
     expect(store.undeliveredFor('orchestrator', 10, 'p').map((r) => r.summary)).toEqual(['for the coordinator'])
-    expect(store.expireUndelivered('orchestrator', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:01.000Z', 'p')).toBe(1)
+    expect(store.staleUndeliveredFor('orchestrator', '2026-09-25T00:00:00.000Z', 'p').map((r) => r.summary)).toEqual(['for the coordinator'])
     store.close()
   })
 

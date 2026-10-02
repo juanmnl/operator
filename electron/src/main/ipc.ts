@@ -27,6 +27,7 @@ import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { capturePreviewShot } from './preview-shot-capture'
+import { logAnnounce } from './announce-log'
 import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
@@ -205,11 +206,11 @@ export function registerIpc(d: Deps): void {
       return d.artifacts.undeliveredFor(String(role), Number(limit) || 10, String(projectId))
     },
     artifactMarkDelivered: async (id) => { d.artifacts.markReportDelivered(Number(id), new Date().toISOString()) },
-    // Reports filed before `before` are marked delivered without being announced; see
-    // `expireUndelivered`. Scoped like `artifactUndelivered`.
-    artifactExpireUndelivered: async (role, before, projectId) => {
-      if (!projectId) { noteUnscopedAnnounce(String(role)); return 0 }
-      return d.artifacts.expireUndelivered(String(role), String(before), new Date().toISOString(), String(projectId))
+    // Reports filed before `before`, for the one summary line the announce pass types in place of
+    // announcing each; see `staleUndeliveredFor`. Scoped like `artifactUndelivered`.
+    artifactStaleUndelivered: async (role, before, projectId) => {
+      if (!projectId) { noteUnscopedAnnounce(String(role)); return [] }
+      return d.artifacts.staleUndeliveredFor(String(role), String(before), String(projectId))
     },
     artifactPendingStatus: async () => d.artifacts.pendingStatus(),
     artifactAckStatus: async (ids) => { d.artifacts.markApplied(ids) },
@@ -496,6 +497,7 @@ export function registerIpc(d: Deps): void {
     // watchdog and belong in the shell, not on this channel. Accepted and dropped so the
     // renderer's 1/s call is not an unhandled-channel warning every second.
     rendererHeartbeat: () => {},
+    announceLog: (line) => { void logAnnounce(String(line)) },
   }
 
   for (const [method, handler] of Object.entries(invoke) as Array<[ApiMethod, (...a: unknown[]) => unknown]>) {

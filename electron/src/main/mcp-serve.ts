@@ -279,8 +279,9 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       // tool that overstates its own delivery teaches the model to stop saying things twice, and
       // that is only safe once delivery is real. Say what happened; do not promise an audience.
       return textResult(
-        `Saved as report #${id} in Operator's store. That is the write, not a read receipt — it is `
-        + `queued for the coordinator's Inbox and will be marked delivered when it is shown there.`,
+        `Saved as report #${id} in Operator's store. That is the write, not a read receipt — a line `
+        + `announcing it is typed into the coordinator the next time it is between turns, and the report `
+        + `is marked delivered once that line has gone in. The full text stays in the project Comms log.`,
       )
     }
 
