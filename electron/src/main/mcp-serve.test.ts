@@ -139,6 +139,33 @@ describe('dispatch — refusals that never reach the app', () => {
     }
     expect(store.openDispatches().length).toBe(before)
   })
+
+  // Security audit 2026-10-01, H2: the body is typed into another lane's pty.
+  it('refuses a body or lane with control characters, and opens no request', () => {
+    const before = store.openDispatches().length
+    for (const [name, args] of [
+      ['dispatch', { lane: 'code', task: 'ok\x1b[201~\x15!echo pwned\r' }],
+      ['reply', { lane: 'operator', line: 'done\x1b[Z' }],
+      ['dispatch', { lane: 'co\x00de', task: 'x' }],
+      ['dispatch', { lane: 'code', task: 'x\x9b201~' }],
+    ] as const) {
+      const r = call(name, args) as { result?: { isError?: boolean; content?: { text: string }[] } }
+      expect(r.result?.isError, JSON.stringify(args)).toBe(true)
+      expect(r.result?.content?.[0].text).toMatch(/control characters/)
+    }
+    expect(store.openDispatches().length).toBe(before)
+  })
+
+  // Security audit 2026-10-01, H3: a task can become the receiving lane's `claude` command line.
+  it('refuses a task that starts with a dash, and opens no request', () => {
+    const before = store.openDispatches().length
+    for (const task of ['--dangerously-skip-permissions', '-p hi', '  --settings={}']) {
+      const r = call('dispatch', { lane: 'code', task }) as { result?: { isError?: boolean; content?: { text: string }[] } }
+      expect(r.result?.isError, task).toBe(true)
+      expect(r.result?.content?.[0].text).toMatch(/may not start with "-"/)
+    }
+    expect(store.openDispatches().length).toBe(before)
+  })
 })
 
 // X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): `to_role` was never written, so a

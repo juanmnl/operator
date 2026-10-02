@@ -14,6 +14,8 @@
 //   identically to one it authored. `dev/research-chat-pipeline-audit.md` alone holds 15
 //   well-formed dispatch lines; asking a lane to summarise it was enough to fire them.
 
+import { stripControlChars } from '../../../src/shared/control-chars'
+
 /** Strip markdown decoration hugging a directive, returning the bare line and the wrapper
  *  characters that were removed (so a symmetric tail can be stripped from the body).
  *
@@ -79,8 +81,10 @@ export function parseDirectives(text: string, keyword: string): Array<[string, s
     const close = rest.indexOf(']')
     if (close < 0) continue
 
-    const target = rest.slice(1, close).trim()
-    let body = rest.slice(close + 1).trim().replace(/^:+/, '').trim()
+    // Control characters are stripped from both halves: the body is typed into another lane's pty,
+    // where an ESC can end the bracketed paste and type keys (security audit 2026-10-01, H2).
+    const target = stripControlChars(rest.slice(1, close)).trim()
+    let body = stripControlChars(rest.slice(close + 1)).trim().replace(/^:+/, '').trim()
     // Strip the tail of a symmetric wrapper — one trailing char per leading one.
     for (const c of [...wrappers].reverse()) {
       if (body.endsWith(c)) body = body.slice(0, -1).trimEnd()
@@ -90,7 +94,12 @@ export function parseDirectives(text: string, keyword: string): Array<[string, s
   return out
 }
 
-export const parseDispatches = (text: string) => parseDirectives(text, 'OPERATOR-DISPATCH')
+/** A dispatched task that starts with `-` is prefixed with `Task: `. The task can become the
+ *  receiving lane's `claude` command line, where a leading dash reads as an option; `buildArgs`
+ *  ends the options with `--` first, so this is the second guard (security audit 2026-10-01, H3).
+ *  Prefixed rather than dropped, because a dropped sentinel looks like the coordinator did nothing. */
+export const parseDispatches = (text: string): Array<[string, string]> =>
+  parseDirectives(text, 'OPERATOR-DISPATCH').map(([role, task]) => [role, task.startsWith('-') ? `Task: ${task}` : task])
 export const parseReplies = (text: string) => parseDirectives(text, 'OPERATOR-REPLY')
 
 /** Stable id for a directive, so re-reading the same transcript line does not re-fire it.

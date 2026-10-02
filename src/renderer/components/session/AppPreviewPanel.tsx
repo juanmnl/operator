@@ -8,7 +8,7 @@ import {
 } from '../../lib/preview-history'
 import type { SessionPort } from '../../../shared/types'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
-import { formatPick, type PreviewPick } from '../../lib/preview-pick'
+import { formatPick, acceptPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
 import { layoutGrid, gridInk, type GridSpec } from '../../../shared/layout-grid'
 import { GridSettingsBand } from './GridSettingsBand'
@@ -174,6 +174,22 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
   // ONE POINTER MODE. ⌘E sets Annotate from outside this component, so the rule is enforced here
   // rather than only in the segment's click handler: Annotate on means Inspect off.
   useEffect(() => { if (annotate) setInspecting(false) }, [annotate])
+  /** For the pick handler, which subscribes once: a pick is accepted only while Inspect is on. */
+  const inspectingRef = useRef(false)
+  inspectingRef.current = inspecting
+  // AN INSPECT NOTE WAITING ON THE USER. A pick never sends itself (lib/preview-pick, H1): it lands
+  // here, in a card Operator draws outside the page, and goes to the Console or Tasks only on a
+  // click there. The ref is set the moment a pick is accepted, before its screenshot is taken, so a
+  // second pick in that gap is dropped too.
+  const [pendingPick, setPendingPick] = useState<null | { msg: string; shot: string | null }>(null)
+  const pickPendingRef = useRef(false)
+  const clearPendingPick = () => { pickPendingRef.current = false; setPendingPick(null) }
+  const sendPendingPick = (to: 'console' | 'tasks') => {
+    if (!pendingPick) return
+    if (to === 'console') onDispatch?.(pendingPick.msg, pendingPick.shot ? [pendingPick.shot] : undefined)
+    else onSendToTasks?.(pendingPick.msg)
+    clearPendingPick()
+  }
   const [annotations, setAnnotations] = useState<Annotation[]>(() => (annKey ? loadAnnotations(annKey) : []))
   // A note being authored: pending geometry + text (isNew distinguishes create vs edit).
   const [draft, setDraft] = useState<null | (Pick<Annotation, 'id' | 'xPct' | 'yPct' | 'wPct' | 'hPct' | 'note' | 'shot'> & { isNew: boolean; thumb?: string })>(null)
@@ -407,17 +423,20 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
     })
     return () => cancelAnimationFrame(id)
   }, [box, preset, nativeHost, panelW, hideInspect, tier])
-  // The inspector's floating card composes the note itself and beacons preview:pick with the final
-  // payload (message + element + chosen target). We format it and route to the Console or Tasks.
+  // The inspector's floating card composes the note itself and beacons preview:pick with the payload
+  // (message + element). We format it and hold it for the user in the pending-note card; nothing is
+  // sent from here. The page can post this message on its own, so it is only accepted while Inspect
+  // is on and no other note is waiting (lib/preview-pick `acceptPick`).
   useEffect(() => {
     const handlePick = (data: string) => {
-      let p: PreviewPick
-      try { p = JSON.parse(data) as PreviewPick } catch { return }
+      const p = acceptPick(data, { inspecting: inspectingRef.current, pending: pickPendingRef.current })
+      if (!p) return
+      pickPendingRef.current = true
       void (async () => {
         // The crop is taken now, after the in-page card has gone, from the main window over the stage:
         // the page is this component's iframe, so its box maps to window px through the stage's rect
-        // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is sent at once and has
-        // no stored note to be deleted with.
+        // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is never
+        // stored, so there is no stored note for the shot to be deleted with, sent or discarded.
         const id = `pick-${crypto.randomUUID()}`
         let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
         if (electronLiveRef.current) {
@@ -431,11 +450,12 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
           const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
           shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
         }
-        const msg = withScreenshot(formatPick(p), shot?.path)
-        if (p.target === 'console') onDispatch?.(msg, shot ? [shot.path] : undefined); else onSendToTasks?.(msg)
+        setPendingPick({ msg: withScreenshot(formatPick(p), shot?.path), shot: shot?.path ?? null })
       })()
     }
-    // Tauri: the native inspect webview beacons to the backend, which emits this.
+    // Tauri: the native inspect webview beacons to the backend, which emits this. Electron: an
+    // attached app's picks arrive here too, over CDP (electron/src/main/preview-cdp.ts). Both go
+    // through the same `acceptPick` gate as the iframe's.
     const unsub = window.operator.onPreviewPick?.(handlePick)
     // Electron: the inspector runs INSIDE the preview iframe (main injects it; see
     // electron/src/main/preview-inspect.ts) and posts to this window. Accepted only from that
@@ -450,7 +470,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
     }
     window.addEventListener('message', onMessage)
     return () => { unsub?.(); window.removeEventListener('message', onMessage) }
-  }, [onDispatch, onSendToTasks, onAnchorChange, shotProj])
+  }, [onAnchorChange, shotProj])
 
   const onOverlayDown = (e: React.MouseEvent) => {
     const r = overlayRef.current?.getBoundingClientRect(); if (!r) return
@@ -970,6 +990,31 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
           <button onClick={() => setDismissedWarn(pick.foreignServer!.port)} style={{ ...linkBtn, color: 'var(--fg-muted)' }}>
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* THE PENDING INSPECT NOTE (H1). Drawn by Operator, outside the stage, so the previewed page
+        can neither click it nor cover it. It shows exactly the text that will be sent, and only
+        these buttons send it; whichever the page's own card offered does not count. */}
+      {pendingPick && (
+        <div data-no-drag data-pending-pick style={{
+          flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6,
+          padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--overlay-subtle)',
+          fontSize: 11, color: 'var(--fg)', lineHeight: 1.5,
+        }}>
+          <span style={{ color: 'var(--fg-muted)' }}>
+            Note from Inspect{pendingPick.shot ? ', with a screenshot' : ''}. Nothing is sent until you choose where.
+          </span>
+          <div style={{
+            maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+            fontFamily: 'var(--font-mono)', fontSize: 11, padding: '6px 8px',
+            border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-deep)',
+          }}>{pendingPick.msg}</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {onDispatch && <button onClick={() => sendPendingPick('console')} title="Send this note to the Console now" style={sendBtn}>→ Console</button>}
+            {onSendToTasks && <button onClick={() => sendPendingPick('tasks')} title="Add this note as a task in the queue" style={sendBtn}>→ Tasks</button>}
+            <button onClick={clearPendingPick} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Discard</button>
+          </div>
         </div>
       )}
 

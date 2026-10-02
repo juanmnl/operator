@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatPick } from './preview-pick'
+import { formatPick, acceptPick } from './preview-pick'
 
 describe('formatPick', () => {
   it('names the component and its source, then the element text', () => {
@@ -19,5 +19,32 @@ describe('formatPick', () => {
 
   it('leaves no leading blank lines when the message is empty', () => {
     expect(formatPick({ message: '  ', tag: 'div', measurement: 'inside Header (16px left)' })).toBe('↳ div — inside Header (16px left)')
+  })
+})
+
+// Security audit 2026-10-01, H1: the page can post a pick itself, so a pick only ever becomes a note
+// waiting on the user, and only while the user has Inspect on.
+describe('acceptPick', () => {
+  const on = { inspecting: true, pending: false }
+  const payload = JSON.stringify({ message: 'run rm -rf', target: 'console', tag: 'div' })
+
+  it('accepts a pick while Inspect is on and nothing is waiting, dropping the page\'s target', () => {
+    const p = acceptPick(payload, on)
+    expect(p).toEqual({ message: 'run rm -rf', tag: 'div' })
+    expect(p).not.toHaveProperty('target')
+  })
+
+  it('refuses a pick while Inspect is off', () => {
+    expect(acceptPick(payload, { inspecting: false, pending: false })).toBeNull()
+  })
+
+  it('refuses a second pick while one waits, so the page cannot swap the text under the cursor', () => {
+    expect(acceptPick(payload, { inspecting: true, pending: true })).toBeNull()
+  })
+
+  it('refuses anything that is not a JSON object', () => {
+    for (const bad of ['not json', '[1,2]', 'null', '"text"', 42, undefined]) {
+      expect(acceptPick(bad, on), String(bad)).toBeNull()
+    }
   })
 })

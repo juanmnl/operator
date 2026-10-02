@@ -157,27 +157,28 @@
       b.style.cssText = 'font:600 11px ui-sans-serif;border-radius:6px;padding:6px 10px;cursor:pointer;background:transparent;color:' + C.ink + ';border:1px solid ' + (primary ? C.line : C.lineSoft);
       return b;
     }
-    var toConsole = mkBtn('→ Console', false);
-    var toTasks = mkBtn('→ Tasks', true);
+    // ONE BUTTON, AND NO TARGET. Operator holds every pick in a card of its own and the user picks
+    // Console or Tasks there: this page could post a pick with any target itself, so a choice made
+    // here would mean nothing (security audit 2026-10-01, H1).
+    var toReview = mkBtn('Review in Operator →', true);
     var spacer = document.createElement('span'); spacer.style.cssText = 'flex:1';
     var cancel = document.createElement('button');
     cancel.textContent = '✕';
     cancel.style.cssText = 'color:' + C.dim + ';background:transparent;border:none;cursor:pointer;font-size:15px;line-height:1;padding:2px 4px';
-    function submit(target) {
-      data.message = inp.value.trim(); data.target = target;
-      toConsole.disabled = toTasks.disabled = true;
+    function submit() {
+      data.message = inp.value.trim();
+      toReview.disabled = true;
       beacon(data,
         function () { removeCompose(); },
-        function () { chip.textContent = '✗ could not reach Operator'; chip.style.color = '#ff6b6b'; toConsole.disabled = toTasks.disabled = false; });
+        function () { chip.textContent = '✗ could not reach Operator'; chip.style.color = '#ff6b6b'; toReview.disabled = false; });
     }
-    toConsole.onclick = function () { submit('console'); };
-    toTasks.onclick = function () { submit('tasks'); };
+    toReview.onclick = submit;
     cancel.onclick = removeCompose;
     inp.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit('tasks'); }
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); }
       else if (ev.key === 'Escape') { ev.preventDefault(); removeCompose(); }
     });
-    row.appendChild(toConsole); row.appendChild(toTasks); row.appendChild(spacer); row.appendChild(cancel);
+    row.appendChild(toReview); row.appendChild(spacer); row.appendChild(cancel);
     card.appendChild(chip);
     if (data.measurement) {
       var meas = document.createElement('div');

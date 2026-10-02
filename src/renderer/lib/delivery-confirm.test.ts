@@ -6,6 +6,8 @@ const at = (ms: number) => new Date(ms).toISOString()
 describe('normalizeTurn', () => {
   it('collapses the differences a round trip through a composer creates', () => {
     expect(normalizeTurn('  do   the\n thing \n')).toBe('do the thing')
+    // submitSequence strips them before writing (H2), so the recorded turn never has them.
+    expect(normalizeTurn('do\x1b the\x15 thing')).toBe('do the thing')
     expect(normalizeTurn('a\tb')).toBe('a b')
   })
 

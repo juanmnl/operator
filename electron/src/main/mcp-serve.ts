@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import { ArtifactStore } from './chat-store'
 import { evaluateWorktreeDone } from './worktree-reap'
 import { COORDINATOR_ROLE_IDS } from '../../../src/renderer/lib/dispatch'
+import { hasControlChars } from '../../../src/shared/control-chars'
 
 const PROTOCOL_VERSION = '2024-11-05'
 
@@ -299,6 +300,19 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         : ''
       if (!lane || !body) {
         return errorResult(`\`lane\` and \`${name === 'dispatch' ? 'task' : 'line'}\` are both required.`)
+      }
+      if (hasControlChars(lane) || hasControlChars(body)) {
+        // REFUSED, not cleaned. The body is typed into another lane's pty, and an ESC or other
+        // control byte there can end the bracketed paste and type keys (security audit
+        // 2026-10-01, H2). No real task needs one, so a body that carries one is refused whole
+        // and the lane is told why, rather than delivered in a form it did not write.
+        return errorResult('the message contains control characters (ESC or another control character other than tab and newline). Nothing was sent; remove them and retry.')
+      }
+      if (name === 'dispatch' && body.startsWith('-')) {
+        // A task can become the receiving lane's `claude` command line, and a leading dash is what an
+        // option looks like there. `buildArgs` ends the options with `--` first, so this is the
+        // second guard, not the only one (security audit 2026-10-01, H3).
+        return errorResult('a task may not start with "-". Nothing was sent; start it with a word and retry.')
       }
       if (!caller.projectId) {
         // Scope is the whole point of routing through Operator: a lane may only address lanes in

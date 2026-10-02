@@ -59,6 +59,12 @@ export function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): 
   // (2.1.261): given a name, the flag binds it and leaves the following argument alone.
   const rcName = typeof o.remoteControlName === 'string' ? o.remoteControlName.trim() : ''
   if (rcName) args.push('--remote-control', rcName)
-  if (o.initialPrompt && String(o.initialPrompt).trim()) args.push(String(o.initialPrompt).trim())
+  // `--` BEFORE THE PROMPT. The prompt is often a dispatched task, which is text another lane wrote;
+  // without the terminator a task such as `--dangerously-skip-permissions` or `--mcp-config=…` is
+  // parsed as an option of the lane's own command line (security audit 2026-10-01, H3). Checked
+  // against the installed binary (2.1.287) with a blocking UserPromptSubmit hook: after `--`, the
+  // next token is the prompt verbatim, `--` itself is not part of it, `--remote-control <name>` still
+  // binds its name, and a prompt that equals a subcommand name (`doctor`) stays a prompt.
+  if (o.initialPrompt && String(o.initialPrompt).trim()) args.push('--', String(o.initialPrompt).trim())
   return args
 }
