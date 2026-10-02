@@ -11,7 +11,7 @@ import { applyPaneActivation, buildTerminalOptions, getMacOptionIsMeta, planDefe
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
 import { isAppChord } from '../../lib/key-routing'
-import { persistFiles, imageFilesFrom, bracketedPaste } from '../../lib/paste-image'
+import { persistFiles, imageFilesFrom, pastePaths } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 import { submitQueue } from '../../lib/submit-queue'
 import { noteKeystroke } from '../../lib/lane-keystrokes'
@@ -274,7 +274,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       e.stopImmediatePropagation()
       const paths = await persistFiles(images, window.operator.savePastedImage)
       // Bracketed paste so Claude Code converts the path to a native `[Image #N]` (see handleDrop).
-      if (paths.length) window.operator.terminalWrite(terminalId, bracketedPaste(paths.join(' ')))
+      if (paths.length) window.operator.terminalWrite(terminalId, pastePaths(paths))
     }
     textarea?.addEventListener('paste', onPaste, { capture: true })
 
@@ -693,7 +693,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     // BRACKETED PASTE (ESC[200~ … ESC[201~), not a plain write: Claude Code only converts a
     // path to a native `[Image #N]` attachment when it arrives as a PASTE. A plain typed
     // write leaves the ugly literal path (the "didn't get shortened" bug).
-    if (paths.length > 0) window.operator.terminalWrite(terminalId, bracketedPaste(paths.join(' ')))
+    if (paths.length > 0) window.operator.terminalWrite(terminalId, pastePaths(paths))
   }, [terminalId])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

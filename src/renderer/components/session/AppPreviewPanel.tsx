@@ -42,6 +42,10 @@ const POINTER_MODES: { id: PointerMode; label: string; title: string }[] = [
   { id: 'inspect', label: 'Inspect', title: 'Inspect elements — hover to outline, click to add a note → Console / Tasks' },
 ]
 
+/** Past either, the pending Inspect note's card says how long the note is (review R1). */
+const PICK_LONG_LINES = 8
+const PICK_LONG_CHARS = 600
+
 // Common dev-server ports to fall back on when the reserved/detected port isn't
 // serving. Vite (5173/5174), CRA/Next (3000/3001), Astro (4321), Vite preview
 // (4173), Python/http (8000/8080), SvelteKit (5173). Ordered by likelihood.
@@ -433,24 +437,36 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
       if (!p) return
       pickPendingRef.current = true
       void (async () => {
-        // The crop is taken now, after the in-page card has gone, from the main window over the stage:
-        // the page is this component's iframe, so its box maps to window px through the stage's rect
-        // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is never
-        // stored, so there is no stored note for the shot to be deleted with, sent or discarded.
-        const id = `pick-${crypto.randomUUID()}`
-        let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
-        if (electronLiveRef.current) {
-          // An Electron app: captured in the app itself over CDP, in its page CSS px.
-          const targets = pickTargets(p)
-          if (targets.length && window.operator.previewCdpShot) {
-            shot = await window.operator.previewCdpShot({ project: shotProj, id, targets, outline: cssRgb('--measure') }).catch(() => null)
+        // THE REF IS RESET WHEN NO CARD COMES UP. Only the card's buttons clear it otherwise, so a
+        // throw anywhere below (review R2) would leave it set with nothing on screen, and every later
+        // pick would be dropped until the panel remounted. It is not reset when the card is up: that
+        // is what keeps a second pick from replacing the note while the user reads it.
+        let shown = false
+        try {
+          // The crop is taken now, after the in-page card has gone, from the main window over the stage:
+          // the page is this component's iframe, so its box maps to window px through the stage's rect
+          // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is never
+          // stored, so there is no stored note for the shot to be deleted with, sent or discarded.
+          const id = `pick-${crypto.randomUUID()}`
+          let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
+          if (electronLiveRef.current) {
+            // An Electron app: captured in the app itself over CDP, in its page CSS px.
+            const targets = pickTargets(p)
+            if (targets.length && window.operator.previewCdpShot) {
+              shot = await window.operator.previewCdpShot({ project: shotProj, id, targets, outline: cssRgb('--measure') }).catch(() => null)
+            }
+          } else {
+            const stage = stageRef.current?.getBoundingClientRect()
+            const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
+            shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
           }
-        } else {
-          const stage = stageRef.current?.getBoundingClientRect()
-          const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
-          shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
+          setPendingPick({ msg: withScreenshot(formatPick(p), shot?.path), shot: shot?.path ?? null })
+          shown = true
+        } catch {
+          // Dropped: a pick that cannot become a note has nothing to show the user.
+        } finally {
+          if (!shown) pickPendingRef.current = false
         }
-        setPendingPick({ msg: withScreenshot(formatPick(p), shot?.path), shot: shot?.path ?? null })
       })()
     }
     // Tauri: the native inspect webview beacons to the backend, which emits this. Electron: an
@@ -995,18 +1011,28 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
 
       {/* THE PENDING INSPECT NOTE (H1). Drawn by Operator, outside the stage, so the previewed page
         can neither click it nor cover it. It shows exactly the text that will be sent, and only
-        these buttons send it; whichever the page's own card offered does not count. */}
-      {pendingPick && (
+        these buttons send it; whichever the page's own card offered does not count.
+        THE WHOLE NOTE IS ON SCREEN BEFORE IT CAN BE SENT (review R1). The text box has no height
+        cap and no scroll of its own, so no part of the note sits in a box the user never scrolls.
+        A note taller than the panel grows the card over the stage (basis `auto` against the stage's
+        0), and only then does the card itself scroll, with the buttons after the last line: the
+        user reaches Send by passing the whole text. A long note also says its size up front. */}
+      {pendingPick && (() => {
+        const lines = pendingPick.msg.split('\n').length
+        const chars = [...pendingPick.msg].length
+        const long = lines > PICK_LONG_LINES || chars > PICK_LONG_CHARS
+        return (
         <div data-no-drag data-pending-pick style={{
-          flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6,
+          flex: '0 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
           padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--overlay-subtle)',
           fontSize: 11, color: 'var(--fg)', lineHeight: 1.5,
         }}>
           <span style={{ color: 'var(--fg-muted)' }}>
-            Note from Inspect{pendingPick.shot ? ', with a screenshot' : ''}. Nothing is sent until you choose where.
+            Note from Inspect{pendingPick.shot ? ', with a screenshot' : ''}. Nothing&nbsp;is sent until you choose where.
+            {long && <span style={{ color: 'var(--fg)' }}>{` ${lines}\u00a0lines, ${chars} characters. The\u00a0buttons are after the last\u00a0line.`}</span>}
           </span>
-          <div style={{
-            maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          <div data-pending-pick-text style={{
+            flexShrink: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
             fontFamily: 'var(--font-mono)', fontSize: 11, padding: '6px 8px',
             border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-deep)',
           }}>{pendingPick.msg}</div>
@@ -1016,7 +1042,8 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
             <button onClick={clearPendingPick} style={{ ...retryBtn, marginRight: 0, marginLeft: 'auto', fontSize: 10.5, padding: '3px 9px', color: 'var(--fg-muted)' }}>Discard</button>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {source === 'electron' && !electronLive ? (
         <div ref={frameWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg-deep)' }}>

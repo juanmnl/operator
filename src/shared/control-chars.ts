@@ -29,3 +29,18 @@ export function stripControlChars(text: string): string {
 export function hasControlChars(text: string): boolean {
   return CONTROL_TEST.test(text)
 }
+
+// TEXT THAT DISPLAYS DIFFERENTLY FROM WHAT IT SAYS. A separate rule from the one above: these
+// characters do nothing to the pty, but they let text shown for the user's approval read one way
+// and say another. The bidi embeddings, overrides and isolates (U+202A–202E, U+2066–2069) reorder
+// what follows them on screen; the zero-width space, non-joiner and joiner (U+200B–200D) and the
+// BOM (U+FEFF) are invisible. Applied to Preview notes before the confirm card shows them and
+// before they are sent, so the card and the lane get the same text. Not part of
+// `stripControlChars`, because U+200D also joins emoji sequences and every other message keeps
+// those intact. Security review 2026-10-02, R1.
+const INVISIBLE = /[\u202a-\u202e\u2066-\u2069\u200b-\u200d\ufeff]/g
+
+/** `text` with bidi controls and zero-width characters removed. */
+export function stripInvisibleChars(text: string): string {
+  return text.replace(INVISIBLE, '')
+}

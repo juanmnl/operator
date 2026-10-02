@@ -3,6 +3,13 @@
 // dragged-or-pasted macOS screenshot (which carries bytes but no File.path) work
 // like iTerm. Shared by the drop handler and the clipboard-paste handler in
 // TerminalPane; `save` is injected so the logic is unit-testable without Tauri.
+//
+// A DROPPED FILE'S NAME IS NOT OPERATOR'S TEXT. It reaches the pty inside a bracketed paste (or,
+// for a non-image, as a plain write), so a name holding `ESC[201~` would end the paste and the rest
+// would arrive as keys. Every path written to a pty goes through `ptyPath`, and the temp file's
+// extension, taken from the name, through `safeExt`. Security review 2026-10-02, R4.
+
+import { stripControlChars } from '../../shared/control-chars'
 
 export type SaveImage = (dataB64: string, ext: string) => Promise<string>
 
@@ -17,10 +24,31 @@ function bytesToBase64(bytes: Uint8Array): string {
 function extFor(f: File): string {
   // Use the name's extension only if it actually has one (a dot past position 0);
   // a clipboard image is often named "clipboard"/"image" with no extension, so
-  // fall back to the mime subtype, then png.
+  // fall back to the mime subtype, then png. Either one only when `safeExt` takes it.
   const dot = f.name.lastIndexOf('.')
   const fromName = dot > 0 ? f.name.slice(dot + 1) : ''
-  return (fromName || f.type.split('/')[1] || 'png').toLowerCase()
+  return safeExt(fromName) ?? safeExt(f.type.split('/')[1] ?? '') ?? 'png'
+}
+
+/** `ext` lowercased, without a leading dot, when it is 1–8 ASCII letters or digits; otherwise null.
+ *  Main applies it again before naming the temp file (`savePastedImage` in electron/src/main/ipc.ts),
+ *  because the renderer's word is not the last one. */
+export function safeExt(ext: string): string | null {
+  const e = ext.replace(/^\./, '').toLowerCase()
+  return /^[a-z0-9]{1,8}$/.test(e) ? e : null
+}
+
+/** A path as it may be written to a pty: control characters removed (`stripControlChars`), and
+ *  then the line breaks and tabs that rule keeps, because a path is one line and in the plain
+ *  write a newline is Enter and a tab is completion. A path that needed this does not name the
+ *  file any more; it was crafted, and failing to find it is the right outcome. */
+export function ptyPath(path: string): string {
+  return stripControlChars(path).replace(/[\n\t]/g, '')
+}
+
+/** The bracketed paste of a set of image paths, each through `ptyPath`. */
+export function pastePaths(paths: string[]): string {
+  return bracketedPaste(paths.map(ptyPath).join(' '))
 }
 
 /** Persist each File to a temp file, returning their paths in order. A File that
@@ -80,8 +108,9 @@ export function isImagePath(path: string): boolean {
  *     usually about to type a command around it), with the trailing space that separates it
  *     from whatever they type next. */
 export function writesForDroppedPaths(paths: string[]): string[] {
-  const images = paths.filter(isImagePath)
-  const rest = paths.filter((p) => !isImagePath(p))
+  const clean = paths.map(ptyPath).filter(Boolean)
+  const images = clean.filter(isImagePath)
+  const rest = clean.filter((p) => !isImagePath(p))
   const out: string[] = []
   if (images.length) out.push(bracketedPaste(images.join(' ')))
   if (rest.length) out.push(rest.map(shellQuote).join(' ') + ' ')
