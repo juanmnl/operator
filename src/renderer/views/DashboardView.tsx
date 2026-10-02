@@ -23,7 +23,7 @@ import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
 import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
-import { routeDispatch, liveLaneNames, reusableLane, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, COORDINATOR_ROLE_IDS, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
+import { routeDispatch, liveLaneNames, reusableLane, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin } from '../lib/lane-keystrokes'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
@@ -44,7 +44,7 @@ import { getTerminal } from '../lib/terminal-registry'
 import { ShellSheet } from '../components/terminal/ShellSheet'
 import { SessionActivityView } from '../components/session/SessionActivityView'
 import { FolderPreferencesView, type FolderPrefsTab } from '../components/preferences/FolderPreferencesView'
-import { announcement, canAnnounceTo, announceCutoff, REPORT_ANNOUNCE_MAX_AGE_MS } from '../lib/comms'
+import { announcement, announceSkip, canAnnounceTo, coordinatorsToAnnounce, announceCutoff, ANNOUNCE_TICK_MS, staleSummary } from '../lib/comms'
 import { dispatchedTasks } from '../lib/plan-dispatches'
 import { SessionToolbar } from '../components/session/SessionToolbar'
 import { FooterReading } from '../components/session/FooterReading'
@@ -4353,81 +4353,117 @@ export function DashboardView() {
   }, [reports])
 
 
-  const announcingRef = useRef(false)
-  useEffect(() => {
-    for (const tab of terminals) {
-      const role = (tab.roleId ?? '').toLowerCase()
-      if (!COORDINATOR_ROLE_IDS.includes(role)) continue
-      // BETWEEN TURNS ONLY — see `canAnnounceTo`.
-      if (!canAnnounceTo(sessions.find((s) => s.terminalId === tab.id))) continue
-      if (announcingRef.current) continue
+  // THE ANNOUNCE PASS: type a line into each idle coordinator for every report it has not been
+  // shown. EVERY idle coordinator per pass (`coordinatorsToAnnounce`), each guarded by its own
+  // in-flight entry, so one coordinator's slow `submit` holds only that coordinator. It used to be
+  // one coordinator per pass behind one app-wide flag, and the pass ran only when `sessions` or
+  // `terminals` changed, so a report that landed while its coordinator sat idle waited for some
+  // unrelated session update, or a Mac wake, and was then expired unseen after twelve hours
+  // (dev/results/lane-signal-back-research-2026-10-02.md, D1-D3). It now also runs when a new
+  // report arrives and every ANNOUNCE_TICK_MS.
+  const announceInFlightRef = useRef<Set<string>>(new Set())
+  // The last line written to the announce log per tab, so an unchanged state is logged once.
+  const announceLoggedRef = useRef<Record<string, string>>({})
+  const noteAnnounce = useCallback((tab: TerminalTab, what: string) => {
+    if (announceLoggedRef.current[tab.id] === what) return
+    announceLoggedRef.current[tab.id] = what
+    const project = dispatchRef.current.projects.find((p) => p.id === tab.projectId)?.name ?? tab.projectId ?? 'none'
+    window.operator.announceLog?.(`tab=${tab.id} role=${tab.roleId ?? ''} project=${project} ${what}`)
+  }, [])
 
-      announcingRef.current = true
-      // SCOPED TO THIS COORDINATOR'S PROJECT. `artifacts.db` is one global store for every
-      // project on the machine, so the role filter alone had `uwazi-app`'s reports announced into
-      // the composer of whatever project's coordinator was idle first — observed with #313/#316/
-      // #318. A coordinator is only told about work in the project it is coordinating.
-      //
-      // OLD REPORTS EXPIRE INSTEAD OF BEING ANNOUNCED. The queue had no age limit, so reports filed
-      // while no coordinator was idle waited days and were then typed in one per idle turn, oldest
-      // first, ahead of new ones: operator #623 waited 9 days, and a report filed that morning waited
-      // 31 minutes behind 36 old rows (audit 2026-09-14). Past the cutoff they are marked delivered
-      // without being typed, stay in the Comms log, and the user is told once how many.
-      const projectName = dispatchRef.current.projects.find((p) => p.id === tab.projectId)?.name
-      void (window.operator.artifactExpireUndelivered?.(role, announceCutoff(Date.now()), tab.projectId) ?? Promise.resolve(0))
-        .then((expired) => {
-          if (expired > 0) {
-            dispatchRef.current.pushToast({
-              text: `${expired} older ${expired === 1 ? 'report was' : 'reports were'} not announced`,
-              detail: `They were more than ${REPORT_ANNOUNCE_MAX_AGE_MS / 3_600_000} hours old and are in the ${projectName ?? 'project'} Comms log.`,
-              kind: 'info',
-            })
-          }
-          return window.operator.artifactUndelivered?.(role, 3, tab.projectId)
-        })
-        .then(async (pending) => {
-          if (pending?.length) refreshReports()
-          for (const report of pending ?? []) {
-            // RE-ASKED PER REPORT, off the REF rather than the closure's `sessions` — the first
-            // announcement is what wakes the lane, so by the second one the phase has usually
-            // flipped to `running` and this closure's snapshot still says `idle`. Without this the
-            // batch pasted lines 2 and 3 straight into a live composer, which is the exact race
-            // reports exist to avoid. Whatever is left stays undelivered and goes out on the next
-            // idle.
-            if (!canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))) break
-            if (!tab.id) break
-            // Mark AFTER the line has actually gone in, and only if it did. The other order
-            // marked a report delivered whether or not it ever reached the composer, so a failed
-            // announcement was silently swallowed — the report sat on its task and in the project
-            // Comms log with nothing ever saying it had arrived.
-            //
-            // THE OUTCOME IS READ FROM THE QUEUE, NOT FROM A THROW. `submit` never rejects: its
-            // chain ends in `.catch()` so one dropped write cannot break ordering for everything
-            // queued behind it, which means a `try/catch` here is dead code that only looks like
-            // a check. `pending(id)` is the real signal — it is cleared when the transcript
-            // confirms a user turn for that write, and still holds the text when the write went
-            // out unconfirmed (the rescue-CR path, or a lane nobody is tailing). Unconfirmed
-            // leaves the row announceable; the worst case is one duplicate line, which is
-            // recoverable where a silent drop is not.
-            //
-            // AND IT HOLDS THE BATCH. `submit` resolves on the write, but not before waiting out
-            // the confirmation deadline — up to RESCUE_AFTER_MS (30s) for a lane whose turn never
-            // appears, so a batch of three can occupy this pass for a minute and a half. That is
-            // acceptable here precisely because it is serialised and bounded: nothing else waits
-            // on this effect, `announcingRef` keeps a second pass from starting, and the
-            // alternative — firing all three and marking them — is the mid-turn paste this whole
-            // guard exists to prevent.
-            const line = announcement(report)
-            await submitQueue.submit(tab.id, line)
-            if (submitQueue.pending(tab.id)?.text === line) break
-            await window.operator.artifactMarkDelivered?.(report.id)
-          }
-        })
-        .catch(() => { /* best-effort: the Comms log still has everything */ })
-        .finally(() => { announcingRef.current = false })
-      break
+  const serveCoordinator = useCallback(async (tab: TerminalTab, role: string): Promise<string> => {
+    // SCOPED TO THIS COORDINATOR'S PROJECT. `artifacts.db` is one global store for every
+    // project on the machine, so the role filter alone had `uwazi-app`'s reports announced into
+    // the composer of whatever project's coordinator was idle first — observed with #313/#316/
+    // #318. A coordinator is only told about work in the project it is coordinating.
+    //
+    // OLD REPORTS ARE SUMMARISED INSTEAD OF ANNOUNCED ONE BY ONE. The queue had no age limit, so
+    // reports filed while no coordinator was idle waited days and were then typed in one per idle
+    // turn, oldest first, ahead of new ones: operator #623 waited 9 days, and a report filed that
+    // morning waited 31 minutes behind 36 old rows (audit 2026-09-14). Past the cutoff they get
+    // ONE line naming their ids and lanes, and are marked delivered only after that line has
+    // gone in. They used to be marked delivered with nothing typed at all, which is how Design's
+    // #1789 was lost on 2026-10-02.
+    const stale = (await window.operator.artifactStaleUndelivered?.(role, announceCutoff(Date.now()), tab.projectId)) ?? []
+    let summarised = ''
+    if (stale.length) {
+      const line = staleSummary(stale)
+      await submitQueue.submit(tab.id, line)
+      if (submitQueue.pending(tab.id)?.text === line) return `stale=${stale.length} outcome=summary unconfirmed, left undelivered`
+      for (const report of stale) await window.operator.artifactMarkDelivered?.(report.id)
+      summarised = ` summarised=${stale.map((r) => `#${r.id}`).join(',')}`
+      refreshReports()
     }
-  }, [terminals, sessions])
+    const pending = (await window.operator.artifactUndelivered?.(role, 3, tab.projectId)) ?? []
+    if (pending.length) refreshReports()
+    const announced: string[] = []
+    let stop = ''
+    for (const report of pending) {
+      // RE-ASKED PER REPORT, off the REF rather than the closure's `sessions` — the first
+      // announcement is what wakes the lane, so by the second one the phase has usually
+      // flipped to `running` and this closure's snapshot still says `idle`. Without this the
+      // batch pasted lines 2 and 3 straight into a live composer, which is the exact race
+      // reports exist to avoid. Whatever is left stays undelivered and goes out on the next
+      // idle.
+      if (!canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))) { stop = ' stopped=turn started'; break }
+      // Mark AFTER the line has actually gone in, and only if it did. The other order
+      // marked a report delivered whether or not it ever reached the composer, so a failed
+      // announcement was silently swallowed — the report sat on its task and in the project
+      // Comms log with nothing ever saying it had arrived.
+      //
+      // THE OUTCOME IS READ FROM THE QUEUE, NOT FROM A THROW. `submit` never rejects: its
+      // chain ends in `.catch()` so one dropped write cannot break ordering for everything
+      // queued behind it, which means a `try/catch` here is dead code that only looks like
+      // a check. `pending(id)` is the real signal — it is cleared when the transcript
+      // confirms a user turn for that write, and still holds the text when the write went
+      // out unconfirmed (the rescue-CR path, or a lane nobody is tailing). Unconfirmed
+      // leaves the row announceable; the worst case is one duplicate line, which is
+      // recoverable where a silent drop is not.
+      //
+      // AND IT HOLDS THE BATCH. `submit` resolves on the write, but not before waiting out
+      // the confirmation deadline — up to RESCUE_AFTER_MS (30s) for a lane whose turn never
+      // appears, so a batch of three can occupy this coordinator for a minute and a half. That
+      // is acceptable because it is serialised per coordinator and bounded: the in-flight entry
+      // keeps a second pass off this tab, other coordinators are served alongside it, and the
+      // alternative — firing all three and marking them — is the mid-turn paste this whole
+      // guard exists to prevent.
+      const line = announcement(report)
+      await submitQueue.submit(tab.id, line)
+      if (submitQueue.pending(tab.id)?.text === line) { stop = ` stopped=#${report.id} unconfirmed, left undelivered`; break }
+      await window.operator.artifactMarkDelivered?.(report.id)
+      announced.push(`#${report.id}`)
+    }
+    const outcome = pending.length ? `announced=${announced.join(',') || 'none'}${stop}` : 'nothing pending'
+    return `stale=${stale.length}${summarised} pending=${pending.length} outcome=${outcome}`
+  }, [refreshReports])
+
+  const announcePass = useCallback(() => {
+    const inFlight = announceInFlightRef.current
+    const serve = coordinatorsToAnnounce(terminalsRef.current, sessionsRef.current, inFlight)
+    for (const tab of terminalsRef.current) {
+      if (serve.includes(tab)) continue
+      const skip = announceSkip(tab, sessionsRef.current, inFlight)
+      if (skip && skip !== 'not a coordinator' && skip !== 'in flight') noteAnnounce(tab, `skip=${skip}`)
+    }
+    for (const tab of serve) {
+      const role = (tab.roleId ?? '').toLowerCase()
+      inFlight.add(tab.id)
+      void serveCoordinator(tab, role)
+        .then((what) => noteAnnounce(tab, what))
+        .catch((err) => noteAnnounce(tab, `outcome=error ${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => { inFlight.delete(tab.id) })
+    }
+  }, [noteAnnounce, serveCoordinator])
+
+  // The newest report id, so the pass re-runs when a report lands rather than on every 4s poll.
+  const newestReportId = reports.reduce((max, r) => Math.max(max, r.id), 0)
+  useEffect(() => { announcePass() }, [terminals, sessions, newestReportId, announcePass])
+  // A timer, not state: a tick that re-rendered this view every few seconds would cost more than
+  // the pass. Timers resume after a Mac sleep, so the first tick after a wake does the catch-up.
+  useEffect(() => {
+    const t = window.setInterval(announcePass, ANNOUNCE_TICK_MS)
+    return () => clearInterval(t)
+  }, [announcePass])
 
   const notifiedRef = useRef<Set<string>>(new Set())
   useEffect(() => {

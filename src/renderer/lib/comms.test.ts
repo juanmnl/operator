@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AgentSession, ArtifactReport, DispatchRecord } from '../../shared/types'
-import { announcement, canAnnounceTo, headline, projectComms, reportsForTask, reportsOfProject, reportState, reportStateLabel, rowKey, toReportRow } from './comms'
+import { announcement, announceSkip, canAnnounceTo, coordinatorsToAnnounce, headline, projectComms, reportsForTask, reportsOfProject, reportState, reportStateLabel, rowKey, STALE_SUMMARY_MAX_IDS, staleSummary, toReportRow } from './comms'
 
 const report = (over: Partial<ArtifactReport> = {}): ArtifactReport => ({
   id: 1, at: '2026-08-24T10:00:00Z', terminalId: 't3', projectId: 'p', roleId: 'code',
@@ -254,5 +254,67 @@ describe('canAnnounceTo — the guard that has to be asked twice', () => {
   it('refuses an ended lane and a tab with no session — there is nobody to tell', () => {
     expect(canAnnounceTo(at({ status: 'ended' }))).toBe(false)
     expect(canAnnounceTo(undefined)).toBe(false)
+  })
+})
+
+describe('coordinatorsToAnnounce — every idle coordinator, each pass', () => {
+  const sess = (terminalId: string, phase: AgentSession['phase'], status: AgentSession['status'] = 'active') =>
+    ({ terminalId, phase, status })
+  const tab = (id: string, roleId: string, projectId = 'p') => ({ id, roleId, projectId })
+
+  it('serves all three idle coordinators in one pass, not only the first in tab order', () => {
+    // 2026-10-02: one per pass starved the coordinators later in the tab list (D1).
+    const terminals = [tab('t0', 'operator', 'fastrack'), tab('t1', 'operator', 'umbra'), tab('t2', 'Operator', 'operator')]
+    const sessions = [sess('t0', 'waiting'), sess('t1', 'idle'), sess('t2', 'waiting')]
+    expect(coordinatorsToAnnounce(terminals, sessions, new Set()).map((t) => t.id)).toEqual(['t0', 't1', 't2'])
+  })
+
+  it('leaves out a coordinator that is mid-turn and one already being served, and serves the rest', () => {
+    const terminals = [tab('t0', 'operator', 'a'), tab('t1', 'operator', 'b'), tab('t2', 'orchestrator', 'c')]
+    const sessions = [sess('t0', 'running'), sess('t1', 'waiting'), sess('t2', 'waiting')]
+    expect(coordinatorsToAnnounce(terminals, sessions, new Set(['t1'])).map((t) => t.id)).toEqual(['t2'])
+  })
+
+  it('never serves a non-coordinator lane, an ended session, or a tab with no session', () => {
+    const terminals = [tab('t3', 'code'), tab('t4', 'operator'), tab('t5', 'operator')]
+    const sessions = [sess('t3', 'waiting'), sess('t4', 'waiting', 'ended')]
+    expect(coordinatorsToAnnounce(terminals, sessions, new Set())).toEqual([])
+  })
+
+  it('names why a coordinator was skipped, for the announce log', () => {
+    const sessions = [sess('t0', 'running'), sess('t1', 'waiting', 'ended'), sess('t3', 'asking')]
+    expect(announceSkip(tab('t9', 'design'), sessions, new Set())).toBe('not a coordinator')
+    expect(announceSkip(tab('t0', 'operator'), sessions, new Set())).toBe('phase running')
+    expect(announceSkip(tab('t1', 'operator'), sessions, new Set())).toBe('phase ended')
+    expect(announceSkip(tab('t2', 'operator'), sessions, new Set())).toBe('no session')
+    expect(announceSkip(tab('t3', 'operator'), sessions, new Set())).toBe('phase asking')
+    expect(announceSkip(tab('t4', 'operator'), [sess('t4', 'idle')], new Set(['t4']))).toBe('in flight')
+    expect(announceSkip(tab('t4', 'operator'), [sess('t4', 'idle')], new Set())).toBeNull()
+  })
+})
+
+describe('staleSummary — one line in place of reports too old to announce one by one', () => {
+  it('lists every id grouped by lane, oldest first, and points at the Comms log', () => {
+    const line = staleSummary([
+      report({ id: 1792, roleId: 'design' }),
+      report({ id: 1788, roleId: 'review' }),
+      report({ id: 1789, roleId: 'design' }),
+    ])
+    expect(line).toBe('[Operator] 3 reports older than 12 h were not announced while you were busy or away: '
+      + 'review #1788; design #1789 #1792 — full text in the Comms log')
+    expect(line).not.toContain('\n')
+  })
+
+  it('reads in the singular for one report, and falls back to the terminal when the lane has no role', () => {
+    expect(staleSummary([report({ id: 7, roleId: null, terminalId: 't4' })]))
+      .toBe('[Operator] 1 report older than 12 h was not announced while you were busy or away: t4 #7 — full text in the Comms log')
+  })
+
+  it('caps the ids it lists and counts the rest, so a long backlog stays one short line', () => {
+    const many = Array.from({ length: STALE_SUMMARY_MAX_IDS + 13 }, (_, i) => report({ id: i + 1, roleId: 'code' }))
+    const line = staleSummary(many)
+    expect(line).toContain(`${STALE_SUMMARY_MAX_IDS + 13} reports`)
+    expect(line).toContain(`#${STALE_SUMMARY_MAX_IDS} and 13 more`)
+    expect(line).not.toContain(`#${STALE_SUMMARY_MAX_IDS + 1} `)
   })
 })

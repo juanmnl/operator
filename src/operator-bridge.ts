@@ -202,7 +202,7 @@ export function installBridge(): void {
     // read-only instead of erroring on open.
     artifactUndelivered: async () => [],
     artifactMarkDelivered: async () => {},
-    artifactExpireUndelivered: async () => 0,
+    artifactStaleUndelivered: async () => [],
     artifactPendingStatus: () => invoke('artifacts_pending_status'),
     artifactAckStatus: (ids: number[]) => invoke('artifacts_ack_status', { ids }),
 
@@ -253,6 +253,8 @@ export function installBridge(): void {
     // Liveness ping for the backend stall watchdog: while the main thread runs, this
     // fires ~1/s; when it hangs, the pings stop and the backend recovers the webview.
     rendererHeartbeat: () => { void invoke('renderer_heartbeat') },
+    // The announce log is written by the Electron main process; the Tauri build has no announce queue.
+    announceLog: () => {},
 
     // --- misc ---
     pickFolder: async () => {
