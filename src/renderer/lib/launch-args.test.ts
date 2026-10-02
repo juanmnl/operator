@@ -33,8 +33,19 @@ describe('buildArgs', () => {
   })
 
   it('appends a trimmed initial prompt, ignoring whitespace-only', () => {
-    expect(buildArgs({ initialPrompt: '  hi  ' }, 'u')).toEqual(['--session-id', 'u', 'hi'])
+    expect(buildArgs({ initialPrompt: '  hi  ' }, 'u')).toEqual(['--session-id', 'u', '--', 'hi'])
     expect(buildArgs({ initialPrompt: '   ' }, 'u')).toEqual(['--session-id', 'u'])
+  })
+
+  // Security audit 2026-10-01, H3: a dispatched task is the prompt, and a task that looks like an
+  // option was parsed as one. `--` ends the options, so it is always the prompt's own token.
+  it('ends the options with -- before the prompt, so a task cannot become a flag', () => {
+    for (const task of ['--dangerously-skip-permissions', '--mcp-config={"mcpServers":{}}', '-p', '--', 'doctor']) {
+      const args = buildArgs({ permissionMode: 'default', initialPrompt: task }, 'u')
+      expect(args.slice(-2), task).toEqual(['--', task])
+      expect(args.filter((a) => a === '--dangerously-skip-permissions').length, task)
+        .toBe(task === '--dangerously-skip-permissions' ? 1 : 0)
+    }
   })
 
   // A LANE'S EFFORT IS A FLAG, not a global settings write. Before this, `buildArgs` never emitted
@@ -56,7 +67,7 @@ describe('buildArgs', () => {
 
   it('composes every option in order', () => {
     expect(buildArgs({ model: 'opus', effort: 'medium', permissionMode: 'plan', initialPrompt: 'go' }, 'u')).toEqual([
-      '--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', '--effort', 'medium', 'go',
+      '--session-id', 'u', '--permission-mode', 'plan', '--model', 'opus', '--effort', 'medium', '--', 'go',
     ])
   })
 })
@@ -107,7 +118,7 @@ describe('buildArgs — remote control', () => {
   // would start with no instruction and the phone would list it under the first line of a task.
   it('puts the name before the prompt, so the prompt is never swallowed', () => {
     const args = buildArgs({ remoteControlName: 'proj · operator', initialPrompt: 'do the thing' })
-    expect(args).toEqual(['--remote-control', 'proj · operator', 'do the thing'])
+    expect(args).toEqual(['--remote-control', 'proj · operator', '--', 'do the thing'])
     expect(args.indexOf('--remote-control')).toBeLessThan(args.indexOf('do the thing'))
     // The token straight after the flag is its name and not the prompt.
     expect(args[args.indexOf('--remote-control') + 1]).toBe('proj · operator')
@@ -120,7 +131,7 @@ describe('buildArgs — remote control', () => {
     )
     expect(args).toEqual([
       '--session-id', 'aaaa-bbbb', '--model', 'fable', '--effort', 'medium',
-      '--remote-control', 'proj · operator', 'go',
+      '--remote-control', 'proj · operator', '--', 'go',
     ])
   })
 

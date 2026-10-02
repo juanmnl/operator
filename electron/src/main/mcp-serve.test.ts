@@ -155,6 +155,17 @@ describe('dispatch — refusals that never reach the app', () => {
     }
     expect(store.openDispatches().length).toBe(before)
   })
+
+  // Security audit 2026-10-01, H3: a task can become the receiving lane's `claude` command line.
+  it('refuses a task that starts with a dash, and opens no request', () => {
+    const before = store.openDispatches().length
+    for (const task of ['--dangerously-skip-permissions', '-p hi', '  --settings={}']) {
+      const r = call('dispatch', { lane: 'code', task }) as { result?: { isError?: boolean; content?: { text: string }[] } }
+      expect(r.result?.isError, task).toBe(true)
+      expect(r.result?.content?.[0].text).toMatch(/may not start with "-"/)
+    }
+    expect(store.openDispatches().length).toBe(before)
+  })
 })
 
 // X3 (dev/results/lane-instances-and-message-mixing-2026-09-25.md): `to_role` was never written, so a

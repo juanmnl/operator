@@ -94,7 +94,12 @@ export function parseDirectives(text: string, keyword: string): Array<[string, s
   return out
 }
 
-export const parseDispatches = (text: string) => parseDirectives(text, 'OPERATOR-DISPATCH')
+/** A dispatched task that starts with `-` is prefixed with `Task: `. The task can become the
+ *  receiving lane's `claude` command line, where a leading dash reads as an option; `buildArgs`
+ *  ends the options with `--` first, so this is the second guard (security audit 2026-10-01, H3).
+ *  Prefixed rather than dropped, because a dropped sentinel looks like the coordinator did nothing. */
+export const parseDispatches = (text: string): Array<[string, string]> =>
+  parseDirectives(text, 'OPERATOR-DISPATCH').map(([role, task]) => [role, task.startsWith('-') ? `Task: ${task}` : task])
 export const parseReplies = (text: string) => parseDirectives(text, 'OPERATOR-REPLY')
 
 /** Stable id for a directive, so re-reading the same transcript line does not re-fire it.

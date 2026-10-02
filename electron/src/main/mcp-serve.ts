@@ -308,6 +308,12 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         // and the lane is told why, rather than delivered in a form it did not write.
         return errorResult('the message contains control characters (ESC or another control character other than tab and newline). Nothing was sent; remove them and retry.')
       }
+      if (name === 'dispatch' && body.startsWith('-')) {
+        // A task can become the receiving lane's `claude` command line, and a leading dash is what an
+        // option looks like there. `buildArgs` ends the options with `--` first, so this is the
+        // second guard, not the only one (security audit 2026-10-01, H3).
+        return errorResult('a task may not start with "-". Nothing was sent; start it with a word and retry.')
+      }
       if (!caller.projectId) {
         // Scope is the whole point of routing through Operator: a lane may only address lanes in
         // its own project, and a caller whose project cannot be established has no scope to be in.

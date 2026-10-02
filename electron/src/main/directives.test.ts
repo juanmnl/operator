@@ -140,3 +140,17 @@ describe('parseDirectives — control characters', () => {
     expect(parseDispatches('OPERATOR-DISPATCH [code] Fix it\r')).toEqual([['code', 'Fix it']])
   })
 })
+
+// Security audit 2026-10-01, H3: a dispatched task can become the receiving lane's command line.
+describe('parseDispatches — a task that starts with a dash', () => {
+  it('is prefixed, so it can never read as an option', () => {
+    expect(parseDispatches('OPERATOR-DISPATCH [code] --dangerously-skip-permissions'))
+      .toEqual([['code', 'Task: --dangerously-skip-permissions']])
+    expect(parseDispatches('OPERATOR-DISPATCH [code] -p do it')).toEqual([['code', 'Task: -p do it']])
+  })
+
+  it('leaves replies and ordinary tasks alone', () => {
+    expect(parseReplies('OPERATOR-REPLY [operator] --done')).toEqual([['operator', '--done']])
+    expect(parseDispatches('OPERATOR-DISPATCH [code] Fix --verbose handling')).toEqual([['code', 'Fix --verbose handling']])
+  })
+})
