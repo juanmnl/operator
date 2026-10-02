@@ -10,6 +10,7 @@ import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildArgs } from '../../../src/renderer/lib/launch-args'
+import { safeExt } from '../../../src/renderer/lib/paste-image'
 import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-api'
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
 import type { TerminalManager } from './terminals'
@@ -368,7 +369,9 @@ export function registerIpc(d: Deps): void {
     revealPath: async (path) => { shell.showItemInFolder(path) },
     savePastedImage: async (dataB64, ext) => {
       const dir = await mkdtemp(join(tmpdir(), 'operator-paste-'))
-      const file = join(dir, `pasted-${Date.now()}.${ext.replace(/^\./, '')}`)
+      // The extension comes from a dropped file's name, and the path goes back into a pty
+      // (lib/paste-image, security review R4), so only letters and digits are kept.
+      const file = join(dir, `pasted-${Date.now()}.${safeExt(ext) ?? 'bin'}`)
       await writeFile(file, Buffer.from(dataB64, 'base64'))
       return file
     },

