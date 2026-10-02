@@ -252,7 +252,9 @@ describe('preview-inspector — switched by the overlay', () => {
     const card = document.getElementById('__op_compose')!
     expect(card.querySelector('[data-op-measurement]')!.textContent).toBe('16px below div#head')
     card.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    expect(sent.mock.calls[0][0]).toMatchObject({ measurement: '16px below div#head', target: 'tasks' })
+    expect(sent.mock.calls[0][0]).toMatchObject({ measurement: '16px below div#head' })
+    // H1: the page's card names no target; Operator's own card decides Console or Tasks.
+    expect(sent.mock.calls[0][0]).not.toHaveProperty('target')
     delete page.__operatorBeacon
   })
 

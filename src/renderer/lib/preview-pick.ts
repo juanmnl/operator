@@ -1,6 +1,12 @@
 // The note an Inspect pick becomes. The inspector inside the previewed page composes the message and
 // sends this payload back; the renderer turns it into the text dispatched to the Console or added
 // to Tasks. Pure, so the wording is tested without the page.
+//
+// THE PAYLOAD IS THE PAGE'S WORD, NOT THE USER'S. The inspector runs in the previewed page's own
+// main world, so the page (or any script it loads) can post a pick itself, with any text, and no
+// click inside the page proves a person made it. A pick therefore never sends anything: it becomes
+// a note in an Operator-drawn card, and the user's click on that card decides whether it goes and
+// where. Security audit 2026-10-01, H1.
 
 /** What `preview:pick` carries, as `src/shared/preview-inspector.js` builds it. */
 export interface PreviewPick {
@@ -10,7 +16,6 @@ export interface PreviewPick {
   component?: string | null
   source?: string | null
   message?: string
-  target?: 'console' | 'tasks'
   /** Where the element sits relative to the redline anchor, when one was set (`16px below Header`). */
   measurement?: string
   /** The element's box in the page's CSS px, for the note's screenshot. */
@@ -29,4 +34,18 @@ export function formatPick(p: PreviewPick): string {
   const measurement = p.measurement ? ` — ${p.measurement}` : ''
   const text = p.text ? ` — “${p.text}”` : ''
   return `${(p.message || '').trim()}\n\n↳ ${loc}${measurement}${text}`.trim()
+}
+
+/** A pick that arrived from the page, if it may become a pending note: only while the user has
+ *  Inspect on, only when no other note is waiting on the user, and only when it parses to an object.
+ *  A second pick while one waits is dropped rather than replacing it, so the page cannot swap the
+ *  text under the user's cursor between reading it and clicking Send. Any `target` the page put in
+ *  the payload is removed: the renderer's own buttons choose Console or Tasks. */
+export function acceptPick(data: unknown, state: { inspecting: boolean; pending: boolean }): PreviewPick | null {
+  if (!state.inspecting || state.pending || typeof data !== 'string') return null
+  let p: unknown
+  try { p = JSON.parse(data) } catch { return null }
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+  const { target: _target, ...pick } = p as PreviewPick & { target?: unknown }
+  return pick
 }
