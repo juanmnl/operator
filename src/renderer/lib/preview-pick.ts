@@ -8,6 +8,8 @@
 // a note in an Operator-drawn card, and the user's click on that card decides whether it goes and
 // where. Security audit 2026-10-01, H1.
 
+import { stripControlChars, stripInvisibleChars } from '../../shared/control-chars'
+
 /** What `preview:pick` carries, as `src/shared/preview-inspector.js` builds it. */
 export interface PreviewPick {
   selector?: string
@@ -27,13 +29,27 @@ export interface PreviewPick {
 }
 
 /** `<message>\n\n↳ PlanCard @ src/Pricing.tsx:42 — 16px below Header — “Pro”`. The location names
- *  the component and its source when React reports them, else the tag and selector. */
+ *  the component and its source when React reports them, else the tag and selector. The result is
+ *  passed through `cleanNote`, so it is the text the confirm card shows and the text that is sent. */
 export function formatPick(p: PreviewPick): string {
   const who = p.component || p.tag || 'element'
   const loc = p.source ? `${who} @ ${p.source}` : `${who}${p.selector ? ` (${p.selector})` : ''}`
   const measurement = p.measurement ? ` — ${p.measurement}` : ''
   const text = p.text ? ` — “${p.text}”` : ''
-  return `${(p.message || '').trim()}\n\n↳ ${loc}${measurement}${text}`.trim()
+  return cleanNote(`${(p.message || '').trim()}\n\n↳ ${loc}${measurement}${text}`)
+}
+
+/** A note as the user will see it in the confirm card, with nothing laid out to hide part of it:
+ *  control characters out and line endings as `\n` (the rule every pty write applies anyway),
+ *  bidi controls and zero-width characters out, the Unicode line and paragraph separators as `\n`,
+ *  and any run of three or more blank lines (empty or whitespace only) cut to one blank line. A page
+ *  can no longer push an instruction below the user's own words with forty newlines.
+ *  Security review 2026-10-02, R1. */
+export function cleanNote(text: string): string {
+  return stripInvisibleChars(stripControlChars(text))
+    .replace(/[\u2028\u2029]/g, '\n')
+    .replace(/\n(?:[^\S\n]*\n){3,}/g, '\n\n')
+    .trim()
 }
 
 /** A pick that arrived from the page, if it may become a pending note: only while the user has

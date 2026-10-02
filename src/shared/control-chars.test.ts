@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stripControlChars, hasControlChars } from './control-chars'
+import { stripControlChars, hasControlChars, stripInvisibleChars } from './control-chars'
 
 // Security audit 2026-10-01, H2: text written into a lane's pty must not carry bytes that end the
 // bracketed paste or act as keys.
@@ -33,5 +33,25 @@ describe('hasControlChars', () => {
     expect(hasControlChars('x\x00')).toBe(true)
     expect(hasControlChars('x\x9b')).toBe(true)
     expect(hasControlChars('a\tb\nc\r\nd')).toBe(false)
+  })
+})
+
+// Security review 2026-10-02, R1: a note the user approves must display as what it says.
+describe('stripInvisibleChars', () => {
+  it('removes the bidi embeddings, overrides and isolates', () => {
+    expect(stripInvisibleChars('ok \u202edeliver\u202c done')).toBe('ok deliver done')
+    let bidi = ''
+    for (let i = 0x202a; i <= 0x202e; i++) bidi += String.fromCharCode(i)
+    for (let i = 0x2066; i <= 0x2069; i++) bidi += String.fromCharCode(i)
+    expect(stripInvisibleChars(`a${bidi}b`)).toBe('ab')
+  })
+
+  it('removes the zero-width characters and the BOM', () => {
+    expect(stripInvisibleChars('\ufeffr\u200bm\u200c -\u200drf')).toBe('rm -rf')
+  })
+
+  it('leaves control characters, line breaks and ordinary text to the other rule', () => {
+    const s = 'Fix it:\n\t- añade «ñ» and 日本語 → ✓ \x1b'
+    expect(stripInvisibleChars(s)).toBe(s)
   })
 })
