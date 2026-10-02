@@ -121,3 +121,22 @@ describe('stripDirectiveDecoration', () => {
     expect(stripDirectiveDecoration('-not-a-bullet').text).toBe('-not-a-bullet')
   })
 })
+
+// Security audit 2026-10-01, H2: a directive's body is typed into another lane's pty, so a control
+// byte in it could end the bracketed paste and type keys there.
+describe('parseDirectives — control characters', () => {
+  it('strips them from the body and the target', () => {
+    expect(parseDispatches('OPERATOR-DISPATCH [co\x1bde] ok\x1b[201~\x15!echo pwned\x07'))
+      .toEqual([['code', 'ok[201~!echo pwned']])
+    expect(parseReplies('OPERATOR-REPLY [operator] done\x1b[Z'))
+      .toEqual([['operator', 'done[Z']])
+  })
+
+  it('drops a directive whose body was nothing but control characters', () => {
+    expect(parseDispatches('OPERATOR-DISPATCH [code] \x1b\x15\x00')).toEqual([])
+  })
+
+  it('a clean directive with a CRLF ending parses as before', () => {
+    expect(parseDispatches('OPERATOR-DISPATCH [code] Fix it\r')).toEqual([['code', 'Fix it']])
+  })
+})

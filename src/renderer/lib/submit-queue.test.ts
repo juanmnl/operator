@@ -18,6 +18,14 @@ describe('submitSequence', () => {
   it('wraps text as a bracketed paste with a trailing CR', () => {
     expect(submitSequence('hi')).toBe('\x1b[200~hi\x1b[201~\r')
   })
+
+  // Security audit 2026-10-01, H2: text that carries its own ESC[201~ would end the paste and
+  // type the rest as keys. Exactly one start and one end marker may reach the pty.
+  it('strips control characters from the text, so it cannot end the paste early', () => {
+    const seq = submitSequence('ok\x1b[201~\x15!echo pwned > /tmp/p1\r')
+    expect(seq).toBe('\x1b[200~ok[201~!echo pwned > /tmp/p1\n\x1b[201~\r')
+    expect(seq.split('\x1b').length - 1).toBe(2)
+  })
 })
 
 describe('createSubmitQueue', () => {
@@ -963,6 +971,14 @@ describe('attachImages — a note screenshot goes out with its note', () => {
     expect(img).toBeGreaterThan(data.indexOf(submitSequence('earlier message')))
     expect(img).toBeLessThan(data.indexOf(submitSequence('note text')))
     expect(data[img].endsWith('\r')).toBe(false)
+  })
+
+  it('strips control characters from the paths (H2)', async () => {
+    const clock = fakeClock()
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...clock })
+    await q.attachImages('t1', ['/s/a.png\x1b[201~\r!rm -rf ~\r'])
+    expect(writes).toEqual(['\x1b[200~/s/a.png[201~\n!rm -rf ~\n\x1b[201~'])
   })
 
   it('writes nothing for an empty list', async () => {

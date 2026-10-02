@@ -25,6 +25,8 @@
 // sent is not delivery, it is precisely the reported failure, and it is worth naming separately
 // from silence because the two have different causes and different fixes.
 
+import { stripControlChars } from '../../shared/control-chars'
+
 /** The tailer truncates a recorded prompt at this many characters and appends an ellipsis
  *  (transcript.rs `apply_user`). A long dispatch therefore CANNOT come back verbatim, and a
  *  matcher that demanded equality would call every long delivery a failure. */
@@ -37,7 +39,9 @@ export const TURN_TEXT_CAP = 4000
  *  and differs in line breaks and runs of spaces without differing in any way a human would call
  *  a difference. Nothing else is normalised — case and punctuation are content. */
 export function normalizeTurn(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
+  // Control characters too: `submitSequence` strips them before the write, so the turn that comes
+  // back never has them and the text we compare against must not either.
+  return stripControlChars(s).replace(/\s+/g, ' ').trim()
 }
 
 export type DeliveryMatch =

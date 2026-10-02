@@ -15,9 +15,15 @@
 //
 // Queues are PER TERMINAL: a dispatch to lane B never waits on lane A.
 
-/** Wrap text as a bracketed paste + CR — the "submit this message" byte sequence. */
+import { stripControlChars } from '../../shared/control-chars'
+
+/** Wrap text as a bracketed paste + CR — the "submit this message" byte sequence.
+ *
+ *  The text is stripped of control characters first (shared/control-chars). A message that
+ *  carries its own `ESC[201~` would otherwise end the paste early and type the rest as keys into
+ *  the lane: security audit 2026-10-01, H2. */
 export function submitSequence(text: string): string {
-  return `\x1b[200~${text}\x1b[201~\r`
+  return `\x1b[200~${stripControlChars(text)}\x1b[201~\r`
 }
 
 /** A TYPED line — what a slash command needs, and the opposite of the paste above.
@@ -313,7 +319,8 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
     attachImages(id, paths) {
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev.then(async () => {
-        if (paths.length) deps.write(id, `\x1b[200~${paths.join(' ')}\x1b[201~`)
+        // Stripped for the same reason as `submitSequence`: a path is text from outside the app.
+        if (paths.length) deps.write(id, `\x1b[200~${stripControlChars(paths.join(' '))}\x1b[201~`)
       })
       chains.set(id, next.catch(() => {}))
       return next
