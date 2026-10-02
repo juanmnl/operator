@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, createElement as h } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { AppPreviewPanel } from './AppPreviewPanel'
@@ -77,5 +77,46 @@ describe('the pending Inspect note card', () => {
     await settle()
     expect(card()).not.toBeNull()
     expect(card()!.textContent).not.toMatch(/\blines, \d+ characters/)
+  })
+})
+
+// Security review 2026-10-02, R2: a pick whose `message` was a number threw while the card was being
+// built, the ref that marks a note as waiting stayed set, and every later pick was dropped.
+describe('a malformed pick does not switch Inspect notes off', () => {
+  const discard = async () => {
+    const b = [...card()!.querySelectorAll('button')].find((x) => x.textContent?.trim() === 'Discard')!
+    await act(async () => { b.click() })
+    expect(card()).toBeNull()
+  }
+
+  it('turns message:1 and message:{} into a note without the message, and takes the next pick', async () => {
+    for (const message of [1, {}]) {
+      deliver(JSON.stringify({ message, tag: 'div' }))
+      await settle()
+      expect(cardText()?.textContent, JSON.stringify(message)).toBe('↳ div')
+      await discard()
+    }
+    deliver(JSON.stringify({ message: 'make it blue', tag: 'div' }))
+    await settle()
+    expect(cardText()?.textContent).toBe('make it blue\n\n↳ div')
+  })
+
+  it('takes the next pick after one whose handling threw', async () => {
+    const spy = vi.spyOn(crypto, 'randomUUID').mockImplementationOnce(() => { throw new Error('boom') })
+    deliver(JSON.stringify({ message: 'first', tag: 'div' }))
+    await settle()
+    expect(card()).toBeNull()
+    spy.mockRestore()
+    deliver(JSON.stringify({ message: 'second', tag: 'div' }))
+    await settle()
+    expect(cardText()?.textContent).toBe('second\n\n↳ div')
+  })
+
+  it('still drops a second pick while a note is waiting', async () => {
+    deliver(JSON.stringify({ message: 'first', tag: 'div' }))
+    await settle()
+    deliver(JSON.stringify({ message: 'swapped', tag: 'div' }))
+    await settle()
+    expect(cardText()?.textContent).toBe('first\n\n↳ div')
   })
 })

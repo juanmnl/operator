@@ -72,6 +72,31 @@ describe('acceptPick', () => {
     expect(acceptPick(payload, { inspecting: true, pending: true })).toBeNull()
   })
 
+  // Security review 2026-10-02, R2: a field of the wrong type used to throw in formatPick, which
+  // left the panel thinking a note was waiting and switched Inspect notes off.
+  it('keeps only string text fields, so formatPick never sees a number or an object', () => {
+    for (const message of [1, {}, [], true, null]) {
+      const p = acceptPick(JSON.stringify({ message, tag: 'div', component: { x: 1 }, text: 7 }), on)
+      expect(p, JSON.stringify(message)).toEqual({ tag: 'div' })
+      expect(() => formatPick(p!)).not.toThrow()
+      expect(formatPick(p!)).toBe('↳ div')
+    }
+  })
+
+  it('keeps boxes and the scale only when they are finite numbers', () => {
+    const box = { x: 1, y: 2, w: 3, h: 4 }
+    expect(acceptPick(JSON.stringify({ box, anchorBox: box, scale: 0.5 }), on)).toEqual({ box, anchorBox: box, scale: 0.5 })
+    // JSON has no Infinity or NaN; 1e999 parses to Infinity.
+    expect(acceptPick('{"box":{"x":1e999,"y":2,"w":3,"h":4},"anchorBox":{"x":"1","y":2,"w":3,"h":4},"scale":"2"}', on)).toEqual({})
+    expect(acceptPick(JSON.stringify({ box: [1, 2, 3, 4], anchorBox: null, scale: null }), on)).toEqual({})
+    // Extra keys in a box are not carried along.
+    expect(acceptPick(JSON.stringify({ box: { ...box, evil: 'x' } }), on)).toEqual({ box })
+  })
+
+  it('drops fields PreviewPick does not name', () => {
+    expect(acceptPick(JSON.stringify({ tag: 'div', images: ['/etc/passwd'], __proto__x: 1 }), on)).toEqual({ tag: 'div' })
+  })
+
   it('refuses anything that is not a JSON object', () => {
     for (const bad of ['not json', '[1,2]', 'null', '"text"', 42, undefined]) {
       expect(acceptPick(bad, on), String(bad)).toBeNull()

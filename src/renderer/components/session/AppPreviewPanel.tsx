@@ -437,24 +437,36 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
       if (!p) return
       pickPendingRef.current = true
       void (async () => {
-        // The crop is taken now, after the in-page card has gone, from the main window over the stage:
-        // the page is this component's iframe, so its box maps to window px through the stage's rect
-        // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is never
-        // stored, so there is no stored note for the shot to be deleted with, sent or discarded.
-        const id = `pick-${crypto.randomUUID()}`
-        let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
-        if (electronLiveRef.current) {
-          // An Electron app: captured in the app itself over CDP, in its page CSS px.
-          const targets = pickTargets(p)
-          if (targets.length && window.operator.previewCdpShot) {
-            shot = await window.operator.previewCdpShot({ project: shotProj, id, targets, outline: cssRgb('--measure') }).catch(() => null)
+        // THE REF IS RESET WHEN NO CARD COMES UP. Only the card's buttons clear it otherwise, so a
+        // throw anywhere below (review R2) would leave it set with nothing on screen, and every later
+        // pick would be dropped until the panel remounted. It is not reset when the card is up: that
+        // is what keeps a second pick from replacing the note while the user reads it.
+        let shown = false
+        try {
+          // The crop is taken now, after the in-page card has gone, from the main window over the stage:
+          // the page is this component's iframe, so its box maps to window px through the stage's rect
+          // and the iframe's scale. `pick-` ids age out on disk: an Inspect note is never
+          // stored, so there is no stored note for the shot to be deleted with, sent or discarded.
+          const id = `pick-${crypto.randomUUID()}`
+          let shot: Awaited<ReturnType<NonNullable<typeof window.operator.previewShotCapture>>> = null
+          if (electronLiveRef.current) {
+            // An Electron app: captured in the app itself over CDP, in its page CSS px.
+            const targets = pickTargets(p)
+            if (targets.length && window.operator.previewCdpShot) {
+              shot = await window.operator.previewCdpShot({ project: shotProj, id, targets, outline: cssRgb('--measure') }).catch(() => null)
+            }
+          } else {
+            const stage = stageRef.current?.getBoundingClientRect()
+            const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
+            shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
           }
-        } else {
-          const stage = stageRef.current?.getBoundingClientRect()
-          const req = stage && stage.width > 0 ? pickShotRequest(p, shotProj, id, stage, cssRgb('--measure')) : null
-          shot = req && window.operator.previewShotCapture ? await window.operator.previewShotCapture(req).catch(() => null) : null
+          setPendingPick({ msg: withScreenshot(formatPick(p), shot?.path), shot: shot?.path ?? null })
+          shown = true
+        } catch {
+          // Dropped: a pick that cannot become a note has nothing to show the user.
+        } finally {
+          if (!shown) pickPendingRef.current = false
         }
-        setPendingPick({ msg: withScreenshot(formatPick(p), shot?.path), shot: shot?.path ?? null })
       })()
     }
     // Tauri: the native inspect webview beacons to the backend, which emits this. Electron: an
