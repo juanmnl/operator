@@ -73,9 +73,10 @@ import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
 import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened } from '../lib/forgotten-projects'
 import { DragRegion } from '../components/DragRegion'
-import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, carriedLaneKeys, snapshotLaneKeys, previousRunOffer, NO_PENDING, type PendingLanes, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
+import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, carriedLaneKeys, snapshotLaneKeys, previousRunOffer, withLastRun, crashResumeLanes, describeCrashResume, NO_PENDING, type PendingLanes, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
 import { launchKind } from '../lib/launch-kind'
-import { laneIsLive, restoreOnce, type RestoreOutcome } from '../lib/restore-guard'
+import { previousRun } from '../lib/previous-run'
+import { laneIsLive, restoreOnce, restoreCwdPlan, type RestoreOutcome } from '../lib/restore-guard'
 import { describeOrigin, isPageMode, originKey, originLabel, pushOrigin, type LaneRef, type NavOrigin } from '../lib/nav-origin'
 import { PageBackProvider } from '../components/settings/PageShell'
 import { isStaleTask, taskAgeDays, splitStale, describeSkipped } from '../lib/task-staleness'
@@ -1075,6 +1076,9 @@ export function DashboardView() {
   /** Saved-session keys a restore is under way for, whichever path started it (see
    *  `handleRestoreSession`). */
   const restoringKeysRef = useRef(new Set<string>())
+  // Lanes main recorded in last-run.json as having called worktree_done in the last run. With
+  // `SavedSession.releasedAt`, what `restoreCwdPlan` refuses to rebuild. Set once at boot.
+  const releasedKeysRef = useRef<ReadonlySet<string>>(new Set())
   const savedSessionsRef = useRef(savedSessions)
   savedSessionsRef.current = savedSessions
   const sessionsRef = useRef(sessions)
@@ -3068,16 +3072,19 @@ export function DashboardView() {
       // `--resume <id>` instead of `--session-id <new uuid>` (lib/launch-args): the lane comes
       // back with its thread, so a re-dispatch costs a process start and not a cold context.
       if (count === 1 && opts?.resume) launchOptions.resumeSessionId = opts.resume.claudeSessionId
+      // A resumed lane keeps its saved-session KEY, so the persist effect rewrites that row
+      // (clearing `suspendedAt` with it) instead of leaving a suspended twin behind — the
+      // duplicate-lane-record shape this store has already been cleaned of once. Chosen before the
+      // spawn so main records it in last-run.json.
+      const key = (count === 1 ? opts?.resume?.key : undefined) ?? crypto.randomUUID()
+      launchOptions.laneKey = key
 
       const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
       if (!result) continue
 
       const tab: TerminalTab = {
         id: result.terminalId,
-        // A resumed lane keeps its saved-session KEY, so the persist effect rewrites that row
-        // (clearing `suspendedAt` with it) instead of leaving a suspended twin behind — the
-        // duplicate-lane-record shape this store has already been cleaned of once.
-        key: (count === 1 ? opts?.resume?.key : undefined) ?? crypto.randomUUID(),
+        key,
         cwd: result.cwd,
         model: config.model || undefined,
         effortLevel: config.effortLevel,
@@ -3402,7 +3409,7 @@ export function DashboardView() {
   // through here, so the lane is claimed for the whole restore and checked against what is live
   // once more right before the spawn. 'skipped': already live or being restored. 'failed': the
   // spawn returned nothing.
-  const handleRestoreSession = useCallback((saved: SavedSession, resume: boolean, opts?: { background?: boolean }): Promise<RestoreOutcome> => {
+  const handleRestoreSession = useCallback((saved: SavedSession, resume: boolean, opts?: { background?: boolean; quiet?: boolean }): Promise<RestoreOutcome> => {
     const isLive = () => laneIsLive(saved, resume, () => terminalsRef.current, async () => window.operator.terminalList?.())
     return restoreOnce(restoringKeysRef.current, saved.key, isLive, async (conversationLive) => {
       // THE DIRECTORY MAY BE GONE, and since lanes close themselves it usually is: a suspended
@@ -3416,7 +3423,13 @@ export function DashboardView() {
       // `?? true` for a bridge without `pathExists`: assume the dir is there and restore as before,
       // rather than rebuilding a worktree over a live one.
       const cwdGone = !(await window.operator.pathExists?.(saved.cwd).catch(() => true) ?? true)
-      if (saved.worktreeBranch && saved.sourceCwd && cwdGone) {
+      const plan = restoreCwdPlan(saved, cwdGone, releasedKeysRef.current)
+      if (plan === 'released') {
+        // Finished: it called worktree_done and its worktree is gone. Not rebuilt (R2-1).
+        if (!opts?.quiet) pushToast({ kind: 'info', text: `${saved.customName || saved.roleId || 'This lane'} finished`, detail: 'It released its worktree with worktree_done, so the worktree is not rebuilt.' })
+        return 'released'
+      }
+      if (plan === 'rebuild' && saved.worktreeBranch && saved.sourceCwd) {
         const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch, saved.roleId)
         if (made && !('error' in made)) {
           cwd = made.path
@@ -3438,6 +3451,7 @@ export function DashboardView() {
       const restoredEffort = migrateEffort(saved.effortLevel)
       if (restoredEffort) launchOptions.effort = restoredEffort
       if (resume && saved.claudeSessionId) launchOptions.resumeSessionId = saved.claudeSessionId
+      launchOptions.laneKey = saved.key
 
       // Resolve the project (canonical repo root) — always, so an old saved session with no
       // projectId gets backfilled and the project's lastActiveAt is touched on reopen.
@@ -3507,7 +3521,7 @@ export function DashboardView() {
       setPrefsViewActive(false)
       return 'started'
     })
-  }, [rememberRecent, upsertProject])
+  }, [rememberRecent, upsertProject, pushToast])
 
   // Resume a PROJECT: re-open every saved agent of the project that isn't already live,
   // each resuming its prior Claude conversation when one exists (else clean in the same
@@ -3520,10 +3534,12 @@ export function DashboardView() {
     const toRestore = savedSessions
       .filter((s) => s.projectId === projectId && !liveKeys.has(s.key))
       .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt)) // oldest first → sidebar keeps its familiar order
+    const finished: string[] = []
     for (const s of toRestore) {
-      await handleRestoreSession(s, true, opts)
+      if (await handleRestoreSession(s, true, { ...opts, quiet: true }) === 'released') finished.push(s.customName || s.roleId || s.key)
     }
-  }, [savedSessions, handleRestoreSession])
+    if (finished.length) pushToast({ kind: 'info', text: `${finished.length} finished lane${finished.length > 1 ? 's' : ''} not resumed`, detail: `${finished.join(', ')}: released ${finished.length > 1 ? 'their worktrees' : 'its worktree'} with worktree_done.` })
+  }, [savedSessions, handleRestoreSession, pushToast])
 
   const forgetSavedSession = useCallback((key: string) => {
     setSavedSessions((prev) => {
@@ -3734,7 +3750,7 @@ export function DashboardView() {
     restartedFromRef.current.add(terminalId)
     try {
       await window.operator.terminalKill(terminalId)
-      const result = await window.operator.terminalSpawn(tab.cwd, launchOptions)
+      const result = await window.operator.terminalSpawn(tab.cwd, { ...launchOptions, laneKey: tab.key })
       if (!result) {
         // The old process is gone and nothing replaced it. Leave the tab in the state any exited
         // lane is in; its saved row is untouched, so it can still be resumed.
@@ -5000,13 +5016,33 @@ export function DashboardView() {
   useEffect(() => {
     if (!savedHydrated || !reattachDone || restoredRef.current) return
     restoredRef.current = true
+    // Which carried lanes have no folder any more, for the card. Asked on a reload too, so the
+    // card's "left out" line is right after one.
+    const missingFolders = async (keys: Iterable<string>): Promise<Set<string>> => {
+      const wanted = new Set(keys)
+      const missing = new Set<string>()
+      await Promise.all(savedSessions.filter((s) => wanted.has(s.key)).map(async (s) => {
+        try {
+          // `pathExists`, not `worktreeStatus`: the latter reports `valid: false` for any
+          // folder that isn't a git repo, which would call a perfectly good directory gone.
+          if ((await window.operator.pathExists?.(s.cwd)) === false) missing.add(s.cwd)
+        } catch { /* unknown → assume present; a wrong "gone" is worse than a late one */ }
+      }))
+      return missing
+    }
     // Every path below must release the persist gate, including the ones that restore nothing.
     if (terminals.length > 0) {
       // ptys survived: a reload, not a restart. The previous run's lanes not yet resumed are still
-      // owed, so carry them, or the first snapshot of this renderer would drop them.
+      // owed, so carry them, or the first snapshot of this renderer would drop them. Same run, so
+      // the snapshot is right and main's last-run record (the run before) is not used for keys.
       const live = new Set(terminals.map((t) => t.key))
-      setPendingLanes(carriedLaneKeys(readWorkspace(localStorage.getItem(WORKSPACE_KEY)), savedSessions, { relaunch: false, live }))
+      const carried = carriedLaneKeys(readWorkspace(localStorage.getItem(WORKSPACE_KEY)), savedSessions, { relaunch: false, live })
+      setPendingLanes(carried)
       setRestoreSettled(true)
+      void (async () => {
+        releasedKeysRef.current = new Set((await previousRun())?.released ?? [])
+        setPendingMissing(await missingFolders([...carried.lastRun, ...carried.older]))
+      })()
       return
     }
 
@@ -5014,8 +5050,15 @@ export function DashboardView() {
       // LAUNCH OR RELOAD, asked of main (lib/launch-kind). A launch opens on the home overview with
       // where you were one click away; a reload (watchdog respawn, crash, ⌘R) restores it as before.
       // One IPC round trip, while the window is still hidden behind the launch splash.
-      const kind = await launchKind()
-      const stored = readWorkspace(localStorage.getItem(WORKSPACE_KEY))
+      // With it, main's record of the last run (last-run.json): which lanes its pty table had and
+      // whether it ended through teardown.
+      const [kind, previous] = await Promise.all([launchKind(), previousRun()])
+      releasedKeysRef.current = new Set(previous?.released ?? [])
+      // On a relaunch main's record is "the lanes the last run had"; the snapshot's own `liveKeys`
+      // are the fallback when there is no record. A reload is the same run: the snapshot stands.
+      const stored = kind === 'reload'
+        ? readWorkspace(localStorage.getItem(WORKSPACE_KEY))
+        : withLastRun(readWorkspace(localStorage.getItem(WORKSPACE_KEY)), previous)
       if (!stored) {
         if (kind === 'launch') { setActiveProjectId(null); setGalleryTab('overview') }
         setRestoreSettled(true)
@@ -5054,15 +5097,7 @@ export function DashboardView() {
       // any path, worktree or not — a missing folder and a removed worktree are the same
       // question here: is there still somewhere to spawn into.
       // Every carried lane, not only the plan's: the resume card covers all projects.
-      const missing = new Set<string>()
-      const carriedSet = new Set(carriedKeys)
-      await Promise.all(savedSessions.filter((s) => carriedSet.has(s.key)).map(async (s) => {
-        try {
-          // `pathExists`, not `worktreeStatus`: the latter reports `valid: false` for any
-          // folder that isn't a git repo, which would call a perfectly good directory gone.
-          if ((await window.operator.pathExists?.(s.cwd)) === false) missing.add(s.cwd)
-        } catch { /* unknown → assume present; a wrong "gone" is worse than a late one */ }
-      }))
+      const missing = await missingFolders(carriedKeys)
       setPendingMissing(missing)
       const settled = planRestore({
         workspace,
@@ -5083,8 +5118,17 @@ export function DashboardView() {
       // AUTO-RESUME — off by default, and deliberately so: reopening the app should not silently
       // spawn six processes, six worktrees and six dev ports. When it is on, it runs the SAME
       // per-project resume the ⌘K action and Project Home use; there is no second resume path.
+      //
+      // AFTER A CRASH it is not a choice: the last run did not end through teardown (a crash, a force
+      // quit, the machine going down), so exactly its lanes are resumed now, in the background,
+      // oldest first, through the same queue as the card's button. A clean quit only offers them.
+      const crashed = crashResumeLanes({ previous, kind, savedSessions, projects, missingPaths: missing })
       const resumable = settled.lanes.filter((l) => !l.blocked)
-      if (resumeOnLaunchEnabled() && settled.projectId && resumable.length) {
+      if (crashed.length) {
+        const { text, detail } = describeCrashResume(crashed, projects)
+        pushToast({ text, kind: 'info', detail })
+        void runResumeQueueRef.current(crashed)
+      } else if (resumeOnLaunchEnabled() && settled.projectId && resumable.length) {
         // In the BACKGROUND on a launch: the lanes start, the overview stays on screen. The resume
         // card is hidden until it finishes, so its button cannot race this for the same lanes.
         setAutoResuming(true)
@@ -5109,6 +5153,7 @@ export function DashboardView() {
     projects,
     missingPaths: pendingMissing,
     failedKeys: resumeFailed,
+    releasedKeys: releasedKeysRef.current,
   }), [pendingLanes, savedSessions, terminals, projects, pendingMissing, resumeFailed])
   const [resumingPrevious, setResumingPrevious] = useState<{ done: number; total: number } | null>(null)
   const resumingPreviousRef = useRef(false)
@@ -5117,10 +5162,12 @@ export function DashboardView() {
   // Sequential for the same reason that one is (ports, re-attach), and in the background so the
   // overview stays on screen while they come up. A lane another path brought back in the meantime
   // is skipped by `handleRestoreSession`.
-  const resumePreviousRun = useCallback(async () => {
-    if (!resumeOffer || resumingPreviousRef.current) return
+  //
+  // The crash auto-resume runs through the same queue, so the card shows its progress and its button
+  // cannot start a second pass over the same lanes.
+  const runResumeQueue = useCallback(async (lanes: readonly SavedSession[]) => {
+    if (resumingPreviousRef.current) return
     resumingPreviousRef.current = true
-    const lanes = resumeOffer.resumable
     try {
       for (let i = 0; i < lanes.length; i++) {
         setResumingPrevious({ done: i, total: lanes.length })
@@ -5134,12 +5181,23 @@ export function DashboardView() {
         // One lane that cannot start must not strand the rest. It stays pending, so a relaunch
         // offers it again; in this run the card names it instead of retrying it.
         if (outcome === 'failed') setResumeFailed((prev) => new Set(prev).add(lanes[i].key))
+        // Finished (worktree_done, folder gone): nothing to resume, now or after a relaunch.
+        if (outcome === 'released') {
+          const key = lanes[i].key
+          setPendingLanes((prev) => ({ lastRun: prev.lastRun.filter((k) => k !== key), older: prev.older.filter((k) => k !== key) }))
+        }
       }
     } finally {
       resumingPreviousRef.current = false
       setResumingPrevious(null)
     }
-  }, [resumeOffer, handleRestoreSession])
+  }, [handleRestoreSession])
+  // The launch restore above runs once and calls this from an older render.
+  const runResumeQueueRef = useRef(runResumeQueue)
+  runResumeQueueRef.current = runResumeQueue
+  const resumePreviousRun = useCallback(async () => {
+    if (resumeOffer) await runResumeQueue(resumeOffer.resumable)
+  }, [resumeOffer, runResumeQueue])
 
   // THE LAYOUT GRID over the Preview. The spec is per project (`Project.previewGrid`, written
   // through updateProject); whether it is shown is per session (`SessionLayout.tools.grid`). A

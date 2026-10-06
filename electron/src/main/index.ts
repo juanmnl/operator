@@ -31,6 +31,7 @@ import { onAppActivated, onWindowFocused } from './activation'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
+import { LastRunRecorder, lastRunFile } from './last-run'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
 // so `__dirname` is the real thing here — `import.meta.url` compiles to an empty string.
@@ -51,6 +52,13 @@ let stopTrayAnim: (() => void) | null = null
 let sweepTimer: ReturnType<typeof setInterval> | null = null
 let checkouts: CheckoutWatcher | null = null
 let claudeVersion: ClaudeVersionWatcher | null = null
+/** last-run.json: this run's live lanes, and whether it ended through teardown (last-run.ts). */
+let lastRun: LastRunRecorder | null = null
+let lastRunTimer: ReturnType<typeof setInterval> | null = null
+
+/** How often last-run.json is re-checked for a lane that called worktree_done. The MCP server
+ *  records a release in the store, not through main, so nothing else announces it. */
+const LAST_RUN_SYNC_MS = 15_000
 
 /** Lane dispatches and replies, held while no renderer can route them (renderer-gate.ts). Released
  *  by the renderer's `rendererReady` once its lane tabs are back. */
@@ -210,6 +218,10 @@ let tornDown = false
 function teardown(): Promise<void> {
   if (teardownPromise) return teardownPromise
   teardownPromise = (async () => {
+    // Before anything is killed: the lanes running now are the ones this run had, and the kills
+    // below (quit or update install) must not take them off the list.
+    lastRun?.freeze()
+    if (lastRunTimer) { clearInterval(lastRunTimer); lastRunTimer = null }
     transcript?.stop()
     // AWAITED, and it is why teardown is async at all: `killAll` now reaps each lane's whole
     // process tree, and quit must not race the app's exit against the SIGTERM it just sent to a
@@ -222,6 +234,12 @@ function teardown(): Promise<void> {
       await releaseLeasesOf(process.pid)
     } catch (e) {
       console.error('[shell] teardown reap failed:', e)
+    }
+    // The run ended through teardown. A crash never gets here, which is what the next boot reads.
+    try {
+      await Promise.race([lastRun?.finish() ?? Promise.resolve(), new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS))])
+    } catch (e) {
+      console.error('[shell] last-run write failed:', e)
     }
     // DEFECT #1 of the worktree lifecycle audit: `teardown` never touched worktrees, so every
     // worktree-backed lane still open at quit — a routine way to stop the app, given hours-long
@@ -327,10 +345,24 @@ function boot(): void {
       // Report-only: what the automatic worktree rule would take now that a lane ended on its own.
       if (selfExit) void checkAutoRemoval('lane-exit')
     },
+    () => { void lastRun?.sync() },
   )
   transcript = new Transcript()
   chat = new ChatStore()
   artifacts = new ArtifactStore()
+
+  // Which lanes this run has, for the next boot. Read the previous run's record and claim the file
+  // before any lane can spawn into it; writes queued before then wait for the claim.
+  lastRun = new LastRunRecorder({
+    file: lastRunFile(),
+    self: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() },
+    lanes: () => terminals?.liveLanes() ?? [],
+    openReleases: () => new Set((artifacts?.pendingReleases(String(process.pid)) ?? []).map((r) => r.terminalId)),
+  })
+  void lastRun.open({ releasesOf: (pid, since) => artifacts?.releasesOfRun(pid, since) ?? [] })
+    .then((verdict) => console.error(`[last-run] previous run: ${verdict}`))
+  lastRunTimer = setInterval(() => { void lastRun?.sync() }, LAST_RUN_SYNC_MS)
+  lastRunTimer.unref?.()
 
   // The tailer's outputs. `chat` is persisted BEFORE the event goes out, matching the Rust —
   // the frontend's re-read on a reply relies on the row already being there.
@@ -414,7 +446,7 @@ function boot(): void {
   claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
   claudeVersion.start()
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, lastRun, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way

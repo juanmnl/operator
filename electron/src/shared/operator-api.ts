@@ -117,6 +117,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   worktreeReapPlan:       { delivery: 'invoke', impl: 'native' },
   worktreeQuickList:      { delivery: 'invoke', impl: 'native' },
   launchKind:             { delivery: 'invoke', impl: 'native' },
+  previousRun:            { delivery: 'invoke', impl: 'native' },
   worktreeReap:           { delivery: 'invoke', impl: 'native' },
   worktreeRemoveSelected: { delivery: 'invoke', impl: 'native' },
   worktreeRescue:         { delivery: 'invoke', impl: 'native' },

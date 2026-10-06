@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { laneIsLive, restoreOnce, type RestoreOutcome } from './restore-guard'
+import { laneIsLive, restoreOnce, restoreCwdPlan, type RestoreOutcome } from './restore-guard'
 
 // Review H1, 2026-10-06: the resume card and Project Home's "Resume N agents" (or auto-resume)
 // could both reach one lane and spawn two `claude --resume <id>` into the same conversation.
@@ -61,5 +61,32 @@ describe('laneIsLive', () => {
 
   it('an unreadable pty list is not a reason to block the restore', async () => {
     expect(await laneIsLive({ key: 'k', claudeSessionId: 'c' }, true, () => [], async () => { throw new Error('ipc') })).toBe(false)
+  })
+})
+
+// Review R2-1, 2026-10-06: the released-worktree exclusion lived only in the card's offer, and only
+// after a launch's folder check, so a reload, Project Home or ⌘K rebuilt a released lane's worktree.
+describe('restoreCwdPlan', () => {
+  const wt = { key: 'k', worktreeBranch: 'operator/abc', sourceCwd: '/repo' }
+
+  it('rebuilds a worktree lane whose folder is gone', () => {
+    expect(restoreCwdPlan(wt, true)).toBe('rebuild')
+  })
+
+  it('refuses the rebuild for a lane that called worktree_done (releasedAt on its row)', () => {
+    expect(restoreCwdPlan({ ...wt, releasedAt: '2026-10-06T10:00:00Z' }, true)).toBe('released')
+  })
+
+  it('refuses it for a lane main recorded as released in last-run.json', () => {
+    expect(restoreCwdPlan(wt, true, new Set(['k']))).toBe('released')
+  })
+
+  it('a released lane whose folder main kept (unsaved work) resumes in that folder', () => {
+    expect(restoreCwdPlan({ ...wt, releasedAt: '2026-10-06T10:00:00Z' }, false)).toBe('as-is')
+  })
+
+  it('a plain folder lane is spawned as-is', () => {
+    expect(restoreCwdPlan({ key: 'k' }, true)).toBe('as-is')
+    expect(restoreCwdPlan({ key: 'k' }, false)).toBe('as-is')
   })
 })

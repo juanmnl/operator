@@ -19,7 +19,7 @@
 // much larger feature. So a session you were looking at restores as PROJECT HOME with that lane
 // named and one press away, and never as something that looks live.
 
-import type { SavedSession } from '../../shared/types'
+import type { PreviousRunInfo, SavedSession } from '../../shared/types'
 
 /** What the content area was showing. Mirrors DashboardView's `contentMode`, plus `session`
  *  for "a lane was focused" — which is the one value that cannot be restored as-is. */
@@ -281,6 +281,64 @@ export function snapshotLaneKeys(
   return { liveKeys, carriedKeys, olderKeys }
 }
 
+// ── MAIN'S RECORD OF THE LAST RUN ───────────────────────────────────────────────────────────────
+//
+// `~/.operator/last-run.json` (electron/src/main/last-run.ts) lists the lanes main's pty table had
+// when the last run ended, and whether it ended through teardown. It is the same rule as
+// `snapshotLaneKeys` (a lane that ended on its own is out, one ended by the quit is in), taken from
+// the process that owns the ptys instead of a renderer that can die. When it exists it replaces
+// the snapshot's `liveKeys` as "the lanes the last run had"; everything downstream
+// (`carriedLaneKeys`, the card, `planRestore`) is unchanged. Without it (first run with this build,
+// the Tauri bridge) the snapshot's own `liveKeys` stand.
+
+/** The snapshot with main's record of the last run as its `liveKeys`. Null only when neither
+ *  exists. A snapshot missing while the record exists still lands on the overview with an offer. */
+export function withLastRun(stored: Workspace | null, previous: PreviousRunInfo | null | undefined): Workspace | null {
+  if (!previous) return stored
+  const liveKeys = previous.lanes.map((l) => l.key)
+  if (stored) return { ...stored, liveKeys }
+  return { v: WORKSPACE_VERSION, projectId: null, mode: 'gallery', projectTab: 'board', liveKeys, at: previous.endedAt }
+}
+
+/** The lanes to resume without asking, oldest first: the last run's, when it did not end through
+ *  teardown and main hands out the auto-resume (first renderer of the app run only). Exactly the
+ *  recorded lanes, minus the ones the card would leave out (forgotten or shelved project, folder
+ *  gone and not rebuildable, released, no conversation); those stay on the card. Empty after a
+ *  clean quit, where the auto-resume setting still decides. */
+export function crashResumeLanes(input: {
+  previous: PreviousRunInfo | null | undefined
+  kind: LaunchKind
+  savedSessions: readonly SavedSession[]
+  projects: ReadonlyArray<{ id: string; name: string; archivedAt?: string }>
+  missingPaths?: ReadonlySet<string>
+}): SavedSession[] {
+  const { previous, kind } = input
+  if (!previous || previous.clean || !previous.autoResume || kind === 'reload') return []
+  const offer = previousRunOffer({
+    keys: previous.lanes.map((l) => l.key),
+    savedSessions: input.savedSessions,
+    liveKeys: new Set(),
+    projects: input.projects,
+    missingPaths: input.missingPaths,
+    releasedKeys: new Set(previous.released),
+  })
+  return offer?.resumable ?? []
+}
+
+/** The toast for a crash resume: which lanes, grouped by project. */
+export function describeCrashResume(lanes: readonly SavedSession[], projects: ReadonlyArray<{ id: string; name: string }>): { text: string; detail: string } {
+  const groups = new Map<string, string[]>()
+  for (const s of lanes) {
+    const name = (s.projectId && projects.find((p) => p.id === s.projectId)?.name) || s.projectName || s.cwd.split('/').pop() || s.cwd
+    groups.set(name, [...(groups.get(name) ?? []), laneName(s)])
+  }
+  const n = lanes.length
+  return {
+    text: `Operator did not quit cleanly. Resuming\u00a0${n}\u00a0lane${n === 1 ? '' : 's'}`,
+    detail: [...groups].map(([p, names]) => `${p}: ${names.join(', ')}`).join(' · '),
+  }
+}
+
 export interface PreviousRunProject {
   projectId: string | null
   name: string
@@ -317,7 +375,7 @@ export interface PreviousRunOffer {
  *  branch and source repo is put back by `handleRestoreSession`, and lanes close themselves, so for
  *  those a missing folder is the normal case and not a reason to leave them out. A lane that
  *  released its worktree with `worktree_done` is the exception. */
-export function previousRunOffer({ keys, savedSessions, liveKeys, projects, missingPaths, failedKeys }: {
+export function previousRunOffer({ keys, savedSessions, liveKeys, projects, missingPaths, failedKeys, releasedKeys }: {
   keys: readonly string[]
   savedSessions: readonly SavedSession[]
   /** Keys live in this run. Already resumed, so not offered. */
@@ -327,6 +385,8 @@ export function previousRunOffer({ keys, savedSessions, liveKeys, projects, miss
   missingPaths?: ReadonlySet<string>
   /** Lanes whose spawn failed in this run. */
   failedKeys?: ReadonlySet<string>
+  /** Lanes main recorded as having called worktree_done (last-run.json), on top of `releasedAt`. */
+  releasedKeys?: ReadonlySet<string>
 }): PreviousRunOffer | null {
   const byKey = new Map(savedSessions.map((s) => [s.key, s]))
   const lanes = [...new Set(keys)]
@@ -344,7 +404,7 @@ export function previousRunOffer({ keys, savedSessions, liveKeys, projects, miss
     if (project.archivedAt) return 'project-shelved'
     if (failedKeys?.has(s.key)) return 'did-not-start'
     if (missingPaths?.has(s.cwd)) {
-      if (s.releasedAt) return 'released'
+      if (s.releasedAt || releasedKeys?.has(s.key)) return 'released'
       if (!(s.worktreeBranch && s.sourceCwd)) return 'folder-missing'
     }
     return s.claudeSessionId ? undefined : 'no-conversation'

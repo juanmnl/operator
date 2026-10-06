@@ -771,6 +771,24 @@ export interface SavedSession {
   lastActiveAt: string
 }
 
+/** The previous app run, as main recorded it in `~/.operator/last-run.json`
+ *  (electron/src/main/last-run.ts). Handed to the renderer at boot. */
+export interface PreviousRunInfo {
+  /** The run ended through teardown (quit, or an update install). False: it crashed, was
+   *  force-quit, or the machine went down. */
+  clean: boolean
+  /** Lanes that were running when it ended, oldest first. A lane that ended on its own, was
+   *  closed or retired, or called worktree_done is not here. */
+  lanes: Array<{ key: string; claudeSessionId?: string; projectId?: string; roleId?: string; startedAt: string }>
+  /** Keys of lanes that called worktree_done in that run. Their worktree is not rebuilt. */
+  released: string[]
+  /** The last time that run wrote the file. */
+  endedAt: string
+  /** Resume `lanes` now, without asking: the run did not end cleanly. True for the first renderer
+   *  of this app run only, and never after a run that crashed soon after auto-resuming. */
+  autoResume: boolean
+}
+
 /** A tool call as a first-class transcript block. Mirrors `ToolBlock` in src-tauri/core.rs. */
 export interface ToolBlock {
   name: string
