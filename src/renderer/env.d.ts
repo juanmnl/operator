@@ -173,6 +173,15 @@ declare global {
       /** `launch` the first time a renderer asks in this app run, `reload` after (watchdog respawn,
        *  crash, ⌘R). Ask once per document: see lib/launch-kind. */
       launchKind?: () => Promise<'launch' | 'reload'>
+      /** The previous app run as main recorded it in last-run.json, or null when there is no record
+       *  (first run with this build, another instance owns it). `autoResume` is true for the first
+       *  renderer of this app run only. */
+      previousRun?: () => Promise<import('../shared/types').PreviousRunInfo | null>
+      /** The previous run's lanes are saved in this renderer's snapshot (or resumed): main stops
+       *  carrying them in last-run.json. */
+      previousRunTaken?: () => Promise<void>
+      /** The crash auto-resume queue has finished; main's crash-loop guard counts from now. */
+      crashResumeDone?: () => Promise<void>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose
        *  unsaved work was confirmed separately; main re-checks everything before acting. */
       worktreeRemoveSelected: (paths: string[], confirmedUnsaved: string[]) => Promise<{ removed: string[]; failed: Array<{ path: string; error: string }> }>

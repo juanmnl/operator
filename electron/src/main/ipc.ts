@@ -47,6 +47,7 @@ import {
 } from '../../../src/renderer/lib/resolve-session-config'
 import { denyReason } from '../../../src/renderer/lib/env-policy'
 import type { Project } from '../../../src/shared/types'
+import type { LastRunRecorder } from './last-run'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
@@ -75,6 +76,8 @@ export interface Deps {
   /** Lanes whose checkout was removed outside Operator (checkout-health.ts). */
   checkouts?: CheckoutWatcher
   getWindow: () => BrowserWindow | null
+  /** last-run.json (last-run.ts): the previous run's lanes, handed to the renderer at boot. */
+  lastRun?: LastRunRecorder
   /** The renderer's lane tabs are back after a launch or reload: release the held dispatches and
    *  replies (renderer-gate.ts). */
   rendererReady?: () => void
@@ -169,6 +172,8 @@ export function registerIpc(d: Deps): void {
         projectId: (o.projectId as string) ?? null,
         roleId: (o.roleId as string) ?? null,
         remoteControl: o.remoteControl === true,
+        // The saved-session key, so last-run.json can name this lane after a crash (last-run.ts).
+        laneKey: typeof o.laneKey === 'string' && o.laneKey ? o.laneKey : undefined,
         ...layers,
       })
       // Register BEFORE returning: the tailer must be watching before Claude's first line
@@ -312,6 +317,13 @@ export function registerIpc(d: Deps): void {
     // `launch` for the first renderer of this app run, `reload` after. The renderer asks once per
     // document and decides whether to open on the home overview or where it was.
     launchKind: async () => launchTracker.claim(),
+    // The previous run's lanes from last-run.json, or null when there is no record this run owns.
+    // Waits for boot's read of the file. `autoResume` is true for the first caller only.
+    previousRun: async () => (d.lastRun ? (await d.lastRun.ready(), d.lastRun.previousRun()) : null),
+    // The renderer has saved the previous run's lanes in its snapshot: main stops carrying them.
+    previousRunTaken: async () => { await d.lastRun?.previousRunTaken() },
+    // The crash auto-resume queue has finished: the crash-loop guard runs from here.
+    crashResumeDone: async () => { d.lastRun?.crashResumeDone() },
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
     // Copies unsaved work out to ~/.operator/rescued; removes nothing (the user still presses remove).

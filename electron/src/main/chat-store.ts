@@ -516,6 +516,15 @@ export class ArtifactStore {
       .map((row) => ({ terminalId: row.terminal_id, projectId: row.project_id, path: row.path, at: row.at }))
   }
 
+  /** Releases filed by an earlier app run since it started, with how each ended. Read at boot to
+   *  catch a lane that called worktree_done after that run last wrote last-run.json. */
+  releasesOfRun(appPid: string, since: string): Array<{ terminalId: string; at: string; outcome: string | null }> {
+    return (this.db.prepare(
+      `SELECT terminal_id, at, outcome FROM worktree_release WHERE app_pid = ? AND at >= ? ORDER BY id`,
+    ).all(appPid, since) as Array<{ terminal_id: string; at: string; outcome: string | null }>)
+      .map((row) => ({ terminalId: row.terminal_id, at: row.at, outcome: row.outcome }))
+  }
+
   /** Cancel this lane's open releases that are OLDER than `promptAt`: it took new work after
    *  `worktree_done`, so its directory is in use again and must not be removed at exit, and
    *  dispatch must not retire it. The lane calls `worktree_done` again when that work is done.

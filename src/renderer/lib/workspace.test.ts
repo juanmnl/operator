@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { planRestore, readWorkspace, describeRestore, carriedLaneKeys, snapshotLaneKeys, previousRunOffer, NO_PENDING, WORKSPACE_VERSION, type Workspace } from './workspace'
-import type { SavedSession } from '../../shared/types'
+import { planRestore, readWorkspace, describeRestore, carriedLaneKeys, snapshotLaneKeys, previousRunOffer, withLastRun, crashResumeLanes, describeCrashResume, NO_PENDING, WORKSPACE_VERSION, type Workspace } from './workspace'
+import type { PreviousRunInfo, SavedSession } from '../../shared/types'
 
 const saved = (over: Partial<SavedSession> & { key: string }): SavedSession => ({
   cwd: `/w/${over.key}`,
@@ -313,5 +313,110 @@ describe('previousRunOffer', () => {
     const offer = previousRunOffer({ keys: ['a1', 'b1'], savedSessions: all, liveKeys: new Set(), projects, failedKeys: new Set(['b1']) })
     expect(offer?.resumable.map((s) => s.key)).toEqual(['a1'])
     expect(offer?.blocked).toEqual([{ name: 'code', blocker: 'did-not-start' }])
+  })
+})
+
+// ── main's last-run.json as the source of the previous run ──────────────────────────────────────
+
+const run = (over: Partial<PreviousRunInfo> = {}): PreviousRunInfo => ({
+  clean: true,
+  lanes: [{ key: 'a', startedAt: '2026-10-01T00:00:00Z' }, { key: 'b', startedAt: '2026-10-02T00:00:00Z' }],
+  released: [],
+  endedAt: '2026-10-06T15:13:09Z',
+  autoResume: false,
+  ...over,
+})
+
+describe('withLastRun', () => {
+  it('main\'s record replaces the snapshot\'s liveKeys and keeps the rest of the snapshot', () => {
+    const stored = ws({ liveKeys: ['stale', 'a'], carriedKeys: ['c'], lastProjectId: 'p1' })
+    expect(withLastRun(stored, run())).toEqual({ ...stored, liveKeys: ['a', 'b'] })
+  })
+
+  it('no record (first run with this build): the snapshot stands', () => {
+    const stored = ws({ liveKeys: ['x'] })
+    expect(withLastRun(stored, null)).toBe(stored)
+    expect(withLastRun(null, null)).toBeNull()
+  })
+
+  it('a record with no snapshot still yields lanes to offer', () => {
+    expect(withLastRun(null, run())).toMatchObject({ projectId: null, mode: 'gallery', liveKeys: ['a', 'b'] })
+  })
+
+  it('feeds carriedLaneKeys like a snapshot would: a record with no lanes does not age the offer', () => {
+    const sessions = [saved({ key: 'a' }), saved({ key: 'b' }), saved({ key: 'c' })]
+    const stored = ws({ liveKeys: ['a'], carriedKeys: ['c'] })
+    expect(carriedLaneKeys(withLastRun(stored, run()), sessions, { relaunch: true })).toEqual({ lastRun: ['a', 'b'], older: ['c'] })
+    expect(carriedLaneKeys(withLastRun(stored, run({ lanes: [] })), sessions, { relaunch: true })).toEqual({ lastRun: ['c'], older: [] })
+  })
+})
+
+describe('crashResumeLanes: the clean/unclean decision', () => {
+  const sessions = [
+    saved({ key: 'b', lastActiveAt: '2026-10-05T00:00:00Z' }),
+    saved({ key: 'a', lastActiveAt: '2026-10-04T00:00:00Z' }),
+    saved({ key: 'other', lastActiveAt: '2026-10-01T00:00:00Z' }),
+  ]
+  const projects = [{ id: 'p1', name: 'operator' }]
+
+  it('an unclean end resumes exactly the recorded lanes, oldest first', () => {
+    const lanes = crashResumeLanes({ previous: run({ clean: false, autoResume: true }), kind: 'launch', savedSessions: sessions, projects })
+    expect(lanes.map((s) => s.key)).toEqual(['a', 'b'])
+  })
+
+  it('a clean quit resumes nothing (the card offers them)', () => {
+    expect(crashResumeLanes({ previous: run({ clean: true }), kind: 'launch', savedSessions: sessions, projects })).toEqual([])
+  })
+
+  it('nothing when main withholds the auto-resume (already handed out, or a crash loop), on a reload, or with no record', () => {
+    expect(crashResumeLanes({ previous: run({ clean: false, autoResume: false }), kind: 'launch', savedSessions: sessions, projects })).toEqual([])
+    expect(crashResumeLanes({ previous: run({ clean: false, autoResume: true }), kind: 'reload', savedSessions: sessions, projects })).toEqual([])
+    expect(crashResumeLanes({ previous: null, kind: 'launch', savedSessions: sessions, projects })).toEqual([])
+  })
+
+  // Review M1 follow-up: lanes main carried from a clean quit (or whose auto-resume it already
+  // handed out) are offered, not started.
+  it('an offer-only lane stays on the card and is not resumed', () => {
+    const previous = run({ clean: false, autoResume: true, lanes: [{ key: 'a', startedAt: '' }, { key: 'b', startedAt: '', offerOnly: true }] })
+    expect(crashResumeLanes({ previous, kind: 'launch', savedSessions: sessions, projects }).map((s) => s.key)).toEqual(['a'])
+    expect(carriedLaneKeys(withLastRun(ws({}), previous), sessions, { relaunch: true }).lastRun).toEqual(['a', 'b'])
+  })
+
+  it('leaves out what the card would: a released lane with its folder gone, a shelved project, no conversation', () => {
+    const rows = [
+      saved({ key: 'a', worktreeBranch: 'operator/x', sourceCwd: '/r' }),
+      saved({ key: 'b', projectId: 'p2' }),
+      saved({ key: 'c', claudeSessionId: undefined }),
+      saved({ key: 'd' }),
+    ]
+    const lanes = crashResumeLanes({
+      previous: run({ clean: false, autoResume: true, lanes: ['a', 'b', 'c', 'd'].map((key) => ({ key, startedAt: '' })), released: ['a'] }),
+      kind: 'launch',
+      savedSessions: rows,
+      projects: [...projects, { id: 'p2', name: 'Shelf', archivedAt: '2026-10-01' }],
+      missingPaths: new Set(['/w/a']),
+    })
+    expect(lanes.map((s) => s.key)).toEqual(['d'])
+  })
+
+  it('the toast names the lanes by project, and binds the sentence start to the next word', () => {
+    const t = describeCrashResume([saved({ key: 'a', roleId: 'qa' }), saved({ key: 'b', roleId: 'code' })], projects)
+    expect(t.text).toBe('Operator did not quit cleanly. Resuming\u00a02\u00a0lanes')
+    expect(t.detail).toBe('operator: qa, code')
+  })
+})
+
+describe('previousRunOffer with main\'s released lanes', () => {
+  it('a lane main recorded as released is not rebuilt, even without releasedAt on its row', () => {
+    const offer = previousRunOffer({
+      keys: ['a'],
+      savedSessions: [saved({ key: 'a', worktreeBranch: 'operator/x', sourceCwd: '/r' })],
+      liveKeys: new Set(),
+      projects: [{ id: 'p1', name: 'operator' }],
+      missingPaths: new Set(['/w/a']),
+      releasedKeys: new Set(['a']),
+    })
+    expect(offer?.resumable).toEqual([])
+    expect(offer?.blocked.map((b) => b.blocker)).toEqual(['released'])
   })
 })

@@ -2,9 +2,11 @@
 //
 // Electron is started only AFTER the dev server answers: loading the window first shows a
 // connection-refused page, and `will-navigate` (correctly) refuses to let it navigate back.
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { rendererPort } from './renderer-port.mjs'
 
@@ -15,6 +17,27 @@ const PORT = rendererPort(process.env)
 // Which page the window opens on: the app, or the measurement bench (`PAGE=bench.html?...`).
 const PAGE = process.env.OPERATOR_ELECTRON_PAGE || 'index.html'
 const URL_ = `http://localhost:${PORT}/${PAGE}`
+
+// A dev instance must not share ~/.operator with the installed app while it runs: it would take
+// last-run.json from it (or, killed hard, leave its own lanes there for the installed app to resume
+// as a crash), and its boot reapers would act on the installed app's lanes and worktrees. With
+// OPERATOR_DIR unset and a packaged Operator running, use a scratch dir instead. Setting
+// OPERATOR_DIR yourself still wins.
+if (!process.env.OPERATOR_DIR && packagedOperatorRunning()) {
+  const scratch = join(tmpdir(), 'operator-dev')
+  mkdirSync(scratch, { recursive: true })
+  process.env.OPERATOR_DIR = scratch
+  console.error(`[dev] the installed Operator is running: this instance uses OPERATOR_DIR=${scratch}. Set OPERATOR_DIR to choose another.`)
+}
+
+function packagedOperatorRunning() {
+  try {
+    const out = execFileSync('/bin/ps', ['-axo', 'comm='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
+    return out.split('\n').some((l) => /\.app\/Contents\/MacOS\/Operator$/.test(l.trim()))
+  } catch {
+    return false
+  }
+}
 
 const children = []
 const run = (cmd, args, opts = {}) => {

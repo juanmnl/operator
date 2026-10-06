@@ -76,10 +76,18 @@ export interface SpawnOptions {
    *  claude-version.ts). Only recorded and reported back, so the renderer can tell a lane running
    *  an older binary than the one installed now. */
   claudeVersion?: string | null
+  /** The renderer's durable key for this lane (`SavedSession.key`). Recorded in last-run.json so
+   *  the next boot can name the lanes this run had (last-run.ts). Absent for a plain shell. */
+  laneKey?: string
 }
 
 interface Managed {
   id: string
+  /** See `SpawnOptions.laneKey`. */
+  laneKey?: string
+  projectId?: string
+  /** ISO time `spawn()` was called, for last-run.json's oldest-first order. */
+  startedAt?: string
   cwd: string
   /** Claude session uuid — the durable key the dev-port lease is filed under. */
   sessionId?: string
@@ -115,6 +123,8 @@ interface Managed {
 }
 
 type DataSink = (id: string, base64: string) => void
+/** A lane entered or left the table (spawn, exit, kill). Read by last-run.ts. */
+type LanesChangedSink = () => void
 /** `selfExit` = the process ended without Operator killing it (the agent quit, or it crashed).
  *  `laneCwd` is the directory a LANE was spawned in; undefined for a plain shell. */
 type ExitSink = (id: string, exitCode: number, signal: number, selfExit: boolean, laneCwd?: string) => void
@@ -130,7 +140,7 @@ export class TerminalManager {
   private readonly portsByCwd = new Map<string, number>()
   private next = 0
 
-  constructor(private readonly onData: DataSink, private readonly onExit: ExitSink) {}
+  constructor(private readonly onData: DataSink, private readonly onExit: ExitSink, private readonly onLanesChanged: LanesChangedSink = () => {}) {}
 
   /** `t0`, `t1`, … — the same id scheme the renderer's saved sessions already key on. */
   private nextId(): string {
@@ -341,7 +351,7 @@ export class TerminalManager {
     const cols = clamp(o.cols, 20, 500) ?? DEFAULT_COLS
     const rows = clamp(o.rows, 5, 200) ?? DEFAULT_ROWS
 
-    const managed: Managed = { id, cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, roleId: o.roleId ?? undefined, out: this.outputFor(() => managed), exited: false }
+    const managed: Managed = { id, laneKey: o.laneKey, projectId: o.projectId ?? undefined, startedAt: new Date().toISOString(), cwd: o.cwd, sessionId: o.sessionId, pty: null, pending: null, history: [], historyBytes: 0, devPort, cdpPort, sniffedPorts: new Set(), claudeVersion: o.claudeVersion ?? null, roleId: o.roleId ?? undefined, out: this.outputFor(() => managed), exited: false }
     this.terminals.set(id, managed)
     if (cdpPort) this.cdpReserving.delete(cdpPort)
 
@@ -376,10 +386,12 @@ export class TerminalManager {
         // Everything the process printed goes out BEFORE its exit does.
         managed.out.close()
         this.onExit(id, exitCode, signal ?? 0, managed.selfExit, managed.cwd)
+        this.onLanesChanged()
       })
     }
 
     managed.pending = { spawn: launch, timer: setTimeout(() => launch(cols, rows), DEFERRED_LAUNCH_FALLBACK_MS) }
+    this.onLanesChanged()
     // `grid` is echoed back because the caller mounts the matching pane off it. This shell has
     // no alacritty core, so it is always false — see the ledger: `gridterm.rs` is the one
     // module with no Node equivalent.
@@ -511,6 +523,7 @@ export class TerminalManager {
     // Same as the Rust path: removing the entry is what makes a second `terminal:exit`
     // impossible, and the frontend's exit path must not run twice.
     this.terminals.delete(t.id)
+    if (t.laneKey) this.onLanesChanged()
     // The lane is already out of `this.terminals` (line above), so what remains is every OTHER
     // live lane — see `shouldReleaseCwdPort` for the double-allocation this guards.
     if (this.portsByCwd.get(t.cwd) === t.devPort
@@ -799,6 +812,14 @@ export class TerminalManager {
    *  (checkout-health.ts) and the live-lane refusal on merge and discard (worktree.ts). */
   liveTerminals(): Array<{ id: string; cwd: string; roleId?: string }> {
     return [...this.terminals.values()].filter((t) => !t.exited).map((t) => ({ id: t.id, cwd: t.cwd, roleId: t.roleId }))
+  }
+
+  /** Every lane in the table that has not exited, for last-run.json. A lane that ended (on its
+   *  own, or killed) is not here; one being killed is, until its exit. */
+  liveLanes(): Array<{ terminalId: string; key: string; cwd: string; claudeSessionId?: string; projectId?: string; roleId?: string; startedAt: string }> {
+    return [...this.terminals.values()]
+      .filter((t) => t.laneKey && !t.exited)
+      .map((t) => ({ terminalId: t.id, key: t.laneKey!, cwd: t.cwd, claudeSessionId: t.sessionId, projectId: t.projectId, roleId: t.roleId, startedAt: t.startedAt ?? '' }))
   }
 
   /** The cwd of every pty that has not exited, lanes and plain shells alike. Read by the worktree

@@ -10,7 +10,24 @@
 // can ask once more right before the spawn: every await before that is a window in which a path
 // that does not go through here (a launch reusing the lane, a re-attach) can have brought it back.
 
-export type RestoreOutcome = 'started' | 'skipped' | 'failed'
+/** 'released': the lane called worktree_done and its folder is gone, so it is finished and its
+ *  worktree is not rebuilt. */
+export type RestoreOutcome = 'started' | 'skipped' | 'failed' | 'released'
+
+/** Where a restore spawns. A missing folder with a branch and source repo is rebuilt, unless the
+ *  lane released its worktree with worktree_done: then its branch may be merged and deleted, and
+ *  a rebuild would put the conversation in a tree without its work, or on a fresh branch (review
+ *  R2-1, 2026-10-06). This is checked here, in the one restore path, so the card, Project Home,
+ *  ⌘K, the sidebar and auto-resume all refuse it, after a launch or a reload alike. */
+export function restoreCwdPlan(
+  saved: { key: string; worktreeBranch?: string; sourceCwd?: string; releasedAt?: string },
+  cwdGone: boolean,
+  releasedKeys?: ReadonlySet<string>,
+): 'as-is' | 'rebuild' | 'released' {
+  if (!cwdGone) return 'as-is'
+  if (saved.releasedAt || releasedKeys?.has(saved.key)) return 'released'
+  return saved.worktreeBranch && saved.sourceCwd ? 'rebuild' : 'as-is'
+}
 
 /** Run `restore` for `key` unless that lane is live or another restore of it is under way.
  *  `inFlight` is shared by every caller; the key is released when `restore` settles. */
