@@ -76,25 +76,29 @@ describe('logRendererGone', () => {
 describe('installCrashRecovery', () => {
   const NEW_DOC = { isMainFrame: true, isSameDocument: false }
 
-  /** A window whose loads emit `did-start-navigation` the way Electron's do. */
+  /** A window whose loads emit start, commit and finish the way Electron's do. Only the start is
+   *  emitted synchronously, so a test can cancel or commit a load on its own. */
   const setup = (opts: { quitting?: boolean } = {}) => {
     const wc = new EventEmitter()
     const urls: string[] = []
     let appLoads = 0
     const leaving = vi.fn()
+    const loaded = vi.fn()
+    const navigate = () => { wc.emit('did-start-navigation', NEW_DOC); wc.emit('did-navigate', {}, 'x', -1, ''); wc.emit('did-finish-load') }
     const win = {
       isDestroyed: () => false,
-      loadURL: async (url: string) => { urls.push(url); wc.emit('did-start-navigation', NEW_DOC) },
+      loadURL: async (url: string) => { urls.push(url); navigate() },
       webContents: wc,
     }
     installCrashRecovery(win as unknown as Parameters<typeof installCrashRecovery>[0], {
-      loadApp: () => { appLoads++; wc.emit('did-start-navigation', NEW_DOC) },
+      loadApp: () => { appLoads++; navigate() },
       quitting: () => !!opts.quitting,
       rendererLeaving: leaving,
+      rendererLoaded: loaded,
     })
     const crash = () => wc.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 5 })
-    const cmdR = () => wc.emit('did-start-navigation', NEW_DOC)
-    return { wc, urls, appLoads: () => appLoads, leaving, crash, cmdR }
+    const cmdR = () => navigate()
+    return { wc, urls, appLoads: () => appLoads, leaving, loaded, crash, cmdR }
   }
 
   beforeEach(() => { vi.useFakeTimers(); vi.spyOn(console, 'error').mockImplementation(() => {}) })
@@ -121,7 +125,33 @@ describe('installCrashRecovery', () => {
     const w = setup()
     w.wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true })
     w.wc.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false })
+    w.wc.emit('did-navigate-in-page', {}, 'app://x#y', true)
     expect(w.leaving).not.toHaveBeenCalled()
+  })
+
+  // Review M1 (round 2): `did-start-navigation` fires before `will-navigate`, so a navigation the
+  // guard then cancels used to hold every dispatch for good under a renderer that stayed.
+  it('a main-frame navigation that starts and is cancelled does not hold anything', () => {
+    const w = setup()
+    w.wc.emit('did-start-navigation', NEW_DOC) // a stray link; will-navigate then refuses it
+    expect(w.leaving).not.toHaveBeenCalled()
+    expect(w.loaded).not.toHaveBeenCalled()
+  })
+
+  it('holds on the commit, and reports the app\'s load so the ready fallback can arm', () => {
+    const w = setup()
+    w.wc.emit('did-start-navigation', NEW_DOC)
+    w.wc.emit('did-navigate', {}, 'app://index.html', -1, '')
+    expect(w.leaving).toHaveBeenCalledTimes(1)
+    w.wc.emit('did-finish-load')
+    expect(w.loaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('the error page\'s load does not arm the ready fallback: it never sends ready', () => {
+    const w = setup()
+    for (let i = 0; i <= RELOAD_LIMIT; i++) { w.crash(); vi.advanceTimersByTime(RECOVERY_DELAY_MS) }
+    expect(w.urls).toHaveLength(1)
+    expect(w.loaded).toHaveBeenCalledTimes(RELOAD_LIMIT) // the app loads only
   })
 
   // Review L3.

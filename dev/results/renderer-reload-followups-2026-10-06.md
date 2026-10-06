@@ -112,3 +112,70 @@ text). Testing it means mounting DashboardView, and no existing test does that.
   - Gone checkouts are re-read with `checkoutGoneList` on mount. Only the toast is lost.
 - Not in this brief, so not done: review L2 (error page loaded into a never-shown window) and N1 (log says `reloaded: true` before the reload happens; the error page's log path cannot be selected).
 - operator/d13c40 (relaunch/ResumeCard) was not touched.
+
+## Review fixes (2026-10-06, branch operator/ae1e80-fix, cut from operator/ae1e80 @ 34ed4f5)
+
+Fixes M1 and M2 of `dev/results/renderer-reload-followups-review-2026-10-06.md`. Not GUI-verified.
+
+### M1. Hold on commit, and a fallback release
+
+- `installCrashRecovery`:
+  - `did-start-navigation` now only cancels a pending recovery load (the L3 timer). On a start the
+    renderer is dead, so it cannot be the one that started the navigation.
+  - The hold, the Preview CDP detach and `previewApi.close()` now run on `did-navigate`. That event
+    fires only for a committed, main-frame, cross-document navigation. A navigation that
+    `will-navigate` cancels never commits, so it no longer holds anything.
+  - `render-process-gone` still calls `rendererLeaving` at once.
+- New `RecoveryHooks.rendererLoaded`, called on `did-finish-load` for the app. It is not called
+  for the error page, which never sends ready.
+- New `createReadyFallback` in `renderer-gate.ts`:
+  - It is armed on that load and disarmed by `rendererReady` or by the next `rendererLeaving`.
+  - If no ready arrives within `READY_FALLBACK_MS` (30 s), main releases the gate anyway. It
+    writes `{reason: 'ready-timeout', held: N}` to `renderer-gone.log` and logs a line to stderr.
+  - This covers a DashboardView that throws before `reattachDone`.
+
+### M2. Age cap on held events
+
+- The gate stamps each held event with the time it was held. On release, events older than
+  `HELD_MAX_AGE_MS` (5 min) are not routed. They go to `onExpired`, together with the number of
+  events dropped past the 200 cap since the last release.
+- An event that waits out a failed delivery keeps its original stamp.
+- Main sends the expired events to the renderer as a new event, `onHeldExpired` (SPEC, `env.d.ts`):
+  - for dispatches, the role, the task and the terminal;
+  - for replies, the count and target;
+  - the dropped count.
+- DashboardView shows one error toast:
+  - title "N dispatches arrived while the window was closed, not sent";
+  - each dispatch as "role: task" (task cut to 80 characters);
+  - that replies are in the channel and were not typed into their lanes;
+  - the dropped count.
+- Nothing expired is routed, so no lane is launched from it.
+- The coordinator did not ask for a held count in the tray or menu, so I did not add one.
+
+### Tests
+
+- `renderer-gate.test.ts`:
+  - routes only fresh events and hands the old ones to onExpired;
+  - a reload within the limit reports nothing;
+  - the dropped count is reported once;
+  - an event that waits out a failed delivery keeps its age;
+  - `createReadyFallback` fires only when no ready and no leave came after a load.
+- `renderer-recovery.test.ts`:
+  - a navigation that starts and is cancelled does not hold anything;
+  - the hold happens on commit, and the app's load is reported;
+  - the error page's load does not arm the fallback.
+- The fake window in the recovery tests now emits start, commit and finish for each load.
+
+Results:
+- `npx tsc --noEmit` (root): exit 0
+- `electron/ npm run typecheck`: exit 0
+- renderer `npx vitest run`: 114 files, 1705 tests passed
+- electron `npx vitest run`: 48 files, 839 tests passed
+
+### Not done
+
+- L1 (an event handed to the old renderer in its last milliseconds) is unchanged. Holding on the
+  commit widens that window slightly, because an event sent between a reload's start and its
+  commit goes to the old document. That gap is the time the navigation takes to commit; for a
+  local `file://` or dev-server load it is short.
+- No held count in the tray.

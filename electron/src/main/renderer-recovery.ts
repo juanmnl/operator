@@ -71,9 +71,13 @@ export const rendererGoneLogFile = (): string => join(operatorDir(), 'logs', 're
 
 export interface GoneEvent {
   at: string
+  /** `RenderProcessGoneDetails.reason`, or `ready-timeout`: the app loaded and never sent
+   *  `rendererReady`, so main released the held events on its own. */
   reason: string
   exitCode: number
   reloaded: boolean
+  /** For `ready-timeout`: how many events were held. */
+  held?: number
 }
 
 /** Append one JSON line per renderer death. Never throws: the recovery must not depend on the log. */
@@ -93,8 +97,10 @@ export interface RecoveryHooks {
   loadApp: () => void
   /** Quit has started; a reload then would only fight the teardown. */
   quitting: () => boolean
-  /** The renderer died, or a navigation is replacing it (Cmd+R, a recovery load). */
+  /** The renderer died, or a navigation replaced it (Cmd+R, a recovery load). */
   rendererLeaving: () => void
+  /** The app (not the error page) finished loading in the main frame. */
+  rendererLoaded: () => void
 }
 
 /** A dead renderer used to leave the window black until the user quit, and quitting kills every
@@ -131,13 +137,20 @@ export function installCrashRecovery(win: Pick<BrowserWindow, 'isDestroyed' | 'l
       }, RECOVERY_DELAY_MS)
     }
   })
-  // Cmd+R, and every load this module starts. A load that starts while a recovery load is still
-  // waiting (Cmd+R on the black window) replaces it: the timer's load would abort the user's.
+  // A load that starts while a recovery load is still waiting (Cmd+R on the black window) replaces
+  // it: the timer's load would abort the user's. On the START, because the renderer is dead there
+  // and cannot be what started it.
   wc.on('did-start-navigation', (details) => {
     if (!replacesDocument(details)) return
     if (pending) { clearTimeout(pending); pending = null }
-    hooks.rendererLeaving()
   })
+  // The document was replaced: Cmd+R, and every load this module starts. On the COMMIT, not the
+  // start: a navigation `installNavigationGuards` cancels in `will-navigate` has already started,
+  // its document stays, and its renderer never sends `rendererReady` again, so a hold taken on the
+  // start stopped every dispatch for good with nothing on screen (review M1, 2026-10-06).
+  // `did-navigate` is main-frame and cross-document only.
+  wc.on('did-navigate', () => { hooks.rendererLeaving() })
+  wc.on('did-finish-load', () => { if (!onErrorPage) hooks.rendererLoaded() })
   // The error page's Reload button is an in-page link, so it needs no script and no preload API.
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     if (isMainFrame && onErrorPage && url.endsWith(RELOAD_HASH)) reload()

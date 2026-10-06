@@ -16,8 +16,8 @@ import { registerIpc, broadcast } from './ipc'
 import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
-import { installCrashRecovery } from './renderer-recovery'
-import { createRendererGate } from './renderer-gate'
+import { installCrashRecovery, logRendererGone } from './renderer-recovery'
+import { createReadyFallback, createRendererGate, READY_FALLBACK_MS } from './renderer-gate'
 import { installPreviewInspect, previewApi } from './preview-inspect'
 import { installPreviewCdp, previewCdp } from './preview-cdp'
 import { ownCdpPort } from './preview-cdp-port'
@@ -62,6 +62,28 @@ const routed = createRendererGate<RoutedEvent>((e) => {
   if (e.method === 'onOrchestratorDispatch') broadcast(mainWindow, e.method, e.payload)
   else broadcast(mainWindow, e.method, e.payload)
   return true
+}, {
+  // Held past the age limit (the window was closed): shown to the user, not routed (review M2).
+  // Replies are already in the channel (`appendReply` runs before the gate); dispatches are listed
+  // so they can be sent again by hand.
+  onExpired: (expired, dropped) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    broadcast(mainWindow, 'onHeldExpired', {
+      dispatches: expired.flatMap((e) => (e.method === 'onOrchestratorDispatch' ? [{ role: e.payload.role, task: e.payload.task, terminalId: e.payload.terminalId }] : [])),
+      replies: expired.flatMap((e) => (e.method === 'onOrchestratorReply' ? [{ to: e.payload.to, projectId: e.payload.projectId }] : [])),
+      dropped,
+    })
+  },
+})
+
+/** The app loaded and never said its tabs are back. Released anyway, with a record, rather than
+ *  holding every dispatch with nothing on screen (review M1). */
+const readyFallback = createReadyFallback(() => {
+  if (routed.isReleased()) return
+  const held = routed.held()
+  console.error(`[shell] no rendererReady ${READY_FALLBACK_MS / 1000}s after the app loaded; releasing ${held} held events`)
+  void logRendererGone({ at: new Date().toISOString(), reason: 'ready-timeout', exitCode: 0, reloaded: false, held })
+  routed.release()
 })
 
 /** How often the live app re-checks for its own leaked lanes. See the call site. */
@@ -115,6 +137,7 @@ function loadApp(win: BrowserWindow): void {
  *    and its screencast keeps encoding frames nobody receives. The web preview's overlays go too. */
 function rendererLeaving(): void {
   routed.hold()
+  readyFallback.leaving()
   previewCdp?.detach()
   previewApi.close()
 }
@@ -151,7 +174,7 @@ function createWindow(): BrowserWindow {
   })
 
   installNavigationGuards(win)
-  installCrashRecovery(win, { loadApp: () => loadApp(win), quitting: () => teardownPromise !== null, rendererLeaving })
+  installCrashRecovery(win, { loadApp: () => loadApp(win), quitting: () => teardownPromise !== null, rendererLeaving, rendererLoaded: () => readyFallback.loaded() })
   startBench(win)
   win.on('resize', () => broadcast(win, 'onWindowResize'))
   // Activation → page focus → the renderer picks the element (activation.ts, src/renderer/lib/refocus).
@@ -391,7 +414,7 @@ function boot(): void {
   claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
   claudeVersion.start()
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow, rendererReady: () => routed.release() })
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way
