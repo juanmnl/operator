@@ -317,3 +317,37 @@ Not GUI-checked. The review's two extra QA cases apply:
    original lanes are offered (or resumed, if the kill came before the hand-out).
 2. An update install with a slow-dying dev server in a lane. Expected: no "did not quit cleanly"
    toast after the update.
+
+## Flaky ENOTEMPTY in the full electron suite (2026-10-06)
+
+Symptom: in `cd electron && npx vitest run`, a test in `the previous run is carried until the
+renderer has it` failed with `ENOTEMPTY` from `afterEach`'s `rmSync(dir)` (last-run.test.ts:60).
+The file alone passed. On this branch's first full run the failing test was `released lanes are
+carried too`, not `a crash before the hand-out`. Both have the same cause.
+
+Cause: a test-only leak, not a production write after teardown. Both tests end on
+`run3.previousRun()`, and in both the answer is `autoResume: true`. `previousRun()` then marks the
+carried lanes offer-only, sets `crashResumed`, and starts the write with `void this.sync()`, which
+nothing awaits. The test returns while that write is in flight. `writeFile(last-run.json.tmp)` runs
+on the libuv threadpool, so under full-suite load it can create the tmp file while the synchronous
+`rmSync` is walking the directory, and the final `rmdir` then finds it not empty. Run alone, the
+write usually finishes first. The other tests that get an auto-resume hand-out await a later
+`sync()`, `previousRunTaken()` or `owner.sync()`, which chains after it.
+
+Evidence: with timestamps printed at write start, after the tmp write, and in `afterEach`, the old
+test file has exactly these two tests with a write started before `afterEach` and its tmp file
+written after it (`a crash before the hand-out`: start 93.62 ms, afterEach 93.74, tmp written
+94.37). With the fix, none of the 31 tests has a write in flight at `afterEach`.
+
+Production checked, no change needed: teardown clears the 15 s resync interval
+(`lastRunTimer`) before `freeze()`, and awaits `freeze()` (bounded by `LAST_RUN_FREEZE_WAIT_MS`).
+`freeze()` clears the crash-loop timer and chains its write after any write in flight. After it,
+`sync()` and `previousRunTaken()` do not write, and `previousRun()`'s `void this.sync()` is one of
+those `sync()` calls. The heartbeat is not a timer: it is checked inside `writeNow`. The lock file
+is removed in `withBootLock`'s `finally`, before `open()` returns.
+
+Fix: both tests now end with `await run3.sync()`, the same pattern the other boot tests use for
+"the auto-resume note's write".
+
+Results: `electron/ npm run typecheck` exit 0; electron `npx vitest run` 3 times in a row, 49
+files, 870 tests passed each time.
