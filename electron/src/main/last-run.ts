@@ -12,10 +12,19 @@
 // quit records the lanes it ended. It is not derived from the `appPid` stamps in sessions.json,
 // which `stampSessionClaims` puts on old rows that share a recycled terminal id.
 //
-// `clean` is false while the app runs and true once teardown has killed the lanes. The next boot
-// reads a false value whose app is no longer running as a crash (or a force quit, or the machine
-// going down), and the renderer then resumes those lanes on its own. A renderer crash writes
-// nothing here: main is still running and so are the lanes.
+// `clean` is false while the app runs and true once teardown has started, written with the frozen
+// list before anything is killed. Teardown can take seconds (`killAll` waits on the lanes' process
+// trees), and an update install or a macOS logout can end the app inside them; that is still a
+// quit, not a crash (review M2). The next boot reads a false value whose app is no longer running
+// as a crash (or a force quit, or the machine going down), and the renderer then resumes those
+// lanes on its own, unless the record is older than `RESUME_MAX_AGE_MS`: then they are offered. A
+// renderer crash writes nothing here: main is still running and so are the lanes.
+//
+// THE PREVIOUS RUN, CARRIED. Boot claims the file for this run straight away, and this run's own
+// list starts empty. If main then died before its renderer had saved the previous run's lanes in
+// its own snapshot, the next boot would find an empty list and those lanes would be gone (review
+// M1). So the record carries the previous run's lanes (`carried`) until the renderer says it has
+// them (`previousRunTaken`), and the next boot reads them as part of the run they were carried by.
 //
 // TWO BOOTS. A second Operator on the same OPERATOR_DIR must neither take the file from the one
 // running nor read the running one's lanes as a crash. Boot reads, judges and claims the file under
@@ -40,6 +49,9 @@ export interface LastRunLane {
   roleId?: string
   cwd: string
   startedAt: string
+  /** Carried lanes only: offered on the card, never auto-resumed (they came from a clean quit, or
+   *  their auto-resume was already handed out). */
+  offerOnly?: boolean
 }
 
 export interface LastRun {
@@ -51,9 +63,12 @@ export interface LastRun {
   lanes: LastRunLane[]
   /** Lanes that called worktree_done in this run, with when. */
   released: Array<{ key: string; at: string }>
-  /** This run auto-resumed a crashed run's lanes less than `CRASH_LOOP_MS` ago. Cleared once it has
-   *  lived that long, so a crash with it still set reads as a crash loop. */
+  /** This run auto-resumed a crashed run's lanes and has not yet run `CRASH_LOOP_MS` past the end
+   *  of that resume, so a crash with it still set reads as a crash loop. */
   crashResumed?: boolean
+  /** The previous run's lanes and releases, until this run's renderer has saved them (see the top
+   *  of this file). A lane live in this run is in `lanes` instead. */
+  carried?: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }> }
   updatedAt: string
 }
 
@@ -62,6 +77,18 @@ export const lastRunFile = (): string => join(operatorDir(), 'last-run.json')
 /** A run that crashed this soon after it auto-resumed lanes may have crashed because of them, so
  *  the next boot offers them instead of resuming them again. */
 export const CRASH_LOOP_MS = 2 * 60 * 1000
+
+/** The crash-loop flag's limit when the renderer never reports the resume queue finished (it died,
+ *  or a reload did not run the queue). */
+export const CRASH_LOOP_MAX_MS = 30 * 60 * 1000
+
+/** An unclean record older than this is offered on the card, not resumed: lanes from a crash a
+ *  day or more ago are not what the user expects to see start on their own. */
+export const RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/** How often an unchanged record is still rewritten, so `updatedAt` stays within this of the end
+ *  of a run whose lanes did not change for days. The age limit reads it. */
+export const HEARTBEAT_MS = 10 * 60 * 1000
 
 /** How far `ps`'s start time (1 s resolution, taken at exec) may sit from the recorded one
  *  (taken from `process.uptime()` once Node is up). */
@@ -100,10 +127,28 @@ export function judgePreviousRun(prev: LastRun | null, self: { pid: number; star
   return prev.clean ? 'clean' : 'unclean'
 }
 
+/** Pure: the record's lanes with the ones it carried from the run before, and its releases with
+ *  that run's. A carried lane that is also in `lanes` or `released` was taken up by the run that
+ *  carried it. */
+export function withCarried(prev: LastRun): LastRun {
+  if (!prev.carried) return prev
+  const own = new Set([...prev.lanes.map((l) => l.key), ...prev.released.map((r) => r.key)])
+  const ownReleased = new Set(prev.released.map((r) => r.key))
+  return {
+    ...prev,
+    lanes: [...prev.lanes, ...prev.carried.lanes.filter((l) => !own.has(l.key))],
+    released: [...prev.released, ...prev.carried.released.filter((r) => !ownReleased.has(r.key))],
+    carried: undefined,
+  }
+}
+
 /** Pure: auto-resume after an unclean end, unless that run itself crashed within `CRASH_LOOP_MS`
- *  of auto-resuming (its flag was still set). */
-export function shouldAutoResume(prev: LastRun, verdict: PreviousVerdict): boolean {
-  return verdict === 'unclean' && prev.lanes.length > 0 && !prev.crashResumed
+ *  of finishing its own auto-resume (its flag was still set), or it ended more than
+ *  `RESUME_MAX_AGE_MS` before `now`. `prev` has its carried lanes merged (`withCarried`). */
+export function shouldAutoResume(prev: LastRun, verdict: PreviousVerdict, now: string): boolean {
+  if (verdict !== 'unclean' || prev.crashResumed) return false
+  if (!(Date.parse(now) - Date.parse(prev.updatedAt) <= RESUME_MAX_AGE_MS)) return false
+  return prev.lanes.some((l) => !l.offerOnly)
 }
 
 /** Pure: a crashed run's lanes, with the ones that called worktree_done after its last write moved
@@ -126,7 +171,7 @@ export function previousRunInfo(prev: LastRun, autoResume: boolean): PreviousRun
     clean: prev.clean,
     lanes: [...prev.lanes]
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-      .map(({ key, claudeSessionId, projectId, roleId, startedAt }) => ({ key, claudeSessionId, projectId, roleId, startedAt })),
+      .map(({ key, claudeSessionId, projectId, roleId, startedAt, offerOnly }) => ({ key, claudeSessionId, projectId, roleId, startedAt, ...(offerOnly ? { offerOnly } : {}) })),
     released: prev.released.map((r) => r.key),
     endedAt: prev.updatedAt,
     autoResume,
@@ -150,7 +195,8 @@ export async function processIsRunning(pid: number, startedAt: string, ps: (pid:
 
 function psStart(pid: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], (err, stdout) => {
+    // LC_ALL=C: `lstart` follows the locale, and Date.parse cannot read de_DE or pt_BR output.
+    execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
       // `ps -p` exits 1 (a numeric code) for a pid that does not exist, with empty output. A string
       // code is `ps` itself failing to run.
       if (err && typeof (err as { code?: unknown }).code !== 'number') return reject(err)
@@ -208,18 +254,22 @@ export interface RecorderDeps {
 }
 
 /** Keeps last-run.json equal to this run's live lanes. Writes are serialized and skipped when
- *  nothing changed. Nothing is written before `open()` has claimed the file, and nothing at all
- *  when another instance owns it. */
+ *  nothing changed (up to `HEARTBEAT_MS`). Nothing is written before `open()` has claimed the file,
+ *  and nothing at all when another instance owns it. */
 export class LastRunRecorder {
   private frozen = false
   private owner = false
   private clean = false
   private crashResumed = false
+  private crashTimer: ReturnType<typeof setTimeout> | null = null
   private lanes: LastRunLane[] = []
   private readonly released = new Map<string, string>()
+  /** The previous run's lanes, until the renderer has saved them (`previousRunTaken`). */
+  private carried: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }> } | null = null
   private chain: Promise<void>
   private opened: () => void = () => {}
   private lastBody = ''
+  private lastWriteAt = 0
   private previous: { info: LastRun; verdict: PreviousVerdict; autoResume: boolean } | null = null
   private autoResumeClaimed = false
 
@@ -232,6 +282,8 @@ export class LastRunRecorder {
 
   /** Settles once `open()` has read and claimed the file (or given up). */
   ready(): Promise<void> { return this.openedPromise }
+
+  private now(): string { return this.d.now?.() ?? new Date().toISOString() }
 
   /** Boot: read the previous run's record, judge it, and claim the file for this run. */
   async open(deps: {
@@ -248,10 +300,18 @@ export class LastRunRecorder {
         if (verdict === 'other-instance') return verdict
         if (prev) {
           let info = prev
+          // Late releases first: they are that run's rows, and match only its own lanes' terminal ids.
           if (verdict === 'unclean' && deps.releasesOf) {
             try { info = withLateReleases(prev, deps.releasesOf(String(prev.appPid), prev.appStartedAt)) } catch { /* store unreadable: keep the file's view */ }
           }
-          this.previous = { info, verdict, autoResume: shouldAutoResume(info, verdict) }
+          info = withCarried(info)
+          const autoResume = shouldAutoResume(info, verdict, this.now())
+          this.previous = { info, verdict, autoResume }
+          // Carried until the renderer has them. Lanes whose auto-resume is not owed stay offer-only.
+          this.carried = {
+            lanes: info.lanes.map((l) => (autoResume && !l.offerOnly ? l : { ...l, offerOnly: true })),
+            released: info.released,
+          }
         }
         this.owner = true
         // Claim it now, under the lock, so a racing boot finds a running app's record.
@@ -280,11 +340,36 @@ export class LastRunRecorder {
     if (autoResume) {
       this.autoResumeClaimed = true
       this.crashResumed = true
+      // Handed out: a crash from here on must not auto-resume the carried lanes again. The
+      // crash-loop flag decides for the lanes this run brings back.
+      if (this.carried) this.carried = { ...this.carried, lanes: this.carried.lanes.map((l) => (l.offerOnly ? l : { ...l, offerOnly: true })) }
       void this.sync()
-      const t = setTimeout(() => { this.crashResumed = false; void this.sync() }, CRASH_LOOP_MS)
-      t.unref?.()
+      // Until the renderer reports the queue finished (`crashResumeDone`); this limit is for a
+      // renderer that never does.
+      this.armCrashTimer(CRASH_LOOP_MAX_MS)
     }
     return previousRunInfo(this.previous.info, autoResume)
+  }
+
+  /** The renderer's crash resume queue has finished: the flag stays for `CRASH_LOOP_MS` more, so a
+   *  lane that crashes the app as it comes up is not resumed again at the next boot (review L1). */
+  crashResumeDone(): void {
+    if (!this.crashResumed) return
+    this.armCrashTimer(CRASH_LOOP_MS)
+  }
+
+  /** The renderer has saved the previous run's lanes in its own snapshot, or resumed them: main
+   *  stops carrying them (review M1). */
+  previousRunTaken(): Promise<void> {
+    if (!this.carried) return this.chain
+    this.carried = null
+    return this.sync()
+  }
+
+  private armCrashTimer(ms: number): void {
+    if (this.crashTimer) clearTimeout(this.crashTimer)
+    this.crashTimer = setTimeout(() => { this.crashTimer = null; this.crashResumed = false; void this.sync() }, ms)
+    this.crashTimer.unref?.()
   }
 
   /** Recompute from the pty table and write if it changed. A no-op once frozen. */
@@ -294,26 +379,22 @@ export class LastRunRecorder {
     return this.enqueue()
   }
 
-  /** Teardown is starting: take the set one last time, then stop it changing, so the kills that
-   *  follow (quit, update install) do not empty it. */
-  freeze(): void {
-    if (this.frozen) return
+  /** Teardown is starting: take the set one last time, stop it changing, and mark the run clean,
+   *  before anything is killed. The kills that follow (quit, update install) do not empty it, and
+   *  an app ended in the middle of them still reads as a quit (review M2). */
+  freeze(): Promise<void> {
+    if (this.frozen) return this.chain
     this.recompute()
     this.frozen = true
-    void this.enqueue()
-  }
-
-  /** Teardown has killed the lanes: this run ended cleanly. */
-  finish(): Promise<void> {
-    this.freeze()
     this.clean = true
+    if (this.crashTimer) { clearTimeout(this.crashTimer); this.crashTimer = null }
     return this.enqueue()
   }
 
   private recompute(): void {
     let open: ReadonlySet<string>
     try { open = this.d.openReleases() } catch { open = new Set() }
-    const now = this.d.now?.() ?? new Date().toISOString()
+    const now = this.now()
     const lanes: LastRunLane[] = []
     for (const l of this.d.lanes()) {
       if (open.has(l.terminalId)) {
@@ -326,9 +407,16 @@ export class LastRunRecorder {
       lanes.push({ key: l.key, terminalId: l.terminalId, cwd: l.cwd, claudeSessionId: l.claudeSessionId, projectId: l.projectId, roleId: l.roleId, startedAt: l.startedAt })
     }
     this.lanes = lanes
+    // A carried lane that came back in this run is this run's lane now; it is not carried again
+    // after it exits.
+    if (this.carried) {
+      const here = new Set([...lanes.map((l) => l.key), ...this.released.keys()])
+      if (this.carried.lanes.some((l) => here.has(l.key))) this.carried = { ...this.carried, lanes: this.carried.lanes.filter((l) => !here.has(l.key)) }
+    }
   }
 
   private record(): LastRun {
+    const carried = this.carried && (this.carried.lanes.length || this.carried.released.length) ? this.carried : null
     return {
       v: LAST_RUN_VERSION,
       appPid: this.d.self.pid,
@@ -337,7 +425,8 @@ export class LastRunRecorder {
       lanes: this.lanes,
       released: [...this.released].map(([key, at]) => ({ key, at })),
       ...(this.crashResumed ? { crashResumed: true } : {}),
-      updatedAt: this.d.now?.() ?? new Date().toISOString(),
+      ...(carried ? { carried } : {}),
+      updatedAt: this.now(),
     }
   }
 
@@ -350,12 +439,14 @@ export class LastRunRecorder {
     if (!this.owner) return
     const rec = this.record()
     const body = JSON.stringify({ ...rec, updatedAt: undefined })
-    if (body === this.lastBody) return
+    const at = Date.parse(rec.updatedAt)
+    if (body === this.lastBody && !(at - this.lastWriteAt >= HEARTBEAT_MS)) return
     try {
       const tmp = `${this.d.file}.tmp`
       await writeFile(tmp, JSON.stringify(rec, null, 2), 'utf8')
       await rename(tmp, this.d.file)
       this.lastBody = body
+      this.lastWriteAt = at
     } catch (e) {
       console.error('[last-run] write failed:', e)
     }

@@ -302,9 +302,9 @@ export function withLastRun(stored: Workspace | null, previous: PreviousRunInfo 
 
 /** The lanes to resume without asking, oldest first: the last run's, when it did not end through
  *  teardown and main hands out the auto-resume (first renderer of the app run only). Exactly the
- *  recorded lanes, minus the ones the card would leave out (forgotten or shelved project, folder
- *  gone and not rebuildable, released, no conversation); those stay on the card. Empty after a
- *  clean quit, where the auto-resume setting still decides. */
+ *  recorded lanes not marked offer-only, minus the ones the card would leave out (forgotten or
+ *  shelved project, folder gone and not rebuildable, released, no conversation); those stay on the
+ *  card. Empty after a clean quit, where the auto-resume setting still decides. */
 export function crashResumeLanes(input: {
   previous: PreviousRunInfo | null | undefined
   kind: LaunchKind
@@ -315,7 +315,9 @@ export function crashResumeLanes(input: {
   const { previous, kind } = input
   if (!previous || previous.clean || !previous.autoResume || kind === 'reload') return []
   const offer = previousRunOffer({
-    keys: previous.lanes.map((l) => l.key),
+    // A lane main marked offer-only (carried from a clean quit, or already handed out) stays on
+    // the card.
+    keys: previous.lanes.filter((l) => !l.offerOnly).map((l) => l.key),
     savedSessions: input.savedSessions,
     liveKeys: new Set(),
     projects: input.projects,

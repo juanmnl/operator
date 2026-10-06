@@ -4955,6 +4955,9 @@ export function DashboardView() {
   // True once the launch restore below has finished reading the snapshot (or decided there was
   // nothing to read). Declared here because the PERSIST effect is gated on it — see there.
   const [restoreSettled, setRestoreSettled] = useState(false)
+  // Set by the launch restore when main handed it a last-run record: the persist effect's first
+  // write tells main it has them (`previousRunTaken`), so main stops carrying them.
+  const lastRunToTakeRef = useRef(false)
 
   // ⚠ Gated on `restoreSettled`, and that gate is the whole reason this works. Both effects key
   // off `savedHydrated`, so without it the persist ran FIRST — writing the fresh, default state
@@ -4996,7 +4999,14 @@ export function DashboardView() {
       lastProjectId: (lastProjectRef.current = activeProjectId ?? continueTarget?.projectId ?? lastProjectRef.current),
       at: new Date().toISOString(),
     }
-    try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
+    try {
+      localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot))
+      // The previous run's lanes are in this snapshot now (owed or live): main can stop carrying them.
+      if (lastRunToTakeRef.current) {
+        lastRunToTakeRef.current = false
+        window.operator.previousRunTaken?.().catch(() => {})
+      }
+    } catch { /* quota */ }
   }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals, continueTarget, pendingLanes])
 
   // ── AND PUTTING YOU BACK ──────────────────────────────────────────────────────────────────
@@ -5059,6 +5069,11 @@ export function DashboardView() {
       const stored = kind === 'reload'
         ? readWorkspace(localStorage.getItem(WORKSPACE_KEY))
         : withLastRun(readWorkspace(localStorage.getItem(WORKSPACE_KEY)), previous)
+      // Main carries those lanes in this run's record until they are in a snapshot of ours: the
+      // persist effect tells it after its first write. A reload does not, because it does not read
+      // main's record; main then carries them to the end of the run, which offers them again at
+      // most once.
+      if (kind !== 'reload' && previous) lastRunToTakeRef.current = true
       if (!stored) {
         if (kind === 'launch') { setActiveProjectId(null); setGalleryTab('overview') }
         setRestoreSettled(true)
@@ -5124,10 +5139,14 @@ export function DashboardView() {
       // oldest first, through the same queue as the card's button. A clean quit only offers them.
       const crashed = crashResumeLanes({ previous, kind, savedSessions, projects, missingPaths: missing })
       const resumable = settled.lanes.filter((l) => !l.blocked)
+      // Main's crash-loop guard runs from the end of the resume, not from when it handed it out: a
+      // long queue can outlast it (review L1).
+      const crashResumeDone = () => { window.operator.crashResumeDone?.().catch(() => {}) }
+      if (previous?.autoResume && !crashed.length) crashResumeDone()
       if (crashed.length) {
         const { text, detail } = describeCrashResume(crashed, projects)
         pushToast({ text, kind: 'info', detail })
-        void runResumeQueueRef.current(crashed)
+        void runResumeQueueRef.current(crashed).finally(crashResumeDone)
       } else if (resumeOnLaunchEnabled() && settled.projectId && resumable.length) {
         // In the BACKGROUND on a launch: the lanes start, the overview stays on screen. The resume
         // card is hidden until it finishes, so its button cannot race this for the same lanes.

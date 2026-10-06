@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   LastRunRecorder, parseLastRun, judgePreviousRun, shouldAutoResume, withLateReleases, processIsRunning,
-  withBootLock, CRASH_LOOP_MS, type LastRun, type LiveLane,
+  withBootLock, withCarried, CRASH_LOOP_MS, CRASH_LOOP_MAX_MS, RESUME_MAX_AGE_MS, HEARTBEAT_MS, type LastRun, type LiveLane,
 } from './last-run'
 
 // --- TerminalManager's real lane table, with node-pty and the probes faked --------------------
@@ -118,16 +118,17 @@ describe('last-run.json lifecycle, from the live pty table', () => {
     expect(read().lanes.map((l) => l.key)).toEqual(['k-a'])
   })
 
-  it('killAll at quit keeps every lane, and teardown marks the run clean', async () => {
+  it('killAll at quit keeps every lane, and the run is marked clean before anything is killed', async () => {
     const { tm, rec, lane } = await managerWithRecorder()
     await lane('k-a')
     await lane('k-b')
-    rec.freeze() // teardown starts
+    await rec.freeze() // teardown starts
+    // Review M2: an update install or a logout can end the app during killAll. What is on disk
+    // at this point is what the next boot reads.
+    expect(read()).toMatchObject({ clean: true, lanes: [{ key: 'k-a' }, { key: 'k-b' }] })
     await tm.killAll()
     for (const p of ptys) p.exit(0) // the kills' exits arrive
     await rec.sync()
-    expect(read().clean).toBe(false)
-    await rec.finish()
     const r = read()
     expect(r.clean).toBe(true)
     expect(r.lanes.map((l) => l.key)).toEqual(['k-a', 'k-b'])
@@ -171,9 +172,8 @@ describe('last-run.json lifecycle, from the live pty table', () => {
     a.pty.exit(0)
     open.delete(a.id) // main settled the release on exit
     await rec.sync()
-    rec.freeze()
+    await rec.freeze()
     await tm.killAll()
-    await rec.finish()
     expect(read().lanes).toEqual([])
     expect(read().released.map((r) => r.key)).toEqual(['k-a'])
   })
@@ -186,9 +186,12 @@ describe('last-run.json lifecycle, from the live pty table', () => {
   })
 })
 
+// The clock the boot tests run at: 17 minutes after `record()` last wrote.
+const NOW = '2026-10-06T15:30:00.000Z'
+
 describe('the next boot', () => {
   const recorder = (self = SELF, lanes: LiveLane[] = []) =>
-    new LastRunRecorder({ file, self, lanes: () => lanes, openReleases: () => new Set() })
+    new LastRunRecorder({ file, self, lanes: () => lanes, openReleases: () => new Set(), now: () => NOW })
 
   it('a crashed run is unclean, and its lanes are handed out for auto-resume exactly once, oldest first', async () => {
     writeFileSync(file, JSON.stringify(record()))
@@ -206,7 +209,8 @@ describe('the next boot', () => {
     expect(read().crashResumed).toBe(true)
   })
 
-  it('the crash-loop flag clears once the auto-resuming run has lived CRASH_LOOP_MS', async () => {
+  // Review L1: a long resume queue outlasted a guard that counted from the hand-out.
+  it('the crash-loop flag holds until CRASH_LOOP_MS after the renderer reports the resume queue finished', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout'] })
     try {
       writeFileSync(file, JSON.stringify(record()))
@@ -215,12 +219,49 @@ describe('the next boot', () => {
       expect(rec.previousRun()!.autoResume).toBe(true)
       await rec.sync()
       expect(read().crashResumed).toBe(true) // a crash now would be a crash loop
-      vi.advanceTimersByTime(CRASH_LOOP_MS)
+      vi.advanceTimersByTime(CRASH_LOOP_MS * 3) // the queue is still restoring lanes
+      await rec.sync()
+      expect(read().crashResumed).toBe(true)
+      rec.crashResumeDone()
+      vi.advanceTimersByTime(CRASH_LOOP_MS - 1)
+      await rec.sync()
+      expect(read().crashResumed).toBe(true) // the last lane may still take the app down
+      vi.advanceTimersByTime(1)
       await rec.sync()
       expect(read().crashResumed).toBeUndefined()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('the crash-loop flag still clears after CRASH_LOOP_MAX_MS when the renderer never reports the queue finished', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      writeFileSync(file, JSON.stringify(record()))
+      const rec = recorder()
+      await rec.open({ isRunning: dead })
+      rec.previousRun()
+      vi.advanceTimersByTime(CRASH_LOOP_MAX_MS - 1)
+      await rec.sync()
+      expect(read().crashResumed).toBe(true)
+      vi.advanceTimersByTime(1)
+      await rec.sync()
+      expect(read().crashResumed).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an unclean record older than RESUME_MAX_AGE_MS is offered, not resumed', async () => {
+    const old = new Date(Date.parse(NOW) - RESUME_MAX_AGE_MS - 1000).toISOString()
+    writeFileSync(file, JSON.stringify(record({ updatedAt: old })))
+    const rec = recorder()
+    expect(await rec.open({ isRunning: dead })).toBe('unclean')
+    const info = rec.previousRun()!
+    expect(info).toMatchObject({ clean: false, autoResume: false })
+    expect(info.lanes.map((l) => l.key)).toEqual(['k-qa', 'k-code']) // still on the card
+    await rec.sync()
+    expect(read().crashResumed).toBeUndefined()
   })
 
   it('a clean quit is offered, not resumed', async () => {
@@ -287,6 +328,124 @@ describe('the next boot', () => {
   })
 })
 
+// Review M1: boot claimed the file with `lanes: []` before anything had consumed the previous
+// record, so a main crash in the first seconds of a run lost the previous run's lanes.
+describe('the previous run is carried until the renderer has it', () => {
+  const RUN2 = { pid: 5001, startedAt: '2026-10-06T15:29:00.000Z' }
+  const RUN3 = { pid: 5002, startedAt: '2026-10-06T15:31:00.000Z' }
+  const recorder = (self: { pid: number; startedAt: string }, lanes: () => LiveLane[] = () => []) =>
+    new LastRunRecorder({ file, self, lanes, openReleases: () => new Set(), now: () => NOW })
+  const keys = (info: { lanes: Array<{ key: string }> } | null) => info?.lanes.map((l) => l.key)
+
+  it('a crash before the hand-out: the next boot still auto-resumes the lanes', async () => {
+    writeFileSync(file, JSON.stringify(record()))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    // Run 2's main dies here, before its renderer asked for anything.
+    expect(read()).toMatchObject({ appPid: RUN2.pid, clean: false, lanes: [] })
+    expect(read().carried?.lanes.map((l) => l.key)).toEqual(['k-qa', 'k-code'])
+    const run3 = recorder(RUN3)
+    expect(await run3.open({ isRunning: dead })).toBe('unclean')
+    const info = run3.previousRun()!
+    expect(keys(info)).toEqual(['k-qa', 'k-code'])
+    expect(info.autoResume).toBe(true)
+    expect(info.lanes.some((l) => l.offerOnly)).toBe(false)
+  })
+
+  it('a crash after the hand-out, before the renderer saved them: the next boot offers them', async () => {
+    writeFileSync(file, JSON.stringify(record()))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    expect(run2.previousRun()!.autoResume).toBe(true)
+    await run2.sync()
+    const run3 = recorder(RUN3)
+    await run3.open({ isRunning: dead })
+    const info = run3.previousRun()!
+    expect(keys(info)).toEqual(['k-qa', 'k-code'])
+    expect(info.autoResume).toBe(false) // crash loop, and the lanes are offer-only
+    expect(info.lanes.every((l) => l.offerOnly)).toBe(true)
+  })
+
+  it('a clean quit, then a crash in the first seconds: the lanes are offered, not resumed', async () => {
+    writeFileSync(file, JSON.stringify(record({ clean: true })))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    run2.previousRun()
+    const run3 = recorder(RUN3)
+    expect(await run3.open({ isRunning: dead })).toBe('unclean')
+    const info = run3.previousRun()!
+    expect(keys(info)).toEqual(['k-qa', 'k-code'])
+    expect(info.autoResume).toBe(false)
+  })
+
+  it('once the renderer has them, main stops carrying them', async () => {
+    writeFileSync(file, JSON.stringify(record()))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    run2.previousRun()
+    await run2.previousRunTaken()
+    expect(read().carried).toBeUndefined()
+    const run3 = recorder(RUN3)
+    await run3.open({ isRunning: dead })
+    expect(keys(run3.previousRun())).toEqual([])
+  })
+
+  it('a carried lane resumed in this run is this run\'s lane, and is not carried again after it exits', async () => {
+    writeFileSync(file, JSON.stringify(record()))
+    let live: LiveLane[] = []
+    const run2 = recorder(RUN2, () => live)
+    await run2.open({ isRunning: dead })
+    run2.previousRun()
+    live = [{ terminalId: 't0', key: 'k-qa', cwd: '/r', startedAt: '2026-10-06T15:29:05.000Z' }]
+    await run2.sync()
+    expect(read().lanes.map((l) => l.key)).toEqual(['k-qa'])
+    expect(read().carried?.lanes.map((l) => l.key)).toEqual(['k-code'])
+    live = [] // it ended on its own
+    await run2.sync()
+    expect(read().lanes).toEqual([])
+    expect(read().carried?.lanes.map((l) => l.key)).toEqual(['k-code'])
+  })
+
+  it('a clean quit before the renderer had them keeps them in the record', async () => {
+    writeFileSync(file, JSON.stringify(record()))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    await run2.freeze()
+    expect(read().clean).toBe(true)
+    const run3 = recorder(RUN3)
+    expect(await run3.open({ isRunning: dead })).toBe('clean')
+    expect(keys(run3.previousRun())).toEqual(['k-qa', 'k-code'])
+  })
+
+  it('released lanes are carried too, so the next boot does not rebuild their worktrees', async () => {
+    writeFileSync(file, JSON.stringify(record({ released: [{ key: 'k-done', at: '2026-10-06T15:00:00.000Z' }] })))
+    const run2 = recorder(RUN2)
+    await run2.open({ isRunning: dead })
+    const run3 = recorder(RUN3)
+    await run3.open({ isRunning: dead })
+    expect(run3.previousRun()!.released).toEqual(['k-done'])
+  })
+})
+
+describe('updatedAt stays close to the end of the run', () => {
+  it('an unchanged record is rewritten every HEARTBEAT_MS, and not more often', async () => {
+    let now = Date.parse('2026-10-06T15:00:00.000Z')
+    const rec = new LastRunRecorder({
+      file, self: SELF, lanes: () => [{ terminalId: 't0', key: 'k', cwd: '/', startedAt: '' }], openReleases: () => new Set(),
+      now: () => new Date(now).toISOString(),
+    })
+    await rec.open({ isRunning: dead })
+    await rec.sync()
+    const first = read().updatedAt
+    now += HEARTBEAT_MS - 1
+    await rec.sync()
+    expect(read().updatedAt).toBe(first)
+    now += 1
+    await rec.sync()
+    expect(read().updatedAt).toBe(new Date(now).toISOString())
+  })
+})
+
 describe('the clean/unclean decision', () => {
   it('judgePreviousRun', () => {
     expect(judgePreviousRun(null, SELF, false)).toBe('none')
@@ -296,11 +455,29 @@ describe('the clean/unclean decision', () => {
     expect(judgePreviousRun(record({ clean: true }), SELF, true)).toBe('other-instance')
   })
 
-  it('shouldAutoResume: unclean with lanes only, and not after a run that crashed soon after auto-resuming', () => {
-    expect(shouldAutoResume(record(), 'unclean')).toBe(true)
-    expect(shouldAutoResume(record({ clean: true }), 'clean')).toBe(false)
-    expect(shouldAutoResume(record({ lanes: [] }), 'unclean')).toBe(false)
-    expect(shouldAutoResume(record({ crashResumed: true }), 'unclean')).toBe(false)
+  it('shouldAutoResume: unclean with lanes only, not after a run that crashed soon after auto-resuming, not past the age limit', () => {
+    expect(shouldAutoResume(record(), 'unclean', NOW)).toBe(true)
+    expect(shouldAutoResume(record({ clean: true }), 'clean', NOW)).toBe(false)
+    expect(shouldAutoResume(record({ lanes: [] }), 'unclean', NOW)).toBe(false)
+    expect(shouldAutoResume(record({ crashResumed: true }), 'unclean', NOW)).toBe(false)
+    const at = (ms: number) => new Date(Date.parse(record().updatedAt) + ms).toISOString()
+    expect(shouldAutoResume(record(), 'unclean', at(RESUME_MAX_AGE_MS))).toBe(true)
+    expect(shouldAutoResume(record(), 'unclean', at(RESUME_MAX_AGE_MS + 1))).toBe(false)
+    expect(shouldAutoResume(record({ updatedAt: 'garbage' }), 'unclean', NOW)).toBe(false)
+    // Only offer-only lanes (carried from a clean quit): nothing to resume.
+    expect(shouldAutoResume(record({ lanes: record().lanes.map((l) => ({ ...l, offerOnly: true })) }), 'unclean', NOW)).toBe(false)
+  })
+
+  it('withCarried: the carried lanes and releases join the record\'s own, without duplicates', () => {
+    const r = record({
+      lanes: [record().lanes[0]],
+      released: [{ key: 'k-rel', at: 'x' }],
+      carried: { lanes: [record().lanes[0], record().lanes[1], { key: 'k-rel', terminalId: 't1', cwd: '/', startedAt: '' }], released: [{ key: 'k-old', at: 'y' }] },
+    })
+    const m = withCarried(r)
+    expect(m.lanes.map((l) => l.key)).toEqual(['k-qa', 'k-code'])
+    expect(m.released.map((x) => x.key)).toEqual(['k-rel', 'k-old'])
+    expect(m.carried).toBeUndefined()
   })
 
   it('withLateReleases ignores a release filed before the lane started (a reused terminal id)', () => {

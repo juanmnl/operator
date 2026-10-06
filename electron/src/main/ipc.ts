@@ -320,6 +320,10 @@ export function registerIpc(d: Deps): void {
     // The previous run's lanes from last-run.json, or null when there is no record this run owns.
     // Waits for boot's read of the file. `autoResume` is true for the first caller only.
     previousRun: async () => (d.lastRun ? (await d.lastRun.ready(), d.lastRun.previousRun()) : null),
+    // The renderer has saved the previous run's lanes in its snapshot: main stops carrying them.
+    previousRunTaken: async () => { await d.lastRun?.previousRunTaken() },
+    // The crash auto-resume queue has finished: the crash-loop guard runs from here.
+    crashResumeDone: async () => { d.lastRun?.crashResumeDone() },
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>
       removeSelected((paths ?? []).map(String), (confirmedUnsaved ?? []).map(String)),
     // Copies unsaved work out to ~/.operator/rescued; removes nothing (the user still presses remove).

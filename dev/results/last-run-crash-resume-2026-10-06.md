@@ -206,3 +206,114 @@ Results (all on ca3e07b):
 - Rank 5 (`stampSessionClaims` keyed by terminal id) is untouched. last-run.json does not read
   those stamps, so it does not depend on that fix.
 - R2-2 through R2-5 are not addressed.
+
+## Review fixes (2026-10-06)
+
+Review: `dev/results/last-run-crash-resume-review-2026-10-06.md`. Fixed M1, M2, L1, L3, L4, and
+added an age limit. L2 and L5 were left as asked.
+
+### M1: the previous run is carried until the renderer has it
+
+- The record has a new optional field, `carried: { lanes, released }`. At boot, `open()` fills it
+  with the previous record's lanes and releases, after late releases are applied and after that
+  record's own `carried` is merged in (`withCarried`). So a chain of early crashes keeps passing
+  the lanes forward.
+- Carried lanes are written in every record until the renderer calls the new IPC
+  `previousRunTaken`. The renderer calls it once, from the persist effect, after its first
+  snapshot write on a launch that received a record. At that point the lanes are either in its
+  `liveKeys` (resumed) or in `carriedKeys` (offered). Dismissing the card happens after that write,
+  so it is covered by the snapshot.
+- A carried lane that comes back in this run moves to `lanes` and is pruned from `carried`
+  permanently, so it does not reappear as carried after it exits.
+- Auto-resume is tracked per lane with `offerOnly`.
+  - Carried lanes are offer-only when the previous verdict did not owe an auto-resume (a clean
+    quit, a crash loop, or past the age limit), or once this run has handed the auto-resume out.
+  - `shouldAutoResume` requires at least one lane that is not offer-only.
+  - `crashResumeLanes` in the renderer skips offer-only lanes, which stay on the card.
+- Outcomes when run 2 crashes in its first seconds (tested):
+  - before the hand-out: run 3 auto-resumes run 1's lanes;
+  - after the hand-out: run 3 offers them, because of the crash-loop flag and offer-only;
+  - run 1 quit cleanly: run 3 offers them.
+- Left out: a renderer *reload* does not call `previousRunTaken`, because the reload path reads the
+  snapshot and not main's record. Main then carries the lanes to the end of that run, so the next
+  launch can offer them once more. This only happens when the first renderer died before its
+  first snapshot write.
+
+### M2: `clean: true` is written at freeze
+
+- `freeze()` now sets `clean = true` and returns the write. `finish()` is removed.
+- `teardown()` awaits the freeze (capped at 1 s, `LAST_RUN_FREEZE_WAIT_MS`) before
+  `transcript.stop()` and `killAll`.
+- An update install, a logout, or a 4 s teardown deadline that ends the app during `killAll` is now
+  read as a quit.
+
+### L1: the crash-loop guard counts from the end of the queue
+
+- Handing out the auto-resume sets `crashResumed` with a fallback limit of 30 min
+  (`CRASH_LOOP_MAX_MS`).
+- The renderer calls the new IPC `crashResumeDone` when the crash resume queue finishes, or
+  straight away when it got the auto-resume but had nothing to resume.
+- Main then clears the flag `CRASH_LOOP_MS` (2 min) later.
+- The 30 min limit is for a renderer that never reports, for example when it died before running
+  the queue (L2).
+
+### Age limit
+
+- An unclean record whose `updatedAt` is more than 24 h old (`RESUME_MAX_AGE_MS`) is offered on the
+  card and not auto-resumed. An unparseable `updatedAt` is treated the same way.
+- Before this change, the 15 s resync wrote only when the content changed, so a run with the same
+  lanes for a week would carry a week-old `updatedAt` and its crash would be read as stale. An
+  unchanged record is now rewritten every 10 min (`HEARTBEAT_MS`), so `updatedAt` is within
+  10 min of when the run ended.
+
+### L3: `ps` runs with LC_ALL=C
+
+- `psStart` passes `env: { ...process.env, LC_ALL: 'C' }`, so `lstart` parses in every locale.
+
+### L4: dev.mjs and OPERATOR_DIR
+
+- When `OPERATOR_DIR` is unset and a packaged Operator is running (a `ps -axo comm=` line ending in
+  `.app/Contents/MacOS/Operator`), `electron/scripts/dev.mjs` sets
+  `OPERATOR_DIR=$TMPDIR/operator-dev`, creates it, and prints a line saying so.
+- An explicit `OPERATOR_DIR` still wins.
+- A dev instance started while the installed app is *not* running still uses `~/.operator`, as
+  before. That is the case the brief scoped out.
+
+### Tests
+
+`electron/src/main/last-run.test.ts`, 31 tests (was 20):
+- M2: after `await freeze()` and before `killAll`, the file already says `clean: true` with every
+  lane.
+- M1, 7 new tests:
+  - a crash before the hand-out, then auto-resume;
+  - a crash after the hand-out, then an offer;
+  - a clean quit followed by an early crash, then an offer;
+  - `previousRunTaken` drops `carried`;
+  - a resumed carried lane is not carried again after it exits;
+  - a clean quit before the renderer acked keeps the lanes;
+  - released keys are carried.
+- `withCarried` merge and dedupe.
+- L1: the flag holds through 3× `CRASH_LOOP_MS` while the queue runs, then clears exactly
+  `CRASH_LOOP_MS` after `crashResumeDone`. A second test covers the 30 min fallback.
+- Age limit:
+  - a 24 h + 1 s old unclean record is offered with its lanes, and no `crashResumed` is written;
+  - `shouldAutoResume` at exactly 24 h is true and at 24 h + 1 ms is false;
+  - an unparseable `updatedAt` gives false;
+  - all lanes offer-only gives false.
+- The heartbeat: no rewrite at `HEARTBEAT_MS - 1`, and a rewrite at `HEARTBEAT_MS`.
+- The boot tests now pin the clock (`now`), because the age limit makes them time-dependent.
+
+`src/renderer/lib/workspace.test.ts`, 1 new: an offer-only lane is not crash-resumed but is still
+in the card's carried keys.
+
+Results:
+- `npx tsc --noEmit` (root): exit 0
+- `electron/ npm run typecheck` (both tsconfigs): exit 0
+- renderer `npx vitest run`: 115 files, 1741 tests passed
+- electron `npx vitest run`: 49 files, 870 tests passed
+
+Not GUI-checked. The review's two extra QA cases apply:
+1. `kill -9` main within a few seconds of a crash-resume launch, then relaunch. Expected: the
+   original lanes are offered (or resumed, if the kill came before the hand-out).
+2. An update install with a slow-dying dev server in a lane. Expected: no "did not quit cleanly"
+   toast after the update.

@@ -778,14 +778,23 @@ export interface PreviousRunInfo {
    *  force-quit, or the machine went down. */
   clean: boolean
   /** Lanes that were running when it ended, oldest first. A lane that ended on its own, was
-   *  closed or retired, or called worktree_done is not here. */
-  lanes: Array<{ key: string; claudeSessionId?: string; projectId?: string; roleId?: string; startedAt: string }>
+   *  closed or retired, or called worktree_done is not here.
+   *  Includes lanes that run carried from the run before it and had not handed to its renderer
+   *  yet (it ended in its first seconds). */
+  lanes: Array<{
+    key: string; claudeSessionId?: string; projectId?: string; roleId?: string; startedAt: string
+    /** Offered on the card, never auto-resumed: a carried lane from a clean quit, or one whose
+     *  auto-resume was already handed out. */
+    offerOnly?: boolean
+  }>
   /** Keys of lanes that called worktree_done in that run. Their worktree is not rebuilt. */
   released: string[]
-  /** The last time that run wrote the file. */
+  /** The last time that run wrote the file: within 10 minutes of when it ended (last-run.ts
+   *  `HEARTBEAT_MS`). */
   endedAt: string
   /** Resume `lanes` now, without asking: the run did not end cleanly. True for the first renderer
-   *  of this app run only, and never after a run that crashed soon after auto-resuming. */
+   *  of this app run only, and never after a run that crashed soon after auto-resuming or one that
+   *  ended more than 24 h ago. */
   autoResume: boolean
 }
 

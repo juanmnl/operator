@@ -199,6 +199,9 @@ function createWindow(): BrowserWindow {
  *  little over that. This ceiling exists because the alternative failure mode is an app that
  *  cannot be quit — and a leaked dev server is a far smaller problem than that. */
 const TEARDOWN_DEADLINE_MS = 4000
+/** How long teardown waits for last-run.json's clean write before it starts killing lanes. One
+ *  small file; the cap is for a boot still holding the lock when quit comes. */
+const LAST_RUN_FREEZE_WAIT_MS = 1000
 
 /** Memoized so every path into quit (`QuitGuard.decide`, the guard's non-asking branches,
  *  `will-quit`) waits on the SAME teardown rather than starting a second one. */
@@ -219,9 +222,15 @@ function teardown(): Promise<void> {
   if (teardownPromise) return teardownPromise
   teardownPromise = (async () => {
     // Before anything is killed: the lanes running now are the ones this run had, and the kills
-    // below (quit or update install) must not take them off the list.
-    lastRun?.freeze()
+    // below (quit or update install) must not take them off the list. The run is marked clean in
+    // the same write and it is awaited here, so an install or a logout that ends the app during
+    // `killAll` is still read as a quit, not a crash (last-run.ts). A crash never gets here.
     if (lastRunTimer) { clearInterval(lastRunTimer); lastRunTimer = null }
+    try {
+      await Promise.race([lastRun?.freeze() ?? Promise.resolve(), new Promise<void>((r) => setTimeout(r, LAST_RUN_FREEZE_WAIT_MS))])
+    } catch (e) {
+      console.error('[shell] last-run write failed:', e)
+    }
     transcript?.stop()
     // AWAITED, and it is why teardown is async at all: `killAll` now reaps each lane's whole
     // process tree, and quit must not race the app's exit against the SIGTERM it just sent to a
@@ -234,12 +243,6 @@ function teardown(): Promise<void> {
       await releaseLeasesOf(process.pid)
     } catch (e) {
       console.error('[shell] teardown reap failed:', e)
-    }
-    // The run ended through teardown. A crash never gets here, which is what the next boot reads.
-    try {
-      await Promise.race([lastRun?.finish() ?? Promise.resolve(), new Promise<void>((r) => setTimeout(r, TEARDOWN_DEADLINE_MS))])
-    } catch (e) {
-      console.error('[shell] last-run write failed:', e)
     }
     // DEFECT #1 of the worktree lifecycle audit: `teardown` never touched worktrees, so every
     // worktree-backed lane still open at quit — a routine way to stop the app, given hours-long

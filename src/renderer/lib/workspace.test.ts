@@ -374,6 +374,14 @@ describe('crashResumeLanes: the clean/unclean decision', () => {
     expect(crashResumeLanes({ previous: null, kind: 'launch', savedSessions: sessions, projects })).toEqual([])
   })
 
+  // Review M1 follow-up: lanes main carried from a clean quit (or whose auto-resume it already
+  // handed out) are offered, not started.
+  it('an offer-only lane stays on the card and is not resumed', () => {
+    const previous = run({ clean: false, autoResume: true, lanes: [{ key: 'a', startedAt: '' }, { key: 'b', startedAt: '', offerOnly: true }] })
+    expect(crashResumeLanes({ previous, kind: 'launch', savedSessions: sessions, projects }).map((s) => s.key)).toEqual(['a'])
+    expect(carriedLaneKeys(withLastRun(ws({}), previous), sessions, { relaunch: true }).lastRun).toEqual(['a', 'b'])
+  })
+
   it('leaves out what the card would: a released lane with its folder gone, a shelved project, no conversation', () => {
     const rows = [
       saved({ key: 'a', worktreeBranch: 'operator/x', sourceCwd: '/r' }),
