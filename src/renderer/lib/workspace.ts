@@ -49,8 +49,18 @@ export interface Workspace {
   lastAgentByProject?: Record<string, string>
   /** Durable keys of the sessions that were LIVE at the time. The resume offer has to be "the
    *  six you had", and `savedSessions` alone cannot say that: it holds every session never
-   *  explicitly closed, including ones from runs before this one. */
+   *  explicitly closed, including ones from runs before this one.
+   *
+   *  This run's lanes, every project's, never one project's (see `carriedLaneKeys`). Not a lane
+   *  that ended on its own: the user quit it, or it crashed, and a relaunch must not restart it.
+   *  Lanes ended by the quit itself stay, which is why this is not a plain `!ended` filter. */
   liveKeys: string[]
+  /** The previous run's lanes not resumed or dismissed in this run. Optional: older snapshots
+   *  lack it (`snapshotLaneKeys`). */
+  carriedKeys?: string[]
+  /** The run before that one's lanes, still not resumed. Dropped at the next relaunch that had
+   *  lanes of its own, so the offer covers two runs at most and cannot grow across relaunches. */
+  olderKeys?: string[]
   /** The last project the user was IN, kept while they sit on the gallery. The app opens on the
    *  home overview at launch, so `projectId` is null right after every launch; without this the
    *  "Continue in <project>" offer would last one launch only. Optional: older snapshots lack it. */
@@ -205,6 +215,160 @@ export function describeRestore(plan: RestorePlan): string | null {
       : `${live} agent${live > 1 ? 's' : ''} ready to resume.`
   }
   return null
+}
+
+// ── THE PREVIOUS RUN'S LANES, CARRIED WHOLE ─────────────────────────────────────────────────────
+//
+// `planRestore` scopes its lanes to the restored project, which is right for "where you were" and
+// wrong for "what was running". The carried set used to be taken from the plan, so the first
+// snapshot after a launch wrote ONE project's lanes over every project's: on 2026-10-06, 33 keys
+// across 7 projects became 5, four seconds after the relaunch
+// (dev/results/relaunch-lost-sessions-2026-10-06.md). The carried set is now the whole previous
+// run, and the project filter applies only where an offer is built.
+//
+// TWO RUNS AT MOST. Lanes not resumed are carried into the next run, and once more into the one
+// after it, then dropped. Carrying them for as long as they were ignored let the set grow with
+// every lane ever live, under a card that said "your last session" (review M2, 2026-10-06). A run
+// that started no lanes does not count: relaunching twice without resuming anything must not lose
+// the lanes you had.
+
+/** The previous runs' lanes not yet resumed or dismissed. */
+export interface PendingLanes {
+  /** The run before this one. */
+  lastRun: string[]
+  /** The run before that, carried once more. */
+  older: string[]
+}
+
+export const NO_PENDING: PendingLanes = { lastRun: [], older: [] }
+
+/** What this launch owes from earlier runs, unscoped. A key whose SavedSession has been forgotten
+ *  (closed, pruned) drops; so does a key live now.
+ *
+ *  `relaunch`: a new run, so the snapshot's own lanes become "last run" and its carried lanes
+ *  become "older"; the snapshot's older lanes drop. A reload of the same run moves nothing. */
+export function carriedLaneKeys(workspace: Workspace | null, savedSessions: readonly SavedSession[], opts: {
+  relaunch: boolean
+  live?: ReadonlySet<string>
+}): PendingLanes {
+  if (!workspace) return NO_PENDING
+  const known = new Set(savedSessions.map((s) => s.key))
+  const keep = (keys: readonly string[] | undefined) => [...new Set(keys ?? [])].filter((k) => known.has(k) && !opts.live?.has(k))
+  const ran = keep(workspace.liveKeys)
+  const carried = keep(workspace.carriedKeys)
+  const older = keep(workspace.olderKeys)
+  let lastRun: string[]
+  let olderRun: string[]
+  if (opts.relaunch && ran.length) { lastRun = ran; olderRun = carried }
+  else if (opts.relaunch) { lastRun = carried; olderRun = older }
+  // A reload: still the same run. Its own lanes that did not come back are owed with the rest.
+  else { lastRun = [...new Set([...carried, ...ran])]; olderRun = older }
+  const inLast = new Set(lastRun)
+  return { lastRun, older: olderRun.filter((k) => !inLast.has(k)) }
+}
+
+/** The snapshot's lane fields: this run's lanes, minus the ones that ended on their own, and the
+ *  earlier runs' lanes still owed. A lane back in this run is not owed: it is this run's now. */
+export function snapshotLaneKeys(
+  tabs: ReadonlyArray<{ key: string; selfExited?: boolean }>,
+  pending: PendingLanes,
+): Pick<Workspace, 'liveKeys' | 'carriedKeys' | 'olderKeys'> {
+  const here = new Set(tabs.map((t) => t.key))
+  const liveKeys = [...new Set(tabs.filter((t) => !t.selfExited).map((t) => t.key))]
+  const carriedKeys = [...new Set(pending.lastRun)].filter((k) => !here.has(k))
+  const inCarried = new Set(carriedKeys)
+  const olderKeys = [...new Set(pending.older)].filter((k) => !here.has(k) && !inCarried.has(k))
+  return { liveKeys, carriedKeys, olderKeys }
+}
+
+export interface PreviousRunProject {
+  projectId: string | null
+  name: string
+  /** Resumable lanes of this project. Lanes left out are counted in `PreviousRunOffer.blocked`. */
+  lanes: number
+}
+
+/** Why the card leaves a lane out. `planRestore`'s two, plus what only the card has to say. */
+export type OfferBlocker = ResumeBlocker
+  /** Its project was forgotten. A resume would bring the project back without being asked. */
+  | 'project-forgotten'
+  /** Its project is shelved. A resume would lift the shelf without being asked. */
+  | 'project-shelved'
+  /** It called `worktree_done` and its worktree was removed. Not rebuilt: the task is finished,
+   *  and its branch may be merged and deleted, so a rebuild could land on a fresh branch. */
+  | 'released'
+  /** The card tried it in this run and the spawn failed. Not retried from the card. */
+  | 'did-not-start'
+
+export interface PreviousRunOffer {
+  /** What the one button resumes, oldest first across every project: the same order
+   *  `handleResumeProject` uses, so the sidebar comes back in its usual order. */
+  resumable: SavedSession[]
+  /** Previous-run lanes the button leaves out, named so the user knows why. */
+  blocked: Array<{ name: string; blocker: OfferBlocker }>
+  /** Most lanes first. */
+  projects: PreviousRunProject[]
+}
+
+/** The gallery overview's resume card. Pure: the carried keys and what exists now → what to
+ *  offer, or null when there is nothing to offer.
+ *
+ *  A missing folder blocks a lane only when it cannot be rebuilt. A worktree lane that kept its
+ *  branch and source repo is put back by `handleRestoreSession`, and lanes close themselves, so for
+ *  those a missing folder is the normal case and not a reason to leave them out. A lane that
+ *  released its worktree with `worktree_done` is the exception. */
+export function previousRunOffer({ keys, savedSessions, liveKeys, projects, missingPaths, failedKeys }: {
+  keys: readonly string[]
+  savedSessions: readonly SavedSession[]
+  /** Keys live in this run. Already resumed, so not offered. */
+  liveKeys: ReadonlySet<string>
+  /** Projects on record. A lane whose project is not here was forgotten. */
+  projects: ReadonlyArray<{ id: string; name: string; archivedAt?: string }>
+  missingPaths?: ReadonlySet<string>
+  /** Lanes whose spawn failed in this run. */
+  failedKeys?: ReadonlySet<string>
+}): PreviousRunOffer | null {
+  const byKey = new Map(savedSessions.map((s) => [s.key, s]))
+  const lanes = [...new Set(keys)]
+    .filter((k) => !liveKeys.has(k))
+    .map((k) => byKey.get(k))
+    .filter((s): s is SavedSession => !!s)
+    .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt))
+  if (!lanes.length) return null
+
+  const byId = new Map(projects.map((p) => [p.id, p]))
+  const projectName = (s: SavedSession) => (s.projectId && byId.get(s.projectId)?.name) || s.projectName || s.cwd.split('/').pop() || s.cwd
+  const blockerOf = (s: SavedSession): OfferBlocker | undefined => {
+    const project = s.projectId ? byId.get(s.projectId) : undefined
+    if (!project) return 'project-forgotten'
+    if (project.archivedAt) return 'project-shelved'
+    if (failedKeys?.has(s.key)) return 'did-not-start'
+    if (missingPaths?.has(s.cwd)) {
+      if (s.releasedAt) return 'released'
+      if (!(s.worktreeBranch && s.sourceCwd)) return 'folder-missing'
+    }
+    return s.claudeSessionId ? undefined : 'no-conversation'
+  }
+
+  const resumable: SavedSession[] = []
+  const blocked: PreviousRunOffer['blocked'] = []
+  for (const s of lanes) {
+    const blocker = blockerOf(s)
+    if (!blocker) { resumable.push(s); continue }
+    // A project blocker names the project too: the lane name alone does not say which one.
+    const name = blocker === 'project-forgotten' || blocker === 'project-shelved' ? `${laneName(s)} in ${projectName(s)}` : laneName(s)
+    blocked.push({ name, blocker })
+  }
+
+  const groups = new Map<string | null, PreviousRunProject>()
+  for (const s of resumable) {
+    const id = s.projectId ?? null
+    const g = groups.get(id) ?? { projectId: id, name: projectName(s), lanes: 0 }
+    g.lanes++
+    groups.set(id, g)
+  }
+  const byCount = [...groups.values()].sort((a, b) => b.lanes - a.lanes || a.name.localeCompare(b.name))
+  return { resumable, blocked, projects: byCount }
 }
 
 /** Where the snapshot lives. One key: the workspace is one fact ("where you were"), and

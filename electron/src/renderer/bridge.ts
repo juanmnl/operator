@@ -83,11 +83,11 @@ export function installSpikeBridge(): void {
     // the renderer's own AgentSession (main imports it from shared/types), which is the point
     // of deriving the seam rather than restating it.
     onTerminalExit: (cb: unknown) => {
-      return (native.onTerminalExit as AnyFn)((id: unknown, code: unknown, signal: unknown) => {
+      return (native.onTerminalExit as AnyFn)((id: unknown, code: unknown, signal: unknown, selfExit: unknown) => {
         const key = String(id)
         decoders.delete(key)
         writeQueues.delete(key)
-        ;(cb as AnyFn)(key, Number(code), Number(signal))
+        ;(cb as AnyFn)(key, Number(code), Number(signal), selfExit === true)
       })
     },
   }

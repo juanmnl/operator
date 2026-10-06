@@ -84,7 +84,7 @@ declare global {
       /** Record a dev-server port sniffed from this session's own terminal output. */
       noteSessionPort: (id: string, port: number) => void
       onTerminalData: (callback: (id: string, data: string) => void) => () => void
-      onTerminalExit: (callback: (id: string, exitCode: number, signal: number) => void) => () => void
+      onTerminalExit: (callback: (id: string, exitCode: number, signal: number, selfExit?: boolean) => void) => () => void
       /** Grid terminal (our own, non-native): start streaming a themed cell snapshot
        *  for `id` at the given size (pushes a full frame immediately). */
       gridtermAttach: (id: string, cols: number, rows: number) => void

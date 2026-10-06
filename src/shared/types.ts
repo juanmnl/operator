@@ -765,6 +765,9 @@ export interface SavedSession {
    *  it never reported at all and the long backstop took it, which is a bug signal, not a
    *  completion. Kept on the record so the difference survives a restart. */
   suspendedReason?: 'reported-done' | 'went-quiet'
+  /** It called `worktree_done`, so main removes its worktree when it exits. The branch may be
+   *  merged and deleted after that, so a missing folder here is not one to rebuild. */
+  releasedAt?: string
   lastActiveAt: string
 }
 
@@ -826,6 +829,8 @@ export interface ManagedTerminal {
   grid?: boolean
   /** The Claude Code version this pty was spawned on, recorded by the backend at spawn. */
   claudeVersion?: string | null
+  /** Exited without Operator killing it (the agent quit, or it crashed). Absent while alive. */
+  selfExit?: boolean
 }
 
 // Folder Preferences types

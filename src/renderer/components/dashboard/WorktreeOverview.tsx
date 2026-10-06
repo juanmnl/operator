@@ -78,13 +78,15 @@ export function OverviewChip({ overview, active, onClick }: {
   )
 }
 
-export function WorktreeOverview({ overview, data, onOpenProject, onOpenSettings, onOpenGlobalWorktrees }: {
+export function WorktreeOverview({ overview, data, onOpenProject, onOpenSettings, onOpenGlobalWorktrees, lead }: {
   overview: Overview
   data: OverviewData & { refresh: () => void }
   onOpenProject: (projectId: string) => void
   onOpenSettings: (projectPath: string, projectName: string, tab?: FolderPrefsTab) => void
   /** The Worktrees tab outside any project, for folders that match no project. */
   onOpenGlobalWorktrees: () => void
+  /** Shown above the machine total: the launch's resume card. */
+  lead?: React.ReactNode
 }) {
   const { rows, unknown, total, detailed } = overview
   const firstLoad = data.phase === 'idle' || (data.loading && data.worktrees.length === 0 && data.phase !== 'detailed')
@@ -94,6 +96,7 @@ export function WorktreeOverview({ overview, data, onOpenProject, onOpenSettings
   return (
     <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
       <div data-overview style={{ padding: '4px 24px 28px', maxWidth: GRID_MAX, margin: '0 auto', boxSizing: 'border-box' }}>
+        {lead}
         <TotalLine total={total} unknown={unknown.worktrees} detailed={detailed} data={data} />
 
         {data.phase === 'error' && (

@@ -313,7 +313,7 @@ function boot(): void {
     },
     (id, code, signal, selfExit, laneCwd) => {
       const w = win()
-      if (w) broadcast(w, 'onTerminalExit', id, code, signal)
+      if (w) broadcast(w, 'onTerminalExit', id, code, signal, selfExit)
       checkouts?.forget(id)
       // A lane that called worktree_done has its worktree removed now that it has ended.
       if (artifacts) void releaseWorktreeOnExit(id, laneCwd, artifacts)
