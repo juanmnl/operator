@@ -16,6 +16,7 @@ import { registerIpc, broadcast } from './ipc'
 import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
+import { decideRecovery, errorPageUrl, logRendererGone, rendererGoneLogFile, RELOAD_HASH } from './renderer-recovery'
 import { installPreviewInspect } from './preview-inspect'
 import { installPreviewCdp } from './preview-cdp'
 import { ownCdpPort } from './preview-cdp-port'
@@ -85,8 +86,52 @@ function installNavigationGuards(win: BrowserWindow): void {
     webPreferences.nodeIntegration = false
     webPreferences.contextIsolation = true
   })
+}
+
+/** Load the app itself into the window — the first load, and every recovery reload. */
+function loadApp(win: BrowserWindow): void {
+  if (DEV_URL) void win.loadURL(DEV_URL)
+  else void win.loadFile(join(here, '..', 'renderer', 'index.html'))
+}
+
+/** How long after a renderer death the reload is issued. Reloading from inside the
+ *  `render-process-gone` handler itself is not reliable; a short deferral is. */
+const RECOVERY_DELAY_MS = 250
+
+/** A dead renderer used to leave the window black until the user quit, and quitting kills every
+ *  lane (2026-10-06, 0.27.1). The ptys live here and survive, so reloading is enough: the renderer's
+ *  reattach path brings the lanes back. `decideRecovery` caps it so a renderer that dies on every
+ *  load ends on an error page with a Reload button instead of looping. */
+function installCrashRecovery(win: BrowserWindow): void {
+  const wc = win.webContents
+  let reloads: number[] = []
+  let onErrorPage = false
+
+  const reload = () => {
+    if (win.isDestroyed() || teardownPromise) return
+    onErrorPage = false
+    loadApp(win)
+  }
+
   wc.on('render-process-gone', (_e, details) => {
-    console.error('[shell] renderer gone:', details.reason, details.exitCode)
+    const decision = decideRecovery({ reason: details.reason, onErrorPage }, reloads, Date.now())
+    reloads = decision.reloads
+    // Quitting closes the window too; a reload then would only fight the teardown.
+    const action = teardownPromise ? 'none' : decision.action
+    console.error('[shell] renderer gone:', details.reason, details.exitCode, '→', action)
+    void logRendererGone({ at: new Date().toISOString(), reason: details.reason, exitCode: details.exitCode, reloaded: action === 'reload' })
+    if (action === 'reload') setTimeout(reload, RECOVERY_DELAY_MS)
+    else if (action === 'error-page') {
+      setTimeout(() => {
+        if (win.isDestroyed() || teardownPromise) return
+        onErrorPage = true
+        void win.loadURL(errorPageUrl(details.reason, rendererGoneLogFile()))
+      }, RECOVERY_DELAY_MS)
+    }
+  })
+  // The error page's Reload button is an in-page link, so it needs no script and no preload API.
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+    if (isMainFrame && onErrorPage && url.endsWith(RELOAD_HASH)) reload()
   })
 }
 
@@ -122,14 +167,14 @@ function createWindow(): BrowserWindow {
   })
 
   installNavigationGuards(win)
+  installCrashRecovery(win)
   startBench(win)
   win.on('resize', () => broadcast(win, 'onWindowResize'))
   // Activation → page focus → the renderer picks the element (activation.ts, src/renderer/lib/refocus).
   win.on('focus', () => onWindowFocused(win, () => broadcast(win, 'onWindowActivated')))
   win.on('closed', () => { mainWindow = null })
 
-  if (DEV_URL) void win.loadURL(DEV_URL)
-  else void win.loadFile(join(here, '..', 'renderer', 'index.html'))
+  loadApp(win)
   return win
 }
 
