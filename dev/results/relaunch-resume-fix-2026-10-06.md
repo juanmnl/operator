@@ -87,3 +87,107 @@ Results:
 3. Press Resume: lanes start in the background, oldest first, the overview stays on screen, the card
    disappears when the last one is up.
 4. Relaunch, dismiss: the card is gone and stays gone after another relaunch.
+
+## Review fixes (2026-10-06, same branch)
+
+Fixes the findings in `dev/results/relaunch-resume-fix-review-2026-10-06.md`. Not GUI-verified.
+
+### H1. One process per conversation
+
+- New `lib/restore-guard.ts`:
+  - `restoreOnce(inFlight, key, isLive, restore)` claims the key for the whole restore and skips
+    a lane that is live or already being restored.
+  - `laneIsLive` checks for a tab with that key and, for a `--resume`, any alive pty on the same
+    `claudeSessionId` from `terminalList()`. That second check also covers a pty the renderer has
+    no tab for.
+- `handleRestoreSession` runs through it with one shared `restoringKeysRef`. The card,
+  `handleResumeProject`, auto-resume, the sidebar and ⌘K all use this path, so they share the
+  in-flight set.
+- Liveness is checked twice: when the restore starts, and again right before `terminalSpawn`,
+  after the folder check, worktree rebuild and project resolve.
+- After a spawn, `terminalsRef.current` is updated immediately, so a restore that starts before
+  the next render sees the new tab.
+- `handleRestoreSession` now returns `'started' | 'skipped' | 'failed'`.
+- `handleResumeProject` reads `terminalsRef.current` instead of the `terminals` closure.
+- The card is hidden while auto-resume runs (`autoResuming`).
+
+### M1. Lanes that ended before quit are not offered
+
+- Main already computed `selfExit`. It now forwards it:
+  - on `onTerminalExit` (main → bridge → `env.d.ts`);
+  - in `terminals.list()` (`Managed.selfExit`), so a renderer that reloads after the exit still
+    knows.
+- The renderer sets `TerminalTab.selfExited` from the exit event, from the 5 s reconcile and on
+  re-attach.
+- `snapshotLaneKeys` leaves `selfExited` tabs out of `liveKeys`. Tabs ended by the quit stay,
+  because `QuitGuard`'s teardown kills them and that is not a self exit. A plain `!ended` filter
+  would have written an empty snapshot.
+- Released worktrees:
+  - The release poll stamps `TerminalTab.releasedWorktree` while the lane runs. The stamp
+    survives the pty's end, because main settles the release row on exit.
+  - The persist effect writes it to the saved row as `SavedSession.releasedAt`.
+  - `previousRunOffer` does not treat such a lane as rebuildable. When its folder is gone it is
+    left out as "finished, worktree released".
+  - The field is not named `released` because `markReleased` sets that name for routing, and
+    routing must read only the open release.
+
+### M2. The offer covers two runs at most
+
+- The snapshot now has three fields:
+  - `liveKeys`: this run's lanes.
+  - `carriedKeys`: the last run's lanes, not resumed.
+  - `olderKeys`: the run before that, not resumed.
+- On a relaunch, `carriedLaneKeys` turns `liveKeys` into "last run" and `carriedKeys` into
+  "older", and drops `olderKeys`. A lane is offered on at most two launches after it last ran, and
+  the set cannot grow.
+- A run that started no lanes does not age the offer, so relaunching several times without
+  resuming anything keeps the lanes (tested over four relaunches).
+- A reload of the same run moves nothing between the fields.
+- `planRestore` gets the carried set as its `liveKeys`.
+- `launchKind` `'unknown'` counts as a relaunch, so the set cannot grow in that case either.
+- Card title: "Resume N lanes from before this launch". The old title, "from your last
+  session", is not accurate when the offer spans two runs.
+
+### L1. Forgotten and shelved projects
+
+- `previousRunOffer` leaves out a lane whose `projectId` is missing or not on record ("project
+  forgotten"), and a lane whose project has `archivedAt` ("project shelved").
+- The left-out line names the lane and its project, e.g. "qa in Shelf (project shelved)".
+- Resume therefore never calls `upsertProject(..., intent: 'user')` for those projects.
+
+### L2. Failed spawns are shown
+
+- A lane whose restore returns `'failed'` or throws goes into `resumeFailed`. The card names it
+  as "did not start" and the button does not retry it in this run.
+- The lane stays pending, so a relaunch offers it again. Dismiss clears the list.
+
+### Tests (12 new or changed)
+
+- `restore-guard.test.ts`, 5 tests:
+  - concurrent restores of one lane spawn it once;
+  - a lane already live is skipped, and so is one that becomes live mid-restore;
+  - the claim is released when the restore throws;
+  - `laneIsLive` sees a running pty on the same conversation and ignores exited ones;
+  - an unreadable pty list does not block the restore.
+- `workspace.test.ts`:
+  - M1: a self-exited tab is left out while tabs ended by the quit are kept, and a self-exited
+    resumed lane is not owed again; the released worktree is not rebuilt.
+  - M2: across runs {A,B} → {C} → {D} → {}, the offers are AB, CAB, DC.
+  - Also: reload does not age; four empty relaunches keep the lanes; L1; L2.
+
+Results:
+- `npx tsc --noEmit` (root): exit 0
+- `electron/ npm run typecheck`: exit 0
+- renderer `npx vitest run`: 115 files, 1725 tests passed
+- electron `npx vitest run`: 46 files, 811 tests passed
+
+### Left out
+
+- No electron unit test for `selfExit` in `list()`. The existing TerminalManager harness
+  (`pty-batch.test.ts`) drives only `spawnShell`, and the lane spawn path needs more setup. The
+  change is two lines in `terminals.ts`.
+- A lane killed by Operator outside quit (a Close-project kill that timed out) is not a self exit,
+  so it is still carried.
+- A released lane whose worktree main kept (unsaved changes) still has its folder and is still
+  offered. It resumes in that folder and nothing is rebuilt.
+- last-run.json: not started, as instructed.

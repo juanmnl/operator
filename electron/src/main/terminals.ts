@@ -104,6 +104,9 @@ interface Managed {
    *  are about to arrive live. */
   out: OutputBatcher
   exited: boolean
+  /** It exited without Operator killing it (the agent quit, or it crashed). Reported by `list()`
+   *  so a renderer that reloads after the exit still knows it. */
+  selfExit?: boolean
   /** A reap is in flight. `kill()` now runs for up to the grace period before it does its
    *  bookkeeping, so the map entry is still present in that window and a second `kill(id)` —
    *  the frontend closes a lane and then the project containing it — would otherwise signal the
@@ -368,10 +371,11 @@ export class TerminalManager {
       })
       p.onExit(({ exitCode, signal }) => {
         managed.exited = true
+        managed.selfExit = !managed.killing
         managed.pty = null
         // Everything the process printed goes out BEFORE its exit does.
         managed.out.close()
-        this.onExit(id, exitCode, signal ?? 0, !managed.killing, managed.cwd)
+        this.onExit(id, exitCode, signal ?? 0, managed.selfExit, managed.cwd)
       })
     }
 
@@ -550,7 +554,7 @@ export class TerminalManager {
     } catch { /* a diagnostic that throws is worse than one that is missing */ }
   }
 
-  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; devPort?: number; claudeVersion: string | null }> {
+  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; selfExit?: boolean; devPort?: number; claudeVersion: string | null }> {
     return [...this.terminals.values()].map((t) => ({
       // Reported so a tab re-attached after a renderer reload still knows its lane's version.
       claudeVersion: t.claudeVersion,
@@ -561,6 +565,7 @@ export class TerminalManager {
       // A pty that has not been exec'd yet is NOT dead — it is deferred. Reporting it as
       // dead would have the frontend reconcile a launching lane away.
       alive: !t.exited,
+      selfExit: t.selfExit,
       devPort: t.devPort,
     }))
   }

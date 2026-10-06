@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PreviousRunOffer } from '../../lib/workspace'
+import type { OfferBlocker, PreviousRunOffer } from '../../lib/workspace'
 import { BACK_BTN as backBtn } from '../../lib/chrome'
 
 // THE PREVIOUS RUN'S LANES, on the home overview a launch opens on. One card for every project, so
@@ -22,17 +22,21 @@ export interface ResumeCardProps {
 const bindLast = (s: string) => s.replace(/ (\S+)$/, ' $1')
 const lanesWord = (n: number) => `${n} ${n === 1 ? 'lane' : 'lanes'}`
 
-const BLOCKER_TEXT = {
+const BLOCKER_TEXT: Record<OfferBlocker, string> = {
   'folder-missing': 'folder gone',
   'no-conversation': 'no saved conversation',
-} as const
+  'project-forgotten': 'project forgotten',
+  'project-shelved': 'project shelved',
+  'released': 'finished, worktree released',
+  'did-not-start': 'did not start',
+}
 
 export function ResumeCard({ offer, progress, onResume, onDismiss }: ResumeCardProps) {
   const [hover, setHover] = useState(false)
   const n = offer.resumable.length
   const title = n
-    ? `Resume ${lanesWord(n)} from your last session`
-    : `${lanesWord(offer.blocked.length)} from your last session can’t be resumed`
+    ? `Resume ${lanesWord(n)} from before this launch`
+    : `${lanesWord(offer.blocked.length)} from before this launch can’t be resumed`
   return (
     <div data-resume-card style={{
       display: 'flex', flexDirection: 'column', gap: 8,
