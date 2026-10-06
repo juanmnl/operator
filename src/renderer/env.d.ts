@@ -35,6 +35,9 @@ declare global {
       /** Every reply posted to a project, oldest first. Read-only — see the bridge. */
       projectReplies?: (projectId: string) => Promise<ProjectReply[]>
       rendererHeartbeat: () => void
+      /** The lane tabs are back after a launch or reload, so lane dispatches and replies can be
+       *  routed. Main holds them until this is called (electron/src/main/renderer-gate.ts). */
+      rendererReady?: () => void
       /** `grid` echoes back which renderer this session was actually spawned with, so the
        *  caller records what was SENT rather than re-reading the pref a second time (which a
        *  mid-flight change could answer differently). See `getRendererMode`. */

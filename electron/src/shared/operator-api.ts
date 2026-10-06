@@ -72,6 +72,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   onFileDrop:           { delivery: 'local',  impl: 'native', rust: 'core' },
   setDockIcon:          { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
   rendererHeartbeat:    { delivery: 'send',   impl: 'native', rust: 'lib.rs' },
+  rendererReady:        { delivery: 'send',   impl: 'native' },
 
   // --- everything else: the mock answers, and the ledger says what a real port costs ---
   // (see electron/PORT-LEDGER.md for the S/M/L estimates that go with these)

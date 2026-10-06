@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  RELOAD_HASH, RELOAD_LIMIT, RELOAD_WINDOW_MS,
-  decideRecovery, errorPageUrl, logRendererGone, rendererGoneLogFile,
+  RECOVERY_DELAY_MS, RELOAD_HASH, RELOAD_LIMIT, RELOAD_WINDOW_MS,
+  decideRecovery, errorPageUrl, installCrashRecovery, logRendererGone, rendererGoneLogFile,
 } from './renderer-recovery'
 
 const crash = { reason: 'crashed', onErrorPage: false }
@@ -68,5 +69,95 @@ describe('logRendererGone', () => {
       { at: '2026-10-06T10:17:15.000Z', reason: 'crashed', exitCode: 5, reloaded: true },
       { at: '2026-10-06T10:17:16.000Z', reason: 'crashed', exitCode: 5, reloaded: false },
     ])
+  })
+})
+
+// Kept after the log test above: each event here also appends to the log, without being awaited.
+describe('installCrashRecovery', () => {
+  const NEW_DOC = { isMainFrame: true, isSameDocument: false }
+
+  /** A window whose loads emit `did-start-navigation` the way Electron's do. */
+  const setup = (opts: { quitting?: boolean } = {}) => {
+    const wc = new EventEmitter()
+    const urls: string[] = []
+    let appLoads = 0
+    const leaving = vi.fn()
+    const win = {
+      isDestroyed: () => false,
+      loadURL: async (url: string) => { urls.push(url); wc.emit('did-start-navigation', NEW_DOC) },
+      webContents: wc,
+    }
+    installCrashRecovery(win as unknown as Parameters<typeof installCrashRecovery>[0], {
+      loadApp: () => { appLoads++; wc.emit('did-start-navigation', NEW_DOC) },
+      quitting: () => !!opts.quitting,
+      rendererLeaving: leaving,
+    })
+    const crash = () => wc.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 5 })
+    const cmdR = () => wc.emit('did-start-navigation', NEW_DOC)
+    return { wc, urls, appLoads: () => appLoads, leaving, crash, cmdR }
+  }
+
+  beforeEach(() => { vi.useFakeTimers(); vi.spyOn(console, 'error').mockImplementation(() => {}) })
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it('a crash releases main\'s hold on the old renderer at once and reloads after the delay', () => {
+    const w = setup()
+    w.crash()
+    expect(w.leaving).toHaveBeenCalledTimes(1)
+    expect(w.appLoads()).toBe(0)
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS)
+    expect(w.appLoads()).toBe(1)
+  })
+
+  // Review M1/M2: both also happen on a plain Cmd+R, with no crash involved.
+  it('Cmd+R releases main\'s hold on the old renderer too', () => {
+    const w = setup()
+    w.cmdR()
+    expect(w.leaving).toHaveBeenCalledTimes(1)
+    expect(w.appLoads()).toBe(0)
+  })
+
+  it('ignores same-document and Preview iframe navigations', () => {
+    const w = setup()
+    w.wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true })
+    w.wc.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false })
+    expect(w.leaving).not.toHaveBeenCalled()
+  })
+
+  // Review L3.
+  it('Cmd+R inside the delay replaces the recovery reload instead of being aborted by it', () => {
+    const w = setup()
+    w.crash()
+    w.cmdR()
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS * 4)
+    expect(w.appLoads()).toBe(0)
+  })
+
+  it('Cmd+R inside the delay also stops the error page from replacing the user\'s load', () => {
+    const w = setup()
+    for (let i = 0; i < RELOAD_LIMIT; i++) { w.crash(); vi.advanceTimersByTime(RECOVERY_DELAY_MS) }
+    expect(w.appLoads()).toBe(RELOAD_LIMIT)
+    w.crash() // over budget: the error page is due
+    w.cmdR()
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS * 4)
+    expect(w.urls).toEqual([])
+  })
+
+  it('shows the error page when nothing intervenes, and its Reload link loads the app', () => {
+    const w = setup()
+    for (let i = 0; i < RELOAD_LIMIT; i++) { w.crash(); vi.advanceTimersByTime(RECOVERY_DELAY_MS) }
+    w.crash()
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS)
+    expect(w.urls).toHaveLength(1)
+    expect(w.urls[0].startsWith('data:text/html')).toBe(true)
+    w.wc.emit('did-navigate-in-page', {}, `${w.urls[0]}${RELOAD_HASH}`, true)
+    expect(w.appLoads()).toBe(RELOAD_LIMIT + 1)
+  })
+
+  it('does not reload while quitting', () => {
+    const w = setup({ quitting: true })
+    w.crash()
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS * 4)
+    expect(w.appLoads()).toBe(0)
   })
 })
