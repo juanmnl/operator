@@ -9,7 +9,9 @@
 // not kept when the app is launched from Finder, so each event also goes to a file.
 import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { BrowserWindow } from 'electron'
 import { operatorDir } from './store'
+import { replacesDocument } from './renderer-gate'
 
 /** At most this many automatic reloads inside `RELOAD_WINDOW_MS`. One more crash inside the window
  *  shows the error page instead: a renderer that dies on every load must not reload forever. */
@@ -69,9 +71,13 @@ export const rendererGoneLogFile = (): string => join(operatorDir(), 'logs', 're
 
 export interface GoneEvent {
   at: string
+  /** `RenderProcessGoneDetails.reason`, or `ready-timeout`: the app loaded and never sent
+   *  `rendererReady`, so main released the held events on its own. */
   reason: string
   exitCode: number
   reloaded: boolean
+  /** For `ready-timeout`: how many events were held. */
+  held?: number
 }
 
 /** Append one JSON line per renderer death. Never throws: the recovery must not depend on the log. */
@@ -80,4 +86,73 @@ export async function logRendererGone(event: GoneEvent): Promise<void> {
     await mkdir(join(operatorDir(), 'logs'), { recursive: true })
     await appendFile(rendererGoneLogFile(), `${JSON.stringify(event)}\n`)
   } catch { /* stderr still has it */ }
+}
+
+/** How long after a renderer death the reload is issued. Reloading from inside the
+ *  `render-process-gone` handler itself is not reliable; a short deferral is. */
+export const RECOVERY_DELAY_MS = 250
+
+export interface RecoveryHooks {
+  /** Load the app itself into the window. */
+  loadApp: () => void
+  /** Quit has started; a reload then would only fight the teardown. */
+  quitting: () => boolean
+  /** The renderer died, or a navigation replaced it (Cmd+R, a recovery load). */
+  rendererLeaving: () => void
+  /** The app (not the error page) finished loading in the main frame. */
+  rendererLoaded: () => void
+}
+
+/** A dead renderer used to leave the window black until the user quit, and quitting kills every
+ *  lane (2026-10-06, 0.27.1). The ptys live in main and survive, so reloading is enough: the
+ *  renderer's reattach path brings the lanes back. `decideRecovery` caps it so a renderer that dies
+ *  on every load ends on an error page with a Reload button instead of looping. */
+export function installCrashRecovery(win: Pick<BrowserWindow, 'isDestroyed' | 'loadURL' | 'webContents'>, hooks: RecoveryHooks): void {
+  const wc = win.webContents
+  let reloads: number[] = []
+  let onErrorPage = false
+  /** The recovery load waiting out `RECOVERY_DELAY_MS`. */
+  let pending: ReturnType<typeof setTimeout> | null = null
+
+  const reload = () => {
+    if (win.isDestroyed() || hooks.quitting()) return
+    onErrorPage = false
+    hooks.loadApp()
+  }
+
+  wc.on('render-process-gone', (_e, details) => {
+    hooks.rendererLeaving()
+    const decision = decideRecovery({ reason: details.reason, onErrorPage }, reloads, Date.now())
+    reloads = decision.reloads
+    const action = hooks.quitting() ? 'none' : decision.action
+    console.error('[shell] renderer gone:', details.reason, details.exitCode, '→', action)
+    void logRendererGone({ at: new Date().toISOString(), reason: details.reason, exitCode: details.exitCode, reloaded: action === 'reload' })
+    if (action === 'reload') pending = setTimeout(() => { pending = null; reload() }, RECOVERY_DELAY_MS)
+    else if (action === 'error-page') {
+      pending = setTimeout(() => {
+        pending = null
+        if (win.isDestroyed() || hooks.quitting()) return
+        onErrorPage = true
+        void win.loadURL(errorPageUrl(details.reason, rendererGoneLogFile()))
+      }, RECOVERY_DELAY_MS)
+    }
+  })
+  // A load that starts while a recovery load is still waiting (Cmd+R on the black window) replaces
+  // it: the timer's load would abort the user's. On the START, because the renderer is dead there
+  // and cannot be what started it.
+  wc.on('did-start-navigation', (details) => {
+    if (!replacesDocument(details)) return
+    if (pending) { clearTimeout(pending); pending = null }
+  })
+  // The document was replaced: Cmd+R, and every load this module starts. On the COMMIT, not the
+  // start: a navigation `installNavigationGuards` cancels in `will-navigate` has already started,
+  // its document stays, and its renderer never sends `rendererReady` again, so a hold taken on the
+  // start stopped every dispatch for good with nothing on screen (review M1, 2026-10-06).
+  // `did-navigate` is main-frame and cross-document only.
+  wc.on('did-navigate', () => { hooks.rendererLeaving() })
+  wc.on('did-finish-load', () => { if (!onErrorPage) hooks.rendererLoaded() })
+  // The error page's Reload button is an in-page link, so it needs no script and no preload API.
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+    if (isMainFrame && onErrorPage && url.endsWith(RELOAD_HASH)) reload()
+  })
 }

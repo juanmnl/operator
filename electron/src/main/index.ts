@@ -16,9 +16,10 @@ import { registerIpc, broadcast } from './ipc'
 import { startBench } from './bench'
 import { serve as serveMcp } from './mcp-serve'
 import { isAllowedNavigation } from './navigation'
-import { decideRecovery, errorPageUrl, logRendererGone, rendererGoneLogFile, RELOAD_HASH } from './renderer-recovery'
-import { installPreviewInspect } from './preview-inspect'
-import { installPreviewCdp } from './preview-cdp'
+import { installCrashRecovery, logRendererGone } from './renderer-recovery'
+import { createReadyFallback, createRendererGate, READY_FALLBACK_MS } from './renderer-gate'
+import { installPreviewInspect, previewApi } from './preview-inspect'
+import { installPreviewCdp, previewCdp } from './preview-cdp'
 import { ownCdpPort } from './preview-cdp-port'
 import { appMenuTemplate } from './app-menu'
 import { createTray, type OperatorTray } from './tray'
@@ -50,6 +51,40 @@ let stopTrayAnim: (() => void) | null = null
 let sweepTimer: ReturnType<typeof setInterval> | null = null
 let checkouts: CheckoutWatcher | null = null
 let claudeVersion: ClaudeVersionWatcher | null = null
+
+/** Lane dispatches and replies, held while no renderer can route them (renderer-gate.ts). Released
+ *  by the renderer's `rendererReady` once its lane tabs are back. */
+type RoutedEvent =
+  | { method: 'onOrchestratorDispatch'; payload: DispatchEvent }
+  | { method: 'onOrchestratorReply'; payload: ReplyEvent }
+const routed = createRendererGate<RoutedEvent>((e) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  if (e.method === 'onOrchestratorDispatch') broadcast(mainWindow, e.method, e.payload)
+  else broadcast(mainWindow, e.method, e.payload)
+  return true
+}, {
+  // Held past the age limit (the window was closed): shown to the user, not routed (review M2).
+  // Replies are already in the channel (`appendReply` runs before the gate); dispatches are listed
+  // so they can be sent again by hand.
+  onExpired: (expired, dropped) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    broadcast(mainWindow, 'onHeldExpired', {
+      dispatches: expired.flatMap((e) => (e.method === 'onOrchestratorDispatch' ? [{ role: e.payload.role, task: e.payload.task, terminalId: e.payload.terminalId }] : [])),
+      replies: expired.flatMap((e) => (e.method === 'onOrchestratorReply' ? [{ to: e.payload.to, projectId: e.payload.projectId }] : [])),
+      dropped,
+    })
+  },
+})
+
+/** The app loaded and never said its tabs are back. Released anyway, with a record, rather than
+ *  holding every dispatch with nothing on screen (review M1). */
+const readyFallback = createReadyFallback(() => {
+  if (routed.isReleased()) return
+  const held = routed.held()
+  console.error(`[shell] no rendererReady ${READY_FALLBACK_MS / 1000}s after the app loaded; releasing ${held} held events`)
+  void logRendererGone({ at: new Date().toISOString(), reason: 'ready-timeout', exitCode: 0, reloaded: false, held })
+  routed.release()
+})
 
 /** How often the live app re-checks for its own leaked lanes. See the call site. */
 const ABANDONED_SWEEP_MS = 10 * 60 * 1000
@@ -94,45 +129,17 @@ function loadApp(win: BrowserWindow): void {
   else void win.loadFile(join(here, '..', 'renderer', 'index.html'))
 }
 
-/** How long after a renderer death the reload is issued. Reloading from inside the
- *  `render-process-gone` handler itself is not reliable; a short deferral is. */
-const RECOVERY_DELAY_MS = 250
-
-/** A dead renderer used to leave the window black until the user quit, and quitting kills every
- *  lane (2026-10-06, 0.27.1). The ptys live here and survive, so reloading is enough: the renderer's
- *  reattach path brings the lanes back. `decideRecovery` caps it so a renderer that dies on every
- *  load ends on an error page with a Reload button instead of looping. */
-function installCrashRecovery(win: BrowserWindow): void {
-  const wc = win.webContents
-  let reloads: number[] = []
-  let onErrorPage = false
-
-  const reload = () => {
-    if (win.isDestroyed() || teardownPromise) return
-    onErrorPage = false
-    loadApp(win)
-  }
-
-  wc.on('render-process-gone', (_e, details) => {
-    const decision = decideRecovery({ reason: details.reason, onErrorPage }, reloads, Date.now())
-    reloads = decision.reloads
-    // Quitting closes the window too; a reload then would only fight the teardown.
-    const action = teardownPromise ? 'none' : decision.action
-    console.error('[shell] renderer gone:', details.reason, details.exitCode, '→', action)
-    void logRendererGone({ at: new Date().toISOString(), reason: details.reason, exitCode: details.exitCode, reloaded: action === 'reload' })
-    if (action === 'reload') setTimeout(reload, RECOVERY_DELAY_MS)
-    else if (action === 'error-page') {
-      setTimeout(() => {
-        if (win.isDestroyed() || teardownPromise) return
-        onErrorPage = true
-        void win.loadURL(errorPageUrl(details.reason, rendererGoneLogFile()))
-      }, RECOVERY_DELAY_MS)
-    }
-  })
-  // The error page's Reload button is an in-page link, so it needs no script and no preload API.
-  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
-    if (isMainFrame && onErrorPage && url.endsWith(RELOAD_HASH)) reload()
-  })
+/** Main's side of a renderer going away (crash, or a navigation replacing it). Nothing the old
+ *  renderer set up in main is still wanted:
+ *  - Lane dispatches and replies are held for the next renderer instead of being sent into the gap.
+ *  - The Preview's CDP attachment is dropped. Only the renderer's unmount detaches it, a crashed
+ *    renderer never unmounts, and while it stays attached Inspect is routed to the other app's page
+ *    and its screencast keeps encoding frames nobody receives. The web preview's overlays go too. */
+function rendererLeaving(): void {
+  routed.hold()
+  readyFallback.leaving()
+  previewCdp?.detach()
+  previewApi.close()
 }
 
 function createWindow(): BrowserWindow {
@@ -167,7 +174,7 @@ function createWindow(): BrowserWindow {
   })
 
   installNavigationGuards(win)
-  installCrashRecovery(win)
+  installCrashRecovery(win, { loadApp: () => loadApp(win), quitting: () => teardownPromise !== null, rendererLeaving, rendererLoaded: () => readyFallback.loaded() })
   startBench(win)
   win.on('resize', () => broadcast(win, 'onWindowResize'))
   // Activation → page focus → the renderer picks the element (activation.ts, src/renderer/lib/refocus).
@@ -332,13 +339,12 @@ function boot(): void {
   transcript.on('chat', (sessionId: string, entries: Array<[number, NarrationEntry]>) => {
     chat?.append(sessionId, entries)
   })
-  transcript.on('dispatch', (d: DispatchEvent) => { const w = win(); if (w) broadcast(w, 'onOrchestratorDispatch', d) })
+  transcript.on('dispatch', (d: DispatchEvent) => routed.send({ method: 'onOrchestratorDispatch', payload: d }))
   transcript.on('reply', (r: ReplyEvent) => {
     // PERSIST, then emit — the order the Rust guarantees, and what the channel's re-read relies
     // on: the event is a live notification, not the delivery mechanism.
     chat?.appendReply(r.id, r.sessionId, r.projectId, r.to, r.text, r.ts)
-    const w = win()
-    if (w) broadcast(w, 'onOrchestratorReply', r)
+    routed.send({ method: 'onOrchestratorReply', payload: r })
   })
   // The lane's own `SendMessage` result, for the bus dispatch path. No persistence: this is a
   // confirmation about a task that already exists, and the task is the durable record.
@@ -408,7 +414,7 @@ function boot(): void {
   claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
   claudeVersion.start()
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow })
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way

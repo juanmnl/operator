@@ -1,0 +1,181 @@
+# Renderer reload follow-ups (M1, M2, L1, L3)
+
+2026-10-06, Code lane. Branch `operator/ae1e80`, from main @ db7165a. Fixes four findings from
+`dev/results/renderer-crash-recovery-review-2026-10-06.md`. Not GUI-verified.
+
+## What changed
+
+### M1: lane dispatches and replies are held while no renderer can route them
+
+- New `electron/src/main/renderer-gate.ts`: `createRendererGate(deliver)`.
+  - Events go straight to the renderer only while it is "ready".
+  - Otherwise they are kept and handed over oldest first on `release()`.
+  - The gate starts held, so the first launch waits for the renderer too.
+  - If there is no window when an event is sent, the event is kept and the gate goes back to held, so later events cannot overtake it.
+  - At most 200 events are kept; past that the oldest are dropped and logged to stderr.
+- `index.ts`: `transcript.on('dispatch')` and `transcript.on('reply')` now go through the gate (`routed`) instead of `broadcast`. The reply is still persisted before it is sent.
+- The gate is held on `render-process-gone` **and** on every main-frame cross-document `did-start-navigation`. The second covers Cmd+R, the recovery reload and the error page.
+- It is released by a new renderer→main `send`, `rendererReady` (`env.d.ts`, `operator-api.ts` SPEC, `ipc.ts`). `DashboardView` calls it in an effect on `reattachDone`, so the lane tabs exist before any held dispatch is routed.
+- Toast text: the two "A dispatch could not be routed" toasts no longer say "The lane that sent it is no longer open".
+  - Sentinel path: "Operator has no tab for the lane that sent it (terminal tN), so it cannot tell which project it belongs to."
+  - MCP path (the carried project id matched nothing): "No open project matches the one it came from, and Operator has no tab for the lane that sent it (terminal tN)."
+  - Both describe what Operator knows. Neither claims the lane is gone.
+
+Replies are held as well as dispatches. A reply is delivered into its target lane by the renderer's
+`onOrchestratorReply` handler, so a reply event lost in the gap was a lost delivery, not only a
+lost toast.
+
+### M2: the Preview CDP attachment is dropped when the renderer goes away
+
+- `rendererLeaving()` in `index.ts` calls `previewCdp?.detach()` and `previewApi.close()`, along with `routed.hold()`.
+- It runs on the same two events as the M1 hold, so it covers both a crash and Cmd+R.
+- After a reload, web-preview Inspect, Redlines and the grid are no longer routed to the other app's page.
+- The screencast is stopped (`detach` sends `Page.stopScreencast` and closes the socket).
+
+### L1: a reload does not show the window again
+
+`ipc.ts` `showMainWindow` now shows a window only the first time it is asked for that window
+(`revealed` WeakSet). Every later renderer mount, whether from a crash reload or Cmd+R, leaves the
+window's visibility and focus alone.
+
+I did not use the `!win.isVisible()` check the brief suggested. `isVisible()` is false when the
+window is minimized or the app is hidden with Cmd+H. Electron documents it as "visible to the user
+in the foreground of the app", which may also exclude a window covered by another app; I did not
+verify that. In all of those cases, a crash reload with that check would call `show()`, which also
+focuses, so the window would still come forward. With "first reveal only" it never does.
+
+A window recreated from the Dock or the tray is a new object, so its first mount still reveals it.
+A window whose first renderer dies before revealing it (review L2) is revealed by the next renderer
+that mounts.
+
+### L3: Cmd+R inside the 250 ms delay is no longer followed by a second load
+
+The recovery timer is kept in `pending`. A main-frame cross-document `did-start-navigation` clears
+it. Loads that `installCrashRecovery` starts itself only happen after the timer has fired and
+cleared `pending`, so they are not affected. This covers both cases:
+- A pending reload no longer aborts the load that the user's Cmd+R started.
+- A pending error page no longer replaces the app the user's Cmd+R started loading.
+
+### Refactor needed to test the Cmd+R path
+
+To test the event wiring without a GUI, `installCrashRecovery` and `RECOVERY_DELAY_MS` moved from
+`index.ts` into `renderer-recovery.ts`. The function now takes the window plus three hooks:
+`loadApp`, `quitting` and `rendererLeaving`. Its behavior is unchanged apart from the L3 timer and
+the `rendererLeaving` call.
+
+## Tests
+
+- `renderer-gate.test.ts` (6 tests):
+  - Held at launch until ready.
+  - Held from a crash or reload until the next ready, then sent oldest first.
+  - An event sent with no window is kept, and later events do not overtake it.
+  - The window disappearing during a release.
+  - The limit.
+  - `replacesDocument`.
+- `renderer-recovery.test.ts`, new `installCrashRecovery` block (7 tests). These drive a fake WebContents (EventEmitter) under fake timers:
+  - A crash calls `rendererLeaving` at once and reloads after the delay.
+  - **Cmd+R calls `rendererLeaving` (M1/M2 path) and starts no extra load.**
+  - Same-document and iframe navigations are ignored.
+  - Cmd+R inside the delay cancels the reload (L3).
+  - Cmd+R inside the delay cancels the error page (L3).
+  - The error page, then its Reload link, loads the app.
+  - No reload while quitting.
+- Mutation check: with the `clearTimeout(pending)` line removed, both L3 tests fail.
+
+Results:
+
+```
+electron  npm run typecheck   → clean (both tsconfigs)
+electron  npx vitest run      → Test Files 48 passed (48), Tests 831 passed (831)
+root      npx tsc --noEmit    → exit 0
+root      npx vitest run      → Test Files 114 passed (114), Tests 1705 passed (1705)
+electron  npm run build:main  → done, bundle contains rendererReady / did-start-navigation
+```
+
+There is no test for the renderer side (the `reattachDone` → `rendererReady` effect, and the toast
+text). Testing it means mounting DashboardView, and no existing test does that.
+
+## Not verified, and left out
+
+- **Not GUI-verified.** Nothing ran in a real window, and following the standing rule I did not launch the app. Unverified assumptions:
+  - Chromium fires `did-start-navigation` for Cmd+R on a crashed WebContents. I expect it to, because a reload is a new navigation in a new renderer process.
+  - The focus behavior.
+
+  Recipe for the user:
+  1. Attach a lane's Electron app in the Preview.
+  2. Press Cmd+R, then turn on Inspect on a web preview. The overlay should appear in the web preview.
+  3. Have a coordinator print an `OPERATOR-DISPATCH` line, and press Cmd+R right after it. The dispatch should route after the lanes reappear, with no "could not be routed" toast.
+  4. Crash the renderer once with `kill -SEGV <Operator Helper (Renderer) pid>` while another app is in front. Operator should stay behind.
+- **Behavior change:** dispatches and replies printed while the window is closed (app still running, window closed from its close button) used to be dropped. They are now held and routed when the window is reopened, which may be much later. The renderer's `seen` dedupe still applies.
+- Not changed: `onLaneDelivery` and `onCheckoutGone`.
+  - A delivery result is matched against `pendingSendsRef`, which is renderer memory and is gone after a reload, so holding it would match nothing.
+  - Gone checkouts are re-read with `checkoutGoneList` on mount. Only the toast is lost.
+- Not in this brief, so not done: review L2 (error page loaded into a never-shown window) and N1 (log says `reloaded: true` before the reload happens; the error page's log path cannot be selected).
+- operator/d13c40 (relaunch/ResumeCard) was not touched.
+
+## Review fixes (2026-10-06, branch operator/ae1e80-fix, cut from operator/ae1e80 @ 34ed4f5)
+
+Fixes M1 and M2 of `dev/results/renderer-reload-followups-review-2026-10-06.md`. Not GUI-verified.
+
+### M1. Hold on commit, and a fallback release
+
+- `installCrashRecovery`:
+  - `did-start-navigation` now only cancels a pending recovery load (the L3 timer). On a start the
+    renderer is dead, so it cannot be the one that started the navigation.
+  - The hold, the Preview CDP detach and `previewApi.close()` now run on `did-navigate`. That event
+    fires only for a committed, main-frame, cross-document navigation. A navigation that
+    `will-navigate` cancels never commits, so it no longer holds anything.
+  - `render-process-gone` still calls `rendererLeaving` at once.
+- New `RecoveryHooks.rendererLoaded`, called on `did-finish-load` for the app. It is not called
+  for the error page, which never sends ready.
+- New `createReadyFallback` in `renderer-gate.ts`:
+  - It is armed on that load and disarmed by `rendererReady` or by the next `rendererLeaving`.
+  - If no ready arrives within `READY_FALLBACK_MS` (30 s), main releases the gate anyway. It
+    writes `{reason: 'ready-timeout', held: N}` to `renderer-gone.log` and logs a line to stderr.
+  - This covers a DashboardView that throws before `reattachDone`.
+
+### M2. Age cap on held events
+
+- The gate stamps each held event with the time it was held. On release, events older than
+  `HELD_MAX_AGE_MS` (5 min) are not routed. They go to `onExpired`, together with the number of
+  events dropped past the 200 cap since the last release.
+- An event that waits out a failed delivery keeps its original stamp.
+- Main sends the expired events to the renderer as a new event, `onHeldExpired` (SPEC, `env.d.ts`):
+  - for dispatches, the role, the task and the terminal;
+  - for replies, the count and target;
+  - the dropped count.
+- DashboardView shows one error toast:
+  - title "N dispatches arrived while the window was closed, not sent";
+  - each dispatch as "role: task" (task cut to 80 characters);
+  - that replies are in the channel and were not typed into their lanes;
+  - the dropped count.
+- Nothing expired is routed, so no lane is launched from it.
+- The coordinator did not ask for a held count in the tray or menu, so I did not add one.
+
+### Tests
+
+- `renderer-gate.test.ts`:
+  - routes only fresh events and hands the old ones to onExpired;
+  - a reload within the limit reports nothing;
+  - the dropped count is reported once;
+  - an event that waits out a failed delivery keeps its age;
+  - `createReadyFallback` fires only when no ready and no leave came after a load.
+- `renderer-recovery.test.ts`:
+  - a navigation that starts and is cancelled does not hold anything;
+  - the hold happens on commit, and the app's load is reported;
+  - the error page's load does not arm the fallback.
+- The fake window in the recovery tests now emits start, commit and finish for each load.
+
+Results:
+- `npx tsc --noEmit` (root): exit 0
+- `electron/ npm run typecheck`: exit 0
+- renderer `npx vitest run`: 114 files, 1705 tests passed
+- electron `npx vitest run`: 48 files, 839 tests passed
+
+### Not done
+
+- L1 (an event handed to the old renderer in its last milliseconds) is unchanged. Holding on the
+  commit widens that window slightly, because an event sent between a reload's start and its
+  commit goes to the old document. That gap is the time the navigation takes to commit; for a
+  local `file://` or dev-server load it is short.
+- No held count in the tray.

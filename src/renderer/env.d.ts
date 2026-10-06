@@ -35,6 +35,17 @@ declare global {
       /** Every reply posted to a project, oldest first. Read-only — see the bridge. */
       projectReplies?: (projectId: string) => Promise<ProjectReply[]>
       rendererHeartbeat: () => void
+      /** The lane tabs are back after a launch or reload, so lane dispatches and replies can be
+       *  routed. Main holds them until this is called (electron/src/main/renderer-gate.ts). */
+      rendererReady?: () => void
+      /** Lane dispatches and replies main held longer than its age limit while no renderer was
+       *  ready (the window was closed), so it did not route them; and how many it dropped past its
+       *  cap. Replies are in the channel already; dispatches were not acted on. */
+      onHeldExpired?: (callback: (h: {
+        dispatches: Array<{ role: string; task: string; terminalId: string }>
+        replies: Array<{ to: string; projectId: string }>
+        dropped: number
+      }) => void) => () => void
       /** `grid` echoes back which renderer this session was actually spawned with, so the
        *  caller records what was SENT rather than re-reading the pref a second time (which a
        *  mid-flight change could answer differently). See `getRendererMode`. */

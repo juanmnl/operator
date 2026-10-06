@@ -52,6 +52,9 @@ export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, 
   if (!win.isDestroyed()) win.webContents.send(eventChannel(method), ...payload)
 }
 
+/** Windows `showMainWindow` has already revealed once. */
+const revealed = new WeakSet<BrowserWindow>()
+
 /** A coordinator tab with no project asked for the report queue. Logged ONCE per role and process:
  *  the renderer polls every few seconds, and the point is to see that it happens, not how often. */
 const unscopedAnnounceSeen = new Set<string>()
@@ -72,6 +75,9 @@ export interface Deps {
   /** Lanes whose checkout was removed outside Operator (checkout-health.ts). */
   checkouts?: CheckoutWatcher
   getWindow: () => BrowserWindow | null
+  /** The renderer's lane tabs are back after a launch or reload: release the held dispatches and
+   *  replies (renderer-gate.ts). */
+  rendererReady?: () => void
   /** The ONE question and the quit preparation the install needs — see `index.ts`. Passed in
    *  rather than imported, because `index.ts` already imports this module and a cycle between
    *  the two bundles badly. */
@@ -453,7 +459,17 @@ export function registerIpc(d: Deps): void {
     saveRoleDefaults: (defaults) => { void store.saveRoleDefaults(defaults) },
     setActiveSession: () => {},
     openExternal: (url) => { if (/^https?:\/\//i.test(url)) void shell.openExternal(url) },
-    showMainWindow: () => { d.getWindow()?.show() },
+    // The renderer asks on every mount, and since crash recovery a mount is not always something
+    // the user did. Only the first reveal of a window shows it: `show()` also focuses, so showing
+    // again on a reload would pull Operator in front of whatever the user is doing, or undo a
+    // Cmd+H or a minimize.
+    showMainWindow: () => {
+      const w = d.getWindow()
+      if (!w || revealed.has(w)) return
+      revealed.add(w)
+      w.show()
+    },
+    rendererReady: () => d.rendererReady?.(),
     quitApp: () => { app.quit() },
     quitDialogShown: () => d.quit.dialogShown(),
     quitDecision: (quit) => d.quit.decide(quit),

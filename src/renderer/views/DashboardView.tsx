@@ -2070,7 +2070,7 @@ export function DashboardView() {
           text: 'A dispatch could not be routed',
           detail: srcTab
             ? `The lane that sent it isn't attached to a project, so there is no roster to route "${roleToken}" against.`
-            : 'The lane that sent it is no longer open.',
+            : `No open project matches the one it came from, and Operator has no tab for the lane that sent it${terminalId ? ` (terminal ${terminalId})` : ''}.`,
           kind: 'error',
         })
         // Logged against the project id the event CARRIED, even though nothing matched it: an
@@ -2319,7 +2319,7 @@ export function DashboardView() {
           text: 'A dispatch could not be routed',
           detail: srcTab
             ? `"${srcTab.roleId ?? 'A lane'}" isn't attached to a project, so its dispatch has no roster to route against.`
-            : 'The lane that sent it is no longer open.',
+            : `Operator has no tab for the lane that sent it (terminal ${d.terminalId}), so it cannot tell which project it belongs to.`,
           kind: 'error',
         })
         if (srcTab?.projectId) {
@@ -2800,6 +2800,29 @@ export function DashboardView() {
       .catch(() => { /* no re-attach */ })
       .finally(() => setReattachDone(true))
   }, [savedHydrated, savedSessions])
+  // Main holds lane dispatches and replies while no renderer can route them: from a crash or a
+  // reload until here, where the tabs they name exist again. Before this, one sent in that gap was
+  // dropped, or found no sending tab and was reported as coming from a lane that was gone.
+  useEffect(() => {
+    if (reattachDone) window.operator.rendererReady?.()
+  }, [reattachDone])
+  // What main held too long to route (the window was closed for longer than its age limit). Named
+  // here instead of acted on: routing them late would launch lanes and type replies hours after
+  // they mattered. A dispatch listed here was never delivered; send it again if it still applies.
+  useEffect(() => window.operator.onHeldExpired?.((h) => {
+    const n = h.dispatches.length
+    const parts: string[] = []
+    if (n) parts.push(h.dispatches.map((d) => `${d.role}: ${d.task.length > 80 ? `${d.task.slice(0, 80)}…` : d.task}`).join(' · '))
+    if (h.replies.length) parts.push(`${h.replies.length} ${h.replies.length === 1 ? 'reply is' : 'replies are'} in the channel and were not typed into ${h.replies.length === 1 ? 'its lane' : 'their lanes'}.`)
+    if (h.dropped) parts.push(`${h.dropped} older ${h.dropped === 1 ? 'event was' : 'events were'} dropped.`)
+    pushToast({
+      text: n
+        ? `${n} ${n === 1 ? 'dispatch' : 'dispatches'} arrived while the window was closed, not\u00a0sent`
+        : 'Lane messages arrived while the window was\u00a0closed',
+      detail: parts.join(' '),
+      kind: 'error',
+    })
+  }), [pushToast])
 
   /** WHEN EACH LANE LAST REPORTED A TASK DONE, by terminal id — the only "finished" signal this
    *  app has that isn't a guess (see lib/lane-lifecycle for why silence is not one). Stamped by
