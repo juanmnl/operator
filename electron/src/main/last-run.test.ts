@@ -350,6 +350,7 @@ describe('the previous run is carried until the renderer has it', () => {
     expect(keys(info)).toEqual(['k-qa', 'k-code'])
     expect(info.autoResume).toBe(true)
     expect(info.lanes.some((l) => l.offerOnly)).toBe(false)
+    await run3.sync() // the auto-resume note's write, before afterEach removes the dir
   })
 
   it('a crash after the hand-out, before the renderer saved them: the next boot offers them', async () => {
@@ -424,6 +425,7 @@ describe('the previous run is carried until the renderer has it', () => {
     const run3 = recorder(RUN3)
     await run3.open({ isRunning: dead })
     expect(run3.previousRun()!.released).toEqual(['k-done'])
+    await run3.sync() // the auto-resume note's write, before afterEach removes the dir
   })
 })
 
