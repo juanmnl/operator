@@ -49,7 +49,10 @@ export interface Workspace {
   lastAgentByProject?: Record<string, string>
   /** Durable keys of the sessions that were LIVE at the time. The resume offer has to be "the
    *  six you had", and `savedSessions` alone cannot say that: it holds every session never
-   *  explicitly closed, including ones from runs before this one. */
+   *  explicitly closed, including ones from runs before this one.
+   *
+   *  Every project's lanes, never one project's (see `carriedLaneKeys`). It also keeps the
+   *  previous run's lanes that have not been resumed or dismissed yet (`snapshotLiveKeys`). */
   liveKeys: string[]
   /** The last project the user was IN, kept while they sit on the gallery. The app opens on the
    *  home overview at launch, so `projectId` is null right after every launch; without this the
@@ -205,6 +208,92 @@ export function describeRestore(plan: RestorePlan): string | null {
       : `${live} agent${live > 1 ? 's' : ''} ready to resume.`
   }
   return null
+}
+
+// ── THE PREVIOUS RUN'S LANES, CARRIED WHOLE ─────────────────────────────────────────────────────
+//
+// `planRestore` scopes its lanes to the restored project, which is right for "where you were" and
+// wrong for "what was running". The carried set used to be taken from the plan, so the first
+// snapshot after a launch wrote ONE project's lanes over every project's: on 2026-10-06, 33 keys
+// across 7 projects became 5, four seconds after the relaunch
+// (dev/results/relaunch-lost-sessions-2026-10-06.md). The carried set is now the whole previous
+// `liveKeys`, and the project filter applies only where an offer is built.
+
+/** The previous run's lanes, unscoped. A key whose SavedSession has been forgotten (closed, pruned)
+ *  drops; nothing else does. */
+export function carriedLaneKeys(workspace: Workspace | null, savedSessions: readonly SavedSession[]): string[] {
+  if (!workspace) return []
+  const known = new Set(savedSessions.map((s) => s.key))
+  return [...new Set(workspace.liveKeys)].filter((k) => known.has(k))
+}
+
+/** What the snapshot records as `liveKeys`: this run's lanes, then the previous run's lanes that
+ *  have not been resumed or dismissed yet. A union, not "terminals, else pending": resuming one lane
+ *  must not erase the offer for the other thirty, and a crash right after that resume would. */
+export function snapshotLiveKeys(terminalKeys: readonly string[], pending: readonly string[]): string[] {
+  const live = new Set(terminalKeys)
+  return [...live, ...pending.filter((k) => !live.has(k))]
+}
+
+export interface PreviousRunProject {
+  projectId: string | null
+  name: string
+  /** Resumable lanes of this project. Lanes left out are counted in `PreviousRunOffer.blocked`. */
+  lanes: number
+}
+
+export interface PreviousRunOffer {
+  /** What the one button resumes, oldest first across every project: the same order
+   *  `handleResumeProject` uses, so the sidebar comes back in its usual order. */
+  resumable: SavedSession[]
+  /** Previous-run lanes the button leaves out, named so the user knows why. */
+  blocked: Array<{ name: string; blocker: ResumeBlocker }>
+  /** Most lanes first. */
+  projects: PreviousRunProject[]
+}
+
+/** The gallery overview's "Resume N lanes from your last session" card. Pure: the carried keys and
+ *  what exists now → what to offer, or null when there is nothing to offer.
+ *
+ *  A missing folder blocks a lane only when it cannot be rebuilt. A worktree lane that kept its
+ *  branch and source repo is put back by `handleRestoreSession`, and lanes close themselves, so for
+ *  those a missing folder is the normal case and not a reason to leave them out. */
+export function previousRunOffer({ keys, savedSessions, liveKeys, projects, missingPaths }: {
+  keys: readonly string[]
+  savedSessions: readonly SavedSession[]
+  /** Keys live in this run. Already resumed, so not offered. */
+  liveKeys: ReadonlySet<string>
+  projects: ReadonlyArray<{ id: string; name: string }>
+  missingPaths?: ReadonlySet<string>
+}): PreviousRunOffer | null {
+  const byKey = new Map(savedSessions.map((s) => [s.key, s]))
+  const lanes = [...new Set(keys)]
+    .filter((k) => !liveKeys.has(k))
+    .map((k) => byKey.get(k))
+    .filter((s): s is SavedSession => !!s)
+    .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt))
+  if (!lanes.length) return null
+
+  const resumable: SavedSession[] = []
+  const blocked: PreviousRunOffer['blocked'] = []
+  for (const s of lanes) {
+    const rebuildable = !!(s.worktreeBranch && s.sourceCwd)
+    const blocker: ResumeBlocker | undefined = missingPaths?.has(s.cwd) && !rebuildable ? 'folder-missing'
+      : s.claudeSessionId ? undefined : 'no-conversation'
+    if (blocker) blocked.push({ name: laneName(s), blocker })
+    else resumable.push(s)
+  }
+
+  const names = new Map(projects.map((p) => [p.id, p.name]))
+  const groups = new Map<string | null, PreviousRunProject>()
+  for (const s of resumable) {
+    const id = s.projectId ?? null
+    const g = groups.get(id) ?? { projectId: id, name: (id && names.get(id)) || s.projectName || s.cwd.split('/').pop() || s.cwd, lanes: 0 }
+    g.lanes++
+    groups.set(id, g)
+  }
+  const byCount = [...groups.values()].sort((a, b) => b.lanes - a.lanes || a.name.localeCompare(b.name))
+  return { resumable, blocked, projects: byCount }
 }
 
 /** Where the snapshot lives. One key: the workspace is one fact ("where you were"), and

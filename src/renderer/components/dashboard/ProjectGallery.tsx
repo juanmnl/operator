@@ -6,6 +6,7 @@ import { LogoMark } from '../LogoMark'
 import { StatusWave } from '../sidebar/StatusWave'
 import { ActivityDashboard } from './ActivityDashboard'
 import { OverviewChip, WorktreeOverview, useOverview } from './WorktreeOverview'
+import { ResumeCard, type ResumeCardProps } from './ResumeCard'
 import type { FolderPrefsTab } from '../preferences/FolderPreferencesView'
 import type { RecentSession, RecentProject } from './RecentLists'
 import { BACK_BTN as backBtn } from '../../lib/chrome'
@@ -74,6 +75,8 @@ interface ProjectGalleryProps {
   /** Where the app was before this launch opened on the overview. Absent on a reload and once you
    *  have gone somewhere. `label` is the place: a project name, or a view such as Preferences. */
   continueTo?: { label: string; onContinue: () => void }
+  /** The previous run's lanes, every project, offered on the overview until resumed or dismissed. */
+  resumeOffer?: ResumeCardProps
   /** Global settings on a tab: the overview's link for folders that match no project. */
   onOpenGlobalPrefs?: (tab?: FolderPrefsTab) => void
   onSelectSession: (s: AgentSession) => void
@@ -94,7 +97,7 @@ export function ProjectGallery({
   onOpenProject, onOpenFolder, onRenameProject, onSetProjectNotes, onForgetProject,
   onArchiveProject, onCloseProject, onArchiveProjects, onRestoreProject, onOpenFolderPrefs,
   onSelectSession, restorableSessions, recentProjects, onRestore, onForget, onOpenFolderPath,
-  closingIds, activeProjectId, onOpenGlobalPrefs, continueTo,
+  closingIds, activeProjectId, onOpenGlobalPrefs, continueTo, resumeOffer,
 }: ProjectGalleryProps) {
   // THE MACHINE OVERVIEW starts reading when the launcher mounts, from files only, so its chip in
   // the header has a number by the time anyone looks. The git half follows on its own delay.
@@ -243,6 +246,7 @@ export function ProjectGallery({
           onOpenProject={onOpenProject}
           onOpenSettings={onOpenFolderPrefs}
           onOpenGlobalWorktrees={() => onOpenGlobalPrefs?.('Worktrees')}
+          lead={resumeOffer && <ResumeCard {...resumeOffer} />}
         />
       ) : tab === 'activity' ? (
         // Unchanged component — the cross-project read, at launcher level only.

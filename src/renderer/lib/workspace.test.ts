@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planRestore, readWorkspace, describeRestore, WORKSPACE_VERSION, type Workspace } from './workspace'
+import { planRestore, readWorkspace, describeRestore, carriedLaneKeys, snapshotLiveKeys, previousRunOffer, WORKSPACE_VERSION, type Workspace } from './workspace'
 import type { SavedSession } from '../../shared/types'
 
 const saved = (over: Partial<SavedSession> & { key: string }): SavedSession => ({
@@ -144,5 +144,93 @@ describe('planRestore', () => {
 
   it('says nothing when there is nothing to say', () => {
     expect(describeRestore(planRestore({ workspace: ws(), projectIds: ['p1'], savedSessions: [] }))).toBeNull()
+  })
+})
+
+// 2026-10-06: 33 lane keys across 7 projects became 5 four seconds after a relaunch, because the
+// carried set was taken from a plan scoped to the focused project.
+describe('the previous run\'s lanes are carried whole', () => {
+  const a1 = saved({ key: 'a1', roleId: 'code', projectId: 'pA', lastActiveAt: '2026-10-06T10:00:00Z' })
+  const a2 = saved({ key: 'a2', roleId: 'qa', projectId: 'pA', lastActiveAt: '2026-10-06T10:05:00Z' })
+  const b1 = saved({ key: 'b1', roleId: 'code', projectId: 'pB', lastActiveAt: '2026-10-06T09:00:00Z' })
+  const b2 = saved({ key: 'b2', roleId: 'design', projectId: 'pB', lastActiveAt: '2026-10-06T09:30:00Z' })
+  const all = [a1, a2, b1, b2]
+  const before = ws({ projectId: 'pA', mode: 'session', liveKeys: ['a1', 'a2', 'b1', 'b2', 'k-forgotten'] })
+
+  it('a plan for project A leaves project B\'s carried keys intact', () => {
+    const plan = planRestore({ workspace: before, projectIds: ['pA', 'pB'], savedSessions: all })
+    // The plan is still scoped: it is "where you were".
+    expect(plan.lanes.map((l) => l.saved.key)).toEqual(['a1', 'a2'])
+    // The carried set is not, and the first snapshot after the launch keeps B's lanes.
+    const carried = carriedLaneKeys(before, all)
+    expect(carried).toEqual(['a1', 'a2', 'b1', 'b2'])
+    expect(snapshotLiveKeys([], carried)).toEqual(['a1', 'a2', 'b1', 'b2'])
+  })
+
+  it('two relaunches in a row keep every project\'s lanes', () => {
+    let raw = JSON.stringify(before)
+    for (let launch = 0; launch < 2; launch++) {
+      const w = readWorkspace(raw)
+      // Nothing resumed: no terminals, so the snapshot is the carried set alone.
+      raw = JSON.stringify(ws({ projectId: null, mode: 'gallery', liveKeys: snapshotLiveKeys([], carriedLaneKeys(w, all)) }))
+    }
+    expect(readWorkspace(raw)?.liveKeys).toEqual(['a1', 'a2', 'b1', 'b2'])
+  })
+
+  it('drops only keys with no saved row', () => {
+    expect(carriedLaneKeys(ws({ liveKeys: ['a1', 'gone', 'a1', 'b1'] }), all)).toEqual(['a1', 'b1'])
+    expect(carriedLaneKeys(null, all)).toEqual([])
+  })
+
+  it('resuming one lane keeps the others in the snapshot', () => {
+    // "terminals, else pending" would write ['a1'] here, and a crash then loses b1 and b2.
+    expect(snapshotLiveKeys(['a1', 'new'], ['a1', 'b1', 'b2'])).toEqual(['a1', 'new', 'b1', 'b2'])
+  })
+})
+
+describe('previousRunOffer', () => {
+  const projects = [{ id: 'pA', name: 'Alpha' }, { id: 'pB', name: 'Beta' }]
+  const a1 = saved({ key: 'a1', roleId: 'code', projectId: 'pA', lastActiveAt: '2026-10-06T10:00:00Z' })
+  const b1 = saved({ key: 'b1', roleId: 'code', projectId: 'pB', lastActiveAt: '2026-10-06T09:00:00Z' })
+  const b2 = saved({ key: 'b2', roleId: 'qa', projectId: 'pB', lastActiveAt: '2026-10-06T09:30:00Z' })
+  const stale = saved({ key: 'stale', roleId: 'old', projectId: 'pB', lastActiveAt: '2026-08-01T09:30:00Z' })
+  const all = [a1, b1, b2, stale]
+
+  it('offers exactly the carried lanes, oldest first across projects, with a per-project count', () => {
+    const offer = previousRunOffer({ keys: ['a1', 'b1', 'b2'], savedSessions: all, liveKeys: new Set(), projects })
+    // Not `stale`: a saved row from an earlier run is not a lane from the last session.
+    expect(offer?.resumable.map((s) => s.key)).toEqual(['b1', 'b2', 'a1'])
+    expect(offer?.projects).toEqual([
+      { projectId: 'pB', name: 'Beta', lanes: 2 },
+      { projectId: 'pA', name: 'Alpha', lanes: 1 },
+    ])
+    expect(offer?.blocked).toEqual([])
+  })
+
+  it('leaves out lanes already live in this run, and offers nothing once all are', () => {
+    const offer = previousRunOffer({ keys: ['a1', 'b1'], savedSessions: all, liveKeys: new Set(['a1']), projects })
+    expect(offer?.resumable.map((s) => s.key)).toEqual(['b1'])
+    expect(previousRunOffer({ keys: ['a1'], savedSessions: all, liveKeys: new Set(['a1']), projects })).toBeNull()
+    expect(previousRunOffer({ keys: [], savedSessions: all, liveKeys: new Set(), projects })).toBeNull()
+  })
+
+  it('names the lanes it cannot resume instead of starting them fresh', () => {
+    const fresh = saved({ key: 'fresh', roleId: 'design', projectId: 'pA', claudeSessionId: undefined })
+    const gone = saved({ key: 'gone', roleId: 'review', projectId: 'pA', cwd: '/gone/review' })
+    const offer = previousRunOffer({
+      keys: ['a1', 'fresh', 'gone'], savedSessions: [...all, fresh, gone], liveKeys: new Set(), projects,
+      missingPaths: new Set(['/gone/review']),
+    })
+    expect(offer?.resumable.map((s) => s.key)).toEqual(['a1'])
+    expect(offer?.blocked).toEqual(expect.arrayContaining([
+      { name: 'design', blocker: 'no-conversation' },
+      { name: 'review', blocker: 'folder-missing' },
+    ]))
+  })
+
+  it('a worktree lane whose folder is gone is still offered: the restore rebuilds it', () => {
+    const wt = saved({ key: 'wt', roleId: 'code', projectId: 'pA', cwd: '/w/wt-gone', worktreeBranch: 'operator/abc', sourceCwd: '/repo' })
+    const offer = previousRunOffer({ keys: ['wt'], savedSessions: [wt], liveKeys: new Set(), projects, missingPaths: new Set(['/w/wt-gone']) })
+    expect(offer?.resumable.map((s) => s.key)).toEqual(['wt'])
   })
 })

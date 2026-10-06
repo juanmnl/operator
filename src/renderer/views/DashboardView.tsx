@@ -73,7 +73,7 @@ import { computeFanMembership } from '../lib/fan-out'
 import { isAppChord } from '../lib/key-routing'
 import { loadForgottenProjects, rememberProjectForgotten, rememberProjectOpened } from '../lib/forgotten-projects'
 import { DragRegion } from '../components/DragRegion'
-import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
+import { planRestore, readWorkspace, describeRestore, resumeOnLaunchEnabled, launchLanding, continueLabel, carriedLaneKeys, snapshotLiveKeys, previousRunOffer, WORKSPACE_KEY, WORKSPACE_VERSION, type Workspace, type ContinueTarget } from '../lib/workspace'
 import { launchKind } from '../lib/launch-kind'
 import { describeOrigin, isPageMode, originKey, originLabel, pushOrigin, type LaneRef, type NavOrigin } from '../lib/nav-origin'
 import { PageBackProvider } from '../components/settings/PageShell'
@@ -4851,9 +4851,20 @@ export function DashboardView() {
   // kind of value that must be current at the moment of the click rather than at the moment the
   // callback was built. Persisted inside the workspace snapshot — one record, see its type.
   const lastAgentRef = useRef<Record<string, string>>({})
-  // Lanes that were live before the restart and have not been resumed yet — see the persist
-  // effect for why an empty terminal list must not overwrite them.
-  const pendingLaneKeysRef = useRef<string[]>([])
+  // Lanes that were live before the restart, in EVERY project, and have not been resumed or
+  // dismissed yet. The persist effect keeps them in the snapshot; the gallery overview's resume
+  // card offers them. State, not a ref, because the card renders from it.
+  const [pendingLaneKeys, setPendingLaneKeys] = useState<string[]>([])
+  // Their folders known to be gone, for the card's "left out" line. Filled once at launch.
+  const [pendingMissing, setPendingMissing] = useState<ReadonlySet<string>>(() => new Set())
+  // A lane that comes back (from the card, the sidebar, Project Home, anywhere) is no longer
+  // pending. Dropping it here rather than filtering at read time keeps a lane resumed and later
+  // suspended from reappearing as "from your last session".
+  useEffect(() => {
+    if (!pendingLaneKeys.length) return
+    const live = new Set(terminals.map((t) => t.key))
+    if (pendingLaneKeys.some((k) => live.has(k))) setPendingLaneKeys((prev) => prev.filter((k) => !live.has(k)))
+  }, [terminals, pendingLaneKeys])
   // True once the launch restore below has finished reading the snapshot (or decided there was
   // nothing to read). Declared here because the PERSIST effect is gated on it — see there.
   const [restoreSettled, setRestoreSettled] = useState(false)
@@ -4887,19 +4898,18 @@ export function DashboardView() {
       // The resume offer has to be "the ones you had". `savedSessions` cannot answer that: it
       // keeps every session never explicitly closed, including ones from earlier runs.
       //
-      // ⚠ CARRIED FORWARD while nothing is live. The obvious version — always write the current
-      // terminals — erases the offer the moment it is restored: launch with the setting off, the
-      // restore reads "four lanes", nothing is spawned, and the very next snapshot records zero.
-      // Restart twice and the lanes you had are simply forgotten. So an empty terminal list does
-      // not mean "you had none", it means "not resumed yet", and the pending set stands until
-      // something real replaces it.
-      liveKeys: terminals.length ? terminals.map((t) => t.key) : pendingLaneKeysRef.current,
+      // ⚠ CARRIED FORWARD until resumed or dismissed. The obvious version — always write the
+      // current terminals — erases the offer the moment it is restored: launch with the setting
+      // off, the restore reads "four lanes", nothing is spawned, and the very next snapshot
+      // records zero. So the previous run's lanes not yet back are written alongside this run's
+      // (lib/workspace `snapshotLiveKeys`), across every project, not only the focused one.
+      liveKeys: snapshotLiveKeys(terminals.map((t) => t.key), pendingLaneKeys),
       lastAgentByProject: lastAgentRef.current,
       lastProjectId: (lastProjectRef.current = activeProjectId ?? continueTarget?.projectId ?? lastProjectRef.current),
       at: new Date().toISOString(),
     }
     try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(snapshot)) } catch { /* quota */ }
-  }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals, continueTarget])
+  }, [savedHydrated, restoreSettled, activeProjectId, contentMode, projectTab, activeSessionId, allSidebarSessions, terminals, continueTarget, pendingLaneKeys])
 
   // ── AND PUTTING YOU BACK ──────────────────────────────────────────────────────────────────
   // ⚠ RUNS EXACTLY ONCE, AT LAUNCH. This is NOT "restore where I was" as a general rule, and the
@@ -4919,7 +4929,14 @@ export function DashboardView() {
     if (!savedHydrated || !reattachDone || restoredRef.current) return
     restoredRef.current = true
     // Every path below must release the persist gate, including the ones that restore nothing.
-    if (terminals.length > 0) { setRestoreSettled(true); return } // ptys survived: a reload, not a restart
+    if (terminals.length > 0) {
+      // ptys survived: a reload, not a restart. The previous run's lanes not yet resumed are still
+      // owed, so carry them, or the first snapshot of this renderer would drop them.
+      const live = new Set(terminals.map((t) => t.key))
+      setPendingLaneKeys(carriedLaneKeys(readWorkspace(localStorage.getItem(WORKSPACE_KEY)), savedSessions).filter((k) => !live.has(k)))
+      setRestoreSettled(true)
+      return
+    }
 
     void (async () => {
       // LAUNCH OR RELOAD, asked of main (lib/launch-kind). A launch opens on the home overview with
@@ -4941,8 +4958,11 @@ export function DashboardView() {
         projectIds: projects.map((p) => p.id),
         savedSessions,
       })
-      // Carried so the offer survives a second restart (see the persist effect).
-      pendingLaneKeysRef.current = plan.lanes.map((l) => l.saved.key)
+      // Carried so the offer survives a second restart (see the persist effect). The WHOLE previous
+      // set, not `plan.lanes`: the plan is scoped to the focused project, and carrying it wrote one
+      // project's lanes over seven projects' on 2026-10-06.
+      const carried = carriedLaneKeys(workspace, savedSessions)
+      setPendingLaneKeys(carried)
       // The per-project last agent outlives the restart too. It only ever WINS when the lane is
       // live, so seeding it from a run where nothing is running is harmless — it starts mattering
       // again the moment something is resumed.
@@ -4956,14 +4976,17 @@ export function DashboardView() {
       // Which of those lanes could not be resumed even if asked. `worktreeStatus` answers for
       // any path, worktree or not — a missing folder and a removed worktree are the same
       // question here: is there still somewhere to spawn into.
+      // Every carried lane, not only the plan's: the resume card covers all projects.
       const missing = new Set<string>()
-      await Promise.all(plan.lanes.map(async (l) => {
+      const carriedSet = new Set(carried)
+      await Promise.all(savedSessions.filter((s) => carriedSet.has(s.key)).map(async (s) => {
         try {
           // `pathExists`, not `worktreeStatus`: the latter reports `valid: false` for any
           // folder that isn't a git repo, which would call a perfectly good directory gone.
-          if ((await window.operator.pathExists?.(l.saved.cwd)) === false) missing.add(l.saved.cwd)
+          if ((await window.operator.pathExists?.(s.cwd)) === false) missing.add(s.cwd)
         } catch { /* unknown → assume present; a wrong "gone" is worse than a late one */ }
       }))
+      setPendingMissing(missing)
       const settled = planRestore({
         workspace,
         projectIds: projects.map((p) => p.id),
@@ -4975,7 +4998,10 @@ export function DashboardView() {
       // saved conversation and could therefore only start FRESH, is named before anything acts
       // on it — silently starting a new agent where someone expected their conversation back is
       // the outcome this whole feature is trying not to produce.
-      if (line) pushToast({ text: kind === 'launch' ? 'Where you left off' : 'Picked up where you left off', kind: 'info', detail: line })
+      //
+      // A LAUNCH with lanes to offer says it on the overview's resume card instead: a toast is gone
+      // in seconds, and it only ever spoke for the focused project.
+      if (line && !(kind === 'launch' && carried.length)) pushToast({ text: kind === 'launch' ? 'Where you left off' : 'Picked up where you left off', kind: 'info', detail: line })
 
       // AUTO-RESUME — off by default, and deliberately so: reopening the app should not silently
       // spawn six processes, six worktrees and six dev ports. When it is on, it runs the SAME
@@ -4991,6 +5017,42 @@ export function DashboardView() {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot: reads current values by design
   }, [savedHydrated, reattachDone])
+
+  // THE RESUME CARD on the gallery overview: the previous run's lanes, every project, one button.
+  // It stays until each lane is back or the card is dismissed; a relaunch in between offers it again.
+  const resumeOffer = useMemo(() => previousRunOffer({
+    keys: pendingLaneKeys,
+    savedSessions,
+    liveKeys: new Set(terminals.map((t) => t.key)),
+    projects,
+    missingPaths: pendingMissing,
+  }), [pendingLaneKeys, savedSessions, terminals, projects, pendingMissing])
+  const [resumingPrevious, setResumingPrevious] = useState<{ done: number; total: number } | null>(null)
+  const resumingPreviousRef = useRef(false)
+  // Exactly the offered lanes, through the per-lane restore path with --resume, oldest first. Not
+  // `handleResumeProject`: that restarts EVERY saved row of a project, earlier runs' included.
+  // Sequential for the same reason that one is (ports, re-attach), and in the background so the
+  // overview stays on screen while they come up.
+  const resumePreviousRun = useCallback(async () => {
+    if (!resumeOffer || resumingPreviousRef.current) return
+    resumingPreviousRef.current = true
+    const lanes = resumeOffer.resumable
+    try {
+      for (let i = 0; i < lanes.length; i++) {
+        setResumingPrevious({ done: i, total: lanes.length })
+        try {
+          await handleRestoreSession(lanes[i], true, { background: true })
+        } catch (e) {
+          // One lane that cannot start must not strand the rest. It stays pending, so the card
+          // still offers it.
+          console.warn('Could not resume lane', lanes[i].key, e)
+        }
+      }
+    } finally {
+      resumingPreviousRef.current = false
+      setResumingPrevious(null)
+    }
+  }, [resumeOffer, handleRestoreSession])
 
   // THE LAYOUT GRID over the Preview. The spec is per project (`Project.previewGrid`, written
   // through updateProject); whether it is shown is per session (`SessionLayout.tools.grid`). A
@@ -5960,6 +6022,12 @@ export function DashboardView() {
             continueTo={continueTarget ? {
               label: continueLabel(continueTarget, projects),
               onContinue: continueWhereYouWere,
+            } : undefined}
+            resumeOffer={resumeOffer ? {
+              offer: resumeOffer,
+              progress: resumingPrevious,
+              onResume: () => { void resumePreviousRun() },
+              onDismiss: () => { setPendingLaneKeys([]) },
             } : undefined}
             onSelectSession={handleSelectSession}
             restorableSessions={restorableSessions}
