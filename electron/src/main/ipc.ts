@@ -317,7 +317,7 @@ export function registerIpc(d: Deps): void {
     previewShotDelete: (project, id) => deleteShot(String(project), String(id)),
     // The Preview screenshot, saved to ~/Downloads (preview-screenshot-capture.ts).
     previewScreenshotHide: (hidden) => previewApi.setDrawingHidden(hidden === true),
-    previewScreenshotTile: (req) => captureTile(d.getWindow(), req),
+    previewScreenshotTile: (req) => captureTile(d.getWindow(), req, previewApi.framePainted),
     previewScreenshotSave: (id, project, page) => saveTiles(String(id), String(project), { w: Number(page?.w) || 0, h: Number(page?.h) || 0 }),
     previewCdpScreenshot: async (project) => {
       const shot = await previewCdp?.screenshot()

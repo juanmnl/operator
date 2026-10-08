@@ -489,10 +489,13 @@ export interface PreviewScreenshotTileRequest {
   at: { x: number; y: number; w: number; h: number }
 }
 
-/** A saved Preview screenshot. */
+/** A Preview screenshot, copied and saved. The copy and the file are independent: either can fail
+ *  alone, and the renderer says which. */
 export interface PreviewScreenshot {
-  /** Absolute path of the PNG in ~/Downloads. */
-  path: string
+  /** Absolute path of the PNG in ~/Downloads, or null when the write failed (`saveError`). */
+  path: string | null
+  /** Why the write failed, in words, when `path` is null. */
+  saveError?: string
   /** The page's viewport, in CSS px: the size the preview was set to. */
   cssWidth: number
   cssHeight: number

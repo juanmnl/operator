@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   screenshotPageSize, tileWindow, tilePlan, tileShift, screenshotPixels, tileOrigin, capturedDpr,
-  fileStem, screenshotFileName, withSuffix, type Rect,
+  fileStem, screenshotFileName, withSuffix, screenshotTooLarge, type Rect,
 } from './preview-screenshot'
 
 /** The panel's page box for a preset, as AppPreviewPanel derives it: `preset` wide, and the panel's
@@ -151,5 +151,20 @@ describe('the file name', () => {
   it('a second capture in the same second gets a suffix', () => {
     expect(withSuffix('a-1x1-20261007-090503.png', 1)).toBe('a-1x1-20261007-090503.png')
     expect(withSuffix('a-1x1-20261007-090503.png', 2)).toBe('a-1x1-20261007-090503-2.png')
+  })
+})
+
+describe('screenshotTooLarge — the image has a ceiling', () => {
+  it('1280×1792 at 2x is within it', () => {
+    expect(screenshotTooLarge(screenshotPixels({ w: 1280, h: 1792 }, 2))).toBeNull()
+  })
+
+  it('refuses a long side past 16384 px', () => {
+    expect(screenshotTooLarge({ w: 1000, h: 16385 })).toMatch(/16384 px limit on a side/)
+  })
+
+  it('refuses more than 64 MB of pixels: 1280 in a tall 300 px panel at 2x', () => {
+    const page = screenshotPageSize({ w: 1280, h: 1000 / (300 / 1280) })
+    expect(screenshotTooLarge(screenshotPixels(page, 2))).toMatch(/^The image would be 2560×8534 px \(83 MB\), over the 64 MB limit\. Use\u00a0a/)
   })
 })

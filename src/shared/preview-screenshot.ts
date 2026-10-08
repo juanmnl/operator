@@ -61,6 +61,23 @@ export function screenshotPixels(page: Size, dpr: number): Size {
   return { w: Math.max(1, Math.round(page.w * k)), h: Math.max(1, Math.round(page.h * k)) }
 }
 
+/** The largest image the screenshot makes: 16384 device px on the long side (past it, viewers and
+ *  the clipboard refuse or downscale), and 16M pixels, a 64 MB BGRA bitmap, which main holds about
+ *  three times while it stitches, encodes and copies. */
+export const SCREENSHOT_MAX_SIDE = 16384
+export const SCREENSHOT_MAX_PIXELS = 16 * 1024 * 1024
+
+/** Why an image of `px` device pixels is refused, or null when it is within the caps. */
+export function screenshotTooLarge(px: Size): string | null {
+  if (Math.max(px.w, px.h) > SCREENSHOT_MAX_SIDE) {
+    return `The image would be ${px.w}×${px.h} px, over the ${SCREENSHOT_MAX_SIDE} px limit on a side. Use\u00a0a narrower preset or a shorter panel.`
+  }
+  if (px.w * px.h > SCREENSHOT_MAX_PIXELS) {
+    return `The image would be ${px.w}×${px.h} px (${Math.round(px.w * px.h * 4 / 1048576)} MB), over the 64 MB limit. Use\u00a0a narrower preset or a shorter panel.`
+  }
+  return null
+}
+
 /** Where a tile's pixels start in the stitched image. */
 export function tileOrigin(tile: Rect, dpr: number): { x: number; y: number } {
   const k = dpr > 0 ? dpr : 1

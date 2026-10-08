@@ -7,7 +7,8 @@ import {
   type PreviewHistory,
 } from '../../lib/preview-history'
 import type { PreviewScreenshot, SessionPort } from '../../../shared/types'
-import { screenshotPageSize, tilePlan, tileShift, tileWindow } from '../../../shared/preview-screenshot'
+import { screenshotPageSize } from '../../../shared/preview-screenshot'
+import { hideLayersOver, runTileLoop, swallowWheel, withTimeout } from '../../lib/preview-screenshot'
 import type { ToastMessage } from '../Toast'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { formatPick, acceptPick } from '../../lib/preview-pick'
@@ -634,41 +635,42 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, projec
   const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
   const readout = scaleReadout(preset, box.w)
 
-  // THE SCREENSHOT (src/shared/preview-screenshot.ts): the page at the size it is set to, at the
-  // display's pixel ratio, saved to ~/Downloads and copied. While it runs the pins, the note card, the
-  // grid and the toast stack are not drawn, and main hides what Operator draws inside the page.
+  // THE SCREENSHOT (src/shared/preview-screenshot.ts, lib/preview-screenshot.ts): the page at the size
+  // it is set to, at the display's pixel ratio, copied and saved to ~/Downloads. While it runs the
+  // pins, the note card, the grid, the toast stack and every other layer of Operator's over the stage
+  // are not drawn, main hides what Operator draws inside the page, and a shield over the stage takes
+  // the pointer and the wheel so the page cannot move between tiles.
   const [shooting, setShooting] = useState(false)
   const shotLabel = projectName || projectId || 'preview'
   /** The web page's size in the image, in CSS px. An attached app is captured at its own window's. */
   const shotSize = screenshotPageSize(pageBox)
+  /** The iframe's transform as React renders it now, for the capture to put back. */
+  const wantTransformRef = useRef('')
+  wantTransformRef.current = fitting || electronLive ? '' : `scale(${scale})`
   /** The web preview, a tile at a time: the iframe is drawn at scale 1 and shifted under the stage
    *  for each tile, so a scaled preset comes out at full size. A direct style write: React leaves the
-   *  iframe's transform alone until the scale itself changes, and `finally` puts it back. */
-  const captureWebScreenshot = async (): Promise<PreviewScreenshot | null> => {
+   *  iframe's transform alone until the scale itself changes. */
+  const captureWebTiles = async (): Promise<{ ok: true; id: string } | { ok: false; reason: string }> => {
     const api = window.operator
     const frame = frameRef.current
     const stageEl = stageRef.current
-    if (!frame || !stageEl || !api.previewScreenshotTile || !api.previewScreenshotSave) return null
-    const r = stageEl.getBoundingClientRect()
-    const win = tileWindow(r, { w: window.innerWidth, h: window.innerHeight })
-    if (!win) return null
-    const page = shotSize
-    const id = crypto.randomUUID()
-    const before = frame.style.transform
-    await api.previewScreenshotHide?.(true)
+    if (!frame || !stageEl || !api.previewScreenshotTile || !api.previewScreenshotSave) return { ok: false, reason: 'The preview could not be captured.' }
+    const cover = hideLayersOver(stageEl, frame)
     try {
-      for (const t of tilePlan(page, win)) {
-        const shift = tileShift(r, win, t)
-        frame.style.transform = `translate(${shift.x}px, ${shift.y}px)`
-        await nextFrames(2)
-        const ok = await api.previewScreenshotTile({ id, rect: { x: win.x, y: win.y, w: t.w, h: t.h }, at: t }).catch(() => false)
-        if (!ok) return null
-      }
+      return await runTileLoop(shotSize, {
+        frame,
+        stage: () => stageEl.getBoundingClientRect(),
+        viewport: () => ({ w: window.innerWidth, h: window.innerHeight }),
+        dpr: () => window.devicePixelRatio,
+        wantTransform: () => wantTransformRef.current,
+        hide: (hidden) => api.previewScreenshotHide?.(hidden) ?? Promise.resolve(),
+        tile: (req) => api.previewScreenshotTile!(req),
+        paint: () => nextFrames(2),
+        beforeTile: cover.refresh,
+      })
     } finally {
-      frame.style.transform = before
-      await api.previewScreenshotHide?.(false)
+      cover.restore()
     }
-    return api.previewScreenshotSave(id, shotLabel, page).catch(() => null)
   }
   const takeScreenshot = async () => {
     if (!pageUp || shooting) return
@@ -676,27 +678,46 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, projec
     setCapturing(true)
     document.documentElement.setAttribute('data-preview-shot', '')
     let shot: PreviewScreenshot | null = null
+    let reason: string | null = null
     try {
-      await nextFrames(2)
-      shot = electronLive
-        ? await window.operator.previewCdpScreenshot?.(shotLabel).catch(() => null) ?? null
-        : await captureWebScreenshot()
+      let tiles: { ok: true; id: string } | { ok: false; reason: string } | null = null
+      try {
+        await nextFrames(2)
+        if (electronLive) {
+          shot = await withTimeout(window.operator.previewCdpScreenshot?.(shotLabel) ?? Promise.resolve(null), SAVE_TIMEOUT_MS, null)
+        } else {
+          tiles = await captureWebTiles()
+        }
+      } finally {
+        // The preview is whole again before the file is written: the save can take a moment on a
+        // large image, and nothing about it needs the page held still.
+        document.documentElement.removeAttribute('data-preview-shot')
+        setCapturing(false)
+      }
+      if (tiles?.ok) shot = await withTimeout(window.operator.previewScreenshotSave!(tiles.id, shotLabel, shotSize), SAVE_TIMEOUT_MS, null)
+      else if (tiles) reason = tiles.reason
     } finally {
-      document.documentElement.removeAttribute('data-preview-shot')
-      setCapturing(false)
       setShooting(false)
     }
-    if (shot) {
-      const saved = shot
-      const name = saved.path.split('/').pop() ?? saved.path
+    const name = shot?.path ? shot.path.split('/').pop() ?? shot.path : null
+    if (shot && shot.path) {
+      const path = shot.path
       onToast?.({
         kind: 'success',
-        text: `Screenshot saved, ${saved.cssWidth}×${saved.cssHeight}`,
-        detail: saved.copied ? `${name} in Downloads, and on the clipboard.` : `${name} in Downloads. It\u00a0could not be copied to the clipboard.`,
-        action: { label: 'Reveal in Finder', run: () => { void window.operator.revealPath(saved.path) } },
+        text: `Screenshot saved, ${shot.cssWidth}×${shot.cssHeight}`,
+        detail: shot.copied ? `${name} in Downloads, and on the clipboard.` : `${name} in Downloads. It\u00a0could not be copied to the clipboard.`,
+        action: { label: 'Reveal in Finder', run: () => { void window.operator.revealPath(path) } },
       })
+    } else if (shot && shot.copied) {
+      onToast?.({
+        kind: 'info',
+        text: `Screenshot copied, ${shot.cssWidth}×${shot.cssHeight}`,
+        detail: `It is on the clipboard. It\u00a0could not be saved to Downloads: ${shot.saveError ?? 'the write failed'}.`,
+      })
+    } else if (shot) {
+      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: `It could not be copied or saved: ${shot.saveError ?? 'the write failed'}.` })
     } else {
-      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: 'The preview could not be captured. Nothing\u00a0was saved.' })
+      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: `${reason ?? 'The preview could not be captured.'} Nothing\u00a0was saved.` })
     }
   }
   // In PAGE px, so a column is a column of the page at any device preset.
@@ -1187,6 +1208,19 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, projec
               />
             )}
 
+          {/* THE SCREENSHOT'S INPUT SHIELD: over the stage for the capture, so a click, hover or wheel
+              cannot reach the page while it is shifted and unscaled. Transparent, so it is not in
+              the image. */}
+          {shooting && (
+            <div
+              data-screenshot-shield
+              aria-hidden
+              ref={(el) => el?.addEventListener('wheel', swallowWheel, { passive: false })}
+              onMouseDown={(e) => e.preventDefault()}
+              style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'progress' }}
+            />
+          )}
+
           {/* THE LAYOUT GRID. Laid out in page px and scaled with the iframe. It sits outside the
               iframe, so it stays put while the page scrolls, and it never takes a click. Above
               the page, below the annotation layers. While the native view hosts the page, the
@@ -1479,6 +1513,11 @@ function cssRgb(token: string): { r: number; g: number; b: number } | undefined 
     return parseRgb(c)
   } catch { return undefined }
 }
+
+/** Bounds the screenshot's save (stitch, PNG, clipboard, file), so the button comes back after a
+ *  stall. Generous, so a slow encode of the largest image the size cap allows is not cut off. Not
+ *  measured. */
+const SAVE_TIMEOUT_MS = 20_000
 
 /** Resolve after `n` animation frames, so a state change has painted before a capture. */
 function nextFrames(n: number): Promise<void> {

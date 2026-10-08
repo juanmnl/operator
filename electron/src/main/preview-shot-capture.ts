@@ -7,6 +7,7 @@ import {
   chooseEncoding, cropRectIn, drawOutline, fitWidth, prunePickShots, saveShot, toBitmapRect,
   unionRect, PICK_PREFIX, type Rect,
 } from './preview-shots'
+import { dipRect } from './preview-screenshot'
 
 export interface CaptureSources {
   window: () => BrowserWindow | null
@@ -31,9 +32,13 @@ export async function capturePreviewShot(req: PreviewShotRequest, sources: Captu
     if (!crop) return null
     if (req.hideInspector) await sources.hideInspector()
     await settle()
-    const shot: NativeImage = await win.webContents.capturePage({ x: crop.x, y: crop.y, width: crop.w, height: crop.h })
+    // `crop` is in window CSS px; `capturePage` takes DIPs, which are CSS px times the zoom factor
+    // (⌘+ / ⌘-). The rect captured, back in CSS px, is what `finishShot` measures the outline against.
+    const zoom = win.webContents.getZoomFactor()
+    const dip = dipRect(crop, zoom)
+    const shot: NativeImage = await win.webContents.capturePage({ x: dip.x, y: dip.y, width: dip.w, height: dip.h })
     if (!shot || shot.isEmpty()) return null
-    return await finishShot(shot, crop, targets, req)
+    return await finishShot(shot, { x: dip.x / zoom, y: dip.y / zoom, w: dip.w / zoom, h: dip.h / zoom }, targets, req)
   } catch (e) {
     console.error('[preview-shot] capture failed:', e)
     return null

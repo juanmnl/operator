@@ -12,7 +12,16 @@
 //   PLACE   a red box at page (200, 300) 100×50 lands there; the blue 10×10 in the viewport's bottom
 //           right corner is complete, so the whole page was captured
 //   CLEAN   no inspector hover outline (#00aa00) and no stand-in overlay (#ff00ff) in the image, and
-//           both are visible again afterwards
+//           both are visible again afterwards; a compose card (#__op_compose) the page adds DURING the
+//           capture is not in the image either
+//   RASTER  the lower page is a canvas at full device resolution under 300 composited layers, all
+//           cyan: every pixel of it is cyan in the image, so no tile was taken before the
+//           out-of-process iframe had drawn the area the shift moved into view. NO_PAINT_WAIT=1 runs
+//           without main's wait for the page's own frame (preview-inspect.ts `framePainted`), to see
+//           whether this page needs it
+//   ZOOM    one case runs the host at 125% (⌘+): the image is still the page at the page's own
+//           position, at screen scale × 1.25 (the 1px stripes cannot stay pure there, so SHARP is
+//           not checked)
 // Also, for comparison: what CDP `Page.captureScreenshot` with `clip.scale` gives on the scaled case
 // (the alternative the tiles replace). Nothing is written to ~/Downloads or the clipboard.
 const { app, BrowserWindow, nativeImage } = require('electron')
@@ -26,9 +35,34 @@ const PAGE = `<!doctype html><meta charset="utf-8"><style>
 html, body { margin: 0; background: #fff }
 #stripes { position: absolute; left: 0; top: 0; width: 160px; height: 120px; background: repeating-linear-gradient(90deg, #000 0 1px, #fff 1px 2px) }
 #target { position: absolute; left: 200px; top: 300px; width: 100px; height: 50px; background: #ff0000 }
-#corner { position: fixed; right: 0; bottom: 0; width: 10px; height: 10px; background: #0000ff }
-</style><div id="stripes"></div><div id="target"></div><div id="corner"></div>
-<div data-operator-overlay style="position:fixed;left:20px;top:150px;width:40px;height:40px;background:#ff00ff"></div>`
+#corner { position: fixed; right: 0; bottom: 0; width: 10px; height: 10px; background: #0000ff; z-index: 2 }
+html { overflow: hidden }
+#heavy { position: absolute; left: 0; top: 400px; width: 100vw; height: calc(100vh - 420px) }
+.layer { position: absolute; width: 37px; height: 23px; background: #00ffff; will-change: transform }
+</style><div id="stripes"></div><div id="target"></div><canvas id="heavy"></canvas><div id="corner"></div>
+<div data-operator-overlay style="position:fixed;left:20px;top:150px;width:40px;height:40px;background:#ff00ff"></div>
+<script>
+  // Drawn on load and again on every resize (a zoom is one): sized at script time, the canvas can
+  // get the iframe's size before its layout settles, which is 0×0.
+  const c = document.getElementById('heavy')
+  function draw() {
+    const r = c.getBoundingClientRect(), k = devicePixelRatio
+    c.width = Math.round(r.width * k); c.height = Math.round(r.height * k)
+    const g = c.getContext('2d')
+    g.fillStyle = '#00ffff'; g.fillRect(0, 0, c.width, c.height)
+    for (let i = 0; i < 20000; i++) g.fillRect((i * 7919) % c.width, (i * 104729) % c.height, 3, 3)
+  }
+  addEventListener('load', () => {
+    const r = c.getBoundingClientRect()
+    for (let i = 0; i < 300; i++) {
+      const d = document.createElement('div'); d.className = 'layer'
+      d.style.left = ((i * 53) % Math.max(1, r.width - 40)) + 'px'; d.style.top = (400 + (i * 97) % Math.max(1, r.height - 30)) + 'px'
+      document.body.appendChild(d)
+    }
+    draw()
+  })
+  addEventListener('resize', draw)
+</script>`
 
 const hosts = new Map()
 function serve() {
@@ -58,10 +92,19 @@ function analyze(img, pageW, pageH) {
     blue: box((r, g, b) => b > 200 && r < 60 && g < 60),
     magenta: box((r, g, b) => r > 200 && b > 200 && g < 60),
     hover: box((r, g, b) => r < 40 && g > 140 && g < 200 && b < 40),
+    compose: box((r, g, b) => r > 200 && g > 120 && g < 180 && b < 40),
+    // Non-cyan pixels in the canvas region, inset from its edges and the blue corner.
+    raster: (() => {
+      let bad = 0, all = 0
+      const y0 = Math.ceil(404 * k), y1 = Math.floor((pageH - 24) * k), x0 = Math.ceil(4 * k), x1 = Math.floor((pageW - 16) * k)
+      for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) { const [r, g, b] = px(x, y); all++; if (!(r < 40 && g > 200 && b > 200)) bad++ }
+      const samples = []; for (const yy of [y0, Math.round((y0 + y1) / 2), y1 - 1]) samples.push(px(x0 + 10, yy).join(','))
+      return { bad, all, samples }
+    })(),
   }
 }
 
-async function run(port, box, preset) {
+async function run(port, box, preset, zoom = 1) {
   const fitting = preset === 'fit'
   const scale = fitting ? 1 : Math.min(1, box.w / preset)
   const stageW = fitting ? box.w : Math.min(preset, box.w)
@@ -76,6 +119,9 @@ async function run(port, box, preset) {
   hosts.set(path, html)
   const win = new BrowserWindow({ show: false, width: box.w + 80, height: box.h + 120, webPreferences: { contextIsolation: true, sandbox: true } })
   await win.loadURL(`http://127.0.0.1:${port}${path}`)
+  // Always set: Chromium keeps a zoom per host in the profile, so 1.25 from an earlier case or run
+  // would otherwise carry over.
+  win.webContents.setZoomFactor(zoom)
   await wait(700)
 
   const inspect = require(join(__dirname, '..', 'out', 'main', 'preview-inspect.cjs'))
@@ -104,16 +150,19 @@ async function run(port, box, preset) {
   const t0 = Date.now()
   await api.setDrawingHidden(true)
   let ok = true
-  for (const t of tiles) {
+  for (const [i, t] of tiles.entries()) {
     const s = shared.tileShift(stage, tileWin, t)
     await win.webContents.executeJavaScript(`new Promise((res) => { document.getElementById('f').style.transform = 'translate(${s.x}px, ${s.y}px)'; requestAnimationFrame(() => requestAnimationFrame(() => res(1))) })`)
-    if (!(await cap.captureTile(win, { id, rect: { x: tileWin.x, y: tileWin.y, w: t.w, h: t.h }, at: t }))) { ok = false; break }
+    // The compose card is made after the hide, as a click in the page would make it: it must stay hidden.
+    if (i === 0) await frame().executeJavaScript(`(() => { const c = document.createElement('div'); c.id = '__op_compose'; c.style.cssText = 'position:fixed;left:240px;top:20px;width:60px;height:40px;background:#ff9900;z-index:9'; document.documentElement.appendChild(c) })()`)
+    if (!(await cap.captureTile(win, { id, rect: { x: tileWin.x, y: tileWin.y, w: t.w, h: t.h }, at: t }, process.env.NO_PAINT_WAIT ? undefined : api.framePainted))) { ok = false; break }
   }
   await win.webContents.executeJavaScript(`document.getElementById('f').style.transform = ${JSON.stringify(fitting ? '' : `scale(${scale})`)}`)
   await api.setDrawingHidden(false)
   const ms = Date.now() - t0
   const img = ok ? cap.takeTiles(id, page) : null
-  const shownAgain = await frame().executeJavaScript('[...document.querySelectorAll("[data-operator-overlay],[data-operator-inspector]")].every((e) => e.style.visibility === "")')
+  const shownAgain = await frame().executeJavaScript('[...document.querySelectorAll("[data-operator-overlay],[data-operator-inspector],#__op_compose")].every((e) => e.style.visibility === "")')
+  const screenScale = await win.webContents.executeJavaScript('devicePixelRatio') / zoom
 
   // The alternative: CDP's clip.scale on the window, over the scaled stage.
   let cdp = null
@@ -127,7 +176,7 @@ async function run(port, box, preset) {
     cdp = analyze(nativeImage.createFromBuffer(Buffer.from(r.data, 'base64')), page.w, page.h)
   }
   win.destroy()
-  return { preset, scale, page, tiles: tiles.length, ms, hoverShown, shownAgain, a: img ? analyze(img, page.w, page.h) : null, cdp }
+  return { preset, zoom, screenScale, scale, page, tiles: tiles.length, ms, hoverShown, shownAgain, a: img ? analyze(img, page.w, page.h) : null, cdp }
 }
 
 app.on('window-all-closed', () => {})
@@ -137,24 +186,25 @@ app.whenReady().then(async () => {
   console.log(`preview-screenshot — electron ${process.versions.electron}`)
   let failed = false
   const near = (a, b) => Math.abs(a - b) <= 0.5
-  for (const [box, preset] of [[{ w: 700, h: 500 }, 'fit'], [{ w: 700, h: 500 }, 375], [{ w: 500, h: 700 }, 1280]]) {
+  for (const [box, preset, zoom] of [[{ w: 700, h: 500 }, 'fit', 1], [{ w: 700, h: 500 }, 375, 1], [{ w: 500, h: 700 }, 1280, 1], [{ w: 500, h: 700 }, 1280, 1.25]]) {
     try {
-      const r = await run(port, box, preset)
+      const r = await run(port, box, preset, zoom)
       const a = r.a
-      const dpr = a ? a.width / r.page.w : 0
+      const dpr = r.screenScale * r.zoom
       const checks = a ? {
-        size: a.width === Math.round(r.page.w * dpr) && a.height === Math.round(r.page.h * dpr) && (dpr === 1 || dpr === 2),
-        sharp: a.grey === 0,
+        size: a.width === Math.round(r.page.w * dpr) && a.height === Math.round(r.page.h * dpr) && (r.screenScale === 1 || r.screenScale === 2),
+        sharp: zoom !== 1 || a.grey === 0,
         place: !!a.red && near(a.red.x, 200) && near(a.red.y, 300) && near(a.red.w, 100) && near(a.red.h, 50),
         corner: !!a.blue && near(a.blue.x, r.page.w - 10) && near(a.blue.y, r.page.h - 10) && near(a.blue.w, 10) && near(a.blue.h, 10),
-        clean: !a.magenta && !a.hover && r.hoverShown === true,
+        clean: !a.magenta && !a.hover && !a.compose && r.hoverShown === true,
+        raster: a.raster.all > 0 && a.raster.bad === 0,
         restored: r.shownAgain === true,
       } : { captured: false }
       const pass = Object.values(checks).every(Boolean)
       if (!pass) failed = true
-      console.log(`${pass ? 'PASS' : 'FAIL'} ${preset} in ${box.w}x${box.h} (scale ${r.scale.toFixed(4)}): page ${r.page.w}x${r.page.h}, ${r.tiles} tile(s) in ${r.ms} ms → ${a ? `${a.width}x${a.height}` : 'nothing'}`)
+      console.log(`${pass ? 'PASS' : 'FAIL'} ${preset} in ${box.w}x${box.h} at zoom ${zoom} (scale ${r.scale.toFixed(4)}): page ${r.page.w}x${r.page.h}, ${r.tiles} tile(s) in ${r.ms} ms → ${a ? `${a.width}x${a.height}` : 'nothing'}`)
       console.log(`   ${JSON.stringify(checks)}`)
-      if (a) console.log(`   grey ${a.grey.toFixed(3)}, red ${JSON.stringify(a.red)}, corner ${JSON.stringify(a.blue)}, magenta ${!!a.magenta}, hover ${!!a.hover}`)
+      if (a) console.log(`   grey ${a.grey.toFixed(3)}, red ${JSON.stringify(a.red)}, corner ${JSON.stringify(a.blue)}, magenta ${!!a.magenta}, hover ${!!a.hover}, compose ${!!a.compose}, raster ${a.raster.bad}/${a.raster.all} off ${a.raster.samples.join(' | ')}`)
       if (r.cdp) console.log(`   for comparison, CDP clip.scale: ${r.cdp.width}x${r.cdp.height}, grey ${r.cdp.grey.toFixed(3)} (stripes blurred when > 0)`)
     } catch (e) {
       failed = true
