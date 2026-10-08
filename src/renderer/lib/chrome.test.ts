@@ -127,7 +127,8 @@ describe('the two mount slots are flex columns, not blocks', () => {
 
   it('the main-view overlay is a flex column', () => {
     const src = stripComments(sourceOf('views/DashboardView.tsx'))
-    const at = src.indexOf("position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)'")
+    // Rounded at the top only: the Preview's stage runs to the bottom edge, and is square there.
+    const at = src.indexOf("position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0'")
     expect(at).toBeGreaterThan(-1)
     const slot = src.slice(at, at + 260)
     expect(slot).toMatch(/display: 'flex'/)

@@ -6,7 +6,10 @@ import {
   emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
   type PreviewHistory,
 } from '../../lib/preview-history'
-import type { SessionPort } from '../../../shared/types'
+import type { PreviewScreenshot, SessionPort } from '../../../shared/types'
+import { screenshotPageSize } from '../../../shared/preview-screenshot'
+import { hideLayersOver, runTileLoop, swallowWheel, withTimeout } from '../../lib/preview-screenshot'
+import type { ToastMessage } from '../Toast'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { formatPick, acceptPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
@@ -62,13 +65,17 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle, onAnchorChange }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, projectId, projectName, onToast, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle, onAnchorChange }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
   storageKey?: string
   /** The lane's project, for where note screenshots are stored (`~/.operator/preview-shots/<project>`). */
   projectId?: string | null
+  /** The lane's project name, for the screenshot's file name (`<project>-<W>x<H>-<time>.png`). */
+  projectName?: string | null
+  /** Where the screenshot says it was saved, with a Reveal in Finder action. */
+  onToast?: (message: Omit<ToastMessage, 'id'>) => void
   /** Send the composed feedback straight to the Console pty (quick path). `images` are screenshot
    *  paths to attach to the same prompt. */
   onDispatch?: (text: string, images?: string[]) => void
@@ -627,6 +634,92 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
    *  as "pixel viewport of the preview frame", and `lib/annotations.pxOf` multiplies by it. */
   const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
   const readout = scaleReadout(preset, box.w)
+
+  // THE SCREENSHOT (src/shared/preview-screenshot.ts, lib/preview-screenshot.ts): the page at the size
+  // it is set to, at the display's pixel ratio, copied and saved to ~/Downloads. While it runs the
+  // pins, the note card, the grid, the toast stack and every other layer of Operator's over the stage
+  // are not drawn, main hides what Operator draws inside the page, and a shield over the stage takes
+  // the pointer and the wheel so the page cannot move between tiles.
+  const [shooting, setShooting] = useState(false)
+  const shotLabel = projectName || projectId || 'preview'
+  /** The web page's size in the image, in CSS px. An attached app is captured at its own window's. */
+  const shotSize = screenshotPageSize(pageBox)
+  /** The iframe's transform as React renders it now, for the capture to put back. */
+  const wantTransformRef = useRef('')
+  wantTransformRef.current = fitting || electronLive ? '' : `scale(${scale})`
+  /** The web preview, a tile at a time: the iframe is drawn at scale 1 and shifted under the stage
+   *  for each tile, so a scaled preset comes out at full size. A direct style write: React leaves the
+   *  iframe's transform alone until the scale itself changes. */
+  const captureWebTiles = async (): Promise<{ ok: true; id: string } | { ok: false; reason: string }> => {
+    const api = window.operator
+    const frame = frameRef.current
+    const stageEl = stageRef.current
+    if (!frame || !stageEl || !api.previewScreenshotTile || !api.previewScreenshotSave) return { ok: false, reason: 'The preview could not be captured.' }
+    const cover = hideLayersOver(stageEl, frame)
+    try {
+      return await runTileLoop(shotSize, {
+        frame,
+        stage: () => stageEl.getBoundingClientRect(),
+        viewport: () => ({ w: window.innerWidth, h: window.innerHeight }),
+        dpr: () => window.devicePixelRatio,
+        wantTransform: () => wantTransformRef.current,
+        hide: (hidden) => api.previewScreenshotHide?.(hidden) ?? Promise.resolve(),
+        tile: (req) => api.previewScreenshotTile!(req),
+        paint: () => nextFrames(2),
+        beforeTile: cover.refresh,
+      })
+    } finally {
+      cover.restore()
+    }
+  }
+  const takeScreenshot = async () => {
+    if (!pageUp || shooting) return
+    setShooting(true)
+    setCapturing(true)
+    document.documentElement.setAttribute('data-preview-shot', '')
+    let shot: PreviewScreenshot | null = null
+    let reason: string | null = null
+    try {
+      let tiles: { ok: true; id: string } | { ok: false; reason: string } | null = null
+      try {
+        await nextFrames(2)
+        if (electronLive) {
+          shot = await withTimeout(window.operator.previewCdpScreenshot?.(shotLabel) ?? Promise.resolve(null), SAVE_TIMEOUT_MS, null)
+        } else {
+          tiles = await captureWebTiles()
+        }
+      } finally {
+        // The preview is whole again before the file is written: the save can take a moment on a
+        // large image, and nothing about it needs the page held still.
+        document.documentElement.removeAttribute('data-preview-shot')
+        setCapturing(false)
+      }
+      if (tiles?.ok) shot = await withTimeout(window.operator.previewScreenshotSave!(tiles.id, shotLabel, shotSize), SAVE_TIMEOUT_MS, null)
+      else if (tiles) reason = tiles.reason
+    } finally {
+      setShooting(false)
+    }
+    const name = shot?.path ? shot.path.split('/').pop() ?? shot.path : null
+    if (shot && shot.path) {
+      const path = shot.path
+      onToast?.({
+        kind: 'success',
+        text: `Screenshot saved, ${shot.cssWidth}×${shot.cssHeight}`,
+        detail: shot.copied ? `${name} in Downloads, and on the clipboard.` : `${name} in Downloads. It\u00a0could not be copied to the clipboard.`,
+        action: { label: 'Reveal in Finder', run: () => { void window.operator.revealPath(path) } },
+      })
+    } else if (shot && shot.copied) {
+      onToast?.({
+        kind: 'info',
+        text: `Screenshot copied, ${shot.cssWidth}×${shot.cssHeight}`,
+        detail: `It is on the clipboard. It\u00a0could not be saved to Downloads: ${shot.saveError ?? 'the write failed'}.`,
+      })
+    } else if (shot) {
+      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: `It could not be copied or saved: ${shot.saveError ?? 'the write failed'}.` })
+    } else {
+      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: `${reason ?? 'The preview could not be captured.'} Nothing\u00a0was saved.` })
+    }
+  }
   // In PAGE px, so a column is a column of the page at any device preset.
   const gridLayout = grid?.on ? layoutGrid(grid.spec, pageBox.w) : null
   const gridColors = grid?.on ? gridInk(grid.spec, 'var(--grid)') : null
@@ -785,6 +878,16 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
         {pathInput && (
           <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" aria-label="Back to /" style={navBtn}><ToolbarIcon name="root" /></button>
         )}
+        {/* THE SCREENSHOT. Disabled by ink, like back and forward, while there is no page. */}
+        <button
+          onClick={() => { void takeScreenshot() }}
+          title={pageUp
+            ? `Screenshot at ${electronLive ? 'the app window\u2019s size' : `${shotSize.w}×${shotSize.h}`}, saved to Downloads and copied`
+            : 'Screenshot (nothing is loaded)'}
+          aria-label="Screenshot"
+          aria-disabled={!pageUp || shooting}
+          style={{ ...previewBtn, color: pageUp && !shooting ? 'var(--fg-muted)' : 'var(--border)', cursor: pageUp && !shooting ? 'pointer' : 'default' }}
+        ><ToolbarIcon name="camera" /></button>
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" aria-label="Open in browser" style={previewBtn}><ToolbarIcon name="external" /></button>
       </div>
 
@@ -1105,12 +1208,25 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
               />
             )}
 
+          {/* THE SCREENSHOT'S INPUT SHIELD: over the stage for the capture, so a click, hover or wheel
+              cannot reach the page while it is shifted and unscaled. Transparent, so it is not in
+              the image. */}
+          {shooting && (
+            <div
+              data-screenshot-shield
+              aria-hidden
+              ref={(el) => el?.addEventListener('wheel', swallowWheel, { passive: false })}
+              onMouseDown={(e) => e.preventDefault()}
+              style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'progress' }}
+            />
+          )}
+
           {/* THE LAYOUT GRID. Laid out in page px and scaled with the iframe. It sits outside the
               iframe, so it stays put while the page scrolls, and it never takes a click. Above
               the page, below the annotation layers. While the native view hosts the page, the
               overlay script draws the grid inside it instead. The dashed container edges are
               `1 / scale` px wide so they stay one screen pixel at a scaled preset. */}
-          {gridLayout && !nativeHost && gridLayout.cols.length > 0 && (
+          {gridLayout && !nativeHost && !capturing && gridLayout.cols.length > 0 && (
             <div aria-hidden style={{
               position: 'absolute', top: 0, left: 0, width: pageBox.w, height: pageBox.h, zIndex: 1,
               transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none',
@@ -1397,6 +1513,11 @@ function cssRgb(token: string): { r: number; g: number; b: number } | undefined 
     return parseRgb(c)
   } catch { return undefined }
 }
+
+/** Bounds the screenshot's save (stitch, PNG, clipboard, file), so the button comes back after a
+ *  stall. Generous, so a slow encode of the largest image the size cap allows is not cut off. Not
+ *  measured. */
+const SAVE_TIMEOUT_MS = 20_000
 
 /** Resolve after `n` animation frames, so a state change has painted before a capture. */
 function nextFrames(n: number): Promise<void> {

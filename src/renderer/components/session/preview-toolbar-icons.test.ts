@@ -81,6 +81,16 @@ describe('the Preview toolbar draws its icons as SVG', () => {
     expect(host.querySelector('button[title^="Forward to the next address"] svg')?.getAttribute('data-toolbar-icon')).toBe('forward')
   })
 
+  it('the screenshot is a camera that no other control uses, and is disabled by ink with no page', () => {
+    const shot = host.querySelector('button[aria-label="Screenshot"]') as HTMLButtonElement | null
+    expect(shot?.querySelector('svg')?.getAttribute('data-toolbar-icon')).toBe('camera')
+    const cameras = [...host.querySelectorAll('button svg[data-toolbar-icon="camera"]')]
+    expect(cameras).toHaveLength(1)
+    // A page is up here (the ping resolved), so it is live and says the size it will capture.
+    expect(shot!.getAttribute('aria-disabled')).toBe('false')
+    expect(shot!.title).toMatch(/^Screenshot at /)
+  })
+
   it('has no glyph text anywhere in the bar, including the origin chip', () => {
     const bar = host.firstElementChild!.firstElementChild!
     expect(bar.textContent ?? '').not.toMatch(GLYPH)

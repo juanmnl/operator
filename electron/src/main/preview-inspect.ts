@@ -28,6 +28,7 @@ import type { PreviewOverlayConfig } from '../../../src/shared/types'
 import { PREVIEW_BRIDGE_JS, PREVIEW_FRAME_NAME } from '../../../src/shared/preview-frame'
 import { OVERLAY_FNS_JS } from './overlay-fns'
 import { EDIT_FNS_JS } from './edit-fns'
+import { pageDrawingVisibilityJs, PAGE_PAINTED_JS } from './preview-screenshot'
 
 /** A script from `src/shared`, read once at module load so a failure is loud at boot, not on
  *  first use. */
@@ -144,8 +145,27 @@ export function installPreviewInspect(
       .catch(() => { /* no page */ })
   }
 
+  // The Preview screenshot hides everything the scripts draw in the page for its capture, and shows
+  // it again after (preview-screenshot.ts). Nothing is removed, so a compose card keeps its text.
+  // Bounded: a page busy in a long task would otherwise hold the capture, and with it the renderer's
+  // restore, for as long as the task runs.
+  const setDrawingHidden = async (hidden: boolean) => {
+    await inFrame(pageDrawingVisibilityJs(hidden), 1000)
+  }
+
+  // Before each tile: the page's own frame, so the area the shift moved into view has been rastered.
+  const framePainted = async () => {
+    await inFrame(PAGE_PAINTED_JS, 500)
+  }
+
+  const inFrame = (js: string, ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    const p = previewFrame()?.executeJavaScript(js) ?? Promise.resolve()
+    p.catch(() => { /* no page */ }).finally(() => { clearTimeout(timer); resolve() })
+  })
+
   // The iframe moves and hides with the renderer's DOM, so these have nothing to do.
-  previewApi = { open, move: () => {}, close, setVisible: () => {}, configure, clearAnchor, hideOutline }
+  previewApi = { open, move: () => {}, close, setVisible: () => {}, configure, clearAnchor, hideOutline, setDrawingHidden, framePainted }
 }
 
 export let previewApi: {
@@ -156,4 +176,6 @@ export let previewApi: {
   configure: (config: PreviewOverlayConfig) => void
   clearAnchor: () => void
   hideOutline: () => Promise<void>
-} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {}, hideOutline: async () => {} }
+  setDrawingHidden: (hidden: boolean) => Promise<void>
+  framePainted: () => Promise<void>
+} = { open: () => {}, move: () => {}, close: () => {}, setVisible: () => {}, configure: () => {}, clearAnchor: () => {}, hideOutline: async () => {}, setDrawingHidden: async () => {}, framePainted: async () => {} }

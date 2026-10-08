@@ -31,6 +31,7 @@ import { EDIT_FNS_JS } from './edit-fns'
 import { EDIT_CMD_TAG, EDIT_STATE_TAG } from '../../../src/shared/preview-edit'
 import { finishShot } from './preview-shot-capture'
 import { cropRect, unionRect } from './preview-shots'
+import { pageDrawingVisibilityJs } from './preview-screenshot'
 
 /** The binding the page calls with `{ kind, … }` JSON. */
 export const CDP_BINDING = '__operatorCdpBridge'
@@ -291,6 +292,36 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
     }
   }
 
+  /** The Preview screenshot of the attached window: its whole viewport at its own CSS size and device
+   *  pixel ratio, with Operator's drawing in the page hidden for the capture. Null when nothing is
+   *  attached or the capture failed. */
+  const screenshot = async (): Promise<{ png: Buffer; css: { w: number; h: number } } | null> => {
+    const c = conn
+    if (!c) return null
+    try {
+      await evaluate(pageDrawingVisibilityJs(true))
+      await new Promise((r) => setTimeout(r, 50))
+      const metrics = await c.send('Page.getLayoutMetrics') as {
+        cssLayoutViewport?: { clientWidth: number; clientHeight: number }
+        cssVisualViewport?: { pageX: number; pageY: number }
+      }
+      const w = metrics.cssLayoutViewport?.clientWidth ?? viewport.width
+      const h = metrics.cssLayoutViewport?.clientHeight ?? viewport.height
+      if (!(w > 0 && h > 0)) return null
+      // The clip is in DOCUMENT coordinates, so the scroll is added, as in `shot`.
+      const res = await c.send('Page.captureScreenshot', {
+        format: 'png',
+        clip: { x: metrics.cssVisualViewport?.pageX ?? 0, y: metrics.cssVisualViewport?.pageY ?? 0, width: w, height: h, scale: 1 },
+      }) as { data?: string }
+      return res.data ? { png: Buffer.from(res.data, 'base64'), css: { w, h } } : null
+    } catch (e) {
+      console.error('[preview-cdp] page screenshot failed:', e)
+      return null
+    } finally {
+      await evaluate(pageDrawingVisibilityJs(false))
+    }
+  }
+
   return {
     listTargets,
     attach,
@@ -303,6 +334,7 @@ export function createPreviewCdp(cb: PreviewCdpCallbacks) {
     editCommand,
     input,
     shot,
+    screenshot,
   }
 }
 

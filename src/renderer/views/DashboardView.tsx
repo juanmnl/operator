@@ -5610,6 +5610,8 @@ export function DashboardView() {
         // annotations on every move.
         storageKey={`main-${session.id}`}
         projectId={projId}
+        projectName={projects.find((p) => p.id === projId)?.name ?? session.projectName}
+        onToast={pushToast}
         // A note's screenshots are pasted first (Claude Code attaches a pasted image path as
         // `[Image #N]`), in the same per-terminal chain, then the text submits them as one prompt.
         onDispatch={session.terminalId ? (text, images) => {
@@ -6151,7 +6153,9 @@ export function DashboardView() {
               // here ask for their height with `flex: 1`, and a plain block gives them nothing —
               // they size to their content, overflow this box, and get clipped. Column keeps
               // full-width stretch, so Preview lays out exactly as it did.
-              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
+              // Square at the bottom: the preview's stage runs to this edge, and a rounded corner cut
+              // the page's own corners off.
+              <div style={{ position: 'absolute', inset: 0, borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0', overflow: 'hidden', background: 'var(--bg-terminal)', display: 'flex', flexDirection: 'column' }}>
                 {mainView === 'preview' && renderPreview(activeSession)}
               </div>
             )}

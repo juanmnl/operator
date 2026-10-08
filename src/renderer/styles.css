@@ -402,6 +402,10 @@ input, textarea, pre, code, [contenteditable="true"], .selectable {
 
 /* Actions footer — a slim action bar at the bottom of the main view and the Canvas
    panel. Same height/style on both so the two columns read as a matched pair. */
+/* The Preview screenshot captures the window over the stage, and the toast stack sits over the side
+   panel's stage. AppPreviewPanel sets the attribute for the length of the capture. */
+html[data-preview-shot] [data-toast-stack] { visibility: hidden !important; }
+
 .actions-footer {
   flex-shrink: 0;
   display: flex;

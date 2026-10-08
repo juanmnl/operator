@@ -43,6 +43,9 @@
   function mk() {
     box = document.createElement('div');
     label = document.createElement('div');
+    // Marked so the Preview screenshot can hide them (electron/src/main/preview-screenshot.ts).
+    box.setAttribute('data-operator-inspector', '');
+    label.setAttribute('data-operator-inspector', '');
     paint();
     document.documentElement.appendChild(box);
     document.documentElement.appendChild(label);

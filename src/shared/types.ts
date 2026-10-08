@@ -480,6 +480,32 @@ export interface PreviewShot {
   thumb: string
 }
 
+/** One tile of a Preview screenshot (src/shared/preview-screenshot.ts): the window rect to capture,
+ *  in window CSS px, and where it lands on the page, in page CSS px. */
+export interface PreviewScreenshotTileRequest {
+  /** The capture this tile belongs to. A new id starts a new capture. */
+  id: string
+  rect: { x: number; y: number; w: number; h: number }
+  at: { x: number; y: number; w: number; h: number }
+}
+
+/** A Preview screenshot, copied and saved. The copy and the file are independent: either can fail
+ *  alone, and the renderer says which. */
+export interface PreviewScreenshot {
+  /** Absolute path of the PNG in ~/Downloads, or null when the write failed (`saveError`). */
+  path: string | null
+  /** Why the write failed, in words, when `path` is null. */
+  saveError?: string
+  /** The page's viewport, in CSS px: the size the preview was set to. */
+  cssWidth: number
+  cssHeight: number
+  /** The image, in device pixels. */
+  width: number
+  height: number
+  /** The image is on the clipboard too. */
+  copied: boolean
+}
+
 /** One directory under `~/.operator/worktrees`, read WITHOUT git or `du`: the Home overview's first
  *  paint. Everything here comes from small JSON files and each folder's own `.git` pointer. */
 export interface WorktreeQuickEntry {

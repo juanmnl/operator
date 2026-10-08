@@ -136,7 +136,9 @@ export function Toasts({ messages, onDismiss, onDismissAll }: ToastsProps) {
   const hiddenCount = groups.length - visible.length
 
   return (
-    <div style={{
+    // `data-toast-stack`: hidden while the Preview takes a screenshot (styles.css), because the
+    // stack sits over the side panel's stage.
+    <div data-toast-stack style={{
       // Top-right: clear of the macOS traffic lights (which live in the left
       // sidebar) and below the drag region / SessionToolbar strip. New toasts
       // stack downward from here.

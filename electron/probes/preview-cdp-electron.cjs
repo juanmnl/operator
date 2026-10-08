@@ -172,6 +172,28 @@ app.whenReady().then(async () => {
         check(`${label}: note screenshot outlines the element`, inside, detail)
       }
 
+      // PAGE SCREENSHOT — the toolbar's Screenshot: the whole viewport at its CSS size times the
+      // app's ratio, with the inspector's hover outline hidden for the capture and shown again after.
+      {
+        await click(210, 195)
+        await timed({ kind: 'mouse', type: 'mouseMoved', x: 215, y: 200, button: 'none', clickCount: 0, modifiers: 0 })
+        await wait(200)
+        const vp = await read('({ w: document.documentElement.clientWidth, h: document.documentElement.clientHeight, dpr: devicePixelRatio })')
+        const res = await cdp.screenshot()
+        let ok = false, detail = 'no screenshot'
+        if (res) {
+          const img = nativeImage.createFromBuffer(res.png)
+          const { width, height } = img.getSize()
+          const bm = img.toBitmap()
+          let hover = 0
+          for (let i = 0; i < bm.length; i += 4) if (bm[i + 2] < 40 && bm[i + 1] > 140 && bm[i + 1] < 200 && bm[i] < 40) hover++
+          const restored = await read('[...document.querySelectorAll("[data-operator-inspector]")].every((e) => e.style.visibility === "")')
+          ok = res.css.w === vp.w && res.css.h === vp.h && width === Math.round(vp.w * vp.dpr) && height === Math.round(vp.h * vp.dpr) && hover === 0 && restored
+          detail = `css ${res.css.w}x${res.css.h} (page ${vp.w}x${vp.h} at ${vp.dpr}x), image ${width}x${height}, hover px ${hover}, drawing shown again ${restored}`
+        }
+        check(`${label}: page screenshot at the viewport size, without Operator's drawing`, ok, detail)
+      }
+
       // EDIT — the pick selected the element in the page's edit engine.
       const redHeight = async (shot) => {
         if (!shot) return null

@@ -28,6 +28,7 @@ import { computeUsage, computeInsights, computeTuning } from './usage'
 import { checkUpdate, installUpdate, type InstallHost } from './updater'
 import { previewApi } from './preview-inspect'
 import { capturePreviewShot } from './preview-shot-capture'
+import { captureTile, savePng, saveTiles } from './preview-screenshot-capture'
 import { logAnnounce } from './announce-log'
 import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
@@ -314,6 +315,14 @@ export function registerIpc(d: Deps): void {
     }),
     previewShotImage: (project, id) => shotDataUrl(String(project), String(id)),
     previewShotDelete: (project, id) => deleteShot(String(project), String(id)),
+    // The Preview screenshot, saved to ~/Downloads (preview-screenshot-capture.ts).
+    previewScreenshotHide: (hidden) => previewApi.setDrawingHidden(hidden === true),
+    previewScreenshotTile: (req) => captureTile(d.getWindow(), req, previewApi.framePainted),
+    previewScreenshotSave: (id, project, page) => saveTiles(String(id), String(project), { w: Number(page?.w) || 0, h: Number(page?.h) || 0 }),
+    previewCdpScreenshot: async (project) => {
+      const shot = await previewCdp?.screenshot()
+      return shot ? savePng(shot.png, String(project), shot.css) : null
+    },
     // `launch` for the first renderer of this app run, `reload` after. The renderer asks once per
     // document and decides whether to open on the home overview or where it was.
     launchKind: async () => launchTracker.claim(),

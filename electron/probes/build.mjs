@@ -18,5 +18,7 @@ await Promise.all([
   build({ ...common, entryPoints: [resolve(root, 'src/main/preview-cdp.ts')], outfile: resolve(root, 'out/main/preview-cdp.cjs') }),
   build({ ...common, entryPoints: [resolve(root, 'src/main/preview-shot-capture.ts')], outfile: resolve(root, 'out/main/preview-shot-capture.cjs') }),
   build({ ...common, entryPoints: [resolve(root, '..', 'src/renderer/lib/preview-shot.ts')], outfile: resolve(root, 'out/main/preview-shot-renderer.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, 'src/main/preview-screenshot-capture.ts')], outfile: resolve(root, 'out/main/preview-screenshot-capture.cjs') }),
+  build({ ...common, entryPoints: [resolve(root, '..', 'src/shared/preview-screenshot.ts')], outfile: resolve(root, 'out/main/preview-screenshot-shared.cjs') }),
 ])
 console.log('probe bundles built into out/')
