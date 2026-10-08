@@ -163,8 +163,12 @@ describe('screenshotTooLarge — the image has a ceiling', () => {
     expect(screenshotTooLarge({ w: 1000, h: 16385 })).toMatch(/16384 px limit on a side/)
   })
 
-  it('refuses more than 64 MB of pixels: 1280 in a tall 300 px panel at 2x', () => {
+  it('1280 in a tall 300 px panel at 2x is within it', () => {
     const page = screenshotPageSize({ w: 1280, h: 1000 / (300 / 1280) })
-    expect(screenshotTooLarge(screenshotPixels(page, 2))).toMatch(/^The image would be 2560×8534 px \(83 MB\), over the 64 MB limit\. Use\u00a0a/)
+    expect(screenshotTooLarge(screenshotPixels(page, 2))).toBeNull()
+  })
+
+  it('refuses more than 128 MB of pixels', () => {
+    expect(screenshotTooLarge({ w: 2560, h: 13200 })).toMatch(/^The image would be 2560×13200 px \(129 MB\), over the 128 MB limit\. Use\u00a0a/)
   })
 })

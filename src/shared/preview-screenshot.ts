@@ -62,10 +62,10 @@ export function screenshotPixels(page: Size, dpr: number): Size {
 }
 
 /** The largest image the screenshot makes: 16384 device px on the long side (past it, viewers and
- *  the clipboard refuse or downscale), and 16M pixels, a 64 MB BGRA bitmap, which main holds about
+ *  the clipboard refuse or downscale), and 32M pixels, a 128 MB BGRA bitmap, which main holds about
  *  three times while it stitches, encodes and copies. */
 export const SCREENSHOT_MAX_SIDE = 16384
-export const SCREENSHOT_MAX_PIXELS = 16 * 1024 * 1024
+export const SCREENSHOT_MAX_PIXELS = 32 * 1024 * 1024
 
 /** Why an image of `px` device pixels is refused, or null when it is within the caps. */
 export function screenshotTooLarge(px: Size): string | null {
@@ -73,7 +73,7 @@ export function screenshotTooLarge(px: Size): string | null {
     return `The image would be ${px.w}×${px.h} px, over the ${SCREENSHOT_MAX_SIDE} px limit on a side. Use\u00a0a narrower preset or a shorter panel.`
   }
   if (px.w * px.h > SCREENSHOT_MAX_PIXELS) {
-    return `The image would be ${px.w}×${px.h} px (${Math.round(px.w * px.h * 4 / 1048576)} MB), over the 64 MB limit. Use\u00a0a narrower preset or a shorter panel.`
+    return `The image would be ${px.w}×${px.h} px (${Math.round(px.w * px.h * 4 / 1048576)} MB), over the ${SCREENSHOT_MAX_PIXELS * 4 / 1048576} MB limit. Use\u00a0a narrower preset or a shorter panel.`
   }
   return null
 }
