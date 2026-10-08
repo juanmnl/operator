@@ -266,6 +266,14 @@ declare global {
       previewShotImage?: (project: string, id: string) => Promise<string>
       /** Delete a note's screenshot. */
       previewShotDelete?: (project: string, id: string) => Promise<void>
+      /** THE PREVIEW SCREENSHOT (src/shared/preview-screenshot.ts), web preview: hide or show
+       *  Operator's drawing inside the page, capture one tile of the window over the stage, then
+       *  stitch the capture's tiles, save it to ~/Downloads and copy it. Electron only. */
+      previewScreenshotHide?: (hidden: boolean) => Promise<void>
+      previewScreenshotTile?: (req: import('../shared/types').PreviewScreenshotTileRequest) => Promise<boolean>
+      previewScreenshotSave?: (id: string, project: string, page: { w: number; h: number }) => Promise<import('../shared/types').PreviewScreenshot | null>
+      /** The same for an attached Electron app, captured whole over CDP at its own viewport. */
+      previewCdpScreenshot?: (project: string) => Promise<import('../shared/types').PreviewScreenshot | null>
       previewInspectClose: () => void
       /** Hide or show the inspector without closing it, so the page inside keeps its state. Used
        *  while a side-panel drag needs the pixels it covers. Electron only. */

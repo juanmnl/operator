@@ -6,7 +6,9 @@ import {
   emptyHistory, pushEntry, goBack, goForward, canGoBack, canGoForward, currentEntry,
   type PreviewHistory,
 } from '../../lib/preview-history'
-import type { SessionPort } from '../../../shared/types'
+import type { PreviewScreenshot, SessionPort } from '../../../shared/types'
+import { screenshotPageSize, tilePlan, tileShift, tileWindow } from '../../../shared/preview-screenshot'
+import type { ToastMessage } from '../Toast'
 import { PANEL_SUBHEAD_H } from '../../lib/chrome'
 import { formatPick, acceptPick } from '../../lib/preview-pick'
 import { toolbarTier, originChipLabel, scaleReadout, pointerMode, CONTROL_OFF_INK as OFF_INK, type ToolbarTier, type PointerMode } from '../../lib/preview-toolbar'
@@ -62,13 +64,17 @@ async function ping(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle, onAnchorChange }: {
+export function AppPreviewPanel({ url, terminalId, storageKey, projectId, projectName, onToast, onDispatch, onSendToTasks, annotate = false, onAnnotateChange, panelW, inspectHidden = false, grid, onGridToggle, onGridSpecChange, onGridEditingChange, redlines, onRedlinesToggle, onAnchorChange }: {
   url: string | null
   /** The session's terminal, so we can ask the backend which ports IT is serving on. */
   terminalId?: string | null
   storageKey?: string
   /** The lane's project, for where note screenshots are stored (`~/.operator/preview-shots/<project>`). */
   projectId?: string | null
+  /** The lane's project name, for the screenshot's file name (`<project>-<W>x<H>-<time>.png`). */
+  projectName?: string | null
+  /** Where the screenshot says it was saved, with a Reveal in Finder action. */
+  onToast?: (message: Omit<ToastMessage, 'id'>) => void
   /** Send the composed feedback straight to the Console pty (quick path). `images` are screenshot
    *  paths to attach to the same prompt. */
   onDispatch?: (text: string, images?: string[]) => void
@@ -627,6 +633,72 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
    *  as "pixel viewport of the preview frame", and `lib/annotations.pxOf` multiplies by it. */
   const pageBox = fitting ? { w: box.w, h: box.h } : { w: preset, h: box.h / scale }
   const readout = scaleReadout(preset, box.w)
+
+  // THE SCREENSHOT (src/shared/preview-screenshot.ts): the page at the size it is set to, at the
+  // display's pixel ratio, saved to ~/Downloads and copied. While it runs the pins, the note card, the
+  // grid and the toast stack are not drawn, and main hides what Operator draws inside the page.
+  const [shooting, setShooting] = useState(false)
+  const shotLabel = projectName || projectId || 'preview'
+  /** The web page's size in the image, in CSS px. An attached app is captured at its own window's. */
+  const shotSize = screenshotPageSize(pageBox)
+  /** The web preview, a tile at a time: the iframe is drawn at scale 1 and shifted under the stage
+   *  for each tile, so a scaled preset comes out at full size. A direct style write: React leaves the
+   *  iframe's transform alone until the scale itself changes, and `finally` puts it back. */
+  const captureWebScreenshot = async (): Promise<PreviewScreenshot | null> => {
+    const api = window.operator
+    const frame = frameRef.current
+    const stageEl = stageRef.current
+    if (!frame || !stageEl || !api.previewScreenshotTile || !api.previewScreenshotSave) return null
+    const r = stageEl.getBoundingClientRect()
+    const win = tileWindow(r, { w: window.innerWidth, h: window.innerHeight })
+    if (!win) return null
+    const page = shotSize
+    const id = crypto.randomUUID()
+    const before = frame.style.transform
+    await api.previewScreenshotHide?.(true)
+    try {
+      for (const t of tilePlan(page, win)) {
+        const shift = tileShift(r, win, t)
+        frame.style.transform = `translate(${shift.x}px, ${shift.y}px)`
+        await nextFrames(2)
+        const ok = await api.previewScreenshotTile({ id, rect: { x: win.x, y: win.y, w: t.w, h: t.h }, at: t }).catch(() => false)
+        if (!ok) return null
+      }
+    } finally {
+      frame.style.transform = before
+      await api.previewScreenshotHide?.(false)
+    }
+    return api.previewScreenshotSave(id, shotLabel, page).catch(() => null)
+  }
+  const takeScreenshot = async () => {
+    if (!pageUp || shooting) return
+    setShooting(true)
+    setCapturing(true)
+    document.documentElement.setAttribute('data-preview-shot', '')
+    let shot: PreviewScreenshot | null = null
+    try {
+      await nextFrames(2)
+      shot = electronLive
+        ? await window.operator.previewCdpScreenshot?.(shotLabel).catch(() => null) ?? null
+        : await captureWebScreenshot()
+    } finally {
+      document.documentElement.removeAttribute('data-preview-shot')
+      setCapturing(false)
+      setShooting(false)
+    }
+    if (shot) {
+      const saved = shot
+      const name = saved.path.split('/').pop() ?? saved.path
+      onToast?.({
+        kind: 'success',
+        text: `Screenshot saved, ${saved.cssWidth}×${saved.cssHeight}`,
+        detail: saved.copied ? `${name} in Downloads, and on the clipboard.` : `${name} in Downloads. It\u00a0could not be copied to the clipboard.`,
+        action: { label: 'Reveal in Finder', run: () => { void window.operator.revealPath(saved.path) } },
+      })
+    } else {
+      onToast?.({ kind: 'error', text: 'Screenshot failed', detail: 'The preview could not be captured. Nothing\u00a0was saved.' })
+    }
+  }
   // In PAGE px, so a column is a column of the page at any device preset.
   const gridLayout = grid?.on ? layoutGrid(grid.spec, pageBox.w) : null
   const gridColors = grid?.on ? gridInk(grid.spec, 'var(--grid)') : null
@@ -785,6 +857,16 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
         {pathInput && (
           <button onClick={() => { commitPath(''); setNonce((n) => n + 1) }} title="Back to /" aria-label="Back to /" style={navBtn}><ToolbarIcon name="root" /></button>
         )}
+        {/* THE SCREENSHOT. Disabled by ink, like back and forward, while there is no page. */}
+        <button
+          onClick={() => { void takeScreenshot() }}
+          title={pageUp
+            ? `Screenshot at ${electronLive ? 'the app window\u2019s size' : `${shotSize.w}×${shotSize.h}`}, saved to Downloads and copied`
+            : 'Screenshot (nothing is loaded)'}
+          aria-label="Screenshot"
+          aria-disabled={!pageUp || shooting}
+          style={{ ...previewBtn, color: pageUp && !shooting ? 'var(--fg-muted)' : 'var(--border)', cursor: pageUp && !shooting ? 'pointer' : 'default' }}
+        ><ToolbarIcon name="camera" /></button>
         <button onClick={() => display && window.operator.openExternal?.(display)} title="Open in browser" aria-label="Open in browser" style={previewBtn}><ToolbarIcon name="external" /></button>
       </div>
 
@@ -1110,7 +1192,7 @@ export function AppPreviewPanel({ url, terminalId, storageKey, projectId, onDisp
               the page, below the annotation layers. While the native view hosts the page, the
               overlay script draws the grid inside it instead. The dashed container edges are
               `1 / scale` px wide so they stay one screen pixel at a scaled preset. */}
-          {gridLayout && !nativeHost && gridLayout.cols.length > 0 && (
+          {gridLayout && !nativeHost && !capturing && gridLayout.cols.length > 0 && (
             <div aria-hidden style={{
               position: 'absolute', top: 0, left: 0, width: pageBox.w, height: pageBox.h, zIndex: 1,
               transform: `scale(${scale})`, transformOrigin: 'top left', pointerEvents: 'none',

@@ -9,9 +9,9 @@
 // ≈ 1.05px).
 //
 // Two verbs never share a glyph: `back` is a chevron (address history), `root` is a return arrow
-// (go to `/`), `reload` is a circular arrow.
+// (go to `/`), `reload` is a circular arrow, `camera` is the screenshot.
 
-export type ToolbarIconName = 'back' | 'forward' | 'reload' | 'root' | 'external' | 'caret-down' | 'caret-up'
+export type ToolbarIconName = 'back' | 'forward' | 'reload' | 'root' | 'external' | 'camera' | 'caret-down' | 'caret-up'
 
 const PATHS: Record<ToolbarIconName, string[]> = {
   back: ['M10 3.5 5.5 8 10 12.5'],
@@ -22,6 +22,8 @@ const PATHS: Record<ToolbarIconName, string[]> = {
   root: ['M12.5 3.5V6.5A2.5 2.5 0 0 1 10 9H3.8', 'M6.3 6.5 3.8 9 6.3 11.5'],
   // A box with an arrow leaving its corner.
   external: ['M9 3H13V7', 'M13 3 7.5 8.5', 'M11.5 9.5V12A1 1 0 0 1 10.5 13H4A1 1 0 0 1 3 12V5.5A1 1 0 0 1 4 4.5H6.5'],
+  // A camera body with a lens: take a screenshot of the page.
+  camera: ['M3 6.5A1 1 0 0 1 4 5.5H5.5L6.5 4H9.5L10.5 5.5H12A1 1 0 0 1 13 6.5V11.5A1 1 0 0 1 12 12.5H4A1 1 0 0 1 3 11.5Z', 'M10 9A2 2 0 1 1 6 9A2 2 0 1 1 10 9'],
   // Disclosure carets, drawn smaller inside the same grid so the stroke stays the same weight.
   'caret-down': ['M5 6.5 8 9.5 11 6.5'],
   'caret-up': ['M5 9.5 8 6.5 11 9.5'],
