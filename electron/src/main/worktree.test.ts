@@ -884,4 +884,40 @@ describe('node_modules cloned into a new worktree', () => {
     expect(await wt.cloneBlockedReason('/dev', SANDBOX)).toMatch(/not on an APFS volume/)
     expect(await wt.cloneBlockedReason(SANDBOX, SANDBOX)).toBeNull()
   })
+
+  // The volume type is read by NAME from the mount table. statfs's numeric type is not stable across
+  // Macs: it was 26 for APFS on the dev Mac and something else on the GitHub runner, which refused
+  // every clone there (run 37714505956). Nothing below depends on that number.
+  it('reads the volume type by name, so the temp directory is APFS and /dev is devfs on any Mac', async () => {
+    if (process.platform !== 'darwin') return
+    expect(await wt.volumeType(SANDBOX)).toBe('apfs')
+    expect(await wt.volumeType('/dev')).toBe('devfs')
+  })
+
+  it('parses the mount table, local mounts only, mount points with spaces kept whole', () => {
+    // Lines copied from `mount` on macOS 27 (the home directory in the devicefs line renamed). The
+    // last line is constructed: a volume whose name has spaces and " on " in it.
+    const out = [
+      '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
+      'devfs on /dev (devfs, local, nobrowse)',
+      '/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, protect, root data)',
+      'map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)',
+      'devices -- file:///Users/me/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/ on /Users/me/Library/Developer/CoreDevice/DeviceFS (devicefs, local, nodev, nosuid, noowners, noatime, quarantine, nobrowse, fskit, mounted by me)',
+      '/dev/disk4s1 on /Volumes/Backup on USB (1) (msdos, local, nodev, nosuid, noowners, noatime, fskit)',
+      '',
+    ].join('\n')
+    expect(wt.parseMountTable(out)).toEqual([
+      { mountPoint: '/', type: 'apfs', local: true },
+      { mountPoint: '/dev', type: 'devfs', local: true },
+      { mountPoint: '/System/Volumes/Data', type: 'apfs', local: true },
+      { mountPoint: '/System/Volumes/Data/home', type: 'autofs', local: false },
+      { mountPoint: '/Users/me/Library/Developer/CoreDevice/DeviceFS', type: 'devicefs', local: true },
+      { mountPoint: '/Volumes/Backup on USB (1)', type: 'msdos', local: true },
+    ])
+  })
+
+  it('a path on no listed mount has no type', async () => {
+    if (process.platform !== 'darwin') return
+    expect(await wt.volumeType(SANDBOX, [{ mountPoint: '/dev', type: 'devfs', local: true }])).toBeNull()
+  })
 })

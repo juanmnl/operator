@@ -7,7 +7,7 @@
 // have taken something that was not a worktree with it.
 import { execFile } from 'node:child_process'
 import { loginShell } from './login-shell'
-import { lstat, mkdir, readFile, readdir, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
@@ -89,10 +89,6 @@ export interface WorktreeCreateResult {
 // 2026-09-16 result). Never a symlink (a lane's install would write into the main checkout) and
 // never a full copy (that is the disk cost worktrees are already criticised for).
 
-/** `statfs.type` for APFS on macOS. Measured on this machine: `/`, the Data volume and the temp
- *  directory report 26; devfs reports 19. */
-const APFS_FSTYPE = 26
-
 /** How long the clones may hold up a lane's launch in total. Two trees (13,869 entries) took about
  *  2 s here; the cap is for a much larger monorepo or a slow disk, not the normal case. */
 export const DEPENDENCY_CLONE_CAP_MS = 30_000
@@ -130,6 +126,49 @@ export async function ignoredNodeModules(root: string): Promise<string[]> {
   return found
 }
 
+export interface Mount { mountPoint: string; type: string; local: boolean }
+
+/** The lines of macOS `mount`: `<device> on <mount point> (<type>, <option>, ...)`. The device is
+ *  matched up to the first ` on ` and the mount point up to the last ` (`, so a mount point with
+ *  spaces or ` on ` in it parses. A line that does not fit is dropped. */
+export function parseMountTable(out: string): Mount[] {
+  const mounts: Mount[] = []
+  for (const line of out.split('\n')) {
+    const m = /^.+? on (.+) \(([^()]*)\)$/.exec(line.trim())
+    if (!m) continue
+    const [type, ...options] = m[2].split(',').map((o) => o.trim())
+    if (type) mounts.push({ mountPoint: m[1], type, local: options.includes('local') })
+  }
+  return mounts
+}
+
+/** The local mounts, from `/sbin/mount`. Network and autofs mounts are left out, so looking a path
+ *  up never stats a mount point that could wait on a server. */
+export async function localMounts(): Promise<Mount[]> {
+  const { stdout } = await execFileAsync('/sbin/mount', [], { timeout: 5000, maxBuffer: 1024 * 1024 })
+  return parseMountTable(stdout).filter((m) => m.local)
+}
+
+/** The file system type name ("apfs", "hfs", "devfs", ...) of the volume holding `path`, or `null`
+ *  when it is on no local mount.
+ *
+ *  statfs(2)'s numeric `f_type` cannot answer this: macOS numbers file systems in the order they
+ *  register at boot. APFS was 26 on the Mac this was written on and a different number on the
+ *  GitHub macos-14 runner (run 37714505956), where a check against 26 refused every clone. Node
+ *  does not expose the type NAME (`f_fstypename`), so it comes from the mount table: the volume is
+ *  the mount whose mount point has the same device number as `path`. Matching by device and not by
+ *  path prefix is what handles firmlinks: `/Users/...` is on the volume mounted at
+ *  `/System/Volumes/Data`. Device numbers are compared as bigints because devfs's is near 2^64. */
+export async function volumeType(path: string, mounts?: Mount[]): Promise<string | null> {
+  const dev = (await stat(path, { bigint: true })).dev
+  for (const m of mounts ?? await localMounts()) {
+    try {
+      if ((await stat(m.mountPoint, { bigint: true })).dev === dev) return m.type
+    } catch { /* unmounted since the table was read, or not readable */ }
+  }
+  return null
+}
+
 /** Why a clone from `src` into `destParent` cannot be a real clone, or `null` when it can.
  *
  *  `cp -c` does NOT fail when cloning is impossible: its man page says it falls back to copyfile(2),
@@ -139,8 +178,9 @@ export async function ignoredNodeModules(root: string): Promise<string[]> {
 export async function cloneBlockedReason(src: string, destParent: string): Promise<string | null> {
   if (process.platform !== 'darwin') return 'cloning needs APFS on macOS'
   try {
-    const [a, b] = await Promise.all([statfs(src), statfs(destParent)])
-    if (a.type !== APFS_FSTYPE || b.type !== APFS_FSTYPE) return 'the checkout is not on an APFS volume'
+    const mounts = await localMounts()
+    const [a, b] = await Promise.all([volumeType(src, mounts), volumeType(destParent, mounts)])
+    if (a !== 'apfs' || b !== 'apfs') return 'the checkout is not on an APFS volume'
     const [sa, sb] = await Promise.all([stat(src), stat(destParent)])
     if (sa.dev !== sb.dev) return 'the worktree is on a different volume from the checkout'
   } catch (e) {
