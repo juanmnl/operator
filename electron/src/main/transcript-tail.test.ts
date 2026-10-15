@@ -118,6 +118,20 @@ describe('the tailer, against a real file on disk', () => {
     expect(seen[0].text).toBe('done here')
   })
 
+  it('skips api-request records: they do not count as activity', async () => {
+    writeFileSync(file, assistantText('answered'))
+    const t = new Transcript()
+    t.register('t9', { claudeSessionId: SESSION, cwd: '/Users/dev/thing', projectId: 'p1' })
+    await t.tick({ isAlive: alive, isActive: inactive })
+    expect(t.liveLanes(alive)[0].lastActivityAt).toBe('2026-08-20T10:00:00Z')
+
+    // Keys as Claude Code 2.1.300 writes them. Parsed, the later timestamp would move lastActivityAt.
+    appendFileSync(file, line({ type: 'api-request', sessionId: SESSION, id: 'r1', timestamp: '2026-08-20T10:05:00Z', version: '2.1.300',
+      querySource: 'repl_main_thread', shapeHash: 'h', requestDigest: 'd', cacheControl: {}, keep: 1, params: {}, base: 'b', tail: [] }))
+    await t.tick({ isAlive: alive, isActive: inactive })
+    expect(t.liveLanes(alive)[0].lastActivityAt).toBe('2026-08-20T10:00:00Z')
+  })
+
   it('marks a session ended when its pty is gone, and reports it as a dead lane', async () => {
     const t = new Transcript()
     t.register('t6', { claudeSessionId: SESSION, cwd: '/Users/dev/thing', projectId: 'p1' })
