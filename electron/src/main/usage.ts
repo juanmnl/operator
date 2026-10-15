@@ -9,9 +9,15 @@ import { homedir } from 'node:os'
 import { extname, join, basename } from 'node:path'
 import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../../src/shared/types'
 
-/** $/1M tokens, (input, output, cache-read). Substring-matched so a dated model id
- *  (`claude-opus-5-20260101`) resolves without a table entry per release, and so a point release
- *  inherits its tier — `sonnet-5` is written to catch a future `sonnet-5-1` too.
+/** $/1M tokens, (input, output, cache-read).
+ *
+ *  SOURCE: the model catalog built into Claude Code 2.1.300 (`pricing_tiers` and the fast-mode
+ *  table in its cost lookup), read from the binary on 2026-10-14. Claude Code prices a turn from
+ *  those tables, so matching them is what makes this page agree with `/cost`.
+ *
+ *  Explicit rows for the ids whose price differs from their family come first; the substring
+ *  fallbacks after them cover dated ids (`claude-opus-5-20260101`) and point releases nobody has
+ *  priced yet, which inherit their family's tier.
  *
  *  PESSIMISTIC WHERE THE ID IS AMBIGUOUS. An unknown model bills at the Opus rate rather than at
  *  zero, because a silent 0 reads as "this cost nothing". The same rule decides the bare aliases:
@@ -19,27 +25,42 @@ import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../.
  *  hand-written fixtures exist) takes the HIGHER 3/15 of Sonnet 4.6, and only a confident
  *  `sonnet-5` match takes 2/10. Under-reporting is the failure this module refuses.
  *
- *  CACHE-READ IS A RATE, NOT A MULTIPLIER. It is 0.1× input on every model here except Fable 5.1,
- *  which reads cache at a flat $0.25/Mtok — a quarter of what 0.1 × $10 would say, on the traffic
- *  an agent session is mostly made of. Scoped to `fable-5-1` deliberately: $0.25 is documented as
- *  something 5.1 ADDS over Fable 5, and whether Mythos 5.1 shares it is open, so `claude-fable-5`
- *  and the mythos ids keep the 0.1× default rather than take a discount nobody has confirmed.
+ *  CACHE-READ IS A RATE, NOT A MULTIPLIER. It is 0.1× input on most models, but not on Opus 5.5
+ *  (0.20 against 4), Sonnet 5.5 (0.10 against 2), Fable 5.1 and Mythos 5.1 (0.25 against 10),
+ *  or Opus 5.5 fast (0.40 against 8). Those rows state it; the rest derive it.
  *
- *  `fast` is Opus fast mode (`usage.speed === 'fast'`), which bills 10/50 instead of 5/25 — the
- *  same model, 2.5× the output speed, at a premium. It is a research preview on Opus 5 and 4.8
- *  only, so no other family consults the flag; 4.8's fast rate is not separately published, and
- *  pricing it with Opus 5's is the pessimistic reading. */
-function rates(model: string, fast = false): [number, number, number] {
+ *  `promptTokens` is input + cache read + cache write. Haiku 5.5 bills the whole turn at a higher
+ *  tier when it exceeds 100K, as Claude Code does; no other model has a long-prompt tier.
+ *
+ *  `fast` is Opus fast mode (`usage.speed === 'fast'`). Claude Code prices it per model: Opus 5.5
+ *  at 8/40, Opus 5 and 4.8 at 10/50, Opus 4.6 and 4.7 at 30/150. An Opus id outside that list
+ *  takes 30/150, the highest. No other family consults the flag. */
+function rates(model: string, fast = false, promptTokens = 0): [number, number, number] {
   /** Cache-read defaults to a tenth of input — derived, never hand-copied, so the two can't drift. */
   const tier = (input: number, output: number): [number, number, number] => [input, output, input * 0.1]
-  if (model.includes('fable-5-1')) return [10, 50, 0.25]
+  if (model.includes('haiku-5-5')) return promptTokens > 100_000 ? [0.5, 2.5, 0.05] : [0.1, 0.5, 0.01]
+  if (model.includes('fable-5-1') || model.includes('mythos-5-1')) return [10, 50, 0.25]
+  if (model.includes('opus-5-5')) return fast ? [8, 40, 0.4] : [4, 20, 0.2]
+  if (model.includes('sonnet-5-5')) return [2, 10, 0.1]
+  // Opus 4.0 and 4.1. The pattern is Claude Code's own: `opus-4` not followed by a single-digit
+  // segment, so `claude-opus-4` and `claude-opus-4-20250514` match and `claude-opus-4-8` does not.
+  if (model.includes('opus-4-1') || /opus-4(?!-\d(?!\d))/.test(model)) return fast ? tier(30, 150) : tier(15, 75)
   if (model.includes('fable') || model.includes('mythos')) return tier(10, 50)
-  if (model.includes('opus')) return fast ? tier(10, 50) : tier(5, 25)
+  if (model.includes('opus')) {
+    if (!fast) return tier(5, 25)
+    return model.includes('opus-5') || model.includes('opus-4-8') ? tier(10, 50) : tier(30, 150)
+  }
   if (model.includes('sonnet-5')) return tier(2, 10)
   if (model.includes('sonnet')) return tier(3, 15)
   if (model.includes('haiku')) return tier(1, 5)
   return tier(5, 25)
 }
+
+/** Claude Code 2.1.300 writes each API request's system prompt, tools and parameters into the
+ *  transcript as `api-request`, `api-request-shape` and `api-request-blob` records — about half
+ *  of a recent file's bytes, and nothing this app reads. Every one starts with this prefix, so a
+ *  string test drops them before `JSON.parse` pays for them. Shared with the tailer. */
+export const isApiRequestLine = (line: string) => line.startsWith('{"type":"api-request')
 
 /** Named `UsageRecord`, not `Record` — a local `Record` shadows TypeScript's built-in
  *  `Record<K, V>` utility type, and the errors it produces point at the USES, not the cause. */
@@ -61,7 +82,7 @@ interface UsageRecord {
  *  its own rate from the table, not a multiplier applied here. Flattening any of it to one number
  *  would misreport this app's usage badly — a long agent session is mostly cache traffic. */
 function cost(r: UsageRecord): number {
-  const [ri, ro, rcr] = rates(r.model, r.fast)
+  const [ri, ro, rcr] = rates(r.model, r.fast, r.context)
   const perIn = ri / 1e6
   return r.input * perIn + r.output * (ro / 1e6) + r.cacheRead * (rcr / 1e6) + r.cache5m * perIn * 1.25 + r.cache1h * perIn * 2
 }
@@ -96,7 +117,7 @@ async function load(): Promise<{ recs: UsageRecord[]; compactions: CompactionRec
       let raw: string
       try { raw = await readFile(join(projectsDir, slug, f), 'utf8') } catch { continue }
       for (const line of raw.split('\n')) {
-        if (!line) continue
+        if (!line || isApiRequestLine(line)) continue
         let obj: RawLine
         try { obj = JSON.parse(line) } catch { continue }
         // COMPACTION BOUNDARIES ride the same pass. They carry no `usage`, so the guard below
