@@ -2,9 +2,11 @@
 // `src-tauri/src/usage.rs`.
 //
 // The source is `~/.claude/projects/<slug>/*.jsonl` — the same files the tailer follows, read
-// whole rather than followed. That is thousands of files, so the parse is cached (30s) and the
-// aggregation is a single pass.
-import { readdir, readFile } from 'node:fs/promises'
+// whole rather than followed — plus each session's subagent transcripts under
+// `<slug>/<session>/subagents/**/*.jsonl`, which are the only record of what subagents spent.
+// That is thousands of files, so each file's parse is kept until its size or mtime changes, the
+// merged result is cached for 30s, and the aggregation is a single pass.
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, join, basename } from 'node:path'
 import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../../src/shared/types'
@@ -12,8 +14,8 @@ import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../.
 /** $/1M tokens, (input, output, cache-read).
  *
  *  SOURCE: the model catalog built into Claude Code 2.1.300 (`pricing_tiers` and the fast-mode
- *  table in its cost lookup), read from the binary on 2026-10-14. Claude Code prices a turn from
- *  those tables, so matching them is what makes this page agree with `/cost`.
+ *  table in its billing lookup `tNt`), read from the binary on 2026-10-14. Claude Code prices a
+ *  turn from those tables, so matching them is what makes this page agree with `/cost`.
  *
  *  Explicit rows for the ids whose price differs from their family come first; the substring
  *  fallbacks after them cover dated ids (`claude-opus-5-20260101`) and point releases nobody has
@@ -32,9 +34,10 @@ import type { UsageStats, UsageInsights, TuningData, EffortUsage } from '../../.
  *  `promptTokens` is input + cache read + cache write. Haiku 5.5 bills the whole turn at a higher
  *  tier when it exceeds 100K, as Claude Code does; no other model has a long-prompt tier.
  *
- *  `fast` is Opus fast mode (`usage.speed === 'fast'`). Claude Code prices it per model: Opus 5.5
- *  at 8/40, Opus 5 and 4.8 at 10/50, Opus 4.6 and 4.7 at 30/150. An Opus id outside that list
- *  takes 30/150, the highest. No other family consults the flag. */
+ *  `fast` is Opus fast mode (`usage.speed === 'fast'`). Claude Code bills it per model: Opus 5.5
+ *  at 8/40, Opus 5 and 4.8 at 10/50, Opus 4.6 and 4.7 at 30/150. Any other Opus id falls through
+ *  to its standard rate, as it does in `tNt` (the 30/150 shown in the fast-mode picker is a
+ *  display string, not the billing path). No other family consults the flag. */
 function rates(model: string, fast = false, promptTokens = 0): [number, number, number] {
   /** Cache-read defaults to a tenth of input — derived, never hand-copied, so the two can't drift. */
   const tier = (input: number, output: number): [number, number, number] => [input, output, input * 0.1]
@@ -44,11 +47,12 @@ function rates(model: string, fast = false, promptTokens = 0): [number, number, 
   if (model.includes('sonnet-5-5')) return [2, 10, 0.1]
   // Opus 4.0 and 4.1. The pattern is Claude Code's own: `opus-4` not followed by a single-digit
   // segment, so `claude-opus-4` and `claude-opus-4-20250514` match and `claude-opus-4-8` does not.
-  if (model.includes('opus-4-1') || /opus-4(?!-\d(?!\d))/.test(model)) return fast ? tier(30, 150) : tier(15, 75)
+  if (model.includes('opus-4-1') || /opus-4(?!-\d(?!\d))/.test(model)) return tier(15, 75)
   if (model.includes('fable') || model.includes('mythos')) return tier(10, 50)
   if (model.includes('opus')) {
-    if (!fast) return tier(5, 25)
-    return model.includes('opus-5') || model.includes('opus-4-8') ? tier(10, 50) : tier(30, 150)
+    if (fast && (model.includes('opus-5') || model.includes('opus-4-8'))) return tier(10, 50)
+    if (fast && (model.includes('opus-4-6') || model.includes('opus-4-7'))) return tier(30, 150)
+    return tier(5, 25)
   }
   if (model.includes('sonnet-5')) return tier(2, 10)
   if (model.includes('sonnet')) return tier(3, 15)
@@ -58,15 +62,20 @@ function rates(model: string, fast = false, promptTokens = 0): [number, number, 
 
 /** Claude Code 2.1.300 writes each API request's system prompt, tools and parameters into the
  *  transcript as `api-request`, `api-request-shape` and `api-request-blob` records — about half
- *  of a recent file's bytes, and nothing this app reads. Every one starts with this prefix, so a
- *  string test drops them before `JSON.parse` pays for them. Shared with the tailer. */
-export const isApiRequestLine = (line: string) => line.startsWith('{"type":"api-request')
+ *  of a recent file's bytes, and nothing this app reads. Each starts with its own type, so a
+ *  string test drops them before `JSON.parse` pays for them. The three types are matched exactly:
+ *  a future `api-request-*` type may carry something worth reading, and must reach the parser.
+ *  Shared with the tailer. */
+const API_REQUEST_PREFIXES = ['{"type":"api-request"', '{"type":"api-request-shape"', '{"type":"api-request-blob"']
+export const isApiRequestLine = (line: string) => API_REQUEST_PREFIXES.some((p) => line.startsWith(p))
 
 /** Named `UsageRecord`, not `Record` — a local `Record` shadows TypeScript's built-in
  *  `Record<K, V>` utility type, and the errors it produces point at the USES, not the cause. */
 interface UsageRecord {
   day: string; model: string; slug: string; session: string
   tsMs: number; durationMs: number
+  /** `sidechain` is the record's own `isSidechain`: true on every record in a subagent transcript,
+   *  and on the sidechain turns older Claude Code versions wrote into the parent file. */
   context: number; sidechain: boolean; skill?: string
   /** Effort as the TRANSCRIPT reports it — a top-level sibling of `timestamp`, present on 100%
    *  of assistant records (measured: 68,972 of 69,022 across 300 real transcripts, values
@@ -76,6 +85,8 @@ interface UsageRecord {
   /** `usage.speed === 'fast'` — Opus fast mode, billed at the premium rate. See `rates`. */
   fast: boolean
   input: number; output: number; cacheRead: number; cache5m: number; cache1h: number
+  /** `${message.id}:${requestId}`, the de-duplication key. Absent when the message has no id. */
+  key?: string
 }
 
 /** Cache-write is billed ABOVE the input rate (1.25× for 5-minute, 2× for 1-hour); cache-read is
@@ -91,89 +102,162 @@ const tokensOf = (r: UsageRecord) => r.input + r.output + r.cacheRead + r.cache5
 let cache: { at: number; recs: UsageRecord[]; compactions: CompactionRecord[] } | null = null
 const CACHE_TTL_MS = 30_000
 
+/** Each transcript's parse, kept for the life of the app and reused while the file's size and
+ *  mtime are unchanged. A finished session or subagent file never changes again, so after the
+ *  first scan only the files being written are read. */
+interface ParsedFile { size: number; mtimeMs: number; recs: UsageRecord[]; compactions: CompactionRecord[] }
+const parsed = new Map<string, ParsedFile>()
+
 /** Drop the cache. For tests, which write transcripts into a sandbox between calls and would
  *  otherwise read the previous test's answer for 30 seconds. */
-export function resetUsageCache(): void { cache = null }
+export function resetUsageCache(): void { cache = null; parsed.clear() }
+
+/** Add `r` to `list` unless a record with its key is already there.
+ *
+ *  A message is re-emitted as a turn streams, so the same (id, requestId) appears many times;
+ *  without this the totals are several times the truth. The copies are not identical in subagent
+ *  transcripts: `output_tokens` grows with each emission (first-seen sums to 13% of the final
+ *  output), so the copy with the LARGER output keeps its usage. The stored record's identity
+ *  (session, sidechain flag, timestamp) stays, so a fork's replay of a parent turn, which has the
+ *  same usage, remains the parent's turn. Records are never mutated: they live in `parsed`. */
+function keep(list: UsageRecord[], index: Map<string, number>, r: UsageRecord): void {
+  if (!r.key) { list.push(r); return }
+  const i = index.get(r.key)
+  if (i === undefined) { index.set(r.key, list.length); list.push(r); return }
+  const s = list[i]
+  if (r.output > s.output) {
+    list[i] = { ...s, input: r.input, output: r.output, cacheRead: r.cacheRead, cache5m: r.cache5m, cache1h: r.cache1h, context: r.context, fast: r.fast }
+  }
+}
+
+interface TranscriptFile { path: string; slug: string; session: string; subagent: boolean }
+
+/** Every `.jsonl` under a session's `subagents/` directory, at any depth: `agent-<id>.jsonl`
+ *  directly, and workflow agents under `workflows/<id>/`. */
+async function subagentFiles(dir: string, slug: string, session: string, out: TranscriptFile[]): Promise<void> {
+  let entries
+  try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+  for (const e of entries) {
+    const path = join(dir, e.name)
+    if (e.isDirectory()) await subagentFiles(path, slug, session, out)
+    else if (extname(e.name) === '.jsonl') out.push({ path, slug, session, subagent: true })
+  }
+}
 
 async function load(): Promise<{ recs: UsageRecord[]; compactions: CompactionRecord[] }> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache
   const projectsDir = join(homedir(), '.claude', 'projects')
-  const out: UsageRecord[] = []
-  const compactions: CompactionRecord[] = []
-  // A message is re-emitted as a turn streams, so the same (id, requestId) appears many times.
-  // Without this the totals are several times the truth.
-  const seen = new Set<string>()
 
   let dirs
   try { dirs = await readdir(projectsDir, { withFileTypes: true }) } catch { return { recs: [], compactions: [] } }
+  const files: TranscriptFile[] = []
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue
     const slug = dir.name
-    let files
-    try { files = await readdir(join(projectsDir, slug)) } catch { continue }
-    for (const f of files) {
-      if (extname(f) !== '.jsonl') continue
-      const session = basename(f, '.jsonl')
-      let raw: string
-      try { raw = await readFile(join(projectsDir, slug, f), 'utf8') } catch { continue }
-      for (const line of raw.split('\n')) {
-        if (!line || isApiRequestLine(line)) continue
-        let obj: RawLine
-        try { obj = JSON.parse(line) } catch { continue }
-        // COMPACTION BOUNDARIES ride the same pass. They carry no `usage`, so the guard below
-        // would drop them — and a second walk over every transcript to find them would double
-        // the cost of the most expensive thing this module does.
-        if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
-          const cm = obj.compactMetadata
-          const cts = typeof obj.timestamp === 'string' ? obj.timestamp : ''
-          compactions.push({
-            day: cts.slice(0, 10), slug, session,
-            tsMs: cts ? Date.parse(cts) || 0 : 0,
-            preTokens: typeof cm?.preTokens === 'number' ? cm.preTokens : 0,
-            postTokens: typeof cm?.postTokens === 'number' ? cm.postTokens : 0,
-          })
-          continue
-        }
-        const msg = obj.message
-        const usage = msg?.usage
-        if (!msg || !usage) continue
-        const model = typeof msg.model === 'string' ? msg.model : ''
-        if (!model || model === '<synthetic>') continue
-        if (typeof msg.id === 'string') {
-          const key = `${msg.id}:${typeof obj.requestId === 'string' ? obj.requestId : ''}`
-          if (seen.has(key)) continue
-          seen.add(key)
-        }
-        const g = (o: Record<string, unknown> | undefined, k: string) => (typeof o?.[k] === 'number' ? (o[k] as number) : 0)
-        const ccTotal = g(usage, 'cache_creation_input_tokens')
-        const cc = usage.cache_creation as Record<string, unknown> | undefined
-        // The 5m/1h split only exists on newer records; older ones carry a single total, which
-        // is billed at the 5-minute rate rather than dropped.
-        const [cache5m, cache1h] = cc && (cc.ephemeral_5m_input_tokens !== undefined || cc.ephemeral_1h_input_tokens !== undefined)
-          ? [g(cc, 'ephemeral_5m_input_tokens'), g(cc, 'ephemeral_1h_input_tokens')]
-          : [ccTotal, 0]
-        const ts = typeof obj.timestamp === 'string' ? obj.timestamp : ''
-        const input = g(usage, 'input_tokens')
-        const cacheRead = g(usage, 'cache_read_input_tokens')
-        out.push({
-          day: ts.slice(0, 10),
-          model, slug, session,
-          tsMs: ts ? Date.parse(ts) || 0 : 0,
-          durationMs: typeof obj.durationMs === 'number' ? obj.durationMs : 0,
-          context: input + cacheRead + cache5m + cache1h,
-          sidechain: obj.isSidechain === true,
-          // Claude Code persists the API's own `usage.speed` verbatim; anything but the literal
-          // 'fast' (including the `null` that `<synthetic>` rows carry) is the standard rate.
-          fast: usage.speed === 'fast',
-          skill: typeof obj.attributionSkill === 'string' && obj.attributionSkill ? obj.attributionSkill : undefined,
-          effort: typeof obj.effort === 'string' && obj.effort ? obj.effort : undefined,
-          input, output: g(usage, 'output_tokens'), cacheRead, cache5m, cache1h,
-        })
-      }
+    let entries
+    try { entries = await readdir(join(projectsDir, slug), { withFileTypes: true }) } catch { continue }
+    // Parent transcripts first, so that on an equal-usage repeat (a fork replaying its parent's
+    // turns) the parent's copy is the one kept.
+    for (const e of entries) {
+      if (extname(e.name) === '.jsonl') files.push({ path: join(projectsDir, slug, e.name), slug, session: basename(e.name, '.jsonl'), subagent: false })
+    }
+    // Only `<session>/subagents/` is walked; a session directory also holds tool-result folders
+    // and other files that are not transcripts. Subagent records belong to the parent session.
+    for (const e of entries) {
+      if (e.isDirectory()) await subagentFiles(join(projectsDir, slug, e.name, 'subagents'), slug, e.name, files)
     }
   }
+
+  const out: UsageRecord[] = []
+  const compactions: CompactionRecord[] = []
+  // ONE index across parent and subagent files, so a turn that appears in both counts once.
+  const index = new Map<string, number>()
+  const live = new Set<string>()
+  for (const f of files) {
+    let st
+    try { st = await stat(f.path) } catch { continue }
+    live.add(f.path)
+    let p = parsed.get(f.path)
+    if (!p || p.size !== st.size || p.mtimeMs !== st.mtimeMs) {
+      let raw: string
+      try { raw = await readFile(f.path, 'utf8') } catch { continue }
+      p = { size: st.size, mtimeMs: st.mtimeMs, ...parseTranscript(raw, f) }
+      parsed.set(f.path, p)
+    }
+    for (const r of p.recs) keep(out, index, r)
+    compactions.push(...p.compactions)
+  }
+  // A deleted transcript must not keep its parse alive for the rest of the run.
+  for (const path of parsed.keys()) if (!live.has(path)) parsed.delete(path)
+
   cache = { at: Date.now(), recs: out, compactions }
   return cache
+}
+
+/** One transcript's usage records (already de-duplicated within the file) and compaction
+ *  boundaries. */
+function parseTranscript(raw: string, f: TranscriptFile): { recs: UsageRecord[]; compactions: CompactionRecord[] } {
+  const { slug, session } = f
+  const recs: UsageRecord[] = []
+  const index = new Map<string, number>()
+  const compactions: CompactionRecord[] = []
+  for (const line of raw.split('\n')) {
+    if (!line || isApiRequestLine(line)) continue
+    // Only usage records and compaction boundaries are read; every other line is skipped before
+    // `JSON.parse`, which is most of the cost of a scan.
+    if (!line.includes('"usage"') && !line.includes('compact_boundary')) continue
+    let obj: RawLine
+    try { obj = JSON.parse(line) } catch { continue }
+    // COMPACTION BOUNDARIES ride the same pass. They carry no `usage`, so the guard below
+    // would drop them — and a second walk over every transcript to find them would double
+    // the cost of the most expensive thing this module does.
+    if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
+      // A subagent compacting its own context is not the lane compacting. None of the subagent
+      // transcripts on disk had one on 2026-10-14.
+      if (f.subagent) continue
+      const cm = obj.compactMetadata
+      const cts = typeof obj.timestamp === 'string' ? obj.timestamp : ''
+      compactions.push({
+        day: cts.slice(0, 10), slug, session,
+        tsMs: cts ? Date.parse(cts) || 0 : 0,
+        preTokens: typeof cm?.preTokens === 'number' ? cm.preTokens : 0,
+        postTokens: typeof cm?.postTokens === 'number' ? cm.postTokens : 0,
+      })
+      continue
+    }
+    const msg = obj.message
+    const usage = msg?.usage
+    if (!msg || !usage) continue
+    const model = typeof msg.model === 'string' ? msg.model : ''
+    if (!model || model === '<synthetic>') continue
+    const g = (o: Record<string, unknown> | undefined, k: string) => (typeof o?.[k] === 'number' ? (o[k] as number) : 0)
+    const ccTotal = g(usage, 'cache_creation_input_tokens')
+    const cc = usage.cache_creation as Record<string, unknown> | undefined
+    // The 5m/1h split only exists on newer records; older ones carry a single total, which
+    // is billed at the 5-minute rate rather than dropped.
+    const [cache5m, cache1h] = cc && (cc.ephemeral_5m_input_tokens !== undefined || cc.ephemeral_1h_input_tokens !== undefined)
+      ? [g(cc, 'ephemeral_5m_input_tokens'), g(cc, 'ephemeral_1h_input_tokens')]
+      : [ccTotal, 0]
+    const ts = typeof obj.timestamp === 'string' ? obj.timestamp : ''
+    const input = g(usage, 'input_tokens')
+    const cacheRead = g(usage, 'cache_read_input_tokens')
+    keep(recs, index, {
+      day: ts.slice(0, 10),
+      model, slug, session,
+      tsMs: ts ? Date.parse(ts) || 0 : 0,
+      durationMs: typeof obj.durationMs === 'number' ? obj.durationMs : 0,
+      context: input + cacheRead + cache5m + cache1h,
+      sidechain: obj.isSidechain === true,
+      // Claude Code persists the API's own `usage.speed` verbatim; anything but the literal
+      // 'fast' (including the `null` that `<synthetic>` rows carry) is the standard rate.
+      fast: usage.speed === 'fast',
+      skill: typeof obj.attributionSkill === 'string' && obj.attributionSkill ? obj.attributionSkill : undefined,
+      effort: typeof obj.effort === 'string' && obj.effort ? obj.effort : undefined,
+      input, output: g(usage, 'output_tokens'), cacheRead, cache5m, cache1h,
+      key: typeof msg.id === 'string' ? `${msg.id}:${typeof obj.requestId === 'string' ? obj.requestId : ''}` : undefined,
+    })
+  }
+  return { recs, compactions }
 }
 
 /** Back-compat for the two existing callers, which only ever wanted the usage records. */
@@ -333,10 +417,15 @@ export async function computeTuning(days: number, sinceMs?: number): Promise<Omi
   interface SessAcc {
     slug: string; model: string; effort?: string
     tokens: number; cost: number; turns: number
+    subagentTokens: number; subagentCost: number
     highContextTurns: number; contexts: number[]
     compactions: number; reReadTokens: number; droppedTokens: number
     firstTsMs: number; lastTsMs: number
+    /** Timestamp of the lane's own record that set `model` and `effort`. */
+    modelTsMs: number
   }
+  const newSession = (slug: string): SessAcc => ({ slug, model: '', tokens: 0, cost: 0, turns: 0, subagentTokens: 0, subagentCost: 0,
+    highContextTurns: 0, contexts: [], compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 0, modelTsMs: 0 })
   const bySession = new Map<string, SessAcc>()
   const byEffort = new Map<string, EffortUsage>()
   const byModel = new Map<string, { input: number; output: number; cacheWrite: number; cacheRead: number; cost: number; messages: number }>()
@@ -349,24 +438,29 @@ export async function computeTuning(days: number, sinceMs?: number): Promise<Omi
     totalTokens += t; totalCost += c
 
     let a = bySession.get(r.session)
-    if (!a) {
-      a = { slug: r.slug, model: r.model, tokens: 0, cost: 0, turns: 0, highContextTurns: 0, contexts: [],
-        compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 0 }
-      bySession.set(r.session, a)
+    if (!a) { a = newSession(r.slug); bySession.set(r.session, a) }
+    a.tokens += t; a.cost += c
+    if (r.sidechain) {
+      // A subagent's spend is the lane's spend, so it is in `tokens` and `cost`. It is not the
+      // lane's turn: a 15k-token subagent context would drag the lane's median down, and a Sonnet
+      // subagent would relabel an Opus lane. `transcript.ts` keeps them out of lane state too.
+      a.subagentTokens += t; a.subagentCost += c
+    } else {
+      a.turns += 1
+      // LATEST WINS for model and effort: a session that switched mid-window is described by what
+      // it is running now, and the per-(model, effort) split below is where the change stays visible.
+      if (r.tsMs >= a.modelTsMs) { a.model = r.model; if (r.effort) a.effort = r.effort; a.modelTsMs = r.tsMs }
+      if (r.context > 150_000) a.highContextTurns += 1
+      a.contexts.push(r.context)
     }
-    a.tokens += t; a.cost += c; a.turns += 1
-    // LATEST WINS for model and effort: a session that switched mid-window is described by what
-    // it is running now, and the per-(model, effort) split below is where the change stays visible.
-    if (r.tsMs >= a.lastTsMs) { a.model = r.model; if (r.effort) a.effort = r.effort }
-    if (r.context > 150_000) a.highContextTurns += 1
-    a.contexts.push(r.context)
     if (r.tsMs > 0) {
       a.firstTsMs = a.firstTsMs ? Math.min(a.firstTsMs, r.tsMs) : r.tsMs
       a.lastTsMs = Math.max(a.lastTsMs, r.tsMs)
     }
 
     // The triple. A lane that ran half a window on High and half on Medium becomes two rows, not
-    // one averaged row that describes neither half.
+    // one averaged row that describes neither half. Subagent records stay in at the effort they
+    // ran at, so the rows still sum to `totalCost`.
     if (r.effort) {
       const key = r.session + ' ' + r.model + ' ' + r.effort
       const e = byEffort.get(key) ?? { session: r.session, model: r.model, effort: r.effort, tokens: 0, cost: 0, turns: 0 }
@@ -389,11 +483,7 @@ export async function computeTuning(days: number, sinceMs?: number): Promise<Omi
   for (const cb of compactions) {
     if (cutoffDay && cb.day && cb.day < cutoffDay) continue
     let a = bySession.get(cb.session)
-    if (!a) {
-      a = { slug: cb.slug, model: '', tokens: 0, cost: 0, turns: 0, highContextTurns: 0, contexts: [],
-        compactions: 0, reReadTokens: 0, droppedTokens: 0, firstTsMs: 0, lastTsMs: 0 }
-      bySession.set(cb.session, a)
-    }
+    if (!a) { a = newSession(cb.slug); bySession.set(cb.session, a) }
     a.compactions += 1
     a.reReadTokens += cb.postTokens
     a.droppedTokens += Math.max(0, cb.preTokens - cb.postTokens)
@@ -404,6 +494,7 @@ export async function computeTuning(days: number, sinceMs?: number): Promise<Omi
     bySession: [...bySession].map(([session, a]) => ({
       session, slug: a.slug, model: a.model, effort: a.effort,
       tokens: a.tokens, cost: a.cost, turns: a.turns,
+      subagentTokens: a.subagentTokens, subagentCost: a.subagentCost,
       highContextTurns: a.highContextTurns, medianContext: median(a.contexts),
       compactions: a.compactions, reReadTokens: a.reReadTokens, droppedTokens: a.droppedTokens,
       firstTsMs: a.firstTsMs, lastTsMs: a.lastTsMs,

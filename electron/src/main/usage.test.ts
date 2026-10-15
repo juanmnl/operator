@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,7 +15,7 @@ const M = 1_000_000
 const turn = (o: {
   id: string; model?: string; input?: number; output?: number; cacheRead?: number
   cache5m?: number; cache1h?: number; ccTotal?: number; ts?: string
-  requestId?: string; sidechain?: boolean; skill?: string; durationMs?: number
+  requestId?: string; sidechain?: boolean; skill?: string; durationMs?: number; effort?: string
   /** `usage.speed` exactly as Claude Code persists it — 'standard' on every real record today. */
   speed?: string
 }) => JSON.stringify({
@@ -25,6 +25,7 @@ const turn = (o: {
   isSidechain: o.sidechain,
   attributionSkill: o.skill,
   durationMs: o.durationMs,
+  effort: o.effort,
   message: {
     id: o.id,
     model: o.model ?? 'claude-opus-5',
@@ -187,8 +188,17 @@ describe('fast mode', () => {
 
   // Claude Code prices fast mode per model; the old single 10/50 over-reported Opus 5.5 and
   // under-reported Opus 4.6 and 4.7.
-  it('is priced per Opus model: 8/40 on 5.5, 10/50 on 5 and 4.8, 30/150 on the rest', async () => {
+  it('is priced per Opus model: 8/40 on 5.5, 10/50 on 5 and 4.8, 30/150 on 4.6 and 4.7', async () => {
     for (const [model, expected] of [['claude-opus-5-5', 48], ['claude-opus-4-8', 60], ['claude-opus-4-6', 180], ['claude-opus-4-7', 180]] as const) {
+      const { stats } = await usageOf(turn({ id: `fast-${model}`, model, input: M, output: M, speed: 'fast' }))
+      expect(stats.totalCost).toBeCloseTo(expected, 9)
+    }
+  })
+
+  // Claude Code's billing lookup (`tNt`) has no fast row for any other Opus and falls through to
+  // the catalog rate. The 30/150 in its fast-mode picker is a display string.
+  it('bills any other Opus at its standard rate', async () => {
+    for (const [model, expected] of [['claude-opus-4-5-20251101', 30], ['claude-opus-4-1', 90], ['claude-opus-4-20250514', 90]] as const) {
       const { stats } = await usageOf(turn({ id: `fast-${model}`, model, input: M, output: M, speed: 'fast' }))
       expect(stats.totalCost).toBeCloseTo(expected, 9)
     }
@@ -244,6 +254,12 @@ describe('api-request records', () => {
     expect(isApiRequestLine(turn({ id: 'a' }))).toBe(false)
     // A user turn that QUOTES the record type is still a user turn.
     expect(isApiRequestLine(JSON.stringify({ type: 'user', message: { content: '{"type":"api-request"}' } }))).toBe(false)
+  })
+
+  it('match only the three known types, so a new api-request-* type still reaches the parser', async () => {
+    const { isApiRequestLine } = await import('./usage')
+    expect(isApiRequestLine(JSON.stringify({ type: 'api-request-error', message: { usage: {} } }))).toBe(false)
+    expect(isApiRequestLine(JSON.stringify({ type: 'api-requests' }))).toBe(false)
   })
 
   it('leave the totals unchanged when interleaved with turns', async () => {
@@ -333,5 +349,166 @@ describe('insights', () => {
     expect(insights.totalTokens).toBe(0)
     expect(insights.highContextPct).toBe(0)
     expect(insights.subagentPct).toBe(0)
+  })
+})
+
+describe('subagent transcripts', () => {
+  // Claude Code writes a subagent's turns to `<slug>/<session>/subagents/agent-<id>.jsonl`, and a
+  // workflow's agents one level deeper under `workflows/<id>/`. None of it is in the parent file.
+  const SLUG = join(SANDBOX, '.claude', 'projects', '-Users-dev-subagents')
+
+  /** Writes a parent transcript and its subagent files, then scans with a fresh module. `files`
+   *  maps a path under `<session>/` to its lines. */
+  async function scan(parent: string, files: Record<string, string>, tuningDays = 0) {
+    const session = Math.random().toString(36).slice(2)
+    mkdirSync(SLUG, { recursive: true })
+    writeFileSync(join(SLUG, `${session}.jsonl`), parent)
+    for (const [rel, lines] of Object.entries(files)) {
+      const path = join(SLUG, session, rel)
+      mkdirSync(join(path, '..'), { recursive: true })
+      writeFileSync(path, lines)
+    }
+    vi.resetModules()
+    const mod = await import('./usage')
+    const result = {
+      session,
+      stats: await mod.computeUsage(0),
+      insights: await mod.computeInsights(0),
+      tuning: await mod.computeTuning(tuningDays, 0),
+    }
+    rmSync(SLUG, { recursive: true, force: true })
+    return result
+  }
+
+  it('counts a subagent turn and attributes it to the parent session', async () => {
+    const { session, stats, tuning } = await scan(
+      turn({ id: 'p', requestId: 'rp', input: M }),
+      { 'subagents/agent-a.jsonl': turn({ id: 's', requestId: 'rs', input: M, sidechain: true }) },
+    )
+    expect(stats.totalTokens).toBe(2 * M)
+    expect(tuning.bySession).toHaveLength(1)
+    expect(tuning.bySession[0].session).toBe(session)
+  })
+
+  it('reads a workflow agent nested under workflows/<id>/', async () => {
+    const { session, stats, tuning } = await scan(
+      turn({ id: 'p', requestId: 'rp', input: M }),
+      { 'subagents/workflows/wf_abc/agent-w.jsonl': turn({ id: 'w', requestId: 'rw', input: M, sidechain: true }) },
+    )
+    expect(stats.totalTokens).toBe(2 * M)
+    expect(tuning.bySession[0].session).toBe(session)
+    expect(tuning.bySession[0].subagentTokens).toBe(M)
+  })
+
+  it('does not read .jsonl files elsewhere in the session directory', async () => {
+    const { stats } = await scan(
+      turn({ id: 'p', requestId: 'rp', input: M }),
+      { 'tool-results/x.jsonl': turn({ id: 't', requestId: 'rt', input: M }) },
+    )
+    expect(stats.totalTokens).toBe(M)
+  })
+
+  // A subagent turn is written several times as it streams, and output_tokens grows between
+  // emissions. Keeping the first copy undercounts subagent output by about 87% on real data.
+  it('keeps the emission with the largest output_tokens', async () => {
+    const emit = (output: number) => turn({ id: 's', requestId: 'rs', input: 10, output, sidechain: true })
+    const { stats } = await scan('', { 'subagents/agent-a.jsonl': emit(5) + emit(300) + emit(4000) + emit(4000) })
+    expect(stats.totalTokens).toBe(4010)
+    expect(stats.byModel[0].messages).toBe(1)
+  })
+
+  // A forked subagent's file begins with a replay of the parent's earlier turns: same id, same
+  // requestId, same usage, but `isSidechain: true`. It is the parent's turn, counted once.
+  it('counts a fork replay of a parent turn once, as the parent turn', async () => {
+    const parentTurn = turn({ id: 'p', requestId: 'rp', input: M, output: 100 })
+    const replay = turn({ id: 'p', requestId: 'rp', input: M, output: 100, sidechain: true })
+    const own = turn({ id: 's', requestId: 'rs', input: 1000, sidechain: true })
+    const { stats, tuning } = await scan(parentTurn, { 'subagents/agent-fork.jsonl': replay + own })
+    expect(stats.totalTokens).toBe(M + 100 + 1000)
+    expect(tuning.bySession[0].turns).toBe(1)
+    expect(tuning.bySession[0].subagentTokens).toBe(1000)
+  })
+
+  it('makes subagentPct non-zero for a session that used a subagent', async () => {
+    const { insights } = await scan(
+      turn({ id: 'p', requestId: 'rp', input: 100 }),
+      { 'subagents/agent-a.jsonl': turn({ id: 's', requestId: 'rs', input: 100, sidechain: true }) },
+    )
+    expect(insights.subagentPct).toBe(100)
+  })
+
+  describe('in Tuning', () => {
+    // The lane: Opus 5 on high, two turns at 200k and 10k context. The subagent: Sonnet 5 on low,
+    // later than both lane turns, at a small context.
+    const lane = turn({ id: 'p1', requestId: 'r1', model: 'claude-opus-5', effort: 'high', cacheRead: 200_000, ts: '2026-08-20T10:00:00Z' })
+      + turn({ id: 'p2', requestId: 'r2', model: 'claude-opus-5', effort: 'high', cacheRead: 10_000, ts: '2026-08-20T10:01:00Z' })
+    const sub = turn({ id: 's1', requestId: 'rs1', model: 'claude-sonnet-5', effort: 'low', input: M, ts: '2026-08-20T10:05:00Z', sidechain: true })
+
+    it('adds subagent spend to the session cost and tokens, and reports it separately', async () => {
+      const { tuning } = await scan(lane, { 'subagents/agent-a.jsonl': sub })
+      const row = tuning.bySession[0]
+      expect(row.subagentTokens).toBe(M)
+      expect(row.subagentCost).toBeCloseTo(2, 9)
+      expect(row.tokens).toBe(210_000 + M)
+      expect(row.cost).toBeCloseTo(210_000 * 0.5 / M + 2, 9)
+      expect(tuning.totalCost).toBeCloseTo(row.cost, 9)
+      expect(row.lastTsMs).toBe(Date.parse('2026-08-20T10:05:00Z'))
+    })
+
+    it('leaves turns, context stats, model and effort to the lane’s own turns', async () => {
+      const without = (await scan(lane, {})).tuning.bySession[0]
+      const withSub = (await scan(lane, { 'subagents/agent-a.jsonl': sub })).tuning.bySession[0]
+      for (const k of ['turns', 'highContextTurns', 'medianContext', 'model', 'effort'] as const) expect(withSub[k]).toBe(without[k])
+      expect(withSub.model).toBe('claude-opus-5')
+      expect(withSub.effort).toBe('high')
+      expect(withSub.turns).toBe(2)
+    })
+
+    it('counts subagent records in byModel, byProject and byEffort at their own effort', async () => {
+      const { tuning } = await scan(lane, { 'subagents/agent-a.jsonl': sub })
+      expect(tuning.byModel.map((m) => m.model).sort()).toEqual(['claude-opus-5', 'claude-sonnet-5'])
+      expect(tuning.byProject[0].cost).toBeCloseTo(tuning.totalCost, 9)
+      expect(tuning.byProject[0].messages).toBe(3)
+      const low = tuning.byEffort.find((e) => e.effort === 'low')!
+      expect(low).toMatchObject({ model: 'claude-sonnet-5', turns: 1, tokens: M })
+      expect(tuning.byEffort.reduce((n, e) => n + e.cost, 0)).toBeCloseTo(tuning.totalCost, 9)
+    })
+
+    it('gives a session with only subagent records a row with no lane model', async () => {
+      const { tuning } = await scan('', { 'subagents/agent-a.jsonl': sub })
+      expect(tuning.bySession[0]).toMatchObject({ model: '', turns: 0, subagentTokens: M, tokens: M })
+    })
+  })
+})
+
+describe('per-file parse cache', () => {
+  // Each transcript is parsed once and reused while its size and mtime are unchanged; the merged
+  // result expires after 30 s. Both are exercised by moving the clock past that.
+  it('re-reads a file that grew, and reuses one whose size and mtime did not change', async () => {
+    const file = join(PROJ, 'cached.jsonl')
+    // A whole-second mtime, so putting it back below restores it exactly (APFS keeps nanoseconds).
+    const T = 1_790_000_000
+    writeFileSync(file, turn({ id: 'a', requestId: 'ra', input: 100 }))
+    utimesSync(file, T, T)
+    vi.resetModules()
+    const mod = await import('./usage')
+    expect((await mod.computeUsage(0)).totalTokens).toBe(100)
+
+    const now = Date.now()
+    const later = (ms: number) => vi.spyOn(Date, 'now').mockReturnValue(now + ms)
+    try {
+      // Same length, different tokens, mtime put back: the cached parse is the one used.
+      writeFileSync(file, turn({ id: 'a', requestId: 'ra', input: 900 }))
+      utimesSync(file, T, T)
+      later(31_000)
+      expect((await mod.computeUsage(0)).totalTokens).toBe(100)
+
+      appendFileSync(file, turn({ id: 'b', requestId: 'rb', input: 5 }))
+      later(62_000)
+      expect((await mod.computeUsage(0)).totalTokens).toBe(905)
+    } finally {
+      vi.restoreAllMocks()
+      rmSync(file)
+    }
   })
 })

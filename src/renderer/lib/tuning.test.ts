@@ -7,6 +7,7 @@ import {
 
 const sess = (o: Partial<SessionUsage> & { session: string }): SessionUsage => ({
   slug: '-Users-dev-proj', model: 'claude-opus-4-20250514', tokens: 1000, cost: 1, turns: 10,
+  subagentTokens: 0, subagentCost: 0,
   highContextTurns: 0, medianContext: 1000, compactions: 0, reReadTokens: 0, droppedTokens: 0,
   firstTsMs: 0, lastTsMs: 0, ...o,
 })

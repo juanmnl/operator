@@ -1085,8 +1085,14 @@ export interface SessionUsage {
   effort?: string
   tokens: number
   cost: number
-  /** Assistant records counted (deduped by message id, like every other total here). */
+  /** Assistant records counted (deduped by message id, like every other total here). The lane's
+   *  own turns only; subagent turns are not counted here. */
   turns: number
+  /** The part of `tokens` and `cost` spent by this session's subagents (sidechain records, read
+   *  from `<session>/subagents/`). Included in `tokens` and `cost`; kept out of `turns`, the
+   *  context stats, `model` and `effort`, which describe the lane's own turns. */
+  subagentTokens: number
+  subagentCost: number
   /** Turns whose context exceeded 150k. */
   highContextTurns: number
   /** Median per-turn context. A median and not a mean: one 900k turn should not describe a lane. */
