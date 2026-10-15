@@ -114,6 +114,16 @@ export function derivePhase(
   return 'waiting'
 }
 
+/** The `content` of the notice Claude Code writes after an idle compaction. See `applySystem`. */
+const IDLE_COMPACT_NOTICE = 'Compacted while idle'
+
+/** A local slash command's own records: the echo of what was typed and its output. Claude Code
+ *  answers these itself, so no assistant record follows. */
+export function isLocalCommandEcho(text: string): boolean {
+  const t = text.trimStart()
+  return ['<command-name>', '<command-message>', '<command-args>', '<local-command-'].some((p) => t.startsWith(p))
+}
+
 /** Turns Claude Code injects that are not the user speaking. Recording them as prompts made
  *  the session summary read as the injected preamble instead of the actual task. */
 export function isInjectedTurn(text: string): boolean {
@@ -462,8 +472,17 @@ export class Track {
 
     const text = userPromptText(content)
     if (text == null) return
-    this.lastWasUserPrompt = true
-    this.lastStopReason = null
+    // NOT EVERY TEXT `user` RECORD IS A PROMPT TO THE MODEL. The compaction re-prime
+    // (`isCompactSummary`) is Claude Code writing the summary back into the context, and a local
+    // slash command (`/model`, `/compact`) writes its echo and stdout as `user` records with no
+    // assistant after them. Counting either as "prompt sent, response not started" left an idle
+    // lane reading `running` until its next turn: since 2.1.294 Claude Code compacts idle lanes
+    // on its own, so every lane left alone long enough ended up there.
+    const reprime = v.isCompactSummary === true
+    if (!reprime && !isLocalCommandEcho(text)) {
+      this.lastWasUserPrompt = true
+      this.lastStopReason = null
+    }
     // A REAL prompt ends the compaction. The re-prime does not — see `endCompaction`.
     if (v.isSidechain !== true) this.endCompaction(v)
     const injected = isInjectedTurn(text)
@@ -474,7 +493,7 @@ export class Track {
       if (line) { this.summary = line; this.dirty = true }
     }
     if (injected) return
-    if (isWorkPrompt(text)) this.notePrompt(typeof v.timestamp === 'string' ? v.timestamp : '')
+    if (!reprime && isWorkPrompt(text)) this.notePrompt(typeof v.timestamp === 'string' ? v.timestamp : '')
     this.pushNarration({
       kind: 'user',
       text: cap(text, PROMPT_TEXT_CAP),
@@ -519,6 +538,16 @@ export class Track {
       this.compactingSinceMs = Date.now()
       this.compactions += 1
       this.dirty = true
+      return
+    }
+    // AN IDLE COMPACTION ENDS WITH THIS NOTICE AND NOTHING ELSE. Since 2.1.294 Claude Code
+    // compacts a lane that has sat between turns, before its prompt cache expires: boundary,
+    // re-prime, attachments, then this `informational` record — and no assistant, because no turn
+    // runs. Without it the lane read `compacting` until the ceiling, and `canAnnounceTo` refused
+    // it for those five minutes. Checked in 56 real idle compactions (2.1.294–2.1.299) and in the
+    // 2.1.300 binary, which appends the same text from the same between-turns path.
+    if (v.subtype === 'informational' && typeof v.content === 'string' && v.content.startsWith(IDLE_COMPACT_NOTICE)) {
+      this.endCompaction(v)
     }
   }
 
