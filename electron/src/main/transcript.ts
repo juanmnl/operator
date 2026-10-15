@@ -18,6 +18,7 @@ import { basename, join } from 'node:path'
 import { operatorDir } from './store'
 import { summarize, firstLine } from './tool-summary'
 import { parseDispatches, parseReplies, directiveId } from './directives'
+import { isApiRequestLine } from './usage'
 // The RENDERER'S types, not a parallel set. The whole premise of this port is that the seam is
 // derived rather than restated, and that has to include the payload shapes: a session this
 // module builds must satisfy the same `AgentSession` the UI destructures.
@@ -369,7 +370,8 @@ export class Track {
         if (!chunk.endsWith('\n')) break
         consumed += Buffer.byteLength(chunk, 'utf8')
         const line = chunk.trimEnd()
-        if (!line) continue
+        // Request records carry no turn, prompt or tool state, and one is appended per model call.
+        if (!line || isApiRequestLine(line)) continue
         try { this.apply(JSON.parse(line)); processed = true } catch { /* not JSON — skip the line, keep the offset */ }
       }
       this.offset += consumed
