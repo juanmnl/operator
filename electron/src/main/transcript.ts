@@ -117,12 +117,19 @@ export function derivePhase(
 /** The `content` of the notice Claude Code writes after an idle compaction. See `applySystem`. */
 const IDLE_COMPACT_NOTICE = 'Compacted while idle'
 
-/** A local command's own records: a slash command's echo and output, or a `!` bash-mode command
- *  and its output. Claude Code answers these itself, so no assistant record follows. */
+/** A local slash command's own records: the echo of what was typed and its output. Claude Code
+ *  answers these itself, so no assistant record follows. */
 export function isLocalCommandEcho(text: string): boolean {
   const t = text.trimStart()
-  return ['<command-name>', '<command-message>', '<command-args>', '<local-command-',
-    '<bash-input>', '<bash-stdout>', '<bash-stderr>'].some((p) => t.startsWith(p))
+  return ['<command-name>', '<command-message>', '<command-args>', '<local-command-'].some((p) => t.startsWith(p))
+}
+
+/** A `!` bash-mode command's records: `<bash-input>`, then one record with its output. NOT an
+ *  echo by itself: bash mode queries the model afterwards, and 144 of the 145 commands on disk
+ *  were followed by an assistant record. See `Track.bashUnqueried` for the exception. */
+export function isBashModeRecord(text: string): boolean {
+  const t = text.trimStart()
+  return ['<bash-input>', '<bash-stdout>', '<bash-stderr>'].some((p) => t.startsWith(p))
 }
 
 /** Turns Claude Code injects that are not the user speaking. Recording them as prompts made
@@ -204,6 +211,12 @@ export class Track {
   /** A main-thread `turn_duration` has been written and no turn has started since. See
    *  `applySystem`. */
   turnEnded = false
+  /** A `<local-command-caveat>` was the last main-thread text record, so the `!` bash command that
+   *  follows will not query the model. The 2.1.300 binary writes the caveat ahead of the bash
+   *  records only when it skips the query (the command was backgrounded, interrupted or aborted, or
+   *  a setting turns the query off). Seen once on disk (2.1.272, a command moved to the background
+   *  at its timeout). Cleared by the bash output record and by any other text record. */
+  bashUnqueried = false
   /** Effort as the transcript reports it, latest wins — present on every assistant record. */
   effort: string | null = null
   /** Latest main-thread prompt size — see where it is assigned. Distinct from `usage`, which is
@@ -270,6 +283,7 @@ export class Track {
     this.compacting = false
     this.compactingSinceMs = 0
     this.turnEnded = false
+    this.bashUnqueried = false
     this.contextTokens = 0
     this.compactions = 0
     this.effort = null
@@ -411,6 +425,10 @@ export class Track {
       return
     }
     if (v.operation !== 'enqueue') return
+    // A TURN IS ABOUT TO START. An idle lane can begin a turn with no `user` record at all: a
+    // prompt typed during `/login` was enqueued and the assistant answered it 1 s later (2.1.296).
+    // A compaction in that window is not between turns, so it must read `compacting`.
+    this.turnEnded = false
     const text = v.content
     if (typeof text !== 'string' || !text.trim() || isInjectedTurn(text)) return
     this.queued.push({ kind: 'queued', text: cap(text, PROMPT_TEXT_CAP), timestamp: ts || nowIso(), images: [] })
@@ -484,7 +502,8 @@ export class Track {
     // lane reading `running` until its next turn: since 2.1.294 Claude Code compacts idle lanes
     // on its own, so every lane left alone long enough ended up there.
     const reprime = v.isCompactSummary === true
-    if (!reprime && !isLocalCommandEcho(text)) {
+    const echo = this.isEcho(text)
+    if (!reprime && !echo) {
       this.lastWasUserPrompt = true
       this.lastStopReason = null
       this.turnEnded = false
@@ -506,6 +525,19 @@ export class Track {
       timestamp: typeof v.timestamp === 'string' ? v.timestamp : nowIso(),
       images: [],
     })
+  }
+
+  /** A local command's own records, which no assistant record follows: a slash command's echo
+   *  and output, and a `!` bash command Claude Code will not send to the model. */
+  private isEcho(text: string): boolean {
+    const t = text.trimStart()
+    if (isBashModeRecord(t)) {
+      const unqueried = this.bashUnqueried
+      if (!t.startsWith('<bash-input>')) this.bashUnqueried = false
+      return unqueried
+    }
+    this.bashUnqueried = t.startsWith('<local-command-caveat>')
+    return isLocalCommandEcho(t)
   }
 
   /** Claude Code's own machinery records. The ones that change a session's PHASE are the
@@ -569,10 +601,14 @@ export class Track {
     // it for those five minutes. Checked in 56 real idle compactions (2.1.294–2.1.299) and in the
     // 2.1.300 binary, which appends the same text from the same between-turns path.
     // No turn is in flight at this notice either (the 2.1.300 binary refuses to compact while one
-    // is), so a prompt flag left over from before the compaction is stale.
+    // is), so a prompt flag left over from before the compaction is stale. ONLY WHILE STILL
+    // COMPACTING: the binary releases the turn guard before it appends the notice, so a queued
+    // prompt can write its `user` record in between. That record ends the compaction, and its flag
+    // is a turn really starting. Not seen on disk; all 56 notices follow their compaction directly.
     if (v.subtype === 'informational' && typeof v.content === 'string' && v.content.startsWith(IDLE_COMPACT_NOTICE)) {
+      const stale = this.compacting
       this.endCompaction(v)
-      this.lastWasUserPrompt = false
+      if (stale) this.lastWasUserPrompt = false
     }
   }
 
