@@ -6,6 +6,11 @@
 // cache expired". Nothing follows it: the lane is waiting for its next prompt. The 2.1.300 binary
 // writes the same notice from the same path (`compactConversation`, between turns only).
 //
+// `compact-idle-after-hook` is Claude Code 2.1.295 records with the text replaced: a `/goal` Stop
+// hook blocked the turn nine times and was overridden, so the turn ended on the hook's `isMeta`
+// feedback record, with no assistant after it, then `turn_duration`. 54 minutes later the lane was
+// compacted while idle.
+//
 // `compact-midturn` is Claude Code 2.1.283 records with the text replaced: an auto-compaction in
 // the middle of a turn — tool_use, its result, boundary, re-prime, attachments, then the model
 // carrying on with another tool call.
@@ -56,9 +61,21 @@ describe('idle compaction (2.1.299 records)', () => {
     expect(phase()).toBe('waiting')
   })
 
-  it('reads `compacting` between the re-prime and the notice', async () => {
-    // Cut just before the notice: the boundary and re-prime are written, the notice is not yet.
+  it('reads `waiting` without the notice: a boundary after `turn_duration` is an idle compaction', async () => {
+    // The text-free rule, in case the notice's wording changes. Cut just before the notice.
     const lines = records('compact-idle')
+    const notice = lines.findIndex((l) => JSON.parse(l).subtype === 'informational')
+    const { phase, tick } = await tailer(`${lines.slice(0, notice).join('\n')}\n`)
+    expect(phase()).toBe('waiting')
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now + COMPACTING_CEILING_MS + 1000)
+    await tick()
+    expect(phase()).toBe('waiting')
+  })
+
+  it('without a `turn_duration` before it, reads `compacting` until the notice', async () => {
+    // The notice is then what ends it.
+    const lines = records('compact-idle').filter((l) => JSON.parse(l).subtype !== 'turn_duration')
     const notice = lines.findIndex((l) => JSON.parse(l).subtype === 'informational')
     const { phase, tick } = await tailer(`${lines.slice(0, notice).join('\n')}\n`)
     expect(phase()).toBe('compacting')
@@ -83,6 +100,152 @@ describe('idle compaction (2.1.299 records)', () => {
     const { phase, tick } = await tailer(fixture('compact-idle'))
     appendFileSync(file, L({ type: 'user', isSidechain: false, timestamp: '2026-10-14T07:10:00.000Z', message: { role: 'user', content: 'next task' } }))
     await tick()
+    expect(phase()).toBe('running')
+  })
+})
+
+describe('idle compaction after a turn that ended on a `user` record (2.1.295 records)', () => {
+  const lines = records('compact-idle-after-hook')
+  const at = (subtype: string) => lines.findIndex((l) => JSON.parse(l).subtype === subtype)
+
+  it('reads `running` while the hook holds the turn open', async () => {
+    // Cut after the hook's feedback record, before the turn ends: the turn is still in flight.
+    const { phase } = await tailer(`${lines.slice(0, at('turn_duration')).join('\n')}\n`)
+    expect(phase()).toBe('running')
+  })
+
+  it('reads `waiting` once `turn_duration` lands', async () => {
+    const { phase } = await tailer(`${lines.slice(0, at('turn_duration') + 1).join('\n')}\n`)
+    expect(phase()).toBe('waiting')
+  })
+
+  it('reads `waiting` after the idle compaction, and past the ceiling', async () => {
+    // Before the fix this was `running`: the feedback record had set `lastWasUserPrompt` and
+    // nothing cleared it, so once the notice ended the compaction the lane read busy.
+    const { phase, tick } = await tailer(fixture('compact-idle-after-hook'))
+    expect(phase()).toBe('waiting')
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now + COMPACTING_CEILING_MS + 1000)
+    await tick()
+    expect(phase()).toBe('waiting')
+  })
+
+  it('the idle notice alone clears a stale prompt flag', async () => {
+    // Without `turn_duration` the boundary reads as mid-turn, and the notice is what ends it. No
+    // turn is in flight at that notice, so it must not fall back to `running`.
+    const noTurnEnd = lines.filter((l) => JSON.parse(l).subtype !== 'turn_duration')
+    const { phase } = await tailer(`${noTurnEnd.join('\n')}\n`)
+    expect(phase()).toBe('waiting')
+  })
+})
+
+describe('turn ended by an Escape interrupt (2.1.274 record shape)', () => {
+  // A question declined with Escape: the tool result, then the interrupt as a text `user` record,
+  // then `turn_duration`. No assistant follows.
+  const ask = L({ type: 'assistant', isSidechain: false, timestamp: '2026-09-17T20:44:12.728Z', message: { id: 'm1', role: 'assistant', model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_1', name: 'AskUserQuestion', input: {} }] } })
+  const declined = L({ type: 'user', isSidechain: false, timestamp: '2026-09-17T20:44:47.119Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: "The user doesn't want to proceed with this tool use.", is_error: true }] } })
+  const interrupt = L({ type: 'user', isSidechain: false, timestamp: '2026-09-17T20:44:47.122Z', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } })
+  const turnEnd = L({ type: 'system', subtype: 'turn_duration', isSidechain: false, isMeta: false, timestamp: '2026-09-17T20:44:47.130Z' })
+
+  it('reads `waiting` once the turn ends', async () => {
+    const { phase } = await tailer(ask + declined + interrupt + turnEnd)
+    expect(phase()).toBe('waiting')
+  })
+})
+
+describe('what ends `turnEnded`', () => {
+  // `turnEnded` makes a boundary read as an idle compaction. Anything that starts a turn must clear
+  // it, or every compaction before that turn's first assistant record would read as idle.
+  const turnEnd = L({ type: 'system', subtype: 'turn_duration', isSidechain: false, isMeta: false, timestamp: '2026-10-14T10:00:00.000Z' })
+  const prompt = L({ type: 'user', isSidechain: false, timestamp: '2026-10-14T10:05:00.000Z', message: { role: 'user', content: 'carry on' } })
+  const boundary = L({ type: 'system', subtype: 'compact_boundary', isSidechain: false, timestamp: '2026-10-14T10:05:30.000Z' })
+  const reply = L({ type: 'assistant', isSidechain: false, timestamp: '2026-10-14T10:05:01.000Z', message: { id: 'm-main', role: 'assistant', model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_m', name: 'Read', input: {} }] } })
+  const result = L({ type: 'user', isSidechain: false, timestamp: '2026-10-14T10:05:02.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_m', content: 'ok' }] } })
+
+  it('a boundary straight after `turn_duration` reads as idle', async () => {
+    const { phase } = await tailer(turnEnd + boundary)
+    expect(phase()).toBe('waiting')
+  })
+
+  it('a real prompt clears it: a boundary before the reply reads `compacting`', async () => {
+    const { phase } = await tailer(turnEnd + prompt + boundary)
+    expect(phase()).toBe('compacting')
+  })
+
+  it('a main-thread assistant record clears it', async () => {
+    // A turn with no `user` record (2.1.296: a prompt enqueued during `/login`), here without the
+    // enqueue so only the assistant record can clear it.
+    const { phase } = await tailer(turnEnd + reply + result + boundary)
+    expect(phase()).toBe('compacting')
+  })
+
+  it('a subagent assistant record does not', async () => {
+    const side = L({ type: 'assistant', isSidechain: true, timestamp: '2026-10-14T10:05:01.000Z', message: { id: 'm-side', role: 'assistant', model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'found it' }] } })
+    const { phase } = await tailer(turnEnd + side + boundary)
+    expect(phase()).toBe('waiting')
+  })
+
+  it('a main-thread enqueue clears it: a turn is about to start', async () => {
+    const enqueue = L({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-10-14T10:05:00.000Z', content: 'keep going' })
+    const { phase } = await tailer(turnEnd + enqueue + boundary)
+    expect(phase()).toBe('compacting')
+  })
+})
+
+describe('a prompt between an idle compaction and its notice', () => {
+  // The 2.1.300 binary releases the turn guard before it appends the notice, so a queued prompt
+  // can start its turn in between. The notice must not clear that turn's prompt flag.
+  const lines = records('compact-idle')
+  const prompt = L({ type: 'user', isSidechain: false, timestamp: '2026-10-11T22:00:00.000Z', message: { role: 'user', content: 'next task' } })
+  const withPromptBeforeNotice = (ls: string[]) => {
+    const notice = ls.findIndex((l) => JSON.parse(l).subtype === 'informational')
+    return `${ls.slice(0, notice).join('\n')}\n${prompt}${ls.slice(notice).join('\n')}\n`
+  }
+
+  it('reads `running` after the notice when the boundary followed `turn_duration`', async () => {
+    const { phase } = await tailer(withPromptBeforeNotice(lines))
+    expect(phase()).toBe('running')
+  })
+
+  it('reads `running` after the notice when there was no `turn_duration`', async () => {
+    const noTurnEnd = lines.filter((l) => JSON.parse(l).subtype !== 'turn_duration')
+    const { phase } = await tailer(withPromptBeforeNotice(noTurnEnd))
+    expect(phase()).toBe('running')
+  })
+})
+
+describe('`!` bash mode (2.1.270–2.1.296 record shape)', () => {
+  // The input, then one `user` string with its output. Claude Code then queries the model: 144 of
+  // the 145 commands on disk were followed by an assistant record, 4.2 s later at the median.
+  const turnEnd = L({ type: 'system', subtype: 'turn_duration', isSidechain: false, isMeta: false, timestamp: '2026-10-02T14:11:00.000Z' })
+  const input = L({ type: 'user', isSidechain: false, timestamp: '2026-10-02T14:11:25.249Z', message: { role: 'user', content: '<bash-input>git status</bash-input>' } })
+  const output = L({ type: 'user', isSidechain: false, timestamp: '2026-10-02T14:11:25.400Z', message: { role: 'user', content: '<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>' } })
+  const reply = L({ type: 'assistant', isSidechain: false, timestamp: '2026-10-02T14:11:29.600Z', message: { id: 'm2', role: 'assistant', model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Clean tree.' }] } })
+  const replyEnd = L({ type: 'system', subtype: 'turn_duration', isSidechain: false, isMeta: false, timestamp: '2026-10-02T14:11:29.700Z' })
+  const boundary = L({ type: 'system', subtype: 'compact_boundary', isSidechain: false, timestamp: '2026-10-02T14:11:27.000Z' })
+  // Shape from the one real no-query case (2.1.272, a command moved to the background).
+  const caveat = L({ type: 'user', isSidechain: false, isMeta: true, timestamp: '2026-10-02T14:11:25.248Z', message: { role: 'user', content: '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>' } })
+
+  it('reads `running` from the command until the reply, then `waiting`', async () => {
+    const { phase, tick } = await tailer(turnEnd + input + output)
+    expect(phase()).toBe('running')
+    appendFileSync(file, reply + replyEnd)
+    await tick()
+    expect(phase()).toBe('waiting')
+  })
+
+  it('a compaction before the reply reads `compacting`', async () => {
+    const { phase } = await tailer(turnEnd + input + output + boundary)
+    expect(phase()).toBe('compacting')
+  })
+
+  it('after a `<local-command-caveat>` the command is not sent to the model: reads `waiting`', async () => {
+    const { phase } = await tailer(turnEnd + caveat + input + output)
+    expect(phase()).toBe('waiting')
+  })
+
+  it('the caveat covers its own command only', async () => {
+    const { phase } = await tailer(turnEnd + caveat + input + output + input + output)
     expect(phase()).toBe('running')
   })
 })

@@ -125,6 +125,14 @@ export function isLocalCommandEcho(text: string): boolean {
   return ['<command-name>', '<command-message>', '<command-args>', '<local-command-'].some((p) => t.startsWith(p))
 }
 
+/** A `!` bash-mode command's records: `<bash-input>`, then one record with its output. NOT an
+ *  echo by itself: bash mode queries the model afterwards, and 144 of the 145 commands on disk
+ *  were followed by an assistant record. See `Track.bashUnqueried` for the exception. */
+export function isBashModeRecord(text: string): boolean {
+  const t = text.trimStart()
+  return ['<bash-input>', '<bash-stdout>', '<bash-stderr>'].some((p) => t.startsWith(p))
+}
+
 /** Turns Claude Code injects that are not the user speaking. Recording them as prompts made
  *  the session summary read as the injected preamble instead of the actual task. */
 export function isInjectedTurn(text: string): boolean {
@@ -201,6 +209,15 @@ export class Track {
   compacting = false
   /** When the boundary landed, for the ceiling below. */
   compactingSinceMs = 0
+  /** A main-thread `turn_duration` has been written and no turn has started since. See
+   *  `applySystem`. */
+  turnEnded = false
+  /** A `<local-command-caveat>` was the last main-thread text record, so the `!` bash command that
+   *  follows will not query the model. The 2.1.300 binary writes the caveat ahead of the bash
+   *  records only when it skips the query (the command was backgrounded, interrupted or aborted, or
+   *  a setting turns the query off). Seen once on disk (2.1.272, a command moved to the background
+   *  at its timeout). Cleared by the bash output record and by any other text record. */
+  bashUnqueried = false
   /** Effort as the transcript reports it, latest wins — present on every assistant record. */
   effort: string | null = null
   /** Latest main-thread prompt size — see where it is assigned. Distinct from `usage`, which is
@@ -266,6 +283,8 @@ export class Track {
     this.lastPromptAt = ''
     this.compacting = false
     this.compactingSinceMs = 0
+    this.turnEnded = false
+    this.bashUnqueried = false
     this.contextTokens = 0
     this.compactions = 0
     this.effort = null
@@ -408,6 +427,10 @@ export class Track {
       return
     }
     if (v.operation !== 'enqueue') return
+    // A TURN IS ABOUT TO START. An idle lane can begin a turn with no `user` record at all: a
+    // prompt typed during `/login` was enqueued and the assistant answered it 1 s later (2.1.296).
+    // A compaction in that window is not between turns, so it must read `compacting`.
+    this.turnEnded = false
     const text = v.content
     if (typeof text !== 'string' || !text.trim() || isInjectedTurn(text)) return
     this.queued.push({ kind: 'queued', text: cap(text, PROMPT_TEXT_CAP), timestamp: ts || nowIso(), images: [] })
@@ -481,9 +504,11 @@ export class Track {
     // lane reading `running` until its next turn: since 2.1.294 Claude Code compacts idle lanes
     // on its own, so every lane left alone long enough ended up there.
     const reprime = v.isCompactSummary === true
-    if (!reprime && !isLocalCommandEcho(text)) {
+    const echo = this.isEcho(text)
+    if (!reprime && !echo) {
       this.lastWasUserPrompt = true
       this.lastStopReason = null
+      this.turnEnded = false
     }
     // A REAL prompt ends the compaction. The re-prime does not — see `endCompaction`.
     if (v.isSidechain !== true) this.endCompaction(v)
@@ -504,8 +529,21 @@ export class Track {
     })
   }
 
-  /** Claude Code's own machinery records. The only one that changes a session's PHASE is the
-   *  compaction boundary.
+  /** A local command's own records, which no assistant record follows: a slash command's echo
+   *  and output, and a `!` bash command Claude Code will not send to the model. */
+  private isEcho(text: string): boolean {
+    const t = text.trimStart()
+    if (isBashModeRecord(t)) {
+      const unqueried = this.bashUnqueried
+      if (!t.startsWith('<bash-input>')) this.bashUnqueried = false
+      return unqueried
+    }
+    this.bashUnqueried = t.startsWith('<local-command-caveat>')
+    return isLocalCommandEcho(t)
+  }
+
+  /** Claude Code's own machinery records. The ones that change a session's PHASE are the
+   *  compaction boundary, the idle-compaction notice and the turn end (`turn_duration`).
    *
    *  WHEN IT IS WRITTEN matters for reading this correctly: the record carries `durationMs`,
    *  `preTokens` and `postTokens`, so it is written once the compaction has already FINISHED — it
@@ -535,11 +573,27 @@ export class Track {
   }
 
   private applySystem(v: Record<string, unknown>): void {
+    // THE TURN IS OVER. Claude Code writes `turn_duration` at every main-thread turn end, including
+    // one that ended without an assistant record after the last user one: a `/goal` Stop hook
+    // overridden after blocking the turn, or an Escape interrupt, both leave a `user` record last.
+    // Without this, that record kept `lastWasUserPrompt` set, so the lane read `running` until its
+    // next turn. Measured across 7,891 real turn ends: none was followed by more of the same turn.
+    if (v.subtype === 'turn_duration' && v.isSidechain !== true) {
+      this.lastWasUserPrompt = false
+      this.turnEnded = true
+      return
+    }
     if (v.subtype === 'compact_boundary') {
-      this.compacting = true
-      this.compactingSinceMs = Date.now()
       this.compactions += 1
       this.dirty = true
+      // A BOUNDARY WRITTEN BETWEEN TURNS IS AN IDLE COMPACTION, and it is already over: the
+      // boundary is written once the compaction finishes, and no turn follows it. This is the
+      // text-free half of the rule below, in case the notice's wording changes. Measured: all 56
+      // idle boundaries on disk came after a `turn_duration` with no turn started since, and none
+      // of the 48 mid-turn ones did.
+      if (this.turnEnded) return
+      this.compacting = true
+      this.compactingSinceMs = Date.now()
       return
     }
     // AN IDLE COMPACTION ENDS WITH THIS NOTICE AND NOTHING ELSE. Since 2.1.294 Claude Code
@@ -548,8 +602,15 @@ export class Track {
     // runs. Without it the lane read `compacting` until the ceiling, and `canAnnounceTo` refused
     // it for those five minutes. Checked in 56 real idle compactions (2.1.294–2.1.299) and in the
     // 2.1.300 binary, which appends the same text from the same between-turns path.
+    // No turn is in flight at this notice either (the 2.1.300 binary refuses to compact while one
+    // is), so a prompt flag left over from before the compaction is stale. ONLY WHILE STILL
+    // COMPACTING: the binary releases the turn guard before it appends the notice, so a queued
+    // prompt can write its `user` record in between. That record ends the compaction, and its flag
+    // is a turn really starting. Not seen on disk; all 56 notices follow their compaction directly.
     if (v.subtype === 'informational' && typeof v.content === 'string' && v.content.startsWith(IDLE_COMPACT_NOTICE)) {
+      const stale = this.compacting
       this.endCompaction(v)
+      if (stale) this.lastWasUserPrompt = false
     }
   }
 
@@ -560,6 +621,7 @@ export class Track {
     // below refuses to be relabelled by a subagent.
     if (v.isSidechain !== true) {
       this.endCompaction(v)
+      this.turnEnded = false
       // EFFORT AS THE TRANSCRIPT REPORTS IT — a top-level sibling of `timestamp`, not something
       // inside `message`. Measured across 300 real transcripts: present on 68,972 of 69,022
       // assistant records. The value actually running, so it catches a mid-session `/effort` the
