@@ -1149,15 +1149,18 @@ export function DashboardView() {
   /** Claude session ids whose transcript holds a turn (main `conversationsWithTurn`). Positives only:
    *  a turn once written stays, so each id is read until it has one. */
   const conversationSeenRef = useRef(new Set<string>())
-  /** Can `--resume` open this session? Undefined when it could not be read; callers go ahead then. */
-  const hasConversation = async (claudeSessionId: string): Promise<boolean | undefined> => {
+  /** Can `--resume` open this session? Undefined when it could not be told (no read, or a config
+   *  dir main cannot resolve); callers go ahead then. */
+  const hasConversation = async (claudeSessionId: string, projectId: string | undefined): Promise<boolean | undefined> => {
     if (conversationSeenRef.current.has(claudeSessionId)) return true
     try {
-      const have = await window.operator.conversationsWithTurn?.([claudeSessionId])
+      const have = await window.operator.conversationsWithTurn?.([{ id: claudeSessionId, projectId }])
       if (!have) return undefined
-      if (!have.includes(claudeSessionId)) return false
-      conversationSeenRef.current.add(claudeSessionId)
-      return true
+      if (have.turn.includes(claudeSessionId)) {
+        conversationSeenRef.current.add(claudeSessionId)
+        return true
+      }
+      return have.none.includes(claudeSessionId) ? false : undefined
     } catch { return undefined }
   }
   /** Claude session ids of saved rows whose transcript has no turn (QA D2): the resume card and
@@ -1165,17 +1168,21 @@ export function DashboardView() {
   const [noTurnIds, setNoTurnIds] = useState<ReadonlySet<string>>(() => new Set())
   const noTurnIdsRef = useRef(noTurnIds)
   noTurnIdsRef.current = noTurnIds
-  const savedIdsKey = useMemo(() => [...new Set(savedSessions.map((x) => x.claudeSessionId).filter((x): x is string => !!x))].sort().join(','), [savedSessions])
+  // With each row's project: main looks the id up under that project's config dir (R5-1).
+  const savedIdsKey = useMemo(() => JSON.stringify([...new Set(savedSessions.filter((x) => !!x.claudeSessionId).map((x) => JSON.stringify([x.claudeSessionId, x.projectId ?? ''])))].sort()), [savedSessions])
   const terminalCount = terminals.length
   useEffect(() => {
-    const ids = savedIdsKey ? savedIdsKey.split(',').filter((x) => !conversationSeenRef.current.has(x)) : []
-    if (!ids.length) { setNoTurnIds((prev) => (prev.size ? new Set() : prev)); return }
+    const rows = (JSON.parse(savedIdsKey) as string[])
+      .map((x) => { const [id, projectId] = JSON.parse(x) as [string, string]; return { id, projectId: projectId || undefined } })
+      .filter((x) => !conversationSeenRef.current.has(x.id))
+    if (!rows.length) { setNoTurnIds((prev) => (prev.size ? new Set() : prev)); return }
     let live = true
-    Promise.resolve(window.operator.conversationsWithTurn?.(ids))
+    Promise.resolve(window.operator.conversationsWithTurn?.(rows))
       .then((have) => {
         if (!live || !have) return
-        for (const id of have) conversationSeenRef.current.add(id)
-        const none = ids.filter((x) => !conversationSeenRef.current.has(x))
+        for (const id of have.turn) conversationSeenRef.current.add(id)
+        // Only ids main looked for where the lane writes; an unknown one stays offered.
+        const none = [...new Set(have.none)].filter((x) => !conversationSeenRef.current.has(x))
         setNoTurnIds((prev) => (prev.size === none.length && none.every((x) => prev.has(x)) ? prev : new Set(none)))
       })
       .catch(() => { /* unknown: every row stays offered, and a restore checks again */ })
@@ -3660,7 +3667,7 @@ export function DashboardView() {
       }
       // NOTHING TO RESUME (QA D2): `--resume` of a session never given a turn prints "No
       // conversation found" and exits. The row is kept; the resume card no longer offers it.
-      if (resume && saved.claudeSessionId && await hasConversation(saved.claudeSessionId) === false) {
+      if (resume && saved.claudeSessionId && await hasConversation(saved.claudeSessionId, saved.projectId) === false) {
         pushToast({ kind: 'error', text: `Could not resume ${saved.customName || saved.roleId || 'this lane'}`, detail: 'It never took a turn, so there is no conversation to resume. Start the lane again from the Team tab.' })
         return 'failed'
       }
@@ -4201,7 +4208,7 @@ export function DashboardView() {
     try {
       // NOTHING TO RESUME (QA D2): a lane suspended before its first turn, by a build without the
       // suspend tick's transcript rule. `--resume` would print "No conversation found" and exit.
-      if (await hasConversation(tab.resumeSessionId) === false) {
+      if (await hasConversation(tab.resumeSessionId, tab.projectId) === false) {
         wakeFailedRef.current.add(tab.key)
         pushToast({ kind: 'error', text: `Could not resume ${name}`, detail: 'It was suspended before its first turn, so there is no conversation to resume. It stays suspended; close it and start the lane again.' })
         return null
@@ -4358,11 +4365,19 @@ export function DashboardView() {
         const unread = needsConversationCheck(lanes, now, idleMs)
         if (unread.length) {
           try {
-            const ids = unread.map((l) => claudeIdOf(l.terminalId)).filter((x): x is string => !!x)
-            const have = await window.operator.conversationsWithTurn?.(ids)
+            const rows = unread.flatMap((l) => {
+              const id = claudeIdOf(l.terminalId)
+              return id ? [{ id, projectId: terminalsRef.current.find((t) => t.id === l.terminalId)?.projectId }] : []
+            })
+            const have = await window.operator.conversationsWithTurn?.(rows)
             if (have) {
-              for (const id of have) conversationSeenRef.current.add(id)
-              for (const lane of unread) lane.conversation = conversationSeenRef.current.has(claudeIdOf(lane.terminalId) ?? '')
+              for (const id of have.turn) conversationSeenRef.current.add(id)
+              const none = new Set(have.none)
+              // An id main could not look for where the lane writes stays unknown, and is kept.
+              for (const lane of unread) {
+                const id = claudeIdOf(lane.terminalId) ?? ''
+                lane.conversation = conversationSeenRef.current.has(id) ? true : none.has(id) ? false : undefined
+              }
             }
           } catch { /* kept */ }
         }

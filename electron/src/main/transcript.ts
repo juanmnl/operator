@@ -111,22 +111,50 @@ export async function hasUserTurn(path: string): Promise<boolean> {
   }
 }
 
-/** The ids among `sessionIds` whose transcript exists and holds a turn (`hasUserTurn`). For idle-lane
- *  suspension: a lane without one cannot be resumed, so it is never suspended, and a saved row
- *  without one is not offered for resume. `projects` is for tests. */
-export async function sessionsWithTurn(sessionIds: readonly string[], projects = join(homedir(), '.claude', 'projects')): Promise<string[]> {
-  let dirs: string[]
-  try { dirs = (await readdir(projects, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => join(projects, e.name)) } catch { return [] }
-  const out: string[] = []
-  for (const id of new Set(sessionIds)) {
+/** One session to look up: its id, and the `projects` directory its lane's Claude Code writes
+ *  under (project-config.ts `laneProjectsDir`), or null when that directory is not known. */
+export interface TurnLookup { id: string; projects: string | null }
+/** `turn`: the transcript exists and holds a turn (`hasUserTurn`). `none`: it was looked for where
+ *  the lane writes and has none, or is not there. An id in neither is unknown. */
+export interface TurnAnswer { turn: string[]; none: string[] }
+
+/** Which of these sessions `--resume` can open. For idle-lane suspension: a lane without a turn
+ *  cannot be resumed, so it is never suspended, and a saved row without one is not offered for
+ *  resume. A missing file means "none" only when it was looked for in the lane's own config dir.
+ *  Where that dir is not known, or cannot be listed, the id is left unknown, so the caller keeps
+ *  the lane up and restores it as before (review round 5, R5-1). */
+export async function sessionsWithTurn(lookups: readonly TurnLookup[]): Promise<TurnAnswer> {
+  const listed = new Map<string, Promise<string[] | null>>()
+  const dirsOf = (projects: string) => {
+    let dirs = listed.get(projects)
+    if (!dirs) {
+      dirs = readdir(projects, { withFileTypes: true })
+        .then((es) => es.filter((e) => e.isDirectory()).map((e) => join(projects, e.name)))
+        // No projects directory: nothing was ever written there. Any other failure is unknown.
+        .catch((e: NodeJS.ErrnoException) => (e?.code === 'ENOENT' ? [] : null))
+      listed.set(projects, dirs)
+    }
+    return dirs
+  }
+  const out: TurnAnswer = { turn: [], none: [] }
+  const seen = new Set<string>()
+  for (const { id, projects } of lookups) {
     // A session id is a uuid; anything else is not looked up as a path.
-    if (!/^[0-9a-f-]{8,64}$/i.test(id)) continue
+    if (seen.has(id) || !/^[0-9a-f-]{8,64}$/i.test(id)) continue
+    seen.add(id)
+    if (!projects) continue
+    const dirs = await dirsOf(projects)
+    if (!dirs) continue
+    let found = false
     for (const dir of dirs) {
       const p = join(dir, `${id}.jsonl`)
       try { if (!(await stat(p)).isFile()) continue } catch { continue }
-      if (await hasUserTurn(p)) out.push(id)
+      found = true
+      if (await hasUserTurn(p)) out.turn.push(id)
+      else out.none.push(id)
       break
     }
+    if (!found) out.none.push(id)
   }
   return out
 }

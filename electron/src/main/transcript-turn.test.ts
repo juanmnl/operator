@@ -57,30 +57,39 @@ beforeAll(async () => {
 })
 afterAll(async () => { await rm(projects, { recursive: true, force: true }) })
 
+/** Every id looked up in one `projects` directory. */
+const lookUp = (ids: string[], dir: string | null = projects) => sessionsWithTurn(ids.map((id) => ({ id, projects: dir })))
+
 describe('a transcript `--resume` can open', () => {
   it('has a user turn: a prompt or a typed slash command', async () => {
-    expect(await sessionsWithTurn([ID.prompt, ID.slashCommand], projects)).toEqual([ID.prompt, ID.slashCommand])
+    expect(await lookUp([ID.prompt, ID.slashCommand])).toEqual({ turn: [ID.prompt, ID.slashCommand], none: [] })
   })
 
   it('has none when Claude Code wrote only Remote Control and title records (a lane never given a turn)', async () => {
-    expect(await sessionsWithTurn([ID.remoteOnly], projects)).toEqual([])
+    expect(await lookUp([ID.remoteOnly])).toEqual({ turn: [], none: [ID.remoteOnly] })
   })
 
   it('has none with only a meta caveat or a subagent record', async () => {
-    expect(await sessionsWithTurn([ID.caveatOnly, ID.sidechainOnly], projects)).toEqual([])
+    expect(await lookUp([ID.caveatOnly, ID.sidechainOnly])).toEqual({ turn: [], none: [ID.caveatOnly, ID.sidechainOnly] })
   })
 
-  it('has none when there is no file for the id', async () => {
-    expect(await sessionsWithTurn([ID.missing], projects)).toEqual([])
+  it('has none when there is no file for the id in the lane\'s own directory', async () => {
+    expect(await lookUp([ID.missing])).toEqual({ turn: [], none: [ID.missing] })
   })
 
   it('answers for a mixed list, once per id, and ignores what is not a session id', async () => {
-    const got = await sessionsWithTurn([ID.missing, ID.prompt, ID.remoteOnly, ID.prompt, '../../etc/passwd'], projects)
-    expect(got).toEqual([ID.prompt])
+    const got = await lookUp([ID.missing, ID.prompt, ID.remoteOnly, ID.prompt, '../../etc/passwd'])
+    expect(got).toEqual({ turn: [ID.prompt], none: [ID.missing, ID.remoteOnly] })
   })
 
-  it('is empty when the projects directory is missing', async () => {
-    expect(await sessionsWithTurn([ID.prompt], join(projects, 'nope'))).toEqual([])
+  it('has none when the projects directory does not exist: nothing was written there', async () => {
+    expect(await lookUp([ID.prompt], join(projects, 'nope'))).toEqual({ turn: [], none: [ID.prompt] })
+  })
+
+  // R5-1: where the lane writes is not known, so a missing file says nothing.
+  it('leaves an id unknown when its projects directory is not known, or cannot be listed', async () => {
+    expect(await lookUp([ID.prompt, ID.missing], null)).toEqual({ turn: [], none: [] })
+    expect(await lookUp([ID.missing], join(projects, '-Users-x-proj1', `${ID.remoteOnly}.jsonl`))).toEqual({ turn: [], none: [] })
   })
 
   it('reads a missing path as no turn rather than throwing', async () => {
