@@ -25,8 +25,8 @@ import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
-import { typedWithin, lastKeystrokeAt, hasUnsentInput, notePaste, noteKeystroke } from '../lib/lane-keystrokes'
-import { planSuspends, quietFor, runSuspend, needsPortCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
+import { planSuspends, quietFor, runSuspend, needsPortCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
@@ -1122,11 +1122,16 @@ export function DashboardView() {
    *  same moment joins the relaunch instead of retiring (or typing into) the same lane again. */
   const retiringRef = useRef(new Set<string>())
   /** Resume a lane suspended while idle, delivering `message` if given (lib/idle-suspend). Set where
-   *  it is built, below; a ref so the dispatch, reply and restore paths declared above it reach it. */
-  const wakeLaneRef = useRef<(tab: Pick<TerminalTab, 'id' | 'key'>, message?: string) => Promise<TerminalTab | null>>(async () => null)
-  /** Suspends whose kill is in flight and closes of suspended lanes, by lane key. A wake waits for
-   *  them, then looks at the lane again (review N1, N2). */
+   *  it is built, below; a ref so the dispatch, reply and restore paths declared above it reach it.
+   *  `'timed-out'`: it waited on the lane's gate past `GATE_WAIT_CAP_MS` and did nothing (review
+   *  R3-2); a caller holding a message reports it undelivered with the `waited` wording. */
+  const wakeLaneRef = useRef<(tab: Pick<TerminalTab, 'id' | 'key'>, message?: string) => Promise<TerminalTab | null | 'timed-out'>>(async () => null)
+  /** Suspends whose kill is in flight and closes of suspended lanes up to their worktree removal, by
+   *  lane key. A wake waits for them, then looks at the lane again (review N1, N2, R3-1). */
   const laneGateRef = useRef(new LaneGate())
+  /** The WIP snapshot and directory removal a close left running, by lane key (review R3-1). The
+   *  close of a suspended lane holds its gate until this settles. */
+  const worktreeRemovalsRef = useRef(new Map<string, Promise<void>>())
   /** When Operator spawned each pty, so a message typed into a lane that is still starting can wait
    *  for it (`whenLaneReady`). Absent for a lane it did not just start. */
   const spawnedAtRef = useRef(new Map<string, number>())
@@ -1683,24 +1688,28 @@ export function DashboardView() {
    *  Matched by TEXT rather than by a terminal id, because a record carries no terminal: the
    *  submitted string is `replyPrefix(...) + task` on the agent→agent path and the bare task
    *  elsewhere, so an endsWith covers both without either path having to hand anything over. */
-  const reportUndelivered = useCallback((terminalId: string, text: string, cause?: 'resume') => {
-    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+  const reportUndelivered = useCallback((terminalId: string, text: string, cause?: 'resume' | 'waited', lane?: Pick<TerminalTab, 'projectId' | 'roleId'>) => {
+    const live = terminalsRef.current.find((t) => t.id === terminalId)
+    // `lane`: the tab as the caller saw it, for a lane closed since (review R3-2), so the record
+    // still turns `undelivered`.
+    const tab = live ?? lane
     const project = projectsRef.current.find((p) => p.id === tab?.projectId)
     const rec = [...(project?.dispatches ?? [])].reverse()
       .find((d) => (d.outcome === 'sent' || d.outcome === 'launched') && text.endsWith(d.task))
     if (project && rec) setDispatchOutcome(project.id, rec.id, 'undelivered')
-    const lane = tab?.roleId
+    const name = tab?.roleId
       ? (project?.roster ?? []).find((r) => r.id === tab.roleId)?.name ?? tab.roleId
       : 'That lane'
     // Actionable, so it stays until dismissed: the recovery is to look at the lane, and a toast
     // that disappears on its own would be a notice nobody was guaranteed to see about work
     // nobody is doing.
     pushToast({
-      text: cause === 'resume' ? `${lane} did not get its message` : `${lane} never started the task it was sent`,
+      text: cause ? `${name} did not get its message` : `${name} never started the task it was sent`,
       // One ellipsised line, minus the action button — about 40 characters land (Toast.tsx).
-      detail: cause === 'resume' ? 'Its resume failed, so it never read it.' : 'It may still be sitting in its composer.',
+      detail: cause === 'waited' ? `It stayed busy for ${GATE_WAIT_CAP_MS / 1000} s; not resumed.`
+        : cause === 'resume' ? 'Its resume failed, so it never read it.' : 'It may still be sitting in its composer.',
       kind: 'error',
-      action: { label: 'Show', run: () => { if (tab) focusTerminalRef.current(tab.id) } },
+      action: { label: 'Show', run: () => { if (live) focusTerminalRef.current(live.id) } },
     })
   }, [pushToast, setDispatchOutcome])
 
@@ -1908,7 +1917,11 @@ export function DashboardView() {
       if (target) void submitWhenReady(target.id, text)
       // Resumed with the reply as its opening prompt, so it cannot arrive before the CLI is up. A
       // resume that fails turns the record above to `undelivered` (review M3).
-      else if (asleep) void wakeLaneRef.current(asleep, text).then((tab) => { if (!tab) reportUndeliveredRef.current(asleep.id, text, 'resume') })
+      else if (asleep) {
+        void wakeLaneRef.current(asleep, text).then((tab) => {
+          if (!tab || tab === 'timed-out') reportUndeliveredRef.current(asleep.id, text, tab ? 'waited' : 'resume', asleep)
+        })
+      }
       if (decision.truncated) {
         // Was "The full text is in the channel." — false the moment the channel went, and this
         // is the one toast whose whole job is telling you something was lost. The sender's own
@@ -2080,7 +2093,11 @@ export function DashboardView() {
             id: `bus-${r.id}`, at: new Date().toISOString(),
             fromRoleId, toRoleId: verdict.target?.roleId, task: r.body, outcome: 'sent', replyId: `bus-${r.id}`,
           })
-          if (asleep) void wakeLaneRef.current(asleep, text).then((tab) => { if (!tab) reportUndeliveredRef.current(asleepId, text, 'resume') })
+          if (asleep) {
+            void wakeLaneRef.current(asleep, text).then((tab) => {
+              if (!tab || tab === 'timed-out') reportUndeliveredRef.current(asleepId, text, tab ? 'waited' : 'resume', asleep)
+            })
+          }
           else reportUndeliveredRef.current(asleepId, text, 'resume')
           toast({ text: `Resuming ${r.lane} with a reply`, kind: 'info' })
         } else if (verdict.outcome === 'launching') {
@@ -3275,9 +3292,13 @@ export function DashboardView() {
     const asleep = opts?.replacing ? undefined : pickSuspendedTab(withActivity(terminalsRef.current), project.id, role.id, paths)
     if (asleep) {
       const tab = await wakeLaneRef.current(asleep, prompt?.trim() || undefined)
+      // The lane stayed held past the cap (review R3-2): the dispatch path queues the task and
+      // says so. Never the cold path below, which would meet whatever is still holding it.
+      if (tab === 'timed-out') return undefined
       if (tab && opts?.focus !== false) setActiveTerminalId(tab.id)
       // Closed while the wake waited on it (review N2): it comes back the way a closed lane does,
-      // below, resuming its thread from the saved row.
+      // below, resuming its thread from the saved row. The gate was held until the close's
+      // worktree removal ended (review R3-1), so the branch can be put back in a fresh directory.
       if (tab || terminalsRef.current.some((t) => t.key === asleep.key)) return tab ?? undefined
     }
     const pending = launchInFlightRef.current.get(laneKey)
@@ -3542,10 +3563,14 @@ export function DashboardView() {
     // slot and is never spawned twice.
     const asleep = terminalsRef.current.find((t) => t.key === saved.key && !!t.idleSuspendedAt)
     if (asleep) {
-      return wakeLaneRef.current(asleep).then((tab) => {
-        // Closed while the wake waited on it (review N2): restored as the closed row it now is.
+      return wakeLaneRef.current(asleep).then((tab): RestoreOutcome | Promise<RestoreOutcome> => {
+        if (tab === 'timed-out') return 'failed'
+        // Closed while the wake waited on it (review N2): restored as the closed row it now is. A
+        // close that forgot the row (the user's) leaves nothing to restore (review R3-3); the row
+        // passed in is from before that close and must not bring the lane back.
         if (!tab && !terminalsRef.current.some((t) => t.key === saved.key)) {
-          return handleRestoreSession(savedSessionsRef.current.find((sv) => sv.key === saved.key) ?? saved, resume, opts)
+          const row = rowAfterClose(savedSessionsRef.current, saved.key)
+          return row === 'skipped' ? row : handleRestoreSession(row, resume, opts)
         }
         if (!tab) return 'failed'
         if (!opts?.background) {
@@ -3692,6 +3717,9 @@ export function DashboardView() {
   }, [savedSessions, handleRestoreSession, pushToast])
 
   const forgetSavedSession = useCallback((key: string) => {
+    // The ref says now what the state will say on the next render: a restore that waited on the
+    // close of this lane reads it as soon as the close ends, and must find the row gone (review R3-3).
+    savedSessionsRef.current = savedSessionsRef.current.filter((s) => s.key !== key)
     setSavedSessions((prev) => {
       const next = prev.filter((s) => s.key !== key)
       try { localStorage.setItem('operator.savedSessions', JSON.stringify(next)) } catch { /* quota */ }
@@ -3757,7 +3785,7 @@ export function DashboardView() {
     // the directory removal must never be pointed at the project itself (main refuses it too).
     // Not for a released lane: main's release rule decides its directory (above).
     if (plan.rendererRemovesWorktree && tab?.worktreeBranch && tab?.sourceCwd && tab.cwd !== tab.sourceCwd) {
-      void finishTasks.then(async () => {
+      const removal = finishTasks.then(async () => {
         // SNAPSHOT FIRST, UNCONDITIONALLY. `worktree remove` takes uncommitted edits with it, and
         // with lanes now closing on their own that is no longer a directory the user chose to
         // delete. The precedent is the "WIP preserved before reaping this worktree" commits from
@@ -3786,6 +3814,12 @@ export function DashboardView() {
           })
         }
       })
+      // Recorded for the close of a suspended lane, which holds the lane's gate until it settles
+      // (review R3-1).
+      const key = tab.key
+      worktreeRemovalsRef.current.set(key, removal)
+      const drop = () => { if (worktreeRemovalsRef.current.get(key) === removal) worktreeRemovalsRef.current.delete(key) }
+      void removal.then(drop, (e) => { console.warn('Worktree removal failed:', e); drop() })
     }
     // Drop the tab; the onTerminalExit handler also runs and will reconcile state.
     // Closing is intentional — forget the saved session so it won't offer to restore. Unless it
@@ -3826,18 +3860,19 @@ export function DashboardView() {
    *  before it drops the tab, and a dispatch, reply, focus or click in that time resumed the lane.
    *  That CLI then ran with no tab, in a worktree the close went on to remove. A wake that arrives
    *  now waits for the close and finds no tab. A resume already under way when the close starts is
-   *  let finish, and the lane it brought back is the one closed. */
+   *  let finish, and the lane it brought back is the one closed.
+   *
+   *  The gate is held past the close's return, until its WIP snapshot and worktree removal have
+   *  settled (lib/idle-suspend `closeUnderGate`, review R3-1): a dispatch let through earlier
+   *  resumed the thread on a fresh branch, because the old directory still held the path. */
   const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
     const tab = session.terminalId ? terminalsRef.current.find((t) => t.id === session.terminalId) : undefined
     if (!tab?.idleSuspendedAt) return closeLane(session, suspend, opts)
-    const release = laneGateRef.current.hold(tab.key)
-    try {
+    return closeUnderGate(laneGateRef.current, tab.key, async () => {
       const waker = wakerRef.current
       const back = waker?.waking(tab.key) ? await waker.wake(tab.key, tab.id) : null
-      return await closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
-    } finally {
-      release()
-    }
+      return closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
+    }, () => worktreeRemovalsRef.current.get(tab.key))
   }, [closeLane])
   handleCloseSessionRef.current = handleCloseSession
 
@@ -4059,7 +4094,7 @@ export function DashboardView() {
           // Owed to the old pty and not typed yet: it wakes the lane instead (review N1).
           submitQueue.divert(terminalId, (text) => {
             void wakeLaneRef.current({ id: terminalId, key: tab.key }, text)
-              .then((next) => { if (!next) reportUndeliveredRef.current(terminalId, text, 'resume') })
+              .then((next) => { if (!next || next === 'timed-out') reportUndeliveredRef.current(terminalId, text, next ? 'waited' : 'resume', tab) })
           })
           terminalsRef.current = withSuspended(terminalsRef.current)
           setTerminals((prev) => withSuspended(prev))
@@ -4084,6 +4119,9 @@ export function DashboardView() {
 
   /** Keys of suspended lanes being resumed, for the pane's "Resuming…". */
   const [wakingKeys, setWakingKeys] = useState<ReadonlySet<string>>(() => new Set())
+  /** Suspended lanes whose wake gave up on the gate (review R3-2), for the pane; `true` when a
+   *  message was dropped with it. Cleared by a click and by a resume that comes back. */
+  const [stalledKeys, setStalledKeys] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   /** Lanes whose resume failed. Focus does not retry them on its own; a click or a message does. */
   const wakeFailedRef = useRef(new Set<string>())
 
@@ -4116,6 +4154,7 @@ export function DashboardView() {
         return null
       }
       wakeFailedRef.current.delete(tab.key)
+      setStalledKeys((prev) => { if (!prev.has(tab.key)) return prev; const n = new Map(prev); n.delete(tab.key); return n })
       // The old id stays in `restartedFromRef` for good (review M4): its exit event can still be
       // on its way, and ids are not reused within a run.
       // Watched until its transcript moves: a `--resume` that exits on its own right away did not
@@ -4145,14 +4184,10 @@ export function DashboardView() {
   /** Keys typed at a suspended pane, per lane key: the latest text the overlay handed over. */
   const heldKeysRef = useRef(new HeldKeys())
   /** Type what was held at the overlay into the resumed lane's composer, once it is ready, and
-   *  unsent (lib/idle-suspend `HeldKeys`). Through the submit queue's chain, behind any message
-   *  already waiting on the lane (review N3). Counted as a draft from the ask, so the lane is not
-   *  suspended with it on its way into the composer. */
-  const typeHeldKeys = (key: string, terminalId: string) => {
-    if (!heldKeysRef.current.has(key)) return
-    notePaste(terminalId)
-    noteKeystroke(terminalId)
-    void heldKeysRef.current.typeInto(key, whenLaneReady(terminalId), (text) => submitQueue.draft(terminalId, text))
+   *  unsent (lib/idle-suspend `typeHeldKeys`). Through the submit queue's chain, behind any message
+   *  already waiting on the lane (review N3). */
+  const typeHeldKeysInto = (key: string, terminalId: string) => {
+    void typeHeldKeys(heldKeysRef.current, key, terminalId, () => whenLaneReady(terminalId), (text) => submitQueue.draft(terminalId, text))
   }
 
   /** Resume the lane `tab` names (by key, since a resume changes its id) and deliver `message`. A
@@ -4168,7 +4203,16 @@ export function DashboardView() {
     if (message) void submitWhenReady(tab.id, message)
     return Promise.resolve(tab)
   }
-  wakeLaneRef.current = (ref, message) => laneGateRef.current.after(ref.key, () => wakeNow(ref, message))
+  // Capped (review R3-2): a kill, close or removal that hangs used to hold every message to the
+  // lane with no sign. Past the cap the wake does nothing; the pane says so, and a caller holding a
+  // message reports it undelivered.
+  wakeLaneRef.current = (ref, message) => laneGateRef.current.after(ref.key, () => wakeNow(ref, message), () => {
+    // Only while the lane still has a pane; a lane closed meanwhile has nowhere to say it.
+    if (terminalsRef.current.some((t) => t.key === ref.key)) {
+      setStalledKeys((prev) => new Map(prev).set(ref.key, !!message || prev.get(ref.key) === true))
+    }
+    return 'timed-out' as const
+  })
 
   // AUTO-RESTART, off unless switched on in Preferences (read per tick, so the switch applies at
   // once). One lane per tick, never while another restart is in flight, never a lane mid-turn or
@@ -6653,10 +6697,12 @@ export function DashboardView() {
                   <SuspendedOverlay
                     active={t.id === activeTerminalId && mainView === 'terminal'}
                     resuming={wakingKeys.has(t.key)}
+                    stalled={stalledKeys.get(t.key)}
                     onResume={(held) => {
                       wakeFailedRef.current.delete(t.key)
+                      setStalledKeys((prev) => { if (!prev.has(t.key)) return prev; const n = new Map(prev); n.delete(t.key); return n })
                       heldKeysRef.current.set(t.key, held)
-                      void wakeLaneRef.current(t).then((tab) => { if (tab) typeHeldKeys(t.key, tab.id) })
+                      void wakeLaneRef.current(t).then((tab) => { if (tab && tab !== 'timed-out') typeHeldKeysInto(t.key, tab.id) })
                     }}
                   />
                 ) : t.ended && (

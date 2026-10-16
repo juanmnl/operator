@@ -4,8 +4,9 @@ import {
   laneReady, LaneWaker, LANE_SETTLE_MS, LANE_READY_TIMEOUT_MS, HELD_RECORD_MAX_AGE_MS,
   suspendedTabId, isPlaceholderId, type SuspendCandidate,
   failedResume, tookTurnSince, RESUME_CONFIRM_MS, suspendedRowsToRestore, overlayKey, runSuspend, placeholderTab,
-  LaneGate, HeldKeys, spawnStampsFromList,
+  LaneGate, HeldKeys, spawnStampsFromList, closeUnderGate, GATE_WAIT_CAP_MS, rowAfterClose, typeHeldKeys,
 } from './idle-suspend'
+import { hasUnsentInput, noteDraftKey, lastKeystrokeAt } from './lane-keystrokes'
 import type { DispatchRecord } from '../../shared/types'
 
 const MIN = 60_000
@@ -407,6 +408,239 @@ describe('idle suspend: the lane gate (review N1, N2)', () => {
     expect(gate.busy('k')).toBe(true)
     b()
     expect(gate.busy('k')).toBe(false)
+  })
+})
+
+describe('idle suspend: gate waits are capped (review R3-2)', () => {
+  it('is 30 s in the app', () => {
+    expect(GATE_WAIT_CAP_MS).toBe(30_000)
+  })
+
+  it('gives up past the cap and never runs the wake, even when the hold lets go later', async () => {
+    const gate = new LaneGate(20)
+    const ran: string[] = []
+    const release = gate.hold('k') // a kill whose IPC call never returns
+    const woke = gate.after('k', async () => { ran.push('wake'); return 'tab' }, () => 'timed-out' as const)
+    expect(await woke).toBe('timed-out')
+    release()
+    await flush()
+    expect(ran).toEqual([])
+  })
+
+  it('a hold that ends inside the cap runs the wake as before', async () => {
+    const gate = new LaneGate(1_000)
+    const release = gate.hold('k')
+    const woke = gate.after('k', async () => 'tab', () => 'timed-out' as const)
+    release()
+    expect(await woke).toBe('tab')
+  })
+
+  it('the cap counts the whole wait, across a hold taken while it waited', async () => {
+    const gate = new LaneGate(30)
+    const kill = gate.hold('k')
+    const woke = gate.after('k', async () => 'tab', () => 'timed-out' as const)
+    await new Promise((r) => setTimeout(r, 20))
+    kill()
+    gate.hold('k') // a close starts as the kill ends, and hangs
+    expect(await woke).toBe('timed-out')
+  })
+
+  it('without a fallback it still waits as long as the hold does', async () => {
+    const gate = new LaneGate(10)
+    const release = gate.hold('k')
+    let done = false
+    const woke = gate.after('k', async () => { done = true })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(done).toBe(false)
+    release()
+    await woke
+    expect(done).toBe(true)
+  })
+})
+
+// Main's side of a resume, reduced to the rule that matters here (electron worktree.ts
+// `reattachWorktree`, pinned against real git in worktree.test.ts): the lane's branch goes back
+// into `<project>-<branch tail>`, and if that path is still taken, a fresh branch is forked.
+function fakeMain() {
+  const dirs = new Set<string>()
+  let fresh = 0
+  const pathOf = (branch: string) => `/wt/repo-${branch.split('/').pop()}`
+  return {
+    dirs,
+    add: (branch: string) => { dirs.add(pathOf(branch)); return pathOf(branch) },
+    createWorktree: async (reuse: string) => {
+      if (!dirs.has(pathOf(reuse))) return { branch: reuse, path: pathOf(reuse) }
+      const branch = `operator/fresh${++fresh}`
+      dirs.add(pathOf(branch))
+      return { branch, path: pathOf(branch) }
+    },
+  }
+}
+
+// The view's close of a suspended lane and a dispatch that arrives during it, reduced to their
+// parts: the tab list, the saved row, the close (drops the tab, starts the removal and returns),
+// and the dispatch's wake through the gate falling through to the cold path.
+function closeHarness(holdUntilRemoved: boolean) {
+  const gate = new LaneGate()
+  const main = fakeMain()
+  const branch = 'operator/x1'
+  const oldPath = main.add(branch)
+  const tabs = new Set(['k'])
+  const row = { key: 'k', worktreeBranch: branch, idleSuspendedAt: '2026-10-16T10:00:00Z' }
+  let removeNow!: () => void
+  const removal = new Promise<void>((r) => { removeNow = r }).then(() => { main.dirs.delete(oldPath) })
+  let closeIpc!: () => void
+  const ipc = new Promise<void>((r) => { closeIpc = r })
+  const closeLane = async () => {
+    await ipc // pendingReleases and the like, before the tab is dropped
+    tabs.delete('k')
+    return 'closed' as const
+  }
+  const close = holdUntilRemoved
+    ? closeUnderGate(gate, 'k', closeLane, () => removal)
+    : closeUnderGate(gate, 'k', closeLane, () => undefined) // round 3: released at the return
+  const dispatch = gate.after('k', async () => {
+    if (tabs.has('k')) return { resumedIn: 'tab' }
+    // Cold path: resume the thread from the closed row, on its own branch.
+    return main.createWorktree(row.worktreeBranch)
+  })
+  return { close, dispatch, closeIpc, removeNow, branch, oldPath, main, gate }
+}
+
+describe('idle suspend: a dispatch that waits on a close resumes on the lane\'s own branch (review R3-1)', () => {
+  it('waits for the worktree removal, then reattaches the old branch', async () => {
+    const h = closeHarness(true)
+    h.closeIpc()
+    expect(await h.close).toBe('closed')
+    await flush()
+    // The close has returned and the tab is gone, but the removal is still running: held.
+    expect(h.gate.busy('k')).toBe(true)
+    let settled = false
+    void h.dispatch.then(() => { settled = true })
+    await flush()
+    expect(settled).toBe(false)
+    h.removeNow()
+    expect(await h.dispatch).toEqual({ branch: h.branch, path: h.oldPath })
+    expect(h.gate.busy('k')).toBe(false)
+  })
+
+  it('released at the close\'s return (round 3), the same dispatch forked a fresh branch', async () => {
+    const h = closeHarness(false)
+    h.closeIpc()
+    await h.close
+    const out = await h.dispatch
+    expect(out).not.toEqual({ branch: h.branch, path: h.oldPath })
+    expect((out as { branch: string }).branch).toMatch(/fresh/)
+    h.removeNow()
+  })
+
+  it('a removal that fails still lets the gate go', async () => {
+    const gate = new LaneGate()
+    let fail!: (e: Error) => void
+    const removal = new Promise<void>((_, rej) => { fail = rej })
+    expect(await closeUnderGate(gate, 'k', async () => 'closed', () => removal)).toBe('closed')
+    expect(gate.busy('k')).toBe(true)
+    fail(new Error('git refused'))
+    await flush()
+    expect(gate.busy('k')).toBe(false)
+  })
+
+  it('a close with no removal (a lane in the main checkout) lets the gate go at its return', async () => {
+    const gate = new LaneGate()
+    expect(await closeUnderGate(gate, 'k', async () => 'closed', () => undefined)).toBe('closed')
+    expect(gate.busy('k')).toBe(false)
+  })
+
+  it('a close that throws lets the gate go', async () => {
+    const gate = new LaneGate()
+    await expect(closeUnderGate(gate, 'k', async () => { throw new Error('ipc') }, () => undefined)).rejects.toThrow('ipc')
+    expect(gate.busy('k')).toBe(false)
+  })
+})
+
+// The user's close of a suspended lane and a restore (resume card, Continue) that waited on it.
+// `rows` stands for `savedSessionsRef`; `forget` is what `forgetSavedSession` does to it.
+function forgetHarness(syncRef: boolean) {
+  const gate = new LaneGate()
+  const tabs = new Set(['k'])
+  const before = { key: 'k', idleSuspendedAt: '2026-10-16T10:00:00Z' }
+  let rows: Array<typeof before> = [before]
+  let render!: () => void
+  const forget = () => {
+    const next = rows.filter((r) => r.key !== 'k')
+    if (syncRef) rows = next // round 4: the ref now
+    void new Promise<void>((r) => { render = r }).then(() => { rows = next }) // the state, next render
+  }
+  const close = closeUnderGate(gate, 'k', async () => { forget(); tabs.delete('k'); return 'closed' }, () => undefined)
+  const restored: string[] = []
+  const restore = gate.after('k', async () => {
+    if (tabs.has('k')) return 'started'
+    const row = rowAfterClose(rows, 'k')
+    if (row === 'skipped') return row
+    restored.push(row.key)
+    return 'started'
+  })
+  return { close, restore, restored, render: () => render() }
+}
+
+describe('idle suspend: a restore after the user closed the lane (review R3-3)', () => {
+  it('finds the row forgotten and skips, before the state has rendered', async () => {
+    const h = forgetHarness(true)
+    await h.close
+    expect(await h.restore).toBe('skipped')
+    expect(h.restored).toEqual([])
+    h.render()
+  })
+
+  it('with the ref left for the next render (round 3), the forgotten lane came back', async () => {
+    const h = forgetHarness(false)
+    await h.close
+    expect(await h.restore).toBe('started')
+    expect(h.restored).toEqual(['k'])
+    h.render()
+  })
+
+  it('restores the closed row a lifecycle close leaves, not the row it was called with', () => {
+    const closed = { key: 'k', suspendedAt: '2026-10-16T12:00:00Z' }
+    expect(rowAfterClose([{ key: 'j' }, closed], 'k')).toBe(closed)
+    expect(rowAfterClose([{ key: 'j' }], 'k')).toBe('skipped')
+  })
+})
+
+describe('idle suspend: held keys count as a draft only once written (review R3-4)', () => {
+  it('marks the lane as holding a draft when the text is written', async () => {
+    const held = new HeldKeys()
+    const out: string[] = []
+    held.set('k', 'fix it')
+    expect(await typeHeldKeys(held, 'k', 'r4-written', async () => {}, (t) => { out.push(t) })).toBe(true)
+    expect(out).toEqual(['fix it'])
+    expect(hasUnsentInput('r4-written')).toBe(true)
+    expect(lastKeystrokeAt('r4-written')).toBeDefined()
+    noteDraftKey('r4-written', { key: 'Enter' })
+  })
+
+  it('leaves no draft when the held text was taken back before the write', async () => {
+    const held = new HeldKeys()
+    const out: string[] = []
+    let ready!: () => void
+    const isReady = new Promise<void>((r) => { ready = r })
+    held.set('k', 'x')
+    const typing = typeHeldKeys(held, 'k', 'r4-cleared', () => isReady, (t) => { out.push(t) })
+    // Marked at the ask in round 3, so this read true from here on.
+    expect(hasUnsentInput('r4-cleared')).toBe(false)
+    held.set('k', '') // Backspace at the overlay before the lane was ready
+    ready()
+    expect(await typing).toBe(false)
+    expect(out).toEqual([])
+    // A phantom draft kept the lane from being suspended again until an Enter or Ctrl+C.
+    expect(hasUnsentInput('r4-cleared')).toBe(false)
+  })
+
+  it('does not ask for readiness when nothing is held', async () => {
+    let asked = false
+    expect(await typeHeldKeys(new HeldKeys(), 'k', 'r4-none', async () => { asked = true }, () => {})).toBe(false)
+    expect(asked).toBe(false)
+    expect(lastKeystrokeAt('r4-none')).toBeUndefined()
   })
 })
 

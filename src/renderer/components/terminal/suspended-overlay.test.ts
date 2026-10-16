@@ -65,3 +65,31 @@ describe('SuspendedOverlay', () => {
     expect(calls).toEqual(['latest x'])
   })
 })
+
+// A WAKE THAT GAVE UP ON THE LANE'S GATE IS SAID ON THE PANE (review R3-2). It used to keep saying
+// "click to resume" while clicks queued behind a hung kill or close.
+describe('SuspendedOverlay after a wake gave up', () => {
+  const show = (props: { resuming: boolean; stalled?: boolean }) => act(() => {
+    root.render(h(SuspendedOverlay, { active: false, onResume: () => {}, ...props }))
+  })
+  const line = () => host.querySelector('span')?.textContent
+
+  it('says a message was not delivered when one was dropped', async () => {
+    await show({ resuming: false, stalled: true })
+    expect(line()).toBe('A message was not delivered — click to resume')
+    expect(host.querySelector('[role="button"]')?.getAttribute('aria-label')).toBe(line())
+  })
+
+  it('says it did not resume when nothing was dropped', async () => {
+    await show({ resuming: false, stalled: false })
+    expect(line()).toBe('Not resumed after 30 s — click to try again')
+  })
+
+  it('reads as before otherwise, and "Resuming…" wins once a resume runs', async () => {
+    await show({ resuming: false })
+    expect(line()).toBe('Suspended — click to resume')
+    await show({ resuming: true, stalled: true })
+    expect(line()).toBe('Resuming…')
+    await act(() => { root.unmount() })
+  })
+})

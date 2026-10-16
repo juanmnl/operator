@@ -1,4 +1,5 @@
 import { COORDINATOR_ROLE_IDS } from './dispatch'
+import { notePaste, noteKeystroke } from './lane-keystrokes'
 import type { DispatchRecord } from '../../shared/types'
 
 // SUSPENDING IDLE LANES: which lanes may have their CLI ended to free memory, and how a message
@@ -245,11 +246,19 @@ export async function runSuspend(st: SuspendSteps): Promise<'suspended' | 'cance
   return 'suspended'
 }
 
+/** How long a wake waits on a lane's gate before it gives up (review R3-2). A kill, a close and
+ *  its worktree removal take seconds; a hold past this is a hung IPC call, and a message that
+ *  waited on it is reported undelivered instead of waiting with no sign. */
+export const GATE_WAIT_CAP_MS = 30_000
+
 /** Ends of a lane in flight, by lane key: a suspend's kill (review N1) or the close of a suspended
- *  lane (review N2). A wake waits for every one of them and then looks at the lane again, so it
- *  never resumes a CLI that is still being reaped, nor one whose tab and worktree are being removed. */
+ *  lane, up to its worktree removal (review N2, R3-1). A wake waits for every one of them and then
+ *  looks at the lane again, so it never resumes a CLI that is still being reaped, nor one whose tab
+ *  and worktree are being removed. */
 export class LaneGate {
   private readonly holds = new Map<string, Set<Promise<void>>>()
+
+  constructor(private readonly capMs = GATE_WAIT_CAP_MS) {}
 
   /** Hold `key` until the returned function is called. Calling it twice is harmless. */
   hold(key: string): () => void {
@@ -274,12 +283,70 @@ export class LaneGate {
   }
 
   /** Run `go` once nothing holds `key`: at once when free, else after every hold now in place and
-   *  any taken while waiting. Callers waiting on the same key run in the order they called. */
-  after<T>(key: string, go: () => Promise<T>): Promise<T> {
-    const set = this.holds.get(key)
-    if (!set?.size) return go()
-    return Promise.all([...set]).then(() => this.after(key, go))
+   *  any taken while waiting. Callers waiting on the same key run in the order they called.
+   *
+   *  With `timedOut`, the wait is capped (review R3-2): past the cap the result is `timedOut()`,
+   *  and `go` never runs, even when the hold lets go later. */
+  after<T, U = T>(key: string, go: () => Promise<T>, timedOut?: () => U): Promise<T | U> {
+    if (!this.busy(key)) return go()
+    return new Promise<T | U>((resolve, reject) => {
+      let done = false
+      const timer = timedOut && setTimeout(() => {
+        if (done) return
+        done = true
+        try { resolve(timedOut()) } catch (e) { reject(e) }
+      }, this.capMs)
+      const look = () => {
+        if (done) return
+        const set = this.holds.get(key)
+        if (set?.size) { void Promise.all([...set]).then(look); return }
+        done = true
+        if (timer) clearTimeout(timer)
+        go().then(resolve, reject)
+      }
+      look()
+    })
   }
+}
+
+/** Close a lane suspended while idle with its gate held, from the start of the close until what
+ *  the close left running on disk has settled (review N2, R3-1).
+ *
+ *  THE CLOSE RETURNS BEFORE ITS WORKTREE IS GONE. It drops the tab and hands back; the WIP snapshot
+ *  and the directory removal run after, chained on the lane's task capture. A wake let through at
+ *  the return found no tab and resumed the lane from its closed row while the old directory was
+ *  still there: main's reattach saw the path taken and forked a fresh branch, so the conversation
+ *  went on in a tree without its own commits, and a restore spawned the CLI inside the directory
+ *  the removal then deleted. `settled` is that removal (absent when there is none), and the gate
+ *  stays held until it ends, failed or not. The close's outcome is returned when the close
+ *  returns, as before: a project close times each lane's close, and the removal is not part of it. */
+export async function closeUnderGate<R>(
+  gate: LaneGate,
+  key: string,
+  close: () => Promise<R>,
+  settled: () => Promise<unknown> | undefined,
+): Promise<R> {
+  const release = gate.hold(key)
+  let out: R
+  try {
+    out = await close()
+  } catch (e) {
+    release()
+    throw e
+  }
+  const removal = settled()
+  // A failed removal keeps the folder; the wake looks again either way.
+  if (removal) void removal.then(release, release)
+  else release()
+  return out
+}
+
+/** A restore whose wake waited on the lane's close and found no tab (review N2, R3-3): the row the
+ *  close left, to restore as the closed lane it now is, or `'skipped'` when the close forgot it (a
+ *  close the user asked for). Read from the rows as the close left them, never the row the restore
+ *  was called with, which is from before the close and still reads as suspended. */
+export function rowAfterClose<R extends { key: string }>(rows: readonly R[], key: string): R | 'skipped' {
+  return rows.find((r) => r.key === key) ?? 'skipped'
 }
 
 /** When each pty Operator is running started, from main's list (review N6). The renderer's own
@@ -411,6 +478,28 @@ export class HeldKeys {
     await write(text)
     return true
   }
+}
+
+/** Type what was held at the overlay for `key` into the resumed lane `terminalId`, unsent, once
+ *  `ready` resolves (`HeldKeys`, through `draft`, the submit queue's chain). Nothing when nothing
+ *  is held; `ready` is not asked for then, since asking counts a delivery waiting on the lane.
+ *
+ *  A keystroke from the ask, so the lane does not read as quiet while the text is on its way. A
+ *  draft only once text is written (review R3-4): a draft keeps the lane from being suspended
+ *  until an Enter or Ctrl+C, and text taken back before the write left one that did not exist. */
+export function typeHeldKeys(
+  held: HeldKeys,
+  key: string,
+  terminalId: string,
+  ready: () => Promise<void>,
+  draft: (text: string) => Promise<void> | void,
+): Promise<boolean> {
+  if (!held.has(key)) return Promise.resolve(false)
+  noteKeystroke(terminalId)
+  return held.typeInto(key, ready(), (text) => {
+    notePaste(terminalId)
+    return draft(text)
+  })
 }
 
 /** What resuming a suspended lane needs from the view. */
