@@ -156,6 +156,24 @@ export function toolResultText(content: unknown): string {
   return JSON.stringify(content)
 }
 
+/** A tool result that says the work went on in the background. Measured across this machine's
+ *  transcripts (2.1.272–2.1.301): `Command running in background with ID: <id>. Output is being
+ *  written to …` (Bash `run_in_background`), `… moved to the background (ID: <id>)` (a command that
+ *  hit its timeout), `Async agent launched successfully.` (Agent) and `Workflow launched in
+ *  background.` Each ends with a `<task-notification>` naming the same tool_use id. */
+const BACKGROUND_RESULT = /^(?:Command running in background with ID:|Async agent launched|Workflow launched in background)|moved to the background \(ID: /
+
+/** The tool_use ids a `<task-notification>` closes. One per notification; a record can carry
+ *  several. The status (completed, failed, killed, stopped) does not matter: any of them ends it. */
+export function notifiedToolUseIds(text: string): string[] {
+  if (!text.includes('<task-notification>')) return []
+  return [...text.matchAll(/<tool-use-id>([^<\s]+)<\/tool-use-id>/g)].map((m) => m[1])
+}
+
+/** How far a background task's own timestamp may sit before the track's creation and still be this
+ *  process's: the CLI writes its clock, main reads its own. */
+const BACKGROUND_CLOCK_SLACK_MS = 5_000
+
 /** The user's actual prompt text, or null. An array containing a tool_result is a RESULT turn,
  *  not a prompt — Claude Code uses the same `user` type for both. */
 export function userPromptText(content: unknown): string | null {
@@ -233,6 +251,9 @@ export class Track {
   openQuestions = new Set<string>()
   inSidechain = false
   activeSubagents = 0
+  /** Background tasks started and not yet notified as finished: tool_use id → the result record's
+   *  timestamp. See `BACKGROUND_RESULT`. */
+  background = new Map<string, string>()
   narration: NarrationEntry[] = []
   activity: ActivityEntry[] = []
   queued: NarrationEntry[] = []
@@ -253,7 +274,9 @@ export class Track {
    *  `SendMessage` calls are tracked, so a lane's ordinary tool traffic costs nothing here. */
   openSends = new Map<string, string>()
 
-  constructor(readonly terminalId: string, readonly track: NewTrack) {}
+  /** `spawnedAtMs`: when the pty this track follows was started. A resumed transcript still holds
+   *  the background tasks of the process before it, which died with it and are never notified. */
+  constructor(readonly terminalId: string, readonly track: NewTrack, readonly spawnedAtMs = Date.now()) {}
 
   get sessionId(): string { return this.track.claudeSessionId }
 
@@ -297,6 +320,7 @@ export class Track {
     this.openSends.clear()
     this.inSidechain = false
     this.activeSubagents = 0
+    this.background.clear()
     this.narration.length = 0
     this.narrationSeq = 0
     this.toolSeqs.clear()
@@ -402,6 +426,8 @@ export class Track {
       this.dirty = true
     }
 
+    if (v.type === 'user' || v.type === 'queue-operation' || v.type === 'attachment') this.closeBackground(v)
+
     switch (v.type) {
       case 'user': this.applyUser(v); break
       case 'assistant': this.applyAssistant(v, ts); break
@@ -436,6 +462,32 @@ export class Track {
     this.queued.push({ kind: 'queued', text: cap(text, PROMPT_TEXT_CAP), timestamp: ts || nowIso(), images: [] })
     if (this.queued.length > QUEUED_CAP) this.queued.splice(0, this.queued.length - QUEUED_CAP)
     this.dirty = true
+  }
+
+  /** A `<task-notification>` closes the background task it names. It reaches the transcript as a
+   *  queued prompt (`queue-operation` enqueue and remove), as a `queued_command` attachment, or as
+   *  a `user` record when the lane was idle; any one of them is enough. */
+  private closeBackground(v: Record<string, unknown>): void {
+    if (!this.background.size) return
+    const texts: unknown[] = [v.content, (v.attachment as Record<string, unknown> | undefined)?.prompt]
+    const content = (v.message as Record<string, unknown> | undefined)?.content
+    texts.push(typeof content === 'string' ? content : userPromptText(content))
+    for (const t of texts) {
+      if (typeof t !== 'string') continue
+      for (const id of notifiedToolUseIds(t)) {
+        if (this.background.delete(id)) this.dirty = true
+      }
+    }
+  }
+
+  /** Background tasks this process started that have not finished. */
+  backgroundTasks(): number {
+    let n = 0
+    for (const at of this.background.values()) {
+      const t = Date.parse(at)
+      if (Number.isNaN(t) || t >= this.spawnedAtMs - BACKGROUND_CLOCK_SLACK_MS) n++
+    }
+    return n
   }
 
   private notePrompt(ts: string): void {
@@ -486,6 +538,10 @@ export class Track {
             this.dirty = true
             break
           }
+        }
+        if (raw && BACKGROUND_RESULT.test(raw)) {
+          this.background.set(id, typeof v.timestamp === 'string' ? v.timestamp : '')
+          this.dirty = true
         }
         this.openTools.delete(id)
         this.openQuestions.delete(id)
@@ -789,6 +845,7 @@ export class Track {
       queued: this.queued,
       todos: this.tasks.map(([, t]) => t),
       activeSubagents: this.activeSubagents,
+      backgroundTasks: this.backgroundTasks() || undefined,
       lastToolName: this.lastToolName,
       startedAt: this.startedAt ?? nowIso(),
       lastActivityAt: this.lastActivityAt || nowIso(),

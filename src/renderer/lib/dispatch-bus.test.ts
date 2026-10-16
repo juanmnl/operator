@@ -516,3 +516,30 @@ describe('resolveDispatch — a REPLY from a caller with no roster role', () => 
     expect(resolveDispatch(reply({ fromRoleId: 'review', fromLabel: 'Review' }), ctx()).verdict.outcome).toBe('send')
   })
 })
+
+// Idle-lane suspension (lib/idle-suspend): the lane exists, its CLI was ended to free memory, and
+// it has no bus address until it is resumed.
+describe('resolveDispatch — a lane SUSPENDED while idle', () => {
+  const asleep = lane('code', { id: 'suspended:k-code', ended: true, suspended: true, claudeSessionId: undefined })
+
+  it('a dispatch launches, and says it is resuming the lane', () => {
+    const { verdict } = resolveDispatch(req('code'), ctx({ lanes: [asleep, lane('review')] }))
+    expect(verdict.outcome).toBe('launching')
+    expect(verdict.to).toBeUndefined()
+    expect(verdict.reason).toMatch(/suspended while idle; Operator is resuming it/)
+  })
+
+  it('a reply resumes the lane with the message, so the caller sends nothing', () => {
+    const { verdict } = resolveDispatch(req('code', { kind: 'reply', task: 'merged, thanks' }), ctx({ lanes: [asleep, lane('review')] }))
+    expect(verdict.outcome).toBe('launching')
+    expect(verdict.to).toBeUndefined()
+    expect(verdict.wake).toEqual({ terminalId: 'suspended:k-code', text: '[Operator · reply from Operator] merged, thanks' })
+  })
+
+  it('a reply to it is still subject to the brakes', () => {
+    const { verdict } = resolveDispatch(req('code', { kind: 'reply' }), ctx({ lanes: [asleep], chatterPaused: true }))
+    expect(verdict.outcome).toBe('refused')
+    expect(verdict.brake).toBe('paused')
+    expect(verdict.wake).toBeUndefined()
+  })
+})

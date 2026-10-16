@@ -47,13 +47,16 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
     running: 'running', compacting: 'compacting', waiting: 'your turn', asking: 'asking you',
     idle: 'idle', ended: 'ended', error: 'error',
   }
-  const phaseLabel = PHASE_LABEL[status] ?? status
+  // A lane suspended while idle (lib/idle-suspend) draws as ended, the dimmed orb, and says which
+  // kind of ended it is: it comes back when you open it.
+  const suspended = status === 'ended' && !!session.suspended
+  const phaseLabel = suspended ? 'suspended' : PHASE_LABEL[status] ?? status
   // The status logo animates ONLY for busy work now (running/compacting), so the phase WORD
   // carries the states the motionless logo can't: a QUIET "your turn" for waiting (its orb no
   // longer pulses), plus muted active-work words and red for error. Idle alone shows no word —
   // a resting orb needs no label. Keeping the words muted avoids the loud "YOUR TURN" of old.
   const isRunning = status === 'running'
-  const showPhase = status === 'running' || status === 'compacting' || status === 'waiting' || status === 'asking' || status === 'error'
+  const showPhase = status === 'running' || status === 'compacting' || status === 'waiting' || status === 'asking' || status === 'error' || suspended
   // `asking you` is the one phase word that must be read to act, so it is warning ink mixed into
   // --fg (the plan meter's TONE_INK construction) and carries NO opacity.
   const phaseColor = status === 'error' ? 'var(--color-error, #f85149)'
@@ -294,7 +297,8 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
             textTransform: 'uppercase',
             letterSpacing: '0.1em',
             color: phaseColor,
-            opacity: status === 'error' ? 0.95 : status === 'asking' ? undefined : 0.65,
+            // No alpha on `suspended`: it is `--fg-muted` already, and the token is the recede.
+            opacity: status === 'error' ? 0.95 : status === 'asking' || suspended ? undefined : 0.65,
           }}
         >
           {phaseLabel}

@@ -180,6 +180,9 @@ declare global {
       /** The previous run's lanes are saved in this renderer's snapshot (or resumed): main stops
        *  carrying them in last-run.json. */
       previousRunTaken?: () => Promise<void>
+      /** The lanes this renderer holds suspended while idle (lib/idle-suspend), the whole list each
+       *  time. Main records them in last-run.json so a relaunch restores them suspended. */
+      setSuspendedLanes?: (lanes: Array<{ key: string; at: string }>) => Promise<void>
       /** The crash auto-resume queue has finished; main's crash-loop guard counts from now. */
       crashResumeDone?: () => Promise<void>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose

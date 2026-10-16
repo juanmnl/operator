@@ -119,6 +119,7 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   launchKind:             { delivery: 'invoke', impl: 'native' },
   previousRun:            { delivery: 'invoke', impl: 'native' },
   previousRunTaken:       { delivery: 'invoke', impl: 'native' },
+  setSuspendedLanes:      { delivery: 'invoke', impl: 'native' },
   crashResumeDone:        { delivery: 'invoke', impl: 'native' },
   worktreeReap:           { delivery: 'invoke', impl: 'native' },
   worktreeRemoveSelected: { delivery: 'invoke', impl: 'native' },

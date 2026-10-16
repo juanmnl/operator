@@ -14,7 +14,7 @@ import { isAppChord } from '../../lib/key-routing'
 import { persistFiles, imageFilesFrom, pastePaths } from '../../lib/paste-image'
 import { base64ToBytes } from '../../lib/base64'
 import { submitQueue } from '../../lib/submit-queue'
-import { noteKeystroke } from '../../lib/lane-keystrokes'
+import { noteKeystroke, noteDraftKey, notePaste } from '../../lib/lane-keystrokes'
 import { createHiddenOutputBuffer, type HiddenOutputBuffer } from '../../lib/hidden-output'
 
 // Claude Code's composer-divider ornaments (👀/👣 and newer cycled pictographs) are
@@ -244,7 +244,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (isComposingRef.current) return true
       // App chords are declined below and emit no bytes, so they are not typing INTO the lane.
       if (e.type === 'keydown' && e.metaKey && isAppChord(e)) return false
-      if (e.type === 'keydown') { disarmRescue(); noteKeystroke(terminalId) }
+      if (e.type === 'keydown') { disarmRescue(); noteKeystroke(terminalId); noteDraftKey(terminalId, e) }
       return true
     })
 
@@ -264,6 +264,7 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       // Pasting into the lane is a person too, and a paste lands in the same composer — so it
       // disarms for BOTH branches below, not just the image one.
       disarmRescue()
+      notePaste(terminalId)
       const images = imageFilesFrom(e.clipboardData)
       if (images.length === 0) return
       e.preventDefault()

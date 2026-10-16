@@ -26,6 +26,12 @@
 // M1). So the record carries the previous run's lanes (`carried`) until the renderer says it has
 // them (`previousRunTaken`), and the next boot reads them as part of the run they were carried by.
 //
+// SUSPENDED LANES. A lane suspended while idle (src/renderer/lib/idle-suspend.ts) has no pty, so it
+// is not in the pty table, and it must not be: crash auto-resume would start it and the resume
+// card would offer it, which undoes the saving. The renderer tells main which lanes it holds
+// suspended (`setSuspended`), and they are recorded in their own list, carried like the others. A
+// key that has a live pty in this run is live, whatever the list says.
+//
 // TWO BOOTS. A second Operator on the same OPERATOR_DIR must neither take the file from the one
 // running nor read the running one's lanes as a crash. Boot reads, judges and claims the file under
 // an exclusive lock file, and a boot that finds the recorded app still running does not own the
@@ -63,12 +69,15 @@ export interface LastRun {
   lanes: LastRunLane[]
   /** Lanes that called worktree_done in this run, with when. */
   released: Array<{ key: string; at: string }>
+  /** Lanes this run held suspended while idle, with when they were suspended. Absent in records
+   *  written before it existed. */
+  suspended?: Array<{ key: string; at: string }>
   /** This run auto-resumed a crashed run's lanes and has not yet run `CRASH_LOOP_MS` past the end
    *  of that resume, so a crash with it still set reads as a crash loop. */
   crashResumed?: boolean
   /** The previous run's lanes and releases, until this run's renderer has saved them (see the top
    *  of this file). A lane live in this run is in `lanes` instead. */
-  carried?: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }> }
+  carried?: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }>; suspended?: Array<{ key: string; at: string }> }
   updatedAt: string
 }
 
@@ -103,7 +112,11 @@ export function parseLastRun(raw: string | null | undefined): LastRun | null {
     const v = JSON.parse(raw) as Partial<LastRun>
     if (v?.v !== LAST_RUN_VERSION || typeof v.appPid !== 'number' || typeof v.appStartedAt !== 'string'
         || typeof v.clean !== 'boolean' || !Array.isArray(v.lanes)) return null
-    return { ...v, released: Array.isArray(v.released) ? v.released : [] } as LastRun
+    return {
+      ...v,
+      released: Array.isArray(v.released) ? v.released : [],
+      suspended: Array.isArray(v.suspended) ? v.suspended.filter((x) => x && typeof x.key === 'string') : undefined,
+    } as LastRun
   } catch {
     return null
   }
@@ -132,12 +145,15 @@ export function judgePreviousRun(prev: LastRun | null, self: { pid: number; star
  *  carried it. */
 export function withCarried(prev: LastRun): LastRun {
   if (!prev.carried) return prev
-  const own = new Set([...prev.lanes.map((l) => l.key), ...prev.released.map((r) => r.key)])
+  const ownSuspended = prev.suspended ?? []
+  const own = new Set([...prev.lanes.map((l) => l.key), ...prev.released.map((r) => r.key), ...ownSuspended.map((x) => x.key)])
   const ownReleased = new Set(prev.released.map((r) => r.key))
+  const suspended = [...ownSuspended, ...(prev.carried.suspended ?? []).filter((x) => !own.has(x.key))]
   return {
     ...prev,
     lanes: [...prev.lanes, ...prev.carried.lanes.filter((l) => !own.has(l.key))],
     released: [...prev.released, ...prev.carried.released.filter((r) => !ownReleased.has(r.key))],
+    ...(suspended.length ? { suspended } : { suspended: undefined }),
     carried: undefined,
   }
 }
@@ -167,12 +183,15 @@ export function withLateReleases(prev: LastRun, releases: ReadonlyArray<{ termin
 
 /** Pure: what the renderer is handed. */
 export function previousRunInfo(prev: LastRun, autoResume: boolean): PreviousRunInfo {
+  const live = new Set(prev.lanes.map((l) => l.key))
+  const suspended = (prev.suspended ?? []).map((x) => x.key).filter((k) => !live.has(k))
   return {
     clean: prev.clean,
     lanes: [...prev.lanes]
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
       .map(({ key, claudeSessionId, projectId, roleId, startedAt, offerOnly }) => ({ key, claudeSessionId, projectId, roleId, startedAt, ...(offerOnly ? { offerOnly } : {}) })),
     released: prev.released.map((r) => r.key),
+    ...(suspended.length ? { suspended } : {}),
     endedAt: prev.updatedAt,
     autoResume,
   }
@@ -264,8 +283,12 @@ export class LastRunRecorder {
   private crashTimer: ReturnType<typeof setTimeout> | null = null
   private lanes: LastRunLane[] = []
   private readonly released = new Map<string, string>()
+  /** Lanes the renderer holds suspended (`setSuspended`): key → when. */
+  private suspendedByKey = new Map<string, string>()
+  /** `suspendedByKey` minus the keys live in this run, as of the last recompute. */
+  private suspended: Array<{ key: string; at: string }> = []
   /** The previous run's lanes, until the renderer has saved them (`previousRunTaken`). */
-  private carried: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }> } | null = null
+  private carried: { lanes: LastRunLane[]; released: Array<{ key: string; at: string }>; suspended?: Array<{ key: string; at: string }> } | null = null
   private chain: Promise<void>
   private opened: () => void = () => {}
   private lastBody = ''
@@ -311,6 +334,7 @@ export class LastRunRecorder {
           this.carried = {
             lanes: info.lanes.map((l) => (autoResume && !l.offerOnly ? l : { ...l, offerOnly: true })),
             released: info.released,
+            ...(info.suspended?.length ? { suspended: info.suspended } : {}),
           }
         }
         this.owner = true
@@ -372,6 +396,14 @@ export class LastRunRecorder {
     this.crashTimer.unref?.()
   }
 
+  /** The lanes the renderer holds suspended, the whole list each time. Ignored once frozen: the
+   *  teardown's record is the one taken when it started. */
+  setSuspended(list: ReadonlyArray<{ key: string; at: string }>): Promise<void> {
+    if (this.frozen) return this.chain
+    this.suspendedByKey = new Map(list.map((x) => [x.key, x.at]))
+    return this.sync()
+  }
+
   /** Recompute from the pty table and write if it changed. A no-op once frozen. */
   sync(): Promise<void> {
     if (this.frozen) return this.chain
@@ -407,16 +439,19 @@ export class LastRunRecorder {
       lanes.push({ key: l.key, terminalId: l.terminalId, cwd: l.cwd, claudeSessionId: l.claudeSessionId, projectId: l.projectId, roleId: l.roleId, startedAt: l.startedAt })
     }
     this.lanes = lanes
+    const live = new Set(lanes.map((l) => l.key))
+    this.suspended = [...this.suspendedByKey].filter(([key]) => !live.has(key)).map(([key, at]) => ({ key, at }))
     // A carried lane that came back in this run is this run's lane now; it is not carried again
-    // after it exits.
+    // after it exits. The same for one this run holds suspended.
     if (this.carried) {
-      const here = new Set([...lanes.map((l) => l.key), ...this.released.keys()])
+      const here = new Set([...lanes.map((l) => l.key), ...this.released.keys(), ...this.suspendedByKey.keys()])
       if (this.carried.lanes.some((l) => here.has(l.key))) this.carried = { ...this.carried, lanes: this.carried.lanes.filter((l) => !here.has(l.key)) }
+      if (this.carried.suspended?.some((x) => here.has(x.key))) this.carried = { ...this.carried, suspended: this.carried.suspended.filter((x) => !here.has(x.key)) }
     }
   }
 
   private record(): LastRun {
-    const carried = this.carried && (this.carried.lanes.length || this.carried.released.length) ? this.carried : null
+    const carried = this.carried && (this.carried.lanes.length || this.carried.released.length || this.carried.suspended?.length) ? this.carried : null
     return {
       v: LAST_RUN_VERSION,
       appPid: this.d.self.pid,
@@ -424,6 +459,7 @@ export class LastRunRecorder {
       clean: this.clean,
       lanes: this.lanes,
       released: [...this.released].map(([key, at]) => ({ key, at })),
+      ...(this.suspended.length ? { suspended: this.suspended } : {}),
       ...(this.crashResumed ? { crashResumed: true } : {}),
       ...(carried ? { carried } : {}),
       updatedAt: this.now(),

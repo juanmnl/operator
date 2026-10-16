@@ -331,6 +331,14 @@ export function registerIpc(d: Deps): void {
     previousRun: async () => (d.lastRun ? (await d.lastRun.ready(), d.lastRun.previousRun()) : null),
     // The renderer has saved the previous run's lanes in its snapshot: main stops carrying them.
     previousRunTaken: async () => { await d.lastRun?.previousRunTaken() },
+    // The lanes the renderer holds suspended while idle: recorded apart from the live ones, so a
+    // crash auto-resume does not start them.
+    setSuspendedLanes: async (lanes) => {
+      const list = (Array.isArray(lanes) ? lanes : [])
+        .filter((x) => x && typeof x.key === 'string' && x.key)
+        .map((x) => ({ key: String(x.key), at: typeof x.at === 'string' ? x.at : new Date().toISOString() }))
+      await d.lastRun?.setSuspended(list)
+    },
     // The crash auto-resume queue has finished: the crash-loop guard runs from here.
     crashResumeDone: async () => { d.lastRun?.crashResumeDone() },
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>

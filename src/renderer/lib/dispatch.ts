@@ -34,6 +34,9 @@ export interface RoutableTab {
   roleId?: string
   /** Pty exited but the pane is still mounted — an ended lane is NOT a live target. */
   ended?: boolean
+  /** Suspended while idle (lib/idle-suspend): ended too, so never typed into, but it is the role's
+   *  lane, and a message to it resumes it instead of launching a second one. */
+  suspended?: boolean
   /** The lane's last activity, used ONLY to break a duplicate tie deterministically. */
   lastActivityAt?: string
   /** Where its pty runs, and for a worktree lane the repo the worktree came from. Checked against
@@ -108,6 +111,14 @@ export function pickLaneTab<T extends RoutableTab>(tabs: T[], projectId: string,
   return best
 }
 
+/** The role's lane suspended while idle, if it has one and no live lane: the one a launch resumes
+ *  instead of spawning. Same tie-break as `pickLaneTab`. */
+export function pickSuspendedTab<T extends RoutableTab>(tabs: T[], projectId: string, roleId: string, projectPath?: ProjectPaths | string): T | undefined {
+  const asleep = tabs.filter((t) => t.suspended)
+  const picked = pickLaneTab(asleep.map((t) => ({ ...t, ended: false })), projectId, roleId, projectPath)
+  return picked && asleep.find((t) => t.id === picked.id)
+}
+
 /** Tabs that are ALIVE but unroutable — the bug state, named so it can be reported.
  *
  *  `pickLaneTab` requires `projectId` AND `roleId`. A tab missing either is invisible to it, so
@@ -132,8 +143,9 @@ export type DispatchRoute<T extends RoutableTab> =
    *  nothing is ended; Operator tells the dispatcher once the lane is idle (lib/retire-watch).
    *  `unseen`: Operator has no phase for it at all, so it can neither end it nor watch it. */
   | { kind: 'finishing'; role: Role; tab: T; unseen: boolean }
-  /** The role is defined but has no live lane → queue for it. */
-  | { kind: 'queue'; role: Role }
+  /** The role is defined but has no live lane → queue for it. `suspended`: its lane is suspended
+   *  while idle, and the launch path resumes that one. */
+  | { kind: 'queue'; role: Role; suspended?: T }
   /** The roster has no such lane, but the token names one of the preset TEMPLATES → add the
    *  lane from its preset, then run the task on it. The dispatch is the demand. */
   | { kind: 'create'; role: Role }
@@ -166,7 +178,10 @@ export function routeDispatch<T extends RoutableTab>(
     return preset ? { kind: 'create', role: preset } : { kind: 'unassigned' }
   }
   const tab = pickLaneTab(tabs, projectId, role.id, projectPath)
-  if (!tab) return { kind: 'queue', role }
+  if (!tab) {
+    const suspended = pickSuspendedTab(tabs, projectId, role.id, projectPath)
+    return suspended ? { kind: 'queue', role, suspended } : { kind: 'queue', role }
+  }
   // A LANE THAT RELEASED ITS WORKTREE IS FINISHED, and new work must not go into it: it runs in a
   // directory that is removed when it ends, and its brief tells it never to branch again there.
   // Only the release record qualifies (`markReleased`); nothing else ends a lane from here.
