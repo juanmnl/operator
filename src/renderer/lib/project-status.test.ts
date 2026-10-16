@@ -16,6 +16,13 @@ describe('projectActivity', () => {
     expect(a.status).toBe('idle')
   })
 
+  it('counts suspended lanes apart from live ones, so "N running" leaves them out', () => {
+    const a = projectActivity([{ status: 'ended', phase: 'waiting', suspended: true }, s('running', 'ended'), s('waiting')])
+    expect(a.live).toBe(1)
+    expect(a.suspended).toBe(1)
+    expect(projectActivityLabel(a)).toEqual({ text: '1 needs you', accent: true })
+  })
+
   it('counts waiting lanes separately from the roll-up', () => {
     // The orb says "running" (busiest) while two lanes still want the user — which is
     // exactly why the label reads off `waiting`, not off `status`.
@@ -25,7 +32,7 @@ describe('projectActivity', () => {
   })
 
   it('is idle with no sessions', () => {
-    expect(projectActivity([], 6)).toEqual({ live: 0, waiting: 0, lanes: 6, status: 'idle' })
+    expect(projectActivity([], 6)).toEqual({ live: 0, suspended: 0, waiting: 0, lanes: 6, status: 'idle' })
   })
 })
 

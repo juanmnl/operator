@@ -3,6 +3,7 @@ import {
   suspendDecision, planSuspends, needsPortCheck, servesDevServer, heldDeliveriesFor, quietFor,
   laneReady, LaneWaker, LANE_SETTLE_MS, LANE_READY_TIMEOUT_MS, HELD_RECORD_MAX_AGE_MS,
   suspendedTabId, isPlaceholderId, type SuspendCandidate,
+  failedResume, tookTurnSince, RESUME_CONFIRM_MS, suspendedRowsToRestore, overlayKey, runSuspend, placeholderTab,
 } from './idle-suspend'
 import type { DispatchRecord } from '../../shared/types'
 
@@ -223,5 +224,136 @@ describe('idle suspend: resume-on-dispatch ordering', () => {
     expect(await second).toBeNull()
     expect(h.log).toEqual(['spawn suspended:k --resume "one"'])
     expect(h.waker.waking('k')).toBe(false)
+  })
+})
+
+describe('idle suspend: a lane just resumed (review H1)', () => {
+  it('counts the spawn as activity, so a lane resumed by focus is not suspended again at once', () => {
+    // Suspended for two hours, resumed by focus a minute ago with no prompt: the transcript has no
+    // record since, so only the spawn says it is fresh.
+    const resumed = lane({ lastActivityAt: ago(120), spawnedAt: NOW - 1 * MIN })
+    expect(quietFor(resumed, NOW)).toBe(1 * MIN)
+    expect(suspendDecision(resumed, NOW, IDLE)).toEqual({ suspend: false, why: 'not idle long enough' })
+    // Quiet for the whole window since the resume: suspended again, as any lane would be.
+    expect(suspendDecision(lane({ lastActivityAt: ago(120), spawnedAt: NOW - 31 * MIN }), NOW, IDLE).suspend).toBe(true)
+    expect(planSuspends([resumed], NOW, IDLE)).toEqual([])
+  })
+
+  it('keeps a lane up while a message to it waits for it to be ready', () => {
+    const d = suspendDecision(lane({ awaitingDelivery: 1 }), NOW, IDLE)
+    expect(d).toEqual({ suspend: false, why: 'a message to it is waiting for it to be ready' })
+    expect(suspendDecision(lane({ awaitingDelivery: 0 }), NOW, IDLE).suspend).toBe(true)
+  })
+})
+
+describe('idle suspend: the order of one suspend (review M4)', () => {
+  const steps = (o: { idle?: boolean[]; killFails?: boolean } = {}) => {
+    const log: string[] = []
+    const idle = [...(o.idle ?? [true, true])]
+    return {
+      log,
+      st: {
+        stillIdle: () => { const v = idle.shift() ?? true; log.push(`check ${v}`); return v },
+        report: async (withThisLane: boolean) => { log.push(withThisLane ? 'report +lane' : 'report -lane') },
+        guardExit: (on: boolean) => { log.push(on ? 'guard on' : 'guard off') },
+        kill: async () => { log.push('kill'); if (o.killFails) throw new Error('no such pty') },
+        markSuspended: () => { log.push('shown suspended') },
+      },
+    }
+  }
+
+  it('tells main, re-checks, guards the exit and kills before the tab reads as suspended', async () => {
+    const h = steps()
+    expect(await runSuspend(h.st)).toBe('suspended')
+    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'kill', 'shown suspended'])
+  })
+
+  it('cancels when a message arrives while main is told, and takes the lane back out of the record', async () => {
+    const h = steps({ idle: [true, false] })
+    expect(await runSuspend(h.st)).toBe('cancelled')
+    expect(h.log).toEqual(['check true', 'report +lane', 'check false', 'report -lane'])
+  })
+
+  it('leaves the lane running and not suspended when the kill fails', async () => {
+    const h = steps({ killFails: true })
+    expect(await runSuspend(h.st)).toBe('kill-failed')
+    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'kill', 'guard off', 'report -lane'])
+    expect(h.log).not.toContain('shown suspended')
+  })
+})
+
+describe('idle suspend: a resume that did not come back (review M3)', () => {
+  const SPAWN = NOW - 5_000
+
+  it('is an exit on its own, soon after the spawn, before the transcript moved', () => {
+    expect(failedResume({ spawnedAt: SPAWN, tookTurn: false }, NOW, true)).toBe(true)
+    // Operator killed it (a close, a restart): not a failed resume.
+    expect(failedResume({ spawnedAt: SPAWN, tookTurn: false }, NOW, false)).toBe(false)
+    // It took a turn: it came back, and a later exit is the lane's own.
+    expect(failedResume({ spawnedAt: SPAWN, tookTurn: true }, NOW, true)).toBe(false)
+    // Long after the spawn: an ordinary exit.
+    expect(failedResume({ spawnedAt: NOW - RESUME_CONFIRM_MS, tookTurn: false }, NOW, true)).toBe(false)
+  })
+
+  it('reads a record written after the spawn as the transcript moving', () => {
+    expect(tookTurnSince(new Date(SPAWN + 1_500).toISOString(), SPAWN)).toBe(true)
+    expect(tookTurnSince(ago(120), SPAWN)).toBe(false)
+    expect(tookTurnSince(undefined, SPAWN)).toBe(false)
+  })
+})
+
+describe('idle suspend: restoring suspended tabs at launch (review M2)', () => {
+  const row = (key: string, over: Record<string, unknown> = {}) => ({ key, idleSuspendedAt: ago(60), claudeSessionId: `c-${key}`, ...over })
+  const none = { tabs: [], restoring: [], fromMain: [], liveAtEnd: [] }
+
+  it('restores rows marked suspended, or listed by main, that can be resumed', () => {
+    const rows = [row('a'), row('b', { idleSuspendedAt: undefined }), row('c', { claudeSessionId: undefined }), row('d', { releasedAt: ago(5) })]
+    expect(suspendedRowsToRestore(rows, none).map((r) => r.key)).toEqual(['a'])
+    expect(suspendedRowsToRestore(rows, { ...none, fromMain: ['b'] }).map((r) => r.key)).toEqual(['a', 'b'])
+  })
+
+  it('makes no second tab for a key that has one, is being restored, or was live at the end', () => {
+    const rows = [row('a'), row('b'), row('c'), row('d')]
+    const got = suspendedRowsToRestore(rows, { tabs: ['a'], restoring: ['b'], fromMain: [], liveAtEnd: ['c'] })
+    expect(got.map((r) => r.key)).toEqual(['d'])
+  })
+
+  it('makes one tab for a key that appears twice', () => {
+    expect(suspendedRowsToRestore([row('a'), row('a')], none)).toHaveLength(1)
+  })
+})
+
+describe('idle suspend: keys typed at the suspended pane (review L4)', () => {
+  it('holds printable keys, takes one back on Backspace, and resumes on each', () => {
+    let held = ''
+    for (const key of ['h', 'i', '!', 'Backspace']) {
+      const r = overlayKey(held, { key })
+      expect(r?.resume).toBe(true)
+      held = r!.held
+    }
+    expect(held).toBe('hi')
+  })
+
+  it('resumes on Enter without adding to or sending the held text', () => {
+    expect(overlayKey('draft', { key: 'Enter' })).toEqual({ held: 'draft', resume: true })
+  })
+
+  it('leaves shortcuts and keys that type nothing alone', () => {
+    expect(overlayKey('x', { key: 'k', metaKey: true })).toBeNull()
+    expect(overlayKey('x', { key: 'c', ctrlKey: true })).toBeNull()
+    expect(overlayKey('x', { key: 'ArrowUp' })).toBeNull()
+    expect(overlayKey('x', { key: 'Shift' })).toBeNull()
+  })
+})
+
+describe('idle suspend: the tab a restored row comes back as (review L5)', () => {
+  it('keeps the fan-out index, so the resumed lane takes its own bus name and not its sibling\'s', () => {
+    const tab = placeholderTab({ key: 'k2', cwd: '/w/k2', roleId: 'code', fanIndex: 2, idleSuspendedAt: ago(10), claudeSessionId: 'c2' }, ago(0))
+    expect(tab).toMatchObject({ id: suspendedTabId('k2'), key: 'k2', fanIndex: 2, ended: true, idleSuspendedAt: ago(10), resumeSessionId: 'c2' })
+    expect(isPlaceholderId(tab.id)).toBe(true)
+  })
+
+  it('stamps a row main listed but the renderer had not marked yet', () => {
+    expect(placeholderTab({ key: 'k', cwd: '/w', claudeSessionId: 'c' }, ago(0)).idleSuspendedAt).toBe(ago(0))
   })
 })

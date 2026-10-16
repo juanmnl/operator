@@ -30,12 +30,19 @@ export interface SuspendCandidate {
   lastActivityAt?: string
   /** Last keystroke into the pane, epoch ms. */
   lastKeystrokeAt?: number
+  /** When Operator spawned this pty, epoch ms: a launch, a restart or a resume. A `--resume` with
+   *  no prompt writes no transcript record, so without this a lane resumed by focus reads as quiet
+   *  for as long as it was suspended. Undefined for a pty Operator did not start in this run. */
+  spawnedAt?: number
   /** The pane the user is looking at. */
   focused?: boolean
   /** Text typed into the composer and not sent (lib/lane-keystrokes). */
   unsentInput?: boolean
   /** A submission in the submit queue still waiting for its turn. */
   pendingSubmission?: boolean
+  /** Messages for this lane waiting for it to be ready (`whenLaneReady`) before they are typed.
+   *  They are not in the submit queue yet, so `pendingSubmission` does not see them. */
+  awaitingDelivery?: number
   /** Dispatches and replies to this lane that are queued or held (`heldDeliveriesFor`). */
   heldDeliveries?: number
   /** Background Bash commands and background agents started by this CLI and not finished. Ending
@@ -67,12 +74,15 @@ function ageOf(iso: string | undefined, nowMs: number): number | undefined {
   return Number.isNaN(t) ? undefined : nowMs - t
 }
 
-/** How long the lane has been quiet: since the later of its last transcript record and its last
- *  keystroke. Undefined when the transcript has no timestamp. */
-export function quietFor(c: Pick<SuspendCandidate, 'lastActivityAt' | 'lastKeystrokeAt'>, nowMs: number): number | undefined {
+/** How long the lane has been quiet: since the latest of its last transcript record, its last
+ *  keystroke and its spawn. Undefined when the transcript has no timestamp. */
+export function quietFor(c: Pick<SuspendCandidate, 'lastActivityAt' | 'lastKeystrokeAt' | 'spawnedAt'>, nowMs: number): number | undefined {
   const transcript = ageOf(c.lastActivityAt, nowMs)
   if (transcript === undefined) return undefined
-  return c.lastKeystrokeAt === undefined ? transcript : Math.min(transcript, nowMs - c.lastKeystrokeAt)
+  let quiet = transcript
+  if (c.lastKeystrokeAt !== undefined) quiet = Math.min(quiet, nowMs - c.lastKeystrokeAt)
+  if (c.spawnedAt !== undefined) quiet = Math.min(quiet, nowMs - c.spawnedAt)
+  return quiet
 }
 
 const BETWEEN_TURNS = new Set(['idle', 'waiting'])
@@ -95,6 +105,7 @@ export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: numb
   // running (lib/cli-update). `asking` is an open AskUserQuestion.
   if (!BETWEEN_TURNS.has(c.phase)) return { suspend: false, why: `it is ${c.phase}` }
   if (c.pendingSubmission) return { suspend: false, why: 'a message to it has not become a turn yet' }
+  if ((c.awaitingDelivery ?? 0) > 0) return { suspend: false, why: 'a message to it is waiting for it to be ready' }
   if (c.unsentInput) return { suspend: false, why: 'it has unsent text in its input' }
   if ((c.heldDeliveries ?? 0) > 0) return { suspend: false, why: 'a dispatch or reply to it is queued or held' }
   if ((c.backgroundTasks ?? 0) > 0) return { suspend: false, why: 'it has background tasks running' }
@@ -183,6 +194,130 @@ export function laneReady(o: { spawnedAt?: number; observed: boolean }, nowMs: n
   const age = nowMs - o.spawnedAt
   if (age >= LANE_READY_TIMEOUT_MS) return true
   return o.observed && age >= LANE_SETTLE_MS
+}
+
+// ── ending the CLI ────────────────────────────────────────────────────────────────────────────
+
+/** The steps of one suspend, from the view. */
+export interface SuspendSteps {
+  /** Re-checks what can change while the suspend runs: a message arrived, someone typed or looked. */
+  stillIdle: () => boolean
+  /** Tell main the suspended set, with this lane in it (`true`) or not. */
+  report: (withThisLane: boolean) => Promise<void>
+  /** Mark the pty's coming exit as not the lane finishing (`true`), or take that back. */
+  guardExit: (on: boolean) => void
+  kill: () => Promise<void>
+  /** Show the tab as suspended: from here routing resumes it instead of typing into it. */
+  markSuspended: () => void
+}
+
+/** One suspend, in the order that keeps a message from starting a second CLI (review M4).
+ *
+ *  Main is told first, so a crash before the kill still restores the lane suspended; main ignores
+ *  a suspended key whose pty is still alive. The exit guard is set before the kill, so the exit
+ *  event finds it whenever it lands. The tab reads as suspended only after the kill: until then it
+ *  is a live lane, a message routed to it is typed into it, and the re-check after the report
+ *  cancels the suspend. A kill that fails leaves the lane running and not suspended. */
+export async function runSuspend(st: SuspendSteps): Promise<'suspended' | 'cancelled' | 'kill-failed'> {
+  if (!st.stillIdle()) return 'cancelled'
+  await st.report(true)
+  if (!st.stillIdle()) {
+    await st.report(false)
+    return 'cancelled'
+  }
+  st.guardExit(true)
+  try {
+    await st.kill()
+  } catch {
+    st.guardExit(false)
+    await st.report(false)
+    return 'kill-failed'
+  }
+  st.markSuspended()
+  return 'suspended'
+}
+
+// ── a resume that did not come back ──────────────────────────────────────────────────────────
+
+/** How long after a resume an exit on its own counts as the resume failing. `--resume` of a
+ *  transcript Claude Code has deleted (`cleanupPeriodDays`) prints "No conversation found" and
+ *  exits within a second or two. */
+export const RESUME_CONFIRM_MS = 60_000
+
+/** Did a resumed CLI exit without coming back? `tookTurn`: its transcript gained a record after the
+ *  spawn. `selfExit`: it exited on its own, not by Operator's kill. Such an exit is not the lane
+ *  finishing, so its tasks are not completed, and the message it carried was never delivered. */
+export function failedResume(w: { spawnedAt: number; tookTurn: boolean }, exitMs: number, selfExit: boolean): boolean {
+  return selfExit && !w.tookTurn && exitMs - w.spawnedAt < RESUME_CONFIRM_MS
+}
+
+/** Has a resumed lane's transcript moved since its spawn? */
+export function tookTurnSince(lastActivityAt: string | undefined, spawnedAt: number): boolean {
+  const t = lastActivityAt ? Date.parse(lastActivityAt) : NaN
+  return !Number.isNaN(t) && t >= spawnedAt
+}
+
+// ── restoring suspended tabs at launch ───────────────────────────────────────────────────────
+
+/** Which saved rows come back as suspended tabs. One tab per key: a key that already has a tab, or
+ *  whose restore is in flight, gets none, and nor does a key main saw live at the end of the last
+ *  run (crash auto-resume owns that one). */
+export function suspendedRowsToRestore<R extends { key: string; idleSuspendedAt?: string; claudeSessionId?: string; releasedAt?: string }>(
+  rows: readonly R[],
+  o: { tabs: Iterable<string>; restoring: Iterable<string>; fromMain: Iterable<string>; liveAtEnd: Iterable<string> },
+): R[] {
+  const taken = new Set([...o.tabs, ...o.restoring, ...o.liveAtEnd])
+  const fromMain = new Set(o.fromMain)
+  const out: R[] = []
+  for (const r of rows) {
+    if (!(r.idleSuspendedAt || fromMain.has(r.key)) || !r.claudeSessionId || r.releasedAt) continue
+    if (taken.has(r.key)) continue
+    taken.add(r.key)
+    out.push(r)
+  }
+  return out
+}
+
+/** The tab a restored suspended row comes back as: no pty, a placeholder id, and everything the
+ *  resume needs to start the CLI as it was, the fan-out index included, since the lane's bus name is
+ *  built from it (review L5). The effort is the row's as written; the view migrates it. */
+export function placeholderTab<R extends {
+  key: string; cwd: string; model?: string; effortLevel?: string; permissionMode?: string
+  worktreeBranch?: string; worktreeBase?: string; sourceCwd?: string; projectId?: string; roleId?: string
+  fanIndex?: number; claudeVersion?: string | null; idleSuspendedAt?: string; claudeSessionId?: string
+}>(sv: R, nowIso: string) {
+  return {
+    id: suspendedTabId(sv.key),
+    key: sv.key,
+    cwd: sv.cwd,
+    model: sv.model,
+    effortLevel: sv.effortLevel,
+    permissionMode: sv.permissionMode,
+    worktreeBranch: sv.worktreeBranch,
+    worktreeBase: sv.worktreeBase,
+    sourceCwd: sv.sourceCwd,
+    projectId: sv.projectId,
+    roleId: sv.roleId,
+    fanIndex: sv.fanIndex,
+    claudeVersion: sv.claudeVersion ?? null,
+    ended: true as const,
+    idleSuspendedAt: sv.idleSuspendedAt ?? nowIso,
+    resumeSessionId: sv.claudeSessionId,
+  }
+}
+
+// ── keys typed at the suspended pane ─────────────────────────────────────────────────────────
+
+/** What a key typed at the suspended pane does to the text held for the resumed lane. Printable
+ *  keys are kept and Backspace takes one back, so the resumed composer gets what was typed. Enter
+ *  only resumes: the held text is typed into the composer and not sent, so nothing is submitted
+ *  that the person has not seen. Null: the key is not ours (a shortcut, an arrow). */
+export function overlayKey(held: string, e: { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean }): { held: string; resume: boolean } | null {
+  if (e.metaKey || e.ctrlKey) return null
+  if (e.key === 'Enter') return { held, resume: true }
+  if (e.key === 'Backspace') return { held: held.slice(0, -1), resume: true }
+  if (e.key.length === 1) return { held: held + e.key, resume: true }
+  return null
 }
 
 /** What resuming a suspended lane needs from the view. */

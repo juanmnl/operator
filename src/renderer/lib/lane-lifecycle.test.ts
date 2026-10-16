@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  laneCloseDecision, planLaneCloses, releasedClosePlan, afterRetireClose, type LaneSnapshot, type LaneClosePolicy,
+  laneCloseDecision, planLaneCloses, releasedClosePlan, afterRetireClose, closedLaneRow, type LaneSnapshot, type LaneClosePolicy,
   DEFAULT_KEEP_WARM_MINUTES, DEFAULT_QUIET_MINUTES,
   doneStampsFrom, DONE_SIGNAL_MAX_AGE_MS,
 } from './lane-lifecycle'
@@ -258,5 +258,53 @@ describe('afterRetireClose with a dead old lane', () => {
   it('a live lane keeps the round-2 answers', () => {
     expect(afterRetireClose('took-work', true)).toBe('send-to-old-lane')
     expect(afterRetireClose('unconfirmed', true)).toBe('leave-queued')
+  })
+})
+
+describe('a lane suspended while idle (review H2)', () => {
+  // No pty and no phase: what the tick builds for a suspended tab.
+  const asleep = (over: Partial<LaneSnapshot> = {}) => lane({ ended: true, suspended: true, phase: undefined, reportedDoneAt: undefined, ...over })
+
+  it('closes on the went-quiet backstop, like a live lane that never reported', () => {
+    expect(laneCloseDecision(asleep({ lastActivityAt: ago(119) }), NOW, POLICY).close).toBe(false)
+    const d = laneCloseDecision(asleep({ lastActivityAt: ago(120) }), NOW, POLICY)
+    expect(d.close).toBe(true)
+    expect(d.close && d.reason).toBe('went-quiet')
+  })
+
+  it('was waiting when it was suspended, and that does not keep it forever', () => {
+    expect(laneCloseDecision(asleep({ phase: 'waiting', lastActivityAt: ago(200) }), NOW, POLICY).close).toBe(true)
+  })
+
+  it('a lane that reported done is closed on the same backstop, with its work marked done', () => {
+    // Not the keep-warm window: that would close it on the tick after it was suspended.
+    expect(laneCloseDecision(asleep({ reportedDoneAt: ago(40), lastActivityAt: ago(40) }), NOW, POLICY).close).toBe(false)
+    const d = laneCloseDecision(asleep({ reportedDoneAt: ago(130), lastActivityAt: ago(130) }), NOW, POLICY)
+    expect(d.close && d.reason).toBe('reported-done')
+  })
+
+  it('keeps the guards a live lane has: open work, the coordinator, auto-close off', () => {
+    expect(laneCloseDecision(asleep({ lastActivityAt: ago(300), openWork: 1 }), NOW, POLICY).close).toBe(false)
+    expect(laneCloseDecision(asleep({ lastActivityAt: ago(300), roleId: 'operator' }), NOW, POLICY).close).toBe(false)
+    expect(laneCloseDecision(asleep({ lastActivityAt: ago(300) }), NOW, { keepWarmMs: 0, quietMs: 120 * MIN }).close).toBe(false)
+  })
+
+  it('a pty that exited for good is still not the lifecycle\'s', () => {
+    expect(laneCloseDecision(lane({ ended: true, lastActivityAt: ago(300), reportedDoneAt: undefined }), NOW, POLICY).close).toBe(false)
+  })
+
+  it('is planned with the live lanes', () => {
+    const plan = planLaneCloses([asleep({ terminalId: 'suspended:k', lastActivityAt: ago(180) }), lane({ terminalId: 't2', lastActivityAt: ago(2) })], NOW, POLICY)
+    expect(plan.close.map((c) => c.lane.terminalId)).toEqual(['suspended:k'])
+  })
+})
+
+describe('the saved row of a closed lane', () => {
+  it('is stamped closed with its reason and loses the idle suspension, so it is neither restored suspended nor a claim', () => {
+    const row = { key: 'k', terminalId: 'suspended:k', idleSuspendedAt: ago(200), claudeSessionId: 'c1', worktreeBranch: 'operator/x' }
+    expect(closedLaneRow(row, 'went-quiet', ago(0))).toEqual({
+      key: 'k', claudeSessionId: 'c1', worktreeBranch: 'operator/x',
+      terminalId: undefined, suspendedAt: ago(0), suspendedReason: 'went-quiet', idleSuspendedAt: undefined,
+    })
   })
 })

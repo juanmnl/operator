@@ -303,8 +303,10 @@ export function ProjectRail({
   // A group's live members, with its LANES in roster order — see `orderByRoster`. Ordering here
   // rather than at the render site is what makes both widths agree: the orbs and the rows read
   // the same list, so a lane dragged at 264 is in the same place at 70.
+  // A lane SUSPENDED WHILE IDLE stays on the rail (lib/idle-suspend): its status is `ended`, but it
+  // is still the project's lane, drawn dimmed with the word "suspended", and opening it resumes it.
   const liveOf = (projectId: string) => {
-    const live = sessions.filter((s) => s.projectId === projectId && s.status !== 'ended')
+    const live = sessions.filter((s) => s.projectId === projectId && (s.status !== 'ended' || !!s.suspended))
     const roster = projects.find((p) => p.id === projectId)?.roster ?? []
     return orderByRoster(live, roster)
   }
@@ -510,7 +512,7 @@ export function ProjectRail({
             >
               <GroupHeader
                 project={p}
-                activity={activities[p.id] ?? { live: 0, waiting: 0, lanes: p.roster?.length ?? 0, status: 'idle' }}
+                activity={activities[p.id] ?? { live: 0, suspended: 0, waiting: 0, lanes: p.roster?.length ?? 0, status: 'idle' }}
                 open={open}
                 collapsed={collapsed}
                 dragging={drag === p.id}

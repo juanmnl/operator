@@ -22,7 +22,7 @@ const p = (id: string, over: Partial<Project> = {}): Project => ({
 })
 
 const act = (over: Partial<ProjectActivity> = {}): ProjectActivity =>
-  ({ live: 0, waiting: 0, lanes: 6, status: 'idle', ...over })
+  ({ live: 0, suspended: 0, waiting: 0, lanes: 6, status: 'idle', ...over })
 
 describe('isActiveProject', () => {
   it('treats a record with no archivedAt as active', () => {
@@ -62,6 +62,8 @@ describe('isOnRail — the rail\'s membership, and therefore Close\'s gate', () 
 
   it('is false for a project that is neither live nor open — nothing to take off', () => {
     expect(isOnRail(p('uwazi_web'), act({ live: 0 }), 'mantel')).toBe(false)
+    // A project whose only lanes are suspended while idle keeps its rail entry.
+    expect(isOnRail(p('uwazi_web'), act({ live: 0, suspended: 1 }), 'mantel')).toBe(true)
     expect(isOnRail(p('uwazi_web'), undefined, null)).toBe(false)
   })
 
@@ -203,12 +205,17 @@ describe('shelvingMoves — the honesty check behind the Shelve toast', () => {
 })
 
 describe('closePlan — what Close will end', () => {
-  const s = (o: Partial<{ id: string; projectId: string; status: string; phase: string; terminalId: string }>) =>
+  const s = (o: Partial<{ id: string; projectId: string; status: string; phase: string; terminalId: string; suspended: boolean }>) =>
     ({ id: 'x', projectId: 'p', status: 'active', phase: 'waiting', terminalId: 't1', ...o })
 
   it('is a pure shelve when nothing is live', () => {
     expect(closePlan('p', [])).toEqual({ sessions: [], running: 0 })
     expect(closePlan('p', [s({ id: 'a', status: 'ended' })])).toEqual({ sessions: [], running: 0 })
+  })
+
+  it('ends a lane suspended while idle, which reads as ended but keeps its tab and worktree', () => {
+    expect(closePlan('p', [s({ id: 'a', status: 'ended', suspended: true }), s({ id: 'b' })]))
+      .toEqual({ sessions: ['a', 'b'], running: 0 })
   })
 
   it('collects every live lane of THIS project', () => {

@@ -807,6 +807,9 @@ export interface SavedSession {
    *  and worktree directory gone. A row with this set is restored as a suspended tab and resumed
    *  with `--resume` on focus, typing or a message; the worktree reaper counts it as a claim. */
   idleSuspendedAt?: string
+  /** 1-based position in a fan-out launch, so a relaunched or resumed lane keeps the bus name it
+   *  launched with (`laneBusName`) instead of taking index 1 from a sibling. */
+  fanIndex?: number
   lastActiveAt: string
 }
 
