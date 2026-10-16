@@ -41,6 +41,17 @@ export function projectActivity(
   return { live: open.length, suspended, waiting, lanes, status }
 }
 
+/** The lanes "Close project" ends: the running ones and the ones suspended while idle, which it
+ *  closes too (`closePlan`). The menu counted only the running ones (QA O4). */
+export function lanesToEnd(a: Pick<ProjectActivity, 'live' | 'suspended'> | undefined): number {
+  return (a?.live ?? 0) + (a?.suspended ?? 0)
+}
+
+/** The Close item's label, shared by the gallery card and the rail menu. */
+export function closeProjectLabel(lanes: number): string {
+  return lanes > 0 ? `Close project · end ${lanes} agent${lanes === 1 ? '' : 's'}` : 'Close project'
+}
+
 /** The one-phrase read for a project: what it's doing, in words rather than a bare count.
  *  `accent` marks the phrases worth accent ink — activity, never mere existence. */
 export function projectActivityLabel(a: ProjectActivity): { text: string; accent: boolean } | null {

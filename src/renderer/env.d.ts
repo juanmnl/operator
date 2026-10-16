@@ -183,6 +183,10 @@ declare global {
       /** The lanes this renderer holds suspended while idle (lib/idle-suspend), the whole list each
        *  time. Main records them in last-run.json so a relaunch restores them suspended. */
       setSuspendedLanes?: (lanes: Array<{ key: string; at: string }>) => Promise<void>
+      /** The Claude session ids among `ids` whose transcript exists and holds a user turn, the ones
+       *  `--resume` can open. A lane without one is never suspended while idle and a saved row
+       *  without one is not offered for resume. */
+      conversationsWithTurn?: (ids: string[]) => Promise<string[]>
       /** The crash auto-resume queue has finished; main's crash-loop guard counts from now. */
       crashResumeDone?: () => Promise<void>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose

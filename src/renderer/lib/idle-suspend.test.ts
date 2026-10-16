@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
-  suspendDecision, planSuspends, needsPortCheck, servesDevServer, heldDeliveriesFor, quietFor,
+  suspendDecision, planSuspends, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, quietFor,
   laneReady, LaneWaker, LANE_SETTLE_MS, LANE_READY_TIMEOUT_MS, HELD_RECORD_MAX_AGE_MS,
   suspendedTabId, isPlaceholderId, type SuspendCandidate,
   failedResume, tookTurnSince, RESUME_CONFIRM_MS, suspendedRowsToRestore, overlayKey, runSuspend, placeholderTab,
   LaneGate, HeldKeys, spawnStampsFromList, closeUnderGate, GATE_WAIT_CAP_MS, rowAfterClose, typeHeldKeys,
+  backToSuspended, offeredForResume,
 } from './idle-suspend'
 import { hasUnsentInput, noteDraftKey, lastKeystrokeAt } from './lane-keystrokes'
 import type { DispatchRecord } from '../../shared/types'
@@ -20,6 +21,7 @@ const lane = (over: Partial<SuspendCandidate> = {}): SuspendCandidate => ({
   phase: 'waiting',
   lastActivityAt: ago(45),
   resumable: true,
+  conversation: true,
   devServer: false,
   ...over,
 })
@@ -87,6 +89,26 @@ describe('idle suspend: eligibility', () => {
     expect(suspendDecision(lane({ ended: true }), NOW, IDLE).suspend).toBe(false)
     expect(suspendDecision(lane({ released: true }), NOW, IDLE).suspend).toBe(false)
     expect(suspendDecision(lane({ inFlight: true }), NOW, IDLE).suspend).toBe(false)
+  })
+
+  // QA final pass, D2: `--resume` of a lane never given a turn prints "No conversation found", and
+  // the lane was lost the first time it was suspended.
+  it('never suspends a lane whose transcript has no turn, and reads the transcript before deciding', () => {
+    expect(suspendDecision(lane({ conversation: false }), NOW, IDLE)).toEqual({ suspend: false, why: 'it has no turn to resume' })
+    expect(suspendDecision(lane({ conversation: undefined }), NOW, IDLE)).toEqual({ suspend: false, why: 'its transcript has not been read', checkConversation: true })
+    expect(planSuspends([lane({ terminalId: 'fresh', conversation: false }), lane({ terminalId: 'unread', conversation: undefined })], NOW, IDLE)).toEqual([])
+  })
+
+  it('reads the transcript only of a lane that passed every earlier rule, and the ports only after it', () => {
+    const lanes = [
+      lane({ terminalId: 'a', conversation: undefined, devServer: undefined }),
+      lane({ terminalId: 'b', conversation: undefined, phase: 'running' }),
+      lane({ terminalId: 'c', conversation: undefined, lastActivityAt: ago(5) }),
+      lane({ terminalId: 'd', conversation: true, devServer: undefined }),
+      lane({ terminalId: 'e', conversation: false, devServer: undefined }),
+    ]
+    expect(needsConversationCheck(lanes, NOW, IDLE).map((l) => l.terminalId)).toEqual(['a'])
+    expect(needsPortCheck(lanes, NOW, IDLE).map((l) => l.terminalId)).toEqual(['d'])
   })
 
   it('does not read the ports of a lane that fails an earlier rule', () => {
@@ -777,5 +799,30 @@ describe('idle suspend: the tab a restored row comes back as (review L5)', () =>
 
   it('stamps a row main listed but the renderer had not marked yet', () => {
     expect(placeholderTab({ key: 'k', cwd: '/w', claudeSessionId: 'c' }, ago(0)).idleSuspendedAt).toBe(ago(0))
+  })
+})
+
+// QA final pass, D2: a lane suspended before its first turn could not be resumed, and the failed
+// resume dropped it from the rail with no word.
+describe('a resume that found no conversation (QA D2)', () => {
+  it('puts the tab back as suspended, with the same thread', () => {
+    const resumed = { id: 't7', key: 'k', ended: false, selfExited: undefined as boolean | undefined, idleSuspendedAt: undefined as string | undefined, resumeSessionId: undefined as string | undefined, quietSince: undefined as string | undefined }
+    const exited = { ...resumed, ended: true, selfExited: true }
+    expect(backToSuspended(exited, { suspendedAt: ago(5), claudeSessionId: 'c1', quietSince: ago(65) })).toEqual({
+      id: 't7', key: 'k', ended: true, selfExited: undefined, idleSuspendedAt: ago(5), resumeSessionId: 'c1', quietSince: ago(65),
+    })
+  })
+
+  it('the resume card leaves out rows known to have no turn, and keeps rows with no session id', () => {
+    const rows = [{ key: 'a', claudeSessionId: 'has' }, { key: 'b', claudeSessionId: 'none' }, { key: 'c' }]
+    expect(offeredForResume(rows, new Set(['none'])).map((r) => r.key)).toEqual(['a', 'c'])
+    expect(offeredForResume(rows, new Set()).map((r) => r.key)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('a session that never wrote a record has not come back, so its exit is a failed resume', () => {
+    const spawnedAt = NOW
+    // `lastRecordAt` is absent until the tailer reads a record; `lastActivityAt` would read "now".
+    expect(tookTurnSince(undefined, spawnedAt)).toBe(false)
+    expect(failedResume({ spawnedAt, tookTurn: tookTurnSince(undefined, spawnedAt) }, spawnedAt + 2_000, true)).toBe(true)
   })
 })

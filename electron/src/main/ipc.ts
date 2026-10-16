@@ -15,6 +15,7 @@ import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
 import type { TerminalManager } from './terminals'
 import type { Transcript } from './transcript'
+import { sessionsWithTurn } from './transcript'
 import type { ChatStore, ArtifactStore } from './chat-store'
 import type { QuitGuard } from './quit'
 import { SPAWN_VERSION_WAIT_MS, type ClaudeVersionWatcher } from './claude-version'
@@ -193,6 +194,8 @@ export function registerIpc(d: Deps): void {
     // files open in there has to be gone first, not merely signalled.
     terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
+    // Which of these Claude sessions `--resume` can open (transcript.ts `sessionsWithTurn`).
+    conversationsWithTurn: async (ids) => sessionsWithTurn(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []),
     claudeVersion: () => d.claudeVersion.resolve(),
     // The current list, for a renderer that (re)loads after an `onCheckoutGone` event went out.
     checkoutGoneList: () => d.checkouts?.list() ?? [],

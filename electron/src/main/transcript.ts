@@ -12,7 +12,9 @@
 // its own end.
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { open, readdir, stat, mkdir, writeFile } from 'node:fs/promises'
+import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { operatorDir } from './store'
@@ -81,6 +83,52 @@ async function findTranscript(sessionId: string): Promise<string | null> {
     try { if ((await stat(p)).isFile()) return p } catch { /* not this one */ }
   }
   return null
+}
+
+/** Does this transcript hold a turn `--resume` can open? Claude Code writes the file before the
+ *  first prompt when it has records to keep (a lane with Remote Control on gets `custom-title`,
+ *  `bridge-session`, `last-prompt` and the like), and `--resume` of such a file, or of an id with
+ *  no file at all, prints "No conversation found" and exits. A `user` record that is not meta is
+ *  the turn; a prompt and a typed slash command both write one. Stops at the first one. */
+export async function hasUserTurn(path: string): Promise<boolean> {
+  let stream
+  try { stream = createReadStream(path, { encoding: 'utf8' }) } catch { return false }
+  const lines = createInterface({ input: stream, crlfDelay: Infinity })
+  try {
+    for await (const line of lines) {
+      if (!line.includes('"user"')) continue
+      try {
+        const v = JSON.parse(line) as Record<string, unknown>
+        if (v.type === 'user' && v.isMeta !== true && v.isSidechain !== true) return true
+      } catch { /* a partial or foreign line */ }
+    }
+    return false
+  } catch {
+    return false
+  } finally {
+    lines.close()
+    stream.destroy()
+  }
+}
+
+/** The ids among `sessionIds` whose transcript exists and holds a turn (`hasUserTurn`). For idle-lane
+ *  suspension: a lane without one cannot be resumed, so it is never suspended, and a saved row
+ *  without one is not offered for resume. `projects` is for tests. */
+export async function sessionsWithTurn(sessionIds: readonly string[], projects = join(homedir(), '.claude', 'projects')): Promise<string[]> {
+  let dirs: string[]
+  try { dirs = (await readdir(projects, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => join(projects, e.name)) } catch { return [] }
+  const out: string[] = []
+  for (const id of new Set(sessionIds)) {
+    // A session id is a uuid; anything else is not looked up as a path.
+    if (!/^[0-9a-f-]{8,64}$/i.test(id)) continue
+    for (const dir of dirs) {
+      const p = join(dir, `${id}.jsonl`)
+      try { if (!(await stat(p)).isFile()) continue } catch { continue }
+      if (await hasUserTurn(p)) out.push(id)
+      break
+    }
+  }
+  return out
 }
 
 /** The session phase, from the signals the tailer tracks. Pure so it can be tested without a
@@ -849,6 +897,7 @@ export class Track {
       lastToolName: this.lastToolName,
       startedAt: this.startedAt ?? nowIso(),
       lastActivityAt: this.lastActivityAt || nowIso(),
+      lastRecordAt: this.lastActivityAt || undefined,
       terminalId: this.terminalId,
       permissionMode: this.track.permissionMode ?? undefined,
       model: this.model ?? undefined,

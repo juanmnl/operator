@@ -8,7 +8,7 @@ import {
   resolveAgentConfig, remoteControlLaunch, clearSeededRoleFields, clearCoordinatorWorktree, migrateGlobalsToLanePins, type LegacyGlobalDefaults,
 } from '../lib/model-config'
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
-import { projectActivity, type ProjectActivity } from '../lib/project-status'
+import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
@@ -26,7 +26,7 @@ import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSen
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
-import { planSuspends, quietFor, runSuspend, needsPortCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
@@ -626,7 +626,9 @@ export function DashboardView() {
         if (!s.id.startsWith('local-')) submitQueue.observable(s.terminalId)
         // A resumed lane whose transcript moved came back (lib/idle-suspend `failedResume`).
         const resumed = resumeWatchRef.current.get(s.terminalId)
-        if (resumed && tookTurnSince(s.lastActivityAt, resumed.spawnedAt)) resumeWatchRef.current.delete(s.terminalId)
+        // `lastRecordAt`, not `lastActivityAt`: that one reads "now" before any record is read, so a
+        // `--resume` that found nothing read as having come back (QA D2).
+        if (resumed && tookTurnSince(s.lastRecordAt, resumed.spawnedAt)) resumeWatchRef.current.delete(s.terminalId)
         // …and whether it is mid-turn, which is what tells the queue that silence is not yet a
         // verdict. A lane whose pty is gone is never "busy": that submission has nothing left to
         // wait for and must be reported.
@@ -1135,6 +1137,50 @@ export function DashboardView() {
   /** When Operator spawned each pty, so a message typed into a lane that is still starting can wait
    *  for it (`whenLaneReady`). Absent for a lane it did not just start. */
   const spawnedAtRef = useRef(new Map<string, number>())
+  /** THE ONE WAY A LANE'S PTY IS SPAWNED here, so every path stamps `spawnedAtRef`: a launch, a
+   *  restore (the project-resume card), and a resume in place. The restore path did not, and the
+   *  lanes the card brought back read as quiet since their last transcript record and were
+   *  suspended again on the next tick (QA final pass, O2). */
+  const spawnLanePty = async (cwd: string, launchOptions: Record<string, unknown>) => {
+    const result = await window.operator.terminalSpawn(cwd, launchOptions)
+    if (result) spawnedAtRef.current.set(result.terminalId, Date.now())
+    return result
+  }
+  /** Claude session ids whose transcript holds a turn (main `conversationsWithTurn`). Positives only:
+   *  a turn once written stays, so each id is read until it has one. */
+  const conversationSeenRef = useRef(new Set<string>())
+  /** Can `--resume` open this session? Undefined when it could not be read; callers go ahead then. */
+  const hasConversation = async (claudeSessionId: string): Promise<boolean | undefined> => {
+    if (conversationSeenRef.current.has(claudeSessionId)) return true
+    try {
+      const have = await window.operator.conversationsWithTurn?.([claudeSessionId])
+      if (!have) return undefined
+      if (!have.includes(claudeSessionId)) return false
+      conversationSeenRef.current.add(claudeSessionId)
+      return true
+    } catch { return undefined }
+  }
+  /** Claude session ids of saved rows whose transcript has no turn (QA D2): the resume card and
+   *  "Resume project" leave those rows out. Read again when the rows' ids change or a lane comes or goes. */
+  const [noTurnIds, setNoTurnIds] = useState<ReadonlySet<string>>(() => new Set())
+  const noTurnIdsRef = useRef(noTurnIds)
+  noTurnIdsRef.current = noTurnIds
+  const savedIdsKey = useMemo(() => [...new Set(savedSessions.map((x) => x.claudeSessionId).filter((x): x is string => !!x))].sort().join(','), [savedSessions])
+  const terminalCount = terminals.length
+  useEffect(() => {
+    const ids = savedIdsKey ? savedIdsKey.split(',').filter((x) => !conversationSeenRef.current.has(x)) : []
+    if (!ids.length) { setNoTurnIds((prev) => (prev.size ? new Set() : prev)); return }
+    let live = true
+    Promise.resolve(window.operator.conversationsWithTurn?.(ids))
+      .then((have) => {
+        if (!live || !have) return
+        for (const id of have) conversationSeenRef.current.add(id)
+        const none = ids.filter((x) => !conversationSeenRef.current.has(x))
+        setNoTurnIds((prev) => (prev.size === none.length && none.every((x) => prev.has(x)) ? prev : new Set(none)))
+      })
+      .catch(() => { /* unknown: every row stays offered, and a restore checks again */ })
+    return () => { live = false }
+  }, [savedIdsKey, terminalCount])
   /** Resolves once a just-spawned lane can take a typed message (lib/idle-suspend `laneReady`). ONE
    *  promise per lane, so messages waiting on the same lane are typed in the order they arrived. A
    *  lane Operator did not just start resolves at once. */
@@ -1363,8 +1409,11 @@ export function DashboardView() {
   const closeProject = useCallback(async (id: string) => {
     const project = projectsRef.current.find((p) => p.id === id)
     if (!project) return
-    const plan = closePlan(id, sessionsRef.current)
-    const live = sessionsRef.current.filter((s) => plan.sessions.includes(s.id))
+    // The rail's sessions, not the observer's: a suspended lane has no observed session, so the
+    // observer's list never carried it, and closing a project left its suspended lanes behind.
+    const railSessions = sidebarSessionsRef.current
+    const plan = closePlan(id, railSessions)
+    const live = railSessions.filter((s) => plan.sessions.includes(s.id))
 
     // CLOSING IS A STATE, and it is rendered immediately. The old sequence awaited every pty
     // death before anything at all happened on screen, so with several lanes the project just sat
@@ -1649,7 +1698,7 @@ export function DashboardView() {
   const exitCompleteRef = useRef<(id: string, selfExit?: boolean) => void>(() => {})
   /** Lanes just resumed from idle suspension whose transcript has not moved since the spawn, with
    *  the message that rode on the command line (lib/idle-suspend `failedResume`). */
-  const resumeWatchRef = useRef(new Map<string, { spawnedAt: number; message?: string }>())
+  const resumeWatchRef = useRef(new Map<string, { spawnedAt: number; message?: string; back?: { suspendedAt: string; claudeSessionId: string; quietSince?: string } }>())
   exitCompleteRef.current = (id: string, selfExit = false) => {
     if (restartedFromRef.current.has(id)) return
     const watch = resumeWatchRef.current.get(id)
@@ -1661,7 +1710,18 @@ export function DashboardView() {
       const tab = terminalsRef.current.find((t) => t.id === id)
       const name = (projectsRef.current.find((p) => p.id === tab?.projectId)?.roster ?? []).find((r) => r.id === tab?.roleId)?.name ?? tab?.roleId ?? 'A lane'
       if (watch.message) reportUndelivered(id, watch.message, 'resume')
-      pushToast({ kind: 'error', text: `${name} exited right after resuming`, detail: 'Its tasks were left open. Its conversation may no longer exist.' })
+      // A suspended lane goes back to suspended, so it stays on the rail with its row, and focus
+      // does not retry it on its own (QA D2). The exit handler's `ended` mark keeps these fields.
+      const back = watch.back
+      if (back && tab) {
+        wakeFailedRef.current.add(tab.key)
+        terminalsRef.current = terminalsRef.current.map((t) => (t.id === id ? backToSuspended(t, back) : t))
+        setTerminals((prev) => prev.map((t) => (t.id === id ? backToSuspended(t, back) : t)))
+        void reportSuspended(terminalsRef.current)
+      }
+      pushToast({ kind: 'error', text: `${name} exited right after resuming`, detail: back
+        ? 'Its conversation was not found. It stays suspended with its tasks open; close it and start the lane again if it keeps failing.'
+        : 'Its tasks were left open. Its conversation may no longer exist.' })
       return
     }
     const tab = terminals.find((t) => t.id === id)
@@ -3210,9 +3270,8 @@ export function DashboardView() {
       const key = (count === 1 ? opts?.resume?.key : undefined) ?? crypto.randomUUID()
       launchOptions.laneKey = key
 
-      const result = await window.operator.terminalSpawn(spawnCwd, launchOptions)
+      const result = await spawnLanePty(spawnCwd, launchOptions)
       if (!result) continue
-      spawnedAtRef.current.set(result.terminalId, Date.now())
 
       const tab: TerminalTab = {
         id: result.terminalId,
@@ -3599,6 +3658,12 @@ export function DashboardView() {
         if (!opts?.quiet) pushToast({ kind: 'info', text: `${saved.customName || saved.roleId || 'This lane'} finished`, detail: 'It released its worktree with worktree_done, so the worktree is not rebuilt.' })
         return 'released'
       }
+      // NOTHING TO RESUME (QA D2): `--resume` of a session never given a turn prints "No
+      // conversation found" and exits. The row is kept; the resume card no longer offers it.
+      if (resume && saved.claudeSessionId && await hasConversation(saved.claudeSessionId) === false) {
+        pushToast({ kind: 'error', text: `Could not resume ${saved.customName || saved.roleId || 'this lane'}`, detail: 'It never took a turn, so there is no conversation to resume. Start the lane again from the Team tab.' })
+        return 'failed'
+      }
       if (plan === 'rebuild' && saved.worktreeBranch && saved.sourceCwd) {
         const made = await window.operator.worktreeCreate(saved.sourceCwd, saved.worktreeBranch, saved.roleId)
         if (made && !('error' in made)) {
@@ -3648,8 +3713,11 @@ export function DashboardView() {
       if (await conversationLive()) return 'skipped'
       // Restore spawns directly into the saved cwd (the worktree path persists
       // across quits), or into the one just reattached for a suspended lane.
-      const result = await window.operator.terminalSpawn(cwd, launchOptions)
+      const result = await spawnLanePty(cwd, launchOptions)
       if (!result) return 'failed'
+      // Watched like a suspended lane's resume: a `--resume` that found no conversation exits at once,
+      // and that is said, not taken for the lane finishing (QA D2).
+      if (launchOptions.resumeSessionId) resumeWatchRef.current.set(result.terminalId, { spawnedAt: spawnedAtRef.current.get(result.terminalId) ?? Date.now() })
 
       const tab: TerminalTab = {
         id: result.terminalId,
@@ -3705,7 +3773,7 @@ export function DashboardView() {
     // Read now, not from the render that built this callback; `handleRestoreSession` checks each
     // lane again before it spawns.
     const liveKeys = new Set(terminalsRef.current.map((t) => t.key))
-    const toRestore = savedSessions
+    const toRestore = offeredForResume(savedSessions, noTurnIdsRef.current)
       .filter((s) => s.projectId === projectId && !liveKeys.has(s.key))
       .filter((s) => !opts?.skipSuspended || (!s.idleSuspendedAt && !opts.skipKeys?.has(s.key)))
       .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt)) // oldest first → sidebar keeps its familiar order
@@ -3949,9 +4017,8 @@ export function DashboardView() {
         initialPrompt: opts.initialPrompt,
       },
     )
-    const result = await window.operator.terminalSpawn(opts.cwd ?? tab.cwd, { ...launchOptions, laneKey: tab.key })
+    const result = await spawnLanePty(opts.cwd ?? tab.cwd, { ...launchOptions, laneKey: tab.key })
     if (!result) return null
-    spawnedAtRef.current.set(result.terminalId, Date.now())
     const next: TerminalTab = {
       ...tab,
       id: result.terminalId,
@@ -4132,6 +4199,13 @@ export function DashboardView() {
     const name = projectsRef.current.find((p) => p.id === tab.projectId)?.roster?.find((r) => r.id === tab.roleId)?.name ?? tab.roleId ?? 'The lane'
     setWakingKeys((prev) => new Set(prev).add(tab.key))
     try {
+      // NOTHING TO RESUME (QA D2): a lane suspended before its first turn, by a build without the
+      // suspend tick's transcript rule. `--resume` would print "No conversation found" and exit.
+      if (await hasConversation(tab.resumeSessionId) === false) {
+        wakeFailedRef.current.add(tab.key)
+        pushToast({ kind: 'error', text: `Could not resume ${name}`, detail: 'It was suspended before its first turn, so there is no conversation to resume. It stays suspended; close it and start the lane again.' })
+        return null
+      }
       // The worktree is kept while suspended, but a person can still remove it. A worktree lane is
       // put back on its branch, as a restore does.
       let cwd = tab.cwd
@@ -4159,7 +4233,11 @@ export function DashboardView() {
       // on its way, and ids are not reused within a run.
       // Watched until its transcript moves: a `--resume` that exits on its own right away did not
       // come back, and its exit must not complete the lane's tasks (`failedResume`).
-      resumeWatchRef.current.set(next.id, { spawnedAt: spawnedAtRef.current.get(next.id) ?? Date.now(), message: first })
+      resumeWatchRef.current.set(next.id, {
+        spawnedAt: spawnedAtRef.current.get(next.id) ?? Date.now(),
+        message: first,
+        back: { suspendedAt: tab.idleSuspendedAt, claudeSessionId: tab.resumeSessionId, quietSince: tab.quietSince },
+      })
       return next
     } catch (e) {
       wakeFailedRef.current.add(tab.key)
@@ -4267,12 +4345,27 @@ export function DashboardView() {
             activeSubagents: session?.activeSubagents,
             released: !!tab.releasedWorktree || isReleased(tab, pendingReleasesRef.current),
             resumable: !!claudeIdOf(tab.id),
+            // Read below for the lanes that pass every earlier rule; once a turn is seen it stays seen.
+            conversation: conversationSeenRef.current.has(claudeIdOf(tab.id) ?? '') ? true : undefined,
             inFlight: restartingRef.current.has(tab.id) || retiringRef.current.has(tab.id) || suspendingRef.current.has(tab.id)
               || laneGateRef.current.busy(tab.key)
               || launchInFlightRef.current.has(`${tab.projectId}:${tab.roleId}`)
               || launchingLanesRef.current.has(`${tab.projectId}:${tab.roleId}`),
           }
         })
+        // A lane never given a turn has nothing for `--resume` to open (QA D2). A read that fails
+        // leaves it unknown, and an unknown lane is kept.
+        const unread = needsConversationCheck(lanes, now, idleMs)
+        if (unread.length) {
+          try {
+            const ids = unread.map((l) => claudeIdOf(l.terminalId)).filter((x): x is string => !!x)
+            const have = await window.operator.conversationsWithTurn?.(ids)
+            if (have) {
+              for (const id of have) conversationSeenRef.current.add(id)
+              for (const lane of unread) lane.conversation = conversationSeenRef.current.has(claudeIdOf(lane.terminalId) ?? '')
+            }
+          } catch { /* kept */ }
+        }
         for (const lane of needsPortCheck(lanes, now, idleMs)) {
           // A port read that fails leaves it unknown, and an unknown lane is kept.
           try { lane.devServer = servesDevServer(await window.operator.sessionPorts?.(lane.terminalId) ?? []) } catch { /* kept */ }
@@ -5202,6 +5295,9 @@ export function DashboardView() {
       .filter((s) => !liveKeys.has(s.key))
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
   }, [savedSessions, terminals])
+  /** What "Resume N agents" and "Resume project" offer: not a row with no conversation (QA D2). The
+   *  splash list keeps every row, with its "clean" reopen. */
+  const resumeOffered = useMemo(() => offeredForResume(restorableSessions, noTurnIds), [restorableSessions, noTurnIds])
 
   // (The "open at last quit" key set — `operator.lastOpenKeys` — was read only by the
   // sidebar's dormant-session list, which is now a Recent PROJECTS list; restoring an
@@ -5891,7 +5987,7 @@ export function DashboardView() {
     // Saved sessions — resume the prior conversation or start clean
     restorableSessions.slice(0, 8).forEach((s) => {
       const name = s.customName || s.projectName
-      if (s.claudeSessionId) {
+      if (s.claudeSessionId && !noTurnIds.has(s.claudeSessionId)) {
         actions.push({
           id: `resume-${s.key}`,
           group: 'Continue',
@@ -5990,7 +6086,7 @@ export function DashboardView() {
           run: () => restoreProject(p.id),
         })
       }
-      const resumable = restorableSessions.filter((s) => s.projectId === p.id).length
+      const resumable = resumeOffered.filter((s) => s.projectId === p.id).length
       if (resumable > 0) {
         actions.push({
           id: `resume-project-${p.id}`, group: 'Project',
@@ -6056,7 +6152,7 @@ export function DashboardView() {
     })
 
     return actions
-  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
+  }, [allSidebarSessions, customNames, recentProjects, restorableSessions, resumeOffered, noTurnIds, currentTheme, handleSelectSession, handleOpenFolderPrefs, handleNewSession, handleNewSessionInFolder, handleRestoreSession, handleOpenAgents, handleOpenPrefs, handleOpenGlobalPrefs, handleToggleTheme, handleSelectTheme, runUpdateCheck,
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
       gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
       selectMainView, selectPanelTab, patchLayout, togglePanel, setPanelOpen, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
@@ -6088,7 +6184,8 @@ export function DashboardView() {
     if (!railMenuProject) return []
     const project = railMenuProject
     const lost = !project.path
-    const live = projectActivities[project.id]?.live ?? 0
+    // Suspended lanes count: Close ends them too (QA O4).
+    const live = lanesToEnd(projectActivities[project.id])
     return [
       { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
       { label: 'Project settings…', onClick: () => handleOpenFolderPrefs(project.path, project.name), disabled: lost },
@@ -6123,7 +6220,7 @@ export function DashboardView() {
         // `id` and not the label: the label counts agents, and an agent exiting between the two
         // clicks of the confirm would otherwise re-arm instead of firing.
         id: 'close-project',
-        label: live > 0 ? `Close project · end ${live} agent${live === 1 ? '' : 's'}` : 'Close project',
+        label: closeProjectLabel(live),
         onClick: () => { void closeProject(project.id) },
         separator: true,
         confirm: live > 0,
@@ -6460,6 +6557,8 @@ export function DashboardView() {
           if (!proj) return null
           const live: Record<string, string> = {}
           for (const t of terminals) if (t.projectId === proj.id && t.roleId) live[t.roleId] = t.id
+          // The tab `live` picked for each role, when that tab is suspended while idle (QA O1).
+          const suspendedRoles = new Set(terminals.filter((t) => t.idleSuspendedAt && t.roleId && live[t.roleId] === t.id).map((t) => t.roleId!))
           // Live runtime per lane, from the transcript observer. ONE map, read by two consumers
           // with narrower views of it: RosterPanel's `LaneSession` (phase + usage, for the Team
           // card's mission-control read) and TaskBoard's `LaneSignal` (status/phase/lastToolName/
@@ -6497,6 +6596,7 @@ export function DashboardView() {
               // there is nothing to default and no way to silently launch with it off.
               onLaunchRole={(project, role, o) => handleLaunchRole(project, role, o.brief, o.launchDevServer)}
               liveRoles={live}
+              suspendedRoles={suspendedRoles}
               laneSessions={laneRuntime}
               laneSignals={laneRuntime}
               onFocusTerminal={focusTerminal}
@@ -6526,7 +6626,7 @@ export function DashboardView() {
               onToggleChatter={toggleChatterPaused}
               addLaneRequest={addLaneRequest}
               onAddLaneRequestHandled={clearAddLaneRequest}
-              resumableCount={restorableSessions.filter((s) => s.projectId === proj.id).length}
+              resumableCount={resumeOffered.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
             />
           )

@@ -59,14 +59,19 @@ export interface SuspendCandidate {
   released?: boolean
   /** It has a Claude session id to `--resume`. Without one it would come back as a blank session. */
   resumable: boolean
+  /** Its transcript exists and holds a user turn (main `conversationsWithTurn`). `--resume` of a lane
+   *  never given a turn prints "No conversation found" and exits, and the lane is lost (QA D2).
+   *  Undefined: not read yet. */
+  conversation?: boolean
   /** A restart, retire, close or resume of this lane is in flight. */
   inFlight?: boolean
 }
 
 export type SuspendDecision =
   | { suspend: true; why: string }
-  /** `checkPorts`: every other rule passed, and the lane's ports have not been read yet. */
-  | { suspend: false; why: string; checkPorts?: true }
+  /** `checkPorts`: every other rule passed, and the lane's ports have not been read yet.
+   *  `checkConversation`: the same, for its transcript. */
+  | { suspend: false; why: string; checkPorts?: true; checkConversation?: true }
 
 /** Milliseconds since `iso`, or undefined when there is no usable timestamp. */
 function ageOf(iso: string | undefined, nowMs: number): number | undefined {
@@ -114,6 +119,8 @@ export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: numb
   const quiet = quietFor(c, nowMs)
   if (quiet === undefined) return { suspend: false, why: 'no activity timestamp' }
   if (quiet < idleMs) return { suspend: false, why: 'not idle long enough' }
+  if (c.conversation === undefined) return { suspend: false, why: 'its transcript has not been read', checkConversation: true }
+  if (!c.conversation) return { suspend: false, why: 'it has no turn to resume' }
   if (c.devServer === undefined) return { suspend: false, why: 'its ports have not been checked', checkPorts: true }
   if (c.devServer) return { suspend: false, why: 'it is serving a dev server' }
   return { suspend: true, why: 'idle past the threshold' }
@@ -133,6 +140,14 @@ export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number
   return lanes.filter((l) => {
     const d = suspendDecision(l, nowMs, idleMs)
     return !d.suspend && d.checkPorts === true
+  })
+}
+
+/** Lanes whose transcript should be read before the next decision: everything before it passed. */
+export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number): SuspendCandidate[] {
+  return lanes.filter((l) => {
+    const d = suspendDecision(l, nowMs, idleMs)
+    return !d.suspend && d.checkConversation === true
   })
 }
 
@@ -374,6 +389,22 @@ export const RESUME_CONFIRM_MS = 60_000
  *  finishing, so its tasks are not completed, and the message it carried was never delivered. */
 export function failedResume(w: { spawnedAt: number; tookTurn: boolean }, exitMs: number, selfExit: boolean): boolean {
   return selfExit && !w.tookTurn && exitMs - w.spawnedAt < RESUME_CONFIRM_MS
+}
+
+/** A suspended lane's tab, put back as it was before a resume that did not come back: suspended,
+ *  with the same thread, so it stays on the rail and the roster says so (QA D2). The rail used to
+ *  drop it as an ended tab, and its saved row lost `idleSuspendedAt`. */
+export function backToSuspended<T extends { ended?: boolean; selfExited?: boolean; idleSuspendedAt?: string; resumeSessionId?: string; quietSince?: string }>(
+  tab: T, was: { suspendedAt: string; claudeSessionId: string; quietSince?: string },
+): T {
+  return { ...tab, ended: true, selfExited: undefined, idleSuspendedAt: was.suspendedAt, resumeSessionId: was.claudeSessionId, quietSince: was.quietSince }
+}
+
+/** Saved rows the resume card and "Resume project" offer. Not a row whose Claude session is known to
+ *  have no turn: `--resume` of it prints "No conversation found" and exits (QA D2). A row with no
+ *  session id launches fresh, and is offered. */
+export function offeredForResume<T extends { claudeSessionId?: string }>(rows: readonly T[], noTurn: ReadonlySet<string>): T[] {
+  return rows.filter((r) => !r.claudeSessionId || !noTurn.has(r.claudeSessionId))
 }
 
 /** Has a resumed lane's transcript moved since its spawn? */

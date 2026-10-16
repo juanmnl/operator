@@ -141,6 +141,10 @@ export interface AgentSession {
   lastToolName: string | null
   startedAt: string
   lastActivityAt: string
+  /** The newest transcript record's timestamp, absent while the tailer has read none. Unlike
+   *  `lastActivityAt`, which reads "now" in that case, it says whether anything was written: a
+   *  `--resume` that found no conversation writes nothing (lib/idle-suspend `failedResume`). */
+  lastRecordAt?: string
   terminalId?: string
   /** Operator-side: the lane's CLI was ended while idle to free memory, and it resumes on focus,
    *  typing or a message (lib/idle-suspend). Its `status` is `ended`. */
