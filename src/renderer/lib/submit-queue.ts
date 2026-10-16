@@ -218,6 +218,22 @@ export interface SubmitQueue {
    *  written directly so a clear can never overtake — or be overtaken by — a submission already
    *  queued for that lane, which would clear the wrong text. */
   clearComposer(id: string, lines?: number): Promise<void>
+  /** Paste `text` into the composer with NO Return, in the same per-terminal chain as `submit`.
+   *
+   *  For text a person typed that is theirs to send: the keys held at a suspended lane's pane
+   *  (lib/idle-suspend `HeldKeys`, review N3). Chained, so it lands after a submission already
+   *  queued for the lane instead of in front of it, where that submission's Return would have sent
+   *  the person's text along with it. No confirmation window: there is no turn to wait for. */
+  draft(id: string, text: string): Promise<void>
+  /** Hand every submission for `id` that is not written yet to `to` instead of writing it, from
+   *  now on; `undefined` ends that.
+   *
+   *  For a lane whose pty is being ended in place to suspend it (lib/idle-suspend, review N1): a
+   *  message queued for the old pty, or sent to it by a caller that read the tab a moment before it
+   *  was suspended, is handed to the wake instead of being typed into a CLI that is being reaped.
+   *  Checked right before the write, so a submission waiting out the gap is caught too. Only
+   *  `submit`: a slash command, a clear or a draft into a dying pty loses nothing worth carrying. */
+  divert(id: string, to: ((text: string) => void) | undefined): void
   /** Disarm any watchdog CR still pending for THIS terminal.
    *
    *  Interrupting has to call this. Claude Code restores the draft text into the composer
@@ -314,6 +330,8 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const working = new Set<string>()
   // Detached confirmation windows still in flight — see `idle`.
   const watches = new Set<Promise<void>>()
+  // Terminals whose submissions go elsewhere — see `divert`.
+  const diverted = new Map<string, (text: string) => void>()
 
   return {
     attachImages(id, paths) {
@@ -333,6 +351,18 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       const next = prev.then(async () => { deps.write(id, clearComposerSequence(lines)) })
       chains.set(id, next.catch(() => {}))
       return next
+    },
+    draft(id, text) {
+      const prev = chains.get(id) ?? Promise.resolve()
+      const next = prev.then(async () => {
+        if (text) deps.write(id, `\x1b[200~${stripControlChars(text)}\x1b[201~`)
+      })
+      chains.set(id, next.catch(() => {}))
+      return next
+    },
+    divert(id, to) {
+      if (to) diverted.set(id, to)
+      else diverted.delete(id)
     },
     submitTyped(id, text) {
       const prev = chains.get(id) ?? Promise.resolve()
@@ -366,6 +396,11 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           const cancelled = () => (nudgeGen.get(id) ?? 0) !== gen
           const confirmed = () => (confirmGen.get(id) ?? 0) !== seen
 
+          const away = diverted.get(id)
+          if (away) {
+            try { away(text) } catch { /* the new owner reports its own failures */ }
+            return
+          }
           deps.write(id, submitSequence(text))
           const writtenAt = now()
           awaiting.set(id, { text, at: writtenAt })

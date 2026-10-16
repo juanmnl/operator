@@ -15,6 +15,7 @@ import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
 import type { TerminalManager } from './terminals'
 import type { Transcript } from './transcript'
+import { sessionsWithTurn } from './transcript'
 import type { ChatStore, ArtifactStore } from './chat-store'
 import type { QuitGuard } from './quit'
 import { SPAWN_VERSION_WAIT_MS, type ClaudeVersionWatcher } from './claude-version'
@@ -42,12 +43,7 @@ const launchTracker = createLaunchTracker()
 import { snapshotPs, sweepTagged, descendantsOf, reapTree, isPidAlive } from './reap'
 import { devServerInventory, ageSnapshot } from './dev-servers'
 import { readBusSessions } from './session-bus'
-import {
-  resolveEnv, resolveSkills, envForSettingsFile, envNamesToUnset,
-  skillOverridesForSettingsFile, enabledPluginsForSettingsFile,
-} from '../../../src/renderer/lib/resolve-session-config'
-import { denyReason } from '../../../src/renderer/lib/env-policy'
-import type { Project } from '../../../src/shared/types'
+import { readProjectConfig, laneProjectsDir, type ProjectLayers } from './project-config'
 import type { LastRunRecorder } from './last-run'
 
 export function broadcast<K extends EventMethod>(win: BrowserWindow, method: K, ...payload: EventPayload<K>): void {
@@ -97,32 +93,10 @@ export interface Deps {
  *  Everything here fails soft. A store that cannot be read, or a project id that matches
  *  nothing, means a lane launches exactly as it did before this existed — which is the correct
  *  outcome for a feature whose whole job is to add optional configuration. */
-async function projectConfig(projectId: string): Promise<{
-  env?: Record<string, string>
-  unsetEnv?: string[]
-  skillOverrides?: Record<string, import('../../../src/shared/types').SkillMode>
-  enabledPlugins?: Record<string, boolean>
-}> {
+async function projectConfig(projectId: string): Promise<ProjectLayers> {
   if (!projectId) return {}
   try {
-    const projects = (await store.loadProjects()) as Project[]
-    const project = projects.find((p) => p?.id === projectId)
-    if (!project) return {}
-    const rows = resolveEnv([{ origin: 'project', entries: project.env }])
-    const skills = resolveSkills([{ origin: 'project', policy: project.skills }])
-    // The denylist runs again on the way out. The UI refuses these names at entry, but
-    // `projects.json` is a file on the user's disk and an older build never knew the rule —
-    // and a stale `PORT` reaching a lane would hand every one of them the same port.
-    const env = envForSettingsFile(rows, (n) => denyReason(n) != null)
-    const unsetEnv = envNamesToUnset(rows)
-    const skillOverrides = skillOverridesForSettingsFile(skills)
-    const enabledPlugins = enabledPluginsForSettingsFile(skills)
-    return {
-      env: Object.keys(env).length ? env : undefined,
-      unsetEnv: unsetEnv.length ? unsetEnv : undefined,
-      skillOverrides: Object.keys(skillOverrides).length ? skillOverrides : undefined,
-      enabledPlugins: Object.keys(enabledPlugins).length ? enabledPlugins : undefined,
-    }
+    return (await readProjectConfig(projectId)) ?? {}
   } catch (e) {
     console.error('[ipc] could not resolve project config:', e)
     return {}
@@ -193,6 +167,20 @@ export function registerIpc(d: Deps): void {
     // files open in there has to be gone first, not merely signalled.
     terminalKill: async (id) => { await d.terminals.kill(id) },
     terminalList: async () => d.terminals.list().map((t) => ({ ...t, ...(d.transcript.identity(t.id) ?? {}) })),
+    // Which of these Claude sessions `--resume` can open (transcript.ts `sessionsWithTurn`), each
+    // looked up under its lane's config dir: a project may set CLAUDE_CONFIG_DIR (R5-1).
+    conversationsWithTurn: async (sessions) => {
+      const rows = (Array.isArray(sessions) ? sessions : [])
+        .filter((x): x is { id: string; projectId?: string } => !!x && typeof x.id === 'string')
+      const dirs = new Map<string, Promise<string | null>>()
+      const dirOf = (projectId: unknown) => {
+        const key = typeof projectId === 'string' ? projectId : ''
+        let dir = dirs.get(key)
+        if (!dir) { dir = laneProjectsDir(key || undefined); dirs.set(key, dir) }
+        return dir
+      }
+      return sessionsWithTurn(await Promise.all(rows.map(async (r) => ({ id: r.id, projects: await dirOf(r.projectId) }))))
+    },
     claudeVersion: () => d.claudeVersion.resolve(),
     // The current list, for a renderer that (re)loads after an `onCheckoutGone` event went out.
     checkoutGoneList: () => d.checkouts?.list() ?? [],
@@ -331,6 +319,14 @@ export function registerIpc(d: Deps): void {
     previousRun: async () => (d.lastRun ? (await d.lastRun.ready(), d.lastRun.previousRun()) : null),
     // The renderer has saved the previous run's lanes in its snapshot: main stops carrying them.
     previousRunTaken: async () => { await d.lastRun?.previousRunTaken() },
+    // The lanes the renderer holds suspended while idle: recorded apart from the live ones, so a
+    // crash auto-resume does not start them.
+    setSuspendedLanes: async (lanes) => {
+      const list = (Array.isArray(lanes) ? lanes : [])
+        .filter((x) => x && typeof x.key === 'string' && x.key)
+        .map((x) => ({ key: String(x.key), at: typeof x.at === 'string' ? x.at : new Date().toISOString() }))
+      await d.lastRun?.setSuspended(list)
+    },
     // The crash auto-resume queue has finished: the crash-loop guard runs from here.
     crashResumeDone: async () => { d.lastRun?.crashResumeDone() },
     worktreeRemoveSelected: (paths, confirmedUnsaved) =>

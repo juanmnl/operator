@@ -57,6 +57,9 @@ export interface DispatchVerdict {
   /** Set on a `finishing` refusal (the target released its worktree and is mid-turn), so the
    *  caller can open the watch that sends the one idle message (lib/retire-watch). Internal. */
   finishing?: { roleId: string; roleName: string; laneTerminalId: string; unseen: boolean }
+  /** Set on a `launching` reply to a lane suspended while idle (lib/idle-suspend): Operator resumes
+   *  that lane and hands it `text` itself, as the resumed CLI's opening prompt. Internal. */
+  wake?: { terminalId: string; text: string }
 }
 
 export interface DispatchRequest {
@@ -152,6 +155,11 @@ export function resolveDispatch(
       }
     }
     const live = route.kind === 'send' || route.kind === 'retire' || route.kind === 'finishing' ? route.tab : undefined
+    // SUSPENDED WHILE IDLE is not "not running": the lane exists and its CLI was ended to free
+    // memory. The reply still passes the brakes, then Operator resumes the lane and hands it the
+    // message, because the lane has no bus address to send to until it is back.
+    const asleep = !live && route.kind === 'queue' ? route.suspended : undefined
+    if (asleep) return wakeWith(asleep, req, ctx, targetRoleId, roster, replyPrefix(req.fromLabel))
     if (!live) {
       return {
         brakes: ctx.brakes,
@@ -215,7 +223,9 @@ export function resolveDispatch(
           ? `${targetRoleId} is not on the roster; Operator is adding it from its preset and launching it with this task as its opening brief`
           : route.kind === 'retire'
             ? `${targetRoleId} released its worktree and is idle; Operator is ending that session and will then launch a fresh ${targetRoleId} lane with this task as its opening brief. If it takes new work before it ends, Operator tells you and launches nothing`
-            : `${targetRoleId} is not running; Operator is launching it with this task as its opening brief`,
+            : route.kind === 'queue' && route.suspended
+              ? `${targetRoleId} was suspended while idle; Operator is resuming it with this task as its next message`
+              : `${targetRoleId} is not running; Operator is launching it with this task as its opening brief`,
       },
     }
   }
@@ -298,6 +308,44 @@ function sendTo(
     brakes: evaluated.state,
     verdict: {
       outcome: 'send', to, text: `${prefix}${text}`,
+      target: { roleId: targetRoleId, terminalId: lane.id },
+    },
+  }
+}
+
+/** A message to a lane suspended while idle: the same brakes as `sendTo`, then Operator delivers it
+ *  by resuming the lane, so the caller sends nothing. */
+function wakeWith(
+  lane: BusLane,
+  req: DispatchRequest,
+  ctx: DispatchContext,
+  targetRoleId: string,
+  roster: Role[],
+  prefix: string,
+): { verdict: DispatchVerdict; brakes: DeliveryState } {
+  const evaluated = evaluateDelivery({
+    from: laneKey(req.projectId, req.fromRoleId),
+    to: laneKey(req.projectId, targetRoleId),
+    fromLabel: req.fromLabel,
+    toLabel: roster.find((r) => r.id === targetRoleId)?.name ?? targetRoleId,
+    text: req.task,
+    targetLive: true,
+    state: ctx.brakes,
+    paused: ctx.chatterPaused,
+    now: ctx.now,
+  })
+  if (evaluated.decision.kind === 'block') {
+    return {
+      brakes: evaluated.state,
+      verdict: { outcome: 'refused', reason: `delivery brake: ${evaluated.decision.note}`, brake: evaluated.decision.reason },
+    }
+  }
+  return {
+    brakes: evaluated.state,
+    verdict: {
+      outcome: 'launching',
+      reason: `${targetRoleId} was suspended while idle; Operator is resuming it and will hand it your message. Do not send it again`,
+      wake: { terminalId: lane.id, text: `${prefix}${req.task}` },
       target: { roleId: targetRoleId, terminalId: lane.id },
     },
   }

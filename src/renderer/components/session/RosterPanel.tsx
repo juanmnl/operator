@@ -22,6 +22,15 @@ export interface LaneSession {
   lastActivityAt?: string
 }
 
+/** The heading over the live cards. Suspended lanes keep a card there, so the count says how many of
+ *  them have a CLI running and names the rest. */
+export function liveSectionLabel(cards: number, suspended: number): string {
+  const running = cards - suspended
+  if (!suspended) return `Live · ${cards}`
+  if (!running) return `Suspended · ${suspended}`
+  return `Live · ${running} · Suspended · ${suspended}`
+}
+
 /** Compact token count for the lane cards: 950 → "950", 12_400 → "12.4k", 3_400_000 → "3.4M". */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
@@ -60,7 +69,7 @@ export function formatTokens(n: number): string {
  *  the raw token: there is no text there to fail a contrast floor. */
 const WARN_INK = 'color-mix(in srgb, var(--color-warning) 50%, var(--fg))'
 
-export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter, addLaneRequest, onAddLaneRequestHandled }: {
+export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles, suspendedRoles, laneSessions, onFocusTerminal, onCloseTerminal, chatterPaused, onToggleChatter, addLaneRequest, onAddLaneRequestHandled }: {
   project?: Project
   onUpdateProject?: (id: string, patch: ProjectPatch) => void
   /** Launch a lane. `brief` is what the user typed into "What do you want done?" — it rides
@@ -79,6 +88,9 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   onLaunchRole?: (project: Project, role: Role, opts: { brief?: string; launchDevServer: boolean }) => Promise<{ id: string } | undefined> | void
   /** roleId → live terminalId, for live dots. */
   liveRoles?: Record<string, string>
+  /** Lanes in `liveRoles` whose CLI was ended while idle (lib/idle-suspend). They keep their card,
+   *  since opening one resumes it, but are not counted or badged as live (QA O1). */
+  suspendedRoles?: ReadonlySet<string>
   /** roleId → live session runtime. The card shows the phase in its live pill (the per-lane token
    *  readout is hidden); kept on the interface so callers don't need rewiring if it returns. */
   laneSessions?: Record<string, LaneSession>
@@ -425,7 +437,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
           (see LaneRow), which keeps them a click from launching without them being the view. */}
       {liveRolesList.length > 0 && (
         <>
-          <SectionLabel>Live · {liveRolesList.length}</SectionLabel>
+          <SectionLabel>{liveSectionLabel(liveRolesList.length, liveRolesList.filter((r) => suspendedRoles?.has(r.id)).length)}</SectionLabel>
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
@@ -468,6 +480,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
             onDragEnd={() => { setDragId(null); setDropAt(null) }}
             coordinator={isCoordinator(role.id)}
             live
+            suspended={!!suspendedRoles?.has(role.id)}
             phase={laneSessions?.[role.id]?.phase}
             onPickAccent={(anchor) => setAccentFor({ roleId: role.id, ...anchor })}
             runningTask={(project.tasks ?? []).find((t) => t.status === 'running' && t.roleId === role.id)?.text}
@@ -623,7 +636,7 @@ export function RosterPanel({ project, onUpdateProject, onLaunchRole, liveRoles,
   )
 }
 
-function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent, projectDefaults }: {
+function RoleCard({ role, coordinator, live, suspended, phase, runningTask, queued = 0, selected, onToggleSelect, onCollapse, onDragStart, onDragEnd, onPatch, onRemove, onCloseSession, onLaunch, onView, onPickAccent, projectDefaults }: {
   role: Role
   /** Present when this card is an EXPANDED idle row — collapses back to its LaneRow. */
   onCollapse?: () => void
@@ -636,6 +649,8 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
   /** The coordinator lane (Operator) — the roster's hub, not a worker peer. */
   coordinator?: boolean
   live?: boolean
+  /** A card in the live section whose CLI was ended while idle. The pill says so instead of a phase. */
+  suspended?: boolean
   /** The live session's phase (running/compacting/waiting/idle) — shown in the pill. */
   phase?: string
   /** Right-click the identity dot → colour picker for this lane. */
@@ -868,8 +883,15 @@ function RoleCard({ role, coordinator, live, phase, runningTask, queued = 0, sel
           stays quiet. */}
       {(live || queued > 0 || coordinator) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 9, flexWrap: 'wrap' }}>
-          {live && (
-            <span title="This lane has a live session" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`, borderRadius: 6, padding: '2px 6px' }}>
+          {live && suspended && (
+            <span data-lane-pill="suspended" title="Its CLI was ended while idle to free memory. Opening it resumes the conversation." style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 6, padding: '2px 6px' }}>
+              {/* A ring, not the filled dot: nothing is running. */}
+              <span style={{ width: 5, height: 5, borderRadius: '50%', boxSizing: 'border-box', border: '1px solid var(--fg-muted)' }} />
+              suspended
+            </span>
+          )}
+          {live && !suspended && (
+            <span data-lane-pill="live" title="This lane has a live session" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: accent, border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`, borderRadius: 6, padding: '2px 6px' }}>
               <span style={{ width: 5, height: 5, borderRadius: '50%', background: accent }} />
               {/* The phase, not a generic "live" — running/compacting/waiting is the
                   actual answer to "who's doing what right now". */}

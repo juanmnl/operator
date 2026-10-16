@@ -12,7 +12,9 @@
 // its own end.
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { open, readdir, stat, mkdir, writeFile } from 'node:fs/promises'
+import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { operatorDir } from './store'
@@ -81,6 +83,80 @@ async function findTranscript(sessionId: string): Promise<string | null> {
     try { if ((await stat(p)).isFile()) return p } catch { /* not this one */ }
   }
   return null
+}
+
+/** Does this transcript hold a turn `--resume` can open? Claude Code writes the file before the
+ *  first prompt when it has records to keep (a lane with Remote Control on gets `custom-title`,
+ *  `bridge-session`, `last-prompt` and the like), and `--resume` of such a file, or of an id with
+ *  no file at all, prints "No conversation found" and exits. A `user` record that is not meta is
+ *  the turn; a prompt and a typed slash command both write one. Stops at the first one. */
+export async function hasUserTurn(path: string): Promise<boolean> {
+  let stream
+  try { stream = createReadStream(path, { encoding: 'utf8' }) } catch { return false }
+  const lines = createInterface({ input: stream, crlfDelay: Infinity })
+  try {
+    for await (const line of lines) {
+      if (!line.includes('"user"')) continue
+      try {
+        const v = JSON.parse(line) as Record<string, unknown>
+        if (v.type === 'user' && v.isMeta !== true && v.isSidechain !== true) return true
+      } catch { /* a partial or foreign line */ }
+    }
+    return false
+  } catch {
+    return false
+  } finally {
+    lines.close()
+    stream.destroy()
+  }
+}
+
+/** One session to look up: its id, and the `projects` directory its lane's Claude Code writes
+ *  under (project-config.ts `laneProjectsDir`), or null when that directory is not known. */
+export interface TurnLookup { id: string; projects: string | null }
+/** `turn`: the transcript exists and holds a turn (`hasUserTurn`). `none`: it was looked for where
+ *  the lane writes and has none, or is not there. An id in neither is unknown. */
+export interface TurnAnswer { turn: string[]; none: string[] }
+
+/** Which of these sessions `--resume` can open. For idle-lane suspension: a lane without a turn
+ *  cannot be resumed, so it is never suspended, and a saved row without one is not offered for
+ *  resume. A missing file means "none" only when it was looked for in the lane's own config dir.
+ *  Where that dir is not known, or cannot be listed, the id is left unknown, so the caller keeps
+ *  the lane up and restores it as before (review round 5, R5-1). */
+export async function sessionsWithTurn(lookups: readonly TurnLookup[]): Promise<TurnAnswer> {
+  const listed = new Map<string, Promise<string[] | null>>()
+  const dirsOf = (projects: string) => {
+    let dirs = listed.get(projects)
+    if (!dirs) {
+      dirs = readdir(projects, { withFileTypes: true })
+        .then((es) => es.filter((e) => e.isDirectory()).map((e) => join(projects, e.name)))
+        // No projects directory: nothing was ever written there. Any other failure is unknown.
+        .catch((e: NodeJS.ErrnoException) => (e?.code === 'ENOENT' ? [] : null))
+      listed.set(projects, dirs)
+    }
+    return dirs
+  }
+  const out: TurnAnswer = { turn: [], none: [] }
+  const seen = new Set<string>()
+  for (const { id, projects } of lookups) {
+    // A session id is a uuid; anything else is not looked up as a path.
+    if (seen.has(id) || !/^[0-9a-f-]{8,64}$/i.test(id)) continue
+    seen.add(id)
+    if (!projects) continue
+    const dirs = await dirsOf(projects)
+    if (!dirs) continue
+    let found = false
+    for (const dir of dirs) {
+      const p = join(dir, `${id}.jsonl`)
+      try { if (!(await stat(p)).isFile()) continue } catch { continue }
+      found = true
+      if (await hasUserTurn(p)) out.turn.push(id)
+      else out.none.push(id)
+      break
+    }
+    if (!found) out.none.push(id)
+  }
+  return out
 }
 
 /** The session phase, from the signals the tailer tracks. Pure so it can be tested without a
@@ -155,6 +231,24 @@ export function toolResultText(content: unknown): string {
   if (content == null) return ''
   return JSON.stringify(content)
 }
+
+/** A tool result that says the work went on in the background. Measured across this machine's
+ *  transcripts (2.1.272–2.1.301): `Command running in background with ID: <id>. Output is being
+ *  written to …` (Bash `run_in_background`), `… moved to the background (ID: <id>)` (a command that
+ *  hit its timeout), `Async agent launched successfully.` (Agent) and `Workflow launched in
+ *  background.` Each ends with a `<task-notification>` naming the same tool_use id. */
+const BACKGROUND_RESULT = /^(?:Command running in background with ID:|Async agent launched|Workflow launched in background)|moved to the background \(ID: /
+
+/** The tool_use ids a `<task-notification>` closes. One per notification; a record can carry
+ *  several. The status (completed, failed, killed, stopped) does not matter: any of them ends it. */
+export function notifiedToolUseIds(text: string): string[] {
+  if (!text.includes('<task-notification>')) return []
+  return [...text.matchAll(/<tool-use-id>([^<\s]+)<\/tool-use-id>/g)].map((m) => m[1])
+}
+
+/** How far a background task's own timestamp may sit before the track's creation and still be this
+ *  process's: the CLI writes its clock, main reads its own. */
+const BACKGROUND_CLOCK_SLACK_MS = 5_000
 
 /** The user's actual prompt text, or null. An array containing a tool_result is a RESULT turn,
  *  not a prompt — Claude Code uses the same `user` type for both. */
@@ -233,6 +327,9 @@ export class Track {
   openQuestions = new Set<string>()
   inSidechain = false
   activeSubagents = 0
+  /** Background tasks started and not yet notified as finished: tool_use id → the result record's
+   *  timestamp. See `BACKGROUND_RESULT`. */
+  background = new Map<string, string>()
   narration: NarrationEntry[] = []
   activity: ActivityEntry[] = []
   queued: NarrationEntry[] = []
@@ -253,7 +350,9 @@ export class Track {
    *  `SendMessage` calls are tracked, so a lane's ordinary tool traffic costs nothing here. */
   openSends = new Map<string, string>()
 
-  constructor(readonly terminalId: string, readonly track: NewTrack) {}
+  /** `spawnedAtMs`: when the pty this track follows was started. A resumed transcript still holds
+   *  the background tasks of the process before it, which died with it and are never notified. */
+  constructor(readonly terminalId: string, readonly track: NewTrack, readonly spawnedAtMs = Date.now()) {}
 
   get sessionId(): string { return this.track.claudeSessionId }
 
@@ -297,6 +396,7 @@ export class Track {
     this.openSends.clear()
     this.inSidechain = false
     this.activeSubagents = 0
+    this.background.clear()
     this.narration.length = 0
     this.narrationSeq = 0
     this.toolSeqs.clear()
@@ -402,6 +502,8 @@ export class Track {
       this.dirty = true
     }
 
+    if (v.type === 'user' || v.type === 'queue-operation' || v.type === 'attachment') this.closeBackground(v)
+
     switch (v.type) {
       case 'user': this.applyUser(v); break
       case 'assistant': this.applyAssistant(v, ts); break
@@ -436,6 +538,32 @@ export class Track {
     this.queued.push({ kind: 'queued', text: cap(text, PROMPT_TEXT_CAP), timestamp: ts || nowIso(), images: [] })
     if (this.queued.length > QUEUED_CAP) this.queued.splice(0, this.queued.length - QUEUED_CAP)
     this.dirty = true
+  }
+
+  /** A `<task-notification>` closes the background task it names. It reaches the transcript as a
+   *  queued prompt (`queue-operation` enqueue and remove), as a `queued_command` attachment, or as
+   *  a `user` record when the lane was idle; any one of them is enough. */
+  private closeBackground(v: Record<string, unknown>): void {
+    if (!this.background.size) return
+    const texts: unknown[] = [v.content, (v.attachment as Record<string, unknown> | undefined)?.prompt]
+    const content = (v.message as Record<string, unknown> | undefined)?.content
+    texts.push(typeof content === 'string' ? content : userPromptText(content))
+    for (const t of texts) {
+      if (typeof t !== 'string') continue
+      for (const id of notifiedToolUseIds(t)) {
+        if (this.background.delete(id)) this.dirty = true
+      }
+    }
+  }
+
+  /** Background tasks this process started that have not finished. */
+  backgroundTasks(): number {
+    let n = 0
+    for (const at of this.background.values()) {
+      const t = Date.parse(at)
+      if (Number.isNaN(t) || t >= this.spawnedAtMs - BACKGROUND_CLOCK_SLACK_MS) n++
+    }
+    return n
   }
 
   private notePrompt(ts: string): void {
@@ -486,6 +614,10 @@ export class Track {
             this.dirty = true
             break
           }
+        }
+        if (raw && BACKGROUND_RESULT.test(raw)) {
+          this.background.set(id, typeof v.timestamp === 'string' ? v.timestamp : '')
+          this.dirty = true
         }
         this.openTools.delete(id)
         this.openQuestions.delete(id)
@@ -789,9 +921,11 @@ export class Track {
       queued: this.queued,
       todos: this.tasks.map(([, t]) => t),
       activeSubagents: this.activeSubagents,
+      backgroundTasks: this.backgroundTasks() || undefined,
       lastToolName: this.lastToolName,
       startedAt: this.startedAt ?? nowIso(),
       lastActivityAt: this.lastActivityAt || nowIso(),
+      lastRecordAt: this.lastActivityAt || undefined,
       terminalId: this.terminalId,
       permissionMode: this.track.permissionMode ?? undefined,
       model: this.model ?? undefined,

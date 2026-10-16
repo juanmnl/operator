@@ -12,7 +12,7 @@ import type { RecentSession, RecentProject } from './RecentLists'
 import { BACK_BTN as backBtn } from '../../lib/chrome'
 import { relativeTime, tildePath } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
-import { projectActivity, projectActivityLabel, type ProjectActivity } from '../../lib/project-status'
+import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../../lib/project-status'
 import { FILTER_THRESHOLD, isOnRail, matchProject, partitionProjects, staleProjects } from '../../lib/project-shelf'
 
 // The launcher — where you are when you're inside no project. Full-bleed inside the content
@@ -309,7 +309,7 @@ export function ProjectGallery({
                         onForget={() => onForgetProject(project.id)}
                         onArchive={() => onArchiveProject(project.id)}
                         onCloseProject={() => onCloseProject(project.id)}
-                        liveCount={activities[project.id]?.live ?? 0}
+                        liveCount={lanesToEnd(activities[project.id])}
                         showClose={isOnRail(project, activities[project.id], activeProjectId ?? null)}
                         onRestore={() => onRestoreProject(project.id)}
                         onOpenFolderPrefs={() => onOpenFolderPrefs(project.path, project.name)}
@@ -392,7 +392,8 @@ function ProjectCard({
   onForget: () => void
   onArchive: () => void
   onCloseProject: () => void
-  /** Live lanes right now — the count Close names, and whether it needs a confirm. */
+  /** Lanes Close would end, suspended ones included (`lanesToEnd`): the count it names, and whether
+   *  it needs a confirm. */
   liveCount: number
   /** Is this project ON THE RAIL (`isOnRail`)? Close takes it off, so it is offered only when
    *  there is an entry to take off. Computed by the caller, which is where scope lives. */
@@ -723,7 +724,7 @@ function ProjectCard({
                   // `id` and not the label: the label counts agents, and an agent exiting between the two
                   // clicks of the confirm would otherwise re-arm instead of firing.
                   id: 'close-project',
-                  label: liveCount > 0 ? `Close project · end ${liveCount} agent${liveCount === 1 ? '' : 's'}` : 'Close project',
+                  label: closeProjectLabel(liveCount),
                   onClick: onCloseProject,
                   separator: true,
                   confirm: liveCount > 0,

@@ -134,6 +134,33 @@ describe('a worktree, end to end against real git', () => {
   })
 })
 
+// THE FACT THE RENDERER'S CLOSE HOLD RESTS ON (review R3-1). The close of a suspended lane returns
+// before its worktree is removed. A dispatch let through at that moment resumed the lane from its
+// closed row while the old directory still held `<project>-<branch tail>`, so the reattach found the
+// path taken and forked a fresh branch: the conversation went on without its own commits. The view
+// now holds the lane's gate until the removal settles (renderer lib/idle-suspend `closeUnderGate`).
+describe('resuming a closed lane while its old directory is still there (review R3-1)', () => {
+  it('forks a fresh branch before the removal, and reattaches the lane\'s own branch after it', async () => {
+    const repo = scratchRepo()
+    const lane = await wt.createWorktree(repo)
+    writeFileSync(join(lane.path, 'work.txt'), 'mine\n')
+    await wt.commitAll(lane.path, 'lane work')
+
+    // Too early: the tab is gone, the directory is not.
+    const early = await wt.createWorktree(repo, lane.branch)
+    expect(early.branch).not.toBe(lane.branch)
+    expect(existsSync(join(early.path, 'work.txt'))).toBe(false)
+    await wt.removeWorktree(early.path, repo)
+
+    // Once the removal has settled, which is when the gate now opens.
+    await wt.removeWorktree(lane.path, repo)
+    const late = await wt.createWorktree(repo, lane.branch)
+    expect(late.branch).toBe(lane.branch)
+    expect(late.path).toBe(lane.path)
+    expect(readFileSync(join(late.path, 'work.txt'), 'utf8')).toBe('mine\n')
+  })
+})
+
 describe('runCheck', () => {
   it('returns output and ok on success', async () => {
     const r = await wt.runCheck(SANDBOX, 'echo hello-from-check')

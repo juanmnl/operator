@@ -6,6 +6,7 @@ import { modelFamilyLabel } from '../../lib/roster'
 import {
   joinLanes, biggestChange, cacheHealth, formatTokens, formatCost, formatChars,
   UNATTRIBUTED, type LaneRow,
+  getIdleSuspendMinutes, setIdleSuspendMinutes, IDLE_SUSPEND_OPTIONS,
 } from '../../lib/tuning'
 
 // THE TUNING PAGE. Design: `dev/results/usage-view-design.md`; mock: `dev/usage-preview.html`.
@@ -17,7 +18,8 @@ import {
 // happened to it.
 //
 // The knobs that exist are exactly two: a role's model and effort, and its charter. Every section
-// here lands on one of those or admits it has none (§ Context pressure does exactly that).
+// here lands on one of those or admits it has none (§ Context pressure does exactly that). The one
+// setting the page holds itself is § Idle lanes, which trades memory for a cold start.
 //
 // TOKENS ARE THE HEADLINE. Cost appears once per row, right-aligned, muted, at 11px. It is the
 // sanity check, never the ranking.
@@ -158,7 +160,46 @@ export function TuningView({ projects, saved, onOpenRoster }: {
           <Cache data={data} />
         </>
       )}
+
+      <IdleLanes />
     </PageShell>
+  )
+}
+
+// ── Idle lanes ───────────────────────────────────────────────────────────────────────────────
+
+/** When an idle lane's CLI is ended to free memory (lib/idle-suspend). Shown whatever the window
+ *  holds: it is a setting, not a reading. The sentence starts are bound to the word after them
+ *  with a no-break space, so no sentence opens on a stray word at a line end. */
+function IdleLanes() {
+  const [minutes, setMinutes] = useState(getIdleSuspendMinutes)
+  const pick = (m: number) => { setIdleSuspendMinutes(m); setMinutes(m) }
+  return (
+    <section style={{ marginBottom: SECTION_GAP }}>
+      <h3 style={sectionHeader}>Idle lanes</h3>
+      <p style={sectionDesc}>
+        {'A lane idle this long has its Claude Code process ended, which frees about 300 MB. '
+          + 'It\u00a0stays in the roster as suspended and resumes the same conversation when you open it, type into it, or a message reaches it. '
+          + 'Coordinators,\u00a0the lane you are looking at, and lanes with unsent text, background tasks or a dev server keep\u00a0running.'}
+      </p>
+      <div role="radiogroup" aria-label="Suspend idle lanes after" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {IDLE_SUSPEND_OPTIONS.map((m) => (
+          <button
+            key={m}
+            role="radio"
+            aria-checked={minutes === m}
+            onClick={() => pick(m)}
+            style={{
+              padding: '4px 12px', borderRadius: 6, cursor: 'pointer', outline: 'none',
+              border: '1px solid var(--border)',
+              background: minutes === m ? 'var(--btn-bg)' : 'transparent',
+              color: minutes === m ? 'var(--fg)' : CONTROL_INK,
+              fontFamily: 'var(--font-body)', fontSize: 11.5,
+            }}
+          >{m === 0 ? 'Off' : `${m} min`}</button>
+        ))}
+      </div>
+    </section>
   )
 }
 

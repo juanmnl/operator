@@ -27,7 +27,7 @@ const LABELS: Record<ProjectTab, string> = { board: 'Board', team: 'Team', moodb
 
 export function ProjectView({
   project, tab, onSelectTab, onBack, onToggleSidebar, sidebarCollapsed,
-  onUpdateProject, onLaunchRole, liveRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
+  onUpdateProject, onLaunchRole, liveRoles, suspendedRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch, onAssignDispatch, onRetryDispatch, onOpenLaneTerminal,
   resumableCount, onResumeProject, chatterPaused, onToggleChatter,
@@ -48,6 +48,8 @@ export function ProjectView({
    *  result is reported back so the roster can tell a failed spawn from a successful one. */
   onLaunchRole?: (project: Project, role: Role, opts: { brief?: string; launchDevServer: boolean }) => Promise<{ id: string } | undefined> | void
   liveRoles?: Record<string, string>
+  /** Lanes in `liveRoles` suspended while idle, for the Team tab (RosterPanel). */
+  suspendedRoles?: ReadonlySet<string>
   /** roleId → live session runtime (phase/usage), for the Team card's mission-control read. */
   laneSessions?: Record<string, LaneSession>
   /** roleId → what that lane is DOING right now, for the board's running cards. Same source
@@ -224,6 +226,7 @@ export function ProjectView({
               onUpdateProject={onUpdateProject}
               onLaunchRole={onLaunchRole}
               liveRoles={liveRoles}
+              suspendedRoles={suspendedRoles}
               laneSessions={laneSessions}
               onFocusTerminal={onFocusTerminal}
               onCloseTerminal={onCloseTerminal}

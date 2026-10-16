@@ -787,6 +787,11 @@ export function stampSessionClaims(records: readonly unknown[], ownLiveTerminalI
   })
 }
 
+/** A `sessions.json` row for a lane suspended while idle: it keeps its worktree. */
+export function isIdleSuspended(r: { idleSuspendedAt?: unknown } | null | undefined): boolean {
+  return typeof r?.idleSuspendedAt === 'string' && r.idleSuspendedAt.length > 0
+}
+
 /** Directories with a live lane in them: a `sessions.json` claim that main's pty table backs.
  *
  *  Where the pty table is known (main), a claim with no pty in its directory is stale and dropped.
@@ -799,9 +804,13 @@ async function liveClaims(): Promise<{ claims: Map<string, string>; lastActive: 
   try {
     const raw = JSON.parse(await readFile(join(operatorDir(), 'sessions.json'), 'utf8')) as unknown[]
     for (const s of Array.isArray(raw) ? raw : []) {
-      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown; appPid?: unknown }
+      const r = s as { cwd?: unknown; terminalId?: unknown; lastActiveAt?: unknown; appPid?: unknown; idleSuspendedAt?: unknown }
       if (typeof r?.cwd !== 'string') continue
       if (typeof r.terminalId === 'string' && r.terminalId && claimIsLive(r.cwd, r.appPid)) claims.set(r.cwd, r.terminalId)
+      // A LANE SUSPENDED WHILE IDLE has no pty and is still open: its CLI was ended to free memory
+      // and comes back with `--resume` in this directory (src/renderer/lib/idle-suspend.ts). A
+      // claim, with no pty to back it, for as long as the row says so.
+      else if (isIdleSuspended(r)) claims.set(r.cwd, 'suspended')
       const at = typeof r.lastActiveAt === 'string' ? Date.parse(r.lastActiveAt) : NaN
       if (!Number.isNaN(at)) lastActive.set(r.cwd, Math.max(at, lastActive.get(r.cwd) ?? 0))
     }
@@ -1448,9 +1457,11 @@ export async function queueEndedSessions(): Promise<number> {
     if (!Array.isArray(raw)) return 0
     let queued = 0
     for (const s of raw) {
-      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown; appPid?: unknown }
+      const r = s as { cwd?: unknown; sourceCwd?: unknown; worktreeBranch?: unknown; terminalId?: unknown; appPid?: unknown; idleSuspendedAt?: unknown }
       if (typeof r?.cwd !== 'string' || typeof r.sourceCwd !== 'string') continue
       if (typeof r.worktreeBranch !== 'string' || !r.worktreeBranch) continue
+      // Suspended while idle, not ended: it resumes in this worktree.
+      if (isIdleSuspended(r)) continue
       // A `terminalId` means the roster believes a lane is open in it. Kept only where main's pty
       // table backs it (`claimIsLive`, the same test the classifier uses); a claim from a previous
       // app run is an ended session like any other. This only QUEUES the removal; nothing drains

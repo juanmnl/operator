@@ -133,10 +133,22 @@ export interface AgentSession {
   /** Latest TodoWrite plan snapshot (Plan tab). */
   todos?: TodoItem[]
   activeSubagents: number
+  /** Background Bash commands and background agents this CLI started and has not seen finish
+   *  (`Command running in background`, `Async agent launched`, closed by its `<task-notification>`).
+   *  Ending the CLI ends them, so a lane with any is never suspended (lib/idle-suspend). Only those
+   *  started by the current process count: a resumed transcript still holds the old process's. */
+  backgroundTasks?: number
   lastToolName: string | null
   startedAt: string
   lastActivityAt: string
+  /** The newest transcript record's timestamp, absent while the tailer has read none. Unlike
+   *  `lastActivityAt`, which reads "now" in that case, it says whether anything was written: a
+   *  `--resume` that found no conversation writes nothing (lib/idle-suspend `failedResume`). */
+  lastRecordAt?: string
   terminalId?: string
+  /** Operator-side: the lane's CLI was ended while idle to free memory, and it resumes on focus,
+   *  typing or a message (lib/idle-suspend). Its `status` is `ended`. */
+  suspended?: boolean
   permissionMode?: string
   /** Cumulative token usage parsed from the transcript (absent until the first turn). */
   usage?: TokenUsage
@@ -794,6 +806,14 @@ export interface SavedSession {
   /** It called `worktree_done`, so main removes its worktree when it exits. The branch may be
    *  merged and deleted after that, so a missing folder here is not one to rebuild. */
   releasedAt?: string
+  /** SUSPENDED WHILE IDLE (lib/idle-suspend): its CLI was ended to free memory, and its tab, worktree
+   *  and branch were kept. Not `suspendedAt`, which is a lane closed after finishing, with its tab
+   *  and worktree directory gone. A row with this set is restored as a suspended tab and resumed
+   *  with `--resume` on focus, typing or a message; the worktree reaper counts it as a claim. */
+  idleSuspendedAt?: string
+  /** 1-based position in a fan-out launch, so a relaunched or resumed lane keeps the bus name it
+   *  launched with (`laneBusName`) instead of taking index 1 from a sibling. */
+  fanIndex?: number
   lastActiveAt: string
 }
 
@@ -815,6 +835,9 @@ export interface PreviousRunInfo {
   }>
   /** Keys of lanes that called worktree_done in that run. Their worktree is not rebuilt. */
   released: string[]
+  /** Keys of lanes that run had suspended while idle (no CLI running). Restored as suspended,
+   *  never auto-resumed or offered with `lanes`. Absent in records written before it existed. */
+  suspended?: string[]
   /** The last time that run wrote the file: within 10 minutes of when it ended (last-run.ts
    *  `HEARTBEAT_MS`). */
   endedAt: string
@@ -884,6 +907,9 @@ export interface ManagedTerminal {
   claudeVersion?: string | null
   /** Exited without Operator killing it (the agent quit, or it crashed). Absent while alive. */
   selfExit?: boolean
+  /** When the backend spawned this pty, ISO. Outlives a renderer reload, unlike the renderer's own
+   *  spawn stamps (lib/idle-suspend `spawnedAt`). */
+  startedAt?: string
 }
 
 // Folder Preferences types

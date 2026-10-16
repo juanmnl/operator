@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   LastRunRecorder, parseLastRun, judgePreviousRun, shouldAutoResume, withLateReleases, processIsRunning,
-  withBootLock, withCarried, CRASH_LOOP_MS, CRASH_LOOP_MAX_MS, RESUME_MAX_AGE_MS, HEARTBEAT_MS, type LastRun, type LiveLane,
+  withBootLock, withCarried, previousRunInfo, CRASH_LOOP_MS, CRASH_LOOP_MAX_MS, RESUME_MAX_AGE_MS, HEARTBEAT_MS, type LastRun, type LiveLane,
 } from './last-run'
 
 // --- TerminalManager's real lane table, with node-pty and the probes faked --------------------
@@ -98,6 +98,16 @@ describe('last-run.json lifecycle, from the live pty table', () => {
     expect(r.clean).toBe(false)
     expect(r.appPid).toBe(SELF.pid)
     expect(r.lanes.map((l) => [l.key, l.claudeSessionId, l.projectId, l.roleId])).toEqual([['k-a', 's-k-a', 'p', 'k-a']])
+  })
+
+  it('the pty list carries each lane\'s start time, for a renderer that reloads (review N6)', async () => {
+    const { tm, lane } = await managerWithRecorder()
+    const before = Date.now()
+    const a = await lane('k-a')
+    const listed = tm.list().find((t) => t.id === a.id)
+    expect(listed?.startedAt).toBeDefined()
+    expect(Date.parse(listed!.startedAt!)).toBeGreaterThanOrEqual(before)
+    expect(listed!.startedAt).toBe(tm.liveLanes().find((l) => l.terminalId === a.id)?.startedAt)
   })
 
   it('a lane that ends on its own leaves the file', async () => {
@@ -495,5 +505,87 @@ describe('the clean/unclean decision', () => {
     expect(await processIsRunning(self, '2026-10-06T15:00:00.000Z', async () => '')).toBe(false)
     expect(await processIsRunning(self, '2026-10-06T15:00:00.000Z', async () => { throw new Error('no ps') })).toBe(true)
     expect(await processIsRunning(999999, '2026-10-06T15:00:00.000Z', lstart('2026-10-06T15:00:00.000Z'))).toBe(false)
+  })
+})
+
+// Idle-lane suspension (src/renderer/lib/idle-suspend.ts): a suspended lane has no pty, and the
+// next boot must restore it suspended, never start it.
+describe('suspended lanes', () => {
+  const RUN2 = { pid: 5001, startedAt: '2026-10-06T15:29:00.000Z' }
+  const RUN3 = { pid: 5002, startedAt: '2026-10-06T15:31:00.000Z' }
+  const AT = '2026-10-06T15:20:00.000Z'
+
+  it('a suspended lane leaves the lanes and is listed as suspended, through a crash: never auto-resumed', async () => {
+    const { tm, rec, lane } = await managerWithRecorder()
+    await lane('k-a')
+    const b = await lane('k-b')
+    // The renderer says first, then ends the CLI.
+    await rec.setSuspended([{ key: 'k-b', at: AT }])
+    await tm.kill(b.id)
+    await rec.sync()
+    expect(read().lanes.map((l) => l.key)).toEqual(['k-a'])
+    expect(read().suspended).toEqual([{ key: 'k-b', at: AT }])
+    // …and the app crashes here.
+    const next = new LastRunRecorder({ file, self: RUN2, lanes: () => [], openReleases: () => new Set(), now: () => NOW })
+    expect(await next.open({ isRunning: dead })).toBe('unclean')
+    const info = next.previousRun()!
+    expect(info.autoResume).toBe(true)
+    expect(info.lanes.map((l) => l.key)).toEqual(['k-a'])
+    expect(info.suspended).toEqual(['k-b'])
+    await next.sync()
+  })
+
+  it('a clean quit records the suspended lanes, and a suspend during teardown does not change the record', async () => {
+    const { tm, rec, lane } = await managerWithRecorder()
+    await lane('k-a')
+    await rec.setSuspended([{ key: 'k-s', at: AT }])
+    await rec.freeze()
+    await rec.setSuspended([])
+    await tm.killAll()
+    for (const p of ptys) p.exit(0)
+    await rec.sync()
+    expect(read()).toMatchObject({ clean: true, lanes: [{ key: 'k-a' }], suspended: [{ key: 'k-s', at: AT }] })
+  })
+
+  it('a resumed lane is live, whatever the suspended list still says', async () => {
+    const { rec, lane } = await managerWithRecorder()
+    await rec.setSuspended([{ key: 'k-a', at: AT }])
+    expect(read().suspended?.map((x) => x.key)).toEqual(['k-a'])
+    await lane('k-a') // resumed with the same lane key before the renderer re-sent its list
+    await rec.sync()
+    expect(read().lanes.map((l) => l.key)).toEqual(['k-a'])
+    expect(read().suspended).toBeUndefined()
+  })
+
+  it('suspended lanes are carried until the renderer has them, and once it holds them they are its own', async () => {
+    writeFileSync(file, JSON.stringify(record({ suspended: [{ key: 'k-s', at: AT }] })))
+    const run2 = new LastRunRecorder({ file, self: RUN2, lanes: () => [], openReleases: () => new Set(), now: () => NOW })
+    await run2.open({ isRunning: dead })
+    // Run 2 dies before its renderer said anything.
+    expect(read().carried?.suspended).toEqual([{ key: 'k-s', at: AT }])
+    const run3 = new LastRunRecorder({ file, self: RUN3, lanes: () => [], openReleases: () => new Set(), now: () => NOW })
+    await run3.open({ isRunning: dead })
+    expect(run3.previousRun()!.suspended).toEqual(['k-s'])
+    // Run 3's renderer restores it suspended and says so: it is this run's, not carried.
+    await run3.setSuspended([{ key: 'k-s', at: AT }])
+    expect(read().suspended).toEqual([{ key: 'k-s', at: AT }])
+    expect(read().carried?.suspended ?? []).toEqual([])
+  })
+
+  it('withCarried merges suspended lanes without duplicates; previousRunInfo drops a key that is also live', () => {
+    const merged = withCarried(record({
+      suspended: [{ key: 'k-s', at: AT }],
+      carried: { lanes: [], released: [], suspended: [{ key: 'k-s', at: AT }, { key: 'k-t', at: AT }, { key: 'k-qa', at: AT }] },
+    }))
+    expect(merged.suspended?.map((x) => x.key)).toEqual(['k-s', 'k-t'])
+    expect(merged.carried).toBeUndefined()
+    // A key with a live pty in that run was live at the end, whatever the list said.
+    const info = previousRunInfo(record({ suspended: [{ key: 'k-qa', at: AT }, { key: 'k-s', at: AT }] }), false)
+    expect(info.suspended).toEqual(['k-s'])
+  })
+
+  it('a record written before the field existed reads with no suspended lanes', () => {
+    const r = parseLastRun(JSON.stringify(record()))!
+    expect(r.suspended).toBeUndefined()
   })
 })

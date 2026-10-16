@@ -5,6 +5,9 @@ import { sessionWaveStatus } from './session-status'
 export interface ProjectActivity {
   /** Sessions currently open for this project (ended ones excluded). */
   live: number
+  /** Lanes suspended while idle (lib/idle-suspend): ended, but still this project's lanes, so they
+   *  keep it on the rail. Not counted in `live`, which is what "N running" reads. */
+  suspended: number
   /** Lanes whose turn it is — the count that actually wants the user. */
   waiting: number
   /** Roster size, so "3 running" can be read against "of 6". */
@@ -23,10 +26,11 @@ export interface ProjectActivity {
 const RANK: Record<string, number> = { asking: 5, running: 4, compacting: 3, waiting: 2, error: 1 }
 
 export function projectActivity(
-  sessions: Array<{ status: string; phase: string }>,
+  sessions: Array<{ status: string; phase: string; suspended?: boolean }>,
   lanes = 0,
 ): ProjectActivity {
   const open = sessions.filter((s) => s.status !== 'ended')
+  const suspended = sessions.filter((s) => s.status === 'ended' && s.suspended).length
   let status: WaveStatus = 'idle'
   let waiting = 0
   for (const s of open) {
@@ -34,7 +38,18 @@ export function projectActivity(
     if (w === 'waiting' || w === 'asking') waiting++
     if ((RANK[w] ?? 0) > (RANK[status] ?? 0)) status = w
   }
-  return { live: open.length, waiting, lanes, status }
+  return { live: open.length, suspended, waiting, lanes, status }
+}
+
+/** The lanes "Close project" ends: the running ones and the ones suspended while idle, which it
+ *  closes too (`closePlan`). The menu counted only the running ones (QA O4). */
+export function lanesToEnd(a: Pick<ProjectActivity, 'live' | 'suspended'> | undefined): number {
+  return (a?.live ?? 0) + (a?.suspended ?? 0)
+}
+
+/** The Close item's label, shared by the gallery card and the rail menu. */
+export function closeProjectLabel(lanes: number): string {
+  return lanes > 0 ? `Close project · end ${lanes} agent${lanes === 1 ? '' : 's'}` : 'Close project'
 }
 
 /** The one-phrase read for a project: what it's doing, in words rather than a bare count.

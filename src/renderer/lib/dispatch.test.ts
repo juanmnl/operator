@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs, tabRunsIn, markReleased, isReleased, reusableLane } from './dispatch'
+import { routeDispatch, liveLaneNames, pickLaneTab, dispatchNeedsApproval, COORDINATOR_ROLE_IDS, type RoutableTab, orphanTabs, tabRunsIn, markReleased, isReleased, reusableLane, pickSuspendedTab } from './dispatch'
 import type { Role } from '../../shared/types'
 
 const roster: Role[] = [
@@ -36,6 +36,27 @@ describe('routeDispatch', () => {
     const tabs = [tab({ id: 't1', roleId: 'code', ended: true })]
     const r = routeDispatch('code', roster, tabs, 'p1')
     expect(r.kind).toBe('queue')
+  })
+
+  // Idle-lane suspension: a suspended lane is ended (never typed into), but it is the role's lane,
+  // and the launch path resumes it rather than spawning a second one.
+  it('queues for a SUSPENDED lane and names it, so the launch resumes that lane', () => {
+    const tabs = [tab({ id: 'suspended:k', roleId: 'code', ended: true, suspended: true })]
+    const r = routeDispatch('code', roster, tabs, 'p1')
+    expect(r.kind).toBe('queue')
+    if (r.kind === 'queue') expect(r.suspended?.id).toBe('suspended:k')
+    // A live lane on the role wins over a suspended one.
+    const both = [...tabs, tab({ id: 't2', roleId: 'code' })]
+    expect(routeDispatch('code', roster, both, 'p1').kind).toBe('send')
+    // An ended lane that is not suspended is not resumed.
+    const ended = routeDispatch('code', roster, [tab({ id: 't1', roleId: 'code', ended: true })], 'p1')
+    if (ended.kind === 'queue') expect(ended.suspended).toBeUndefined()
+  })
+
+  it('pickSuspendedTab returns the original tab, not a copy marked live', () => {
+    const asleep = tab({ id: 'suspended:k', roleId: 'code', ended: true, suspended: true })
+    expect(pickSuspendedTab([asleep], 'p1', 'code')).toBe(asleep)
+    expect(pickSuspendedTab([asleep], 'p1', 'research')).toBeUndefined()
   })
 
   it('ignores a live lane in a DIFFERENT project', () => {

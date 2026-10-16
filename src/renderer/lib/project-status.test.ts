@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { projectActivity, projectActivityLabel } from './project-status'
+import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel } from './project-status'
 
 const s = (phase: string, status = 'active') => ({ status, phase })
 
@@ -16,6 +16,13 @@ describe('projectActivity', () => {
     expect(a.status).toBe('idle')
   })
 
+  it('counts suspended lanes apart from live ones, so "N running" leaves them out', () => {
+    const a = projectActivity([{ status: 'ended', phase: 'waiting', suspended: true }, s('running', 'ended'), s('waiting')])
+    expect(a.live).toBe(1)
+    expect(a.suspended).toBe(1)
+    expect(projectActivityLabel(a)).toEqual({ text: '1 needs you', accent: true })
+  })
+
   it('counts waiting lanes separately from the roll-up', () => {
     // The orb says "running" (busiest) while two lanes still want the user — which is
     // exactly why the label reads off `waiting`, not off `status`.
@@ -25,7 +32,7 @@ describe('projectActivity', () => {
   })
 
   it('is idle with no sessions', () => {
-    expect(projectActivity([], 6)).toEqual({ live: 0, waiting: 0, lanes: 6, status: 'idle' })
+    expect(projectActivity([], 6)).toEqual({ live: 0, suspended: 0, waiting: 0, lanes: 6, status: 'idle' })
   })
 })
 
@@ -44,5 +51,21 @@ describe('projectActivityLabel', () => {
 
   it('says nothing for a project with no lanes and nothing running', () => {
     expect(projectActivityLabel(projectActivity([], 0))).toBeNull()
+  })
+})
+
+// QA final pass, O4: "Close project · end 1 agent" with two more suspended lanes on the rail. Close
+// ends those too, and the label is what the user confirms.
+describe('the Close project label', () => {
+  it('counts suspended lanes with the running ones', () => {
+    const a = projectActivity([{ status: 'ended', phase: 'waiting', suspended: true }, { status: 'ended', phase: 'waiting', suspended: true }, s('waiting')], 4)
+    expect(lanesToEnd(a)).toBe(3)
+    expect(closeProjectLabel(lanesToEnd(a))).toBe('Close project · end 3 agents')
+  })
+
+  it('names suspended lanes alone, and nothing when there is nothing to end', () => {
+    expect(closeProjectLabel(lanesToEnd(projectActivity([{ status: 'ended', phase: 'idle', suspended: true }])))).toBe('Close project · end 1 agent')
+    expect(closeProjectLabel(lanesToEnd(projectActivity([s('idle', 'ended')])))).toBe('Close project')
+    expect(lanesToEnd(undefined)).toBe(0)
   })
 })

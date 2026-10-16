@@ -116,6 +116,12 @@ describe('restartLaunchOptions — the resume shape', () => {
     expect(o).toEqual({ resumeSessionId: 'uuid-b', remoteControl: true, remoteControlName: 'operator · Code' })
     expect(buildArgs(o, 'uuid-b')).toEqual(['--resume', 'uuid-b', '--remote-control', 'operator · Code'])
   })
+
+  // Idle-lane suspension: the message that resumes a suspended lane rides the spawn, after `--`.
+  it('carries an opening prompt for a resume, after the option terminator', () => {
+    const o = restartLaunchOptions({}, 'uuid-c', { remoteControl: false, initialPrompt: '[Operator · message from Operator] go' })
+    expect(buildArgs(o, 'uuid-c')).toEqual(['--resume', 'uuid-c', '--', '[Operator · message from Operator] go'])
+  })
 })
 
 describe('restart in place', () => {

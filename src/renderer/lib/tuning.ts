@@ -289,3 +289,32 @@ export function cacheHealth(readShare: number, tokens: number): 'healthy' | 'low
   if (tokens < 100_000) return 'thin'
   return readShare >= HEALTHY_CACHE_READ ? 'healthy' : 'low'
 }
+
+// ── Idle lanes: when an idle lane's CLI is ended to free memory (lib/idle-suspend) ─────────────
+
+/** Minutes a lane may sit idle or waiting before its CLI is ended. `0` is Off. */
+export const IDLE_SUSPEND_KEY = 'operator.lane.idleSuspendMinutes'
+
+/** Thirty minutes. A suspended lane costs a process start and a cold prompt cache when it is
+ *  used again, so the window has to be longer than the gaps inside ordinary work (a reply read
+ *  and answered, a coordinator's follow-up dispatch). Each live CLI holds about 300 MB with its
+ *  MCP server (dev/results/memory-footprint-research-2026-10-16.md, Q4). */
+export const DEFAULT_IDLE_SUSPEND_MINUTES = 30
+
+/** The choices the Tuning page offers. `0` is Off. */
+export const IDLE_SUSPEND_OPTIONS = [0, 15, DEFAULT_IDLE_SUSPEND_MINUTES, 60, 120] as const
+
+export function getIdleSuspendMinutes(): number {
+  try {
+    const raw = localStorage.getItem(IDLE_SUSPEND_KEY)
+    if (raw === null) return DEFAULT_IDLE_SUSPEND_MINUTES
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE_SUSPEND_MINUTES
+  } catch {
+    return DEFAULT_IDLE_SUSPEND_MINUTES
+  }
+}
+
+export function setIdleSuspendMinutes(minutes: number): void {
+  try { localStorage.setItem(IDLE_SUSPEND_KEY, String(Math.max(0, Math.round(minutes)))) } catch { /* quota */ }
+}

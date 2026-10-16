@@ -258,6 +258,21 @@ describe('stale sessions.json claims', () => {
     await reap.queueEndedSessions()
     expect(await queued()).toEqual([])
   })
+
+  // Idle-lane suspension (src/renderer/lib/idle-suspend.ts): the CLI was ended to free memory and
+  // the lane resumes in this worktree. No pty backs the claim, and the row has no terminal id.
+  it('a lane suspended while idle keeps its worktree: claimed, not queued at boot', async () => {
+    const repo = scratchRepo()
+    const suspended = await wt.createWorktree(repo)
+    writeSessions([record(suspended.path, repo, { terminalId: undefined, idleSuspendedAt: '2026-10-16T12:00:00Z' })])
+    reap.setLivePtyCwds(() => [])
+    try {
+      expect((await factsFor(suspended.path)).liveTerminalId).toBe('suspended')
+      expect((await entryFor(suspended.path)).live).toBe(true)
+      await reap.queueEndedSessions()
+      expect((await reap.loadPending()).map((p) => p.path)).not.toContain(suspended.path)
+    } finally { reap.setLivePtyCwds(null) }
+  })
 })
 
 // ── (3) G3: boot retries removals someone started, and only those ────────────────────────────────

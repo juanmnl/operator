@@ -180,6 +180,14 @@ declare global {
       /** The previous run's lanes are saved in this renderer's snapshot (or resumed): main stops
        *  carrying them in last-run.json. */
       previousRunTaken?: () => Promise<void>
+      /** The lanes this renderer holds suspended while idle (lib/idle-suspend), the whole list each
+       *  time. Main records them in last-run.json so a relaunch restores them suspended. */
+      setSuspendedLanes?: (lanes: Array<{ key: string; at: string }>) => Promise<void>
+      /** Which of these Claude sessions `--resume` can open, each looked up under the config dir
+       *  its project's lanes run with. `turn`: the transcript holds a user turn. `none`: it has none
+       *  or is not where the lane writes. An id in neither is unknown. A lane without a turn is never
+       *  suspended while idle and a saved row without one is not offered for resume. */
+      conversationsWithTurn?: (sessions: Array<{ id: string; projectId?: string }>) => Promise<{ turn: string[]; none: string[] }>
       /** The crash auto-resume queue has finished; main's crash-loop guard counts from now. */
       crashResumeDone?: () => Promise<void>
       /** Remove directories the user picked and confirmed. `confirmedUnsaved` names the paths whose

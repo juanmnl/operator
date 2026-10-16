@@ -168,6 +168,12 @@ describe('the previous run\'s lanes are carried whole', () => {
     expect(snapshotLaneKeys([], carried)).toEqual({ liveKeys: [], carriedKeys: ['a1', 'a2', 'b1', 'b2'], olderKeys: [] })
   })
 
+  // Idle-lane suspension: a suspended lane is restored suspended from its saved row. Listed as one
+  // that was running, the next launch would offer it on the card or resume it.
+  it('a lane suspended while idle is not one of this run\'s running lanes', () => {
+    expect(snapshotLaneKeys([{ key: 'a1' }, { key: 'a2', idleSuspendedAt: '2026-10-16T12:00:00Z' }], { lastRun: [], older: [] }).liveKeys).toEqual(['a1'])
+  })
+
   it('relaunching again and again without resuming anything keeps every project\'s lanes', () => {
     // A run that started no lanes does not age the offer.
     let raw = JSON.stringify(before)

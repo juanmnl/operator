@@ -34,6 +34,11 @@ export interface LaneSnapshot {
   phase?: string
   /** The pty already exited; its own exit path owns it. */
   ended?: boolean
+  /** SUSPENDED WHILE IDLE (lib/idle-suspend): its CLI was ended to free memory and its tab kept.
+   *  It has no pty and no phase, but it is still a lane, and it closes on the went-quiet backstop
+   *  like a live one, so the suspension never pins its tab, row and worktree claim forever.
+   *  `lastActivityAt` is its transcript's last record, from the saved row. */
+  suspended?: boolean
   /** Last transcript activity, ISO. The clock the grace window runs on. */
   lastActivityAt?: string
   /** When this lane's most recent completion signal landed, ISO — a `task_status(id,'done')`
@@ -82,7 +87,7 @@ function ageOf(iso: string | undefined, nowMs: number): number | undefined {
  *  cut the tail of the very turn that reported. */
 export function laneCloseDecision(lane: LaneSnapshot, nowMs: number, policy: LaneClosePolicy): LaneCloseDecision {
   if (policy.keepWarmMs <= 0) return { close: false, why: 'auto-close is off' }
-  if (lane.ended) return { close: false, why: 'the pty already exited' }
+  if (lane.ended && !lane.suspended) return { close: false, why: 'the pty already exited' }
   if (lane.roleId && COORDINATOR_ROLE_IDS.includes(lane.roleId.toLowerCase())) {
     // Out of scope by design: the coordinator runs in the repo and is long-lived. It is the lane
     // that commissions task-scoped work, not one of them.
@@ -90,6 +95,7 @@ export function laneCloseDecision(lane: LaneSnapshot, nowMs: number, policy: Lan
   }
   if (lane.focused) return { close: false, why: 'you are looking at it' }
   if (lane.openWork > 0) return { close: false, why: `${lane.openWork} task(s) still open` }
+  if (lane.suspended) return suspendedCloseDecision(lane, nowMs, policy)
   if (!lane.phase) return { close: false, why: 'no tracked session yet' }
   if (BUSY.has(lane.phase)) return { close: false, why: `still ${lane.phase}` }
   if (lane.phase === 'asking') return { close: false, why: 'asking you a question' }
@@ -116,6 +122,34 @@ export function laneCloseDecision(lane: LaneSnapshot, nowMs: number, policy: Lan
     return { close: true, reason: 'went-quiet', why: 'silent past the backstop without ever reporting' }
   }
   return { close: false, why: 'has not reported done' }
+}
+
+/** A suspended lane closes once its transcript has been quiet past `quietMs`, the backstop a live
+ *  lane is closed on. It was between turns when it was suspended (lib/idle-suspend never suspends a
+ *  busy lane), so there is no phase to check. Not the keep-warm window: a lane is suspended after
+ *  15 minutes at the least, which is past the default window, so a reported lane would close on
+ *  the tick after its suspension and the suspension would be pointless. The reason still follows
+ *  the report, so a lane that reported has its work marked done, and one that never did,
+ *  abandoned. */
+function suspendedCloseDecision(lane: LaneSnapshot, nowMs: number, policy: LaneClosePolicy): LaneCloseDecision {
+  const idleFor = ageOf(lane.lastActivityAt, nowMs)
+  if (idleFor === undefined || idleFor < policy.quietMs) return { close: false, why: 'suspended, not quiet past the backstop yet' }
+  return lane.reportedDoneAt !== undefined
+    ? { close: true, reason: 'reported-done', why: 'suspended and quiet past the backstop after reporting done' }
+    : { close: true, reason: 'went-quiet', why: 'suspended and silent past the backstop without ever reporting' }
+}
+
+/** The saved row of a lane the lifecycle closed: stamped `suspendedAt` with its reason, so the next
+ *  dispatch resumes it cold, and stripped of the pty id it no longer has (a stale `terminalId` is
+ *  what made tasks unmatchable for months). A lane closed while suspended idle loses
+ *  `idleSuspendedAt` too, or it would be restored as a suspended tab at the next launch and kept as a
+ *  worktree claim after its worktree was removed (review H2). */
+export function closedLaneRow<R extends { terminalId?: string; suspendedAt?: string; suspendedReason?: LaneCloseReason; idleSuspendedAt?: string }>(
+  row: R,
+  reason: LaneCloseReason,
+  nowIso: string,
+): R {
+  return { ...row, terminalId: undefined, suspendedAt: nowIso, suspendedReason: reason, idleSuspendedAt: undefined }
 }
 
 export interface LaneClosePlan {

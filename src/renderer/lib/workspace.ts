@@ -267,14 +267,15 @@ export function carriedLaneKeys(workspace: Workspace | null, savedSessions: read
   return { lastRun, older: olderRun.filter((k) => !inLast.has(k)) }
 }
 
-/** The snapshot's lane fields: this run's lanes, minus the ones that ended on their own, and the
- *  earlier runs' lanes still owed. A lane back in this run is not owed: it is this run's now. */
+/** The snapshot's lane fields: this run's lanes, minus the ones that ended on their own and the ones
+ *  suspended while idle (restored suspended from their saved rows, never offered or resumed), and
+ *  the earlier runs' lanes still owed. A lane back in this run is not owed: it is this run's now. */
 export function snapshotLaneKeys(
-  tabs: ReadonlyArray<{ key: string; selfExited?: boolean }>,
+  tabs: ReadonlyArray<{ key: string; selfExited?: boolean; idleSuspendedAt?: string }>,
   pending: PendingLanes,
 ): Pick<Workspace, 'liveKeys' | 'carriedKeys' | 'olderKeys'> {
   const here = new Set(tabs.map((t) => t.key))
-  const liveKeys = [...new Set(tabs.filter((t) => !t.selfExited).map((t) => t.key))]
+  const liveKeys = [...new Set(tabs.filter((t) => !t.selfExited && !t.idleSuspendedAt).map((t) => t.key))]
   const carriedKeys = [...new Set(pending.lastRun)].filter((k) => !here.has(k))
   const inCarried = new Set(carriedKeys)
   const olderKeys = [...new Set(pending.older)].filter((k) => !here.has(k) && !inCarried.has(k))

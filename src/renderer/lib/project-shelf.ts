@@ -24,7 +24,7 @@ export function isActiveProject(p: Project, activity?: ProjectActivity): boolean
   return !p.archivedAt || (activity?.live ?? 0) > 0
 }
 
-/** Is this project ON THE RAIL right now? Live, or the one you're in.
+/** Is this project ON THE RAIL right now? Live, holding a suspended lane, or the one you're in.
  *
  *  Derived, never stored — the rail's membership rule and CLOSE's gate are the same question,
  *  which is why they must be the same function. Close means "take it off the rail", so it is
@@ -37,7 +37,7 @@ export function isActiveProject(p: Project, activity?: ProjectActivity): boolean
  *  different surface: which SHELF the gallery files it under. A project can be off the rail and
  *  active, or on the rail and shelved (a live lane pins it to Active). */
 export function isOnRail(p: Project, activity: ProjectActivity | undefined, activeProjectId: string | null): boolean {
-  return (activity?.live ?? 0) > 0 || p.id === activeProjectId
+  return (activity?.live ?? 0) > 0 || (activity?.suspended ?? 0) > 0 || p.id === activeProjectId
 }
 
 /** Would writing `archivedAt` actually move this project to Previous *right now*?
@@ -53,7 +53,9 @@ export function shelvingMoves(activity?: ProjectActivity): boolean {
   return (activity?.live ?? 0) === 0
 }
 
-/** The sessions CLOSE will end, and how many of them are mid-task.
+/** The sessions CLOSE will end, and how many of them are mid-task. A lane suspended while idle
+ *  (lib/idle-suspend) is one of them: its status is `ended`, but its tab, row and worktree are
+ *  kept, and a close that skipped it left all three behind to come back at the next launch.
  *
  *  Pure over the session list so the sequencing is testable without a pty. `running` is only
  *  reported, never blocking: closing is reversible housekeeping and does not earn a modal, but
@@ -64,9 +66,9 @@ export function shelvingMoves(activity?: ProjectActivity): boolean {
  *  session with no project cannot be attributed to this one. */
 export function closePlan(
   projectId: string,
-  sessions: ReadonlyArray<{ id: string; projectId?: string; status?: string; phase?: string; terminalId?: string }>,
+  sessions: ReadonlyArray<{ id: string; projectId?: string; status?: string; phase?: string; terminalId?: string; suspended?: boolean }>,
 ): { sessions: string[]; running: number } {
-  const live = sessions.filter((s) => s.projectId === projectId && s.status !== 'ended' && !!s.terminalId)
+  const live = sessions.filter((s) => s.projectId === projectId && (s.status !== 'ended' || !!s.suspended) && !!s.terminalId)
   return {
     sessions: live.map((s) => s.id),
     running: live.filter((s) => s.phase === 'running' || s.phase === 'compacting').length,
