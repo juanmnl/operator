@@ -207,17 +207,24 @@ export interface SuspendSteps {
   /** Mark the pty's coming exit as not the lane finishing (`true`), or take that back. */
   guardExit: (on: boolean) => void
   kill: () => Promise<void>
-  /** Show the tab as suspended: from here routing resumes it instead of typing into it. */
+  /** Show the tab as suspended. From here routing wakes it, and the wake waits for the kill
+   *  (`LaneGate`); a message already owed to the old pty goes through the wake too. */
   markSuspended: () => void
+  /** The kill failed: the tab is a live lane again, and messages that waited on the kill are typed
+   *  into it. */
+  unmarkSuspended: () => void
 }
 
-/** One suspend, in the order that keeps a message from starting a second CLI (review M4).
+/** One suspend, in the order that keeps a message from starting a second CLI (review M4) and from
+ *  being typed into the dying one (review N1).
  *
  *  Main is told first, so a crash before the kill still restores the lane suspended; main ignores
- *  a suspended key whose pty is still alive. The exit guard is set before the kill, so the exit
- *  event finds it whenever it lands. The tab reads as suspended only after the kill: until then it
- *  is a live lane, a message routed to it is typed into it, and the re-check after the report
- *  cancels the suspend. A kill that fails leaves the lane running and not suspended. */
+ *  a suspended key whose pty is still alive. The re-check after the report cancels the suspend if a
+ *  message arrived meanwhile. From the moment it passes, the tab reads as suspended: a message routed
+ *  during the kill wakes the lane, and the view holds that wake until the kill has settled (the kill
+ *  takes a `ps` snapshot and waits on the process tree, so it is never instant). Before, the tab read
+ *  as live until the kill returned, and a message in that window was typed into a CLI that was being
+ *  reaped. A kill that fails leaves the lane running and not suspended. */
 export async function runSuspend(st: SuspendSteps): Promise<'suspended' | 'cancelled' | 'kill-failed'> {
   if (!st.stillIdle()) return 'cancelled'
   await st.report(true)
@@ -226,15 +233,66 @@ export async function runSuspend(st: SuspendSteps): Promise<'suspended' | 'cance
     return 'cancelled'
   }
   st.guardExit(true)
+  st.markSuspended()
   try {
     await st.kill()
   } catch {
+    st.unmarkSuspended()
     st.guardExit(false)
     await st.report(false)
     return 'kill-failed'
   }
-  st.markSuspended()
   return 'suspended'
+}
+
+/** Ends of a lane in flight, by lane key: a suspend's kill (review N1) or the close of a suspended
+ *  lane (review N2). A wake waits for every one of them and then looks at the lane again, so it
+ *  never resumes a CLI that is still being reaped, nor one whose tab and worktree are being removed. */
+export class LaneGate {
+  private readonly holds = new Map<string, Set<Promise<void>>>()
+
+  /** Hold `key` until the returned function is called. Calling it twice is harmless. */
+  hold(key: string): () => void {
+    let open!: () => void
+    const held = new Promise<void>((r) => { open = r })
+    const set = this.holds.get(key) ?? new Set<Promise<void>>()
+    set.add(held)
+    this.holds.set(key, set)
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      set.delete(held)
+      if (!set.size && this.holds.get(key) === set) this.holds.delete(key)
+      open()
+    }
+  }
+
+  /** Is anything holding `key`? */
+  busy(key: string): boolean {
+    return (this.holds.get(key)?.size ?? 0) > 0
+  }
+
+  /** Run `go` once nothing holds `key`: at once when free, else after every hold now in place and
+   *  any taken while waiting. Callers waiting on the same key run in the order they called. */
+  after<T>(key: string, go: () => Promise<T>): Promise<T> {
+    const set = this.holds.get(key)
+    if (!set?.size) return go()
+    return Promise.all([...set]).then(() => this.after(key, go))
+  }
+}
+
+/** When each pty Operator is running started, from main's list (review N6). The renderer's own
+ *  spawn stamps die with it, so after a reload a lane resumed a moment earlier read as quiet since
+ *  its last transcript record and was suspended on the next tick. Scratch shells are not lanes. */
+export function spawnStampsFromList(list: ReadonlyArray<{ id: string; alive: boolean; startedAt?: string }>): Array<[string, number]> {
+  const out: Array<[string, number]> = []
+  for (const t of list) {
+    if (!t.alive || t.id.startsWith('sh')) continue
+    const at = t.startedAt ? Date.parse(t.startedAt) : NaN
+    if (!Number.isNaN(at)) out.push([t.id, at])
+  }
+  return out
 }
 
 // ── a resume that did not come back ──────────────────────────────────────────────────────────
@@ -318,6 +376,41 @@ export function overlayKey(held: string, e: { key: string; metaKey?: boolean; ct
   if (e.key === 'Backspace') return { held: held.slice(0, -1), resume: true }
   if (e.key.length === 1) return { held: held + e.key, resume: true }
   return null
+}
+
+/** Keys held at suspended panes, per lane key, until they are typed into the resumed lane.
+ *
+ *  TAKEN WHEN WRITTEN, NOT WHEN ASKED (review N3). The overlay hands over the text after each burst
+ *  of typing and once more when it unmounts, and every hand-over asks for it to be typed. The text
+ *  is read at the write, so the last hand-over wins and it is typed once, whichever ask gets there
+ *  first. It is written after every message that was already waiting on the lane's readiness, so a
+ *  dispatch that joined the same resume is submitted on its own and the person's text stays in the
+ *  composer, unsent. */
+export class HeldKeys {
+  private readonly held = new Map<string, string>()
+
+  /** The overlay's latest text for `key`; empty clears it. */
+  set(key: string, text: string): void {
+    if (text) this.held.set(key, text)
+    else this.held.delete(key)
+  }
+
+  has(key: string): boolean { return this.held.has(key) }
+
+  /** Once `ready` resolves, and one task later, write what is held for `key` with `write` (the
+   *  submit queue's chain). False when there was nothing left to write. */
+  async typeInto(key: string, ready: Promise<void>, write: (text: string) => Promise<void> | void): Promise<boolean> {
+    if (!this.held.has(key)) return false
+    await ready
+    // Messages waiting on the same readiness continue in microtasks; a timer runs after all of
+    // them, so they are queued before this text.
+    await new Promise<void>((r) => setTimeout(r, 0))
+    const text = this.held.get(key)
+    if (!text) return false
+    this.held.delete(key)
+    await write(text)
+    return true
+  }
 }
 
 /** What resuming a suspended lane needs from the view. */

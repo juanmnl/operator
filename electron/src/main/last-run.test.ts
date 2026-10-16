@@ -100,6 +100,16 @@ describe('last-run.json lifecycle, from the live pty table', () => {
     expect(r.lanes.map((l) => [l.key, l.claudeSessionId, l.projectId, l.roleId])).toEqual([['k-a', 's-k-a', 'p', 'k-a']])
   })
 
+  it('the pty list carries each lane\'s start time, for a renderer that reloads (review N6)', async () => {
+    const { tm, lane } = await managerWithRecorder()
+    const before = Date.now()
+    const a = await lane('k-a')
+    const listed = tm.list().find((t) => t.id === a.id)
+    expect(listed?.startedAt).toBeDefined()
+    expect(Date.parse(listed!.startedAt!)).toBeGreaterThanOrEqual(before)
+    expect(listed!.startedAt).toBe(tm.liveLanes().find((l) => l.terminalId === a.id)?.startedAt)
+  })
+
   it('a lane that ends on its own leaves the file', async () => {
     const { rec, lane } = await managerWithRecorder()
     await lane('k-a')

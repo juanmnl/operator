@@ -567,10 +567,13 @@ export class TerminalManager {
     } catch { /* a diagnostic that throws is worse than one that is missing */ }
   }
 
-  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; selfExit?: boolean; devPort?: number; claudeVersion: string | null }> {
+  list(): Array<{ id: string; pid: number; cwd: string; command: string; alive: boolean; selfExit?: boolean; devPort?: number; claudeVersion: string | null; startedAt?: string }> {
     return [...this.terminals.values()].map((t) => ({
       // Reported so a tab re-attached after a renderer reload still knows its lane's version.
       claudeVersion: t.claudeVersion,
+      // And when it started: the renderer counts a lane's spawn as activity, so a lane resumed
+      // a moment before a reload is not suspended again on its old transcript time.
+      startedAt: t.startedAt,
       id: t.id,
       pid: t.pty?.pid ?? 0,
       cwd: t.cwd,

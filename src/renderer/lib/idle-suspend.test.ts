@@ -4,6 +4,7 @@ import {
   laneReady, LaneWaker, LANE_SETTLE_MS, LANE_READY_TIMEOUT_MS, HELD_RECORD_MAX_AGE_MS,
   suspendedTabId, isPlaceholderId, type SuspendCandidate,
   failedResume, tookTurnSince, RESUME_CONFIRM_MS, suspendedRowsToRestore, overlayKey, runSuspend, placeholderTab,
+  LaneGate, HeldKeys, spawnStampsFromList,
 } from './idle-suspend'
 import type { DispatchRecord } from '../../shared/types'
 
@@ -246,7 +247,7 @@ describe('idle suspend: a lane just resumed (review H1)', () => {
   })
 })
 
-describe('idle suspend: the order of one suspend (review M4)', () => {
+describe('idle suspend: the order of one suspend (review M4, N1)', () => {
   const steps = (o: { idle?: boolean[]; killFails?: boolean } = {}) => {
     const log: string[] = []
     const idle = [...(o.idle ?? [true, true])]
@@ -258,14 +259,15 @@ describe('idle suspend: the order of one suspend (review M4)', () => {
         guardExit: (on: boolean) => { log.push(on ? 'guard on' : 'guard off') },
         kill: async () => { log.push('kill'); if (o.killFails) throw new Error('no such pty') },
         markSuspended: () => { log.push('shown suspended') },
+        unmarkSuspended: () => { log.push('shown live') },
       },
     }
   }
 
-  it('tells main, re-checks, guards the exit and kills before the tab reads as suspended', async () => {
+  it('tells main, re-checks, guards the exit, and reads as suspended from before the kill', async () => {
     const h = steps()
     expect(await runSuspend(h.st)).toBe('suspended')
-    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'kill', 'shown suspended'])
+    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'shown suspended', 'kill'])
   })
 
   it('cancels when a message arrives while main is told, and takes the lane back out of the record', async () => {
@@ -277,8 +279,194 @@ describe('idle suspend: the order of one suspend (review M4)', () => {
   it('leaves the lane running and not suspended when the kill fails', async () => {
     const h = steps({ killFails: true })
     expect(await runSuspend(h.st)).toBe('kill-failed')
-    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'kill', 'guard off', 'report -lane'])
-    expect(h.log).not.toContain('shown suspended')
+    expect(h.log).toEqual(['check true', 'report +lane', 'check true', 'guard on', 'shown suspended', 'kill', 'shown live', 'guard off', 'report -lane'])
+  })
+})
+
+// The view's wiring, reduced to its parts: the tab's state, the gate held from "shown suspended"
+// until the kill settles, and a router that wakes a suspended lane through the gate and types into
+// a live one.
+function suspendHarness() {
+  const gate = new LaneGate()
+  const log: string[] = []
+  let suspended = false
+  let killDone!: () => void
+  let killFail!: (e: Error) => void
+  const killing = new Promise<void>((res, rej) => { killDone = res; killFail = rej })
+  let release: (() => void) | undefined
+  const route = (msg: string) => {
+    // What routing sees at the moment the message arrives.
+    if (!suspended) { log.push(`typed ${msg}`); return Promise.resolve() }
+    return gate.after('k', async () => { log.push(suspended ? `woke with ${msg}` : `typed ${msg}`) })
+  }
+  const run = runSuspend({
+    stillIdle: () => true,
+    report: async () => {},
+    guardExit: () => {},
+    kill: () => { log.push('kill started'); return killing.then(() => { log.push('kill settled') }) },
+    markSuspended: () => { release = gate.hold('k'); suspended = true },
+    unmarkSuspended: () => { suspended = false },
+  }).finally(() => release?.())
+  return { log, route, run, killDone, killFail: () => killFail(new Error('no such pty')) }
+}
+
+const flush = () => new Promise<void>((r) => setTimeout(r, 0))
+
+describe('idle suspend: a message routed while the old CLI is being killed (review N1)', () => {
+  it('waits for the kill, then wakes the lane with that message, never typing into the dying CLI', async () => {
+    const h = suspendHarness()
+    await flush()
+    expect(h.log).toEqual(['kill started'])
+    const a = h.route('dispatch A')
+    const b = h.route('reply B')
+    await flush()
+    expect(h.log).toEqual(['kill started']) // held: nothing typed, nothing resumed
+    h.killDone()
+    await h.run
+    await Promise.all([a, b])
+    // In arrival order, and only after the kill: the first wakes the lane, the second joins.
+    expect(h.log).toEqual(['kill started', 'kill settled', 'woke with dispatch A', 'woke with reply B'])
+  })
+
+  it('types what waited into the lane when the kill fails, since it is still running', async () => {
+    const h = suspendHarness()
+    await flush()
+    const a = h.route('dispatch A')
+    h.killFail()
+    expect(await h.run).toBe('kill-failed')
+    await a
+    expect(h.log).toEqual(['kill started', 'typed dispatch A'])
+  })
+})
+
+describe('idle suspend: the lane gate (review N1, N2)', () => {
+  it('runs at once when nothing holds the lane', async () => {
+    const gate = new LaneGate()
+    const ran: string[] = []
+    const p = gate.after('k', async () => { ran.push('go'); return 1 })
+    expect(ran).toEqual(['go']) // synchronously, so a wake registers its resume before anything else runs
+    expect(await p).toBe(1)
+  })
+
+  it('waits for every hold on that key, and only that key', async () => {
+    const gate = new LaneGate()
+    const ran: string[] = []
+    const kill = gate.hold('k')
+    const close = gate.hold('k')
+    void gate.after('k', async () => { ran.push('k') })
+    void gate.after('other', async () => { ran.push('other') })
+    await flush()
+    expect(ran).toEqual(['other'])
+    kill()
+    await flush()
+    expect(ran).toEqual(['other'])
+    close()
+    await flush()
+    expect(ran).toEqual(['other', 'k'])
+    expect(gate.busy('k')).toBe(false)
+  })
+
+  it('also waits for a hold taken while it waited: a close that starts right after the kill', async () => {
+    const gate = new LaneGate()
+    const ran: string[] = []
+    const kill = gate.hold('k')
+    void gate.after('k', async () => { ran.push('wake') })
+    // The close takes the gate in the same moment the kill lets go.
+    kill()
+    const close = gate.hold('k')
+    await flush()
+    expect(ran).toEqual([])
+    close()
+    await flush()
+    expect(ran).toEqual(['wake'])
+  })
+
+  it('a wake that waited on a close finds no lane and resolves to nothing (review N2)', async () => {
+    const gate = new LaneGate()
+    const tabs = new Set(['k'])
+    const resumed: string[] = []
+    const wake = () => gate.after('k', async () => {
+      if (!tabs.has('k')) return null
+      resumed.push('k')
+      return 'tab'
+    })
+    const release = gate.hold('k') // the close starts
+    const woke = wake() // a dispatch arrives during its IPC calls
+    tabs.delete('k') // the close drops the tab
+    release()
+    expect(await woke).toBeNull()
+    expect(resumed).toEqual([]) // no CLI started for a tab that is gone
+  })
+
+  it('releasing twice is harmless', () => {
+    const gate = new LaneGate()
+    const a = gate.hold('k')
+    const b = gate.hold('k')
+    a()
+    a()
+    expect(gate.busy('k')).toBe(true)
+    b()
+    expect(gate.busy('k')).toBe(false)
+  })
+})
+
+describe('idle suspend: keys held at the overlay reach the resumed lane (review N3)', () => {
+  it('types the last text handed over, once, however many hand-overs asked for it', async () => {
+    const held = new HeldKeys()
+    const written: string[] = []
+    let ready!: () => void
+    const isReady = new Promise<void>((r) => { ready = r })
+    held.set('k', 'fix')
+    const first = held.typeInto('k', isReady, (t) => { written.push(t) })
+    // Typing went on after the first pause; the overlay unmounts and hands over the rest.
+    held.set('k', 'fix the tests')
+    const second = held.typeInto('k', isReady, (t) => { written.push(t) })
+    ready()
+    expect(await Promise.all([first, second])).toEqual([true, false])
+    expect(written).toEqual(['fix the tests'])
+    expect(held.has('k')).toBe(false)
+  })
+
+  it('writes after every message already waiting on the same readiness', async () => {
+    const held = new HeldKeys()
+    const order: string[] = []
+    let ready!: () => void
+    const isReady = new Promise<void>((r) => { ready = r })
+    held.set('k', 'draft')
+    const typing = held.typeInto('k', isReady, (t) => { order.push(`draft ${t}`) })
+    // A dispatch that joined the same resume, waiting on the same promise, registered after.
+    const dispatch = isReady.then(() => { order.push('dispatch') })
+    ready()
+    await Promise.all([typing, dispatch])
+    expect(order).toEqual(['dispatch', 'draft draft'])
+  })
+
+  it('writes nothing when nothing was typed', async () => {
+    const held = new HeldKeys()
+    const written: string[] = []
+    held.set('k', 'x')
+    held.set('k', '') // Backspace took it back
+    expect(await held.typeInto('k', Promise.resolve(), (t) => { written.push(t) })).toBe(false)
+    expect(written).toEqual([])
+  })
+})
+
+describe('idle suspend: spawn times survive a renderer reload (review N6)', () => {
+  it('reads each live pty\'s start time from main\'s list', () => {
+    const at = '2026-10-16T11:58:00.000Z'
+    expect(spawnStampsFromList([
+      { id: 't3', alive: true, startedAt: at },
+      { id: 't4', alive: false, startedAt: at }, // exited: not a lane to judge
+      { id: 'sh1', alive: true, startedAt: at }, // a scratch shell
+      { id: 't5', alive: true }, // an older main with no start time
+      { id: 't6', alive: true, startedAt: 'nonsense' },
+    ])).toEqual([['t3', Date.parse(at)]])
+  })
+
+  it('keeps a lane resumed just before the reload up, where the transcript alone would suspend it', () => {
+    const [[, spawnedAt]] = spawnStampsFromList([{ id: 't3', alive: true, startedAt: new Date(NOW - 2 * MIN).toISOString() }])
+    expect(suspendDecision(lane({ lastActivityAt: ago(90) }), NOW, IDLE).suspend).toBe(true)
+    expect(suspendDecision(lane({ lastActivityAt: ago(90), spawnedAt }), NOW, IDLE)).toEqual({ suspend: false, why: 'not idle long enough' })
   })
 })
 

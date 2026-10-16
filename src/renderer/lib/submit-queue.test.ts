@@ -1018,3 +1018,64 @@ describe('onSubmit', () => {
     expect(pastes(writes.map((data) => ({ data })))).toHaveLength(1)
   })
 })
+
+describe('divert — a lane whose pty is being ended in place (idle suspend, review N1)', () => {
+  it('hands a submission queued before the divert, and not written yet, to the new owner', async () => {
+    const clock = fakeClock()
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...clock })
+    await q.submit('t1', 'A')
+    const handed: string[] = []
+    // B is queued while the lane is still live; the suspend commits before its write.
+    const b = q.submit('t1', 'B')
+    q.divert('t1', (text) => handed.push(text))
+    await b
+    expect(pastes(writes.map((data) => ({ data }))).map((w) => w.data)).toEqual([submitSequence('A')])
+    expect(handed).toEqual(['B'])
+    // Nothing is awaited on the old pty, so nothing is reported lost there.
+    expect(q.pending('t1')).toBeUndefined()
+  })
+
+  it('hands over every later submission in order, and only for that terminal', async () => {
+    const clock = fakeClock()
+    const writes: { id: string; data: string }[] = []
+    const q = createSubmitQueue({ write: (id, data) => writes.push({ id, data }), ...clock })
+    const handed: string[] = []
+    q.divert('t1', (text) => handed.push(text))
+    await Promise.all([q.submit('t1', 'one'), q.submit('t2', 'other'), q.submit('t1', 'two')])
+    expect(handed).toEqual(['one', 'two'])
+    expect(pastes(writes).map((w) => [w.id, w.data])).toEqual([['t2', submitSequence('other')]])
+  })
+
+  it('writes again once the divert ends (the kill failed and the lane is live)', async () => {
+    const clock = fakeClock()
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...clock })
+    q.divert('t1', () => {})
+    q.divert('t1', undefined)
+    await q.submit('t1', 'A')
+    expect(writes[0]).toBe(submitSequence('A'))
+  })
+})
+
+describe('draft — text a person typed, into the composer, unsent (idle suspend, review N3)', () => {
+  it('pastes with no Return and lands after a submission already queued for the lane', async () => {
+    const clock = fakeClock()
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...clock })
+    const sub = q.submit('t1', 'the dispatch')
+    const draft = q.draft('t1', 'my note')
+    await Promise.all([sub, draft])
+    const at = writes.indexOf('\x1b[200~my note\x1b[201~')
+    expect(at).toBeGreaterThan(writes.indexOf(submitSequence('the dispatch')))
+    // The dispatch's whole submission, rescue CR included, is done before the person's text goes in.
+    expect(writes.slice(at + 1)).toEqual([])
+  })
+
+  it('strips control characters, so the text cannot end the paste or submit itself', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock() })
+    await q.draft('t1', 'a\x1b[201~\rb')
+    expect(writes).toEqual(['\x1b[200~a[201~\nb\x1b[201~'])
+  })
+})

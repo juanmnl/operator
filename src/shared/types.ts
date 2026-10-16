@@ -903,6 +903,9 @@ export interface ManagedTerminal {
   claudeVersion?: string | null
   /** Exited without Operator killing it (the agent quit, or it crashed). Absent while alive. */
   selfExit?: boolean
+  /** When the backend spawned this pty, ISO. Outlives a renderer reload, unlike the renderer's own
+   *  spawn stamps (lib/idle-suspend `spawnedAt`). */
+  startedAt?: string
 }
 
 // Folder Preferences types
