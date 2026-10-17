@@ -45,8 +45,22 @@ copyFileSync(resolve(root, '..', 'src', 'shared', 'preview-edit-page.js'), resol
 // insurance, but if you are looking for what draws the menu bar, it is `tray-anim.ts`.
 copyFileSync(resolve(root, '..', 'src-tauri', 'icons', 'tray.png'), resolve(root, 'out', 'tray.png'))
 
+/** The lane MCP server runs under `ELECTRON_RUN_AS_NODE`, where `require('electron')` returns
+ *  only the binary's path. An import of it anywhere in that bundle would build and then fail in
+ *  every lane, so it fails the build instead. */
+const noElectron = {
+  name: 'no-electron',
+  setup(b) {
+    b.onResolve({ filter: /^electron(\/|$)/ }, (args) => ({
+      errors: [{ text: `mcp-serve.cjs runs as plain node and cannot import "${args.path}" (imported by ${args.importer})` }],
+    }))
+  },
+}
+
 const targets = [
   { entryPoints: [resolve(root, 'src/main/index.ts')], outfile: resolve(root, 'out/main/index.cjs') },
+  // Each lane's MCP server, beside `index.cjs` so `terminals.ts` finds it from its own __dirname.
+  { entryPoints: [resolve(root, 'src/main/mcp-serve-main.ts')], outfile: resolve(root, 'out/main/mcp-serve.cjs'), plugins: [noElectron] },
   { entryPoints: [resolve(root, 'src/preload/index.ts')], outfile: resolve(root, 'out/preload/index.cjs') },
   // Service workers' preload — the Badging API stub; see preload/service-worker.ts.
   { entryPoints: [resolve(root, 'src/preload/service-worker.ts')], outfile: resolve(root, 'out/preload/service-worker.cjs') },

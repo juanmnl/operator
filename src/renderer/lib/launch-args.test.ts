@@ -75,25 +75,28 @@ describe('buildArgs', () => {
 describe('mcpConfigArg — the client half of the artifact plane', () => {
   // The whole bug: this flag was never built, so `operator__report` was in no lane's tool list
   // from the day the Electron shell shipped. 0 of 13 live lanes had it; 0 calls in any transcript.
-  it('names the operator server, pointed at the binary running us', () => {
-    expect(JSON.parse(mcpConfigArg('/Applications/Operator.app/Contents/MacOS/Operator')))
+  it('names the operator server: the binary running us, as node, on the server bundle', () => {
+    const exe = '/Applications/Operator.app/Contents/MacOS/Operator'
+    const script = '/Applications/Operator.app/Contents/Resources/app.asar/out/main/mcp-serve.cjs'
+    expect(JSON.parse(mcpConfigArg(exe, script)))
       .toEqual({
         mcpServers: {
-          operator: { command: '/Applications/Operator.app/Contents/MacOS/Operator', args: ['--mcp-serve'] },
+          operator: { command: exe, args: [script], env: { ELECTRON_RUN_AS_NODE: '1' } },
         },
       })
   })
 
-  // In dev `process.execPath` is the `electron` binary, which opens an empty shell and answers
-  // nothing unless it is given the app directory first. Getting this wrong fails silently — the
-  // lane launches fine and simply has no tool.
-  it('passes the app path first in DEV, where execPath is electron itself', () => {
-    const cfg = JSON.parse(mcpConfigArg('/repo/node_modules/.bin/electron', '/repo/electron'))
-    expect(cfg.mcpServers.operator.args).toEqual(['/repo/electron', '--mcp-serve'])
+  // Without the variable the binary boots as the full app: a window-less Electron with a GPU and
+  // a network helper per lane, about 46 MB where node takes about 15.
+  it('runs the server as plain node, without the old --mcp-serve flag', () => {
+    const op = JSON.parse(mcpConfigArg('/repo/node_modules/electron/dist/Electron', '/repo/electron/out/main/mcp-serve.cjs')).mcpServers.operator
+    expect(op.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    expect(op.args).toEqual(['/repo/electron/out/main/mcp-serve.cjs'])
+    expect(op.args).not.toContain('--mcp-serve')
   })
 
   it('is valid JSON on one line — it is passed inline as a CLI argument', () => {
-    const s = mcpConfigArg('/x/Operator')
+    const s = mcpConfigArg('/x/Operator', '/x/app.asar/out/main/mcp-serve.cjs')
     expect(s.includes('\n')).toBe(false)
     expect(() => JSON.parse(s)).not.toThrow()
   })

@@ -56,10 +56,10 @@ export interface DevServerRow {
 // two call sites end up disagreeing about what a dev server is while both look correct.
 
 
-/** Things that look like a dev server and are not one. `--mcp-serve` is Operator's OWN artifact
- *  helper riding on every lane; it carries the full tag set and would otherwise dominate the
- *  list, and killing it does nothing for a port. */
-const NOT_A_SERVER_RE = /--mcp-serve|Operator Helper|\bclaude\b\s+--settings/
+/** Things that look like a dev server and are not one. `…/mcp-serve.cjs` (and `--mcp-serve`, the
+ *  form older builds use) is Operator's OWN artifact helper riding on every lane; it carries the
+ *  full tag set and would otherwise dominate the list, and killing it does nothing for a port. */
+const NOT_A_SERVER_RE = /--mcp-serve|\/mcp-serve\.cjs\b|Operator Helper|\bclaude\b\s+--settings/
 
 /** Strip the environment `ps -E` appends, so the row shows a command and not 4KB of exports.
  *  The env begins at the first `KEY=value` token that follows the argv — anchored on a space so

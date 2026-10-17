@@ -194,6 +194,20 @@ describe('hole 3 — the inventory the user decides from', () => {
     expect(devServerInventory({ ...base, tagged, ps: [] })).toEqual([])
   })
 
+  // The helper as lanes now start it: the app's binary, as node, on the server bundle. Its rows
+  // from a dead app or an abandoned lane need not look like a dev server to be listed, so only
+  // the exclusion keeps them out.
+  it('never lists the node-mode mcp-serve helper, from a live lane, an abandoned one or a dead app', () => {
+    const helper = '/Applications/Operator.app/Contents/MacOS/Operator /Applications/Operator.app/Contents/Resources/app.asar/out/main/mcp-serve.cjs'
+    const devHelper = '/Users/dev/operator/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /Users/dev/operator/electron/out/main/mcp-serve.cjs'
+    const tagged = [
+      tag({ pid: 300, terminalId: 't18', appPid: APP, command: helper }),
+      tag({ pid: 301, terminalId: 't28', appPid: APP, command: helper }),
+      tag({ pid: 302, terminalId: 't3', appPid: 41111, command: devHelper }),
+    ]
+    expect(devServerInventory({ ...base, tagged, ps: [] })).toEqual([])
+  })
+
   it('never lists the lane’s own claude process', () => {
     const tagged = [tag({ pid: 301, terminalId: 't18', appPid: APP, command: 'claude --settings /Users/dev/.operator/sessions/x.json' })]
     expect(devServerInventory({ ...base, tagged, ps: [] })).toEqual([])
@@ -250,6 +264,8 @@ describe('the automatic sweep’s shape filters', () => {
     // Our helpers carry the full tag set on every lane, and a timer that kills them kills the app.
     for (const cmd of [
       '/Applications/Operator.app/Contents/MacOS/Operator --mcp-serve',
+      '/Applications/Operator.app/Contents/MacOS/Operator /Applications/Operator.app/Contents/Resources/app.asar/out/main/mcp-serve.cjs',
+      '/Users/dev/operator/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /Users/dev/operator/electron/out/main/mcp-serve.cjs',
       '/Applications/Operator.app/Contents/Frameworks/Operator Helper.app/Contents/MacOS/Helper',
       '/Users/dev/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron',
     ]) expect(OPERATOR_BINARY_RE.test(cmd)).toBe(true)

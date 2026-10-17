@@ -253,6 +253,14 @@ describe('provesOwnServer — proof-positive, or false', () => {
     expect(provesOwnServer(1425, ev())).toBe(false)
   })
 
+  it('is FALSE when the mcp helper is the node-mode form lanes now start', () => {
+    const ps = [
+      ...base.slice(0, 2),
+      { pid: 102, ppid: 101, command: '/Applications/Operator.app/Contents/MacOS/Operator /Applications/Operator.app/Contents/Resources/app.asar/out/main/mcp-serve.cjs' },
+    ]
+    expect(provesOwnServer(1425, ev({ ps }))).toBe(false)
+  })
+
   it('is FALSE for a lane running a BUILD — grandchildren are not a server', () => {
     // The review's failure scenario exactly: t8 is mid-build, so it has grandchildren, and a
     // stranger holds 1425.

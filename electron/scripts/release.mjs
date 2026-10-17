@@ -7,7 +7,7 @@
 // notarization (which needs the CI-only App Store Connect issuer id).
 //
 // Stages, in this order and for these reasons:
-//   package → prune → sign → ASSERT --mcp-serve → notarize → staple → validate → dmg/zip/yml
+//   package → prune → sign → ASSERT MCP serve → notarize → staple → validate → dmg/zip/yml
 //
 // The assertion sits after signing and before notarization on purpose: it is the SIGNED binary
 // a lane will actually spawn, and notarization takes minutes that are wasted if the artifact
@@ -252,40 +252,49 @@ step('verify what shipped')
 }
 
 // ---------------------------------------------------------------- the assertion that matters
-// A lane spawns `process.execPath --mcp-serve`. If the packaged binary cannot answer that, the
-// artifact plane is dead and the failure is SILENT — the probe measured a hang with no output,
-// no error and no exit code. Cheaper to catch here than after a notarization round trip.
-step('assert the packaged app serves --mcp-serve')
+// A lane spawns `process.execPath <app.asar>/out/main/mcp-serve.cjs` with ELECTRON_RUN_AS_NODE=1;
+// lanes an older build launched still spawn `process.execPath --mcp-serve`. If the packaged binary
+// cannot answer either, the artifact plane is dead and the failure is SILENT — the probe measured
+// a hang with no output, no error and no exit code. Cheaper to catch here than after a
+// notarization round trip.
+step('assert the packaged app serves MCP (as node, and the older --mcp-serve form)')
 {
   const exe = join(APP, 'Contents', 'MacOS', PRODUCT)
-  const sandbox = join(OUT, 'mcp-assert-home')
-  mkdirSync(sandbox, { recursive: true })
-  // The driver exits NON-ZERO whenever any step fails, and `probe/env` is a method only the
-  // throwaway probe app implements — so a clean run of the real server still exits 1. Catch it
-  // and judge the steps, rather than letting the exit code decide.
-  let out
-  try {
-    out = execFileSync(process.execPath, [join(root, 'probes', 'mcp-probe', 'scripts', 'drive.mjs'), exe, '--mcp-serve'], {
-      encoding: 'utf8',
-      // A SANDBOXED HOME: `operator__report` really inserts a row, and pointing it at the real
-      // ~/.operator would leave a probe report in the user's artifact store on every build.
-      env: { ...process.env, OPERATOR_DIR: sandbox, OPERATOR_TERMINAL_ID: 't-release-assert' },
-      stdio: ['ignore', 'pipe', 'inherit'],
-    }).toString()
-  } catch (e) {
-    out = e.stdout?.toString() ?? ''
-    if (!out) { console.error('::error::the --mcp-serve driver produced no output at all'); process.exit(1) }
+  const forms = [
+    { name: 'as node: out/main/mcp-serve.cjs', args: [join(APP, 'Contents', 'Resources', 'app.asar', 'out', 'main', 'mcp-serve.cjs')], env: { RUN_AS_NODE: '1' } },
+    { name: '--mcp-serve', args: ['--mcp-serve'], env: {} },
+  ]
+  for (const form of forms) {
+    console.log(`  ${form.name}:`)
+    const sandbox = join(OUT, 'mcp-assert-home')
+    mkdirSync(sandbox, { recursive: true })
+    // The driver exits NON-ZERO whenever any step fails, and `probe/env` is a method only the
+    // throwaway probe app implements — so a clean run of the real server still exits 1. Catch it
+    // and judge the steps, rather than letting the exit code decide.
+    let out
+    try {
+      out = execFileSync(process.execPath, [join(root, 'probes', 'mcp-probe', 'scripts', 'drive.mjs'), exe, ...form.args], {
+        encoding: 'utf8',
+        // A SANDBOXED HOME: `operator__report` really inserts a row, and pointing it at the real
+        // ~/.operator would leave a probe report in the user's artifact store on every build.
+        env: { ...process.env, ...form.env, OPERATOR_DIR: sandbox, OPERATOR_TERMINAL_ID: 't-release-assert' },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      }).toString()
+    } catch (e) {
+      out = e.stdout?.toString() ?? ''
+      if (!out) { console.error(`::error::the MCP driver produced no output at all (${form.name})`); process.exit(1) }
+    }
+    const result = JSON.parse(out)
+    const required = result.steps.filter((s) => s.name !== 'probe/env')
+    const failed = required.filter((s) => !s.ok)
+    for (const s of required) console.log(`    ${s.ok ? 'ok  ' : 'FAIL'} ${s.name}`)
+    if (failed.length) {
+      console.error(`\n::error::the packaged app failed the MCP contract (${form.name}): ${failed.map((s) => s.name).join(', ')}`)
+      process.exit(1)
+    }
+    console.log(`    startup ${result.startupMs}ms`)
+    rmSync(sandbox, { recursive: true, force: true })
   }
-  const result = JSON.parse(out)
-  const required = result.steps.filter((s) => s.name !== 'probe/env')
-  const failed = required.filter((s) => !s.ok)
-  for (const s of required) console.log(`  ${s.ok ? 'ok  ' : 'FAIL'} ${s.name}`)
-  if (failed.length) {
-    console.error(`\n::error::the packaged app failed the --mcp-serve contract: ${failed.map((s) => s.name).join(', ')}`)
-    process.exit(1)
-  }
-  console.log(`  startup ${result.startupMs}ms`)
-  rmSync(sandbox, { recursive: true, force: true })
 }
 
 // ---------------------------------------------------------------- notarize + staple

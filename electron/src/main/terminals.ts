@@ -295,12 +295,11 @@ export class TerminalManager {
     // measured it — 0 of 13 live lanes had the flag, 0 calls in any transcript, and the store's
     // last write was the day the launch path changed hands.
     //
-    // PACKAGED VS DEV is the whole subtlety. `process.execPath` in the packaged app is the
-    // Operator binary and `--mcp-serve` alone is enough. In dev it is the `electron` binary,
-    // which needs the app directory as argv[1] or it opens an empty shell and answers nothing.
-    // `app.isPackaged` is the only thing that can tell those apart, so the branch lives here
-    // rather than inside the pure arg builder.
-    prefix.push('--mcp-config', mcpConfigArg(process.execPath, app.isPackaged ? undefined : app.getAppPath()))
+    // THE SERVER RUNS AS NODE: `process.execPath` with `ELECTRON_RUN_AS_NODE=1` on the server
+    // bundle that sits beside this one (`mcp-serve-main.ts`, built to `out/main/mcp-serve.cjs`).
+    // `__dirname` is `out/main` in dev and `…/app.asar/out/main` packaged, so one path form
+    // serves both, and node mode reads scripts from inside the asar.
+    prefix.push('--mcp-config', mcpConfigArg(process.execPath, join(__dirname, 'mcp-serve.cjs')))
 
     const inner = [...prefix, ...o.args].map(shellQuote).join(' ')
     const shell = loginShell()

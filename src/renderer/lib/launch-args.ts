@@ -11,17 +11,26 @@
  *  `operator__report` calls appear in any of the day's transcripts, and `artifacts.db` has not
  *  been written to since the Tauri build stopped launching lanes.
  *
- *  `command` is the OPERATOR BINARY ITSELF — `process.execPath`. In the packaged app that is
- *  `Operator.app/Contents/MacOS/Operator`; in dev it is the `electron` binary, which needs the
- *  app path as its first argument or it opens an empty shell instead of running our main script.
- *  That asymmetry is why the caller passes both rather than this function guessing.
+ *  `command` is the OPERATOR BINARY ITSELF — `process.execPath` — run as plain node with
+ *  `ELECTRON_RUN_AS_NODE=1`, and `script` is the server bundle beside the main one
+ *  (`out/main/mcp-serve.cjs`, inside `app.asar` when packaged). Run as the full app with
+ *  `--mcp-serve`, every lane's server also started Chromium's GPU and network helpers: about 46 MB
+ *  and 3 processes per lane, against about 15 MB and 1 process as node
+ *  (dev/results/memory-footprint-research-2026-10-16.md). The same form serves dev and packaged
+ *  builds; the caller passes a script path it computed from its own location, so the path cannot
+ *  drift from the bundle that is running.
+ *
+ *  `env` is ADDED to the lane's environment, not substituted for it: Claude Code 2.1.302 builds a
+ *  stdio server's environment as its own base environment with this object spread on top, so
+ *  `OPERATOR_TERMINAL_ID` and the rest still reach the server.
  *
  *  Passed as INLINE JSON rather than a file: it is one small object, it changes per lane only in
  *  ways this function already knows, and a temp file would be one more thing to write, clean up,
  *  and fail to find. */
-export function mcpConfigArg(execPath: string, appPath?: string): string {
-  const args = appPath ? [appPath, '--mcp-serve'] : ['--mcp-serve']
-  return JSON.stringify({ mcpServers: { operator: { command: execPath, args } } })
+export function mcpConfigArg(execPath: string, script: string): string {
+  return JSON.stringify({
+    mcpServers: { operator: { command: execPath, args: [script], env: { ELECTRON_RUN_AS_NODE: '1' } } },
+  })
 }
 
 export function buildArgs(o: Record<string, unknown> = {}, sessionId?: string): string[] {

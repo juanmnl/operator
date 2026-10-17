@@ -205,14 +205,15 @@ export function shouldReleaseCwdPort(
 // Neither alone is enough. (1) without (2) is the old bug with extra steps; (2) without (1) is a
 // reservation with nothing running behind it.
 
-/** Commands that inherit the tag and are never a dev server. `--mcp-serve` is Operator's own
- *  artifact helper riding on every lane; `claude` is the lane itself; a bare login shell is the
- *  pty. All three sit at depth >= 2 and all three fooled the old predicate. */
-const NOT_A_LANE_SERVER = /--mcp-serve|Operator Helper|\bclaude\b\s+--settings|^-?(?:\/bin\/)?(?:ba|z|fi|c)?sh\b|\/(?:ba|z|fi|c)?sh\s+-[il]/
+/** Commands that inherit the tag and are never a dev server. `…/mcp-serve.cjs` (and
+ *  `--mcp-serve`, the form older builds use) is Operator's own artifact helper riding on every lane;
+ *  `claude` is the lane itself; a bare login shell is the pty. All three sit at depth >= 2 and all
+ *  three fooled the old predicate. */
+const NOT_A_LANE_SERVER = /--mcp-serve|\/mcp-serve\.cjs\b|Operator Helper|\bclaude\b\s+--settings|^-?(?:\/bin\/)?(?:ba|z|fi|c)?sh\b|\/(?:ba|z|fi|c)?sh\s+-[il]/
 
 /** Operator's own binaries and helpers. Refused by every automatic path REGARDLESS of tags:
  *  they carry the full tag set on every lane, and a sweep that kills them kills the app. */
-export const OPERATOR_BINARY_RE = /Operator\.app|Operator Helper|--mcp-serve|\belectron\b/i
+export const OPERATOR_BINARY_RE = /Operator\.app|Operator Helper|--mcp-serve|\/mcp-serve\.cjs\b|\belectron\b/i
 
 /** Anything that looks like a dev server. THE one definition — `dev-servers.ts` imports it
  *  rather than keeping a copy, because the two had already drifted: this one carried a bare

@@ -485,6 +485,9 @@ function refreshTray(): void {
 }
 
 if (process.argv.includes('--mcp-serve')) {
+  // THE OLD LAUNCH FORM, kept for compatibility. Lanes now run `out/main/mcp-serve.cjs` as plain
+  // node (see `mcpConfigArg`); this path serves lanes whose `--mcp-config` an older build wrote
+  // and that are still running across an update. It can go once no released build writes it.
   // Never open a window, take a lock, or touch the dock on this path.
   try { app.dock?.hide() } catch { /* not on macOS, or too early — neither matters here */ }
   serveMcp()

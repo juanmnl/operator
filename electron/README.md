@@ -89,7 +89,7 @@ non-zero if the pane-hidden case still bleeds.
 ```
 src/shared/operator-api.ts   the contract: OperatorApi = Window['operator'], + the SPEC table
 src/shared/ipc-contract.ts   typed invoke/send/event maps derived from those signatures
-src/main/index.ts            lifecycle, window, navigation guards, the --mcp-serve branch
+src/main/index.ts            lifecycle, window, navigation guards, the legacy --mcp-serve branch
 src/main/ipc.ts              handler registration (no channel strings, no `any` payloads)
 src/main/terminals.ts        node-pty              ← lib.rs
 src/main/transcript.ts       the JSONL tailer      ← transcript.rs
@@ -97,6 +97,7 @@ src/main/directives.ts       the OPERATOR-* sentinels + their quotation guards
 src/main/worktree.ts         git worktrees         ← worktree.rs
 src/main/chat-store.ts       SQLite                ← chatstore.rs + artifacts.rs
 src/main/mcp-serve.ts        the artifact plane    ← mcp.rs
+src/main/mcp-serve-main.ts   its entry, run by each lane as plain node (out/main/mcp-serve.cjs)
 src/main/store.ts            durable JSON          ← core.rs
 src/main/folder-prefs.ts     settings + MCP list   ← folderprefs.rs
 src/main/agents.ts           subagent .md files    ← agents.rs

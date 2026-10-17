@@ -1,14 +1,20 @@
-// Operator's own MCP server — `operator --mcp-serve`, the artifact plane's write side.
+// Operator's own MCP server, the artifact plane's write side.
 //
 // THE SAME BINARY IS THE APP AND THE SERVER. `terminalSpawn` hands each lane
-// `{"command": process.execPath, "args": ["--mcp-serve"]}`, so a lane talks to the build it was
-// launched from: nothing extra to sign, notarize or locate. Ported from `src-tauri/src/mcp.rs`,
-// and proven to survive packaging + Developer ID signing in
-// `dev/briefs/2026-08-20-electron-mcp-serve-probe-RESULT.md` (85ms, execPath correct under asar).
+// `{"command": process.execPath, "args": ["<app>/out/main/mcp-serve.cjs"],
+//   "env": {"ELECTRON_RUN_AS_NODE": "1"}}` (see `mcpConfigArg` and `mcp-serve-main.ts`), so a lane
+// talks to the build it was launched from, run as plain node: nothing extra to sign, notarize or
+// locate. `operator --mcp-serve` (the full app, headless) still reaches `serve()` through
+// `index.ts`, for lanes whose config an older build wrote. Ported from `src-tauri/src/mcp.rs`, and
+// proven to survive packaging + Developer ID signing in
+// `dev/briefs/2026-08-20-electron-mcp-serve-probe-RESULT.md` (85ms full app, 66ms as node, execPath
+// and `require` correct under asar).
 //
-// THE CONDITION FROM THAT PROBE: a quarantined, UNNOTARIZED bundle spawned this way hangs
-// silently — no output, no error, no exit code. Notarizing and stapling is therefore load-
-// bearing for this file, not release polish.
+// THE CONDITION FROM THAT PROBE: a quarantined, UNNOTARIZED bundle spawned as an MCP server hangs
+// silently — no output, no error, no exit code. The probe measured that with the full-app form;
+// the node form execs the same signed binary, so the same Gatekeeper check applies to it, but that
+// combination has not been measured. Notarizing and stapling is therefore load-bearing for this
+// file, not release polish.
 import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
