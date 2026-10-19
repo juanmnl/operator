@@ -93,10 +93,18 @@ export function quietFor(c: Pick<SuspendCandidate, 'lastActivityAt' | 'lastKeyst
 
 const BETWEEN_TURNS = new Set(['idle', 'waiting'])
 
+/** How long a lane must have been quiet: milliseconds from the Tuning setting (`0` or less is Off),
+ *  or `'now'` under memory pressure (lib/memory-pressure), which drops only the quiet-time rule. A
+ *  lane must still be between turns, unfocused, not a coordinator, with nothing owed to it, no
+ *  background work, a turn to resume and no dev server; and the Off setting does not apply, since
+ *  `'now'` comes from the person pressing "Suspend idle lanes" or from a critical level that the
+ *  caller has already checked against the setting. */
+export type IdleThreshold = number | 'now'
+
 /** May this lane's CLI be ended now? Ordered from "not ours to end" to "not quiet long enough",
  *  each rule with its own reason so a caller can say why nothing happened. */
-export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: number): SuspendDecision {
-  if (idleMs <= 0) return { suspend: false, why: 'suspending idle lanes is off' }
+export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: IdleThreshold): SuspendDecision {
+  if (idleMs !== 'now' && idleMs <= 0) return { suspend: false, why: 'suspending idle lanes is off' }
   if (c.ended) return { suspend: false, why: 'not running' }
   if (!c.resumable) return { suspend: false, why: 'no conversation to resume' }
   if (c.roleId && COORDINATOR_ROLE_IDS.includes(c.roleId.toLowerCase())) {
@@ -117,18 +125,20 @@ export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: numb
   if ((c.backgroundTasks ?? 0) > 0) return { suspend: false, why: 'it has background tasks running' }
   if ((c.activeSubagents ?? 0) > 0) return { suspend: false, why: 'it has subagents running' }
   const quiet = quietFor(c, nowMs)
+  // Kept under `'now'` too: a lane with no transcript timestamp is one nothing is known about.
   if (quiet === undefined) return { suspend: false, why: 'no activity timestamp' }
-  if (quiet < idleMs) return { suspend: false, why: 'not idle long enough' }
+  if (idleMs !== 'now' && quiet < idleMs) return { suspend: false, why: 'not idle long enough' }
   if (c.conversation === undefined) return { suspend: false, why: 'its transcript has not been read', checkConversation: true }
   if (!c.conversation) return { suspend: false, why: 'it has no turn to resume' }
   if (c.devServer === undefined) return { suspend: false, why: 'its ports have not been checked', checkPorts: true }
   if (c.devServer) return { suspend: false, why: 'it is serving a dev server' }
-  return { suspend: true, why: 'idle past the threshold' }
+  return { suspend: true, why: idleMs === 'now' ? 'idle, and memory is low' : 'idle past the threshold' }
 }
 
 /** Every lane to suspend on this tick, quietest first, capped. The cap is pacing: each suspend is
- *  a kill and a state write, and the rest go on the next tick. */
-export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number, limit = 2): SuspendCandidate[] {
+ *  a kill and a state write, and the rest go on the next tick. A memory-pressure pass passes no cap
+ *  (`Infinity`): the point is to free memory before the kernel starts killing processes itself. */
+export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold, limit = 2): SuspendCandidate[] {
   return lanes
     .filter((l) => suspendDecision(l, nowMs, idleMs).suspend)
     .sort((a, b) => (quietFor(b, nowMs) ?? 0) - (quietFor(a, nowMs) ?? 0))
@@ -136,7 +146,7 @@ export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, 
 }
 
 /** Lanes whose ports should be read before the next decision: everything else already passed. */
-export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number): SuspendCandidate[] {
+export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold): SuspendCandidate[] {
   return lanes.filter((l) => {
     const d = suspendDecision(l, nowMs, idleMs)
     return !d.suspend && d.checkPorts === true
@@ -144,7 +154,7 @@ export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number
 }
 
 /** Lanes whose transcript should be read before the next decision: everything before it passed. */
-export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number): SuspendCandidate[] {
+export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold): SuspendCandidate[] {
   return lanes.filter((l) => {
     const d = suspendDecision(l, nowMs, idleMs)
     return !d.suspend && d.checkConversation === true

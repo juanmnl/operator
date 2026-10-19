@@ -368,6 +368,18 @@ export interface GoneCheckout {
   since: number
 }
 
+/** The kernel's memory-pressure grade (`kern.memorystatus_vm_pressure_level`): 1 normal, 2 warn,
+ *  4 critical. See electron/src/main/memory-pressure.ts. */
+export type MemoryPressureLevel = 1 | 2 | 4
+
+export interface MemoryPressure {
+  level: MemoryPressureLevel
+  /** `kern.memorystatus_level`: the percent of memory the kernel counts as available. */
+  freePercent?: number
+  /** Epoch ms of the reading. */
+  at: number
+}
+
 /** How a worktree directory was classified by the reaper. See
  *  `dev/results/worktree-lifecycle-audit.md` for what each one measured on disk. */
 export type ReapClass =

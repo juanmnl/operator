@@ -52,6 +52,8 @@ export const SPEC: Record<ApiMethod, MethodSpec> = {
   onWindowActivated:    { delivery: 'event',  impl: 'native' },
   onCheckoutGone:       { delivery: 'event',  impl: 'native' },
   checkoutGoneList:     { delivery: 'invoke', impl: 'native' },
+  onMemoryPressure:     { delivery: 'event',  impl: 'native' },
+  memoryPressure:       { delivery: 'invoke', impl: 'native' },
   terminalHistory:      { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   shellSpawn:           { delivery: 'invoke', impl: 'native', rust: 'lib.rs' },
   onTerminalData:       { delivery: 'event',  impl: 'native', rust: 'lib.rs' },

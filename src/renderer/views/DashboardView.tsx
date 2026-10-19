@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, useReducer } from 'react'
 import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
@@ -26,9 +26,11 @@ import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSen
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
-import { planSuspends, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
+import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
+import { MemoryBanner, MEMORY_BANNER_H } from '../components/MemoryBanner'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
 import { canDismissDispatch } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
@@ -4125,7 +4127,7 @@ export function DashboardView() {
    *  then resumes the lane with it, rather than starting a second CLI beside the dying one or being
    *  typed into it. A message already queued for the old pty is diverted into the same wake. A kill
    *  that fails leaves the lane running and not suspended, and what waited is typed into it. */
-  const suspendLane = useCallback(async (terminalId: string, minutes: number): Promise<boolean> => {
+  const suspendLane = useCallback(async (terminalId: string, why: string): Promise<boolean> => {
     const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab || tab.ended || restartingRef.current.has(terminalId) || suspendingRef.current.has(terminalId)) return false
     const claudeSessionId = claudeIdOf(terminalId)
@@ -4186,7 +4188,7 @@ export function DashboardView() {
     if (outcome === 'kill-failed') console.warn('[lanes] suspend: kill failed; the lane stays running')
     if (outcome !== 'suspended') return false
     const name = projectsRef.current.find((p) => p.id === tab.projectId)?.roster?.find((r) => r.id === tab.roleId)?.name ?? tab.roleId ?? tab.key
-    console.info(`[lanes] suspended ${name} after ${minutes} min idle`)
+    console.info(`[lanes] suspended ${name} ${why}`)
     return true
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportSuspended])
@@ -4320,80 +4322,150 @@ export function DashboardView() {
   // passed every other rule, and the suspends run one after another.
   const suspendLaneRef = useRef(suspendLane)
   suspendLaneRef.current = suspendLane
+
+  /** Every lane that may be suspended now under `threshold`, quietest first, at most `limit`. The
+   *  transcript and the ports are read only for lanes that passed every other rule. */
+  const suspendableLanes = async (threshold: IdleThreshold, limit: number): Promise<SuspendCandidate[]> => {
+    const now = Date.now()
+    const lanes: SuspendCandidate[] = terminalsRef.current.map((tab) => {
+      const session = sessionsRef.current.find((x) => x.terminalId === tab.id && x.status !== 'ended')
+      const project = projectsRef.current.find((p) => p.id === tab.projectId)
+      return {
+        terminalId: tab.id,
+        roleId: tab.roleId,
+        phase: session?.phase,
+        ended: tab.ended,
+        lastActivityAt: session?.lastActivityAt,
+        lastKeystrokeAt: lastKeystrokeAt(tab.id),
+        // A resume writes no record: without its spawn time, a lane resumed by focus read as
+        // quiet for as long as it had been suspended (review H1).
+        spawnedAt: spawnedAtRef.current.get(tab.id),
+        focused: tab.id === activeTerminalIdRef.current,
+        unsentInput: hasUnsentInput(tab.id),
+        pendingSubmission: !!submitQueue.pending(tab.id),
+        awaitingDelivery: awaitingReadyRef.current.get(tab.id),
+        heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
+        backgroundTasks: session?.backgroundTasks,
+        activeSubagents: session?.activeSubagents,
+        released: !!tab.releasedWorktree || isReleased(tab, pendingReleasesRef.current),
+        resumable: !!claudeIdOf(tab.id),
+        // Read below for the lanes that pass every earlier rule; once a turn is seen it stays seen.
+        conversation: conversationSeenRef.current.has(claudeIdOf(tab.id) ?? '') ? true : undefined,
+        inFlight: restartingRef.current.has(tab.id) || retiringRef.current.has(tab.id) || suspendingRef.current.has(tab.id)
+          || laneGateRef.current.busy(tab.key)
+          || launchInFlightRef.current.has(`${tab.projectId}:${tab.roleId}`)
+          || launchingLanesRef.current.has(`${tab.projectId}:${tab.roleId}`),
+      }
+    })
+    // A lane never given a turn has nothing for `--resume` to open (QA D2). A read that fails
+    // leaves it unknown, and an unknown lane is kept.
+    const unread = needsConversationCheck(lanes, now, threshold)
+    if (unread.length) {
+      try {
+        const rows = unread.flatMap((l) => {
+          const id = claudeIdOf(l.terminalId)
+          return id ? [{ id, projectId: terminalsRef.current.find((t) => t.id === l.terminalId)?.projectId }] : []
+        })
+        const have = await window.operator.conversationsWithTurn?.(rows)
+        if (have) {
+          for (const id of have.turn) conversationSeenRef.current.add(id)
+          const none = new Set(have.none)
+          // An id main could not look for where the lane writes stays unknown, and is kept.
+          for (const lane of unread) {
+            const id = claudeIdOf(lane.terminalId) ?? ''
+            lane.conversation = conversationSeenRef.current.has(id) ? true : none.has(id) ? false : undefined
+          }
+        }
+      } catch { /* kept */ }
+    }
+    for (const lane of needsPortCheck(lanes, now, threshold)) {
+      // A port read that fails leaves it unknown, and an unknown lane is kept.
+      try { lane.devServer = servesDevServer(await window.operator.sessionPorts?.(lane.terminalId) ?? []) } catch { /* kept */ }
+    }
+    return planSuspends(lanes, Date.now(), threshold, limit)
+  }
+  const suspendableLanesRef = useRef(suspendableLanes)
+  suspendableLanesRef.current = suspendableLanes
+
+  /** The suspend pass in progress, timed or under memory pressure. One at a time: the timed tick
+   *  skips while one runs, and a pressure pass waits for it. */
+  const suspendPassRef = useRef<Promise<number> | null>(null)
+  /** Suspend every lane `threshold` allows, one after another. Resolves to how many were. */
+  const runSuspendPass = useCallback(async (threshold: IdleThreshold, limit: number, why: string): Promise<number> => {
+    while (suspendPassRef.current) await suspendPassRef.current.catch(() => 0)
+    const pass = (async () => {
+      let n = 0
+      for (const lane of await suspendableLanesRef.current(threshold, limit)) {
+        if (await suspendLaneRef.current(lane.terminalId, why)) n++
+      }
+      return n
+    })()
+    suspendPassRef.current = pass
+    try { return await pass } finally { if (suspendPassRef.current === pass) suspendPassRef.current = null }
+  }, [])
+
   useEffect(() => {
     if (!savedHydrated || !reattachDone) return
-    let running = false
-    const tick = async () => {
+    const tick = () => {
       const minutes = getIdleSuspendMinutes()
-      if (minutes <= 0 || running) return
-      running = true
-      try {
-        const idleMs = minutes * 60_000
-        const now = Date.now()
-        const lanes: SuspendCandidate[] = terminalsRef.current.map((tab) => {
-          const session = sessionsRef.current.find((x) => x.terminalId === tab.id && x.status !== 'ended')
-          const project = projectsRef.current.find((p) => p.id === tab.projectId)
-          return {
-            terminalId: tab.id,
-            roleId: tab.roleId,
-            phase: session?.phase,
-            ended: tab.ended,
-            lastActivityAt: session?.lastActivityAt,
-            lastKeystrokeAt: lastKeystrokeAt(tab.id),
-            // A resume writes no record: without its spawn time, a lane resumed by focus read as
-            // quiet for as long as it had been suspended (review H1).
-            spawnedAt: spawnedAtRef.current.get(tab.id),
-            focused: tab.id === activeTerminalIdRef.current,
-            unsentInput: hasUnsentInput(tab.id),
-            pendingSubmission: !!submitQueue.pending(tab.id),
-            awaitingDelivery: awaitingReadyRef.current.get(tab.id),
-            heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
-            backgroundTasks: session?.backgroundTasks,
-            activeSubagents: session?.activeSubagents,
-            released: !!tab.releasedWorktree || isReleased(tab, pendingReleasesRef.current),
-            resumable: !!claudeIdOf(tab.id),
-            // Read below for the lanes that pass every earlier rule; once a turn is seen it stays seen.
-            conversation: conversationSeenRef.current.has(claudeIdOf(tab.id) ?? '') ? true : undefined,
-            inFlight: restartingRef.current.has(tab.id) || retiringRef.current.has(tab.id) || suspendingRef.current.has(tab.id)
-              || laneGateRef.current.busy(tab.key)
-              || launchInFlightRef.current.has(`${tab.projectId}:${tab.roleId}`)
-              || launchingLanesRef.current.has(`${tab.projectId}:${tab.roleId}`),
-          }
-        })
-        // A lane never given a turn has nothing for `--resume` to open (QA D2). A read that fails
-        // leaves it unknown, and an unknown lane is kept.
-        const unread = needsConversationCheck(lanes, now, idleMs)
-        if (unread.length) {
-          try {
-            const rows = unread.flatMap((l) => {
-              const id = claudeIdOf(l.terminalId)
-              return id ? [{ id, projectId: terminalsRef.current.find((t) => t.id === l.terminalId)?.projectId }] : []
-            })
-            const have = await window.operator.conversationsWithTurn?.(rows)
-            if (have) {
-              for (const id of have.turn) conversationSeenRef.current.add(id)
-              const none = new Set(have.none)
-              // An id main could not look for where the lane writes stays unknown, and is kept.
-              for (const lane of unread) {
-                const id = claudeIdOf(lane.terminalId) ?? ''
-                lane.conversation = conversationSeenRef.current.has(id) ? true : none.has(id) ? false : undefined
-              }
-            }
-          } catch { /* kept */ }
-        }
-        for (const lane of needsPortCheck(lanes, now, idleMs)) {
-          // A port read that fails leaves it unknown, and an unknown lane is kept.
-          try { lane.devServer = servesDevServer(await window.operator.sessionPorts?.(lane.terminalId) ?? []) } catch { /* kept */ }
-        }
-        for (const lane of planSuspends(lanes, Date.now(), idleMs)) await suspendLaneRef.current(lane.terminalId, minutes)
-      } finally {
-        running = false
-      }
+      if (minutes <= 0 || suspendPassRef.current) return
+      void runSuspendPass(minutes * 60_000, 2, `after ${minutes} min idle`)
     }
-    const timer = window.setInterval(() => { void tick() }, 60_000)
+    const timer = window.setInterval(tick, 60_000)
     return () => window.clearInterval(timer)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedHydrated, reattachDone])
+  }, [savedHydrated, reattachDone, runSuspendPass])
+
+  // MEMORY PRESSURE (lib/memory-pressure). Main pushes the kernel's level when it changes; the
+  // banner shows above normal. "Suspend idle lanes" suspends what lib/idle-suspend allows with
+  // the quiet-time rule dropped; at critical the same pass runs without asking, unless idle
+  // suspension is Off in Tuning.
+  const [pressure, dispatchPressure] = useReducer(reducePressure, NORMAL_BANNER)
+  /** Lanes the button would suspend now; undefined while it is being read. */
+  const [pressureEligible, setPressureEligible] = useState<number | undefined>(undefined)
+  const [pressureBusy, setPressureBusy] = useState(false)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(window.operator.memoryPressure?.())
+      .then((p) => { if (live && p) dispatchPressure({ type: 'level', level: p.level }) })
+      .catch(() => { /* no reading yet; the next change is pushed */ })
+    const off = window.operator.onMemoryPressure?.((p) => dispatchPressure({ type: 'level', level: p.level }))
+    return () => { live = false; off?.() }
+  }, [])
+
+  const readPressureEligible = useCallback(async () => {
+    try { setPressureEligible((await suspendableLanesRef.current('now', Infinity)).length) } catch { setPressureEligible(undefined) }
+  }, [])
+  const pressureShown = bannerVisible(pressure)
+  useEffect(() => {
+    if (!pressureShown || !reattachDone) { setPressureEligible(undefined); return }
+    void readPressureEligible()
+    const timer = window.setInterval(() => { void readPressureEligible() }, PRESSURE_RECHECK_MS)
+    return () => window.clearInterval(timer)
+  }, [pressureShown, reattachDone, readPressureEligible])
+
+  const suspendUnderPressure = useCallback(async (why: string) => {
+    setPressureBusy(true)
+    try {
+      const n = await runSuspendPass('now', Infinity, why)
+      dispatchPressure({ type: 'suspended', count: n })
+    } finally {
+      setPressureBusy(false)
+      void readPressureEligible()
+    }
+  }, [runSuspendPass, readPressureEligible])
+
+  // CRITICAL: suspend without asking, at once and again every PRESSURE_RECHECK_MS while it lasts.
+  // The Tuning setting is read per pass, so turning it Off stops the next one.
+  useEffect(() => {
+    if (pressure.level !== 4 || !savedHydrated || !reattachDone) return
+    const pass = () => {
+      if (!autoSuspendAllowed(4, getIdleSuspendMinutes())) return
+      void suspendUnderPressure('because memory is critically low')
+    }
+    pass()
+    const timer = window.setInterval(pass, PRESSURE_RECHECK_MS)
+    return () => window.clearInterval(timer)
+  }, [pressure.level, savedHydrated, reattachDone, suspendUnderPressure])
 
   // FOCUS RESUMES. Opening a suspended lane (rail, roster, ⌘1-9, a toast) starts it again. A lane
   // whose resume failed is left for a click, so a broken one does not retry on every render.
@@ -6975,9 +7047,23 @@ export function DashboardView() {
             cwd={activeSession.workingDirectory}
             theme={currentTheme.xterm}
             open={shellOpen}
-            bottom={FOOTER_H}
+            bottom={FOOTER_H + (pressureShown ? MEMORY_BANNER_H : 0)}
             suspendFit={resizingPanel || windowResizing || !!activeMove}
             onClose={closeShell}
+          />
+        )}
+
+        {pressureShown && (
+          <MemoryBanner
+            level={pressure.level}
+            copy={bannerCopy(pressure, {
+              running: terminals.filter((t) => !t.ended).length,
+              eligible: pressureEligible,
+              autoOff: getIdleSuspendMinutes() <= 0,
+            })}
+            busy={pressureBusy}
+            onSuspend={() => { void suspendUnderPressure('because memory is low') }}
+            onDismiss={() => dispatchPressure({ type: 'dismiss' })}
           />
         )}
       </div>

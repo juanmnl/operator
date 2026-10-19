@@ -35,6 +35,7 @@ import { listTargets, previewCdp } from './preview-cdp'
 import { deleteShot, shotDataUrl } from './preview-shots'
 import { skillsCatalog } from './skills'
 import type { CheckoutWatcher } from './checkout-health'
+import type { MemoryPressureWatcher } from './memory-pressure'
 import { reapPlan, reap, removeWorktreeDurably, removeSelected, checkAutoRemoval, quickWorktreeList, rescueWorktree, stampSessionClaims } from './worktree-reap'
 import { createLaunchTracker } from './launch-kind'
 
@@ -72,6 +73,8 @@ export interface Deps {
   claudeVersion: ClaudeVersionWatcher
   /** Lanes whose checkout was removed outside Operator (checkout-health.ts). */
   checkouts?: CheckoutWatcher
+  /** The kernel's memory-pressure level (memory-pressure.ts). */
+  memory?: MemoryPressureWatcher
   getWindow: () => BrowserWindow | null
   /** last-run.json (last-run.ts): the previous run's lanes, handed to the renderer at boot. */
   lastRun?: LastRunRecorder
@@ -184,6 +187,8 @@ export function registerIpc(d: Deps): void {
     claudeVersion: () => d.claudeVersion.resolve(),
     // The current list, for a renderer that (re)loads after an `onCheckoutGone` event went out.
     checkoutGoneList: () => d.checkouts?.list() ?? [],
+    // The latest reading, for a renderer that (re)loads after an `onMemoryPressure` event went out.
+    memoryPressure: async () => d.memory?.current() ?? null,
     terminalHistory: async (id) => d.terminals.history(id),
     shellSpawn: async (cwd) => d.terminals.spawnShell(cwd),
     getDevPorts: async () => d.terminals.devPorts(),
