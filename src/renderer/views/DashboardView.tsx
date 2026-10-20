@@ -26,7 +26,7 @@ import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSen
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
-import { planSuspends, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, suspendPlanned, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
@@ -4127,7 +4127,7 @@ export function DashboardView() {
    *  then resumes the lane with it, rather than starting a second CLI beside the dying one or being
    *  typed into it. A message already queued for the old pty is diverted into the same wake. A kill
    *  that fails leaves the lane running and not suspended, and what waited is typed into it. */
-  const suspendLane = useCallback(async (terminalId: string, why: string): Promise<boolean> => {
+  const suspendLane = useCallback(async (terminalId: string, why: string, eligible?: () => boolean): Promise<boolean> => {
     const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab || tab.ended || restartingRef.current.has(terminalId) || suspendingRef.current.has(terminalId)) return false
     const claudeSessionId = claudeIdOf(terminalId)
@@ -4138,6 +4138,9 @@ export function DashboardView() {
       && !hasUnsentInput(terminalId)
       && !awaitingReadyRef.current.get(terminalId)
       && terminalId !== activeTerminalIdRef.current
+      // The pass's full decision on fresh state (review M1): background tasks, subagents, a dev
+      // server, held deliveries, a release or another end of the lane in flight.
+      && (eligible?.() ?? true)
     if (!stillIdle()) return false
     const now = Date.now()
     const quiet = quietFor({ lastActivityAt: session?.lastActivityAt, lastKeystrokeAt: lastKeystrokeAt(terminalId), spawnedAt: spawnedAtRef.current.get(terminalId) }, now)
@@ -4323,40 +4326,49 @@ export function DashboardView() {
   const suspendLaneRef = useRef(suspendLane)
   suspendLaneRef.current = suspendLane
 
+  /** A lane as the suspend rules see it now. `suspending`: its own suspend in progress counts as in
+   *  flight, which it does when planning and not for the re-check inside that suspend. Its ports
+   *  are not read here. */
+  const suspendCandidate = (tab: TerminalTab, now: number, suspending: boolean): SuspendCandidate => {
+    const session = sessionsRef.current.find((x) => x.terminalId === tab.id && x.status !== 'ended')
+    const project = projectsRef.current.find((p) => p.id === tab.projectId)
+    return {
+      terminalId: tab.id,
+      roleId: tab.roleId,
+      phase: session?.phase,
+      ended: tab.ended,
+      lastActivityAt: session?.lastActivityAt,
+      lastKeystrokeAt: lastKeystrokeAt(tab.id),
+      // A resume writes no record: without its spawn time, a lane resumed by focus read as
+      // quiet for as long as it had been suspended (review H1).
+      spawnedAt: spawnedAtRef.current.get(tab.id),
+      focused: tab.id === activeTerminalIdRef.current,
+      unsentInput: hasUnsentInput(tab.id),
+      pendingSubmission: !!submitQueue.pending(tab.id),
+      awaitingDelivery: awaitingReadyRef.current.get(tab.id),
+      heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
+      backgroundTasks: session?.backgroundTasks,
+      activeSubagents: session?.activeSubagents,
+      released: !!tab.releasedWorktree || isReleased(tab, pendingReleasesRef.current),
+      resumable: !!claudeIdOf(tab.id),
+      // Read below for the lanes that pass every earlier rule; once a turn is seen it stays seen.
+      conversation: conversationSeenRef.current.has(claudeIdOf(tab.id) ?? '') ? true : undefined,
+      inFlight: restartingRef.current.has(tab.id) || retiringRef.current.has(tab.id) || (suspending && suspendingRef.current.has(tab.id))
+        || laneGateRef.current.busy(tab.key)
+        || launchInFlightRef.current.has(`${tab.projectId}:${tab.roleId}`)
+        || launchingLanesRef.current.has(`${tab.projectId}:${tab.roleId}`),
+    }
+  }
+  /** Does the lane serve a dev server? Undefined when the port read failed: an unknown lane is kept. */
+  const readDevServer = async (terminalId: string): Promise<boolean | undefined> => {
+    try { return servesDevServer(await window.operator.sessionPorts?.(terminalId) ?? []) } catch { return undefined }
+  }
+
   /** Every lane that may be suspended now under `threshold`, quietest first, at most `limit`. The
    *  transcript and the ports are read only for lanes that passed every other rule. */
   const suspendableLanes = async (threshold: IdleThreshold, limit: number): Promise<SuspendCandidate[]> => {
     const now = Date.now()
-    const lanes: SuspendCandidate[] = terminalsRef.current.map((tab) => {
-      const session = sessionsRef.current.find((x) => x.terminalId === tab.id && x.status !== 'ended')
-      const project = projectsRef.current.find((p) => p.id === tab.projectId)
-      return {
-        terminalId: tab.id,
-        roleId: tab.roleId,
-        phase: session?.phase,
-        ended: tab.ended,
-        lastActivityAt: session?.lastActivityAt,
-        lastKeystrokeAt: lastKeystrokeAt(tab.id),
-        // A resume writes no record: without its spawn time, a lane resumed by focus read as
-        // quiet for as long as it had been suspended (review H1).
-        spawnedAt: spawnedAtRef.current.get(tab.id),
-        focused: tab.id === activeTerminalIdRef.current,
-        unsentInput: hasUnsentInput(tab.id),
-        pendingSubmission: !!submitQueue.pending(tab.id),
-        awaitingDelivery: awaitingReadyRef.current.get(tab.id),
-        heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
-        backgroundTasks: session?.backgroundTasks,
-        activeSubagents: session?.activeSubagents,
-        released: !!tab.releasedWorktree || isReleased(tab, pendingReleasesRef.current),
-        resumable: !!claudeIdOf(tab.id),
-        // Read below for the lanes that pass every earlier rule; once a turn is seen it stays seen.
-        conversation: conversationSeenRef.current.has(claudeIdOf(tab.id) ?? '') ? true : undefined,
-        inFlight: restartingRef.current.has(tab.id) || retiringRef.current.has(tab.id) || suspendingRef.current.has(tab.id)
-          || laneGateRef.current.busy(tab.key)
-          || launchInFlightRef.current.has(`${tab.projectId}:${tab.roleId}`)
-          || launchingLanesRef.current.has(`${tab.projectId}:${tab.roleId}`),
-      }
-    })
+    const lanes: SuspendCandidate[] = terminalsRef.current.map((tab) => suspendCandidate(tab, now, true))
     // A lane never given a turn has nothing for `--resume` to open (QA D2). A read that fails
     // leaves it unknown, and an unknown lane is kept.
     const unread = needsConversationCheck(lanes, now, threshold)
@@ -4378,27 +4390,40 @@ export function DashboardView() {
         }
       } catch { /* kept */ }
     }
-    for (const lane of needsPortCheck(lanes, now, threshold)) {
-      // A port read that fails leaves it unknown, and an unknown lane is kept.
-      try { lane.devServer = servesDevServer(await window.operator.sessionPorts?.(lane.terminalId) ?? []) } catch { /* kept */ }
-    }
+    for (const lane of needsPortCheck(lanes, now, threshold)) lane.devServer = await readDevServer(lane.terminalId)
     return planSuspends(lanes, Date.now(), threshold, limit)
   }
   const suspendableLanesRef = useRef(suspendableLanes)
   suspendableLanesRef.current = suspendableLanes
+  const suspendFreshRef = useRef({ suspendCandidate, readDevServer })
+  suspendFreshRef.current = { suspendCandidate, readDevServer }
 
   /** The suspend pass in progress, timed or under memory pressure. One at a time: the timed tick
    *  skips while one runs, and a pressure pass waits for it. */
   const suspendPassRef = useRef<Promise<number> | null>(null)
-  /** Suspend every lane `threshold` allows, one after another. Resolves to how many were. */
+  /** Suspend every lane `threshold` allows, at most `limit`, one after another, each judged again
+   *  on fresh state right before its kill (lib/idle-suspend `suspendPlanned`). Resolves to how many
+   *  were. Every step is capped (review L2), so a hung IPC call cannot hold the lock for good. */
   const runSuspendPass = useCallback(async (threshold: IdleThreshold, limit: number, why: string): Promise<number> => {
     while (suspendPassRef.current) await suspendPassRef.current.catch(() => 0)
     const pass = (async () => {
-      let n = 0
-      for (const lane of await suspendableLanesRef.current(threshold, limit)) {
-        if (await suspendLaneRef.current(lane.terminalId, why)) n++
+      const planned = await withCap(suspendableLanesRef.current(threshold, limit), SUSPEND_STEP_CAP_MS)
+      if (planned === 'timed-out') {
+        console.warn(`[lanes] suspend pass: reading the lanes took longer than ${SUSPEND_STEP_CAP_MS / 1000} s; nothing suspended`)
+        return 0
       }
-      return n
+      const { suspendCandidate: candidate, readDevServer: ports } = suspendFreshRef.current
+      return suspendPlanned({
+        planned,
+        threshold,
+        fresh: (terminalId) => {
+          const tab = terminalsRef.current.find((t) => t.id === terminalId)
+          return tab ? candidate(tab, Date.now(), false) : undefined
+        },
+        readDevServer: ports,
+        suspend: (terminalId, eligible) => suspendLaneRef.current(terminalId, why, eligible),
+        onSkip: (terminalId, skipped) => console.warn(`[lanes] suspend of ${terminalId} ${skipped}`),
+      })
     })()
     suspendPassRef.current = pass
     try { return await pass } finally { if (suspendPassRef.current === pass) suspendPassRef.current = null }
@@ -4422,13 +4447,15 @@ export function DashboardView() {
   const [pressure, dispatchPressure] = useReducer(reducePressure, NORMAL_BANNER)
   /** Lanes the button would suspend now; undefined while it is being read. */
   const [pressureEligible, setPressureEligible] = useState<number | undefined>(undefined)
+  /** Pressure passes asked for and not finished (review L3): the button reads busy until all are. */
+  const pressurePendingRef = useRef(0)
   const [pressureBusy, setPressureBusy] = useState(false)
   useEffect(() => {
     let live = true
     Promise.resolve(window.operator.memoryPressure?.())
-      .then((p) => { if (live && p) dispatchPressure({ type: 'level', level: p.level }) })
+      .then((p) => { if (live && p) dispatchPressure({ type: 'level', level: p.level, at: Date.now() }) })
       .catch(() => { /* no reading yet; the next change is pushed */ })
-    const off = window.operator.onMemoryPressure?.((p) => dispatchPressure({ type: 'level', level: p.level }))
+    const off = window.operator.onMemoryPressure?.((p) => dispatchPressure({ type: 'level', level: p.level, at: Date.now() }))
     return () => { live = false; off?.() }
   }, [])
 
@@ -4443,13 +4470,16 @@ export function DashboardView() {
     return () => window.clearInterval(timer)
   }, [pressureShown, reattachDone, readPressureEligible])
 
-  const suspendUnderPressure = useCallback(async (why: string) => {
+  /** `limit`: the button suspends at most the count it showed, quietest first (review L4); a lane
+   *  that went quiet since the count was read waits for the next look. */
+  const suspendUnderPressure = useCallback(async (why: string, limit = Infinity) => {
+    pressurePendingRef.current++
     setPressureBusy(true)
     try {
-      const n = await runSuspendPass('now', Infinity, why)
+      const n = await runSuspendPass('now', limit, why)
       dispatchPressure({ type: 'suspended', count: n })
     } finally {
-      setPressureBusy(false)
+      if (--pressurePendingRef.current === 0) setPressureBusy(false)
       void readPressureEligible()
     }
   }, [runSuspendPass, readPressureEligible])
@@ -4459,7 +4489,8 @@ export function DashboardView() {
   useEffect(() => {
     if (pressure.level !== 4 || !savedHydrated || !reattachDone) return
     const pass = () => {
-      if (!autoSuspendAllowed(4, getIdleSuspendMinutes())) return
+      // Not queued behind a pressure pass already asked for (review L3): that one re-plans anyway.
+      if (!autoSuspendAllowed(4, getIdleSuspendMinutes()) || pressurePendingRef.current > 0) return
       void suspendUnderPressure('because memory is critically low')
     }
     pass()
@@ -7062,7 +7093,7 @@ export function DashboardView() {
               autoOff: getIdleSuspendMinutes() <= 0,
             })}
             busy={pressureBusy}
-            onSuspend={() => { void suspendUnderPressure('because memory is low') }}
+            onSuspend={() => { if (pressureEligible) void suspendUnderPressure('because memory is low', pressureEligible) }}
             onDismiss={() => dispatchPressure({ type: 'dismiss' })}
           />
         )}

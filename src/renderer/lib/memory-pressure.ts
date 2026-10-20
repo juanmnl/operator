@@ -13,17 +13,23 @@ import type { MemoryPressureLevel } from '../../shared/types'
 
 export interface PressureBanner {
   level: MemoryPressureLevel
-  /** Closed by the person. Holds until the level returns to normal and rises again, or rises from
-   *  warn to critical. */
+  /** Closed by the person. Holds until the level returns to normal and rises again more than
+   *  DISMISSAL_KEPT_MS later, or rises from warn to critical. */
   dismissed: boolean
   /** Lanes suspended since the level last rose from normal, by the button or automatically. */
   suspended: number
+  /** At normal: when the level dropped to it, if the banner was dismissed at the time. */
+  dismissedDropAt?: number
 }
 
 export const NORMAL_BANNER: PressureBanner = { level: 1, dismissed: false, suspended: 0 }
 
+/** A dismissal survives a drop to normal and a rise back within this long (review L1). Main
+ *  already holds a drop until it has lasted a minute; this covers a slower flap. */
+export const DISMISSAL_KEPT_MS = 5 * 60_000
+
 export type PressureEvent =
-  | { type: 'level'; level: MemoryPressureLevel }
+  | { type: 'level'; level: MemoryPressureLevel; at: number }
   | { type: 'dismiss' }
   | { type: 'suspended'; count: number }
 
@@ -31,10 +37,14 @@ export function reducePressure(s: PressureBanner, e: PressureEvent): PressureBan
   switch (e.type) {
     case 'level':
       if (e.level === s.level) return s
-      // Back to normal: hidden, and the next rise starts clean.
-      if (e.level === 1) return NORMAL_BANNER
-      // A new rise from normal: shown again, whatever was dismissed before.
-      if (s.level === 1) return { level: e.level, dismissed: false, suspended: 0 }
+      // Back to normal: hidden, and the next rise starts clean unless it comes soon after.
+      if (e.level === 1) return s.dismissed ? { ...NORMAL_BANNER, dismissedDropAt: e.at } : NORMAL_BANNER
+      // A new rise from normal: shown again, unless it was dismissed and normal lasted only briefly.
+      // A rise to critical always shows it, as warn to critical does.
+      if (s.level === 1) {
+        const kept = e.level === 2 && s.dismissedDropAt !== undefined && e.at - s.dismissedDropAt < DISMISSAL_KEPT_MS
+        return { level: e.level, dismissed: kept, suspended: 0 }
+      }
       // Warn to critical: shown again even if dismissed at warn, because lanes may now be
       // suspended without the person asking and they should see that it happened.
       if (e.level > s.level) return { ...s, level: e.level, dismissed: false }

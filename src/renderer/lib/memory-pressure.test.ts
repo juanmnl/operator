@@ -1,12 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
-  reducePressure, bannerVisible, autoSuspendAllowed, bannerCopy, joinSentences, NORMAL_BANNER,
+  reducePressure, bannerVisible, autoSuspendAllowed, bannerCopy, joinSentences, NORMAL_BANNER, DISMISSAL_KEPT_MS,
   type PressureBanner, type PressureEvent,
 } from './memory-pressure'
-import { suspendDecision, planSuspends, needsPortCheck, type SuspendCandidate } from './idle-suspend'
+import { suspendDecision, planSuspends, needsPortCheck, suspendPlanned, withCap, SUSPEND_STEP_CAP_MS, type SuspendCandidate, type PassSteps } from './idle-suspend'
 
 const run = (...events: PressureEvent[]): PressureBanner => events.reduce(reducePressure, NORMAL_BANNER)
-const lvl = (level: 1 | 2 | 4): PressureEvent => ({ type: 'level', level })
+const lvl = (level: 1 | 2 | 4, at = 0): PressureEvent => ({ type: 'level', level, at })
 const DISMISS: PressureEvent = { type: 'dismiss' }
 
 describe('memory pressure: the banner state', () => {
@@ -24,7 +24,18 @@ describe('memory pressure: the banner state', () => {
   })
 
   it('shows again on the next rise from normal', () => {
-    expect(bannerVisible(run(lvl(2), DISMISS, lvl(1), lvl(2)))).toBe(true)
+    expect(bannerVisible(run(lvl(2), DISMISS, lvl(1, 1000), lvl(2, 1000 + DISMISSAL_KEPT_MS)))).toBe(true)
+    // Never dismissed: shown on any rise, however soon.
+    expect(bannerVisible(run(lvl(2), lvl(1, 1000), lvl(2, 2000)))).toBe(true)
+  })
+
+  it('stays dismissed across a quick drop to normal and back (review L1)', () => {
+    const s = run(lvl(2), DISMISS, lvl(1, 1000), lvl(2, 1000 + DISMISSAL_KEPT_MS - 1))
+    expect(bannerVisible(s)).toBe(false)
+    // A rise to critical still shows it.
+    expect(bannerVisible(reducePressure(s, lvl(4, 1000 + DISMISSAL_KEPT_MS)))).toBe(true)
+    // The hold is counted from the last drop, and is not carried past a rise that showed it.
+    expect(bannerVisible(run(lvl(2), DISMISS, lvl(1, 0), lvl(4, 10), lvl(1, 20), lvl(2, 30)))).toBe(true)
   })
 
   it('shows again when warn rises to critical, since lanes may now be suspended', () => {
@@ -35,6 +46,7 @@ describe('memory pressure: the banner state', () => {
     const s = run(lvl(4), { type: 'suspended', count: 3 }, lvl(1))
     expect(bannerVisible(s)).toBe(false)
     expect(s).toEqual(NORMAL_BANNER)
+    expect(run(lvl(4), DISMISS, lvl(1, 50))).toEqual({ ...NORMAL_BANNER, dismissedDropAt: 50 })
     expect(run(lvl(4), { type: 'suspended', count: 3 }, lvl(1), lvl(2)).suspended).toBe(0)
   })
 
@@ -137,5 +149,122 @@ describe('memory pressure: "suspend now" drops only the quiet-time rule', () => 
     expect(needsPortCheck([lane({ devServer: undefined })], NOW, 'now')).toHaveLength(1)
     const many = Array.from({ length: 5 }, (_, i) => lane({ terminalId: `t${i}` }))
     expect(planSuspends(many, NOW, 'now', Infinity)).toHaveLength(5)
+  })
+})
+
+describe('a suspend pass judges each lane again right before its kill (review M1)', () => {
+  const NOW = Date.parse('2026-10-16T12:00:00Z')
+  const lane = (id: string, over: Partial<SuspendCandidate> = {}): SuspendCandidate => ({
+    terminalId: id, roleId: 'code', phase: 'waiting',
+    lastActivityAt: new Date(NOW - 10_000).toISOString(),
+    resumable: true, conversation: true, devServer: false,
+    ...over,
+  })
+
+  /** A view whose lanes can change while the pass runs. `suspend` checks `eligible` right before
+   *  its kill, as `suspendLane` does, and records what it killed. */
+  function view(ids: string[]) {
+    const state = new Map(ids.map((id) => [id, lane(id)]))
+    const ports = new Map<string, boolean>()
+    const killed: string[] = []
+    const beforeKill: Array<(id: string) => void> = []
+    const steps: PassSteps = {
+      planned: ids.map((id) => lane(id)),
+      threshold: 'now',
+      now: () => NOW,
+      fresh: (id) => { const c = state.get(id); return c && { ...c, devServer: undefined } },
+      readDevServer: async (id) => ports.get(id) ?? false,
+      suspend: async (id, eligible) => {
+        if (!eligible()) return false
+        await Promise.resolve() // the report IPC
+        for (const f of beforeKill) f(id)
+        if (!eligible()) return false
+        killed.push(id)
+        return true
+      },
+    }
+    return { state, ports, killed, beforeKill, steps }
+  }
+
+  it('does not kill a lane that started a background task after the plan was made', async () => {
+    const v = view(['a', 'b', 'c'])
+    // While "a" is being suspended, "c" takes a turn and leaves a background task running.
+    v.beforeKill.push((id) => { if (id === 'a') v.state.set('c', lane('c', { backgroundTasks: 1 })) })
+    expect(await suspendPlanned(v.steps)).toBe(2)
+    expect(v.killed).toEqual(['a', 'b'])
+  })
+
+  it('does not kill a lane that gains a background task between its report and its kill', async () => {
+    const v = view(['a'])
+    v.beforeKill.push(() => v.state.set('a', lane('a', { backgroundTasks: 1 })))
+    expect(await suspendPlanned(v.steps)).toBe(0)
+    expect(v.killed).toEqual([])
+  })
+
+  it.each<[string, Partial<SuspendCandidate>]>([
+    ['a subagent', { activeSubagents: 1 }],
+    ['a held dispatch', { heldDeliveries: 1 }],
+    ['a release', { released: true }],
+    ['another end of the lane in flight', { inFlight: true }],
+    ['a turn in progress', { phase: 'running' }],
+  ])('keeps a lane that gained %s mid-pass', async (_name, over) => {
+    const v = view(['a', 'b'])
+    v.beforeKill.push((id) => { if (id === 'a') v.state.set('b', lane('b', over)) })
+    await suspendPlanned(v.steps)
+    expect(v.killed).toEqual(['a'])
+  })
+
+  it('reads the ports again, and keeps a lane that started a dev server mid-pass', async () => {
+    const v = view(['a', 'b'])
+    v.beforeKill.push((id) => { if (id === 'a') v.ports.set('b', true) })
+    await suspendPlanned(v.steps)
+    expect(v.killed).toEqual(['a'])
+  })
+
+  it('keeps a lane whose ports cannot be read now, and one whose tab is gone', async () => {
+    const v = view(['a', 'b'])
+    v.steps.readDevServer = async (id) => (id === 'a' ? undefined : false)
+    v.state.delete('b')
+    expect(await suspendPlanned(v.steps)).toBe(0)
+  })
+
+  describe('a step that hangs (review L2)', () => {
+    afterEach(() => { vi.useRealTimers() })
+
+    it('is given up after the cap, logged, and the pass goes on', async () => {
+      vi.useFakeTimers()
+      const v = view(['a', 'b'])
+      const skipped: string[] = []
+      v.steps.onSkip = (id, why) => skipped.push(`${id} ${why}`)
+      let latePorts!: (b: boolean) => void
+      v.steps.readDevServer = (id) => (id === 'a' ? new Promise((r) => { latePorts = r }) : Promise.resolve(false))
+      const done = suspendPlanned(v.steps)
+      await vi.advanceTimersByTimeAsync(SUSPEND_STEP_CAP_MS)
+      expect(await done).toBe(1)
+      expect(v.killed).toEqual(['b'])
+      expect(skipped).toEqual([`a took longer than ${SUSPEND_STEP_CAP_MS / 1000} s; the pass moved on`])
+      // The port read that comes back late starts no suspend.
+      latePorts(false)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(v.killed).toEqual(['b'])
+    })
+
+    it('goes on past a step that throws', async () => {
+      const v = view(['a', 'b'])
+      const skipped: string[] = []
+      v.steps.onSkip = (id, why) => skipped.push(`${id} ${why}`)
+      const suspend = v.steps.suspend
+      v.steps.suspend = (id, eligible) => (id === 'a' ? Promise.reject(new Error('ipc')) : suspend(id, eligible))
+      expect(await suspendPlanned(v.steps)).toBe(1)
+      expect(skipped).toEqual(['a failed: ipc'])
+    })
+
+    it('withCap resolves the value, or timed-out once the cap passes', async () => {
+      vi.useFakeTimers()
+      expect(await withCap(Promise.resolve(3), 10)).toBe(3)
+      const slow = withCap(new Promise(() => {}), 10)
+      await vi.advanceTimersByTimeAsync(10)
+      expect(await slow).toBe('timed-out')
+    })
   })
 })

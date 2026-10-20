@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { MemoryPressureWatcher, parsePressure, fakePressureFile, NORMAL_POLL_MS, ELEVATED_POLL_MS } from './memory-pressure'
+import { MemoryPressureWatcher, parsePressure, fakePressureFile, NORMAL_POLL_MS, ELEVATED_POLL_MS, NORMAL_CONFIRM_MS } from './memory-pressure'
 
 describe('parsing the sysctl reading', () => {
   it('reads the level and the percent available', () => {
@@ -39,7 +39,8 @@ describe('the watcher', () => {
     const readings = ['1\n60', '1\n58', '2\n20', '2\n18', '4\n5', '1\n70']
     const sample = vi.fn(async () => readings.shift() ?? '1\n70')
     const seen: number[] = []
-    const w = new MemoryPressureWatcher((p) => seen.push(p.level), sample, () => 1000)
+    vi.setSystemTime(1000)
+    const w = new MemoryPressureWatcher((p) => seen.push(p.level), sample)
     w.start()
     await vi.advanceTimersByTimeAsync(0)
     expect(seen).toEqual([1])
@@ -61,8 +62,70 @@ describe('the watcher', () => {
     expect(w.current()?.freePercent).toBe(18)
     await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
     expect(seen).toEqual([1, 2, 4])
+    // Back to normal: reported only once it has held for NORMAL_CONFIRM_MS (review L1).
     await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(seen).toEqual([1, 2, 4])
+    expect(w.current()?.level).toBe(4)
+    await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS)
     expect(seen).toEqual([1, 2, 4, 1])
+    w.stop()
+  })
+
+  it('does not report a drop to normal that lasts less than NORMAL_CONFIRM_MS', async () => {
+    vi.useFakeTimers()
+    let reading = '2\n20'
+    const seen: number[] = []
+    const w = new MemoryPressureWatcher((p) => seen.push(p.level), async () => reading)
+    w.start()
+    await vi.advanceTimersByTimeAsync(0)
+    reading = '1\n40'
+    await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS - ELEVATED_POLL_MS)
+    reading = '2\n18'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS * 2)
+    // The flap never reached the renderer, and the normal stretch starts again from zero.
+    reading = '1\n40'
+    await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS - ELEVATED_POLL_MS)
+    expect(seen).toEqual([2])
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS * 2)
+    expect(seen).toEqual([2, 1])
+    w.stop()
+  })
+
+  it('logs the first failed read and the recovery, not every failure', async () => {
+    vi.useFakeTimers()
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let out: string | Error = '2\n20'
+    const w = new MemoryPressureWatcher(() => {}, async () => { if (out instanceof Error) throw out; return out })
+    w.start()
+    await vi.advanceTimersByTimeAsync(0)
+    log.mockClear()
+    out = new Error('spawn EAGAIN')
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS * 3)
+    out = 'garbage'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(log.mock.calls.map((c) => String(c[0]))).toEqual(['[memory] pressure read failed (spawn EAGAIN); keeping level 2'])
+    out = '2\n19'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(String(log.mock.calls.at(-1)?.[0])).toBe('[memory] pressure read recovered after 4 failed reads')
+    w.stop()
+    log.mockRestore()
+  })
+
+  it('runs one polling loop when started again while a read is in flight', async () => {
+    vi.useFakeTimers()
+    let resolve!: (s: string) => void
+    const sample = vi.fn(() => new Promise<string>((r) => { resolve = r }))
+    const w = new MemoryPressureWatcher(() => {}, sample)
+    w.start()
+    const first = resolve
+    w.start()
+    first('1\n60')
+    resolve('1\n60')
+    await vi.advanceTimersByTimeAsync(0)
+    sample.mockImplementation(async () => '1\n60')
+    const before = sample.mock.calls.length
+    await vi.advanceTimersByTimeAsync(NORMAL_POLL_MS * 3)
+    expect(sample.mock.calls.length - before).toBe(3)
     w.stop()
   })
 
@@ -71,6 +134,7 @@ describe('the watcher', () => {
     let fail = false
     const sample = vi.fn(async () => { if (fail) throw new Error('exec'); return '2\n20' })
     const seen: number[] = []
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     const w = new MemoryPressureWatcher((p) => seen.push(p.level), sample)
     w.start()
     await vi.advanceTimersByTimeAsync(0)
@@ -82,5 +146,6 @@ describe('the watcher', () => {
     const calls = sample.mock.calls.length
     await vi.advanceTimersByTimeAsync(NORMAL_POLL_MS * 3)
     expect(sample).toHaveBeenCalledTimes(calls)
+    log.mockRestore()
   })
 })

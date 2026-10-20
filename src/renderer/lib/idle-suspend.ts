@@ -161,6 +161,80 @@ export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs
   })
 }
 
+/** Resolves to what `p` resolves to, or `'timed-out'` once `ms` have passed first. */
+export function withCap<T>(p: Promise<T>, ms: number): Promise<T | 'timed-out'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<'timed-out'>((r) => { timer = setTimeout(() => r('timed-out'), ms) })
+  return Promise.race([p, cap]).finally(() => clearTimeout(timer))
+}
+
+/** How long one lane's step in a suspend pass may take: its port read, the report to main and the
+ *  kill, which waits 1.5 s before it escalates (review L2). Past it the pass moves on. */
+export const SUSPEND_STEP_CAP_MS = 20_000
+
+/** One suspend pass, from the view. */
+export interface PassSteps {
+  /** The lanes planned at the start of the pass, in order. */
+  planned: readonly SuspendCandidate[]
+  threshold: IdleThreshold
+  /** The lane as it is now, read fresh from the view's state. Undefined when its tab is gone. Its
+   *  ports are not read here, and its own suspend in progress does not count as in flight. */
+  fresh: (terminalId: string) => SuspendCandidate | undefined
+  /** Read the lane's ports again: whether it serves a dev server, undefined if the read failed. */
+  readDevServer: (terminalId: string) => Promise<boolean | undefined>
+  /** Suspend it. `eligible` is the full decision on fresh state, for the view to check right
+   *  before the kill. */
+  suspend: (terminalId: string, eligible: () => boolean) => Promise<boolean>
+  /** A lane's step failed or passed SUSPEND_STEP_CAP_MS. */
+  onSkip?: (terminalId: string, why: string) => void
+  now?: () => number
+  capMs?: number
+}
+
+/** Suspend the planned lanes one after another. Resolves to how many were.
+ *
+ *  THE PLAN IS OLD BY THE TIME A LANE'S TURN COMES (review M1). Each suspend is an IPC write and a
+ *  kill with a grace period, so in an uncapped pass the last lane is reached tens of seconds after
+ *  it was judged, and in that time it can take a turn that leaves a background task, a subagent or
+ *  a dev server running, or have a dispatch held for it. So each lane's ports are read again and
+ *  the whole `suspendDecision` runs again on fresh state, before its suspend starts and once more
+ *  right before its kill. Its transcript is not read again: once a turn is seen it stays seen.
+ *
+ *  A step that passes the cap is left to finish on its own, and the pass goes on. Its suspend still
+ *  checks the lane before the kill; a port read that comes back late starts nothing. */
+export async function suspendPlanned(st: PassSteps): Promise<number> {
+  const now = st.now ?? Date.now
+  let n = 0
+  for (const lane of st.planned) {
+    const id = lane.terminalId
+    let gaveUp = false
+    const step = (async () => {
+      const devServer = await st.readDevServer(id)
+      if (gaveUp) return false
+      const eligible = () => {
+        const c = st.fresh(id)
+        return !!c && suspendDecision({ ...c, conversation: c.conversation ?? lane.conversation, devServer }, now(), st.threshold).suspend
+      }
+      return eligible() ? st.suspend(id, eligible) : false
+    })()
+    let done: boolean | 'timed-out'
+    try {
+      done = await withCap(step, st.capMs ?? SUSPEND_STEP_CAP_MS)
+    } catch (e) {
+      st.onSkip?.(id, `failed: ${e instanceof Error ? e.message : String(e)}`)
+      continue
+    }
+    if (done === 'timed-out') {
+      gaveUp = true
+      step.catch(() => false)
+      st.onSkip?.(id, `took longer than ${(st.capMs ?? SUSPEND_STEP_CAP_MS) / 1000} s; the pass moved on`)
+      continue
+    }
+    if (done) n++
+  }
+  return n
+}
+
 /** Does a port list from `sessionPorts` mean the lane is serving something? A port another lane
  *  claims is that lane's and survives this one ending; every other live port counts, including a
  *  shared reservation, which may be this lane's. */
