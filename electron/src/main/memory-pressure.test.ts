@@ -62,12 +62,57 @@ describe('the watcher', () => {
     expect(w.current()?.freePercent).toBe(18)
     await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
     expect(seen).toEqual([1, 2, 4])
-    // Back to normal: reported only once it has held for NORMAL_CONFIRM_MS (review L1).
+    // Back to normal: warn while it is confirmed (review R2-1), normal once it has held for
+    // NORMAL_CONFIRM_MS (review L1).
     await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
-    expect(seen).toEqual([1, 2, 4])
-    expect(w.current()?.level).toBe(4)
+    expect(seen).toEqual([1, 2, 4, 2])
+    expect(w.current()).toEqual({ level: 2, freePercent: 70, at: 1000 + NORMAL_POLL_MS * 2 + ELEVATED_POLL_MS * 3 })
     await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS)
-    expect(seen).toEqual([1, 2, 4, 1])
+    expect(seen).toEqual([1, 2, 4, 2, 1])
+    w.stop()
+  })
+
+  it('reports a drop from critical to normal as warn at once, then normal once it holds', async () => {
+    vi.useFakeTimers()
+    let reading = '4\n4'
+    const seen: number[] = []
+    const w = new MemoryPressureWatcher((p) => seen.push(p.level), async () => reading)
+    w.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(seen).toEqual([4])
+    reading = '1\n55'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    // Critical ends with the first normal read, so the critical pass stops; the banner stays at warn.
+    expect(seen).toEqual([4, 2])
+    expect(w.current()?.freePercent).toBe(55)
+    // The minute counts from that first normal read, not from the report of warn.
+    await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS - ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2])
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2, 1])
+    w.stop()
+  })
+
+  it('reports critical again at once when it returns while a drop from critical is confirmed', async () => {
+    vi.useFakeTimers()
+    let reading = '4\n4'
+    const seen: number[] = []
+    const w = new MemoryPressureWatcher((p) => seen.push(p.level), async () => reading)
+    w.start()
+    await vi.advanceTimersByTimeAsync(0)
+    reading = '1\n55'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS * 4)
+    reading = '4\n3'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2, 4])
+    // The earlier normal stretch does not count toward the next drop.
+    reading = '1\n55'
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2, 4, 2])
+    await vi.advanceTimersByTimeAsync(NORMAL_CONFIRM_MS - ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2, 4, 2])
+    await vi.advanceTimersByTimeAsync(ELEVATED_POLL_MS)
+    expect(seen).toEqual([4, 2, 4, 2, 1])
     w.stop()
   })
 

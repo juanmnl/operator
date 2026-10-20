@@ -14,7 +14,9 @@
 //
 // A DROP TO NORMAL IS REPORTED ONLY ONCE IT HOLDS for NORMAL_CONFIRM_MS (review L1). Near the warn
 // threshold the grade can move between 1 and 2 from one read to the next, and each change shows or
-// hides the banner, which resizes every visible lane pane. A rise is reported at once.
+// hides the banner, which resizes every visible lane pane. A rise is reported at once. A drop from
+// critical is reported as warn while it is confirmed (review R2-1): the banner stays up at the same
+// size, and the renderer's critical pass, which suspends every idle lane every 30 s, stops at once.
 import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import type { MemoryPressure, MemoryPressureLevel } from '../../../src/shared/types'
@@ -116,16 +118,23 @@ export class MemoryPressureWatcher {
     const at = this.now()
     const reported = this.last?.level
     if (parsed.level === 1 && reported !== undefined && reported > 1) {
-      // Held at the higher level until normal has lasted NORMAL_CONFIRM_MS.
+      // Held above normal until normal has lasted NORMAL_CONFIRM_MS: at warn, from either level.
       this.normalSince ??= at
-      if (at - this.normalSince < NORMAL_CONFIRM_MS) return
+      if (at - this.normalSince < NORMAL_CONFIRM_MS) {
+        if (reported === 4) this.report({ level: 2, freePercent: parsed.freePercent, at })
+        return
+      }
     }
     this.normalSince = null
-    const changed = parsed.level !== reported
-    this.last = { level: parsed.level, freePercent: parsed.freePercent, at }
+    this.report({ level: parsed.level, freePercent: parsed.freePercent, at })
+  }
+
+  private report(p: MemoryPressure): void {
+    const changed = p.level !== this.last?.level
+    this.last = p
     if (changed) {
-      console.error(`[memory] pressure level ${parsed.level}${parsed.freePercent === undefined ? '' : `, ${parsed.freePercent}% available`}`)
-      this.onChange(this.last)
+      console.error(`[memory] pressure level ${p.level}${p.freePercent === undefined ? '' : `, ${p.freePercent}% available`}`)
+      this.onChange(p)
     }
   }
 }
