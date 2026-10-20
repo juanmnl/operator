@@ -31,6 +31,7 @@ import { onAppActivated, onWindowFocused } from './activation'
 import { loadSessions } from './store'
 import { aggregateState, buildDots, frameImage, startTrayAnimation, type TrayPhase } from './tray-anim'
 import { ClaudeVersionWatcher } from './claude-version'
+import { MemoryPressureWatcher, fakePressureFile, pressureSource } from './memory-pressure'
 import { LastRunRecorder, lastRunFile } from './last-run'
 
 // Bundled to CJS (node-pty is a native CJS addon and a sandboxed preload has no ESM loader),
@@ -52,6 +53,7 @@ let stopTrayAnim: (() => void) | null = null
 let sweepTimer: ReturnType<typeof setInterval> | null = null
 let checkouts: CheckoutWatcher | null = null
 let claudeVersion: ClaudeVersionWatcher | null = null
+let memory: MemoryPressureWatcher | null = null
 /** last-run.json: this run's live lanes, and whether it ended through teardown (last-run.ts). */
 let lastRun: LastRunRecorder | null = null
 let lastRunTimer: ReturnType<typeof setInterval> | null = null
@@ -269,6 +271,7 @@ function teardown(): Promise<void> {
     artifacts?.close()
     if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null }
     claudeVersion?.stop()
+    memory?.stop()
     stopTrayAnim?.()
     stopTrayAnim = null
     tray?.destroy()
@@ -455,7 +458,15 @@ function boot(): void {
   claudeVersion = new ClaudeVersionWatcher((v) => { const w = win(); if (w) broadcast(w, 'onClaudeVersion', v) })
   claudeVersion.start()
 
-  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, lastRun, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
+  // The kernel's memory-pressure level, polled (memory-pressure.ts). macOS only: the sysctl names
+  // are Darwin's. A dev build may read a fake level from OPERATOR_MEMORY_PRESSURE_FILE instead.
+  const fakePressure = fakePressureFile(app.isPackaged, process.env)
+  if (process.platform === 'darwin' || fakePressure) {
+    memory = new MemoryPressureWatcher((p) => { const w = win(); if (w) broadcast(w, 'onMemoryPressure', p) }, pressureSource(fakePressure))
+    memory.start()
+  }
+
+  registerIpc({ terminals, transcript, chat, artifacts, quit, updateHost, claudeVersion, checkouts, memory: memory ?? undefined, lastRun, getWindow: () => mainWindow, rendererReady: () => { readyFallback.ready(); routed.release() } })
   mainWindow = createWindow()
 
   // The menu bar. AFTER the window, because "Show Operator" shows it — and it is the one way

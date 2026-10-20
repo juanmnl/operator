@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout, MemoryPressure } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -332,6 +332,10 @@ declare global {
        *  `rm`), as a full list each time it changes. Not repaired; shown on the lane. */
       onCheckoutGone?: (callback: (list: GoneCheckout[]) => void) => () => void
       checkoutGoneList?: () => Promise<GoneCheckout[]>
+      /** Pushed when the kernel's memory-pressure level changes (main polls `sysctl`). */
+      onMemoryPressure?: (callback: (p: MemoryPressure) => void) => () => void
+      /** The latest reading, or null before the first one (and on a platform without it). */
+      memoryPressure?: () => Promise<MemoryPressure | null>
     }
   }
 }

@@ -93,10 +93,18 @@ export function quietFor(c: Pick<SuspendCandidate, 'lastActivityAt' | 'lastKeyst
 
 const BETWEEN_TURNS = new Set(['idle', 'waiting'])
 
+/** How long a lane must have been quiet: milliseconds from the Tuning setting (`0` or less is Off),
+ *  or `'now'` under memory pressure (lib/memory-pressure), which drops only the quiet-time rule. A
+ *  lane must still be between turns, unfocused, not a coordinator, with nothing owed to it, no
+ *  background work, a turn to resume and no dev server; and the Off setting does not apply, since
+ *  `'now'` comes from the person pressing "Suspend idle lanes" or from a critical level that the
+ *  caller has already checked against the setting. */
+export type IdleThreshold = number | 'now'
+
 /** May this lane's CLI be ended now? Ordered from "not ours to end" to "not quiet long enough",
  *  each rule with its own reason so a caller can say why nothing happened. */
-export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: number): SuspendDecision {
-  if (idleMs <= 0) return { suspend: false, why: 'suspending idle lanes is off' }
+export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: IdleThreshold): SuspendDecision {
+  if (idleMs !== 'now' && idleMs <= 0) return { suspend: false, why: 'suspending idle lanes is off' }
   if (c.ended) return { suspend: false, why: 'not running' }
   if (!c.resumable) return { suspend: false, why: 'no conversation to resume' }
   if (c.roleId && COORDINATOR_ROLE_IDS.includes(c.roleId.toLowerCase())) {
@@ -117,18 +125,20 @@ export function suspendDecision(c: SuspendCandidate, nowMs: number, idleMs: numb
   if ((c.backgroundTasks ?? 0) > 0) return { suspend: false, why: 'it has background tasks running' }
   if ((c.activeSubagents ?? 0) > 0) return { suspend: false, why: 'it has subagents running' }
   const quiet = quietFor(c, nowMs)
+  // Kept under `'now'` too: a lane with no transcript timestamp is one nothing is known about.
   if (quiet === undefined) return { suspend: false, why: 'no activity timestamp' }
-  if (quiet < idleMs) return { suspend: false, why: 'not idle long enough' }
+  if (idleMs !== 'now' && quiet < idleMs) return { suspend: false, why: 'not idle long enough' }
   if (c.conversation === undefined) return { suspend: false, why: 'its transcript has not been read', checkConversation: true }
   if (!c.conversation) return { suspend: false, why: 'it has no turn to resume' }
   if (c.devServer === undefined) return { suspend: false, why: 'its ports have not been checked', checkPorts: true }
   if (c.devServer) return { suspend: false, why: 'it is serving a dev server' }
-  return { suspend: true, why: 'idle past the threshold' }
+  return { suspend: true, why: idleMs === 'now' ? 'idle, and memory is low' : 'idle past the threshold' }
 }
 
 /** Every lane to suspend on this tick, quietest first, capped. The cap is pacing: each suspend is
- *  a kill and a state write, and the rest go on the next tick. */
-export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number, limit = 2): SuspendCandidate[] {
+ *  a kill and a state write, and the rest go on the next tick. A memory-pressure pass passes no cap
+ *  (`Infinity`): the point is to free memory before the kernel starts killing processes itself. */
+export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold, limit = 2): SuspendCandidate[] {
   return lanes
     .filter((l) => suspendDecision(l, nowMs, idleMs).suspend)
     .sort((a, b) => (quietFor(b, nowMs) ?? 0) - (quietFor(a, nowMs) ?? 0))
@@ -136,7 +146,7 @@ export function planSuspends(lanes: readonly SuspendCandidate[], nowMs: number, 
 }
 
 /** Lanes whose ports should be read before the next decision: everything else already passed. */
-export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number): SuspendCandidate[] {
+export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold): SuspendCandidate[] {
   return lanes.filter((l) => {
     const d = suspendDecision(l, nowMs, idleMs)
     return !d.suspend && d.checkPorts === true
@@ -144,11 +154,85 @@ export function needsPortCheck(lanes: readonly SuspendCandidate[], nowMs: number
 }
 
 /** Lanes whose transcript should be read before the next decision: everything before it passed. */
-export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: number): SuspendCandidate[] {
+export function needsConversationCheck(lanes: readonly SuspendCandidate[], nowMs: number, idleMs: IdleThreshold): SuspendCandidate[] {
   return lanes.filter((l) => {
     const d = suspendDecision(l, nowMs, idleMs)
     return !d.suspend && d.checkConversation === true
   })
+}
+
+/** Resolves to what `p` resolves to, or `'timed-out'` once `ms` have passed first. */
+export function withCap<T>(p: Promise<T>, ms: number): Promise<T | 'timed-out'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<'timed-out'>((r) => { timer = setTimeout(() => r('timed-out'), ms) })
+  return Promise.race([p, cap]).finally(() => clearTimeout(timer))
+}
+
+/** How long one lane's step in a suspend pass may take: its port read, the report to main and the
+ *  kill, which waits 1.5 s before it escalates (review L2). Past it the pass moves on. */
+export const SUSPEND_STEP_CAP_MS = 20_000
+
+/** One suspend pass, from the view. */
+export interface PassSteps {
+  /** The lanes planned at the start of the pass, in order. */
+  planned: readonly SuspendCandidate[]
+  threshold: IdleThreshold
+  /** The lane as it is now, read fresh from the view's state. Undefined when its tab is gone. Its
+   *  ports are not read here, and its own suspend in progress does not count as in flight. */
+  fresh: (terminalId: string) => SuspendCandidate | undefined
+  /** Read the lane's ports again: whether it serves a dev server, undefined if the read failed. */
+  readDevServer: (terminalId: string) => Promise<boolean | undefined>
+  /** Suspend it. `eligible` is the full decision on fresh state, for the view to check right
+   *  before the kill. */
+  suspend: (terminalId: string, eligible: () => boolean) => Promise<boolean>
+  /** A lane's step failed or passed SUSPEND_STEP_CAP_MS. */
+  onSkip?: (terminalId: string, why: string) => void
+  now?: () => number
+  capMs?: number
+}
+
+/** Suspend the planned lanes one after another. Resolves to how many were.
+ *
+ *  THE PLAN IS OLD BY THE TIME A LANE'S TURN COMES (review M1). Each suspend is an IPC write and a
+ *  kill with a grace period, so in an uncapped pass the last lane is reached tens of seconds after
+ *  it was judged, and in that time it can take a turn that leaves a background task, a subagent or
+ *  a dev server running, or have a dispatch held for it. So each lane's ports are read again and
+ *  the whole `suspendDecision` runs again on fresh state, before its suspend starts and once more
+ *  right before its kill. Its transcript is not read again: once a turn is seen it stays seen.
+ *
+ *  A step that passes the cap is left to finish on its own, and the pass goes on. Its suspend still
+ *  checks the lane before the kill; a port read that comes back late starts nothing. */
+export async function suspendPlanned(st: PassSteps): Promise<number> {
+  const now = st.now ?? Date.now
+  let n = 0
+  for (const lane of st.planned) {
+    const id = lane.terminalId
+    let gaveUp = false
+    const step = (async () => {
+      const devServer = await st.readDevServer(id)
+      if (gaveUp) return false
+      const eligible = () => {
+        const c = st.fresh(id)
+        return !!c && suspendDecision({ ...c, conversation: c.conversation ?? lane.conversation, devServer }, now(), st.threshold).suspend
+      }
+      return eligible() ? st.suspend(id, eligible) : false
+    })()
+    let done: boolean | 'timed-out'
+    try {
+      done = await withCap(step, st.capMs ?? SUSPEND_STEP_CAP_MS)
+    } catch (e) {
+      st.onSkip?.(id, `failed: ${e instanceof Error ? e.message : String(e)}`)
+      continue
+    }
+    if (done === 'timed-out') {
+      gaveUp = true
+      step.catch(() => false)
+      st.onSkip?.(id, `took longer than ${(st.capMs ?? SUSPEND_STEP_CAP_MS) / 1000} s; the pass moved on`)
+      continue
+    }
+    if (done) n++
+  }
+  return n
 }
 
 /** Does a port list from `sessionPorts` mean the lane is serving something? A port another lane
