@@ -120,8 +120,15 @@ export function installCrashRecovery(win: Pick<BrowserWindow, 'isDestroyed' | 'l
     hooks.loadApp()
   }
 
+  /** A throw from the hook must not skip the log and the reload decision below it, or reach
+   *  Electron as an uncaught exception in main (0.28.3: the Preview's frame lookup threw on the
+   *  dead renderer, so nothing was logged and the window never reloaded). */
+  const leaving = () => {
+    try { hooks.rendererLeaving() } catch (e) { console.error('[shell] rendererLeaving failed:', e) }
+  }
+
   wc.on('render-process-gone', (_e, details) => {
-    hooks.rendererLeaving()
+    leaving()
     const decision = decideRecovery({ reason: details.reason, onErrorPage }, reloads, Date.now())
     reloads = decision.reloads
     const action = hooks.quitting() ? 'none' : decision.action
@@ -149,7 +156,7 @@ export function installCrashRecovery(win: Pick<BrowserWindow, 'isDestroyed' | 'l
   // its document stays, and its renderer never sends `rendererReady` again, so a hold taken on the
   // start stopped every dispatch for good with nothing on screen (review M1, 2026-10-06).
   // `did-navigate` is main-frame and cross-document only.
-  wc.on('did-navigate', () => { hooks.rendererLeaving() })
+  wc.on('did-navigate', () => { leaving() })
   wc.on('did-finish-load', () => { if (!onErrorPage) hooks.rendererLoaded() })
   // The error page's Reload button is an in-page link, so it needs no script and no preload API.
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {

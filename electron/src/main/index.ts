@@ -142,12 +142,18 @@ function loadApp(win: BrowserWindow): void {
  *  - Lane dispatches and replies are held for the next renderer instead of being sent into the gap.
  *  - The Preview's CDP attachment is dropped. Only the renderer's unmount detaches it, a crashed
  *    renderer never unmounts, and while it stays attached Inspect is routed to the other app's page
- *    and its screencast keeps encoding frames nobody receives. The web preview's overlays go too. */
+ *    and its screencast keeps encoding frames nobody receives. The web preview's overlays go too.
+ *  Each step runs on its own: one that throws must not skip the others. */
 function rendererLeaving(): void {
-  routed.hold()
-  readyFallback.leaving()
-  previewCdp?.detach()
-  previewApi.close()
+  const steps: [string, () => void][] = [
+    ['hold', () => routed.hold()],
+    ['ready fallback', () => readyFallback.leaving()],
+    ['preview cdp detach', () => previewCdp?.detach()],
+    ['preview overlays close', () => previewApi.close()],
+  ]
+  for (const [name, step] of steps) {
+    try { step() } catch (e) { console.error(`[shell] renderer leaving: ${name} failed:`, e) }
+  }
 }
 
 function createWindow(): BrowserWindow {
