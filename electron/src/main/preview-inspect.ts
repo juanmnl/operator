@@ -74,8 +74,15 @@ export function installPreviewInspect(
   const previewFrame = (): WebFrameMain | undefined => {
     const win = getWindow()
     if (!win || win.isDestroyed()) return undefined
-    const top = win.webContents.mainFrame
-    return top.frames.find((f) => isPreviewFrame(f, top))
+    // A dead renderer throws here ("Render frame was disposed before WebFrameMain could be
+    // accessed"). `close` runs from the `render-process-gone` handler, so a throw there escaped as
+    // an uncaught exception in main and skipped the crash log and the reload (0.28.3, after an OOM).
+    try {
+      const top = win.webContents.mainFrame
+      return top.frames.find((f) => isPreviewFrame(f, top))
+    } catch {
+      return undefined
+    }
   }
 
   /** Put the scripts in the page (each guards against running twice) and apply the configuration. */
@@ -100,8 +107,13 @@ export function installPreviewInspect(
     // none of the scripts and no anchor.
     win.webContents.on('did-frame-finish-load', (_e, isMainFrame, processId, routingId) => {
       if (isMainFrame || !active) return
-      const frame = webFrameMain.fromId(processId, routingId)
-      if (!isPreviewFrame(frame, win.webContents.mainFrame)) return
+      let frame: WebFrameMain | undefined
+      try {
+        frame = webFrameMain.fromId(processId, routingId)
+        if (!isPreviewFrame(frame, win.webContents.mainFrame)) return
+      } catch {
+        return // the renderer went away between the load and this event; see `previewFrame`
+      }
       onAnchor(false)
       inject(frame!)
     })

@@ -78,11 +78,11 @@ describe('installCrashRecovery', () => {
 
   /** A window whose loads emit start, commit and finish the way Electron's do. Only the start is
    *  emitted synchronously, so a test can cancel or commit a load on its own. */
-  const setup = (opts: { quitting?: boolean } = {}) => {
+  const setup = (opts: { quitting?: boolean; leaving?: () => void } = {}) => {
     const wc = new EventEmitter()
     const urls: string[] = []
     let appLoads = 0
-    const leaving = vi.fn()
+    const leaving = vi.fn(opts.leaving)
     const loaded = vi.fn()
     const navigate = () => { wc.emit('did-start-navigation', NEW_DOC); wc.emit('did-navigate', {}, 'x', -1, ''); wc.emit('did-finish-load') }
     const win = {
@@ -182,6 +182,23 @@ describe('installCrashRecovery', () => {
     expect(w.urls[0].startsWith('data:text/html')).toBe(true)
     w.wc.emit('did-navigate-in-page', {}, `${w.urls[0]}${RELOAD_HASH}`, true)
     expect(w.appLoads()).toBe(RELOAD_LIMIT + 1)
+  })
+
+  // 0.28.3: the Preview's frame lookup threw on the dead renderer ("Render frame was disposed"),
+  // the throw escaped the handler as an uncaught exception, and nothing was logged or reloaded.
+  it('a rendererLeaving hook that throws still logs the crash and reloads', () => {
+    const w = setup({ leaving: () => { throw new Error('Render frame was disposed') } })
+    expect(() => w.crash()).not.toThrow()
+    expect(console.error).toHaveBeenCalledWith('[shell] renderer gone:', 'crashed', 5, '→', 'reload')
+    vi.advanceTimersByTime(RECOVERY_DELAY_MS)
+    expect(w.appLoads()).toBe(1)
+  })
+
+  it('a rendererLeaving hook that throws on a navigation does not throw out of the handler', () => {
+    const w = setup({ leaving: () => { throw new Error('Render frame was disposed') } })
+    expect(() => w.cmdR()).not.toThrow()
+    expect(w.leaving).toHaveBeenCalledTimes(1)
+    expect(w.loaded).toHaveBeenCalledTimes(1)
   })
 
   it('does not reload while quitting', () => {
