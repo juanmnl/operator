@@ -6721,8 +6721,10 @@ export function DashboardView() {
               // Closing a lane's session from its card goes through the SAME path as closing it
               // from the sidebar — pty kill, running tasks completed with their diff + check,
               // worktree chained behind. A second close route must not become a second lifecycle.
+              // The rail's sessions, not the observer's: a suspended lane has no observed session,
+              // so the observer lookup found nothing and the card's ■ did nothing on it.
               onCloseTerminal={(tid) => {
-                const s = sessions.find((x) => x.terminalId === tid)
+                const s = allSidebarSessions.find((x) => x.terminalId === tid)
                 if (s) void handleCloseSession(s)
               }}
               onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
