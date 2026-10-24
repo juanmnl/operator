@@ -229,7 +229,7 @@ skeleton, which is the app's one precedent for a dialog that names lanes
   dialog was open is ended too, and the toast reports the real count.
 - Copy check against the global typography rule: the title is one sentence. In the body, wrap
   points must not leave a sentence's first word ("Unsaved", "Branches") alone at a line end.
-  Bind the first two words of each sentence with ` `.
+  Bind the first two words of each sentence with a non-breaking space (`\u00a0` in JSX strings).
 
 **Outcome: one toast that is true.**
 
