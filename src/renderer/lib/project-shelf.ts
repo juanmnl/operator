@@ -53,14 +53,13 @@ export function shelvingMoves(activity?: ProjectActivity): boolean {
   return (activity?.live ?? 0) === 0
 }
 
-/** The sessions CLOSE will end, and how many of them are mid-task. A lane suspended while idle
+/** The sessions CLOSE will end, and how many of them are mid-turn. A lane suspended while idle
  *  (lib/idle-suspend) is one of them: its status is `ended`, but its tab, row and worktree are
  *  kept, and a close that skipped it left all three behind to come back at the next launch.
  *
- *  Pure over the session list so the sequencing is testable without a pty. `running` is only
- *  reported, never blocking: closing is reversible housekeeping and does not earn a modal, but
- *  ending a lane mid-turn loses that turn's work, so the count is named in the toast rather than
- *  discovered afterwards.
+ *  Pure over the session list so the sequencing is testable without a pty. `running` is never
+ *  blocking: ending a lane mid-turn loses that turn's work, so the close guard names the count
+ *  (lib/project-close-guard) rather than leaving it to be discovered afterwards.
  *
  *  Scoped by `projectId` alone — closing one project must never touch another's lanes, and a
  *  session with no project cannot be attributed to this one. */

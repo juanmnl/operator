@@ -716,18 +716,14 @@ function ProjectCard({
             // stopped writing `archivedAt`: Shelve files the project to Previous, Close leaves it
             // on Active and takes it off the rail. Different outcomes, so the gate went.
             //
-            // CONFIRM only when agents will actually be ended — this surface had none at all,
-            // reasoning that its Undo toast was the guard, and that guard evaporated with the
-            // shelf write there is no longer anything to undo.
+            // NO ARMED CONFIRM: with agents to end, `onCloseProject` opens the close guard, which
+            // names them (DashboardView `requestCloseProject`). An idle close has nothing to confirm.
             ...(showClose
               ? [{
-                  // `id` and not the label: the label counts agents, and an agent exiting between the two
-                  // clicks of the confirm would otherwise re-arm instead of firing.
                   id: 'close-project',
                   label: closeProjectLabel(liveCount),
                   onClick: onCloseProject,
                   separator: true,
-                  confirm: liveCount > 0,
                 }]
               : []),
             // "Shelve", not "Archive": three of the four surfaces already said shelf (the toast,

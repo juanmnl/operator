@@ -68,3 +68,23 @@ describe('project close pushes one true toast and offers Retry (task 2)', () => 
     expect(end).toMatch(/stuck\.map\([^)]*\)[\s\S]*endProjectLanesRef\.current\(project, fresh\)/)
   })
 })
+
+describe('Close project goes through the close guard (task 3)', () => {
+  it('opens the dialog only when there are lanes to end', () => {
+    const req = bodyOf('requestCloseProject')
+    expect(req).toMatch(/if \(!plan\.sessions\.length\) \{ void closeProject\(id\); return \}/)
+    expect(req).toContain('closeGuardCopy(project.name, plan.sessions.length, plan.running)')
+  })
+
+  it('every entry point asks; only the guard and the idle path close directly', () => {
+    // requestCloseProject's idle path, the guard's End, and nothing else.
+    expect(src.match(/void closeProject\(/g)).toHaveLength(2)
+    expect(propOf('onCloseProject')).toBe('onCloseProject={requestCloseProject}')
+  })
+
+  it('the rail menu item does not arm: the dialog is the confirm', () => {
+    const items = bodyOf('railMenuItems')
+    expect(items).toContain('requestCloseProject(project.id)')
+    expect(items).not.toMatch(/confirm: live/)
+  })
+})

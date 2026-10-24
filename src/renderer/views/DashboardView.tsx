@@ -67,6 +67,8 @@ import { AgentsHubView } from '../components/agents/AgentsHubView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { QuitGuard } from '../components/QuitGuard'
+import { ProjectCloseGuard } from '../components/ProjectCloseGuard'
+import { closeGuardCopy, closeGuardRows, type CloseGuardCopy, type CloseGuardRow } from '../lib/project-close-guard'
 import { askBeforeQuitEnabled, type LaneIdentity, type QuitRequest } from '../lib/quit-guard'
 import { chatSignal } from '../lib/chat-signal'
 import { ProjectGallery, type GalleryTab } from '../components/dashboard/ProjectGallery'
@@ -4899,6 +4901,33 @@ export function DashboardView() {
     }
   }, [sessions, roleOf, customNames, accentOf])
 
+  // --- Project close guard ---------------------------------------------------------------
+  // Close project's confirm (lib/project-close-guard). Every entry point comes through
+  // `requestCloseProject`: with no lanes to end the project closes at once, otherwise the dialog
+  // names them. Rows and copy are frozen when it opens; End plans the close again (`closeProject`).
+  const [closeGuard, setCloseGuard] = useState<{ projectId: string; copy: CloseGuardCopy; rows: CloseGuardRow[] } | null>(null)
+
+  const requestCloseProject = useCallback((id: string) => {
+    const project = projectsRef.current.find((p) => p.id === id)
+    if (!project) return
+    const railSessions = sidebarSessionsRef.current
+    const plan = closePlan(id, railSessions)
+    if (!plan.sessions.length) { void closeProject(id); return }
+    const lanes = railSessions.filter((s) => plan.sessions.includes(s.id)).map((s) => ({
+      terminalId: s.terminalId!,
+      name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
+      phase: s.phase,
+      suspended: !!s.suspended,
+      lastActivityAt: s.lastActivityAt,
+      accent: accentOf(s),
+    }))
+    setCloseGuard({
+      projectId: id,
+      rows: closeGuardRows(lanes).rows,
+      copy: closeGuardCopy(project.name, plan.sessions.length, plan.running),
+    })
+  }, [closeProject, roleOf, customNames, accentOf])
+
   // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
   // hint on a row is the chord that reaches it. Kept as the single source both the hints and
   // the key handler read from.
@@ -6349,22 +6378,18 @@ export function DashboardView() {
       // user actually asked for: a project you opened, launched nothing in, and could not remove
       // from the strip except by shelving it away to Previous.
       //
-      // ONE VERB, GRADUATED. The label carries the count only when there is a count, and the
-      // confirm engages only when there is something irreversible to confirm — ending ptys, two
-      // clicks from a mis-aimed right-click on the strip you navigate by. Confirming the idle
-      // close would teach people to click through the confirms that matter. Not danger-toned:
-      // red is the gallery's mark for Forget, and one verb must not read as two weights.
+      // ONE VERB, GRADUATED. The label carries the count only when there is a count. The item does
+      // not arm: with lanes to end it opens the close guard, which names them, and an idle close
+      // has nothing irreversible to confirm. Not danger-toned: red is the gallery's mark for
+      // Forget, and one verb must not read as two weights.
       {
-        // `id` and not the label: the label counts agents, and an agent exiting between the two
-        // clicks of the confirm would otherwise re-arm instead of firing.
         id: 'close-project',
         label: closeProjectLabel(live),
-        onClick: () => { void closeProject(project.id) },
+        onClick: () => requestCloseProject(project.id),
         separator: true,
-        confirm: live > 0,
       },
     ]
-  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
+  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, requestCloseProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
 
   /** THE LAUNCH PATH THE IDLE ROWS USED TO CARRY. The strip lists only what is LIVE now, so the
    *  roster's quiet lanes have no row to click — and removing a control must never strand the need
@@ -6428,7 +6453,7 @@ export function DashboardView() {
         // while it is open. The picker and port editor are the component's own.
         // A layout move slides the stage without resizing it, which the view's placement does not
         // follow; hidden for the move, it is re-placed at the stage's settled rect when it shows.
-        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!activeMove || panelOverlaid}
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!closeGuard || !!activeMove || panelOverlaid}
         grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
         onGridToggle={toggleGrid}
         onGridSpecChange={changeGridSpec}
@@ -6999,7 +7024,7 @@ export function DashboardView() {
             onSetProjectNotes={(id, contextNotes) => updateProject(id, { contextNotes })}
             onForgetProject={forgetProject}
             onArchiveProject={archiveProject}
-            onCloseProject={(id) => { void closeProject(id) }}
+            onCloseProject={requestCloseProject}
             activeProjectId={activeProjectId}
             closingIds={closingProjects}
             onArchiveProjects={archiveProjects}
@@ -7173,6 +7198,14 @@ export function DashboardView() {
           identify={identifyQuitLane}
           onStay={() => answerQuit(false)}
           onQuit={() => answerQuit(true)}
+        />
+      )}
+      {closeGuard && !quitRequest && (
+        <ProjectCloseGuard
+          copy={closeGuard.copy}
+          rows={closeGuard.rows}
+          onKeep={() => setCloseGuard(null)}
+          onEnd={() => { const { projectId } = closeGuard; setCloseGuard(null); void closeProject(projectId) }}
         />
       )}
 
