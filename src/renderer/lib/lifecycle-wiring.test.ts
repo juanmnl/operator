@@ -12,6 +12,14 @@ const src = raw
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(Math.max(0, m.length - p1.length)))
 
+/** The text of `const <name> = …` up to the next top-level `const` of the component. */
+function bodyOf(name: string): string {
+  const at = src.indexOf(`const ${name} = `)
+  expect(at, `${name} is declared`).toBeGreaterThan(-1)
+  const next = src.indexOf('\n  const ', at + 1)
+  return src.slice(at, next === -1 ? undefined : next)
+}
+
 /** The JSX prop `name={…}`, up to the closing brace that matches its opening one. */
 function propOf(name: string): string {
   const at = src.indexOf(`${name}={`)
@@ -32,5 +40,31 @@ describe('the Team card ■ closes a suspended lane (task 1)', () => {
     expect(close).toContain('allSidebarSessions.find(')
     expect(close).not.toMatch(/\bsessions\.find\(/)
     expect(close).toContain('handleCloseSession(')
+  })
+})
+
+describe('project close pushes one true toast and offers Retry (task 2)', () => {
+  it('closeProject hands its lanes to the one routine Retry also uses', () => {
+    expect(bodyOf('closeProject')).toContain('endProjectLanesRef.current(project, live)')
+    expect(bodyOf('closeProject')).not.toContain('pushToast(')
+  })
+
+  it('pushes exactly one toast per run, chosen by closeToast', () => {
+    const end = bodyOf('endProjectLanes')
+    expect(end.match(/pushToast\(/g)).toHaveLength(2) // the nothing-to-end pointer, and the outcome
+    expect(end.match(/closeToast\(/g)).toHaveLength(2)
+    expect(end).not.toMatch(/did not stop/)
+  })
+
+  it('decides "did not stop" by aliveness read after the bound', () => {
+    const end = bodyOf('endProjectLanes')
+    expect(end.match(/window\.operator\.terminalList/g)).toHaveLength(2)
+    expect(end).toContain('stuckAfterClose(attempts, aliveAfter)')
+  })
+
+  it('Retry re-runs the close on the stuck lanes only', () => {
+    const end = bodyOf('endProjectLanes')
+    expect(end).toMatch(/label: 'Retry'/)
+    expect(end).toMatch(/stuck\.map\([^)]*\)[\s\S]*endProjectLanesRef\.current\(project, fresh\)/)
   })
 })

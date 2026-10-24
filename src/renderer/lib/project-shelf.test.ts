@@ -4,7 +4,7 @@ import type { ProjectActivity } from './project-status'
 import {
   FILTER_THRESHOLD, STALE_DAYS,
   isActiveProject, isOnRail, byActivityThenRecency, partitionProjects, matchProject, staleProjects,
-  shelvingMoves, closePlan,
+  shelvingMoves, closePlan, isMidTurn, stuckAfterClose, closeToast,
   byRailOrder, reorderRail,
 } from './project-shelf'
 
@@ -247,9 +247,11 @@ describe('closePlan — what Close will end', () => {
       s({ id: 'b', phase: 'compacting' }),
       s({ id: 'c', phase: 'waiting' }),
       s({ id: 'd', phase: 'idle' }),
+      s({ id: 'e', phase: 'asking' }),
     ])
-    expect(plan.sessions).toHaveLength(4)
-    expect(plan.running).toBe(2)
+    expect(plan.sessions).toHaveLength(5)
+    // A lane with a question open is mid-turn too: ending it loses the question.
+    expect(plan.running).toBe(3)
   })
 
   it('a closed project has nothing left to lift it onto Active', () => {
@@ -332,5 +334,83 @@ describe('rail order — the user places the tiles, nothing recomputes them', ()
     const store = [proj('a', 0), proj('b', 1)]
     expect(ids(reorderRail(store, 'a', 'a', 'before'))).toEqual(['a', 'b'])
     expect(sorted(reorderRail(store, 'a', 'a', 'before'))).toEqual(['a', 'b'])
+  })
+})
+
+describe('isMidTurn', () => {
+  it('is running, compacting or asking, and nothing else', () => {
+    expect(['running', 'compacting', 'asking'].map(isMidTurn)).toEqual([true, true, true])
+    expect(['waiting', 'idle', undefined].map(isMidTurn)).toEqual([false, false, false])
+  })
+})
+
+describe('stuckAfterClose — which lanes did not stop', () => {
+  const lane = (terminalId: string) => ({ terminalId })
+
+  it('is the lanes whose pty is still alive after the bound', () => {
+    const a = lane('t1'), b = lane('t2'), c = lane('t3')
+    const stuck = stuckAfterClose([
+      { lane: a, settled: true, wasDead: false },
+      { lane: b, settled: false, wasDead: false },
+      { lane: c, settled: false, wasDead: false },
+    ], new Set(['t2']))
+    expect(stuck).toEqual([b])
+  })
+
+  it('does not call a close that is still running stuck once its pty is gone', () => {
+    // The 4 s race used to report this lane as one that would not stop, while its close (a WIP
+    // commit, a worktree removal) carried on and finished in the background.
+    expect(stuckAfterClose([{ lane: lane('t1'), settled: false, wasDead: false }], new Set())).toEqual([])
+  })
+
+  it('falls back to the race when the backend cannot list its terminals', () => {
+    const a = lane('t1'), b = lane('t2'), c = lane('t3')
+    const stuck = stuckAfterClose([
+      { lane: a, settled: true, wasDead: false },
+      { lane: b, settled: false, wasDead: false },
+      { lane: c, settled: false, wasDead: true }, // nothing behind it to stop
+    ], null)
+    expect(stuck).toEqual([b])
+  })
+})
+
+describe('closeToast — one toast per close, and it is true', () => {
+  it('every lane ended: the receipt, no Retry', () => {
+    expect(closeToast('web27', 4, [])).toEqual({
+      text: 'Closed web27 — 4 agents ended',
+      detail: 'It stays in Active. Launching\u00a0an agent here brings it back to the rail.',
+      retry: false,
+    })
+    expect(closeToast('web27', 1, []).text).toBe('Closed web27 — 1 agent ended')
+  })
+
+  it('some stuck: counts only the lanes that ended, names the rest, offers Retry', () => {
+    expect(closeToast('web27', 4, ['QA'])).toEqual({
+      text: 'Closed 3 of 4 agents in web27',
+      detail: 'QA did not stop.',
+      retry: true,
+    })
+    expect(closeToast('web27', 4, ['QA', 'Code']).detail).toBe('QA and Code did not stop.')
+    expect(closeToast('web27', 6, ['QA', 'Code', 'Research']).detail).toBe('QA, Code and Research did not stop.')
+    expect(closeToast('web27', 6, ['A', 'B', 'C', 'D', 'E']).detail).toBe('A, B, C and 2 more did not stop.')
+  })
+
+  it('all stuck: never says Closed with a count of what ended', () => {
+    const t = closeToast('web27', 2, ['QA', 'Code'])
+    expect(t).toEqual({ text: 'Could not close web27', detail: 'QA and Code did not stop.', retry: true })
+    expect(t.text).not.toMatch(/ended/)
+  })
+
+  it('nothing to end: a pointer, not a receipt', () => {
+    expect(closeToast('web27', 0, [])).toEqual({
+      text: 'Closed web27', detail: 'It stays in Active — open it again any time.', retry: false,
+    })
+  })
+
+  it('no sentence starts with a word left alone on its line', () => {
+    for (const t of [closeToast('p', 3, []), closeToast('p', 3, ['QA']), closeToast('p', 0, [])]) {
+      // After every full stop that is followed by more text, the next two words are bound.
+      for (const m of t.detail.matchAll(/\. (\S+)(.)/g)) expect(m[2], t.detail).toBe('\u00a0')
+    }
   })
 })

@@ -10,7 +10,7 @@ import {
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
-import { shelvingMoves, closePlan } from '../lib/project-shelf'
+import { shelvingMoves, closePlan, stuckAfterClose, closeToast } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -1423,6 +1423,27 @@ export function DashboardView() {
     const railSessions = sidebarSessionsRef.current
     const plan = closePlan(id, railSessions)
     const live = railSessions.filter((s) => plan.sessions.includes(s.id))
+    setActiveProjectId((cur) => (cur === id ? null : cur))
+    // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
+    // absence is the change: the project stays exactly where it was, on Active, with its roster,
+    // tasks, notes and branches. Reopening it is just opening it.
+    await endProjectLanesRef.current(project, live)
+  }, [])
+
+  /** A close per lane already running, by terminal id. Retry waits on the close it finds here
+   *  rather than starting a second one: two closes of one lane would commit and remove its
+   *  worktree twice, and main's kill already answers a second call with the first. */
+  const lanesClosingRef = useRef(new Map<string, Promise<CloseOutcome>>())
+
+  /** End these lanes of a project, bounded and in parallel, and push ONE toast that says what
+   *  happened. Close project and its Retry both come here. */
+  const endProjectLanes = useCallback(async (project: Project, lanes: AgentSession[]) => {
+    const id = project.id
+    if (!lanes.length) {
+      const t = closeToast(project.name, 0, [])
+      pushToast({ text: t.text, detail: t.detail })
+      return
+    }
 
     // CLOSING IS A STATE, and it is rendered immediately. The old sequence awaited every pty
     // death before anything at all happened on screen, so with several lanes the project just sat
@@ -1431,83 +1452,82 @@ export function DashboardView() {
     //
     // Not armed when there is nothing to tear down: an idle close finishes in the same frame, and
     // a `closing…` chip that appears and vanishes for one frame is noise about no work.
-    if (plan.sessions.length) {
-      setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
-    }
-    setActiveProjectId((cur) => (cur === id ? null : cur))
+    setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
 
     // BOUNDED, AND IN PARALLEL. Sequentially awaiting each lane meant one hung `handleCloseSession`
     // stalled every lane behind it, so a single wedged pty could hold the whole close open
-    // indefinitely — the user's "it takes a while to get removed". The timeout turns that into a
-    // reported fact instead of a hang.
+    // indefinitely — the user's "it takes a while to get removed". The bound decides when the
+    // toast is pushed; it does not cancel anything.
     const KILL_TIMEOUT_MS = 4000
-    // A PTY THAT IS ALREADY DEAD IS NOT AN AGENT THAT REFUSED TO STOP. Asked once, up front, so
-    // the verdict below can tell the two apart: `stuck` is supposed to mean "this process would
-    // not die", and reporting a lane whose child exited hours ago as stuck is both wrong and
-    // unactionable — there is nothing for the user to go and look at. `null` when the backend
-    // cannot answer, which falls back to the old all-or-nothing reading rather than guessing
-    // everything is dead.
-    const listed = await window.operator.terminalList?.().catch(() => undefined)
-    const aliveIds = Array.isArray(listed)
-      ? new Set(listed.filter((t) => t.alive).map((t) => t.id))
-      : null
-    const wasDead = (s: AgentSession) => aliveIds !== null && !!s.terminalId && !aliveIds.has(s.terminalId)
+    // A PTY THAT IS ALREADY DEAD IS NOT AN AGENT THAT REFUSED TO STOP. Asked once, up front, so a
+    // lane whose child exited hours ago can be marked ended below. `null` when the backend cannot
+    // answer.
+    const aliveIdsOf = (listed: unknown) => (Array.isArray(listed)
+      ? new Set((listed as Array<{ id: string; alive: boolean }>).filter((t) => t.alive).map((t) => t.id))
+      : null)
+    const aliveBefore = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
+    const wasDead = (s: AgentSession) => aliveBefore !== null && !!s.terminalId && !aliveBefore.has(s.terminalId)
 
-    const outcomes = await Promise.all(live.map(async (s) => {
-      try {
-        await Promise.race([
-          handleCloseSessionRef.current(s),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), KILL_TIMEOUT_MS)),
-        ])
-        return { s, ok: true }
-      } catch {
-        // Timed out — but if there was no process behind it when we started, the teardown had
-        // nothing to wait for and the close SUCCEEDED. Only a lane that was genuinely running is
-        // allowed to be reported as one that would not stop.
-        return { s, ok: wasDead(s) }
-      }
-    }))
-    const stuck = outcomes.filter((o) => !o.ok).map((o) => o.s)
+    const closing = lanesClosingRef.current
+    const closes = lanes.map((s) => {
+      const tid = s.terminalId!
+      const running = closing.get(tid)
+      if (running) return running
+      const close = handleCloseSessionRef.current(s)
+      closing.set(tid, close)
+      const drop = () => { if (closing.get(tid) === close) closing.delete(tid) }
+      void close.then(drop, drop)
+      return close
+    })
+    const bound = new Promise<false>((resolve) => setTimeout(() => resolve(false), KILL_TIMEOUT_MS))
+    const attempts = await Promise.all(lanes.map(async (s, i) => ({
+      lane: s,
+      settled: await Promise.race([closes[i].then(() => true, () => false), bound]),
+      wasDead: wasDead(s),
+    })))
+    // "DID NOT STOP" MEANS THE PTY IS STILL ALIVE, asked again after the bound. A close that is
+    // still running at 4 s has usually killed its pty and is finishing the worktree; it was
+    // reported as stuck while it carried on, and the user closed each such lane by hand.
+    const aliveAfter = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
+    const stuck = stuckAfterClose(attempts, aliveAfter)
+
     // Whatever the teardown managed, a tab with no live pty must not keep the project on the rail:
     // `isOnRail` reads `projectActivity.live`, so one tab that never got dropped is the whole
     // "closing it left it there" bug. Marking them ended (rather than deleting) keeps the ordinary
     // exit bookkeeping — the sidebar still shows the lane as finished, it just stops counting.
-    const deadIds = new Set(live.filter(wasDead).map((s) => s.terminalId!))
+    const deadIds = new Set(lanes.filter(wasDead).map((s) => s.terminalId!))
     if (deadIds.size) {
       setTerminals((prev) => (prev.some((t) => deadIds.has(t.id) && !t.ended)
         ? prev.map((t) => (deadIds.has(t.id) ? { ...t, ended: true } : t))
         : prev))
     }
 
-    // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
-    // absence is the change: the project stays exactly where it was, on Active, with its roster,
-    // tasks, notes and branches. Reopening it is just opening it.
-    setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
-    if (stuck.length) {
-      pushToast({
-        text: `${project.name} — ${stuck.length} agent${stuck.length === 1 ? '' : 's'} did not stop`,
-        detail: stuck.map((s) => sessionLabel({ session: s })).join(', '),
-      })
-    }
-    const n = plan.sessions.length
-    // NO UNDO, ON EITHER VARIANT, and that is honesty rather than a removed feature. Undo used to
-    // restore the shelf — which is no longer written — while the ptys it appeared to be offering
-    // back were already gone. With nothing to reverse, the toast's job is to say where the
-    // project went, which is also the "reads as done, not lost" answer.
-    pushToast(n
-      // A receipt for something irreversible.
-      ? {
-        text: `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended`,
-        detail: 'It stays in Active. Launching an agent here brings it back to the rail.',
-      }
-      // Nothing ended, so this is a pointer, not a receipt — and it needs no action: closing an
-      // idle project lands you on the gallery with its card in front of you, so "show me where
-      // it went" would point at itself.
-      : {
-        text: `Closed ${project.name}`,
-        detail: 'It stays in Active — open it again any time.',
-      })
+    // The chip stays until every close has settled, the ones still stopping included.
+    void Promise.allSettled(closes).then(() => {
+      setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
+    })
+
+    // ONE TOAST, AND IT IS TRUE (lib/project-shelf `closeToast`). It used to push "N did not stop"
+    // and "Closed X — N agents ended" together, with N counting the lanes that did not stop. NO
+    // UNDO: there is nothing to reverse, the ptys are gone. Retry closes the lanes that are still
+    // alive, read fresh off the rail when it is pressed.
+    const t = closeToast(project.name, lanes.length, stuck.map((s) => sessionLabel({ session: s })))
+    pushToast({
+      text: t.text,
+      detail: t.detail,
+      ...(t.retry ? {
+        action: {
+          label: 'Retry',
+          run: () => {
+            const fresh = stuck.map((s) => sidebarSessionsRef.current.find((x) => x.terminalId === s.terminalId) ?? s)
+            void endProjectLanesRef.current(project, fresh)
+          },
+        },
+      } : {}),
+    })
   }, [pushToast])
+  const endProjectLanesRef = useRef(endProjectLanes)
+  endProjectLanesRef.current = endProjectLanes
 
   const archiveProject = useCallback((id: string) => archiveProjects([id]), [archiveProjects])
 

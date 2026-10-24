@@ -71,7 +71,82 @@ export function closePlan(
   const live = sessions.filter((s) => s.projectId === projectId && (s.status !== 'ended' || !!s.suspended) && !!s.terminalId)
   return {
     sessions: live.map((s) => s.id),
-    running: live.filter((s) => s.phase === 'running' || s.phase === 'compacting').length,
+    running: live.filter((s) => isMidTurn(s.phase)).length,
+  }
+}
+
+/** Is a lane in the middle of a turn? Ending it now loses that turn: the work it is doing, or the
+ *  question it has open. One definition for every close guard (project close, ⌘W). */
+export function isMidTurn(phase: string | undefined): boolean {
+  return phase === 'running' || phase === 'compacting' || phase === 'asking'
+}
+
+/** One lane of a project close, as the close saw it when its time bound ran out. */
+export interface CloseAttempt<T> {
+  lane: T
+  /** Its close finished within the bound. */
+  settled: boolean
+  /** Its pty was already dead when the close began. */
+  wasDead: boolean
+}
+
+/** The lanes that DID NOT STOP: their pty is still alive after the bound.
+ *
+ *  Aliveness, not the race. A close that is still running at the bound (a WIP commit, a slow reap)
+ *  has usually killed its pty already; it is still stopping, and calling it stuck sent the user to
+ *  close by hand a lane that was on its way out. `aliveAfter` is `terminalList` read again after
+ *  the bound. When the backend cannot answer (`null`), a close that did not finish in time and had
+ *  a live process behind it is the best reading there is. */
+export function stuckAfterClose<T extends { terminalId?: string }>(
+  attempts: ReadonlyArray<CloseAttempt<T>>,
+  aliveAfter: ReadonlySet<string> | null,
+): T[] {
+  return attempts
+    .filter((a) => (aliveAfter
+      ? !!a.lane.terminalId && aliveAfter.has(a.lane.terminalId)
+      : !a.settled && !a.wasDead))
+    .map((a) => a.lane)
+}
+
+/** `Code`, `Code and QA`, `Code, QA and Research`, `Code, QA, Research and 2 more`. */
+function nameList(names: readonly string[]): string {
+  const shown = names.length > 4 ? names.slice(0, 3) : names
+  const rest = names.length - shown.length
+  if (rest > 0) return `${shown.join(', ')} and ${rest} more`
+  if (shown.length < 2) return shown.join('')
+  return `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`
+}
+
+/** The ONE toast a project close pushes, and whether it offers Retry.
+ *
+ *  It used to push two at once when a lane missed the bound: "N did not stop" and "Closed X — N
+ *  agents ended", where the second N counted the lanes the first one named. Now the receipt is
+ *  only pushed when every lane ended, and the count is only ever the lanes that did.
+ *
+ *  `total` is the lanes the close set out to end; `stuck` names the ones still alive. In the
+ *  details, the first word of every sentence after the first is bound to the next one with a
+ *  no-break space, so a wrap never leaves it alone after the full stop. */
+export function closeToast(
+  projectName: string, total: number, stuck: readonly string[],
+): { text: string; detail: string; retry: boolean } {
+  if (total === 0) {
+    // Nothing ended, so this is a pointer, not a receipt.
+    return { text: `Closed ${projectName}`, detail: 'It stays in Active — open it again any time.', retry: false }
+  }
+  if (stuck.length === 0) {
+    return {
+      text: `Closed ${projectName} — ${total} agent${total === 1 ? '' : 's'} ended`,
+      detail: 'It stays in Active. Launching\u00a0an agent here brings it back to the rail.',
+      retry: false,
+    }
+  }
+  const ended = total - stuck.length
+  return {
+    text: ended === 0
+      ? `Could not close ${projectName}`
+      : `Closed ${ended} of ${total} agents in ${projectName}`,
+    detail: `${nameList(stuck)} did not stop.`,
+    retry: true,
   }
 }
 
