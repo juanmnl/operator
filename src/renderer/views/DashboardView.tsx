@@ -10,7 +10,7 @@ import {
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
-import { shelvingMoves, closePlan, stuckAfterClose, closeToast } from '../lib/project-shelf'
+import { shelvingMoves, closePlan, stuckAfterClose, closeToast, isOnRail } from '../lib/project-shelf'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -6262,6 +6262,17 @@ export function DashboardView() {
           run: () => { void handleResumeProject(p.id) },
         })
       }
+      // Close, for every project on the rail: the same gate and label as the rail and gallery
+      // menus, and the same request, so it opens the close guard when there are lanes to end.
+      if (isOnRail(p, projectActivities[p.id], activeProjectId)) {
+        const toEnd = lanesToEnd(projectActivities[p.id])
+        actions.push({
+          id: `close-project-${p.id}`, group: 'Project',
+          label: toEnd > 0 ? `Close ${p.name} · end ${toEnd} agent${toEnd === 1 ? '' : 's'}` : `Close ${p.name}`,
+          detail: 'Ends its agents and takes it off the rail. Its\u00a0roster, tasks and notes stay.',
+          run: () => requestCloseProject(p.id),
+        })
+      }
       const queued = (p.tasks ?? []).filter((t) => t.roleId && (t.status ?? 'queued') === 'queued').length
       if (queued > 0) {
         actions.push({
@@ -6323,7 +6334,7 @@ export function DashboardView() {
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
       gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
       selectMainView, selectPanelTab, patchLayout, togglePanel, setPanelOpen, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
-      installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
+      installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions, projectActivities, activeProjectId, requestCloseProject])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -6793,6 +6804,8 @@ export function DashboardView() {
               onAddLaneRequestHandled={clearAddLaneRequest}
               resumableCount={resumeOffered.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
+              // Shown always: this page is the active project, so it is on the rail (`isOnRail`).
+              onCloseProject={() => requestCloseProject(proj.id)}
             />
           )
         })()}

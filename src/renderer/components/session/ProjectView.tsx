@@ -30,7 +30,7 @@ export function ProjectView({
   onUpdateProject, onLaunchRole, liveRoles, suspendedRoles, laneSessions, laneSignals, onFocusTerminal, onCloseTerminal,
   onAddTask, onAssignTask, onRemoveTask, onSendTask, onStartAll, onSetTaskStatus,
   onApproveDispatch, onRejectDispatch, onAssignDispatch, onRetryDispatch, onOpenLaneTerminal,
-  resumableCount, onResumeProject, chatterPaused, onToggleChatter,
+  resumableCount, onResumeProject, onCloseProject, chatterPaused, onToggleChatter,
   addLaneRequest, onAddLaneRequestHandled, reports,
 }: {
   project: Project
@@ -82,6 +82,9 @@ export function ProjectView({
   /** Saved-but-not-live agents of this project — resumable as a group. */
   resumableCount?: number
   onResumeProject?: () => void
+  /** Close project: end its lanes and take it off the rail. Opens the close guard when there are
+   *  lanes to end (DashboardView `requestCloseProject`). */
+  onCloseProject?: () => void
   /** The agent→agent delivery kill switch. It lived in the channel header, which is gone; a
    *  switch that exists for incidents has to stay reachable during one, so it sits on Team —
    *  next to the lanes whose chatter it stops. */
@@ -139,13 +142,14 @@ export function ProjectView({
             </button>
           ))}
         </span>
+        <span style={{ flex: 1 }} />
         {/* Group resume: bring back every previously open agent of this project. */}
         {(resumableCount ?? 0) > 0 && onResumeProject && (
           <button
             onClick={onResumeProject}
             title="Re-open every previously open agent of this project, continuing its conversation"
             style={{
-              marginLeft: 'auto', cursor: 'pointer', outline: 'none',
+              cursor: 'pointer', outline: 'none',
               fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
               textTransform: 'uppercase', letterSpacing: '0.14em',
               padding: '3px 10px', borderRadius: 6,
@@ -154,6 +158,26 @@ export function ProjectView({
             }}
           >
             Resume {resumableCount} agent{resumableCount! > 1 ? 's' : ''}
+          </button>
+        )}
+        {/* Close project, quiet: body text, no fill. The rail's ⋯ and the gallery card carry the
+            same verb, and the palette lists it; this is the one on the page you are looking at. */}
+        {onCloseProject && (
+          <button
+            data-project-close
+            onClick={onCloseProject}
+            title="End this project’s agents and take it off the rail. Its roster, tasks and notes stay."
+            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--fg-muted)' }}
+            onFocus={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
+            onBlur={(e) => { e.currentTarget.style.color = 'var(--fg-muted)' }}
+            style={{
+              flexShrink: 0, cursor: 'pointer', outline: 'none', padding: '3px 2px',
+              fontFamily: 'var(--font-body)', fontSize: 11.5,
+              border: 'none', background: 'transparent', color: 'var(--fg-muted)',
+            }}
+          >
+            Close project
           </button>
         )}
       </DragRegion>

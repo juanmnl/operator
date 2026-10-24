@@ -12,9 +12,9 @@ const src = raw
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(Math.max(0, m.length - p1.length)))
 
-/** The text of `const <name> = …` up to the next top-level `const` of the component. */
+/** The text of `const <name> = …` (or `const <name>: T = …`) up to the next top-level `const` of the component. */
 function bodyOf(name: string): string {
-  const at = src.indexOf(`const ${name} = `)
+  const at = src.search(new RegExp(`const ${name}(: [^=]+)? = `))
   expect(at, `${name} is declared`).toBeGreaterThan(-1)
   const next = src.indexOf('\n  const ', at + 1)
   return src.slice(at, next === -1 ? undefined : next)
@@ -79,12 +79,24 @@ describe('Close project goes through the close guard (task 3)', () => {
   it('every entry point asks; only the guard and the idle path close directly', () => {
     // requestCloseProject's idle path, the guard's End, and nothing else.
     expect(src.match(/void closeProject\(/g)).toHaveLength(2)
-    expect(propOf('onCloseProject')).toBe('onCloseProject={requestCloseProject}')
+    expect(src).toContain('onCloseProject={requestCloseProject}')
   })
 
   it('the rail menu item does not arm: the dialog is the confirm', () => {
     const items = bodyOf('railMenuItems')
     expect(items).toContain('requestCloseProject(project.id)')
     expect(items).not.toMatch(/confirm: live/)
+  })
+})
+
+describe('more ways in to Close project (task 4)', () => {
+  it('the project home header asks for the close', () => {
+    expect(src).toContain('onCloseProject={() => requestCloseProject(proj.id)}')
+  })
+
+  it('the palette lists Close for every project on the rail, through the same request', () => {
+    const palette = bodyOf('paletteActions')
+    expect(palette).toMatch(/if \(isOnRail\(p, projectActivities\[p\.id\], activeProjectId\)\)/)
+    expect(palette).toMatch(/id: `close-project-\$\{p\.id\}`[\s\S]*?run: \(\) => requestCloseProject\(p\.id\)/)
   })
 })
