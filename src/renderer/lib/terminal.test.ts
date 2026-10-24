@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn, stripOrnaments, detectDevServerPorts } from './terminal'
+import { isLightBackground, stripAnsi, detectDevServerPort, findUrlAtColumn, findUrlInWrappedRows, LINK_RE, stripOrnaments, detectDevServerPorts } from './terminal'
 
 describe('isLightBackground', () => {
   it('classifies by perceived luma', () => {
@@ -72,6 +72,58 @@ describe('findUrlAtColumn', () => {
     expect(findUrlAtColumn(line, 0)).toBeNull()
     expect(findUrlAtColumn(line, 1)).toBeNull()
     expect(findUrlAtColumn('no urls here', 3)).toBeNull()
+  })
+
+  // 2026-10-24: "claude.ai/artifact/L6xd2A8XBUUCiXZFGv9qge," opened with the comma and 404'd.
+  const at = (text: string, url: string) => findUrlAtColumn(text, text.indexOf(url) + 2)
+  it('leaves trailing sentence punctuation out', () => {
+    expect(at('open https://claude.ai/artifact/L6xd2A8XBUUCiXZFGv9qge, then', 'https://')).toBe('https://claude.ai/artifact/L6xd2A8XBUUCiXZFGv9qge')
+    expect(at('It is at https://x.y/z.', 'https://')).toBe('https://x.y/z')
+    expect(at('Is it https://x.y/z?', 'https://')).toBe('https://x.y/z')
+    expect(at('see https://x.y/z; and', 'https://')).toBe('https://x.y/z')
+    expect(at('done: https://x.y/z!', 'https://')).toBe('https://x.y/z')
+    expect(at('"https://x.y/z".', 'https://')).toBe('https://x.y/z')
+    expect(at('“https://x.y/z”', 'https://')).toBe('https://x.y/z')
+  })
+  it('keeps punctuation inside the URL', () => {
+    expect(at('go https://x.y/a.b,c?d=1&e=f.g', 'https://')).toBe('https://x.y/a.b,c?d=1&e=f.g')
+    expect(at('go https://x.y:8080/p#frag', 'https://')).toBe('https://x.y:8080/p#frag')
+  })
+  it('leaves the closing paren of prose out', () => {
+    expect(at('(see https://x.y/z)', 'https://')).toBe('https://x.y/z')
+    expect(at('(see https://x.y/z).', 'https://')).toBe('https://x.y/z')
+    expect(at('[docs](https://x.y/z)', 'https://')).toBe('https://x.y/z')
+  })
+  it('leaves markdown emphasis out', () => {
+    expect(at('**https://x.y**', 'https://')).toBe('https://x.y')
+    expect(at('_https://x.y/z_', 'https://')).toBe('https://x.y/z')
+  })
+  it('keeps a balanced paren group, also at the end', () => {
+    expect(at('https://en.wikipedia.org/wiki/Foo_(bar)', 'https://')).toBe('https://en.wikipedia.org/wiki/Foo_(bar)')
+    expect(at('(see https://en.wikipedia.org/wiki/Foo_(bar)).', 'https://')).toBe('https://en.wikipedia.org/wiki/Foo_(bar)')
+    expect(at('https://x.y/a_(b)_c', 'https://')).toBe('https://x.y/a_(b)_c')
+  })
+  it('is one non-global rule, so the link addon can build its own copy from it', () => {
+    expect(LINK_RE.flags).not.toContain('g')
+    expect(() => new RegExp(LINK_RE.source, LINK_RE.flags + 'g')).not.toThrow()
+  })
+})
+
+describe('findUrlInWrappedRows', () => {
+  // A 20-column terminal: the URL runs over three rows of one wrapped line.
+  const url = 'https://example.com/a/very/long/path/x'
+  const text = `see ${url}, ok`
+  const rows = [text.slice(0, 20), text.slice(20, 40), text.slice(40).padEnd(20)]
+  it('resolves the whole URL from any row it covers', () => {
+    expect(findUrlInWrappedRows(rows, 0, 6)).toBe(url)
+    expect(findUrlInWrappedRows(rows, 1, 3)).toBe(url)
+    expect(findUrlInWrappedRows(rows, 2, 0)).toBe(url)
+  })
+  it('returns null past the end of the URL', () => {
+    expect(findUrlInWrappedRows(rows, 2, 3)).toBeNull()
+  })
+  it('reads a single unwrapped row like findUrlAtColumn', () => {
+    expect(findUrlInWrappedRows(['go https://x.y/z, now'], 0, 5)).toBe('https://x.y/z')
   })
 })
 

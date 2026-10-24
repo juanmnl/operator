@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
-import { isLightBackground, detectDevServerPort, findUrlAtColumn, stripOrnaments } from '../../lib/terminal'
+import { isLightBackground, detectDevServerPort, findUrlInWrappedRows, stripOrnaments, LINK_RE } from '../../lib/terminal'
 import { applyPaneActivation, buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
@@ -189,10 +189,12 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
     term.unicode.activeVersion = '15-graphemes'
     // Clicking a link opens it in the system browser (via Tauri's opener);
     // falls back to window.open elsewhere.
+    // `urlRegex`: the same rule the click resolver below uses (lib/terminal `LINK_RE`), so what is
+    // underlined is what opens.
     term.loadAddon(new WebLinksAddon((_event, uri) => {
       if (window.operator?.openExternal) window.operator.openExternal(uri)
       else window.open(uri, '_blank')
-    }))
+    }, { urlRegex: LINK_RE }))
 
     // WebGL renderer (loaded after open()). Falls back to xterm's DOM renderer if the addon
     // can't init OR the GPU context is later lost (driver reset, sleep/wake) — disposing the
@@ -580,9 +582,20 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       const col = Math.floor((e.clientX - rect.left) / cell.width)
       const row = Math.floor((e.clientY - rect.top) / cell.height)
       if (col < 0 || row < 0) return null
-      const line = t.buffer.active.getLine(t.buffer.active.viewportY + row)
-      if (!line) return null
-      return findUrlAtColumn(line.translateToString(false), col)
+      // The whole wrapped line, not just the clicked row: a URL wider than the terminal continues
+      // on the rows below, each marked `isWrapped`. Capped like the addon's 2048-char window.
+      const buf = t.buffer.active
+      const y = buf.viewportY + row
+      if (!buf.getLine(y)) return null
+      let top = y
+      while (top > 0 && y - top < 64 && buf.getLine(top)?.isWrapped) top--
+      const rows: string[] = []
+      for (let i = top; rows.length < 128; i++) {
+        const line = buf.getLine(i)
+        if (!line || (i > top && !line.isWrapped)) break
+        rows.push(line.translateToString(false))
+      }
+      return findUrlInWrappedRows(rows, y - top, col)
     }
     const onClickCapture = (e: MouseEvent) => {
       const t = termRef.current

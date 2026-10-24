@@ -101,14 +101,39 @@ export function detectDevServerPort(
   return { port: ports[0] ?? null, tail: next }
 }
 
-const URL_RE = /(https?:\/\/[^\s'"`<>()\[\]]+)/g
+// WHERE A URL ENDS, one rule for hover and click. xterm's WebLinksAddon draws the hover from its
+// `urlRegex` option and TerminalPane's click resolver (used while Claude Code has mouse tracking
+// on) reads `findUrlAtColumn`. Both get this, so the underline and the opened URL are the same text.
+//
+// Based on the addon's own `strictUrlRegex`: whitespace, straight and curly quotes, backticks, <>,
+// {}, [], |, \ and ^ end a URL, and so does `*`, so markdown bold around a link is not part of it.
+// A URL may not END in sentence punctuation (. , ; : ! ? ~ _): "…/qge," in prose opened with the
+// comma and 404'd (2026-10-24). One change from the addon: a balanced (…) group is kept, anywhere including at the
+// end, so `wiki/Foo_(bar)` resolves whole while the `)` closing "(see https://x.y/z)" does not. An
+// unmatched ( or ) ends the URL. One level of nesting, which is what real URLs use. Read as: any
+// URL character or (…) group, repeated, then a last character that is not punctuation, or a group.
+//
+// Not global: the addon builds its own copy with the `g` flag added, and a source that already
+// had it would throw there.
+export const LINK_RE = /https?:\/\/(?:[^\s"'`“”‘’<>(){}\[\]|\\^*]|\([^\s"'`“”‘’<>(){}\[\]|\\^*]*\))*(?:[^\s"'`“”‘’<>(){}\[\]|\\^*.,;:!?~_]|\([^\s"'`“”‘’<>(){}\[\]|\\^*]*\))/
 
 /** The http(s) URL whose run covers `col` in a line of text, or null. */
 export function findUrlAtColumn(text: string, col: number): string | null {
-  URL_RE.lastIndex = 0
+  const re = new RegExp(LINK_RE.source, 'g')
   let m: RegExpExecArray | null
-  while ((m = URL_RE.exec(text))) {
+  while ((m = re.exec(text))) {
     if (col >= m.index && col < m.index + m[0].length) return m[0]
   }
   return null
+}
+
+/** The URL under (`row`, `col`) when a long line wraps across terminal rows.
+ *
+ *  `rows` are the rows of ONE wrapped line, top first, each untrimmed so its string length is its
+ *  width; `row` indexes into them. A URL longer than the terminal is wide is split over rows, and
+ *  reading only the clicked row opened the part of it on that row. */
+export function findUrlInWrappedRows(rows: readonly string[], row: number, col: number): string | null {
+  let offset = 0
+  for (let i = 0; i < row; i++) offset += rows[i].length
+  return findUrlAtColumn(rows.join(''), offset + col)
 }
