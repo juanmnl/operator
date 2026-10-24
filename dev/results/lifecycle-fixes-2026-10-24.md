@@ -68,7 +68,7 @@ Line numbers below are at the branch tip, `993c026`.
     agent?`), the body from B2, the mid-turn line (hidden at 0), `and N more`,
     `Keep running`, `End N and close` (one lane: `End it and close`), and the hint
     `Esc to keep`. In every sentence after the first, the first word is bound to the next
-    with ` `.
+    with `\u00a0`.
 - `DashboardView.tsx:4917` `requestCloseProject`: every entry point calls it. With no lanes to
   end, the project closes at once. Otherwise it freezes the rows and copy and opens the dialog
   (rendered at `:7242`). End calls `closeProject`, which plans again.
