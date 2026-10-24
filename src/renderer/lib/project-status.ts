@@ -47,6 +47,16 @@ export function lanesToEnd(a: Pick<ProjectActivity, 'live' | 'suspended'> | unde
   return (a?.live ?? 0) + (a?.suspended ?? 0)
 }
 
+/** The Forget item, shared by the gallery card and the Previous row. Forgetting a project whose
+ *  lanes are still open would leave their ptys running with no project to show them under, so the
+ *  item is disabled while there are any and names the reason. Disabled, it drops the danger tone:
+ *  a disabled item is --fg at 0.4 (CardMenu), not a faded red. */
+export function forgetProjectItem(lanes: number): { label: string; disabled: boolean; danger: boolean } {
+  return lanes > 0
+    ? { label: `Forget project — close it first (${lanes} agent${lanes === 1 ? '' : 's'} open)`, disabled: true, danger: false }
+    : { label: 'Forget project', disabled: false, danger: true }
+}
+
 /** The Close item's label, shared by the gallery card and the rail menu. */
 export function closeProjectLabel(lanes: number): string {
   return lanes > 0 ? `Close project · end ${lanes} agent${lanes === 1 ? '' : 's'}` : 'Close project'

@@ -12,7 +12,7 @@ import type { RecentSession, RecentProject } from './RecentLists'
 import { BACK_BTN as backBtn } from '../../lib/chrome'
 import { relativeTime, tildePath } from '../../lib/format'
 import { sessionWaveStatus } from '../../lib/session-status'
-import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../../lib/project-status'
+import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel, forgetProjectItem, type ProjectActivity } from '../../lib/project-status'
 import { FILTER_THRESHOLD, isOnRail, matchProject, partitionProjects, staleProjects } from '../../lib/project-shelf'
 
 // The launcher — where you are when you're inside no project. Full-bleed inside the content
@@ -336,6 +336,7 @@ export function ProjectGallery({
                           <PreviousRow
                             key={project.id}
                             project={project}
+                            liveCount={lanesToEnd(activities[project.id])}
                             menuOpen={menuFor === project.id}
                             onMenu={(open) => setMenuFor(open ? project.id : null)}
                             onOpen={() => onOpenProject(project.id)}
@@ -737,7 +738,10 @@ function ProjectCard({
             // feedback_two_verbs_one_glyph in vocabulary instead of pixels. Three altitudes,
             // three words — Close ends agents, Shelve files, Forget destroys — and the two that
             // are destructive never sit adjacent without separation.
-            { label: 'Forget project', onClick: onForget, danger: true, confirm: true, separator: true },
+            //
+            // BLOCKED WHILE LANES ARE OPEN (forgetProjectItem): forgetting then left their ptys
+            // running with no project. Close first, as a live roster card blocks delete.
+            { ...forgetProjectItem(liveCount), id: 'forget-project', onClick: onForget, confirm: true, separator: true },
           ]}
         />
       )}
@@ -996,8 +1000,10 @@ function SectionToggle({ label, expanded, togglable, onToggle }: {
 /** A shelved project: a ROW, not a receded card. Everything a card says that only matters
  *  while you're working — description, orbs, backlog — is gone; what's left is the three
  *  facts you need to recognise it and decide whether to bring it back. */
-function PreviousRow({ project, menuOpen, onMenu, onOpen, onRestore, onForget, onOpenFolderPrefs }: {
+function PreviousRow({ project, liveCount, menuOpen, onMenu, onOpen, onRestore, onForget, onOpenFolderPrefs }: {
   project: Project
+  /** Lanes Close would end (`lanesToEnd`): Forget is blocked while there are any. */
+  liveCount: number
   menuOpen: boolean
   onMenu: (open: boolean) => void
   onOpen: () => void
@@ -1088,7 +1094,8 @@ function PreviousRow({ project, menuOpen, onMenu, onOpen, onRestore, onForget, o
             { label: 'Reveal in Finder', onClick: () => { void window.operator.revealPath?.(project.path) }, disabled: lost },
             { label: 'Project settings…', onClick: onOpenFolderPrefs, disabled: lost },
             { label: 'Restore to active', onClick: onRestore, separator: true },
-            { label: 'Forget project', onClick: onForget, danger: true, confirm: true },
+            // A shelved project can still hold a suspended lane; Forget waits for it to close.
+            { ...forgetProjectItem(liveCount), id: 'forget-project', onClick: onForget, confirm: true },
           ]}
         />
       )}

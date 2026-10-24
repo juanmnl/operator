@@ -1317,6 +1317,9 @@ export function DashboardView() {
   const forgetProject = useCallback((id: string) => {
     const project = projectsRef.current.find((p) => p.id === id)
     if (!project) return
+    // Blocked while its lanes are open: their ptys would keep running with no project. The menus
+    // disable the item (forgetProjectItem); this holds for any other caller.
+    if (lanesToEnd(activitiesRef.current[id]) > 0) return
     // Snapshot BEFORE anything is unstamped — after the writes below there is no way left to
     // tell which terminals and saved sessions belonged here.
     const snap: ForgottenSnapshot = {

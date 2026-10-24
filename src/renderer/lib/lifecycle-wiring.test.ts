@@ -130,3 +130,17 @@ describe('⌘W arms on a mid-turn lane (task 7)', () => {
     expect(branch.indexOf('return')).toBeLessThan(branch.indexOf('handleCloseSession(active)'))
   })
 })
+
+describe('Forget is blocked while lanes are open (task 8)', () => {
+  const GALLERY = Object.values(import.meta.glob('../components/dashboard/ProjectGallery.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)[0]
+
+  it('both Forget items come from forgetProjectItem with the lane count', () => {
+    expect(GALLERY.match(/\{ \.\.\.forgetProjectItem\(liveCount\), id: 'forget-project', onClick: onForget, confirm: true/g)).toHaveLength(2)
+    expect(GALLERY).not.toMatch(/label: 'Forget project'/)
+    expect(GALLERY).toContain('liveCount={lanesToEnd(activities[project.id])}')
+  })
+
+  it('forgetProject refuses a project with open lanes', () => {
+    expect(bodyOf('forgetProject')).toMatch(/if \(lanesToEnd\(activitiesRef\.current\[id\]\) > 0\) return/)
+  })
+})
