@@ -100,3 +100,21 @@ describe('more ways in to Close project (task 4)', () => {
     expect(palette).toMatch(/id: `close-project-\$\{p\.id\}`[\s\S]*?run: \(\) => requestCloseProject\(p\.id\)/)
   })
 })
+
+describe('the rail row close control (task 6)', () => {
+  const ITEM = Object.values(import.meta.glob('../components/sidebar/SessionItem.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)[0]
+
+  it('draws ■ and arms as stop?, like the Team card: one verb, one glyph, one look', () => {
+    expect(ITEM).toContain("{confirmingClose ? 'stop?' : '■'}")
+    expect(ITEM).not.toMatch(/'×\??'/)
+    expect(ITEM).toMatch(/background: confirmingClose \? 'var\(--overlay-medium\)'/)
+    expect(ITEM).not.toMatch(/confirmingClose \? 'var\(--color-error\)'/)
+    expect(ITEM).toContain("'Close session (⌘W)'")
+  })
+
+  it('is revealed by keyboard focus as well as hover', () => {
+    expect(ITEM).toContain('const revealClose = closable && (hovered || focusWithin)')
+    expect(ITEM).toMatch(/onFocus=\{\(\) => setFocusWithin\(true\)\}/)
+    expect(ITEM).toContain('(revealClose || confirmingClose)')
+  })
+})

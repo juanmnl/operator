@@ -37,6 +37,9 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [confirmingClose, setConfirmingClose] = useState(false)
+  // Keyboard focus anywhere in the row reveals the close control, as hover does: the row is a
+  // tab stop, and a control only the mouse can find is not one the keyboard can reach.
+  const [focusWithin, setFocusWithin] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const status = sessionWaveStatus(session)
@@ -83,6 +86,8 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
   // no known model would otherwise open an empty box.
   const meta = laneMetaRows(session, effortLevel)
   const endHover = () => { hover.dismiss(); setConfirmingClose(false) }
+  /** The close control takes the place of the phase word, effort and shortcut hint. */
+  const revealClose = closable && (hovered || focusWithin)
 
   const commitRename = () => {
     const trimmed = editValue.trim()
@@ -120,6 +125,8 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
       }}
       onMouseEnter={hover.onMouseEnter}
       onMouseLeave={endHover}
+      onFocus={() => setFocusWithin(true)}
+      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false) }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -253,7 +260,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         )}
       </span>
       </div>
-      {/* Right group: status word + meta, right-aligned; yields to the close button on hover. */}
+      {/* Right group: status word + meta, right-aligned; yields to the close button on hover or focus. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
       {!editing && fanInfo && (
         <span
@@ -287,9 +294,9 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         </span>
       )}
       {/* Quiet phase word — only for active work / error (see showPhase above); waiting +
-          idle rely on the animated logo. Hidden on hover so the close affordance can take
-          its place (same gate as effort/shortcut). */}
-      {!editing && showPhase && !(hovered && closable) && (
+          idle rely on the animated logo. Hidden on hover or focus so the close affordance can
+          take its place (same gate as effort/shortcut). */}
+      {!editing && showPhase && !revealClose && (
         <span
           style={{
             flexShrink: 0,
@@ -308,7 +315,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
           a lone "L"/"M"/"XH" flags the exception worth noticing. Also in the composer + roster.
           `effortCode`, not `effortLevel[0]`: the ladder has both `medium` and `max` on it, so the
           first letter stopped identifying a level. */}
-      {!editing && effortLevel && effortLevel !== 'high' && !(hovered && closable) && (
+      {!editing && effortLevel && effortLevel !== 'high' && !revealClose && (
         <span
           title={`Effort: ${effortLevel}`}
           style={{
@@ -323,7 +330,7 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
           {effortCode(effortLevel)}
         </span>
       )}
-      {!editing && shortcutIndex != null && !(hovered && closable) && (
+      {!editing && shortcutIndex != null && !revealClose && (
         <span
           style={{
             fontSize: 9, color: 'var(--fg-muted)',
@@ -335,25 +342,33 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
           ⌘{shortcutIndex}
         </span>
       )}
-      {!editing && closable && (hovered || confirmingClose) && (
+      {/* CLOSE SESSION: ■, the glyph the Team card uses for the same verb, and its armed look
+          ("stop?" in --fg on --overlay-medium). It was ×, which at this size cannot be told from
+          the Team card's ✕, and that one deletes the lane. */}
+      {!editing && closable && (revealClose || confirmingClose) && (
         <button
           onClick={handleCloseClick}
-          title={confirmingClose ? 'Click again to confirm' : 'Close session'}
+          // The row answers Enter and Space by opening the lane. Without this, pressing either on
+          // the focused button opened the lane instead of closing it.
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}
+          onFocus={(e) => { e.currentTarget.style.boxShadow = 'inset 0 0 0 1px var(--accent)' }}
+          onBlur={(e) => { e.currentTarget.style.boxShadow = 'none' }}
+          title={confirmingClose ? 'Click again to close the session — the lane and its config stay' : 'Close session (⌘W)'}
+          aria-label={confirmingClose ? `Confirm closing ${label}` : `Close ${label}`}
+          data-close-session={confirmingClose ? 'confirm' : 'idle'}
           style={{
-            background: confirmingClose ? 'var(--color-error)' : 'transparent',
-            color: confirmingClose ? 'var(--fg-on-accent)' : 'var(--fg-muted)',
-            border: 'none',
-            borderRadius: 3,
-            padding: '0 5px',
-            fontSize: 10,
-            fontFamily: 'inherit',
-            lineHeight: '14px',
-            cursor: 'pointer',
-            flexShrink: 0,
-            
+            flexShrink: 0, height: 20, padding: confirmingClose ? '0 6px' : 0,
+            width: confirmingClose ? undefined : 20,
+            display: 'grid', placeItems: 'center', border: 'none', borderRadius: 4,
+            background: confirmingClose ? 'var(--overlay-medium)' : 'transparent',
+            color: confirmingClose ? 'var(--fg)' : 'var(--fg-muted)',
+            cursor: 'pointer', outline: 'none',
+            fontFamily: 'var(--font-mono)', fontSize: confirmingClose ? 9 : 10,
+            letterSpacing: confirmingClose ? '0.06em' : undefined,
+            textTransform: confirmingClose ? 'uppercase' : undefined,
           }}
         >
-          {confirmingClose ? '×?' : '×'}
+          {confirmingClose ? 'stop?' : '■'}
         </button>
       )}
       </div>
