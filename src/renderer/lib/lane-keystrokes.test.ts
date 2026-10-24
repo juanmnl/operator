@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput } from './lane-keystrokes'
+import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput, clearUnsentInput } from './lane-keystrokes'
 
 describe('lane keystrokes', () => {
   it('reports typing within the window, per terminal', () => {
@@ -31,6 +31,12 @@ describe('unsent input', () => {
     expect(hasUnsentInput('d1')).toBe(false)
     notePaste('d2')
     expect(hasUnsentInput('d2')).toBe(true)
+  })
+
+  it('forgets a draft when the lane ends or restarts', () => {
+    noteDraftKey('d5', { key: 'x' })
+    clearUnsentInput('d5')
+    expect(hasUnsentInput('d5')).toBe(false)
   })
 
   it('reports the last keystroke time', () => {

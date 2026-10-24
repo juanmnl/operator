@@ -27,6 +27,8 @@ export function lastKeystrokeAt(terminalId: string): number | undefined {
 // composer, because the new process starts with an empty one. The TUI's composer cannot be read, so
 // this is judged from the keys: a printable key or a paste starts a draft, Enter or Ctrl+C ends it.
 // A draft deleted with Backspace still reads as a draft. That errs toward keeping a lane running.
+// The submit queue reads it too (lib/submit-queue `hasUnsentInput`): a message pasted into a draft
+// is merged with it and submitted, so deliveries wait until the draft is sent or cleared.
 
 const drafts = new Set<string>()
 
@@ -53,4 +55,11 @@ export function notePaste(terminalId: string): void {
 /** Has someone typed into this lane's composer without sending it? */
 export function hasUnsentInput(terminalId: string): boolean {
   return drafts.has(terminalId)
+}
+
+/** Forget a lane's draft: its process ended or was restarted, so its composer is gone. The submit
+ *  queue holds deliveries while a draft is flagged (lib/submit-queue), and a flag left on a dead
+ *  terminal id would hold them forever. */
+export function clearUnsentInput(terminalId: string): void {
+  drafts.delete(terminalId)
 }

@@ -39,7 +39,8 @@ export interface SuspendCandidate {
   focused?: boolean
   /** Text typed into the composer and not sent (lib/lane-keystrokes). */
   unsentInput?: boolean
-  /** A submission in the submit queue still waiting for its turn. */
+  /** A submission in the submit queue not written yet (held on a draft included) or still waiting
+   *  for its turn (lib/submit-queue `owesSubmission`). */
   pendingSubmission?: boolean
   /** Messages for this lane waiting for it to be ready (`whenLaneReady`) before they are typed.
    *  They are not in the submit queue yet, so `pendingSubmission` does not see them. */

@@ -25,9 +25,10 @@ import { CardMenu, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
-import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
+import { typedWithin, lastKeystrokeAt, hasUnsentInput, clearUnsentInput } from '../lib/lane-keystrokes'
 import { planSuspends, suspendPlanned, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
+import { DraftHoldNotice } from '../components/terminal/DraftHoldNotice'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
 import { MemoryBanner, MEMORY_BANNER_H } from '../components/MemoryBanner'
@@ -38,7 +39,7 @@ import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { laneBusName, projectSlug } from '../lib/bus-name'
 import { useRefocusOnActivate, type ActivationView } from '../lib/use-refocus-on-activate'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
-import { submitQueue, onUndeliveredSubmission, onSubmission, composerLines } from '../lib/submit-queue'
+import { submitQueue, onUndeliveredSubmission, onSubmission, composerLines, owesSubmission } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail, RAIL_W, RAIL_W_OPEN } from '../components/sidebar/ProjectRail'
@@ -652,6 +653,8 @@ export function DashboardView() {
     const unsubExit = window.operator.onTerminalExit((id, _code, _signal, selfExit) => {
       // A pty ended BY A RESTART is not a lane finishing; its tab has been, or is about to be,
       // swapped for the resumed one (see handleRestartLane).
+      // Its composer went with the process, so a draft flagged on it can no longer hold messages.
+      clearUnsentInput(id)
       if (restartedFromRef.current.has(id)) { submitQueue.busy(id, false); return }
       // Don't drop the tab — unmounting the pane blanks the final output. xterm
       // keeps its buffer after the pty dies, so mark the tab ended and leave it
@@ -736,7 +739,7 @@ export function DashboardView() {
           // running tasks — otherwise they sit `running` forever, which is a leak this store
           // has already had once.
           const selfExited = new Set(live.filter((x) => x.selfExit).map((x) => x.id))
-          for (const id of stale) { exitCompleteRef.current(id, selfExited.has(id)); submitQueue.busy(id, false) }
+          for (const id of stale) { exitCompleteRef.current(id, selfExited.has(id)); submitQueue.busy(id, false); clearUnsentInput(id) }
           const dead = new Set(stale)
           return prev.map((t) => (dead.has(t.id) ? { ...t, ended: true, selfExited: selfExited.has(t.id) } : t))
         })
@@ -1242,7 +1245,7 @@ export function DashboardView() {
         lastActivityAt: session?.lastActivityAt,
         phase: session && session.status !== 'ended' ? session.phase : undefined,
         settling: typedWithin(t.id, RETIRE_TYPING_QUIET_MS, now)
-          || !!submitQueue.pending(t.id)
+          || owesSubmission(submitQueue, t.id)
           || (!Number.isNaN(activeAt) && now - activeAt < RETIRE_ACTIVITY_QUIET_MS),
       }
     }), pendingReleasesRef.current)
@@ -2630,7 +2633,8 @@ export function DashboardView() {
     // composer — that is what `sent · never started` MEANS — and re-delivering onto it would make
     // the lane read the task twice, concatenated. Queued on the same per-terminal chain as the
     // delivery that follows, so it cannot overtake it. Bounded by the lines WE pasted; anything a
-    // human typed beyond that survives, deliberately.
+    // human typed beyond that survives, deliberately. Skipped by the queue while the lane has a
+    // draft (`clearComposer`), and the delivery then waits for it: the walk would delete their text.
     const targetTab = terminalsRef.current.find((t) => t.roleId === rec.toRoleId && t.projectId === projectId && !t.ended)
     if (targetTab) void submitQueue.clearComposer(targetTab.id, composerLines(rec.task))
     deliverDispatchRef.current({
@@ -3996,7 +4000,7 @@ export function DashboardView() {
     claudeVersion: tab.claudeVersion,
     ended: tab.ended,
     session: sessionsRef.current.find((s) => s.terminalId === tab.id),
-    pendingSubmission: !!submitQueue.pending(tab.id),
+    pendingSubmission: owesSubmission(submitQueue, tab.id),
     resumable: !!(claudeIdOf(tab.id) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [])
@@ -4069,7 +4073,7 @@ export function DashboardView() {
     if (!tab || tab.ended || restartingRef.current.has(terminalId)) return
     const session = sessionsRef.current.find((s) => s.terminalId === terminalId)
     // Re-checked at the moment of acting: a turn can start between drawing the button and the click.
-    if (!canRestartLane(session, !!submitQueue.pending(terminalId))) return
+    if (!canRestartLane(session, owesSubmission(submitQueue, terminalId))) return
     const claudeSessionId = claudeIdOf(terminalId) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId
     if (!claudeSessionId) return // nothing to resume; a restart would open a blank session
     // The live effort first, as the toolbar reads it: a mid-session `/effort` is what the lane runs.
@@ -4079,6 +4083,9 @@ export function DashboardView() {
     restartedFromRef.current.add(terminalId)
     try {
       await window.operator.terminalKill(terminalId)
+      // The resumed CLI starts with an empty composer. Also cleared on the exit event; done here
+      // too in case that event is lost.
+      clearUnsentInput(terminalId)
       const next = await spawnInPlace(tab, claudeSessionId, { effort })
       if (!next) {
         // The old process is gone and nothing replaced it. Leave the tab in the state any exited
@@ -4134,7 +4141,7 @@ export function DashboardView() {
     if (!claudeSessionId) return false
     const session = sessionsRef.current.find((s) => s.terminalId === terminalId)
     const stillIdle = () => terminalsRef.current.some((t) => t.id === terminalId && !t.ended)
-      && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), !!submitQueue.pending(terminalId))
+      && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), owesSubmission(submitQueue, terminalId))
       && !hasUnsentInput(terminalId)
       && !awaitingReadyRef.current.get(terminalId)
       && terminalId !== activeTerminalIdRef.current
@@ -4344,7 +4351,7 @@ export function DashboardView() {
       spawnedAt: spawnedAtRef.current.get(tab.id),
       focused: tab.id === activeTerminalIdRef.current,
       unsentInput: hasUnsentInput(tab.id),
-      pendingSubmission: !!submitQueue.pending(tab.id),
+      pendingSubmission: owesSubmission(submitQueue, tab.id),
       awaitingDelivery: awaitingReadyRef.current.get(tab.id),
       heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
       backgroundTasks: session?.backgroundTasks,
@@ -6911,6 +6918,8 @@ export function DashboardView() {
                     }}
                   />
                 )}
+                {/* Messages waiting on what the person typed (lib/submit-queue). */}
+                {!t.ended && !isPlaceholderId(t.id) && <DraftHoldNotice terminalId={t.id} />}
                 {t.idleSuspendedAt ? (
                   <SuspendedOverlay
                     active={t.id === activeTerminalId && mainView === 'terminal'}

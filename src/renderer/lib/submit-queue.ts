@@ -16,6 +16,7 @@
 // Queues are PER TERMINAL: a dispatch to lane B never waits on lane A.
 
 import { stripControlChars } from '../../shared/control-chars'
+import { hasUnsentInput, clearUnsentInput } from './lane-keystrokes'
 
 /** Wrap text as a bracketed paste + CR — the "submit this message" byte sequence.
  *
@@ -174,6 +175,13 @@ export const CONFIRM_WINDOW_MS = 4000
  *  tailer's 1s poll: asking faster cannot learn anything sooner. */
 export const BUSY_RECHECK_MS = 1000
 
+/** How often a submission held on a person's draft re-asks whether the draft is gone.
+ *
+ *  The draft flag changes on a keydown in the same renderer, so this only bounds how long after
+ *  Enter or Ctrl+C the held message goes out. A quarter second is under the 350 ms gap that
+ *  follows it anyway. */
+export const DRAFT_POLL_MS = 250
+
 /** How long to wait before the watchdog CR for a message of this length. */
 export function nudgeDelayFor(text: string, floorMs: number = SUBMIT_NUDGE_MS): number {
   return Math.min(SUBMIT_NUDGE_MAX_MS, floorMs + Math.round((text.length / 1000) * SUBMIT_NUDGE_PER_1K_MS))
@@ -192,6 +200,14 @@ export interface SubmitQueueDeps {
    *  a prompt. DashboardView cancels a `worktree_done` release here, so a lane that is being
    *  handed work is never retired in the gap before its transcript shows the turn. */
   onSubmit?: (id: string, text: string) => void
+  /** Whether a person has typed into this lane's composer and not sent it (lib/lane-keystrokes).
+   *  A submission waits while it is true; see `submit`. Injected so the queue stays testable
+   *  against a fake pty. Absent reads as "no draft", which is the queue's behaviour before
+   *  2026-10-24. */
+  hasUnsentInput?: (id: string) => boolean
+  /** The draft was sent: a forced delivery (`deliverNow`) pasted into it and its CR submitted the
+   *  whole composer. Called so the flag does not hold the next message for a draft that is gone. */
+  clearUnsentInput?: (id: string) => void
 }
 
 export interface SubmitQueue {
@@ -298,6 +314,20 @@ export interface SubmitQueue {
    *  goes idle with no turn and nothing queued still gets named; see the verdict window. */
   busy(id: string, busy: boolean): void
   pending(id: string): { text: string; at: number } | undefined
+  /** How many `submit`s for `id` are queued and not written yet, held or not.
+   *
+   *  `pending` starts at the write, so a message waiting on a draft (or on the gap) is not in it.
+   *  Retire, restart and suspend read both: a lane with a message still owed to it is not idle. */
+  unwritten(id: string): number
+  /** How many messages are waiting on the person's draft in this lane: `unwritten` while the
+   *  chain is held on it, else 0. What the pane's "N messages waiting" shows. */
+  heldForDraft(id: string): number
+  /** Deliver what is held on the draft now, the person's choice: every `submit` enqueued so far
+   *  for `id` stops waiting on the draft. The first one pastes into the draft and its CR sends
+   *  both. Later submissions wait on a draft again. */
+  deliverNow(id: string): void
+  /** Called whenever `heldForDraft` may have changed, for any terminal. Returns the unsubscribe. */
+  onHoldChange(fn: () => void): () => void
   /** Await every outstanding delivery VERDICT (not the writes — `submit` already resolves on
    *  those). The confirmation window runs detached so it can't hold up the next dispatch, which
    *  leaves tests with nothing to await; this is that handle. */
@@ -332,6 +362,24 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const watches = new Set<Promise<void>>()
   // Terminals whose submissions go elsewhere — see `divert`.
   const diverted = new Map<string, (text: string) => void>()
+  const hasDraft = deps.hasUnsentInput ?? (() => false)
+  // Per terminal: how many `submit`s were enqueued (each takes the next number), how many of
+  // those are not written yet, the highest number `deliverNow` released, and whether the chain is
+  // waiting on a draft right now.
+  const enqueued = new Map<string, number>()
+  const unwrittenCount = new Map<string, number>()
+  const forced = new Map<string, number>()
+  const holding = new Set<string>()
+  const holdListeners = new Set<() => void>()
+  const holdChanged = () => {
+    for (const fn of holdListeners) { try { fn() } catch { /* a listener must never break the queue */ } }
+  }
+  const setHolding = (id: string, on: boolean) => {
+    if (on === holding.has(id)) return
+    if (on) holding.add(id)
+    else holding.delete(id)
+    holdChanged()
+  }
 
   return {
     attachImages(id, paths) {
@@ -348,7 +396,14 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       // No gap wait and no confirmation window: this writes no CR, so there is no turn to wait
       // for and nothing to rescue. It only has to be ORDERED with respect to the submissions
       // around it.
-      const next = prev.then(async () => { deps.write(id, clearComposerSequence(lines)) })
+      //
+      // NEVER OVER A DRAFT. The walk assumes the composer holds only what this app pasted. With a
+      // person's text in it, it deletes up to `lines` lines of theirs (2026-10-24 report, retry
+      // variant). Checked when its turn in the chain comes, which is when the composer is read.
+      const next = prev.then(async () => {
+        if (hasDraft(id)) return
+        deps.write(id, clearComposerSequence(lines))
+      })
       chains.set(id, next.catch(() => {}))
       return next
     },
@@ -381,14 +436,49 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
 
     submit(id, text) {
       try { deps.onSubmit?.(id, text) } catch { /* a listener must never block a submission */ }
+      const seq = (enqueued.get(id) ?? 0) + 1
+      enqueued.set(id, seq)
+      unwrittenCount.set(id, (unwrittenCount.get(id) ?? 0) + 1)
+      if (holding.has(id)) holdChanged()
+      let settled = false
+      const written = () => {
+        if (settled) return
+        settled = true
+        const n = (unwrittenCount.get(id) ?? 1) - 1
+        if (n > 0) unwrittenCount.set(id, n)
+        else unwrittenCount.delete(id)
+        if (holding.has(id)) holdChanged()
+      }
+      // HELD ON A PERSON'S DRAFT (2026-10-24). The paste lands at the cursor in the TUI's composer
+      // and the CR in the same write submits everything there, so a message typed into a lane
+      // where someone has half a sentence was merged into it and sent. Wait until the draft is
+      // sent (Enter) or cleared (Ctrl+C), with no timeout: their text must never be merged, and a
+      // late message is recoverable where a corrupted one is not. `deliverNow` is the way out.
+      // Not while diverted: that message goes to a wake, not into this composer.
+      const draftHolds = () => !diverted.has(id) && seq > (forced.get(id) ?? 0) && hasDraft(id)
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev
         .then(async () => {
-          const last = lastAt.get(id)
-          if (last !== undefined) {
-            const since = now() - last
-            if (since < gapMs) await sleep(gapMs - since)
+          // The whole chain waits here, so what is queued behind this message keeps its order, and
+          // the gap still separates each write. Asked again after the gap: a person can start
+          // typing during it.
+          for (;;) {
+            if (draftHolds()) {
+              setHolding(id, true)
+              while (draftHolds()) await sleep(DRAFT_POLL_MS)
+              setHolding(id, false)
+              // Their Enter is the last thing that touched the composer, so the gap runs from it.
+              lastAt.set(id, now())
+            }
+            const last = lastAt.get(id)
+            if (last !== undefined) {
+              const since = now() - last
+              if (since < gapMs) await sleep(gapMs - since)
+            }
+            if (!draftHolds()) break
           }
+          // Everything below is timed from the write, never from the enqueue: a message that
+          // waited ten minutes on a draft gets the same confirmation window as one sent at once.
           const gen = nudgeGen.get(id) ?? 0
           // Captured BEFORE the write: a turn that started earlier (the lane was already busy
           // when we arrived) must not be read as confirmation of a message we hadn't sent yet.
@@ -398,10 +488,15 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
 
           const away = diverted.get(id)
           if (away) {
+            written()
             try { away(text) } catch { /* the new owner reports its own failures */ }
             return
           }
+          // Still a draft here only when `deliverNow` released this message over it.
+          const intoDraft = hasDraft(id)
           deps.write(id, submitSequence(text))
+          written()
+          if (intoDraft) deps.clearUnsentInput?.(id)
           const writtenAt = now()
           awaiting.set(id, { text, at: writtenAt })
           // THE CLOSED LOOP. Wait for the turn to START — re-asking, not sleeping a guessed
@@ -488,7 +583,7 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           watchDelivery()
         })
         // A failed write must not break ordering for everything queued behind it.
-        .catch(() => { awaiting.delete(id) /* dropped submission */ })
+        .catch(() => { written(); awaiting.delete(id) /* dropped submission */ })
       chains.set(id, next)
       return next
     },
@@ -517,7 +612,28 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
     pending(id) {
       return awaiting.get(id)
     },
+    unwritten(id) {
+      return unwrittenCount.get(id) ?? 0
+    },
+    heldForDraft(id) {
+      return holding.has(id) ? unwrittenCount.get(id) ?? 0 : 0
+    },
+    deliverNow(id) {
+      forced.set(id, enqueued.get(id) ?? 0)
+      holdChanged()
+    },
+    onHoldChange(fn) {
+      holdListeners.add(fn)
+      return () => { holdListeners.delete(fn) }
+    },
   }
+}
+
+/** Whether `id` is still owed a message: written and not yet confirmed (`pending`), or queued and
+ *  not written yet (`unwritten`, which includes a message held on the person's draft). Retire,
+ *  restart and suspend read this, so a lane is not ended with a message still on its way. */
+export function owesSubmission(q: Pick<SubmitQueue, 'pending' | 'unwritten'>, id: string): boolean {
+  return !!q.pending(id) || q.unwritten(id) > 0
 }
 
 /** Where the app-wide queue reports a lost submission. Installed by the view that owns the
@@ -543,4 +659,6 @@ export const submitQueue = createSubmitQueue({
   write: (id, data) => window.operator.terminalWrite(id, data),
   onUndelivered: (id, text) => undeliveredHandler?.(id, text),
   onSubmit: (id, text) => submitHandler?.(id, text),
+  hasUnsentInput,
+  clearUnsentInput,
 })

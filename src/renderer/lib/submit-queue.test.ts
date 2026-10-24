@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue, clearComposerSequence, composerLines, MAX_CLEAR_LINES } from './submit-queue'
+import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue, clearComposerSequence, composerLines, MAX_CLEAR_LINES, DRAFT_POLL_MS } from './submit-queue'
+import { noteDraftKey, hasUnsentInput, clearUnsentInput } from './lane-keystrokes'
 
 /** A deterministic clock: `sleep` advances virtual time instead of waiting. */
 function fakeClock() {
@@ -1077,5 +1078,213 @@ describe('draft — text a person typed, into the composer, unsent (idle suspend
     const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock() })
     await q.draft('t1', 'a\x1b[201~\rb')
     expect(writes).toEqual(['\x1b[200~a[201~\nb\x1b[201~'])
+  })
+})
+
+/** A clock that also runs scheduled events as virtual time passes: how a test makes the person
+ *  press Enter at t=5000 while the queue is polling. Throws past an hour so a hold that never
+ *  ends fails the test instead of spinning. */
+function eventClock() {
+  let t = 0
+  const events: { at: number; run: () => void }[] = []
+  const fire = () => {
+    for (const e of events.filter((x) => x.at <= t)) { events.splice(events.indexOf(e), 1); e.run() }
+  }
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms
+      if (t > 3_600_000) throw new Error('held forever')
+      fire()
+    },
+    at: (when: number, run: () => void) => { events.push({ at: when, run }) },
+  }
+}
+
+describe('held on a person\'s draft (2026-10-24: a delivery merged into half-typed text)', () => {
+  /** A queue whose draft flag the test sets, per terminal. */
+  function setup() {
+    const clock = eventClock()
+    const writes: { at: number; id: string; data: string }[] = []
+    const drafts = new Set<string>()
+    const cleared: string[] = []
+    const q = createSubmitQueue({
+      write: (id, data) => writes.push({ at: clock.now(), id, data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      clearUnsentInput: (id) => { cleared.push(id); drafts.delete(id) },
+    })
+    return { clock, writes, drafts, cleared, q }
+  }
+
+  it('writes nothing while the draft is there, and counts the message as owed to the lane', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    const seen: { held: number; unwritten: number; pending: boolean; writes: number }[] = []
+    clock.at(2000, () => seen.push({ held: q.heldForDraft('t1'), unwritten: q.unwritten('t1'), pending: !!q.pending('t1'), writes: writes.length }))
+    clock.at(5000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(seen).toEqual([{ held: 1, unwritten: 1, pending: false, writes: 0 }])
+    expect(writes[0].data).toBe(submitSequence('A'))
+    // The gap runs from the moment the draft went, not from the enqueue.
+    expect(writes[0].at).toBeGreaterThanOrEqual(5000 + SUBMIT_GAP_MS)
+    expect(q.unwritten('t1')).toBe(0)
+    expect(q.heldForDraft('t1')).toBe(0)
+  })
+
+  it('does not hold a lane with no draft', async () => {
+    const { writes, q } = setup()
+    await q.submit('t1', 'A')
+    expect(writes[0]).toMatchObject({ at: 0, data: submitSequence('A') })
+  })
+
+  it('releases on Enter, read from the real key tracking', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-enter', { key: 'P' })
+    clock.at(3000, () => noteDraftKey('hold-enter', { key: 'Enter' }))
+    await q.submit('hold-enter', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+    expect(writes[0].at).toBeLessThan(3000 + DRAFT_POLL_MS + SUBMIT_GAP_MS + 1)
+  })
+
+  it('releases on Ctrl+C', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-ctrlc', { key: 'x' })
+    // Shift+Enter is a newline inside the draft, not a send.
+    clock.at(1000, () => noteDraftKey('hold-ctrlc', { key: 'Enter', shiftKey: true }))
+    clock.at(4000, () => noteDraftKey('hold-ctrlc', { key: 'c', ctrlKey: true }))
+    await q.submit('hold-ctrlc', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(4000 + SUBMIT_GAP_MS)
+  })
+
+  it('releases when the lane ends and its flag is cleared, so a dead id holds nothing', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-exit', { key: 'x' })
+    clock.at(2000, () => clearUnsentInput('hold-exit'))
+    await q.submit('hold-exit', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(2000)
+  })
+
+  it('holds the whole burst, then writes it in order with the gap between each', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1000, () => expect(q.heldForDraft('t1')).toBe(3))
+    clock.at(4000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'other lane'), q.submit('t1', 'B'), q.submit('t1', 'C')])
+    // Another lane is not held by this lane's draft: written long before it clears. (The clock
+    // is shared, so t1's polls move it; the order is what matters.)
+    expect(pastes(writes).find((w) => w.id === 't2')!.at).toBeLessThan(4000)
+    const subs = pastes(writes).filter((w) => w.id === 't1')
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B'), submitSequence('C')])
+    expect(subs[0].at).toBeGreaterThanOrEqual(4000 + SUBMIT_GAP_MS)
+    expect(subs[1].at - subs[0].at).toBeGreaterThanOrEqual(SUBMIT_GAP_MS)
+    expect(subs[2].at - subs[1].at).toBeGreaterThanOrEqual(SUBMIT_GAP_MS)
+  })
+
+  it('holds again when typing starts during the gap after a release', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    clock.at(1100, () => drafts.add('t1'))
+    clock.at(6000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(6000 + SUBMIT_GAP_MS)
+  })
+
+  it('deliverNow sends everything held so far, into the draft, and clears the flag', async () => {
+    const { clock, writes, drafts, cleared, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => q.deliverNow('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t1', 'B')])
+    const subs = pastes(writes)
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B')])
+    expect(subs[0].at).toBeGreaterThanOrEqual(2000)
+    // The first one's CR sent the draft with it, so the flag goes and B is not held on it.
+    expect(cleared).toEqual(['t1'])
+    expect(subs[1].at - subs[0].at).toBeLessThan(RESCUE_AFTER_MS)
+  })
+
+  it('deliverNow does not release a message enqueued after it', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    q.deliverNow('t1')
+    clock.at(3000, () => drafts.delete('t1'))
+    await q.submit('t1', 'later')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+  })
+
+  it('tells listeners when the held count changes', async () => {
+    const { clock, drafts, q } = setup()
+    drafts.add('t1')
+    const counts: number[] = []
+    const off = q.onHoldChange(() => counts.push(q.heldForDraft('t1')))
+    clock.at(2000, () => drafts.delete('t1'))
+    const a = q.submit('t1', 'A')
+    await Promise.resolve()
+    void q.submit('t1', 'B')
+    await a
+    await q.idle()
+    off()
+    expect(counts[0]).toBe(1) // held
+    expect(counts).toContain(2) // B joined while held
+    expect(counts[counts.length - 1]).toBe(0)
+  })
+
+  it('times the delivery check from the write, not the enqueue: a long hold is not reported lost', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const lost: string[] = []
+    const drafts = new Set(['t1'])
+    const q = createSubmitQueue({
+      write: (_id, data) => writes.push({ at: clock.now(), data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      onUndelivered: (_id, text) => lost.push(text),
+    })
+    q.observable('t1')
+    // Held for ten minutes, far past RESCUE_AFTER_MS + CONFIRM_WINDOW_MS.
+    const release = 600_000
+    clock.at(release, () => drafts.delete('t1'))
+    let pendingAt: number | undefined
+    clock.at(release + SUBMIT_GAP_MS + 1000, () => { pendingAt = q.pending('t1')?.at; q.confirm('t1') })
+    await q.submit('t1', 'A')
+    await q.idle()
+    expect(pendingAt).toBeGreaterThanOrEqual(release)
+    expect(lost).toEqual([])
+    // Confirmed inside the window that started at the write, so no rescue CR.
+    expect(writes.map((w) => w.data)).toEqual([submitSequence('A')])
+  })
+
+  it('hands a held message to a divert instead of waiting on a draft in a dying pty', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    const handed: string[] = []
+    clock.at(1000, () => q.divert('t1', (text) => handed.push(text)))
+    await q.submit('t1', 'A')
+    expect(handed).toEqual(['A'])
+    expect(writes).toEqual([])
+    expect(q.unwritten('t1')).toBe(0)
+  })
+})
+
+describe('clearComposer never runs over a draft (retry path)', () => {
+  it('writes nothing while the person has unsent text', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock(), hasUnsentInput: () => true })
+    await q.clearComposer('t1', 2)
+    expect(writes).toEqual([])
+  })
+
+  it('still clears our own stale paste when there is no draft', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock(), hasUnsentInput: () => false })
+    await q.clearComposer('t1', 2)
+    expect(writes).toEqual([clearComposerSequence(2)])
   })
 })
