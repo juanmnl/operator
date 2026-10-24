@@ -11,6 +11,7 @@ import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffo
 import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan, stuckAfterClose, closeToast, isOnRail } from '../lib/project-shelf'
+import { closeKeyAction, type CloseKeyArm } from '../lib/close-key'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -21,7 +22,7 @@ import { IDLE, installPressed, installProgressed, installFailed, type InstallSta
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
-import { CardMenu, type CardMenuItem } from '../components/CardMenu'
+import { CardMenu, CONFIRM_MS, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
@@ -577,8 +578,11 @@ export function DashboardView() {
     })
   }, [beginLayoutMove, sidebarCollapsed, cardWFor, panelOpen])
 
-  const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
-    setToasts((prev) => [...prev, { ...message, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }])
+  /** Returns the toast's id, for a caller that has to take it down early (the ⌘W arm). */
+  const pushToast = useCallback((message: Omit<ToastMessage, 'id'>): string => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    setToasts((prev) => [...prev, { ...message, id }])
+    return id
   }, [])
 
   const dismissToast = useCallback((id: string) => {
@@ -5376,6 +5380,9 @@ export function DashboardView() {
     }
   }, [sessions])
 
+  /** ⌘W armed on a mid-turn lane: which one, until when, and the toast that says so. */
+  const closeKeyArmRef = useRef<(CloseKeyArm & { toastId: string }) | null>(null)
+
   // Global keyboard shortcuts: Cmd+N new session, Cmd+W close active session,
   // Cmd+1..9 switch to local terminal by index.
   useEffect(() => {
@@ -5413,6 +5420,21 @@ export function DashboardView() {
         e.preventDefault()
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
+          // A LANE MID-TURN ARMS FIRST (lib/close-key). One press ended it, and the close forgets
+          // its saved session, so the turn was lost with no way to resume it. The mouse routes
+          // take two clicks. The second press within CONFIRM_MS closes; an idle or waiting lane
+          // closes on the first, as before.
+          const armed = closeKeyArmRef.current
+          if (closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now()) === 'arm') {
+            if (armed) dismissToast(armed.toastId)
+            const name = sessionLabel({ session: active, role: roleOf(active), customName: customNames[active.id] })
+            const toastId = pushToast({ text: `Press ⌘W again to close ${name} — it is mid-turn` })
+            closeKeyArmRef.current = { terminalId: active.terminalId, until: Date.now() + CONFIRM_MS, toastId }
+            setTimeout(() => dismissToast(toastId), CONFIRM_MS)
+            return
+          }
+          if (armed) dismissToast(armed.toastId)
+          closeKeyArmRef.current = null
           handleCloseSession(active)
         }
       } else if (e.key >= '1' && e.key <= '9') {
@@ -5436,7 +5458,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId, roleOf, customNames, pushToast, dismissToast])
 
   // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
   // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise

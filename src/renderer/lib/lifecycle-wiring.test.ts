@@ -118,3 +118,15 @@ describe('the rail row close control (task 6)', () => {
     expect(ITEM).toContain('(revealClose || confirmingClose)')
   })
 })
+
+describe('⌘W arms on a mid-turn lane (task 7)', () => {
+  it('asks closeKeyAction before closing, and arms with a toast for CONFIRM_MS', () => {
+    const at = src.indexOf("e.key === 'w' || e.key === 'W'")
+    expect(at).toBeGreaterThan(-1)
+    const branch = src.slice(at, src.indexOf('} else if', at))
+    expect(branch).toMatch(/closeKeyAction\([\s\S]*\) === 'arm'\)/)
+    expect(branch).toContain('Press ⌘W again to close ${name} — it is mid-turn')
+    expect(branch).toContain('until: Date.now() + CONFIRM_MS')
+    expect(branch.indexOf('return')).toBeLessThan(branch.indexOf('handleCloseSession(active)'))
+  })
+})
