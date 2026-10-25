@@ -40,6 +40,9 @@ export interface CardMenuItem {
   /** Requires a second click: the first arms it and relabels, the second fires. For an
    *  action that persists and can't be taken back by re-opening a folder. */
   confirm?: boolean
+  /** A shortcut shown at the right of the label, such as `⌘W`. Not drawn on a disabled item: its
+   *  0.4 opacity would stack on `--fg-muted`. */
+  hint?: string
 }
 
 /** The key an armed confirm is held under: the item's ACTION identity, falling back to its label.
@@ -152,6 +155,11 @@ export function CardMenu({ items, onClose, at, title }: {
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
             {armed === confirmKeyOf(it) ? `${it.label} — click again` : it.label}
+            {it.hint && !it.disabled && (
+              <span style={{ float: 'right', marginLeft: 18, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-muted)' }}>
+                {it.hint}
+              </span>
+            )}
           </button>
         </div>
       ))}

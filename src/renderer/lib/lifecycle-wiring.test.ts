@@ -177,3 +177,38 @@ describe('the guard dialog keeps the app\'s keys and gives focus back (review R4
     expect(DIALOG).toMatch(/const restore = keepFocus\(\)[\s\S]*?return restore/)
   })
 })
+
+describe('the lane menu: three ways in, one list (lifecycle audit B1, task 5)', () => {
+  const RAIL = Object.values(import.meta.glob('../components/sidebar/ProjectRail.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)[0]
+  const ITEM = Object.values(import.meta.glob('../components/sidebar/SessionItem.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)[0]
+  const TOOLBAR = Object.values(import.meta.glob('../components/session/SessionToolbar.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)[0]
+
+  it('the toolbar ⋯ opens the active lane\'s menu, and a second click closes it', () => {
+    expect(TOOLBAR).toMatch(/title="Lane actions"/)
+    expect(TOOLBAR).toContain('data-popmenu-trigger="lane-actions"')
+    expect(propOf('onLaneActions')).toMatch(/setLaneActions\(\(cur\) => \(cur\?\.sessionId === activeSession\.id \? null :/)
+  })
+
+  it('a right-click on the orb, at both widths, opens the lane menu, not the colour picker', () => {
+    expect(RAIL).not.toContain('onPickAccent')
+    expect(propOf('onLaneMenu')).toContain('setLaneActions({ sessionId: session.id, ...anchor })')
+    expect(propOf('onLaneMenu')).not.toContain('setAccentPicker')
+  })
+
+  it('a right-click on the expanded row opens it where the orb does', () => {
+    expect(ITEM).toMatch(/onContextMenu=\{onLaneMenu && \(\(e\) => \{\s*if \(editing\) return/)
+    expect(ITEM).toContain("e.currentTarget.querySelector('[data-accent-orb]')")
+  })
+
+  it('Colour is an item in it, opening the picker at the menu\'s place', () => {
+    expect(bodyOf('laneActionMenu')).toContain('colour: () => setAccentPicker({ sessionId: s.id, top: laneActions.top, left: laneActions.left })')
+  })
+
+  it('Suspend by hand keeps every suspend rule but the quiet time and "you are looking at it"', () => {
+    expect(bodyOf('laneSuspendCandidate')).toContain('focused: false')
+    expect(bodyOf('canSuspendByHand')).toMatch(/suspendDecision\([\s\S]*'now'\)\.suspend/)
+    expect(bodyOf('suspendByHand')).toContain("threshold: 'now'")
+    expect(bodyOf('suspendByHand')).toContain("suspendLaneRef.current(id, 'by hand', eligible, { byHand: true })")
+    expect(bodyOf('suspendLane')).toContain('(!!opts?.byHand || terminalId !== activeTerminalIdRef.current)')
+  })
+})

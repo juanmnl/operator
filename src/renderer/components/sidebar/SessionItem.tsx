@@ -30,11 +30,11 @@ interface SessionItemProps {
   onClick: () => void
   onRename: (newName: string) => void
   onClose: () => void
-  /** Right-click on the status dot → open the colour picker anchored under it. */
-  onPickAccent?: (anchor: { top: number; left: number }) => void
+  /** Right-click on the status dot or the row → open the lane menu anchored under the dot. */
+  onLaneMenu?: (anchor: { top: number; left: number }) => void
 }
 
-export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onPickAccent }: SessionItemProps) {
+export function SessionItem({ session, label, active, effortLevel, labelIsRole, roleColor, fanInfo, currentTask, closable, shortcutIndex, onClick, onRename, onClose, onLaneMenu }: SessionItemProps) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(label)
   const [confirmingClose, setConfirmingClose] = useState(false)
@@ -124,6 +124,16 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         setEditValue(label)
         setEditing(true)
       }}
+      // Right-click anywhere on the row opens the lane menu where the orb's does, so both routes
+      // open one menu in one place (lifecycle audit B1, entry 2).
+      onContextMenu={onLaneMenu && ((e) => {
+        if (editing) return
+        e.preventDefault()
+        hover.dismiss()
+        const orb = e.currentTarget.querySelector('[data-accent-orb]') ?? e.currentTarget
+        const r = orb.getBoundingClientRect()
+        onLaneMenu({ top: r.bottom + 6, left: r.left })
+      })}
       onMouseEnter={hover.onMouseEnter}
       onMouseLeave={endHover}
       // Keyboard focus only (review R7): a click focuses the row too, and the ■ stayed after the
@@ -180,12 +190,13 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
         // both states: `dev/drive-rail-invariant.mjs` measures this element's painted centre at
         // 70 and at 264 and fails if it moved. Two selectors would have measured two elements.
         data-rail-orb={session.id}
-        onContextMenu={onPickAccent && ((e) => {
-          // Right-click the orb to recolour; left-click falls through to row select.
+        onContextMenu={onLaneMenu && ((e) => {
+          // Right-click the orb for the lane menu (colour is in it); left-click falls through to
+          // row select.
           e.preventDefault()
           e.stopPropagation()
           const r = e.currentTarget.getBoundingClientRect()
-          onPickAccent({ top: r.bottom + 6, left: r.left })
+          onLaneMenu({ top: r.bottom + 6, left: r.left })
         })}
         // The disc's OWN box, 24px — not a 36px box with the disc centred in it, which is what
         // put the disc 6px further right than the row's left edge. The disc now starts where the

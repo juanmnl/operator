@@ -217,3 +217,123 @@ None of this has been run in the app. Use real lanes, both themes, and both rail
   new close would also wait on the same kill.
 - While the close dialog is open, chords other than Esc, ⌘. and Tab still reach the app (⌘W,
   ⌘K). The quit guard behaves the same way.
+
+## Round 2: Review fixes (R1-R8) and the lane menu (tasks 5 and 9)
+
+Review: `dev/results/lifecycle-fixes-review-2026-10-24.md`. Branch `operator/95b180`, on top of
+2648dca. Not merged. Not GUI-verified.
+
+### Part A: R1-R8
+
+- **R1, held ⌘W.** `closeKeyAction(lane, armed, now, repeat)` returns `ignore` for an auto-repeat,
+  and the ⌘W branch passes `e.repeat` and returns on `ignore` before anything arms or closes. That
+  also stops a repeat from closing the lane that becomes active after a close.
+- **R2, one close per lane.** New `LaneCloses` (lib/close-key) keyed by terminal id. Every caller
+  goes through `handleCloseSession`, which runs the close through it: the rail ■, ⌘W, the Team
+  card, the palette, the project close and its Retry. A second ask gets the running close, with
+  the first one's reason (a lane being suspended is not also forgotten). `endProjectLanes` no
+  longer has its own map.
+- **R3, woken suspended lane.** When the close of a suspended lane waits on a resume in flight,
+  it files itself under the new terminal id too (`alias`), and `closedAs(old)` returns that id
+  for 60 s. `endProjectLanes` judges each lane by every id it had: the original, `closedAs`, and
+  the id its tab carries now (looked up by tab key). `stuckAfterClose` takes those ids
+  (`CloseAttempt.ids`) and returns a stuck lane under the id that is alive, so Retry finds the
+  resumed lane.
+- **R4, dialog keys.** New `guardKeyAction` (lib/guard-keys): Esc and ⌘. answer the safe verb, Tab
+  cycles, and every `isAppChord` chord plus ⌘E is blocked with preventDefault and
+  stopPropagation. preventDefault matters because the native File menu closes the window on ⌘W
+  when nothing takes it. ⌘Q and ⌘C go through. This applies to both guards.
+- **R5, focus.** `keepFocus()` (lib/guard-keys) saves `document.activeElement` on mount and
+  restores it on unmount if it is still in the document. Both guards.
+- **R6, dialog copy.** `CloseGuardLane.folder` (`worktree` | `checkout` | `released`), set in
+  `requestCloseProject` from the tab: released per the release cache, own worktree when
+  `worktreeBranch && sourceCwd && cwd !== sourceCwd`, else checkout. `closeGuardCopy` takes the
+  lanes and says, per kind: no CLI for suspended lanes, nothing removed or committed in the
+  project folder, a released folder removed only if clean. With mixed kinds it counts each. Every
+  sentence after the first binds its first word with U+00A0. A project whose lanes all run in
+  their own worktree reads exactly as before.
+- **R7, rail row ■ after a click.** Confirmed by reading the code. The terminal is focused on
+  mount and on window activation, and selecting the row that is already active moves no focus, so
+  the row kept focus and the ■ stayed. The row now sets `focusWithin` only for keyboard focus
+  (`isKeyboardFocus`, lib/keyboard-focus, `:focus-visible`; an engine that cannot parse it reads
+  as keyboard, which keeps the reveal reachable).
+- **R8.** The project home's Close tooltip is now a JS string with `Its roster`. A JSX
+  attribute string does not process the escape.
+
+### Part B: the lane menu (task 5) and Suspend (task 9)
+
+- `laneActionItems` (lib/lane-actions, pure) builds the list: **Close session** (arms when the lane
+  is running or suspended; `⌘W` hint only on the active lane, the one ⌘W closes; disabled with no
+  terminal), **Restart on Claude Code X** (only when out of date; disabled while busy),
+  **Suspend — keep the conversation** (only when the rules allow it now), and **Lane colour…**
+  under a hairline, which opens the AccentPicker at the menu's coordinates. DashboardView maps each
+  action to its handler (`laneActionMenu`) and renders one `CardMenu` titled with the lane's label.
+- `CardMenuItem.hint`: a right-aligned mono shortcut in `--fg-muted`, not drawn on a disabled item,
+  so the 0.4 opacity never stacks on `--fg-muted`.
+- **Entry 1:** a `⋯` in `SessionToolbar`, right cluster, before the side-panel toggle: `chipBase`,
+  `CHIP_H` square, `--fg-muted` ink that goes to `--fg` on hover and while open, no opacity, title
+  "Lane actions", `data-popmenu-trigger`. A second click closes the menu.
+- **Entry 2:** right-click on the collapsed orb (`RailOrb`), the expanded orb, or anywhere on the
+  expanded row (`SessionItem`; skipped while renaming) opens the lane menu at the coordinates the
+  accent picker used. The row's right-click anchors under its orb, so both routes open in one
+  place. `ProjectRail`'s `onPickAccent` is renamed `onLaneMenu` down to `SessionItem`. The Team
+  cards' recolour right-click is unchanged.
+- **Suspend by hand:** `suspendByHand` runs `suspendPlanned` for the one lane at threshold `now`,
+  with `focused: false`. The person asked, so the quiet time and "you are looking at it" are
+  dropped; every other rule holds. It reads the transcript first when that is unknown.
+  `suspendLane` takes `{ byHand: true }` to allow the active lane. A refusal pushes
+  `<lane> keeps running` with `Not suspended: <reason>.` The item shows only when
+  `canSuspendByHand` passes with the transcript and dev-server reads taken as passing, so a
+  coordinator, a mid-turn lane, one with unsent text or background work never offers it.
+- Not added: "Suspend all" in the project close dialog (declined by the user).
+- `dev/drive-accent-picker.mjs`: the rail right-clicks now click `Lane colour…` before looking for
+  swatches. Not run (needs the app).
+
+### Tests
+
+- `close-key.test.ts`: repeat ignored (armed, unarmed, idle lane); `LaneCloses` joins a running
+  close, starts a new one after it settles, files a woken lane under its new id and remembers it.
+- `project-shelf.test.ts`: `stuckAfterClose` judges a woken lane by its new id and returns it under
+  that id; not stuck once the new CLI stopped.
+- `guard-keys.test.ts` (new): safe, cycle, block for app chords and ⌘E, pass for ⌘Q, ⌘C and plain
+  keys; `keepFocus` restores, and does nothing for a removed element.
+- `keyboard-focus.test.ts` (new): follows `:focus-visible`, fallback on a parse error, null target.
+- `project-close-guard.test.ts`: body per kind (checkout, released, suspended, a four-kind mix, all
+  suspended in the checkout) with the no-break spaces, and the all-worktree text unchanged.
+- `lane-actions.test.ts` (new): order, arming, ⌘W only on the active lane, Restart and Suspend
+  only when they apply, distinct labels with no ■ or ✕, Close disabled with no terminal.
+- `lifecycle-wiring.test.ts`: pins updated for R1, R2, R3, R6 and R7; new pins for the dialog's key
+  block and focus restore, the toolbar ⋯ toggle, the rail and row right-click, Colour in the menu,
+  and the suspend-by-hand rules.
+
+Results:
+- Root `npx vitest run`: 129 files, **2018 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 56 files, **998 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### In-app checks for QA (added)
+
+10. **Held ⌘W.** On a running lane, hold ⌘W for about a second. Expected: the arm toast, and the
+    lane stays. Release and press once more within 2.5 s: it closes.
+11. **Close while closing.** Close a project whose QA lane is slow to stop. While the toast
+    reads `QA did not stop`, press QA's ■ twice on the rail. Expected: no second `Kept the
+    worktree folder…` error, and QA ends once.
+12. **Dialog keys.** With the close dialog open, press ⌘W, ⌘N and ⌘K. Expected: nothing happens
+    behind the scrim. Press Esc: the dialog closes and keys typed next go into the lane you were
+    in.
+13. **Dialog copy.** Close a project with one lane in the main checkout (worktrees off), and one
+    with a suspended lane. Expected: the body says nothing is committed for the first, and that
+    no CLI is running for the second.
+14. **Row ■ after a click.** Click the active row on the expanded rail and move the pointer away.
+    Expected: the phase word comes back. Tab to the row: ■ shows.
+15. **Lane menu.** At 264 and at 70 and with the rail hidden: open the toolbar ⋯, right-click an
+    orb, right-click an expanded row. Expected: one menu titled with the lane, in the same place
+    for the orb and its row. Close session arms on a live lane. Lane colour… opens the picker.
+    On an idle worker lane that has had a turn, Suspend — keep the conversation suspends it (the
+    pane shows the suspended overlay) and a click resumes it. The coordinator's menu and a running
+    lane's menu have no Suspend item. Check both themes.
+
+### Open points
+
+- The palette's "Close this session" is still not guarded for a mid-turn lane (unchanged).
+- The `closing…` chip still has no upper time limit (unchanged).

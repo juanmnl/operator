@@ -12,6 +12,7 @@ import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } 
 import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan, stuckAfterClose, closeToast, isOnRail } from '../lib/project-shelf'
 import { closeKeyAction, LaneCloses, type CloseKeyArm } from '../lib/close-key'
+import { laneActionItems, type LaneAction } from '../lib/lane-actions'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -27,7 +28,7 @@ import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSen
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
-import { planSuspends, suspendPlanned, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, suspendPlanned, suspendDecision, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
@@ -4172,7 +4173,7 @@ export function DashboardView() {
    *  then resumes the lane with it, rather than starting a second CLI beside the dying one or being
    *  typed into it. A message already queued for the old pty is diverted into the same wake. A kill
    *  that fails leaves the lane running and not suspended, and what waited is typed into it. */
-  const suspendLane = useCallback(async (terminalId: string, why: string, eligible?: () => boolean): Promise<boolean> => {
+  const suspendLane = useCallback(async (terminalId: string, why: string, eligible?: () => boolean, opts?: { byHand?: boolean }): Promise<boolean> => {
     const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab || tab.ended || restartingRef.current.has(terminalId) || suspendingRef.current.has(terminalId)) return false
     const claudeSessionId = claudeIdOf(terminalId)
@@ -4182,7 +4183,8 @@ export function DashboardView() {
       && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), !!submitQueue.pending(terminalId))
       && !hasUnsentInput(terminalId)
       && !awaitingReadyRef.current.get(terminalId)
-      && terminalId !== activeTerminalIdRef.current
+      // The lane being looked at is kept, unless the person suspends it themselves (the lane menu).
+      && (!!opts?.byHand || terminalId !== activeTerminalIdRef.current)
       // The pass's full decision on fresh state (review M1): background tasks, subagents, a dev
       // server, held deliveries, a release or another end of the lane in flight.
       && (eligible?.() ?? true)
@@ -4442,6 +4444,55 @@ export function DashboardView() {
   suspendableLanesRef.current = suspendableLanes
   const suspendFreshRef = useRef({ suspendCandidate, readDevServer })
   suspendFreshRef.current = { suspendCandidate, readDevServer }
+
+  /** SUSPEND BY HAND, from the lane menu (lifecycle audit task 9, approved 2026-10-24). The only
+   *  manual stop used to be Close, which forgets the conversation. This ends the CLI and keeps the
+   *  tab and the thread, as the idle pass does, under the same rules at the `now` threshold: the
+   *  quiet time is dropped and "you are looking at it" is lifted, since the person asked. Every
+   *  other rule holds (between turns, nothing owed, no unsent text, no background work, no dev
+   *  server, a turn to resume), and a refusal says which. */
+  const laneSuspendCandidate = (tab: TerminalTab, suspending: boolean): SuspendCandidate =>
+    ({ ...suspendFreshRef.current.suspendCandidate(tab, Date.now(), suspending), focused: false })
+  /** Whether the lane menu offers Suspend: the rules that can be read now, with the transcript and
+   *  ports, which need a read, taken as passing. The click checks them. */
+  const canSuspendByHand = (tab: TerminalTab): boolean => !tab.ended
+    && suspendDecision({ ...laneSuspendCandidate(tab, true), conversation: true, devServer: false }, Date.now(), 'now').suspend
+  const suspendByHand = async (terminalId: string, name: string): Promise<void> => {
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+    if (!tab) return
+    const lane = laneSuspendCandidate(tab, true)
+    const cid = claudeIdOf(terminalId)
+    if (lane.conversation === undefined && cid) {
+      try {
+        const have = await window.operator.conversationsWithTurn?.([{ id: cid, projectId: tab.projectId }])
+        if (have?.turn.includes(cid)) { conversationSeenRef.current.add(cid); lane.conversation = true }
+        else if (have?.none.includes(cid)) lane.conversation = false
+      } catch { /* unknown, and an unknown lane is kept */ }
+    }
+    const fresh = (id: string) => {
+      const t = terminalsRef.current.find((x) => x.id === id)
+      return t ? laneSuspendCandidate(t, false) : undefined
+    }
+    let skipped = ''
+    const done = await suspendPlanned({
+      planned: [lane],
+      threshold: 'now',
+      fresh,
+      readDevServer: suspendFreshRef.current.readDevServer,
+      suspend: (id, eligible) => suspendLaneRef.current(id, 'by hand', eligible, { byHand: true }),
+      onSkip: (_id, why) => { skipped = why },
+    })
+    if (done) return
+    const now = fresh(terminalId)
+    const why = skipped || (now
+      ? suspendDecision({ ...now, conversation: now.conversation ?? lane.conversation, devServer: await suspendFreshRef.current.readDevServer(terminalId) }, Date.now(), 'now').why
+      : 'not running')
+    pushToast({ text: `${name} keeps running`, detail: `Not suspended: ${why}.` })
+  }
+  const suspendByHandRef = useRef(suspendByHand)
+  suspendByHandRef.current = suspendByHand
+  const canSuspendByHandRef = useRef(canSuspendByHand)
+  canSuspendByHandRef.current = canSuspendByHand
 
   /** The suspend pass in progress, timed or under memory pressure. One at a time: the timed tick
    *  skips while one runs, and a pressure pass waits for it. */
@@ -4847,6 +4898,9 @@ export function DashboardView() {
   // stable saved key rather than the per-run session id.
   const [sessionAccents, setSessionAccents] = useState<Record<string, string>>(() => loadSessionAccents())
   const [accentPicker, setAccentPicker] = useState<{ sessionId: string; top: number; left: number } | null>(null)
+  /** One lane's actions menu, open at `top`/`left` (lifecycle audit B1): from the toolbar's ⋯, or a
+   *  right-click on the lane's orb or row at either rail width. */
+  const [laneActions, setLaneActions] = useState<{ sessionId: string; top: number; left: number } | null>(null)
   // The rail tile's context menu. Held HERE, not in ProjectRail, for the same reason the accent
   // picker is: the rail's tile column clips its overflow at 44px.
   const [railMenu, setRailMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
@@ -6453,6 +6507,38 @@ export function DashboardView() {
     ]
   }, [railMenuProject, projectActivities, handleOpenFolderPrefs, requestCloseProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
 
+  /** ONE LANE'S ACTIONS (lifecycle audit B1 and task 9). One list for the toolbar's ⋯ and the rail's
+   *  right-click. Close arms when the lane has anything to lose (running or suspended); ⌘W is
+   *  shown only for the lane it would close. Restart appears only when the lane is out of date,
+   *  Suspend only when the rules allow it now. Colour opens the picker where the menu was. */
+  const laneActionsTarget = laneActions ? allSidebarSessions.find((s) => s.id === laneActions.sessionId) : undefined
+  const laneActionsName = laneActionsTarget
+    ? sessionLabel({ session: laneActionsTarget, role: roleOf(laneActionsTarget), customName: customNames[laneActionsTarget.id], fallback: laneActionsTarget.projectName })
+    : ''
+  const laneActionMenu = useMemo((): CardMenuItem[] => {
+    const s = laneActionsTarget
+    if (!s || !laneActions) return []
+    const tab = s.terminalId ? terminals.find((t) => t.id === s.terminalId) : undefined
+    const live = tab && !tab.ended ? tab : undefined
+    const run: Record<LaneAction, () => void> = {
+      close: () => { void handleCloseSession(s) },
+      restart: () => { if (live) void handleRestartLane(live.id) },
+      suspend: () => { if (live) void suspendByHandRef.current(live.id, laneActionsName) },
+      colour: () => setAccentPicker({ sessionId: s.id, top: laneActions.top, left: laneActions.left }),
+    }
+    return laneActionItems({
+      active: s.id === activeSessionId,
+      live: s.status !== 'ended' || !!s.suspended,
+      closable: !!s.terminalId,
+      restart: live && installedClaudeVersion && isOutOfDate(live.claudeVersion, installedClaudeVersion)
+        ? { version: installedClaudeVersion, canRestart: restartable(restartCandidateOf(live), installedClaudeVersion) }
+        : undefined,
+      canSuspend: !!live && canSuspendByHandRef.current(live),
+    }).map(({ action, ...item }) => ({ ...item, onClick: run[action] }))
+    // `sessions`: the suspend rules read the tracked phase through a ref, so a phase change must rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneActionsTarget, laneActions, laneActionsName, terminals, sessions, activeSessionId, installedClaudeVersion, restartCandidateOf, handleRestartLane, handleCloseSession])
+
   /** THE LAUNCH PATH THE IDLE ROWS USED TO CARRY. The strip lists only what is LIVE now, so the
    *  roster's quiet lanes have no row to click — and removing a control must never strand the need
    *  behind it. Same verb, same one step, one gesture further in: pick the lane, it launches. */
@@ -6578,6 +6664,14 @@ export function DashboardView() {
           onClose={() => setRailMenu(null)}
         />
       )}
+      {laneActions && laneActionsTarget && (
+        <CardMenu
+          at={{ top: laneActions.top, left: laneActions.left }}
+          title={laneActionsName}
+          items={laneActionMenu}
+          onClose={() => setLaneActions(null)}
+        />
+      )}
       {laneMenu && laneMenuProject && (
         <CardMenu
           at={{ top: laneMenu.top, left: laneMenu.left }}
@@ -6631,7 +6725,7 @@ export function DashboardView() {
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         accentOf={accentOf}
-        onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
+        onLaneMenu={(session, anchor) => setLaneActions({ sessionId: session.id, ...anchor })}
         onOpenProjectHome={handleOpenProjectHome}
         projectHomeActive={contentMode === 'project'}
         onRestoreProject={restoreProject}
@@ -6895,6 +6989,9 @@ export function DashboardView() {
               onTogglePanel={togglePanel}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
+              // A second click on ⋯ closes it: the trigger is not "outside" for the menu's dismiss.
+              onLaneActions={(anchor) => setLaneActions((cur) => (cur?.sessionId === activeSession.id ? null : { sessionId: activeSession.id, ...anchor }))}
+              laneActionsOpen={laneActions?.sessionId === activeSession.id}
               checkoutGone={(() => {
                 const g = tab && goneCheckouts.find((x) => x.terminalId === tab.id)
                 return g ? { label: checkoutGoneLabel(g, tab.worktreeBranch), detail: checkoutGoneDetail(g, tab.worktreeBranch) } : null
