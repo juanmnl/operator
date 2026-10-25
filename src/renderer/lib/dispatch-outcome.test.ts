@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { DispatchRecord } from '../../shared/types'
-import { canDismissDispatch, chipForOutcome, type ChipTone } from './dispatch-outcome'
+import type { DispatchRecord, OwedSubmission } from '../../shared/types'
+import { canDismissDispatch, chipForOutcome, flipHeld, settleUnreturnedHeld, splitOwed, wakeOrEnded, HELD_LOST_NOTE, type ChipTone } from './dispatch-outcome'
 
 // Ported from `project-channel.test.ts`, which was deleted whole with the channel. The claim at
 // the time — "every describe tests a function that no longer exists" — was wrong about this one
@@ -99,5 +99,57 @@ describe('chipForOutcome — the retire outcomes', () => {
     expect(chipForOutcome('retiring')).toEqual({ label: 'queued · ending the released lane first', tone: 'warn' })
     expect(chipForOutcome('not-retired')).toEqual({ label: 'queued · lane could not be ended', tone: 'warn' })
     for (const o of ['retiring', 'not-retired'] as const) expect(chipForOutcome(o).label).not.toMatch(/wasn.t running/)
+  })
+})
+
+describe('held on a draft, on the record (review F1/F5, 2026-10-24)', () => {
+  const rec = (id: string, task: string, outcome: DispatchRecord['outcome'] = 'sent', toRoleId = 'code'): DispatchRecord =>
+    ({ id, at: '2026-10-24T10:00:00Z', fromRoleId: 'operator', toRoleId, task, outcome })
+
+  it('reads as held, not delivered', () => {
+    expect(chipForOutcome('held')).toEqual({ label: 'held · waiting on unsent text in the lane', tone: 'warn' })
+  })
+
+  it('flips the newest matching record to the lane, and back once written', () => {
+    const list = [rec('a', 'check it'), rec('b', 'check it'), rec('c', 'check it', 'sent', 'design')]
+    const held = flipHeld(list, '[from Operator] check it', 'code', true)!
+    expect(held.map((d) => d.outcome)).toEqual(['sent', 'held', 'sent'])
+    expect(flipHeld(held, 'check it', 'code', false)!.map((d) => d.outcome)).toEqual(['sent', 'sent', 'sent'])
+  })
+
+  it('changes nothing for a message no record carries', () => {
+    expect(flipHeld([rec('a', 'check it')], '[Operator] Lanes running now: Code.', 'code', true)).toBeUndefined()
+  })
+
+  it('after a reload, a held record no message came back for reads undelivered', () => {
+    const list = [rec('a', 'came back', 'held'), rec('b', 'lost', 'held'), rec('c', 'lost', 'sent')]
+    const out = settleUnreturnedHeld(list, ['[from Operator] came back'])!
+    expect(out.map((d) => d.outcome)).toEqual(['held', 'undelivered', 'sent'])
+    expect(out[1].note).toBe(HELD_LOST_NOTE)
+    expect(settleUnreturnedHeld([rec('a', 'came back', 'held')], ['came back'])).toBeUndefined()
+  })
+})
+
+describe('what the old renderer owed, after a reload (review S3/S6, 2026-10-25)', () => {
+  const owed = (key: string, terminalId: string, extra: Partial<OwedSubmission> = {}): OwedSubmission =>
+    ({ key, terminalId, text: `msg ${key}`, at: 0, ...extra })
+
+  it('re-submits to a running terminal, waits to see if a gone one was suspended, and drops a gone announcement', () => {
+    const out = splitOwed([
+      owed('a', 't1'),
+      owed('b', 't1', { reports: [7] }),
+      owed('c', 't2', { laneKey: 'lane-2' }),
+      owed('d', 't2', { laneKey: 'lane-2', reports: [8] }),
+      owed('e', 't3'),
+    ], new Set(['t1']))
+    expect(out.resubmit.map((o) => o.key)).toEqual(['a', 'b'])
+    expect(out.toWake.map((o) => o.key)).toEqual(['c'])
+    expect(out.ended.map((o) => o.key)).toEqual(['e'])
+  })
+
+  it('wakes a lane suspended across the reload, by its key, and reports the rest ended', () => {
+    const tabs = [{ key: 'lane-2', id: 'suspended:lane-2', idleSuspendedAt: '2026-10-25T08:00:00Z' }, { key: 'lane-3', id: 't9' }]
+    const out = wakeOrEnded([owed('c', 't2', { laneKey: 'lane-2' }), owed('f', 't4', { laneKey: 'lane-3' }), owed('g', 't5', { laneKey: 'lane-4' })], tabs)
+    expect(out.map((x) => x.tab?.id)).toEqual(['suspended:lane-2', undefined, undefined])
   })
 })

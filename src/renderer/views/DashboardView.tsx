@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef, useReducer } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout, OwedSubmission } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { launchWorkspace, suspendedToResume } from '../lib/lane-workspace'
@@ -27,20 +27,21 @@ import { CardMenu, CONFIRM_MS, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
-import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
+import { typedWithin, lastKeystrokeAt, hasUnsentInput, clearUnsentInput, onDraftChange, restoreDrafts } from '../lib/lane-keystrokes'
 import { planSuspends, suspendPlanned, suspendDecision, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, wakesOnFocus, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
+import { DraftHoldNotice } from '../components/terminal/DraftHoldNotice'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
 import { MemoryBanner, MEMORY_BANNER_H } from '../components/MemoryBanner'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
-import { canDismissDispatch } from '../lib/dispatch-outcome'
+import { canDismissDispatch, flipHeld, settleUnreturnedHeld, splitOwed, wakeOrEnded } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { laneBusName, projectSlug } from '../lib/bus-name'
 import { useRefocusOnActivate, type ActivationView } from '../lib/use-refocus-on-activate'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
-import { submitQueue, onUndeliveredSubmission, onSubmission, composerLines } from '../lib/submit-queue'
+import { submitQueue, onUndeliveredSubmission, onSubmission, onSubmissionLedger, composerLines, owesSubmission } from '../lib/submit-queue'
 import { matchSubmission, promptsSince } from '../lib/delivery-confirm'
 import { fetchTaskDiffStat, taskHasDiffSource } from '../lib/task-diff'
 import { ProjectRail, RAIL_W, RAIL_W_OPEN } from '../components/sidebar/ProjectRail'
@@ -659,6 +660,8 @@ export function DashboardView() {
     const unsubExit = window.operator.onTerminalExit((id, _code, _signal, selfExit) => {
       // A pty ended BY A RESTART is not a lane finishing; its tab has been, or is about to be,
       // swapped for the resumed one (see handleRestartLane).
+      // Its composer went with the process, so a draft flagged on it can no longer hold messages.
+      clearUnsentInput(id)
       if (restartedFromRef.current.has(id)) { submitQueue.busy(id, false); return }
       // Don't drop the tab — unmounting the pane blanks the final output. xterm
       // keeps its buffer after the pty dies, so mark the tab ended and leave it
@@ -743,7 +746,7 @@ export function DashboardView() {
           // running tasks — otherwise they sit `running` forever, which is a leak this store
           // has already had once.
           const selfExited = new Set(live.filter((x) => x.selfExit).map((x) => x.id))
-          for (const id of stale) { exitCompleteRef.current(id, selfExited.has(id)); submitQueue.busy(id, false) }
+          for (const id of stale) { exitCompleteRef.current(id, selfExited.has(id)); submitQueue.busy(id, false); clearUnsentInput(id) }
           const dead = new Set(stale)
           return prev.map((t) => (dead.has(t.id) ? { ...t, ended: true, selfExited: selfExited.has(t.id) } : t))
         })
@@ -1249,7 +1252,7 @@ export function DashboardView() {
         lastActivityAt: session?.lastActivityAt,
         phase: session && session.status !== 'ended' ? session.phase : undefined,
         settling: typedWithin(t.id, RETIRE_TYPING_QUIET_MS, now)
-          || !!submitQueue.pending(t.id)
+          || owesSubmission(submitQueue, t.id)
           || (!Number.isNaN(activeAt) && now - activeAt < RETIRE_ACTIVITY_QUIET_MS),
       }
     }), pendingReleasesRef.current)
@@ -1789,14 +1792,14 @@ export function DashboardView() {
    *  Matched by TEXT rather than by a terminal id, because a record carries no terminal: the
    *  submitted string is `replyPrefix(...) + task` on the agent→agent path and the bare task
    *  elsewhere, so an endsWith covers both without either path having to hand anything over. */
-  const reportUndelivered = useCallback((terminalId: string, text: string, cause?: 'resume' | 'waited', lane?: Pick<TerminalTab, 'projectId' | 'roleId'>) => {
+  const reportUndelivered = useCallback((terminalId: string, text: string, cause?: 'resume' | 'waited' | 'ended', lane?: Pick<TerminalTab, 'projectId' | 'roleId'>) => {
     const live = terminalsRef.current.find((t) => t.id === terminalId)
     // `lane`: the tab as the caller saw it, for a lane closed since (review R3-2), so the record
     // still turns `undelivered`.
     const tab = live ?? lane
     const project = projectsRef.current.find((p) => p.id === tab?.projectId)
     const rec = [...(project?.dispatches ?? [])].reverse()
-      .find((d) => (d.outcome === 'sent' || d.outcome === 'launched') && text.endsWith(d.task))
+      .find((d) => (d.outcome === 'sent' || d.outcome === 'launched' || d.outcome === 'held') && text.endsWith(d.task))
     if (project && rec) setDispatchOutcome(project.id, rec.id, 'undelivered')
     const name = tab?.roleId
       ? (project?.roster ?? []).find((r) => r.id === tab.roleId)?.name ?? tab.roleId
@@ -1808,7 +1811,8 @@ export function DashboardView() {
       text: cause ? `${name} did not get its message` : `${name} never started the task it was sent`,
       // One ellipsised line, minus the action button — about 40 characters land (Toast.tsx).
       detail: cause === 'waited' ? `It stayed busy for ${GATE_WAIT_CAP_MS / 1000} s; not resumed.`
-        : cause === 'resume' ? 'Its resume failed, so it never read it.' : 'It may still be sitting in its composer.',
+        : cause === 'resume' ? 'Its resume failed, so it never read it.'
+        : cause === 'ended' ? 'The lane ended before it was typed.' : 'It may still be sitting in its composer.',
       kind: 'error',
       action: { label: 'Show', run: () => { if (live) focusTerminalRef.current(live.id) } },
     })
@@ -1816,6 +1820,49 @@ export function DashboardView() {
 
   // Installed rather than imported: lib/submit-queue must not learn what a project is.
   useEffect(() => { onUndeliveredSubmission(reportUndelivered) }, [reportUndelivered])
+
+  // HELD ON A DRAFT, ON THE RECORD (review F1/F5, 2026-10-24). A message waiting on the person's
+  // unsent text was logged `sent` at the enqueue, so the dispatch log, the board and the dispatcher
+  // all read it as delivered while nothing had been typed. The queue says when the hold takes one
+  // and when it is written; the record reads `held` in between. Matched by text, as
+  // `reportUndelivered` does, and to the lane's role. Nothing changes when no record matches (an
+  // `[Operator]` note or an announcement has none).
+  const markHeldRecord = useCallback((terminalId: string, text: string, on: boolean, lane?: Pick<TerminalTab, 'projectId' | 'roleId'>) => {
+    const tab = lane ?? terminalsRef.current.find((t) => t.id === terminalId)
+    const roleId = tab?.roleId
+    const projectId = tab?.projectId
+    if (!projectId || !roleId) return
+    setProjects((prev) => {
+      const p = prev.find((x) => x.id === projectId)
+      const next = p && flipHeld(p.dispatches ?? [], text, roleId, on)
+      return next ? prev.map((x) => (x === p ? { ...x, dispatches: next } : x)) : prev
+    })
+  }, [])
+
+  // WHAT A LANE IS OWED, KEPT IN MAIN (review F1). The queue and the draft flags are renderer memory;
+  // the ptys and the text in their composers survive a crash or reload. Main keeps a copy of both
+  // (electron/src/main/lane-holds.ts) and the next renderer takes them back after the re-attach.
+  useEffect(() => {
+    onSubmissionLedger({
+      // With what a re-submission after a reload needs: the lane's key for a wake, the images, the
+      // reports an announcement marks, and whether its record reads `held` (review S3-S6).
+      owe: (id, key, text, opts) => {
+        const tab = terminalsRef.current.find((t) => t.id === id)
+        window.operator.laneHoldNote?.({ kind: 'owe', entry: {
+          key, terminalId: id, text, at: Date.now(), projectId: tab?.projectId, roleId: tab?.roleId, laneKey: tab?.key,
+          images: opts?.images?.length ? [...opts.images] : undefined,
+          reports: opts?.reports?.length ? [...opts.reports] : undefined,
+          held: opts?.held || undefined,
+        } })
+      },
+      settle: (_id, key) => window.operator.laneHoldNote?.({ kind: 'settle', key }),
+      held: (id, key, text, on) => {
+        window.operator.laneHoldNote?.({ kind: 'held', key, on })
+        markHeldRecord(id, text, on)
+      },
+    })
+    return onDraftChange((terminalId, on) => window.operator.laneHoldNote?.({ kind: 'draft', terminalId, on }))
+  }, [markHeldRecord])
   // For the mount-time reply subscriptions, which are declared above it.
   const reportUndeliveredRef = useRef(reportUndelivered)
   reportUndeliveredRef.current = reportUndelivered
@@ -2662,7 +2709,8 @@ export function DashboardView() {
     // composer — that is what `sent · never started` MEANS — and re-delivering onto it would make
     // the lane read the task twice, concatenated. Queued on the same per-terminal chain as the
     // delivery that follows, so it cannot overtake it. Bounded by the lines WE pasted; anything a
-    // human typed beyond that survives, deliberately.
+    // human typed beyond that survives, deliberately. Skipped by the queue while the lane has a
+    // draft (`clearComposer`), and the delivery then waits for it: the walk would delete their text.
     const targetTab = terminalsRef.current.find((t) => t.roleId === rec.toRoleId && t.projectId === projectId && !t.ended)
     if (targetTab) void submitQueue.clearComposer(targetTab.id, composerLines(rec.task))
     deliverDispatchRef.current({
@@ -3036,8 +3084,64 @@ export function DashboardView() {
   // Main holds lane dispatches and replies while no renderer can route them: from a crash or a
   // reload until here, where the tabs they name exist again. Before this, one sent in that gap was
   // dropped, or found no sending tab and was reported as coming from a lane that was gone.
+  //
+  // Before that, what the old renderer owed its lanes (review F1). The drafts main kept are flagged
+  // again, marked unknown: the person may have sent or cleared them since, and the TUI cannot be
+  // read. The owed messages go back into the queue for a lane that is still running, where they
+  // wait on that draft as before, and ahead of anything main releases next. One whose lane is gone
+  // is reported. A `held` record no message came back for (the app quit with it held, so main
+  // started empty) never reached its lane: it reads `undelivered`, with a note saying why.
+  //
+  // Each goes back as it was first submitted (review S3-S5, 2026-10-25): with its images, with its
+  // record's `held` mark, and an announce-pass line with the pass's idle check, marking its reports
+  // delivered once written. One whose terminal is gone may be for a lane suspended across the reload
+  // (S6); it waits for the suspended tabs (`owedToWake`) and wakes that lane, as a divert would have.
+  const [owedToWake, setOwedToWake] = useState<OwedSubmission[]>([])
   useEffect(() => {
-    if (reattachDone) window.operator.rendererReady?.()
+    if (!reattachDone) return
+    const resubmit = (o: OwedSubmission) => {
+      const reports = o.reports
+      if (!reports?.length) {
+        void submitQueue.submit(o.terminalId, o.text, { images: o.images, held: o.held })
+        return
+      }
+      // A pass already serving this coordinator announces these reports itself: they are undelivered.
+      const inFlight = announceInFlightRef.current
+      if (inFlight.has(o.terminalId)) return
+      inFlight.add(o.terminalId)
+      const stillIdle = (held: boolean) => !held && canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === o.terminalId))
+      void submitQueue.submit(o.terminalId, o.text, { reports, onlyIf: stillIdle })
+        .then(async (ok) => {
+          if (!ok || submitQueue.pending(o.terminalId)?.text === o.text) return
+          for (const id of reports) await window.operator.artifactMarkDelivered?.(id)
+          refreshReports()
+        })
+        .catch(() => {})
+        .finally(() => inFlight.delete(o.terminalId))
+    }
+    const restore = async () => {
+      const holds = await window.operator.laneHoldsTake?.().catch(() => undefined)
+      const live = new Set(terminalsRef.current.filter((t) => !t.ended && !t.selfExited).map((t) => t.id))
+      const split = splitOwed(holds?.owed ?? [], live)
+      if (holds) {
+        restoreDrafts(holds.drafts.filter((id) => live.has(id)))
+        for (const o of split.resubmit) resubmit(o)
+        for (const o of split.ended) reportUndeliveredRef.current(o.terminalId, o.text, 'ended', { projectId: o.projectId, roleId: o.roleId })
+        if (split.toWake.length) setOwedToWake(split.toWake)
+      }
+      const back = [...split.resubmit, ...split.toWake]
+      setProjects((prev) => {
+        let changed = false
+        const next = prev.map((p) => {
+          const settled = settleUnreturnedHeld(p.dispatches ?? [], back.filter((o) => o.projectId === p.id).map((o) => o.text))
+          if (!settled) return p
+          changed = true
+          return { ...p, dispatches: settled }
+        })
+        return changed ? next : prev
+      })
+    }
+    void restore().finally(() => window.operator.rendererReady?.())
   }, [reattachDone])
   // What main held too long to route (the window was closed for longer than its age limit). Named
   // here instead of acted on: routing them late would launch lanes and type replies hours after
@@ -4043,7 +4147,7 @@ export function DashboardView() {
     claudeVersion: tab.claudeVersion,
     ended: tab.ended,
     session: sessionsRef.current.find((s) => s.terminalId === tab.id),
-    pendingSubmission: !!submitQueue.pending(tab.id),
+    pendingSubmission: owesSubmission(submitQueue, tab.id),
     resumable: !!(claudeIdOf(tab.id) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [])
@@ -4116,7 +4220,7 @@ export function DashboardView() {
     if (!tab || tab.ended || restartingRef.current.has(terminalId)) return
     const session = sessionsRef.current.find((s) => s.terminalId === terminalId)
     // Re-checked at the moment of acting: a turn can start between drawing the button and the click.
-    if (!canRestartLane(session, !!submitQueue.pending(terminalId))) return
+    if (!canRestartLane(session, owesSubmission(submitQueue, terminalId))) return
     const claudeSessionId = claudeIdOf(terminalId) ?? savedSessionsRef.current.find((s) => s.key === tab.key)?.claudeSessionId
     if (!claudeSessionId) return // nothing to resume; a restart would open a blank session
     // The live effort first, as the toolbar reads it: a mid-session `/effort` is what the lane runs.
@@ -4126,6 +4230,9 @@ export function DashboardView() {
     restartedFromRef.current.add(terminalId)
     try {
       await window.operator.terminalKill(terminalId)
+      // The resumed CLI starts with an empty composer. Also cleared on the exit event; done here
+      // too in case that event is lost.
+      clearUnsentInput(terminalId)
       const next = await spawnInPlace(tab, claudeSessionId, { effort })
       if (!next) {
         // The old process is gone and nothing replaced it. Leave the tab in the state any exited
@@ -4181,7 +4288,7 @@ export function DashboardView() {
     if (!claudeSessionId) return false
     const session = sessionsRef.current.find((s) => s.terminalId === terminalId)
     const stillIdle = () => terminalsRef.current.some((t) => t.id === terminalId && !t.ended)
-      && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), !!submitQueue.pending(terminalId))
+      && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), owesSubmission(submitQueue, terminalId))
       && !hasUnsentInput(terminalId)
       && !awaitingReadyRef.current.get(terminalId)
       // The lane being looked at is kept, unless the person suspends it themselves (the lane menu).
@@ -4332,7 +4439,7 @@ export function DashboardView() {
    *  unsent (lib/idle-suspend `typeHeldKeys`). Through the submit queue's chain, behind any message
    *  already waiting on the lane (review N3). */
   const typeHeldKeysInto = (key: string, terminalId: string) => {
-    void typeHeldKeys(heldKeysRef.current, key, terminalId, () => whenLaneReady(terminalId), (text) => submitQueue.draft(terminalId, text))
+    void typeHeldKeys(heldKeysRef.current, key, terminalId, () => whenLaneReady(terminalId), (text, onWrite) => submitQueue.draft(terminalId, text, onWrite))
   }
 
   /** Resume the lane `tab` names (by key, since a resume changes its id) and deliver `message`. A
@@ -4399,7 +4506,7 @@ export function DashboardView() {
       spawnedAt: spawnedAtRef.current.get(tab.id),
       focused: tab.id === activeTerminalIdRef.current,
       unsentInput: hasUnsentInput(tab.id),
-      pendingSubmission: !!submitQueue.pending(tab.id),
+      pendingSubmission: owesSubmission(submitQueue, tab.id),
       awaitingDelivery: awaitingReadyRef.current.get(tab.id),
       heldDeliveries: heldDeliveriesFor(project?.dispatches, tab.roleId, now),
       backgroundTasks: session?.backgroundTasks,
@@ -5346,11 +5453,16 @@ export function DashboardView() {
     // ONE line naming their ids and lanes, and are marked delivered only after that line has
     // gone in. They used to be marked delivered with nothing typed at all, which is how Design's
     // #1789 was lost on 2026-10-02.
+    // AFTER A HOLD, NOT AT ALL (review F6, 2026-10-24). A line enqueued just before the person started
+    // typing waits on their draft, and their Enter releases it into the turn that Enter starts; the
+    // session still reads idle for about a second after. So a held line is refused at the write and
+    // stays undelivered for the next pass, and an unheld one re-checks the phase there.
+    const stillIdle = (held: boolean) => !held && canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === tab.id))
     const stale = (await window.operator.artifactStaleUndelivered?.(role, announceCutoff(Date.now()), tab.projectId)) ?? []
     let summarised = ''
     if (stale.length) {
       const line = staleSummary(stale)
-      await submitQueue.submit(tab.id, line)
+      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle, reports: stale.map((r) => r.id) }))) return `stale=${stale.length} outcome=summary not written (draft or turn), left undelivered`
       if (submitQueue.pending(tab.id)?.text === line) return `stale=${stale.length} outcome=summary unconfirmed, left undelivered`
       for (const report of stale) await window.operator.artifactMarkDelivered?.(report.id)
       summarised = ` summarised=${stale.map((r) => `#${r.id}`).join(',')}`
@@ -5390,7 +5502,7 @@ export function DashboardView() {
       // alternative — firing all three and marking them — is the mid-turn paste this whole
       // guard exists to prevent.
       const line = announcement(report)
-      await submitQueue.submit(tab.id, line)
+      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle, reports: [report.id] }))) { stop = ` stopped=#${report.id} not written (draft or turn), left undelivered`; break }
       if (submitQueue.pending(tab.id)?.text === line) { stop = ` stopped=#${report.id} unconfirmed, left undelivered`; break }
       await window.operator.artifactMarkDelivered?.(report.id)
       announced.push(`#${report.id}`)
@@ -5401,10 +5513,10 @@ export function DashboardView() {
 
   const announcePass = useCallback(() => {
     const inFlight = announceInFlightRef.current
-    const serve = coordinatorsToAnnounce(terminalsRef.current, sessionsRef.current, inFlight)
+    const serve = coordinatorsToAnnounce(terminalsRef.current, sessionsRef.current, inFlight, hasUnsentInput)
     for (const tab of terminalsRef.current) {
       if (serve.includes(tab)) continue
-      const skip = announceSkip(tab, sessionsRef.current, inFlight)
+      const skip = announceSkip(tab, sessionsRef.current, inFlight, hasUnsentInput)
       if (skip && skip !== 'not a coordinator' && skip !== 'in flight') noteAnnounce(tab, `skip=${skip}`)
     }
     for (const tab of serve) {
@@ -5951,6 +6063,21 @@ export function DashboardView() {
     return () => { live = false }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedHydrated, reattachDone, restoreSettled, suspendedRestored])
+
+  // What the old renderer owed a lane whose terminal is gone (review S6): a lane suspended across
+  // the reload is woken with it, as the suspend's divert would have; any other ended.
+  useEffect(() => {
+    if (!suspendedRestored || !owedToWake.length) return
+    setOwedToWake([])
+    for (const { o, tab } of wakeOrEnded(owedToWake, terminalsRef.current)) {
+      const lane = { projectId: o.projectId, roleId: o.roleId }
+      if (!tab) { reportUndeliveredRef.current(o.terminalId, o.text, 'ended', lane); continue }
+      void wakeLaneRef.current(tab, o.text).then((next) => {
+        if (!next || next === 'timed-out') reportUndeliveredRef.current(tab.id, o.text, next ? 'waited' : 'resume', lane)
+        else if (o.held) markHeldRecord(next.id, o.text, false, lane)
+      })
+    }
+  }, [suspendedRestored, owedToWake, markHeldRecord])
 
   // Main records the suspended set in last-run.json; told whenever it changes, once the restore
   // above has put this run's set together.
@@ -6608,10 +6735,11 @@ export function DashboardView() {
         projectName={projects.find((p) => p.id === projId)?.name ?? session.projectName}
         onToast={pushToast}
         // A note's screenshots are pasted first (Claude Code attaches a pasted image path as
-        // `[Image #N]`), in the same per-terminal chain, then the text submits them as one prompt.
+        // `[Image #N]`), in the same write step as the text, which submits them as one prompt.
         onDispatch={session.terminalId ? (text, images) => {
-          if (images?.length) void submitQueue.attachImages(session.terminalId!, images)
-          void submitQueue.submit(session.terminalId!, text)
+          // One step, after any hold on the person's draft: pasted on their own, the images went into
+          // the draft at once while the text waited (review F7).
+          void submitQueue.submit(session.terminalId!, text, { images })
         } : undefined}
         onSendToTasks={projId && projects.some((p) => p.id === projId) ? (text) => addProjectTask(projId, text) : undefined}
         annotate={previewAnnotate}
@@ -7139,6 +7267,8 @@ export function DashboardView() {
                     }}
                   />
                 )}
+                {/* Messages waiting on what the person typed (lib/submit-queue). */}
+                {!t.ended && !isPlaceholderId(t.id) && <DraftHoldNotice terminalId={t.id} />}
                 {t.idleSuspendedAt ? (
                   <SuspendedOverlay
                     active={t.id === activeTerminalId && mainView === 'terminal'}

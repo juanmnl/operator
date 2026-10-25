@@ -13,6 +13,7 @@ import { buildArgs } from '../../../src/renderer/lib/launch-args'
 import { safeExt } from '../../../src/renderer/lib/paste-image'
 import { channel, eventChannel, SPEC, type ApiMethod } from '../shared/operator-api'
 import type { EventMethod, EventPayload, InvokeHandlers, SendHandlers } from '../shared/ipc-contract'
+import { LaneHolds } from './lane-holds'
 import type { TerminalManager } from './terminals'
 import type { Transcript } from './transcript'
 import { sessionsWithTurn } from './transcript'
@@ -107,7 +108,11 @@ async function projectConfig(projectId: string): Promise<ProjectLayers> {
 }
 
 export function registerIpc(d: Deps): void {
+  // Drafts and owed messages per lane, for the next renderer (lane-holds.ts). Lives as long as
+  // main does, which is as long as the ptys do.
+  const laneHolds = new LaneHolds()
   const invoke: InvokeHandlers = {
+    laneHoldsTake: async () => laneHolds.take(),
     // --- terminals ---------------------------------------------------------------------
     // Composes the launch exactly as `operator-bridge.ts` does, except that the folder picker,
     // the session uuid and `buildArgs` all run HERE. The renderer-only inputs — the tui pref
@@ -467,6 +472,7 @@ export function registerIpc(d: Deps): void {
   }
 
   const send: SendHandlers = {
+    laneHoldNote: (op) => laneHolds.apply(op),
     terminalStart: (id, cols, rows) => d.terminals.start(id, cols, rows),
     terminalWrite: (id, data) => d.terminals.write(id, data),
     terminalResize: (id, cols, rows) => d.terminals.resize(id, cols, rows),

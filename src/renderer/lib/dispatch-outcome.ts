@@ -1,4 +1,4 @@
-import type { DispatchRecord } from '../../shared/types'
+import type { DispatchRecord, OwedSubmission } from '../../shared/types'
 
 // WHAT A DISPATCH OUTCOME SAYS TO A HUMAN. One vocabulary, for every surface that shows one.
 //
@@ -90,8 +90,65 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip 
       return { label: 'queued · ending the released lane first', tone: 'warn' }
     case 'not-retired':
       return { label: 'queued · lane could not be ended', tone: 'warn' }
+    // Waiting in the submit queue on text the person typed into that lane and has not sent. Not
+    // typed yet; it goes once they send or clear it, or press Deliver now in the lane.
+    case 'held':
+      return { label: 'held · waiting on unsent text in the lane', tone: 'warn' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }
   }
+}
+
+/** The note on a `held` record that no message came back for after a reload or relaunch. */
+export const HELD_LOST_NOTE = 'Held on unsent text in the lane when Operator quit or reloaded; it was never typed.'
+
+/** `sent` → `held` (`on`) or back, on the newest record to `roleId` whose task `text` ends with
+ *  (the submitted text is the task, or a reply prefix plus it). Undefined when none matches, so the
+ *  caller can keep its state as it is. */
+export function flipHeld(records: readonly DispatchRecord[], text: string, roleId: string, on: boolean): DispatchRecord[] | undefined {
+  const from: DispatchRecord['outcome'] = on ? 'sent' : 'held'
+  for (let i = records.length - 1; i >= 0; i--) {
+    const d = records[i]
+    if (d.outcome !== from || d.toRoleId !== roleId || !text.endsWith(d.task)) continue
+    return records.map((x, j) => (j === i ? { ...x, outcome: on ? 'held' : 'sent' } : x))
+  }
+  return undefined
+}
+
+/** After a reload: every `held` record that none of the messages given back (`returned`, their
+ *  submitted texts) matches never reached its lane, so it reads `undelivered`. Undefined when
+ *  nothing changes. */
+export function settleUnreturnedHeld(records: readonly DispatchRecord[], returned: readonly string[]): DispatchRecord[] | undefined {
+  if (!records.some((d) => d.outcome === 'held' && !returned.some((t) => t.endsWith(d.task)))) return undefined
+  return records.map((d) => (d.outcome !== 'held' || returned.some((t) => t.endsWith(d.task))
+    ? d
+    : { ...d, outcome: 'undelivered', note: HELD_LOST_NOTE }))
+}
+
+/** After a reload: where each message the old renderer owed goes.
+ *
+ *  - `resubmit`: its terminal is still running, so it goes back into the queue.
+ *  - `toWake`: its terminal is gone but the lane's key is known. The lane may have been suspended
+ *    across the reload (review S6, 2026-10-25); its placeholder tab comes back only after this, so
+ *    `wakeOrEnded` decides once it has.
+ *  - `ended`: its terminal is gone and nothing names the lane.
+ *
+ *  An announce-pass line (`reports`) for a terminal that is gone is in none of them: its reports
+ *  are still undelivered in artifacts.db, and the pass announces them once the coordinator is idle. */
+export function splitOwed(owed: readonly OwedSubmission[], live: ReadonlySet<string>): { resubmit: OwedSubmission[]; toWake: OwedSubmission[]; ended: OwedSubmission[] } {
+  const out = { resubmit: [] as OwedSubmission[], toWake: [] as OwedSubmission[], ended: [] as OwedSubmission[] }
+  for (const o of owed) {
+    if (live.has(o.terminalId)) out.resubmit.push(o)
+    else if (o.reports?.length) continue
+    else if (o.laneKey) out.toWake.push(o)
+    else out.ended.push(o)
+  }
+  return out
+}
+
+/** The suspended tab each of `toWake` resumes with its message, or undefined when its lane is not
+ *  suspended (it ended). */
+export function wakeOrEnded<T extends { key: string; idleSuspendedAt?: string }>(toWake: readonly OwedSubmission[], tabs: readonly T[]): { o: OwedSubmission; tab?: T }[] {
+  return toWake.map((o) => ({ o, tab: tabs.find((t) => t.key === o.laneKey && !!t.idleSuspendedAt) }))
 }

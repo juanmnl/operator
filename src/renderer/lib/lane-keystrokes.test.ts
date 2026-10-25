@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput } from './lane-keystrokes'
+import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput, clearUnsentInput, restoreDrafts, draftUnknown, onDraftChange, listMayBeOpen, DOUBLE_ESC_MS } from './lane-keystrokes'
 
 describe('lane keystrokes', () => {
   it('reports typing within the window, per terminal', () => {
@@ -33,9 +33,249 @@ describe('unsent input', () => {
     expect(hasUnsentInput('d2')).toBe(true)
   })
 
+  it('forgets a draft when the lane ends or restarts', () => {
+    noteDraftKey('d5', { key: 'x' })
+    clearUnsentInput('d5')
+    expect(hasUnsentInput('d5')).toBe(false)
+  })
+
   it('reports the last keystroke time', () => {
     noteKeystroke('d3', 7_000)
     expect(lastKeystrokeAt('d3')).toBe(7_000)
     expect(lastKeystrokeAt('d4')).toBeUndefined()
+  })
+})
+
+describe('unsent input: the keys Claude Code reads differently (review F4/F5, 2026-10-24)', () => {
+  it('reads \\ then Enter as a newline in the draft, not a send', () => {
+    expect(draftEffect({ key: 'Enter' }, { before: '\\' }, 10)).toBe('draft')
+    noteDraftKey('k1', { key: 'x' }, 0)
+    noteDraftKey('k1', { key: '\\' }, 10)
+    // Shift on its own between them changes nothing in the composer.
+    noteDraftKey('k1', { key: 'Shift', shiftKey: true }, 15)
+    noteDraftKey('k1', { key: 'Enter' }, 20)
+    expect(hasUnsentInput('k1')).toBe(true)
+    // The next Enter sends the multi-line message.
+    noteDraftKey('k1', { key: 'Enter' }, 30)
+    expect(hasUnsentInput('k1')).toBe(false)
+  })
+
+  it('reads a \\ deleted before the Enter as gone', () => {
+    noteDraftKey('k2', { key: '\\' }, 0)
+    noteDraftKey('k2', { key: 'Backspace' }, 10)
+    noteDraftKey('k2', { key: 'Enter' }, 20)
+    expect(hasUnsentInput('k2')).toBe(false)
+  })
+
+  it('clears on a double Esc inside the window, as the TUI does', () => {
+    noteDraftKey('k3', { key: 'x' }, 0)
+    noteDraftKey('k3', { key: 'Escape' }, 1000)
+    expect(hasUnsentInput('k3')).toBe(true)
+    noteDraftKey('k3', { key: 'Escape' }, 1000 + DOUBLE_ESC_MS)
+    expect(hasUnsentInput('k3')).toBe(false)
+  })
+
+  it('does not clear on two Escs too far apart, or with a key between them', () => {
+    noteDraftKey('k4', { key: 'x' }, 0)
+    noteDraftKey('k4', { key: 'Escape' }, 100)
+    noteDraftKey('k4', { key: 'Escape' }, 101 + DOUBLE_ESC_MS)
+    expect(hasUnsentInput('k4')).toBe(true)
+    noteDraftKey('k5', { key: 'x' }, 0)
+    noteDraftKey('k5', { key: 'Escape' }, 100)
+    noteDraftKey('k5', { key: 'ArrowLeft' }, 150)
+    noteDraftKey('k5', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('k5')).toBe(true)
+  })
+
+  it('restores the drafts main kept after a reload, marked unknown until a key settles them', () => {
+    restoreDrafts(['k6', 'k7'])
+    expect(hasUnsentInput('k6')).toBe(true)
+    expect(draftUnknown('k6')).toBe(true)
+    noteDraftKey('k6', { key: 'y' })
+    expect(draftUnknown('k6')).toBe(false)
+    expect(hasUnsentInput('k6')).toBe(true)
+    noteDraftKey('k7', { key: 'Enter' })
+    expect(hasUnsentInput('k7')).toBe(false)
+    expect(draftUnknown('k7')).toBe(false)
+    clearUnsentInput('k6')
+  })
+
+  it('tells its listeners each change once, for main\'s mirror', () => {
+    const seen: [string, boolean][] = []
+    const off = onDraftChange((id, on) => seen.push([id, on]))
+    noteDraftKey('k8', { key: 'a' })
+    noteDraftKey('k8', { key: 'b' })
+    notePaste('k8')
+    noteDraftKey('k8', { key: 'c', ctrlKey: true })
+    clearUnsentInput('k8')
+    off()
+    noteDraftKey('k8', { key: 'z' })
+    expect(seen).toEqual([['k8', true], ['k8', false]])
+    clearUnsentInput('k8')
+  })
+})
+
+describe('unsent input: suggestion lists and the character before the cursor (review S1/S2, 2026-10-25)', () => {
+  it('S1: an Esc while a suggestion list may be open starts no pair, as with disableEscapeDoublePress', () => {
+    expect(draftEffect({ key: 'Escape' }, { prev: { key: 'Escape', at: 0 }, picker: true }, 10)).toBeNull()
+    // `@src/ren`, then a double Esc: the first closes the picker, the second only says "Esc again".
+    for (const [i, key] of [...'look @src/ren'].entries()) noteDraftKey('s1', { key }, i)
+    noteDraftKey('s1', { key: 'Escape' }, 100)
+    noteDraftKey('s1', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s1')).toBe(true)
+    // A third Esc inside the window is the second of a new pair, and the TUI clears then.
+    noteDraftKey('s1', { key: 'Escape' }, 300)
+    expect(hasUnsentInput('s1')).toBe(false)
+  })
+
+  it('S1: the / command menu counts too, and a pasted @ path', () => {
+    noteDraftKey('s2', { key: '/' }, 0)
+    noteDraftKey('s2', { key: 'e' }, 10)
+    noteDraftKey('s2', { key: 'Escape' }, 100)
+    noteDraftKey('s2', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s2')).toBe(true)
+    notePaste('s3', 'see @docs/plan.md')
+    noteDraftKey('s3', { key: 'Escape' }, 100)
+    noteDraftKey('s3', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s3')).toBe(true)
+    clearUnsentInput('s2')
+    clearUnsentInput('s3')
+  })
+
+  it('S1: with no key that opens a list, a double Esc still clears; after Enter or Ctrl+C the list is gone', () => {
+    noteDraftKey('s4', { key: 'a' }, 0)
+    noteDraftKey('s4', { key: 'Escape' }, 100)
+    noteDraftKey('s4', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s4')).toBe(false)
+    noteDraftKey('s5', { key: '@' }, 0)
+    noteDraftKey('s5', { key: 'c', ctrlKey: true }, 10)
+    noteDraftKey('s5', { key: 'x' }, 20)
+    noteDraftKey('s5', { key: 'Escape' }, 100)
+    noteDraftKey('s5', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s5')).toBe(false)
+  })
+
+  it('S1: a draft restored after a reload takes a list to be open', () => {
+    restoreDrafts(['s6'])
+    noteDraftKey('s6', { key: 'Escape' }, 100)
+    noteDraftKey('s6', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s6')).toBe(true)
+    clearUnsentInput('s6')
+  })
+
+  it('S2: a paste that ends in \\, then Enter, is a newline', () => {
+    notePaste('b1', 'C:\\Users\\')
+    noteDraftKey('b1', { key: 'Enter' }, 10)
+    expect(hasUnsentInput('b1')).toBe(true)
+    // The TUI replaced the \\ with the newline, so the next Enter sends.
+    noteDraftKey('b1', { key: 'Enter' }, 20)
+    expect(hasUnsentInput('b1')).toBe(false)
+  })
+
+  it('S2: \\, another character, Backspace, Enter is a newline', () => {
+    noteDraftKey('b2', { key: '\\' }, 0)
+    noteDraftKey('b2', { key: 'x' }, 10)
+    noteDraftKey('b2', { key: 'Backspace' }, 20)
+    noteDraftKey('b2', { key: 'Enter' }, 30)
+    expect(hasUnsentInput('b2')).toBe(true)
+    clearUnsentInput('b2')
+  })
+
+  it('S2: a \\ typed before the cursor moved is not read as the one before it', () => {
+    noteDraftKey('b3', { key: '\\' }, 0)
+    noteDraftKey('b3', { key: 'ArrowLeft' }, 10)
+    noteDraftKey('b3', { key: 'Backspace' }, 20)
+    noteDraftKey('b3', { key: 'Enter' }, 30)
+    expect(hasUnsentInput('b3')).toBe(false)
+    // A paste whose text is not known leaves the character unseen, and Enter sends.
+    noteDraftKey('b4', { key: '\\' }, 0)
+    notePaste('b4')
+    noteDraftKey('b4', { key: 'Enter' }, 10)
+    expect(hasUnsentInput('b4')).toBe(false)
+  })
+})
+
+describe('unsent input: which / and @ open a suggestion list (review N1, 2026-10-25)', () => {
+  const typeKeys = (id: string, text: string) => { for (const key of text) noteDraftKey(id, { key }, 0) }
+  const doubleEsc = (id: string) => {
+    noteDraftKey(id, { key: 'Escape' }, 100)
+    noteDraftKey(id, { key: 'Escape' }, 200)
+  }
+
+  it('opens the command menu only on a draft that starts with / and a command name', () => {
+    expect(listMayBeOpen('/')).toBe(true)
+    expect(listMayBeOpen('/rev')).toBe(true)
+    expect(listMayBeOpen('/review ')).toBe(true)
+    // Arguments after the name, or a second / (a path), close it.
+    expect(listMayBeOpen('/review 12')).toBe(false)
+    expect(listMayBeOpen('/usr/bin')).toBe(false)
+  })
+
+  it('opens the mid-draft command list on / after whitespace, as the binary\'s nA does', () => {
+    expect(listMayBeOpen('then /rev')).toBe(true)
+    expect(listMayBeOpen('then\n/rev')).toBe(true)
+    expect(listMayBeOpen('see /usr/bin')).toBe(false)
+    expect(listMayBeOpen('see src/main.ts')).toBe(false)
+    expect(listMayBeOpen('open https://example.com/a')).toBe(false)
+  })
+
+  it('opens the file picker on @ at the start or after whitespace, until the mention ends', () => {
+    expect(listMayBeOpen('@')).toBe(true)
+    expect(listMayBeOpen('look at @src/ren')).toBe(true)
+    expect(listMayBeOpen('文件。@src')).toBe(true)
+    expect(listMayBeOpen('look at @"my docs/pl')).toBe(true)
+    expect(listMayBeOpen('look at @src/main.ts and')).toBe(false)
+    expect(listMayBeOpen('mail me@example.com')).toBe(false)
+  })
+
+  it('a double Esc clears a draft that holds a path, a URL or an email address', () => {
+    typeKeys('n1', 'see /usr/bin and https://example.com/a')
+    doubleEsc('n1')
+    expect(hasUnsentInput('n1')).toBe(false)
+    notePaste('n2', 'fix src/main.ts, ask me@example.com')
+    doubleEsc('n2')
+    expect(hasUnsentInput('n2')).toBe(false)
+  })
+
+  it('a finished @ mention no longer holds the double Esc; Backspace into it opens the list again', () => {
+    typeKeys('n3', 'read @src/main.ts now')
+    doubleEsc('n3')
+    expect(hasUnsentInput('n3')).toBe(false)
+    typeKeys('n4', 'read @src/main.ts ')
+    noteDraftKey('n4', { key: 'Backspace' }, 0)
+    doubleEsc('n4')
+    expect(hasUnsentInput('n4')).toBe(true)
+    clearUnsentInput('n4')
+  })
+
+  it('after the cursor moves, a draft that held an @ or / may still have a list open', () => {
+    // `@src now`, cursor back into the mention, a character typed: the TUI may show the picker.
+    typeKeys('n5', '@src now')
+    noteDraftKey('n5', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n5', { key: 'x' }, 0)
+    doubleEsc('n5')
+    expect(hasUnsentInput('n5')).toBe(true)
+    clearUnsentInput('n5')
+    // A draft with neither does not.
+    typeKeys('n6', 'hello wrld')
+    noteDraftKey('n6', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n6', { key: 'o' }, 0)
+    doubleEsc('n6')
+    expect(hasUnsentInput('n6')).toBe(false)
+    expect(listMayBeOpen('\u0000x', true)).toBe(true)
+    // A space may still be inside a quoted mention begun in the unseen text; a closed quote and a space end it.
+    expect(listMayBeOpen('\u0000x y', true)).toBe(true)
+    expect(listMayBeOpen('\u0000x" y', true)).toBe(false)
+    expect(listMayBeOpen('\u0000x', false)).toBe(false)
+  })
+
+  it('a sent or cleared draft forgets the @ it held', () => {
+    typeKeys('n7', '@src')
+    noteDraftKey('n7', { key: 'Enter' }, 0)
+    typeKeys('n7', 'next')
+    noteDraftKey('n7', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n7', { key: 'x' }, 0)
+    doubleEsc('n7')
+    expect(hasUnsentInput('n7')).toBe(false)
   })
 })

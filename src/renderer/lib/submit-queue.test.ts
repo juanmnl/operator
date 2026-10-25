@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue, clearComposerSequence, composerLines, MAX_CLEAR_LINES } from './submit-queue'
+import { createSubmitQueue, submitSequence, nudgeDelayFor, rescueDelayFor, SUBMIT_GAP_MS, SUBMIT_NUDGE_MS, SUBMIT_NUDGE_MAX_MS, RESCUE_AFTER_MS, CONFIRM_POLL_MS, CONFIRM_WINDOW_MS, type SubmitQueue, clearComposerSequence, composerLines, MAX_CLEAR_LINES, DRAFT_POLL_MS } from './submit-queue'
+import { noteDraftKey, hasUnsentInput, clearUnsentInput } from './lane-keystrokes'
 
 /** A deterministic clock: `sleep` advances virtual time instead of waiting. */
 function fakeClock() {
@@ -1077,5 +1078,347 @@ describe('draft — text a person typed, into the composer, unsent (idle suspend
     const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock() })
     await q.draft('t1', 'a\x1b[201~\rb')
     expect(writes).toEqual(['\x1b[200~a[201~\nb\x1b[201~'])
+  })
+})
+
+/** A clock that also runs scheduled events as virtual time passes: how a test makes the person
+ *  press Enter at t=5000 while the queue is polling. Throws past an hour so a hold that never
+ *  ends fails the test instead of spinning. */
+function eventClock() {
+  let t = 0
+  const events: { at: number; run: () => void }[] = []
+  const fire = () => {
+    for (const e of events.filter((x) => x.at <= t)) { events.splice(events.indexOf(e), 1); e.run() }
+  }
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms
+      if (t > 3_600_000) throw new Error('held forever')
+      fire()
+    },
+    at: (when: number, run: () => void) => { events.push({ at: when, run }) },
+  }
+}
+
+describe('held on a person\'s draft (2026-10-24: a delivery merged into half-typed text)', () => {
+  /** A queue whose draft flag the test sets, per terminal. */
+  function setup() {
+    const clock = eventClock()
+    const writes: { at: number; id: string; data: string }[] = []
+    const drafts = new Set<string>()
+    const cleared: string[] = []
+    const q = createSubmitQueue({
+      write: (id, data) => writes.push({ at: clock.now(), id, data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      clearUnsentInput: (id) => { cleared.push(id); drafts.delete(id) },
+    })
+    return { clock, writes, drafts, cleared, q }
+  }
+
+  it('writes nothing while the draft is there, and counts the message as owed to the lane', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    const seen: { held: number; unwritten: number; pending: boolean; writes: number }[] = []
+    clock.at(2000, () => seen.push({ held: q.heldForDraft('t1'), unwritten: q.unwritten('t1'), pending: !!q.pending('t1'), writes: writes.length }))
+    clock.at(5000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(seen).toEqual([{ held: 1, unwritten: 1, pending: false, writes: 0 }])
+    expect(writes[0].data).toBe(submitSequence('A'))
+    // The gap runs from the moment the draft went, not from the enqueue.
+    expect(writes[0].at).toBeGreaterThanOrEqual(5000 + SUBMIT_GAP_MS)
+    expect(q.unwritten('t1')).toBe(0)
+    expect(q.heldForDraft('t1')).toBe(0)
+  })
+
+  it('does not hold a lane with no draft', async () => {
+    const { writes, q } = setup()
+    await q.submit('t1', 'A')
+    expect(writes[0]).toMatchObject({ at: 0, data: submitSequence('A') })
+  })
+
+  it('releases on Enter, read from the real key tracking', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-enter', { key: 'P' })
+    clock.at(3000, () => noteDraftKey('hold-enter', { key: 'Enter' }))
+    await q.submit('hold-enter', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+    expect(writes[0].at).toBeLessThan(3000 + DRAFT_POLL_MS + SUBMIT_GAP_MS + 1)
+  })
+
+  it('releases on Ctrl+C', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-ctrlc', { key: 'x' })
+    // Shift+Enter is a newline inside the draft, not a send.
+    clock.at(1000, () => noteDraftKey('hold-ctrlc', { key: 'Enter', shiftKey: true }))
+    clock.at(4000, () => noteDraftKey('hold-ctrlc', { key: 'c', ctrlKey: true }))
+    await q.submit('hold-ctrlc', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(4000 + SUBMIT_GAP_MS)
+  })
+
+  it('releases when the lane ends and its flag is cleared, so a dead id holds nothing', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push({ at: clock.now(), data }), now: clock.now, sleep: clock.sleep, hasUnsentInput })
+    noteDraftKey('hold-exit', { key: 'x' })
+    clock.at(2000, () => clearUnsentInput('hold-exit'))
+    await q.submit('hold-exit', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(2000)
+  })
+
+  it('holds the whole burst, then writes it in order with the gap between each', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1000, () => expect(q.heldForDraft('t1')).toBe(3))
+    clock.at(4000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'other lane'), q.submit('t1', 'B'), q.submit('t1', 'C')])
+    // Another lane is not held by this lane's draft: written long before it clears. (The clock
+    // is shared, so t1's polls move it; the order is what matters.)
+    expect(pastes(writes).find((w) => w.id === 't2')!.at).toBeLessThan(4000)
+    const subs = pastes(writes).filter((w) => w.id === 't1')
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B'), submitSequence('C')])
+    expect(subs[0].at).toBeGreaterThanOrEqual(4000 + SUBMIT_GAP_MS)
+    expect(subs[1].at - subs[0].at).toBeGreaterThanOrEqual(SUBMIT_GAP_MS)
+    expect(subs[2].at - subs[1].at).toBeGreaterThanOrEqual(SUBMIT_GAP_MS)
+  })
+
+  it('holds again when typing starts during the gap after a release', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    clock.at(1100, () => drafts.add('t1'))
+    clock.at(6000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(6000 + SUBMIT_GAP_MS)
+  })
+
+  it('deliverNow sends the head into the draft and clears the flag; the next goes once no draft is left', async () => {
+    const { clock, writes, drafts, cleared, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => q.deliverNow('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t1', 'B')])
+    const subs = pastes(writes)
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B')])
+    expect(subs[0].at).toBeGreaterThanOrEqual(2000)
+    // The first one's CR sent the draft with it, so the flag goes and B is not held on it.
+    expect(cleared).toEqual(['t1'])
+    expect(subs[1].at - subs[0].at).toBeLessThan(RESCUE_AFTER_MS)
+  })
+
+  it('deliverNow does not release a message enqueued after it', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    q.deliverNow('t1')
+    clock.at(3000, () => drafts.delete('t1'))
+    await q.submit('t1', 'later')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+  })
+
+  it('tells listeners when the held count changes', async () => {
+    const { clock, drafts, q } = setup()
+    drafts.add('t1')
+    const counts: number[] = []
+    const off = q.onHoldChange(() => counts.push(q.heldForDraft('t1')))
+    clock.at(2000, () => drafts.delete('t1'))
+    const a = q.submit('t1', 'A')
+    await Promise.resolve()
+    void q.submit('t1', 'B')
+    await a
+    await q.idle()
+    off()
+    expect(counts[0]).toBe(1) // held
+    expect(counts).toContain(2) // B joined while held
+    expect(counts[counts.length - 1]).toBe(0)
+  })
+
+  it('times the delivery check from the write, not the enqueue: a long hold is not reported lost', async () => {
+    const clock = eventClock()
+    const writes: { at: number; data: string }[] = []
+    const lost: string[] = []
+    const drafts = new Set(['t1'])
+    const q = createSubmitQueue({
+      write: (_id, data) => writes.push({ at: clock.now(), data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      onUndelivered: (_id, text) => lost.push(text),
+    })
+    q.observable('t1')
+    // Held for ten minutes, far past RESCUE_AFTER_MS + CONFIRM_WINDOW_MS.
+    const release = 600_000
+    clock.at(release, () => drafts.delete('t1'))
+    let pendingAt: number | undefined
+    clock.at(release + SUBMIT_GAP_MS + 1000, () => { pendingAt = q.pending('t1')?.at; q.confirm('t1') })
+    await q.submit('t1', 'A')
+    await q.idle()
+    expect(pendingAt).toBeGreaterThanOrEqual(release)
+    expect(lost).toEqual([])
+    // Confirmed inside the window that started at the write, so no rescue CR.
+    expect(writes.map((w) => w.data)).toEqual([submitSequence('A')])
+  })
+
+  it('hands a held message to a divert instead of waiting on a draft in a dying pty', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    const handed: string[] = []
+    clock.at(1000, () => q.divert('t1', (text) => handed.push(text)))
+    await q.submit('t1', 'A')
+    expect(handed).toEqual(['A'])
+    expect(writes).toEqual([])
+    expect(q.unwritten('t1')).toBe(0)
+  })
+})
+
+describe('clearComposer never runs over a draft (retry path)', () => {
+  it('writes nothing while the person has unsent text', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock(), hasUnsentInput: () => true })
+    await q.clearComposer('t1', 2)
+    expect(writes).toEqual([])
+  })
+
+  it('still clears our own stale paste when there is no draft', async () => {
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock(), hasUnsentInput: () => false })
+    await q.clearComposer('t1', 2)
+    expect(writes).toEqual([clearComposerSequence(2)])
+  })
+})
+
+describe('held on a draft: review fixes (2026-10-24)', () => {
+  function setup(extra: Partial<Parameters<typeof createSubmitQueue>[0]> = {}) {
+    const clock = eventClock()
+    const writes: { at: number; id: string; data: string }[] = []
+    const drafts = new Set<string>()
+    const q = createSubmitQueue({
+      write: (id, data) => writes.push({ at: clock.now(), id, data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      clearUnsentInput: (id) => { drafts.delete(id) },
+      ...extra,
+    })
+    return { clock, writes, drafts, q }
+  }
+
+  it('F2: deliverNow releases only the head; typing right after it holds message 2', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => q.deliverNow('t1'))
+    // The person starts their next line just after message 1 went with their draft.
+    clock.at(2000 + SUBMIT_GAP_MS + 10, () => drafts.add('t1'))
+    clock.at(9000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t1', 'B')])
+    const subs = pastes(writes)
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B')])
+    expect(subs[0].at).toBeLessThan(2000 + SUBMIT_GAP_MS + 10)
+    // Not merged into the new line: B waited for it to be sent.
+    expect(subs[1].at).toBeGreaterThanOrEqual(9000 + SUBMIT_GAP_MS)
+  })
+
+  it('F2: deliverNow with nothing at the hold releases nothing', async () => {
+    const { clock, writes, drafts, q } = setup()
+    q.deliverNow('t1')
+    drafts.add('t1')
+    clock.at(3000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+  })
+
+  it('F6: onlyIf is asked after the hold, told it was held, and false writes nothing', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => drafts.delete('t1'))
+    const asked: boolean[] = []
+    const ok = await q.submit('t1', 'announce', { onlyIf: (held) => { asked.push(held); return !held } })
+    expect(ok).toBe(false)
+    expect(asked).toEqual([true])
+    expect(writes).toEqual([])
+    expect(q.unwritten('t1')).toBe(0)
+    expect(q.pending('t1')).toBeUndefined()
+    // Unheld, the same guard lets it through.
+    expect(await q.submit('t1', 'announce', { onlyIf: (held) => !held })).toBe(true)
+    expect(pastes(writes).map((w) => w.data)).toEqual([submitSequence('announce')])
+  })
+
+  it('F7: images go in the same step as the text, after the hold', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1500, () => drafts.delete('t1'))
+    await q.submit('t1', 'fix the header', { images: ['/tmp/a.png', '/tmp/b.png'] })
+    expect(writes.slice(0, 2).map((w) => w.data)).toEqual(['\x1b[200~/tmp/a.png /tmp/b.png\x1b[201~', submitSequence('fix the header')])
+    expect(writes[0].at).toBeGreaterThanOrEqual(1500)
+  })
+
+  it('F8: a slash command over a draft writes nothing and resolves false', async () => {
+    const { writes, drafts, q } = setup()
+    drafts.add('t1')
+    expect(await q.submitTyped('t1', '/effort high')).toBe(false)
+    drafts.delete('t1')
+    expect(await q.submitTyped('t1', '/effort high')).toBe(true)
+    expect(writes.map((w) => w.data)).toEqual(['/effort high\r'])
+  })
+
+  it('F3: draft runs onWrite at the write, after what was queued ahead of it', async () => {
+    const { writes, q } = setup()
+    const seenAtMark: string[][] = []
+    const a = q.submit('t1', 'A')
+    const d = q.draft('t1', 'mine', () => seenAtMark.push(pastes(writes).map((w) => w.data)))
+    // Not at the enqueue.
+    expect(seenAtMark).toEqual([])
+    await Promise.all([a, d])
+    expect(seenAtMark).toEqual([[submitSequence('A'), '\x1b[200~mine\x1b[201~']])
+  })
+
+  it('F1: tells the ledger what is owed, when the draft holds it, and when it is settled', async () => {
+    const events: string[] = []
+    const { clock, drafts, q } = setup({
+      ledger: {
+        owe: (id, _key, text) => events.push(`owe ${id} ${text}`),
+        settle: (id) => events.push(`settle ${id}`),
+        held: (id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${id} ${text}`),
+      },
+    })
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'B')])
+    expect(events).toEqual(['owe t1 A', 'owe t2 B', 'held t1 A', 'settle t2', 'unheld t1 A', 'settle t1'])
+  })
+
+  it('F1: settles a submission a divert took, and one refused by onlyIf', async () => {
+    const settled: string[] = []
+    const { q } = setup({ ledger: { owe: () => {}, settle: (_id, key) => settled.push(key), held: () => {} } })
+    expect(await q.submit('t1', 'no', { onlyIf: () => false })).toBe(false)
+    q.divert('t1', () => {})
+    expect(await q.submit('t1', 'away')).toBe(true)
+    expect(settled).toHaveLength(2)
+    expect(new Set(settled).size).toBe(2)
+  })
+
+  it('S3/S4: hands the ledger the images and reports a re-submission needs', async () => {
+    const owed: unknown[] = []
+    const { q } = setup({ ledger: { owe: (_id, _key, _text, opts) => owed.push({ images: opts?.images, reports: opts?.reports }), settle: () => {}, held: () => {} } })
+    await q.submit('t1', 'look here', { images: ['/tmp/a.png'] })
+    await q.submit('t1', 'report #7 ready', { reports: [7], onlyIf: () => true })
+    expect(owed).toEqual([{ images: ['/tmp/a.png'], reports: undefined }, { images: undefined, reports: [7] }])
+  })
+
+  it('S5: a re-submission whose record reads held turns it back at the write, without holding again', async () => {
+    const events: string[] = []
+    const { q } = setup({ ledger: { owe: () => {}, settle: () => events.push('settle'), held: (_id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${text}`) } })
+    await q.submit('t1', 'A', { held: true })
+    expect(events).toEqual(['unheld A', 'settle'])
+  })
+
+  it('S5: one that is held again is not marked held twice', async () => {
+    const events: string[] = []
+    const { clock, drafts, q } = setup({ ledger: { owe: () => {}, settle: () => events.push('settle'), held: (_id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${text}`) } })
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A', { held: true })
+    expect(events).toEqual(['unheld A', 'settle'])
   })
 })

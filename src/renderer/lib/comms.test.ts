@@ -281,6 +281,14 @@ describe('coordinatorsToAnnounce — every idle coordinator, each pass', () => {
     expect(coordinatorsToAnnounce(terminals, sessions, new Set())).toEqual([])
   })
 
+  it('skips an idle coordinator with unsent text in its composer, and says why (review F5)', () => {
+    const terminals = [tab('t0', 'operator', 'a'), tab('t1', 'operator', 'b')]
+    const sessions = [sess('t0', 'waiting'), sess('t1', 'waiting')]
+    const drafts = (id: string) => id === 't0'
+    expect(coordinatorsToAnnounce(terminals, sessions, new Set(), drafts).map((t) => t.id)).toEqual(['t1'])
+    expect(announceSkip(tab('t0', 'operator'), sessions, new Set(), drafts)).toBe('unsent text in the composer')
+  })
+
   it('names why a coordinator was skipped, for the announce log', () => {
     const sessions = [sess('t0', 'running'), sess('t1', 'waiting', 'ended'), sess('t3', 'asking')]
     expect(announceSkip(tab('t9', 'design'), sessions, new Set())).toBe('not a coordinator')
