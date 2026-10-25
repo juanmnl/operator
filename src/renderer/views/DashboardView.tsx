@@ -10,7 +10,9 @@ import {
 import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffort, isLegacyEffort } from '../lib/effort'
 import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
-import { shelvingMoves, closePlan } from '../lib/project-shelf'
+import { shelvingMoves, closePlan, stuckAfterClose, closeToast, isOnRail } from '../lib/project-shelf'
+import { closeKeyAction, LaneCloses, type CloseKeyArm } from '../lib/close-key'
+import { laneActionItems, type LaneAction } from '../lib/lane-actions'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -21,12 +23,12 @@ import { IDLE, installPressed, installProgressed, installFailed, type InstallSta
 import { sessionLabel } from '../lib/session-label'
 import { loadSessionAccents, saveSessionAccent } from '../lib/session-accents'
 import { AccentPicker } from '../components/AccentPicker'
-import { CardMenu, type CardMenuItem } from '../components/CardMenu'
+import { CardMenu, CONFIRM_MS, type CardMenuItem } from '../components/CardMenu'
 import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSend, type SendBook } from '../lib/dispatch-bus'
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput, clearUnsentInput, onDraftChange, restoreDrafts } from '../lib/lane-keystrokes'
-import { planSuspends, suspendPlanned, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, suspendPlanned, suspendDecision, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, wakesOnFocus, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { DraftHoldNotice } from '../components/terminal/DraftHoldNotice'
 import { getIdleSuspendMinutes } from '../lib/tuning'
@@ -68,6 +70,8 @@ import { AgentsHubView } from '../components/agents/AgentsHubView'
 import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { QuitGuard } from '../components/QuitGuard'
+import { ProjectCloseGuard } from '../components/ProjectCloseGuard'
+import { closeGuardCopy, closeGuardRows, type CloseGuardCopy, type CloseGuardRow, type CloseGuardLane, type LaneFolder } from '../lib/project-close-guard'
 import { askBeforeQuitEnabled, type LaneIdentity, type QuitRequest } from '../lib/quit-guard'
 import { chatSignal } from '../lib/chat-signal'
 import { ProjectGallery, type GalleryTab } from '../components/dashboard/ProjectGallery'
@@ -576,8 +580,11 @@ export function DashboardView() {
     })
   }, [beginLayoutMove, sidebarCollapsed, cardWFor, panelOpen])
 
-  const pushToast = useCallback((message: Omit<ToastMessage, 'id'>) => {
-    setToasts((prev) => [...prev, { ...message, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }])
+  /** Returns the toast's id, for a caller that has to take it down early (the ⌘W arm). */
+  const pushToast = useCallback((message: Omit<ToastMessage, 'id'>): string => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    setToasts((prev) => [...prev, { ...message, id }])
+    return id
   }, [])
 
   const dismissToast = useCallback((id: string) => {
@@ -1314,6 +1321,9 @@ export function DashboardView() {
   const forgetProject = useCallback((id: string) => {
     const project = projectsRef.current.find((p) => p.id === id)
     if (!project) return
+    // Blocked while its lanes are open: their ptys would keep running with no project. The menus
+    // disable the item (forgetProjectItem); this holds for any other caller.
+    if (lanesToEnd(activitiesRef.current[id]) > 0) return
     // Snapshot BEFORE anything is unstamped — after the writes below there is no way left to
     // tell which terminals and saved sessions belonged here.
     const snap: ForgottenSnapshot = {
@@ -1426,6 +1436,27 @@ export function DashboardView() {
     const railSessions = sidebarSessionsRef.current
     const plan = closePlan(id, railSessions)
     const live = railSessions.filter((s) => plan.sessions.includes(s.id))
+    setActiveProjectId((cur) => (cur === id ? null : cur))
+    // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
+    // absence is the change: the project stays exactly where it was, on Active, with its roster,
+    // tasks, notes and branches. Reopening it is just opening it.
+    await endProjectLanesRef.current(project, live)
+  }, [])
+
+  /** The close running per lane, kept by `handleCloseSession` for every caller (lib/close-key
+   *  `LaneCloses`). Retry, or a ■ pressed meanwhile, joins it rather than starting a second one:
+   *  two closes of one lane would commit and remove its worktree twice. */
+  const laneClosesRef = useRef(new LaneCloses<CloseOutcome>((r) => r === 'closed'))
+
+  /** End these lanes of a project, bounded and in parallel, and push ONE toast that says what
+   *  happened. Close project and its Retry both come here. */
+  const endProjectLanes = useCallback(async (project: Project, lanes: AgentSession[]) => {
+    const id = project.id
+    if (!lanes.length) {
+      const t = closeToast(project.name, 0, [])
+      pushToast({ text: t.text, detail: t.detail })
+      return
+    }
 
     // CLOSING IS A STATE, and it is rendered immediately. The old sequence awaited every pty
     // death before anything at all happened on screen, so with several lanes the project just sat
@@ -1434,83 +1465,84 @@ export function DashboardView() {
     //
     // Not armed when there is nothing to tear down: an idle close finishes in the same frame, and
     // a `closing…` chip that appears and vanishes for one frame is noise about no work.
-    if (plan.sessions.length) {
-      setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
-    }
-    setActiveProjectId((cur) => (cur === id ? null : cur))
+    setClosingProjects((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
 
     // BOUNDED, AND IN PARALLEL. Sequentially awaiting each lane meant one hung `handleCloseSession`
     // stalled every lane behind it, so a single wedged pty could hold the whole close open
-    // indefinitely — the user's "it takes a while to get removed". The timeout turns that into a
-    // reported fact instead of a hang.
+    // indefinitely — the user's "it takes a while to get removed". The bound decides when the
+    // toast is pushed; it does not cancel anything.
     const KILL_TIMEOUT_MS = 4000
-    // A PTY THAT IS ALREADY DEAD IS NOT AN AGENT THAT REFUSED TO STOP. Asked once, up front, so
-    // the verdict below can tell the two apart: `stuck` is supposed to mean "this process would
-    // not die", and reporting a lane whose child exited hours ago as stuck is both wrong and
-    // unactionable — there is nothing for the user to go and look at. `null` when the backend
-    // cannot answer, which falls back to the old all-or-nothing reading rather than guessing
-    // everything is dead.
-    const listed = await window.operator.terminalList?.().catch(() => undefined)
-    const aliveIds = Array.isArray(listed)
-      ? new Set(listed.filter((t) => t.alive).map((t) => t.id))
-      : null
-    const wasDead = (s: AgentSession) => aliveIds !== null && !!s.terminalId && !aliveIds.has(s.terminalId)
+    // A PTY THAT IS ALREADY DEAD IS NOT AN AGENT THAT REFUSED TO STOP. Asked once, up front, so a
+    // lane whose child exited hours ago can be marked ended below. `null` when the backend cannot
+    // answer.
+    const aliveIdsOf = (listed: unknown) => (Array.isArray(listed)
+      ? new Set((listed as Array<{ id: string; alive: boolean }>).filter((t) => t.alive).map((t) => t.id))
+      : null)
+    const aliveBefore = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
+    const wasDead = (s: AgentSession) => aliveBefore !== null && !!s.terminalId && !aliveBefore.has(s.terminalId)
 
-    const outcomes = await Promise.all(live.map(async (s) => {
-      try {
-        await Promise.race([
-          handleCloseSessionRef.current(s),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), KILL_TIMEOUT_MS)),
-        ])
-        return { s, ok: true }
-      } catch {
-        // Timed out — but if there was no process behind it when we started, the teardown had
-        // nothing to wait for and the close SUCCEEDED. Only a lane that was genuinely running is
-        // allowed to be reported as one that would not stop.
-        return { s, ok: wasDead(s) }
-      }
-    }))
-    const stuck = outcomes.filter((o) => !o.ok).map((o) => o.s)
+    // Deduplicated in `handleCloseSession`: Retry, or a ■ pressed meanwhile, joins a close that is
+    // still running instead of starting a second.
+    const keyOf = new Map(lanes.map((s) => [s.terminalId!, terminalsRef.current.find((t) => t.id === s.terminalId)?.key]))
+    const closes = lanes.map((s) => handleCloseSessionRef.current(s))
+    const bound = new Promise<false>((resolve) => setTimeout(() => resolve(false), KILL_TIMEOUT_MS))
+    const attempts = await Promise.all(lanes.map(async (s, i) => ({
+      lane: s,
+      settled: await Promise.race([closes[i].then(() => true, () => false), bound]),
+      wasDead: wasDead(s),
+    })))
+    // EVERY ID THE LANE HAS HAD (review R3). A suspended lane being woken is closed under its new
+    // terminal id, so the old one is dead whatever happens to the new CLI. The id the close
+    // recorded, and the one the lane's tab carries now if it is still on the rail.
+    const withIds = attempts.map((a) => {
+      const tid = a.lane.terminalId!
+      const key = keyOf.get(tid)
+      const now = key ? terminalsRef.current.find((t) => t.key === key)?.id : undefined
+      return { ...a, ids: [tid, laneClosesRef.current.closedAs(tid), now].filter((x): x is string => !!x) }
+    })
+    // "DID NOT STOP" MEANS THE PTY IS STILL ALIVE, asked again after the bound. A close that is
+    // still running at 4 s has usually killed its pty and is finishing the worktree; it was
+    // reported as stuck while it carried on, and the user closed each such lane by hand.
+    const aliveAfter = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
+    const stuck = stuckAfterClose(withIds, aliveAfter)
+
     // Whatever the teardown managed, a tab with no live pty must not keep the project on the rail:
     // `isOnRail` reads `projectActivity.live`, so one tab that never got dropped is the whole
     // "closing it left it there" bug. Marking them ended (rather than deleting) keeps the ordinary
     // exit bookkeeping — the sidebar still shows the lane as finished, it just stops counting.
-    const deadIds = new Set(live.filter(wasDead).map((s) => s.terminalId!))
+    const deadIds = new Set(lanes.filter(wasDead).map((s) => s.terminalId!))
     if (deadIds.size) {
       setTerminals((prev) => (prev.some((t) => deadIds.has(t.id) && !t.ended)
         ? prev.map((t) => (deadIds.has(t.id) ? { ...t, ended: true } : t))
         : prev))
     }
 
-    // NOTHING IS WRITTEN TO THE PROJECT. This is where `archivedAt` used to be stamped, and its
-    // absence is the change: the project stays exactly where it was, on Active, with its roster,
-    // tasks, notes and branches. Reopening it is just opening it.
-    setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
-    if (stuck.length) {
-      pushToast({
-        text: `${project.name} — ${stuck.length} agent${stuck.length === 1 ? '' : 's'} did not stop`,
-        detail: stuck.map((s) => sessionLabel({ session: s })).join(', '),
-      })
-    }
-    const n = plan.sessions.length
-    // NO UNDO, ON EITHER VARIANT, and that is honesty rather than a removed feature. Undo used to
-    // restore the shelf — which is no longer written — while the ptys it appeared to be offering
-    // back were already gone. With nothing to reverse, the toast's job is to say where the
-    // project went, which is also the "reads as done, not lost" answer.
-    pushToast(n
-      // A receipt for something irreversible.
-      ? {
-        text: `Closed ${project.name} — ${n} agent${n === 1 ? '' : 's'} ended`,
-        detail: 'It stays in Active. Launching an agent here brings it back to the rail.',
-      }
-      // Nothing ended, so this is a pointer, not a receipt — and it needs no action: closing an
-      // idle project lands you on the gallery with its card in front of you, so "show me where
-      // it went" would point at itself.
-      : {
-        text: `Closed ${project.name}`,
-        detail: 'It stays in Active — open it again any time.',
-      })
+    // The chip stays until every close has settled, the ones still stopping included.
+    void Promise.allSettled(closes).then(() => {
+      setClosingProjects((prev) => { const next = new Set(prev); next.delete(id); return next })
+    })
+
+    // ONE TOAST, AND IT IS TRUE (lib/project-shelf `closeToast`). It used to push "N did not stop"
+    // and "Closed X — N agents ended" together, with N counting the lanes that did not stop. NO
+    // UNDO: there is nothing to reverse, the ptys are gone. Retry closes the lanes that are still
+    // alive, read fresh off the rail when it is pressed.
+    const t = closeToast(project.name, lanes.length, stuck.map((s) => sessionLabel({ session: s })))
+    pushToast({
+      text: t.text,
+      detail: t.detail,
+      ...(t.retry ? {
+        action: {
+          label: 'Retry',
+          run: () => {
+            const fresh = stuck.map((s) => sidebarSessionsRef.current.find((x) => x.terminalId === s.terminalId) ?? s)
+            void endProjectLanesRef.current(project, fresh)
+          },
+        },
+      } : {}),
+    })
   }, [pushToast])
+  const endProjectLanesRef = useRef(endProjectLanes)
+  endProjectLanesRef.current = endProjectLanes
 
   const archiveProject = useCallback((id: string) => archiveProjects([id]), [archiveProjects])
 
@@ -4046,14 +4078,29 @@ export function DashboardView() {
    *  The gate is held past the close's return, until its WIP snapshot and worktree removal have
    *  settled (lib/idle-suspend `closeUnderGate`, review R3-1): a dispatch let through earlier
    *  resumed the thread on a fresh branch, because the old directory still held the path. */
-  const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
-    const tab = session.terminalId ? terminalsRef.current.find((t) => t.id === session.terminalId) : undefined
-    if (!tab?.idleSuspendedAt) return closeLane(session, suspend, opts)
-    return closeUnderGate(laneGateRef.current, tab.key, async () => {
-      const waker = wakerRef.current
-      const back = waker?.waking(tab.key) ? await waker.wake(tab.key, tab.id) : null
-      return closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
-    }, () => worktreeRemovalsRef.current.get(tab.key))
+  const handleCloseSession = useCallback((session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
+    // ONE CLOSE PER LANE, whoever asks (lib/close-key `LaneCloses`, review R2). A second ask gets
+    // the first close, with the first one's reason: a lane being suspended is not also forgotten.
+    // Except a person's ask during an automatic close: it runs its own if the lane is left (T3).
+    const tid = session.terminalId
+    const tab = tid ? terminalsRef.current.find((t) => t.id === tid) : undefined
+    const start = (alias: (other: string) => void): Promise<CloseOutcome> => (!tab?.idleSuspendedAt
+      ? closeLane(session, suspend, opts)
+      : closeUnderGate(laneGateRef.current, tab.key, async () => {
+        const waker = wakerRef.current
+        const back = waker?.waking(tab.key) ? await waker.wake(tab.key, tab.id) : null
+        // The lane a resume brought back has a new terminal id. The project close judges whether it
+        // stopped by that one (review R3), and a close asked for under it joins this one.
+        if (back) alias(back.id)
+        return closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
+      }, () => worktreeRemovalsRef.current.get(tab.key)))
+    if (!tid) return start(() => {})
+    const closes = laneClosesRef.current
+    const close = closes.run(tid, start, !!opts?.auto)
+    // The alias is kept a while for the project close's check after its bound, then forgotten.
+    const forget = () => { setTimeout(() => closes.forget(tid), 60_000) }
+    void close.then(forget, forget)
+    return close
   }, [closeLane])
   handleCloseSessionRef.current = handleCloseSession
 
@@ -4234,7 +4281,7 @@ export function DashboardView() {
    *  then resumes the lane with it, rather than starting a second CLI beside the dying one or being
    *  typed into it. A message already queued for the old pty is diverted into the same wake. A kill
    *  that fails leaves the lane running and not suspended, and what waited is typed into it. */
-  const suspendLane = useCallback(async (terminalId: string, why: string, eligible?: () => boolean): Promise<boolean> => {
+  const suspendLane = useCallback(async (terminalId: string, why: string, eligible?: () => boolean, opts?: { byHand?: boolean }): Promise<boolean> => {
     const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab || tab.ended || restartingRef.current.has(terminalId) || suspendingRef.current.has(terminalId)) return false
     const claudeSessionId = claudeIdOf(terminalId)
@@ -4244,7 +4291,8 @@ export function DashboardView() {
       && canRestartLane(sessionsRef.current.find((s) => s.terminalId === terminalId), owesSubmission(submitQueue, terminalId))
       && !hasUnsentInput(terminalId)
       && !awaitingReadyRef.current.get(terminalId)
-      && terminalId !== activeTerminalIdRef.current
+      // The lane being looked at is kept, unless the person suspends it themselves (the lane menu).
+      && (!!opts?.byHand || terminalId !== activeTerminalIdRef.current)
       // The pass's full decision on fresh state (review M1): background tasks, subagents, a dev
       // server, held deliveries, a release or another end of the lane in flight.
       && (eligible?.() ?? true)
@@ -4282,10 +4330,13 @@ export function DashboardView() {
             void wakeLaneRef.current({ id: terminalId, key: tab.key }, text)
               .then((next) => { if (!next || next === 'timed-out') reportUndeliveredRef.current(terminalId, text, next ? 'waited' : 'resume', tab) })
           })
+          // Suspended by hand, it stays suspended while it is on screen (review T1).
+          if (opts?.byHand) suspendedByHandRef.current.add(tab.key)
           terminalsRef.current = withSuspended(terminalsRef.current)
           setTerminals((prev) => withSuspended(prev))
         },
         unmarkSuspended: () => {
+          suspendedByHandRef.current.delete(tab.key)
           submitQueue.divert(terminalId, undefined)
           terminalsRef.current = withLive(terminalsRef.current)
           setTerminals((prev) => withLive(prev))
@@ -4310,6 +4361,9 @@ export function DashboardView() {
   const [stalledKeys, setStalledKeys] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   /** Lanes whose resume failed. Focus does not retry them on its own; a click or a message does. */
   const wakeFailedRef = useRef(new Set<string>())
+  /** Lanes the person suspended from the lane menu, by key. Focus does not resume them either
+   *  (`wakesOnFocus`, review T1): a click or a key in the pane does, or a message. */
+  const suspendedByHandRef = useRef(new Set<string>())
 
   /** Start a suspended lane's CLI again, in its tab. `first` is its opening prompt. */
   const resumeSuspended = async (terminalId: string, first?: string): Promise<TerminalTab | null> => {
@@ -4347,6 +4401,7 @@ export function DashboardView() {
         return null
       }
       wakeFailedRef.current.delete(tab.key)
+      suspendedByHandRef.current.delete(tab.key)
       setStalledKeys((prev) => { if (!prev.has(tab.key)) return prev; const n = new Map(prev); n.delete(tab.key); return n })
       // The old id stays in `restartedFromRef` for good (review M4): its exit event can still be
       // on its way, and ids are not reused within a run.
@@ -4505,6 +4560,55 @@ export function DashboardView() {
   const suspendFreshRef = useRef({ suspendCandidate, readDevServer })
   suspendFreshRef.current = { suspendCandidate, readDevServer }
 
+  /** SUSPEND BY HAND, from the lane menu (lifecycle audit task 9, approved 2026-10-24). The only
+   *  manual stop used to be Close, which forgets the conversation. This ends the CLI and keeps the
+   *  tab and the thread, as the idle pass does, under the same rules at the `now` threshold: the
+   *  quiet time is dropped and "you are looking at it" is lifted, since the person asked. Every
+   *  other rule holds (between turns, nothing owed, no unsent text, no background work, no dev
+   *  server, a turn to resume), and a refusal says which. */
+  const laneSuspendCandidate = (tab: TerminalTab, suspending: boolean): SuspendCandidate =>
+    ({ ...suspendFreshRef.current.suspendCandidate(tab, Date.now(), suspending), focused: false })
+  /** Whether the lane menu offers Suspend: the rules that can be read now, with the transcript and
+   *  ports, which need a read, taken as passing. The click checks them. */
+  const canSuspendByHand = (tab: TerminalTab): boolean => !tab.ended
+    && suspendDecision({ ...laneSuspendCandidate(tab, true), conversation: true, devServer: false }, Date.now(), 'now').suspend
+  const suspendByHand = async (terminalId: string, name: string): Promise<void> => {
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+    if (!tab) return
+    const lane = laneSuspendCandidate(tab, true)
+    const cid = claudeIdOf(terminalId)
+    if (lane.conversation === undefined && cid) {
+      try {
+        const have = await window.operator.conversationsWithTurn?.([{ id: cid, projectId: tab.projectId }])
+        if (have?.turn.includes(cid)) { conversationSeenRef.current.add(cid); lane.conversation = true }
+        else if (have?.none.includes(cid)) lane.conversation = false
+      } catch { /* unknown, and an unknown lane is kept */ }
+    }
+    const fresh = (id: string) => {
+      const t = terminalsRef.current.find((x) => x.id === id)
+      return t ? laneSuspendCandidate(t, false) : undefined
+    }
+    let skipped = ''
+    const done = await suspendPlanned({
+      planned: [lane],
+      threshold: 'now',
+      fresh,
+      readDevServer: suspendFreshRef.current.readDevServer,
+      suspend: (id, eligible) => suspendLaneRef.current(id, 'by hand', eligible, { byHand: true }),
+      onSkip: (_id, why) => { skipped = why },
+    })
+    if (done) return
+    const now = fresh(terminalId)
+    const why = skipped || (now
+      ? suspendDecision({ ...now, conversation: now.conversation ?? lane.conversation, devServer: await suspendFreshRef.current.readDevServer(terminalId) }, Date.now(), 'now').why
+      : 'not running')
+    pushToast({ text: `${name} keeps running`, detail: `Not suspended: ${why}.` })
+  }
+  const suspendByHandRef = useRef(suspendByHand)
+  suspendByHandRef.current = suspendByHand
+  const canSuspendByHandRef = useRef(canSuspendByHand)
+  canSuspendByHandRef.current = canSuspendByHand
+
   /** The suspend pass in progress, timed or under memory pressure. One at a time: the timed tick
    *  skips while one runs, and a pressure pass waits for it. */
   const suspendPassRef = useRef<Promise<number> | null>(null)
@@ -4606,11 +4710,12 @@ export function DashboardView() {
   }, [pressure.level, savedHydrated, reattachDone, suspendUnderPressure])
 
   // FOCUS RESUMES. Opening a suspended lane (rail, roster, ⌘1-9, a toast) starts it again. A lane
-  // whose resume failed is left for a click, so a broken one does not retry on every render.
+  // whose resume failed is left for a click, so a broken one does not retry on every render. So is
+  // one suspended by hand: it is the lane on screen when it is suspended (review T1).
   useEffect(() => {
     if (!reattachDone) return
     const tab = terminals.find((t) => t.id === activeTerminalId)
-    if (!tab?.idleSuspendedAt || wakeFailedRef.current.has(tab.key)) return
+    if (!tab || !wakesOnFocus(tab, wakeFailedRef.current, suspendedByHandRef.current)) return
     void wakeLaneRef.current(tab)
   }, [activeTerminalId, terminals, reattachDone])
 
@@ -4909,6 +5014,9 @@ export function DashboardView() {
   // stable saved key rather than the per-run session id.
   const [sessionAccents, setSessionAccents] = useState<Record<string, string>>(() => loadSessionAccents())
   const [accentPicker, setAccentPicker] = useState<{ sessionId: string; top: number; left: number } | null>(null)
+  /** One lane's actions menu, open at `top`/`left` (lifecycle audit B1): from the toolbar's ⋯, or a
+   *  right-click on the lane's orb or row at either rail width. */
+  const [laneActions, setLaneActions] = useState<{ sessionId: string; top: number; left: number } | null>(null)
   // The rail tile's context menu. Held HERE, not in ProjectRail, for the same reason the accent
   // picker is: the rail's tile column clips its overflow at 44px.
   const [railMenu, setRailMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
@@ -4985,6 +5093,41 @@ export function DashboardView() {
       accent: accentOf(session),
     }
   }, [sessions, roleOf, customNames, accentOf])
+
+  // --- Project close guard ---------------------------------------------------------------
+  // Close project's confirm (lib/project-close-guard). Every entry point comes through
+  // `requestCloseProject`: with no lanes to end the project closes at once, otherwise the dialog
+  // names them. Rows and copy are frozen when it opens; End plans the close again (`closeProject`).
+  const [closeGuard, setCloseGuard] = useState<{ projectId: string; copy: CloseGuardCopy; rows: CloseGuardRow[] } | null>(null)
+
+  const requestCloseProject = useCallback((id: string) => {
+    const project = projectsRef.current.find((p) => p.id === id)
+    if (!project) return
+    const railSessions = sidebarSessionsRef.current
+    const plan = closePlan(id, railSessions)
+    if (!plan.sessions.length) { void closeProject(id); return }
+    const lanes = railSessions.filter((s) => plan.sessions.includes(s.id)).map((s): CloseGuardLane => {
+      const tab = terminalsRef.current.find((t) => t.id === s.terminalId)
+      // What `closeLane` will do to its folder, so the dialog says what is true of it (review R6).
+      // The release cache is enough for the copy; the close reads it fresh.
+      const folder: LaneFolder = tab && isReleased(tab, pendingReleasesRef.current) ? 'released'
+        : tab?.worktreeBranch && tab.sourceCwd && tab.cwd !== tab.sourceCwd ? 'worktree' : 'checkout'
+      return {
+        terminalId: s.terminalId!,
+        name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
+        phase: s.phase,
+        suspended: !!s.suspended,
+        lastActivityAt: s.lastActivityAt,
+        accent: accentOf(s),
+        folder,
+      }
+    })
+    setCloseGuard({
+      projectId: id,
+      rows: closeGuardRows(lanes).rows,
+      copy: closeGuardCopy(project.name, plan.sessions.length, plan.running, lanes),
+    })
+  }, [closeProject, roleOf, customNames, accentOf])
 
   // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
   // hint on a row is the chord that reaches it. Kept as the single source both the hints and
@@ -5439,6 +5582,33 @@ export function DashboardView() {
     }
   }, [sessions])
 
+  /** ⌘W armed on a mid-turn lane: which one, until when, and the toast that says so. */
+  const closeKeyArmRef = useRef<(CloseKeyArm & { toastId: string }) | null>(null)
+  /** Close `active`, or arm first when it is mid-turn (lib/close-key). ⌘W and the palette's "Close
+   *  this session" share the arm, so a second ask from either within CONFIRM_MS closes (review r2:
+   *  the palette item carries the ⌘W hint and closed a mid-turn lane on one Enter). `again` is the
+   *  toast's wording for the second ask. */
+  const closeOrArm = (active: AgentSession, repeat: boolean, again: (name: string) => string) => {
+    // No terminal, so no turn to lose: closed at once, as the palette always did.
+    if (!active.terminalId) { void handleCloseSession(active); return }
+    const armed = closeKeyArmRef.current
+    const action = closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now(), repeat)
+    if (action === 'ignore') return
+    if (action === 'arm') {
+      if (armed) dismissToast(armed.toastId)
+      const name = sessionLabel({ session: active, role: roleOf(active), customName: customNames[active.id] })
+      const toastId = pushToast({ text: again(name) })
+      closeKeyArmRef.current = { terminalId: active.terminalId, until: Date.now() + CONFIRM_MS, toastId }
+      setTimeout(() => dismissToast(toastId), CONFIRM_MS)
+      return
+    }
+    if (armed) dismissToast(armed.toastId)
+    closeKeyArmRef.current = null
+    void handleCloseSession(active)
+  }
+  const closeOrArmRef = useRef(closeOrArm)
+  closeOrArmRef.current = closeOrArm
+
   // Global keyboard shortcuts: Cmd+N new session, Cmd+W close active session,
   // Cmd+1..9 switch to local terminal by index.
   useEffect(() => {
@@ -5476,7 +5646,11 @@ export function DashboardView() {
         e.preventDefault()
         const active = allSidebarSessions.find((s) => s.id === activeSessionId)
         if (active && active.terminalId && localTerminalIds.has(active.terminalId)) {
-          handleCloseSession(active)
+          // A LANE MID-TURN ARMS FIRST (lib/close-key). One press ended it, and the close forgets
+          // its saved session, so the turn was lost with no way to resume it. The mouse routes
+          // take two clicks. The second press within CONFIRM_MS closes; an idle or waiting lane
+          // closes on the first, as before.
+          closeOrArmRef.current(active, e.repeat, (name) => `Press ⌘W again to close ${name} — it is mid-turn`)
         }
       } else if (e.key >= '1' && e.key <= '9') {
         const idx = parseInt(e.key, 10) - 1
@@ -5499,7 +5673,7 @@ export function DashboardView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId])
+  }, [handleNewSession, handleCloseSession, handleSelectSession, toggleSidebar, allSidebarSessions, activeSessionId, localTerminalIds, shortcutTerminals, sessions, handleShowGallery, activeProjectId, roleOf, customNames, pushToast, dismissToast])
 
   // Esc closes the scratch terminal hub (ShellSheet) when it's open. Only mounted while open,
   // and CAPTURE phase + stopPropagation so it beats the sheet's xterm (which would otherwise
@@ -6280,7 +6454,7 @@ export function DashboardView() {
         { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => setPanelOpen(true, { panelTab: 'diff' }) },
         // One patch, so the move out of the main view and the open land together.
         { id: 'panel-preview', group: 'View', label: 'Side panel: Preview', run: () => setPanelOpen(true, { panelTab: 'preview' }) },
-        { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => { void handleCloseSession(activeSession) } },
+        { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => closeOrArmRef.current(activeSession, false, (name) => `Choose Close this session again, or press ⌘W, to close ${name} — it is mid-turn`) },
       )
       if (mainView === 'preview' || previewInPanel) {
         actions.push({
@@ -6338,6 +6512,17 @@ export function DashboardView() {
           label: `Resume ${p.name} — ${resumable} agent${resumable > 1 ? 's' : ''}`,
           detail: 'Re-opens every previously open agent, continuing its conversation',
           run: () => { void handleResumeProject(p.id) },
+        })
+      }
+      // Close, for every project on the rail: the same gate and label as the rail and gallery
+      // menus, and the same request, so it opens the close guard when there are lanes to end.
+      if (isOnRail(p, projectActivities[p.id], activeProjectId)) {
+        const toEnd = lanesToEnd(projectActivities[p.id])
+        actions.push({
+          id: `close-project-${p.id}`, group: 'Project',
+          label: toEnd > 0 ? `Close ${p.name} · end ${toEnd} agent${toEnd === 1 ? '' : 's'}` : `Close ${p.name}`,
+          detail: 'Ends its agents and takes it off the rail. Its\u00a0roster, tasks and notes stay.',
+          run: () => requestCloseProject(p.id),
         })
       }
       const queued = (p.tasks ?? []).filter((t) => t.roleId && (t.status ?? 'queued') === 'queued').length
@@ -6401,7 +6586,7 @@ export function DashboardView() {
       activeSession, activeTerminalId, handleDumpBuffer, mainView, panelOpen, previewInPanel, previewAnnotate, sidebarCollapsed, projects, terminals,
       gridOn, gridSpec, toggleGrid, changeGridSpec, editGrid, redlinesOn, toggleRedlines, previewAnchored,
       selectMainView, selectPanelTab, patchLayout, togglePanel, setPanelOpen, toggleSidebar, handleShowGallery, handleCloseSession, handleOpenProject, handleLaunchRole, startProjectTasks, handleResumeProject, restoreProject, handleOpenTuning,
-      installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions])
+      installedClaudeVersion, restartCandidateOf, handleRestartLane, sessions, projectActivities, activeProjectId, requestCloseProject])
 
   const accentTarget = accentPicker ? allSidebarSessions.find((s) => s.id === accentPicker.sessionId) : undefined
   const accentTargetRole = accentTarget ? roleOf(accentTarget) : undefined
@@ -6456,22 +6641,50 @@ export function DashboardView() {
       // user actually asked for: a project you opened, launched nothing in, and could not remove
       // from the strip except by shelving it away to Previous.
       //
-      // ONE VERB, GRADUATED. The label carries the count only when there is a count, and the
-      // confirm engages only when there is something irreversible to confirm — ending ptys, two
-      // clicks from a mis-aimed right-click on the strip you navigate by. Confirming the idle
-      // close would teach people to click through the confirms that matter. Not danger-toned:
-      // red is the gallery's mark for Forget, and one verb must not read as two weights.
+      // ONE VERB, GRADUATED. The label carries the count only when there is a count. The item does
+      // not arm: with lanes to end it opens the close guard, which names them, and an idle close
+      // has nothing irreversible to confirm. Not danger-toned: red is the gallery's mark for
+      // Forget, and one verb must not read as two weights.
       {
-        // `id` and not the label: the label counts agents, and an agent exiting between the two
-        // clicks of the confirm would otherwise re-arm instead of firing.
         id: 'close-project',
         label: closeProjectLabel(live),
-        onClick: () => { void closeProject(project.id) },
+        onClick: () => requestCloseProject(project.id),
         separator: true,
-        confirm: live > 0,
       },
     ]
-  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, closeProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
+  }, [railMenuProject, projectActivities, handleOpenFolderPrefs, requestCloseProject, terminals, sessions, allSidebarSessions, customNames, installedClaudeVersion, restartCandidateOf, handleRestartLane])
+
+  /** ONE LANE'S ACTIONS (lifecycle audit B1 and task 9). One list for the toolbar's ⋯ and the rail's
+   *  right-click. Close arms when the lane has anything to lose (running or suspended); ⌘W is
+   *  shown only for the lane it would close. Restart appears only when the lane is out of date,
+   *  Suspend only when the rules allow it now. Colour opens the picker where the menu was. */
+  const laneActionsTarget = laneActions ? allSidebarSessions.find((s) => s.id === laneActions.sessionId) : undefined
+  const laneActionsName = laneActionsTarget
+    ? sessionLabel({ session: laneActionsTarget, role: roleOf(laneActionsTarget), customName: customNames[laneActionsTarget.id], fallback: laneActionsTarget.projectName })
+    : ''
+  const laneActionMenu = useMemo((): CardMenuItem[] => {
+    const s = laneActionsTarget
+    if (!s || !laneActions) return []
+    const tab = s.terminalId ? terminals.find((t) => t.id === s.terminalId) : undefined
+    const live = tab && !tab.ended ? tab : undefined
+    const run: Record<LaneAction, () => void> = {
+      close: () => { void handleCloseSession(s) },
+      restart: () => { if (live) void handleRestartLane(live.id) },
+      suspend: () => { if (live) void suspendByHandRef.current(live.id, laneActionsName) },
+      colour: () => setAccentPicker({ sessionId: s.id, top: laneActions.top, left: laneActions.left }),
+    }
+    return laneActionItems({
+      active: s.id === activeSessionId,
+      live: s.status !== 'ended' || !!s.suspended,
+      closable: !!s.terminalId,
+      restart: live && installedClaudeVersion && isOutOfDate(live.claudeVersion, installedClaudeVersion)
+        ? { version: installedClaudeVersion, canRestart: restartable(restartCandidateOf(live), installedClaudeVersion) }
+        : undefined,
+      canSuspend: !!live && canSuspendByHandRef.current(live),
+    }).map(({ action, ...item }) => ({ ...item, onClick: run[action] }))
+    // `sessions`: the suspend rules read the tracked phase through a ref, so a phase change must rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneActionsTarget, laneActions, laneActionsName, terminals, sessions, activeSessionId, installedClaudeVersion, restartCandidateOf, handleRestartLane, handleCloseSession])
 
   /** THE LAUNCH PATH THE IDLE ROWS USED TO CARRY. The strip lists only what is LIVE now, so the
    *  roster's quiet lanes have no row to click — and removing a control must never strand the need
@@ -6536,7 +6749,7 @@ export function DashboardView() {
         // while it is open. The picker and port editor are the component's own.
         // A layout move slides the stage without resizing it, which the view's placement does not
         // follow; hidden for the move, it is re-placed at the stage's settled rect when it shows.
-        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!activeMove || panelOverlaid}
+        inspectHidden={resizingPanel || paletteOpen || !!quitRequest || !!closeGuard || !!activeMove || panelOverlaid}
         grid={{ on: gridOn, spec: gridSpec, editing: gridEditing, savedTo: gridProject?.name ?? null }}
         onGridToggle={toggleGrid}
         onGridSpecChange={changeGridSpec}
@@ -6599,6 +6812,14 @@ export function DashboardView() {
           onClose={() => setRailMenu(null)}
         />
       )}
+      {laneActions && laneActionsTarget && (
+        <CardMenu
+          at={{ top: laneActions.top, left: laneActions.left }}
+          title={laneActionsName}
+          items={laneActionMenu}
+          onClose={() => setLaneActions(null)}
+        />
+      )}
       {laneMenu && laneMenuProject && (
         <CardMenu
           at={{ top: laneMenu.top, left: laneMenu.left }}
@@ -6652,7 +6873,7 @@ export function DashboardView() {
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         accentOf={accentOf}
-        onPickAccent={(session, anchor) => setAccentPicker({ sessionId: session.id, ...anchor })}
+        onLaneMenu={(session, anchor) => setLaneActions({ sessionId: session.id, ...anchor })}
         onOpenProjectHome={handleOpenProjectHome}
         projectHomeActive={contentMode === 'project'}
         onRestoreProject={restoreProject}
@@ -6849,8 +7070,10 @@ export function DashboardView() {
               // Closing a lane's session from its card goes through the SAME path as closing it
               // from the sidebar — pty kill, running tasks completed with their diff + check,
               // worktree chained behind. A second close route must not become a second lifecycle.
+              // The rail's sessions, not the observer's: a suspended lane has no observed session,
+              // so the observer lookup found nothing and the card's ■ did nothing on it.
               onCloseTerminal={(tid) => {
-                const s = sessions.find((x) => x.terminalId === tid)
+                const s = allSidebarSessions.find((x) => x.terminalId === tid)
                 if (s) void handleCloseSession(s)
               }}
               onAddTask={(text, roleId) => addProjectTask(proj.id, text, roleId)}
@@ -6874,6 +7097,8 @@ export function DashboardView() {
               onAddLaneRequestHandled={clearAddLaneRequest}
               resumableCount={resumeOffered.filter((s) => s.projectId === proj.id).length}
               onResumeProject={() => { void handleResumeProject(proj.id) }}
+              // Shown always: this page is the active project, so it is on the rail (`isOnRail`).
+              onCloseProject={() => requestCloseProject(proj.id)}
             />
           )
         })()}
@@ -6912,6 +7137,9 @@ export function DashboardView() {
               onTogglePanel={togglePanel}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={toggleSidebar}
+              // A second click on ⋯ closes it: the trigger is not "outside" for the menu's dismiss.
+              onLaneActions={(anchor) => setLaneActions((cur) => (cur?.sessionId === activeSession.id ? null : { sessionId: activeSession.id, ...anchor }))}
+              laneActionsOpen={laneActions?.sessionId === activeSession.id}
               checkoutGone={(() => {
                 const g = tab && goneCheckouts.find((x) => x.terminalId === tab.id)
                 return g ? { label: checkoutGoneLabel(g, tab.worktreeBranch), detail: checkoutGoneDetail(g, tab.worktreeBranch) } : null
@@ -7048,6 +7276,7 @@ export function DashboardView() {
                     stalled={stalledKeys.get(t.key)}
                     onResume={(held) => {
                       wakeFailedRef.current.delete(t.key)
+                      suspendedByHandRef.current.delete(t.key)
                       setStalledKeys((prev) => { if (!prev.has(t.key)) return prev; const n = new Map(prev); n.delete(t.key); return n })
                       heldKeysRef.current.set(t.key, held)
                       void wakeLaneRef.current(t).then((tab) => { if (tab && tab !== 'timed-out') typeHeldKeysInto(t.key, tab.id) })
@@ -7107,7 +7336,7 @@ export function DashboardView() {
             onSetProjectNotes={(id, contextNotes) => updateProject(id, { contextNotes })}
             onForgetProject={forgetProject}
             onArchiveProject={archiveProject}
-            onCloseProject={(id) => { void closeProject(id) }}
+            onCloseProject={requestCloseProject}
             activeProjectId={activeProjectId}
             closingIds={closingProjects}
             onArchiveProjects={archiveProjects}
@@ -7281,6 +7510,17 @@ export function DashboardView() {
           identify={identifyQuitLane}
           onStay={() => answerQuit(false)}
           onQuit={() => answerQuit(true)}
+        />
+      )}
+      {closeGuard && !quitRequest && (
+        <ProjectCloseGuard
+          copy={closeGuard.copy}
+          rows={closeGuard.rows}
+          onKeep={() => setCloseGuard(null)}
+          onEnd={() => { const { projectId } = closeGuard; setCloseGuard(null); void closeProject(projectId) }}
+          // Opened from the rail or gallery ⋯ or the palette, the menu that had focus is gone: the
+          // lane on screen takes it, if one is (review T2).
+          restoreFocus={() => { const id = activationViewRef.current.laneOnScreen; if (id) getTerminal(id)?.focus() }}
         />
       )}
 

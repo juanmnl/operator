@@ -30,8 +30,10 @@ await p.waitForTimeout(300)
 check('left-click does not open the picker', await p.locator('[data-accent-swatch]').count() === 0)
 
 await orb.click({ button: 'right' })
+// A rail right-click opens the lane menu (lifecycle audit B1); colour is an item in it.
+await p.locator('[data-card-menu-item="Lane colour…"]').click()
 await p.waitForTimeout(400)
-check('right-click opens the picker', await p.locator('[data-accent-swatch]').count() > 0,
+check('right-click, then Lane colour…, opens the picker', await p.locator('[data-accent-swatch]').count() > 0,
   `${await p.locator('[data-accent-swatch]').count()} swatches`)
 
 // Esc closes.
@@ -41,6 +43,8 @@ check('Esc closes the picker', await p.locator('[data-accent-swatch]').count() =
 
 // Re-open, then click away to close.
 await orb.click({ button: 'right' })
+// A rail right-click opens the lane menu (lifecycle audit B1); colour is an item in it.
+await p.locator('[data-card-menu-item="Lane colour…"]').click()
 await p.waitForTimeout(300)
 await p.mouse.click(900, 700)
 await p.waitForTimeout(300)
@@ -60,6 +64,8 @@ const orbFillOf = (id) => p.evaluate((rid) => {
 
 const beforeLabel = await labelColorOf(rowId)
 await orb.click({ button: 'right' })
+// A rail right-click opens the lane menu (lifecycle audit B1); colour is an item in it.
+await p.locator('[data-card-menu-item="Lane colour…"]').click()
 await p.waitForTimeout(300)
 await p.locator(`[data-accent-swatch="${PICK}"]`).click()
 await p.waitForTimeout(500)
@@ -114,6 +120,8 @@ if (!laneless) {
   }, id)
   const before = await orbFill(laneless)
   await lorb.click({ button: 'right' })
+  // A rail right-click opens the lane menu (lifecycle audit B1); colour is an item in it.
+  await p.locator('[data-card-menu-item="Lane colour…"]').click()
   await p.waitForTimeout(400)
   check('lane-less orb opens the picker', await p.locator('[data-accent-swatch]').count() > 0)
   await p.locator('[data-accent-swatch="#a78bfa"]').click()
@@ -149,8 +157,10 @@ const railOrb = p.locator('button[aria-label]').filter({ has: p.locator('svg') }
 await p.locator('button').filter({ hasText: '' }).first().waitFor().catch(() => {})
 const railBtn = p.locator('div > button[aria-label]').nth(1)
 await railBtn.click({ button: 'right' })
+// A rail right-click opens the lane menu (lifecycle audit B1); colour is an item in it.
+await p.locator('[data-card-menu-item="Lane colour…"]').click()
 await p.waitForTimeout(400)
-check('rail orb right-click opens the picker', await p.locator('[data-accent-swatch]').count() > 0)
+check('rail orb right-click, then Lane colour…, opens the picker', await p.locator('[data-accent-swatch]').count() > 0)
 await p.keyboard.press('Escape')
 
 // ---------------------------------------------------------------- roster board

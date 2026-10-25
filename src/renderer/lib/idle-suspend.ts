@@ -485,6 +485,15 @@ export function backToSuspended<T extends { ended?: boolean; selfExited?: boolea
   return { ...tab, ended: true, selfExited: undefined, idleSuspendedAt: was.suspendedAt, resumeSessionId: was.claudeSessionId, quietSince: was.quietSince }
 }
 
+/** Does focus on this tab resume it (DashboardView's FOCUS RESUMES)? Only a suspended lane, and not
+ *  one whose resume failed (`failed`, left for a click) or one the person suspended by hand
+ *  (`byHand`, review T1, 2026-10-25). The lane menu suspends the lane on screen, so it is still
+ *  focused when it reads as suspended, and focus resumed it at once. It waits for a click or a
+ *  key in its pane, or a message. Keyed by lane key. */
+export function wakesOnFocus(tab: { key: string; idleSuspendedAt?: string } | undefined, failed: ReadonlySet<string>, byHand: ReadonlySet<string>): boolean {
+  return !!tab?.idleSuspendedAt && !failed.has(tab.key) && !byHand.has(tab.key)
+}
+
 /** Saved rows the resume card and "Resume project" offer. Not a row whose Claude session is known to
  *  have no turn: `--resume` of it prints "No conversation found" and exits (QA D2). A row with no
  *  session id launches fresh, and is offered. */

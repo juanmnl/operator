@@ -93,9 +93,14 @@ interface SessionToolbarProps {
   cliUpdate?: { label: string; canRestart: boolean; onRestart: () => void } | null
   /** This lane's checkout was removed outside Operator (lib/checkout-gone). Shown, never repaired. */
   checkoutGone?: { label: string; detail: string } | null
+  /** Open this lane's actions menu (close, restart, suspend, colour) at `anchor`, viewport coords of
+   *  the menu's top-left (lifecycle audit B1, entry 1). Absent: no ⋯. */
+  onLaneActions?: (anchor: { top: number; left: number }) => void
+  /** The lane menu is open, so the ⋯ reads as pressed. */
+  laneActionsOpen?: boolean
 }
 
-export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar, cliUpdate, checkoutGone }: SessionToolbarProps) {
+export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, terminalId, detectedDevPort, effortLevel: effortLevelProp, model: modelProp, phase, onModelChange, onEffortChange, permissionMode, lastToolName, branch, mainView, onSelectMainView, panelOpen, onTogglePanel, sidebarCollapsed, onToggleSidebar, cliUpdate, checkoutGone, onLaneActions, laneActionsOpen }: SessionToolbarProps) {
   const [effortLevel, setEffortLevel] = useState<string | null>(effortLevelProp ?? null)
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [mcpExpanded, setMcpExpanded] = useState(false)
@@ -544,6 +549,36 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
             >
               {permissionMode === 'bypassPermissions' ? 'No Perms' : permissionMode}
             </span>
+          )}
+
+          {/* LANE ACTIONS (lifecycle audit B1, entry 1). In the main pane, so it is there whether the
+              rail is at 264, at 70 or hidden: the close at the collapsed width was the complaint.
+              `⋯` is the app's "menu of actions" mark, not a verb, so it shares no glyph with ■.
+              --fg-muted at rest and --fg on hover or while open, no opacity. */}
+          {onLaneActions && (
+            <button
+              data-lane-actions
+              data-popmenu-trigger="lane-actions"
+              aria-haspopup="menu"
+              aria-expanded={!!laneActionsOpen}
+              title="Lane actions"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                // Under the button, its right edge on the button's; CardMenu clamps it on screen.
+                onLaneActions({ top: r.bottom + 4, left: r.right - 180 })
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
+              onMouseLeave={(e) => { if (!laneActionsOpen) e.currentTarget.style.color = 'var(--fg-muted)' }}
+              style={{
+                ...chipBase,
+                width: CHIP_H, padding: 0, marginLeft: 4,
+                justifyContent: 'center',
+                borderRadius: 4,
+                cursor: 'pointer', outline: 'none',
+                fontFamily: 'var(--font-mono)', fontSize: 12,
+                color: laneActionsOpen ? 'var(--fg)' : 'var(--fg-muted)',
+              }}
+            >⋯</button>
           )}
 
           {/* Right side-panel toggle (Plan / Diff) — accent when open. */}
