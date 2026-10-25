@@ -90,8 +90,38 @@ export function chipForOutcome(outcome: DispatchRecord['outcome']): OutcomeChip 
       return { label: 'queued · ending the released lane first', tone: 'warn' }
     case 'not-retired':
       return { label: 'queued · lane could not be ended', tone: 'warn' }
+    // Waiting in the submit queue on text the person typed into that lane and has not sent. Not
+    // typed yet; it goes once they send or clear it, or press Deliver now in the lane.
+    case 'held':
+      return { label: 'held · waiting on unsent text in the lane', tone: 'warn' }
     default:
       // An outcome from a future version: show it verbatim rather than mislabelling it.
       return { label: String(outcome), tone: 'muted' }
   }
+}
+
+/** The note on a `held` record that no message came back for after a reload or relaunch. */
+export const HELD_LOST_NOTE = 'Held on unsent text in the lane when Operator quit or reloaded; it was never typed.'
+
+/** `sent` → `held` (`on`) or back, on the newest record to `roleId` whose task `text` ends with
+ *  (the submitted text is the task, or a reply prefix plus it). Undefined when none matches, so the
+ *  caller can keep its state as it is. */
+export function flipHeld(records: readonly DispatchRecord[], text: string, roleId: string, on: boolean): DispatchRecord[] | undefined {
+  const from: DispatchRecord['outcome'] = on ? 'sent' : 'held'
+  for (let i = records.length - 1; i >= 0; i--) {
+    const d = records[i]
+    if (d.outcome !== from || d.toRoleId !== roleId || !text.endsWith(d.task)) continue
+    return records.map((x, j) => (j === i ? { ...x, outcome: on ? 'held' : 'sent' } : x))
+  }
+  return undefined
+}
+
+/** After a reload: every `held` record that none of the messages given back (`returned`, their
+ *  submitted texts) matches never reached its lane, so it reads `undelivered`. Undefined when
+ *  nothing changes. */
+export function settleUnreturnedHeld(records: readonly DispatchRecord[], returned: readonly string[]): DispatchRecord[] | undefined {
+  if (!records.some((d) => d.outcome === 'held' && !returned.some((t) => t.endsWith(d.task)))) return undefined
+  return records.map((d) => (d.outcome !== 'held' || returned.some((t) => t.endsWith(d.task))
+    ? d
+    : { ...d, outcome: 'undelivered', note: HELD_LOST_NOTE }))
 }

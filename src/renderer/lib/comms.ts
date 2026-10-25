@@ -267,12 +267,17 @@ export function announceSkip(
   tab: AnnounceTab,
   sessions: readonly Pick<AgentSession, 'terminalId' | 'status' | 'phase'>[],
   inFlight: ReadonlySet<string>,
+  hasDraft: (terminalId: string) => boolean = () => false,
 ): string | null {
   if (!COORDINATOR_ROLE_IDS.includes((tab.roleId ?? '').toLowerCase())) return 'not a coordinator'
   // BETWEEN TURNS ONLY — see `canAnnounceTo`.
   const session = sessions.find((s) => s.terminalId === tab.id)
   if (!canAnnounceTo(session)) return session ? `phase ${session.status === 'ended' ? 'ended' : session.phase}` : 'no session'
   if (inFlight.has(tab.id)) return 'in flight'
+  // NOT INTO A DRAFT (review F5, 2026-10-24). The line would wait in the submit queue on the
+  // person's text, holding this coordinator's in-flight entry with no sign outside its pane, and go
+  // into the turn their Enter starts. Reports are durable, so they wait here instead, unannounced.
+  if (hasDraft(tab.id)) return 'unsent text in the composer'
   return null
 }
 
@@ -288,8 +293,9 @@ export function coordinatorsToAnnounce<T extends AnnounceTab>(
   terminals: readonly T[],
   sessions: readonly Pick<AgentSession, 'terminalId' | 'status' | 'phase'>[],
   inFlight: ReadonlySet<string>,
+  hasDraft?: (terminalId: string) => boolean,
 ): T[] {
-  return terminals.filter((tab) => announceSkip(tab, sessions, inFlight) === null)
+  return terminals.filter((tab) => announceSkip(tab, sessions, inFlight, hasDraft) === null)
 }
 
 /** How often the announce pass re-runs on its own, besides on a session, tab or report change.

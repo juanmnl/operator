@@ -208,11 +208,39 @@ export interface SubmitQueueDeps {
   /** The draft was sent: a forced delivery (`deliverNow`) pasted into it and its CR submitted the
    *  whole composer. Called so the flag does not hold the next message for a draft that is gone. */
   clearUnsentInput?: (id: string) => void
+  /** Where every submission not written yet is recorded, so a renderer crash or reload does not
+   *  lose it (review F1). DashboardView sends these to main; see `SubmissionLedger`. */
+  ledger?: SubmissionLedger
+}
+
+/** The submissions a lane is still owed, as the queue tells them to whoever keeps them outside the
+ *  renderer. `key` is unique per submission across reloads.
+ *
+ *  `owe` at the enqueue, `settle` once it is written, handed to a divert, dropped by a failed
+ *  write or refused by its `onlyIf`. `held` when the lane's draft starts holding it (`on`) and
+ *  again at its settle (`off`), so a dispatch record can read `held` while it waits. */
+export interface SubmissionLedger {
+  owe(id: string, key: string, text: string): void
+  settle(id: string, key: string): void
+  held(id: string, key: string, text: string, on: boolean): void
+}
+
+/** Options for one `submit`. */
+export interface SubmitOptions {
+  /** Image paths pasted right before the text, in the same step and after any hold, so the two land
+   *  in one prompt (the Preview's annotations, review F7). */
+  images?: readonly string[]
+  /** Asked right before the write, after any hold and the gap. `held` says whether the person's
+   *  draft held this submission. False writes nothing, and `submit` resolves false. For a line
+   *  that must only go into an idle lane (the announce pass, review F6): a person's Enter that
+   *  released the hold has just started a turn that the session state does not show yet. */
+  onlyIf?: (held: boolean) => boolean
 }
 
 export interface SubmitQueue {
-  /** Enqueue a message for `id`; resolves once it has been written. */
-  submit(id: string, text: string): Promise<void>
+  /** Enqueue a message for `id`; resolves once it has been written (true), or once it is known it
+   *  will not be (false: refused by `onlyIf`, or the write failed). A divert counts as written. */
+  submit(id: string, text: string, opts?: SubmitOptions): Promise<boolean>
   /** Paste image PATHS into the lane's composer, ordered with the submissions around it and with no
    *  Return, so the `submit` that follows goes out as one prompt carrying the images. Claude Code
    *  turns a pasted image path into an `[Image #N]` attachment only when it arrives as a paste of
@@ -228,8 +256,12 @@ export interface SubmitQueue {
    *  NO NUDGE AND NO RESCUE, unlike `submit`. Those exist because a long paste can fail to
    *  commit, and the rescue is itself a keystroke; a slash command is one short line that either
    *  lands or does not, and a rescue CR fired after it would be a bare Return into whatever the
-   *  lane shows next. */
-  submitTyped(id: string, text: string): Promise<void>
+   *  lane shows next.
+   *
+   *  NOT OVER A DRAFT (review F8): typed after the person's text, its CR submits `their text/effort
+   *  high` as a prompt and the command never runs. Resolves false then, with nothing written, so
+   *  the toolbar does not record a change the lane never made. */
+  submitTyped(id: string, text: string): Promise<boolean>
   /** Clear a lane's composer, in the SAME per-terminal chain as `submit`. Chained rather than
    *  written directly so a clear can never overtake — or be overtaken by — a submission already
    *  queued for that lane, which would clear the wrong text. */
@@ -239,8 +271,12 @@ export interface SubmitQueue {
    *  For text a person typed that is theirs to send: the keys held at a suspended lane's pane
    *  (lib/idle-suspend `HeldKeys`, review N3). Chained, so it lands after a submission already
    *  queued for the lane instead of in front of it, where that submission's Return would have sent
-   *  the person's text along with it. No confirmation window: there is no turn to wait for. */
-  draft(id: string, text: string): Promise<void>
+   *  the person's text along with it. No confirmation window: there is no turn to wait for.
+   *
+   *  `onWrite` runs at the write, not at the enqueue (review F3): the held keys mark the lane's
+   *  draft with it, and a draft marked earlier held the submissions queued ahead of this text, which
+   *  then waited behind them forever. */
+  draft(id: string, text: string, onWrite?: () => void): Promise<void>
   /** Hand every submission for `id` that is not written yet to `to` instead of writing it, from
    *  now on; `undefined` ends that.
    *
@@ -322,9 +358,9 @@ export interface SubmitQueue {
   /** How many messages are waiting on the person's draft in this lane: `unwritten` while the
    *  chain is held on it, else 0. What the pane's "N messages waiting" shows. */
   heldForDraft(id: string): number
-  /** Deliver what is held on the draft now, the person's choice: every `submit` enqueued so far
-   *  for `id` stops waiting on the draft. The first one pastes into the draft and its CR sends
-   *  both. Later submissions wait on a draft again. */
+  /** Deliver the message at the head of the hold now, the person's choice: it pastes into the
+   *  draft and its CR sends both. Only that one (review F2): the next waits on a draft again, so a
+   *  line the person starts typing right after is not merged with message 2. */
   deliverNow(id: string): void
   /** Called whenever `heldForDraft` may have changed, for any terminal. Returns the unsubscribe. */
   onHoldChange(fn: () => void): () => void
@@ -338,7 +374,7 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const now = deps.now ?? (() => Date.now())
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   // Per-terminal promise chain + the last write time on that terminal.
-  const chains = new Map<string, Promise<void>>()
+  const chains = new Map<string, Promise<unknown>>()
   const lastAt = new Map<string, number>()
   // Bumped by cancelNudge. A nudge captures the value before its wait and only fires if it
   // still matches — so a cancel during the wait disarms it without needing a timer handle.
@@ -369,6 +405,19 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   const enqueued = new Map<string, number>()
   const unwrittenCount = new Map<string, number>()
   const forced = new Map<string, number>()
+  // The seq of the submission whose turn it is (the one at the hold), per terminal.
+  const headSeq = new Map<string, number>()
+  // Submissions not written yet, per terminal, in order: for the ledger's held marks.
+  const owed = new Map<string, { key: string; text: string; held: boolean }[]>()
+  const ledger = deps.ledger
+  const instance = Math.random().toString(36).slice(2, 10)
+  const markHeld = (id: string) => {
+    for (const e of owed.get(id) ?? []) {
+      if (e.held) continue
+      e.held = true
+      try { ledger?.held(id, e.key, e.text, true) } catch { /* the ledger must never break the queue */ }
+    }
+  }
   const holding = new Set<string>()
   const holdListeners = new Set<() => void>()
   const holdChanged = () => {
@@ -376,7 +425,7 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
   }
   const setHolding = (id: string, on: boolean) => {
     if (on === holding.has(id)) return
-    if (on) holding.add(id)
+    if (on) { holding.add(id); markHeld(id) }
     else holding.delete(id)
     holdChanged()
   }
@@ -407,10 +456,12 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       chains.set(id, next.catch(() => {}))
       return next
     },
-    draft(id, text) {
+    draft(id, text, onWrite) {
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev.then(async () => {
-        if (text) deps.write(id, `\x1b[200~${stripControlChars(text)}\x1b[201~`)
+        if (!text) return
+        deps.write(id, `\x1b[200~${stripControlChars(text)}\x1b[201~`)
+        onWrite?.()
       })
       chains.set(id, next.catch(() => {}))
       return next
@@ -427,26 +478,40 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           const since = now() - last
           if (since < gapMs) await sleep(gapMs - since)
         }
+        if (hasDraft(id)) return false
         deps.write(id, typedSequence(text))
         lastAt.set(id, now())
+        return true
       })
       chains.set(id, next.catch(() => {}))
       return next
     },
 
-    submit(id, text) {
+    submit(id, text, opts) {
       try { deps.onSubmit?.(id, text) } catch { /* a listener must never block a submission */ }
       const seq = (enqueued.get(id) ?? 0) + 1
       enqueued.set(id, seq)
       unwrittenCount.set(id, (unwrittenCount.get(id) ?? 0) + 1)
-      if (holding.has(id)) holdChanged()
+      const entry = { key: `${instance}-${id}-${seq}`, text, held: false }
+      owed.set(id, [...(owed.get(id) ?? []), entry])
+      try { ledger?.owe(id, entry.key, text) } catch { /* the ledger must never break the queue */ }
+      if (holding.has(id)) { markHeld(id); holdChanged() }
       let settled = false
+      // Written, diverted, refused or failed: this submission is no longer owed to the lane.
       const written = () => {
         if (settled) return
         settled = true
         const n = (unwrittenCount.get(id) ?? 1) - 1
         if (n > 0) unwrittenCount.set(id, n)
         else unwrittenCount.delete(id)
+        const left = (owed.get(id) ?? []).filter((e) => e !== entry)
+        if (left.length) owed.set(id, left)
+        else owed.delete(id)
+        try {
+          if (entry.held) ledger?.held(id, entry.key, text, false)
+          ledger?.settle(id, entry.key)
+        } catch { /* the ledger must never break the queue */ }
+        if (headSeq.get(id) === seq) headSeq.delete(id)
         if (holding.has(id)) holdChanged()
       }
       // HELD ON A PERSON'S DRAFT (2026-10-24). The paste lands at the cursor in the TUI's composer
@@ -459,11 +524,14 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       const prev = chains.get(id) ?? Promise.resolve()
       const next = prev
         .then(async () => {
+          headSeq.set(id, seq)
+          let wasHeld = false
           // The whole chain waits here, so what is queued behind this message keeps its order, and
           // the gap still separates each write. Asked again after the gap: a person can start
           // typing during it.
           for (;;) {
             if (draftHolds()) {
+              wasHeld = true
               setHolding(id, true)
               while (draftHolds()) await sleep(DRAFT_POLL_MS)
               setHolding(id, false)
@@ -490,10 +558,12 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           if (away) {
             written()
             try { away(text) } catch { /* the new owner reports its own failures */ }
-            return
+            return true
           }
+          if (opts?.onlyIf && !opts.onlyIf(wasHeld)) { written(); return false }
           // Still a draft here only when `deliverNow` released this message over it.
           const intoDraft = hasDraft(id)
+          if (opts?.images?.length) deps.write(id, `\x1b[200~${stripControlChars(opts.images.join(' '))}\x1b[201~`)
           deps.write(id, submitSequence(text))
           written()
           if (intoDraft) deps.clearUnsentInput?.(id)
@@ -559,12 +629,12 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
           // CONFIRMED FIRST. Both can be true — a turn started and then the user typed — and
           // delivered beats disarmed: the message is on the record, so there is nothing to
           // rescue and nothing to report.
-          if (confirmed()) { awaiting.delete(id); lastAt.set(id, now()); return }
+          if (confirmed()) { awaiting.delete(id); lastAt.set(id, now()); return true }
           // Disarmed mid-wait — the CR must NOT go out.
           if (cancelled()) {
             lastAt.set(id, now())
             // Stop is deliberate: the user settled this submission themselves.
-            if (cancelReason.get(id) !== 'typing' || !deps.onUndelivered) { awaiting.delete(id); return }
+            if (cancelReason.get(id) !== 'typing' || !deps.onUndelivered) { awaiting.delete(id); return true }
             // Typing is not. We suppressed the only thing that would have submitted a stranded
             // draft, so this dispatch may now sit in that composer forever — and silence would
             // make it look delivered. Give it the same window (no CR) and then say so if no
@@ -572,18 +642,19 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
             // watcher can still confirm it, which is what keeps the report honest when the
             // paste committed on its own a moment after the keystroke.
             watchDelivery(true)
-            return
+            return true
           }
           deps.write(id, '\r')
           lastAt.set(id, now())
           // Still open-loop past this point unless someone is watching, so give the rescue its
           // own window and then say so. No second CR: if a bare CR did not commit it, another
           // one will not either, and each extra keystroke is another chance to split something.
-          if (!deps.onUndelivered) { awaiting.delete(id); return }
+          if (!deps.onUndelivered) { awaiting.delete(id); return true }
           watchDelivery()
+          return true
         })
         // A failed write must not break ordering for everything queued behind it.
-        .catch(() => { written(); awaiting.delete(id) /* dropped submission */ })
+        .catch(() => { written(); awaiting.delete(id); return false /* dropped submission */ })
       chains.set(id, next)
       return next
     },
@@ -619,7 +690,10 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       return holding.has(id) ? unwrittenCount.get(id) ?? 0 : 0
     },
     deliverNow(id) {
-      forced.set(id, enqueued.get(id) ?? 0)
+      // The head only. Nothing at the hold (the pill is drawn from `holding`): release nothing.
+      const head = headSeq.get(id)
+      if (head === undefined || !holding.has(id)) return
+      forced.set(id, Math.max(forced.get(id) ?? 0, head))
       holdChanged()
     },
     onHoldChange(fn) {
@@ -653,6 +727,13 @@ export function onSubmission(fn: (id: string, text: string) => void) {
   submitHandler = fn
 }
 
+/** Where the app-wide queue records what it owes each lane (`SubmissionLedger`). Installed by
+ *  DashboardView, which knows the lane's project and sends it to main. */
+let ledgerHandler: SubmissionLedger | undefined
+export function onSubmissionLedger(l: SubmissionLedger) {
+  ledgerHandler = l
+}
+
 /** The app-wide queue. Terminal writes already go through an ordered per-terminal write
  *  queue in the bridge (byte ordering); this adds the SUBMISSION spacing on top. */
 export const submitQueue = createSubmitQueue({
@@ -661,4 +742,9 @@ export const submitQueue = createSubmitQueue({
   onSubmit: (id, text) => submitHandler?.(id, text),
   hasUnsentInput,
   clearUnsentInput,
+  ledger: {
+    owe: (id, key, text) => ledgerHandler?.owe(id, key, text),
+    settle: (id, key) => ledgerHandler?.settle(id, key),
+    held: (id, key, text, on) => ledgerHandler?.held(id, key, text, on),
+  },
 })

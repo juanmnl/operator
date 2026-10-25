@@ -173,7 +173,9 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
   // and the durable one both hang off the write actually going out.
   const pickEffort = (level: EffortLevel) => {
     if (!tunable || !terminalId) return
-    void submitQueue.submitTyped(terminalId, effortCommand(level)).then(() => {
+    // False when the lane has unsent text: nothing was typed, so nothing is recorded (review F8).
+    void submitQueue.submitTyped(terminalId, effortCommand(level)).then((typed) => {
+      if (!typed) return
       setEffortLevel(level)
       onEffortChange?.(level)
     })
@@ -181,7 +183,8 @@ export function SessionToolbar({ projectPath, projectName, onOpenProjectHome, te
 
   const pickModel = (id: string) => {
     if (!tunable || !terminalId) return
-    void submitQueue.submitTyped(terminalId, modelCommand(id)).then(() => {
+    void submitQueue.submitTyped(terminalId, modelCommand(id)).then((typed) => {
+      if (!typed) return
       setModel(id)
       onModelChange?.(id)
     })

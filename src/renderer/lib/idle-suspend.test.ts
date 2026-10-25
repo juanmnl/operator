@@ -7,7 +7,8 @@ import {
   LaneGate, HeldKeys, spawnStampsFromList, closeUnderGate, GATE_WAIT_CAP_MS, rowAfterClose, typeHeldKeys,
   backToSuspended, offeredForResume,
 } from './idle-suspend'
-import { hasUnsentInput, noteDraftKey, lastKeystrokeAt } from './lane-keystrokes'
+import { hasUnsentInput, noteDraftKey, lastKeystrokeAt, clearUnsentInput } from './lane-keystrokes'
+import { createSubmitQueue, submitSequence } from './submit-queue'
 import type { DispatchRecord } from '../../shared/types'
 
 const MIN = 60_000
@@ -634,7 +635,12 @@ describe('idle suspend: held keys count as a draft only once written (review R3-
     const held = new HeldKeys()
     const out: string[] = []
     held.set('k', 'fix it')
-    expect(await typeHeldKeys(held, 'k', 'r4-written', async () => {}, (t) => { out.push(t) })).toBe(true)
+    expect(await typeHeldKeys(held, 'k', 'r4-written', async () => {}, (t, onWrite) => {
+      // Not before the writer says it wrote (review F3).
+      expect(hasUnsentInput('r4-written')).toBe(false)
+      out.push(t)
+      onWrite()
+    })).toBe(true)
     expect(out).toEqual(['fix it'])
     expect(hasUnsentInput('r4-written')).toBe(true)
     expect(lastKeystrokeAt('r4-written')).toBeDefined()
@@ -656,6 +662,27 @@ describe('idle suspend: held keys count as a draft only once written (review R3-
     expect(out).toEqual([])
     // A phantom draft kept the lane from being suspended again until an Enter or Ctrl+C.
     expect(hasUnsentInput('r4-cleared')).toBe(false)
+  })
+
+  it('does not hold the messages queued ahead of it, so neither waits on the other (review F3)', async () => {
+    // Two messages joined the wake; the held text is queued behind them. Marked at the enqueue, the
+    // draft held message 2, and the text waited behind it: nothing was written.
+    const writes: string[] = []
+    const q = createSubmitQueue({ write: (_id, data) => writes.push(data), sleep: async () => {}, hasUnsentInput })
+    const held = new HeldKeys()
+    held.set('k', 'check the logs')
+    const one = q.submit('f3', 'message 1')
+    const two = q.submit('f3', 'message 2')
+    const typed = typeHeldKeys(held, 'k', 'f3', async () => {}, (text, onWrite) => q.draft('f3', text, onWrite))
+    expect(await one).toBe(true)
+    expect(await two).toBe(true)
+    expect(await typed).toBe(true)
+    // (Each message also gets its rescue CR: nothing confirms a turn here.)
+    expect(writes.filter((w) => w !== '\r')).toEqual([submitSequence('message 1'), submitSequence('message 2'), '\x1b[200~check the logs\x1b[201~'])
+    expect(q.heldForDraft('f3')).toBe(0)
+    // The text is in the composer now, so the next message waits on it.
+    expect(hasUnsentInput('f3')).toBe(true)
+    clearUnsentInput('f3')
   })
 
   it('does not ask for readiness when nothing is held', async () => {

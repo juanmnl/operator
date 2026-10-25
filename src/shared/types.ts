@@ -737,6 +737,11 @@ export interface DispatchRecord {
     // The released lane could not be ended (its state could not be confirmed), so no fresh lane
     // was launched and the task is queued on the board for that role.
     | 'not-retired'
+    // Written over `sent` while the message waits in the lane's submit queue on text the person
+    // typed and has not sent (lib/submit-queue, 2026-10-24); back to `sent` once it is written.
+    // Nothing was typed into the lane yet. A `held` record whose message did not survive (the app
+    // quit with it held) becomes `undelivered` at the next launch.
+    | 'held'
   /** THE BRAKE'S OWN SENTENCE, when one stopped this. `evaluateDelivery`'s `block()` already
    *  writes these as prose to a human — "…so that pair is suspended for 5 minutes. Other lanes
    *  are unaffected." — and until now they were shown NOWHERE. Persisted rather than regenerated:
@@ -1294,3 +1299,25 @@ export interface ArtifactStatusEvent {
   taskId: string
   status: string
 }
+
+/** A message the renderer's submit queue owes a lane and has not written yet, as main keeps it
+ *  (electron/src/main/lane-holds.ts, review F1 2026-10-24). A renderer crash or reload loses the
+ *  queue; the next renderer takes these and delivers them again, or reports them. */
+export interface OwedSubmission {
+  /** Unique per submission, across reloads. */
+  key: string
+  terminalId: string
+  /** The exact text the queue was asked to submit. */
+  text: string
+  /** When it was enqueued, ms since the epoch. */
+  at: number
+  /** The lane it was for, so it can still be reported once that terminal is gone. */
+  projectId?: string
+  roleId?: string
+}
+
+/** What the renderer tells main about a lane's composer and its owed messages. */
+export type LaneHoldOp =
+  | { kind: 'draft'; terminalId: string; on: boolean }
+  | { kind: 'owe'; entry: OwedSubmission }
+  | { kind: 'settle'; key: string }

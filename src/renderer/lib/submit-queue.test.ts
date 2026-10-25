@@ -1197,7 +1197,7 @@ describe('held on a person\'s draft (2026-10-24: a delivery merged into half-typ
     expect(writes[0].at).toBeGreaterThanOrEqual(6000 + SUBMIT_GAP_MS)
   })
 
-  it('deliverNow sends everything held so far, into the draft, and clears the flag', async () => {
+  it('deliverNow sends the head into the draft and clears the flag; the next goes once no draft is left', async () => {
     const { clock, writes, drafts, cleared, q } = setup()
     drafts.add('t1')
     clock.at(2000, () => q.deliverNow('t1'))
@@ -1286,5 +1286,115 @@ describe('clearComposer never runs over a draft (retry path)', () => {
     const q = createSubmitQueue({ write: (_id, data) => writes.push(data), ...fakeClock(), hasUnsentInput: () => false })
     await q.clearComposer('t1', 2)
     expect(writes).toEqual([clearComposerSequence(2)])
+  })
+})
+
+describe('held on a draft: review fixes (2026-10-24)', () => {
+  function setup(extra: Partial<Parameters<typeof createSubmitQueue>[0]> = {}) {
+    const clock = eventClock()
+    const writes: { at: number; id: string; data: string }[] = []
+    const drafts = new Set<string>()
+    const q = createSubmitQueue({
+      write: (id, data) => writes.push({ at: clock.now(), id, data }),
+      now: clock.now, sleep: clock.sleep,
+      hasUnsentInput: (id) => drafts.has(id),
+      clearUnsentInput: (id) => { drafts.delete(id) },
+      ...extra,
+    })
+    return { clock, writes, drafts, q }
+  }
+
+  it('F2: deliverNow releases only the head; typing right after it holds message 2', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => q.deliverNow('t1'))
+    // The person starts their next line just after message 1 went with their draft.
+    clock.at(2000 + SUBMIT_GAP_MS + 10, () => drafts.add('t1'))
+    clock.at(9000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t1', 'B')])
+    const subs = pastes(writes)
+    expect(subs.map((w) => w.data)).toEqual([submitSequence('A'), submitSequence('B')])
+    expect(subs[0].at).toBeLessThan(2000 + SUBMIT_GAP_MS + 10)
+    // Not merged into the new line: B waited for it to be sent.
+    expect(subs[1].at).toBeGreaterThanOrEqual(9000 + SUBMIT_GAP_MS)
+  })
+
+  it('F2: deliverNow with nothing at the hold releases nothing', async () => {
+    const { clock, writes, drafts, q } = setup()
+    q.deliverNow('t1')
+    drafts.add('t1')
+    clock.at(3000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A')
+    expect(writes[0].at).toBeGreaterThanOrEqual(3000 + SUBMIT_GAP_MS)
+  })
+
+  it('F6: onlyIf is asked after the hold, told it was held, and false writes nothing', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(2000, () => drafts.delete('t1'))
+    const asked: boolean[] = []
+    const ok = await q.submit('t1', 'announce', { onlyIf: (held) => { asked.push(held); return !held } })
+    expect(ok).toBe(false)
+    expect(asked).toEqual([true])
+    expect(writes).toEqual([])
+    expect(q.unwritten('t1')).toBe(0)
+    expect(q.pending('t1')).toBeUndefined()
+    // Unheld, the same guard lets it through.
+    expect(await q.submit('t1', 'announce', { onlyIf: (held) => !held })).toBe(true)
+    expect(pastes(writes).map((w) => w.data)).toEqual([submitSequence('announce')])
+  })
+
+  it('F7: images go in the same step as the text, after the hold', async () => {
+    const { clock, writes, drafts, q } = setup()
+    drafts.add('t1')
+    clock.at(1500, () => drafts.delete('t1'))
+    await q.submit('t1', 'fix the header', { images: ['/tmp/a.png', '/tmp/b.png'] })
+    expect(writes.slice(0, 2).map((w) => w.data)).toEqual(['\x1b[200~/tmp/a.png /tmp/b.png\x1b[201~', submitSequence('fix the header')])
+    expect(writes[0].at).toBeGreaterThanOrEqual(1500)
+  })
+
+  it('F8: a slash command over a draft writes nothing and resolves false', async () => {
+    const { writes, drafts, q } = setup()
+    drafts.add('t1')
+    expect(await q.submitTyped('t1', '/effort high')).toBe(false)
+    drafts.delete('t1')
+    expect(await q.submitTyped('t1', '/effort high')).toBe(true)
+    expect(writes.map((w) => w.data)).toEqual(['/effort high\r'])
+  })
+
+  it('F3: draft runs onWrite at the write, after what was queued ahead of it', async () => {
+    const { writes, q } = setup()
+    const seenAtMark: string[][] = []
+    const a = q.submit('t1', 'A')
+    const d = q.draft('t1', 'mine', () => seenAtMark.push(pastes(writes).map((w) => w.data)))
+    // Not at the enqueue.
+    expect(seenAtMark).toEqual([])
+    await Promise.all([a, d])
+    expect(seenAtMark).toEqual([[submitSequence('A'), '\x1b[200~mine\x1b[201~']])
+  })
+
+  it('F1: tells the ledger what is owed, when the draft holds it, and when it is settled', async () => {
+    const events: string[] = []
+    const { clock, drafts, q } = setup({
+      ledger: {
+        owe: (id, _key, text) => events.push(`owe ${id} ${text}`),
+        settle: (id) => events.push(`settle ${id}`),
+        held: (id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${id} ${text}`),
+      },
+    })
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    await Promise.all([q.submit('t1', 'A'), q.submit('t2', 'B')])
+    expect(events).toEqual(['owe t1 A', 'owe t2 B', 'held t1 A', 'settle t2', 'unheld t1 A', 'settle t1'])
+  })
+
+  it('F1: settles a submission a divert took, and one refused by onlyIf', async () => {
+    const settled: string[] = []
+    const { q } = setup({ ledger: { owe: () => {}, settle: (_id, key) => settled.push(key), held: () => {} } })
+    expect(await q.submit('t1', 'no', { onlyIf: () => false })).toBe(false)
+    q.divert('t1', () => {})
+    expect(await q.submit('t1', 'away')).toBe(true)
+    expect(settled).toHaveLength(2)
+    expect(new Set(settled).size).toBe(2)
   })
 })

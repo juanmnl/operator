@@ -4,7 +4,7 @@ declare module '*.png' {
 }
 
 import type { QuitRequest } from './lib/quit-guard'
-import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout, MemoryPressure } from '../shared/types'
+import { AgentSession, ManagedTerminal, FolderPreferences, ClaudeSettings, McpServersResult, RepoInfo, WorktreeCreateResult, WorktreeStatus, WorktreeDiff, ProjectIdentity, AgentDefinition, UsageStats, UsageInsights, GridUpdate, NarrationEntry, OperatorReply, ProjectReply, ArtifactReport, ArtifactStatusEvent, SkillsCatalog, ReapPlan, ReapRunResult, SessionPort, DevServerProc, TuningData, WorktreeQuickEntry, PreviewShot, PreviewShotRequest, GoneCheckout, MemoryPressure, LaneHoldOp, OwedSubmission } from '../shared/types'
 
 interface PlanLimits {
   sessionPct?: number | null
@@ -38,6 +38,12 @@ declare global {
       /** The lane tabs are back after a launch or reload, so lane dispatches and replies can be
        *  routed. Main holds them until this is called (electron/src/main/renderer-gate.ts). */
       rendererReady?: () => void
+      /** A lane's draft flag changed, or a message to it was queued or settled (lib/submit-queue).
+       *  Main keeps them for the next renderer (electron/src/main/lane-holds.ts). */
+      laneHoldNote?: (op: LaneHoldOp) => void
+      /** After a reload: the lanes main knew to have a draft, and the messages the old renderer
+       *  owed and never wrote. The owed list is handed over once. */
+      laneHoldsTake?: () => Promise<{ drafts: string[]; owed: OwedSubmission[] }>
       /** Lane dispatches and replies main held longer than its age limit while no renderer was
        *  ready (the window was closed), so it did not route them; and how many it dropped past its
        *  cap. Replies are in the channel already; dispatches were not acted on. */

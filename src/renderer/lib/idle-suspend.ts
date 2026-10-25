@@ -602,20 +602,20 @@ export class HeldKeys {
  *
  *  A keystroke from the ask, so the lane does not read as quiet while the text is on its way. A
  *  draft only once text is written (review R3-4): a draft keeps the lane from being suspended
- *  until an Enter or Ctrl+C, and text taken back before the write left one that did not exist. */
+ *  until an Enter or Ctrl+C, and text taken back before the write left one that did not exist.
+ *  `draft` calls its `onWrite` AT the write, in the submit queue's chain (review F3, 2026-10-24).
+ *  Marked when queued, the draft held every message queued ahead of this text, and the text waited
+ *  behind them: nothing was written, and the pane said a message waited on text nobody could see. */
 export function typeHeldKeys(
   held: HeldKeys,
   key: string,
   terminalId: string,
   ready: () => Promise<void>,
-  draft: (text: string) => Promise<void> | void,
+  draft: (text: string, onWrite: () => void) => Promise<void> | void,
 ): Promise<boolean> {
   if (!held.has(key)) return Promise.resolve(false)
   noteKeystroke(terminalId)
-  return held.typeInto(key, ready(), (text) => {
-    notePaste(terminalId)
-    return draft(text)
-  })
+  return held.typeInto(key, ready(), (text) => draft(text, () => notePaste(terminalId)))
 }
 
 /** What resuming a suspended lane needs from the view. */
