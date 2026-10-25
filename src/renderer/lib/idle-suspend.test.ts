@@ -5,7 +5,7 @@ import {
   suspendedTabId, isPlaceholderId, type SuspendCandidate,
   failedResume, tookTurnSince, RESUME_CONFIRM_MS, suspendedRowsToRestore, overlayKey, runSuspend, placeholderTab,
   LaneGate, HeldKeys, spawnStampsFromList, closeUnderGate, GATE_WAIT_CAP_MS, rowAfterClose, typeHeldKeys,
-  backToSuspended, offeredForResume,
+  backToSuspended, offeredForResume, wakesOnFocus,
 } from './idle-suspend'
 import { hasUnsentInput, noteDraftKey, lastKeystrokeAt } from './lane-keystrokes'
 import type { DispatchRecord } from '../../shared/types'
@@ -824,5 +824,21 @@ describe('a resume that found no conversation (QA D2)', () => {
     // `lastRecordAt` is absent until the tailer reads a record; `lastActivityAt` would read "now".
     expect(tookTurnSince(undefined, spawnedAt)).toBe(false)
     expect(failedResume({ spawnedAt, tookTurn: tookTurnSince(undefined, spawnedAt) }, spawnedAt + 2_000, true)).toBe(true)
+  })
+})
+
+describe('focus resumes a suspended lane, except one suspended by hand (review T1, 2026-10-25)', () => {
+  const tab = (key: string, suspended = true) => ({ key, idleSuspendedAt: suspended ? '2026-10-25T08:00:00Z' : undefined })
+
+  it('resumes a lane suspended while idle, and not a running one', () => {
+    expect(wakesOnFocus(tab('a'), new Set(), new Set())).toBe(true)
+    expect(wakesOnFocus(tab('a', false), new Set(), new Set())).toBe(false)
+    expect(wakesOnFocus(undefined, new Set(), new Set())).toBe(false)
+  })
+
+  it('leaves one whose resume failed, or one suspended from the lane menu, for a click', () => {
+    expect(wakesOnFocus(tab('a'), new Set(['a']), new Set())).toBe(false)
+    expect(wakesOnFocus(tab('a'), new Set(), new Set(['a']))).toBe(false)
+    expect(wakesOnFocus(tab('b'), new Set(), new Set(['a']))).toBe(true)
   })
 })

@@ -68,7 +68,9 @@ const PHASE_WORD: Record<string, string> = {
   asking: 'Asking you',
 }
 
-function rank(phase: string): number {
+/** Where a phase sorts in a guard's row list, most consequential first. Unknown phases sort last.
+ *  Shared with the project close guard (lib/project-close-guard). */
+export function phaseRank(phase: string): number {
   const i = PHASE_ORDER.indexOf(phase)
   return i < 0 ? PHASE_ORDER.length : i
 }
@@ -86,7 +88,7 @@ export function quitGuardRows(
 ): { rows: QuitRow[]; more: number } {
   const multiProject = projectCount(req.lanes) > 1
   const ordered = [...req.lanes].sort((a, b) => {
-    const r = rank(a.phase) - rank(b.phase)
+    const r = phaseRank(a.phase) - phaseRank(b.phase)
     if (r !== 0) return r
     // Within a bucket, most recently active first.
     return (b.lastActivityAt || '').localeCompare(a.lastActivityAt || '')

@@ -228,7 +228,9 @@ export interface ProjectRailProps {
   planNow?: number
   onSelectSession?: (session: AgentSession) => void
   accentOf?: (session: AgentSession) => string | undefined
-  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
+  /** Right-click on a lane's orb or row, at either width: open its lane menu at `anchor` (lifecycle
+   *  audit B1, entry 2). Colour is an item in it; this used to open the accent picker directly. */
+  onLaneMenu?: (session: AgentSession, anchor: { top: number; left: number }) => void
   /** Un-shelve the open project — the `previous` chip, expanded only. */
   onRestoreProject?: (projectId: string) => void
   customNames?: Record<string, string>
@@ -273,7 +275,7 @@ export function ProjectRail({
   onShowGallery, onOpenFolder, onOpenAgents, agentsActive, onOpenTuning, tuningActive, closingIds,
   planLimits, planNow,
   onReorder, onTileMenu, menuProjectId,
-  sessions = [], activeSessionId, onSelectSession, accentOf, onPickAccent,
+  sessions = [], activeSessionId, onSelectSession, accentOf, onLaneMenu,
   onRestoreProject, customNames = {}, effortLevels = {}, fanInfo = {}, shortcutIndices = {},
   onRenameSession, onCloseSession, onAgentMenu, onAddLane, onReorderSession, onReorderLane,
   activeFolderPrefs, globalPrefsActive, prefsViewActive, isDark,
@@ -560,7 +562,7 @@ export function ProjectRail({
                     // gesture that worked at 264 and not at 70 would be two surfaces again.
                     drag={dragFor(s)}
                     onSelect={() => onSelectSession?.(s)}
-                    onPickAccent={onPickAccent}
+                    onLaneMenu={onLaneMenu}
                   />
                 ))
                 : live.map((s) => (
@@ -580,7 +582,7 @@ export function ProjectRail({
                     onSelect={() => onSelectSession?.(s)}
                     onRename={(name) => onRenameSession?.(s.id, name)}
                     onClose={() => onCloseSession?.(s)}
-                    onPickAccent={onPickAccent && ((anchor) => onPickAccent(s, anchor))}
+                    onLaneMenu={onLaneMenu && ((anchor) => onLaneMenu(s, anchor))}
                   />
                 ))}
 
@@ -966,7 +968,7 @@ function HomeRow({ collapsed, current, onClick }: { collapsed: boolean; current:
 
 /** One live agent, COLLAPSED. A 24px disc in the 36px member box, centred on the axis — the same
  *  disc, at the same x, that the expanded row carries. */
-function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect, onPickAccent }: {
+function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect, onLaneMenu }: {
   session: AgentSession
   active: boolean
   accent?: string
@@ -983,7 +985,7 @@ function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect
     onReorder: (draggedId: string, targetId: string, edge: 'before' | 'after') => void
   }
   onSelect: () => void
-  onPickAccent?: (session: AgentSession, anchor: { top: number; left: number }) => void
+  onLaneMenu?: (session: AgentSession, anchor: { top: number; left: number }) => void
 }) {
   const hoverCard = useHoverCard(`orb:${session.id}`)
   const [edge, setEdge] = useState<'before' | 'after' | null>(null)
@@ -1026,12 +1028,12 @@ function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect
           setEdge(null)
         })}
         onClick={onSelect}
-        onContextMenu={onPickAccent && ((e) => {
+        onContextMenu={onLaneMenu && ((e) => {
           e.preventDefault()
           e.stopPropagation()
           hoverCard.dismiss() // it is `position: fixed` exactly where the popover opens
           const r = e.currentTarget.getBoundingClientRect()
-          onPickAccent(session, { top: r.bottom + 6, left: r.right + 8 })
+          onLaneMenu(session, { top: r.bottom + 6, left: r.right + 8 })
         })}
         aria-label={label}
         aria-current={active || undefined}
@@ -1101,7 +1103,7 @@ function RailOrb({ session, active, accent, initial, effortLevel, drag, onSelect
 
 /** One live agent, EXPANDED — `SessionItem`, which was already the right object for this row and
  *  is the one thing the old sidebar had that survives whole. */
-function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, drag, onSelect, onRename, onClose, onPickAccent }: {
+function MemberRow({ session, project, role, active, accent, customName, effortLevel, fan, shortcutIndex, drag, onSelect, onRename, onClose, onLaneMenu }: {
   session: AgentSession
   project: Project
   role?: Role
@@ -1123,7 +1125,7 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
   onSelect: () => void
   onRename: (name: string) => void
   onClose: () => void
-  onPickAccent?: (anchor: { top: number; left: number }) => void
+  onLaneMenu?: (anchor: { top: number; left: number }) => void
 }) {
   const [edge, setEdge] = useState<'before' | 'after' | null>(null)
   const row = (
@@ -1143,7 +1145,7 @@ function MemberRow({ session, project, role, active, accent, customName, effortL
       onClick={onSelect}
       onRename={onRename}
       onClose={onClose}
-      onPickAccent={onPickAccent}
+      onLaneMenu={onLaneMenu}
     />
   )
   return (

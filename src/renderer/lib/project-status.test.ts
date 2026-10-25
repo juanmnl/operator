@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel } from './project-status'
+import { projectActivity, projectActivityLabel, lanesToEnd, closeProjectLabel, forgetProjectItem } from './project-status'
 
 const s = (phase: string, status = 'active') => ({ status, phase })
 
@@ -67,5 +67,20 @@ describe('the Close project label', () => {
     expect(closeProjectLabel(lanesToEnd(projectActivity([{ status: 'ended', phase: 'idle', suspended: true }])))).toBe('Close project · end 1 agent')
     expect(closeProjectLabel(lanesToEnd(projectActivity([s('idle', 'ended')])))).toBe('Close project')
     expect(lanesToEnd(undefined)).toBe(0)
+  })
+})
+
+describe('forgetProjectItem', () => {
+  it('is the danger item when nothing is open', () => {
+    expect(forgetProjectItem(0)).toEqual({ label: 'Forget project', disabled: false, danger: true })
+  })
+
+  it('is disabled while lanes are open, and says why', () => {
+    expect(forgetProjectItem(1)).toEqual({ label: 'Forget project — close it first (1 agent open)', disabled: true, danger: false })
+    expect(forgetProjectItem(3).label).toBe('Forget project — close it first (3 agents open)')
+  })
+
+  it('counts suspended lanes, which Forget would orphan as well', () => {
+    expect(forgetProjectItem(lanesToEnd(projectActivity([{ status: 'ended', phase: 'idle', suspended: true }])))).toMatchObject({ disabled: true })
   })
 })
