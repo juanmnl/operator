@@ -308,3 +308,56 @@ describe('the saved row of a closed lane', () => {
     })
   })
 })
+
+// #2813: a lane that reported done past the window was closable while a reply or an announcement
+// waited behind the person's draft. Neither has a task, so `openWork` never saw them.
+describe('what is still on its way to a lane holds its close', () => {
+  const asleep = (over: Partial<LaneSnapshot> = {}) => lane({ ended: true, suspended: true, phase: undefined, lastActivityAt: ago(300), ...over })
+
+  it('refuses while a message to it is owed', () => {
+    const d = laneCloseDecision(lane({ owed: true }), NOW, POLICY)
+    expect(d.close).toBe(false)
+    expect(d.why).toBe('a message to it has not become a turn yet')
+  })
+
+  it('refuses while it has unsent text in its input', () => {
+    const d = laneCloseDecision(lane({ unsentInput: true }), NOW, POLICY)
+    expect(d.close).toBe(false)
+    expect(d.why).toBe('it has unsent text in its input')
+  })
+
+  it('refuses while a dispatch or reply to it is queued or held', () => {
+    const d = laneCloseDecision(lane({ heldDeliveries: 1 }), NOW, POLICY)
+    expect(d.close).toBe(false)
+    expect(d.why).toBe('a dispatch or reply to it is queued or held')
+  })
+
+  it('holds the went-quiet backstop too', () => {
+    const quiet = { reportedDoneAt: undefined, lastActivityAt: ago(300) }
+    expect(laneCloseDecision(lane(quiet), NOW, POLICY).close).toBe(true)
+    expect(laneCloseDecision(lane({ ...quiet, owed: true }), NOW, POLICY).close).toBe(false)
+    expect(laneCloseDecision(lane({ ...quiet, unsentInput: true }), NOW, POLICY).close).toBe(false)
+    expect(laneCloseDecision(lane({ ...quiet, heldDeliveries: 2 }), NOW, POLICY).close).toBe(false)
+  })
+
+  it('holds a lane suspended while idle', () => {
+    expect(laneCloseDecision(asleep(), NOW, POLICY).close).toBe(true)
+    expect(laneCloseDecision(asleep({ owed: true }), NOW, POLICY).close).toBe(false)
+    expect(laneCloseDecision(asleep({ heldDeliveries: 1 }), NOW, POLICY).close).toBe(false)
+  })
+
+  it('closes once they clear, on the reason it had', () => {
+    const held = lane({ owed: true, unsentInput: true, heldDeliveries: 1 })
+    expect(laneCloseDecision(held, NOW, POLICY).close).toBe(false)
+    const d = laneCloseDecision({ ...held, owed: false, unsentInput: false, heldDeliveries: 0 }, NOW, POLICY)
+    expect(d.close).toBe(true)
+    expect(d.close && d.reason).toBe('reported-done')
+  })
+
+  it('is left out of the plan until they clear', () => {
+    const lanes = [lane({ terminalId: 'a', heldDeliveries: 1 }), lane({ terminalId: 'b', unsentInput: true }), lane({ terminalId: 'c' })]
+    expect(planLaneCloses(lanes, NOW, POLICY).close.map((c) => c.lane.terminalId)).toEqual(['c'])
+    const cleared = lanes.map((l) => ({ ...l, heldDeliveries: 0, unsentInput: false }))
+    expect(planLaneCloses(cleared, NOW, POLICY).close.map((c) => c.lane.terminalId).sort()).toEqual(['a', 'b', 'c'])
+  })
+})

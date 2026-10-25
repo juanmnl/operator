@@ -4742,7 +4742,8 @@ export function DashboardView() {
         // OPEN WORK = tasks IN FLIGHT, not the whole backlog. A lane's queued tasks are not
         // being worked on and are picked up again by the launch path when it comes back, so
         // counting them would pin a lane open for a backlog nobody is touching.
-        const openWork = (projectsRef.current.find((p) => p.id === tab.projectId)?.tasks ?? []).filter((t) => (
+        const project = projectsRef.current.find((p) => p.id === tab.projectId)
+        const openWork = (project?.tasks ?? []).filter((t) => (
           t.status === 'running' && (
             (!!claudeId && t.claudeSessionId === claudeId)
             || (!!tab.roleId && t.roleId === tab.roleId)
@@ -4750,6 +4751,10 @@ export function DashboardView() {
         )).length
         // A lane that took new work invalidates its old report: it is not the same "finished".
         if (openWork > 0) delete doneReportsRef.current[tab.id]
+        // What is still on its way to it, or typed into it, and would be lost with the pty.
+        const owed = owesSubmission(submitQueue, tab.id) || !!awaitingReadyRef.current.get(tab.id)
+        const unsentInput = hasUnsentInput(tab.id)
+        const heldDeliveries = heldDeliveriesFor(project?.dispatches, tab.roleId, Date.now())
         // SUSPENDED WHILE IDLE is still a lane, and closes on the went-quiet backstop like a live
         // one (review H2), or its tab, row and worktree claim would stay forever. Its quiet runs
         // from when it went quiet, which the tab or its saved row keeps (lib/lane-lifecycle).
@@ -4763,6 +4768,9 @@ export function DashboardView() {
             lastActivityAt: tab.quietSince ?? savedSessionsRef.current.find((sv) => sv.key === tab.key)?.lastActiveAt,
             reportedDoneAt: doneReportsRef.current[tab.id],
             openWork,
+            owed,
+            unsentInput,
+            heldDeliveries,
             focused: tab.id === activeTerminalIdRef.current,
           }
         }
@@ -4775,6 +4783,9 @@ export function DashboardView() {
           lastActivityAt: session?.lastActivityAt,
           reportedDoneAt: doneReportsRef.current[tab.id],
           openWork,
+          owed,
+          unsentInput,
+          heldDeliveries,
           focused: tab.id === activeTerminalIdRef.current,
         }
       })
