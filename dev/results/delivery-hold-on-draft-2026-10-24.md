@@ -124,3 +124,127 @@ project: A = coordinator, B = worker. The steps follow the report's recipe.
 
 Also check that the pill disappears once the message is written, and that it does not cover the
 composer.
+
+## Fix round 1 (Review: `dev/results/delivery-hold-on-draft-review-2026-10-24.md`)
+
+Branch `operator/17f40`, fast-forwarded from `operator/98a1c0` @ ac7a75b; `operator/98a1c0` moved to
+the same tip. Not merged. Not GUI-verified.
+
+### F1. Held messages survive a renderer crash or reload
+
+- Main keeps what the renderer's queue owes each lane, and a copy of the draft flags:
+  `electron/src/main/lane-holds.ts` (new, memory only, capped at 500 owed entries). IPC:
+  `laneHoldNote(op)` (send) and `laneHoldsTake()` (invoke), in `env.d.ts`, `operator-api.ts`,
+  `ipc.ts`. Types `OwedSubmission` and `LaneHoldOp` in `src/shared/types.ts`.
+- The submit queue reports every submission to a `SubmissionLedger` dep: `owe` at the enqueue,
+  `settle` when it is written, diverted, refused or dropped, and `held` on/off around a draft hold.
+  DashboardView installs it (`onSubmissionLedger`) and sends `owe`/`settle` to main. Every change of
+  the draft set goes to main too (`onDraftChange` in `lib/lane-keystrokes`).
+- After the re-attach and before `rendererReady`, DashboardView takes the holds from main. Drafts on
+  live lanes are flagged again and marked unknown (`restoreDrafts`). Owed messages for a live lane
+  are submitted again, so they hold on that draft as before and go ahead of anything main releases
+  next. Owed messages for a lane that is gone are reported undelivered ("The lane ended before it was
+  typed.").
+- New dispatch outcome `held`: a record goes `sent` → `held` when the draft holds its message and
+  back to `sent` at the write (`flipHeld`, matched by text and role like `reportUndelivered`). Chip:
+  "held · waiting on unsent text in the lane". This is the sign outside the pane that F5 asked for:
+  the Comms log and the board show it. A `held` record that no message came back for at the next
+  launch (the app quit with it held, so main started empty) becomes `undelivered` with a note
+  (`settleUnreturnedHeld`). `reportUndelivered` now also matches `held`.
+- **Deviation from the brief, deliberately.** The brief says to treat every lane re-attached after a
+  reload as "draft unknown". I treat only the lanes main's mirror had a draft on. Main sees every
+  draft change, so a lane with no flag in main had no draft when the renderer died (the only gap is a
+  keystroke in the last IPC hop before a crash). Flagging every lane would hold every delivery and
+  every announcement, and refuse idle suspension, on every lane after each reload until the person
+  visits each one. That is the wrong cost while the renderer leak makes reloads the likely trigger
+  for memory pressure. If you want the literal version, it is one line in the restore effect
+  (`restoreDrafts(live)`).
+- The pill's copy for an unknown draft: "1 message waits: after the reload, Operator can't tell if
+  you left text here". Enter, Ctrl+C, double Esc, a typed key or Deliver now settles it.
+
+### F2. Deliver now releases only the head
+
+`deliverNow` forces only the submission at the hold (`headSeq`). After its write the flag clears,
+so message 2 goes when no draft is left and holds again if the person starts typing. With nothing at
+the hold it releases nothing. Tooltip: "the next message is added to what you typed".
+
+### F3. Held keys no longer deadlock behind a message waiting on them
+
+`submitQueue.draft(id, text, onWrite)` runs `onWrite` at the write, inside the chain.
+`typeHeldKeys` passes `notePaste` through it instead of calling it before queueing. The messages
+queued ahead of the text no longer see a draft that is not there yet.
+
+### F4. `\` + Enter is a newline
+
+`draftEffect(e, prev, now)` reads the previous key: Enter after `\` is `draft`. Modifier-only
+keydowns are not recorded as the previous key. Not handled: an Enter that accepts an autocomplete
+entry (`@` picker, `/` menu); not verified against the binary.
+
+### F5. Double Esc clears the draft; the announce pass skips a coordinator with a draft
+
+- Two Escapes within `DOUBLE_ESC_MS = 800` (from the 2.1.310 binary: `var a=800`, the double-press
+  window used for "Esc again to clear", inclusive) clear the flag. A key between them, or a longer
+  gap, does not.
+- `announceSkip` / `coordinatorsToAnnounce` take `hasDraft`; a coordinator with a draft is skipped
+  with "unsent text in the composer" in the announce log. Reports are durable, so they wait
+  unannounced instead of holding the coordinator's in-flight entry.
+
+### F6. No announcement after a hold
+
+`submit` takes `opts.onlyIf(held)`, asked right before the write. The announce pass passes
+`!held && canAnnounceTo(session)`: a held line is not written (the person's Enter has just started
+a turn the session does not show yet), `submit` resolves false, and the report stays undelivered for
+the next pass (5 s tick). `submit` now resolves to a boolean: true when written or diverted.
+
+### F7. Preview images ride the same step
+
+`submit(id, text, { images })` writes the image paste right before the text, after the hold. The
+Preview's `onDispatch` uses it instead of `attachImages` + `submit`.
+
+### F8. Toolbar slash commands are not typed into a draft
+
+`submitTyped` resolves false and writes nothing when the lane has a draft at its turn. The toolbar
+records the effort or model only when it resolves true. There is no message saying why the chip did
+nothing; left out.
+
+### Tests
+
+- `submit-queue.test.ts` "held on a draft: review fixes": F2 head only and re-hold, F2 nothing at the
+  hold, F6 `onlyIf` after the hold, F7 images after the hold, F8 `submitTyped`, F3 `onWrite` at the
+  write, F1 ledger events and settles for divert and refusal.
+- `idle-suspend.test.ts`: held keys mark the draft only through `onWrite`; F3 scenario against the
+  real queue (two messages and the held text all written, nothing held).
+- `lane-keystrokes.test.ts`: `\` + Enter, deleted `\`, double Esc inside and outside the window and
+  with a key between, `restoreDrafts`/`draftUnknown`, listener fires once per change.
+- `dispatch-outcome.test.ts`: `held` chip, `flipHeld`, `settleUnreturnedHeld`.
+- `comms.test.ts`: coordinator with a draft skipped.
+- `electron/src/main/lane-holds.test.ts` (new): owed handed over once and oldest first, drafts kept,
+  cap.
+
+Results:
+- Root `npx vitest run`: 123 files, **1986 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 57 files, **1001 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### GUI check, added steps
+
+Same setup as above (A = coordinator, B = worker).
+
+7. `\` + Enter: in B type `please check:\`, press Enter (a new line appears in the composer), type
+   `the logs`. Cause a message to B from A. Expected: nothing is submitted, and the pill shows
+   "1 message waits…". Press Enter: your two-line message goes as one turn, then the message arrives.
+8. Double Esc: in B type `half a thought`, press Esc twice quickly (the composer clears; the TUI
+   shows "Esc again to clear" after the first). Cause a message to B. Expected: it is delivered at
+   once, with no pill. Repeat with the two Escapes more than a second apart. Expected: the text
+   stays in the composer, and a message to B waits with the pill.
+9. Deliver now with two messages: type a draft in B, cause two messages to B, press Deliver now,
+   and start typing right away. Expected: message 1 goes with your draft; message 2 waits on your new
+   line and the pill shows "1 message waits".
+10. Reload: type a draft in B, cause a message to B (pill shows), check Team → Dispatches reads
+    "held · waiting on unsent text in the lane", then press Cmd+R. Expected: after the reload B's pill
+    reads "1 message waits: after the reload, Operator can't tell if you left text here". Press
+    Enter in B: your text goes, then the message; the record reads "delivered".
+11. Coordinator draft: type into A and leave it. Have B call `report`. Expected: nothing is typed
+    into A, and `$OPERATOR_DIR/logs/announce.log` has a line with
+    `skip=unsent text in the composer`. Press Enter or clear it with Esc Esc; within about 5 s of A
+    going idle the announcement arrives.
