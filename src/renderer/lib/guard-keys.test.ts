@@ -52,3 +52,38 @@ describe('keepFocus (review R5)', () => {
     expect(document.activeElement).not.toBe(gone)
   })
 })
+
+describe('keepFocus with nowhere to go back to (review T2, 2026-10-25)', () => {
+  it('uses the fallback when focus was on body, as after a menu item opened the dialog', () => {
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const lane = document.createElement('textarea')
+    document.body.appendChild(lane)
+    const restore = keepFocus(document, () => lane.focus())
+    restore()
+    expect(document.activeElement).toBe(lane)
+    lane.remove()
+  })
+
+  it('uses the fallback when the element that had focus has left the document', () => {
+    const item = document.createElement('button')
+    document.body.appendChild(item)
+    item.focus()
+    let fell = 0
+    const restore = keepFocus(document, () => { fell++ })
+    item.remove()
+    restore()
+    expect(fell).toBe(1)
+  })
+
+  it('does not use it when the element is still there', () => {
+    const lane = document.createElement('textarea')
+    document.body.appendChild(lane)
+    lane.focus()
+    let fell = 0
+    const restore = keepFocus(document, () => { fell++ })
+    restore()
+    expect(fell).toBe(0)
+    expect(document.activeElement).toBe(lane)
+    lane.remove()
+  })
+})

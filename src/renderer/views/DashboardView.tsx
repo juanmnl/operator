@@ -28,7 +28,7 @@ import { dispatchSender, resolveDispatch, readDeliveryResult, trackSend, takeSen
 import { routeDispatch, liveLaneNames, reusableLane, pickSuspendedTab, dispatchNeedsApproval, orphanTabs, markReleased, isReleased, RETIRE_ACTIVITY_QUIET_MS, RETIRE_TYPING_QUIET_MS } from '../lib/dispatch'
 import { noteFinishing, clearWatch, dueSignals, signalLine, finishingDelivery, type WatchBook } from '../lib/retire-watch'
 import { typedWithin, lastKeystrokeAt, hasUnsentInput } from '../lib/lane-keystrokes'
-import { planSuspends, suspendPlanned, suspendDecision, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, type SuspendCandidate } from '../lib/idle-suspend'
+import { planSuspends, suspendPlanned, suspendDecision, withCap, SUSPEND_STEP_CAP_MS, type IdleThreshold, quietFor, runSuspend, needsPortCheck, needsConversationCheck, servesDevServer, heldDeliveriesFor, laneReady, LaneWaker, LaneGate, GATE_WAIT_CAP_MS, closeUnderGate, rowAfterClose, typeHeldKeys, HeldKeys, spawnStampsFromList, isPlaceholderId, placeholderTab, failedResume, tookTurnSince, backToSuspended, offeredForResume, suspendedRowsToRestore, wakesOnFocus, type SuspendCandidate } from '../lib/idle-suspend'
 import { SuspendedOverlay } from '../components/terminal/SuspendedOverlay'
 import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
@@ -1443,7 +1443,7 @@ export function DashboardView() {
   /** The close running per lane, kept by `handleCloseSession` for every caller (lib/close-key
    *  `LaneCloses`). Retry, or a ■ pressed meanwhile, joins it rather than starting a second one:
    *  two closes of one lane would commit and remove its worktree twice. */
-  const laneClosesRef = useRef(new LaneCloses<CloseOutcome>())
+  const laneClosesRef = useRef(new LaneCloses<CloseOutcome>((r) => r === 'closed'))
 
   /** End these lanes of a project, bounded and in parallel, and push ONE toast that says what
    *  happened. Close project and its Retry both come here. */
@@ -3977,6 +3977,7 @@ export function DashboardView() {
   const handleCloseSession = useCallback((session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
     // ONE CLOSE PER LANE, whoever asks (lib/close-key `LaneCloses`, review R2). A second ask gets
     // the first close, with the first one's reason: a lane being suspended is not also forgotten.
+    // Except a person's ask during an automatic close: it runs its own if the lane is left (T3).
     const tid = session.terminalId
     const tab = tid ? terminalsRef.current.find((t) => t.id === tid) : undefined
     const start = (alias: (other: string) => void): Promise<CloseOutcome> => (!tab?.idleSuspendedAt
@@ -3991,7 +3992,7 @@ export function DashboardView() {
       }, () => worktreeRemovalsRef.current.get(tab.key)))
     if (!tid) return start(() => {})
     const closes = laneClosesRef.current
-    const close = closes.run(tid, start)
+    const close = closes.run(tid, start, !!opts?.auto)
     // The alias is kept a while for the project close's check after its bound, then forgotten.
     const forget = () => { setTimeout(() => closes.forget(tid), 60_000) }
     void close.then(forget, forget)
@@ -4222,10 +4223,13 @@ export function DashboardView() {
             void wakeLaneRef.current({ id: terminalId, key: tab.key }, text)
               .then((next) => { if (!next || next === 'timed-out') reportUndeliveredRef.current(terminalId, text, next ? 'waited' : 'resume', tab) })
           })
+          // Suspended by hand, it stays suspended while it is on screen (review T1).
+          if (opts?.byHand) suspendedByHandRef.current.add(tab.key)
           terminalsRef.current = withSuspended(terminalsRef.current)
           setTerminals((prev) => withSuspended(prev))
         },
         unmarkSuspended: () => {
+          suspendedByHandRef.current.delete(tab.key)
           submitQueue.divert(terminalId, undefined)
           terminalsRef.current = withLive(terminalsRef.current)
           setTerminals((prev) => withLive(prev))
@@ -4250,6 +4254,9 @@ export function DashboardView() {
   const [stalledKeys, setStalledKeys] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   /** Lanes whose resume failed. Focus does not retry them on its own; a click or a message does. */
   const wakeFailedRef = useRef(new Set<string>())
+  /** Lanes the person suspended from the lane menu, by key. Focus does not resume them either
+   *  (`wakesOnFocus`, review T1): a click or a key in the pane does, or a message. */
+  const suspendedByHandRef = useRef(new Set<string>())
 
   /** Start a suspended lane's CLI again, in its tab. `first` is its opening prompt. */
   const resumeSuspended = async (terminalId: string, first?: string): Promise<TerminalTab | null> => {
@@ -4287,6 +4294,7 @@ export function DashboardView() {
         return null
       }
       wakeFailedRef.current.delete(tab.key)
+      suspendedByHandRef.current.delete(tab.key)
       setStalledKeys((prev) => { if (!prev.has(tab.key)) return prev; const n = new Map(prev); n.delete(tab.key); return n })
       // The old id stays in `restartedFromRef` for good (review M4): its exit event can still be
       // on its way, and ids are not reused within a run.
@@ -4595,11 +4603,12 @@ export function DashboardView() {
   }, [pressure.level, savedHydrated, reattachDone, suspendUnderPressure])
 
   // FOCUS RESUMES. Opening a suspended lane (rail, roster, ⌘1-9, a toast) starts it again. A lane
-  // whose resume failed is left for a click, so a broken one does not retry on every render.
+  // whose resume failed is left for a click, so a broken one does not retry on every render. So is
+  // one suspended by hand: it is the lane on screen when it is suspended (review T1).
   useEffect(() => {
     if (!reattachDone) return
     const tab = terminals.find((t) => t.id === activeTerminalId)
-    if (!tab?.idleSuspendedAt || wakeFailedRef.current.has(tab.key)) return
+    if (!tab || !wakesOnFocus(tab, wakeFailedRef.current, suspendedByHandRef.current)) return
     void wakeLaneRef.current(tab)
   }, [activeTerminalId, terminals, reattachDone])
 
@@ -5463,6 +5472,30 @@ export function DashboardView() {
 
   /** ⌘W armed on a mid-turn lane: which one, until when, and the toast that says so. */
   const closeKeyArmRef = useRef<(CloseKeyArm & { toastId: string }) | null>(null)
+  /** Close `active`, or arm first when it is mid-turn (lib/close-key). ⌘W and the palette's "Close
+   *  this session" share the arm, so a second ask from either within CONFIRM_MS closes (review r2:
+   *  the palette item carries the ⌘W hint and closed a mid-turn lane on one Enter). `again` is the
+   *  toast's wording for the second ask. */
+  const closeOrArm = (active: AgentSession, repeat: boolean, again: (name: string) => string) => {
+    // No terminal, so no turn to lose: closed at once, as the palette always did.
+    if (!active.terminalId) { void handleCloseSession(active); return }
+    const armed = closeKeyArmRef.current
+    const action = closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now(), repeat)
+    if (action === 'ignore') return
+    if (action === 'arm') {
+      if (armed) dismissToast(armed.toastId)
+      const name = sessionLabel({ session: active, role: roleOf(active), customName: customNames[active.id] })
+      const toastId = pushToast({ text: again(name) })
+      closeKeyArmRef.current = { terminalId: active.terminalId, until: Date.now() + CONFIRM_MS, toastId }
+      setTimeout(() => dismissToast(toastId), CONFIRM_MS)
+      return
+    }
+    if (armed) dismissToast(armed.toastId)
+    closeKeyArmRef.current = null
+    void handleCloseSession(active)
+  }
+  const closeOrArmRef = useRef(closeOrArm)
+  closeOrArmRef.current = closeOrArm
 
   // Global keyboard shortcuts: Cmd+N new session, Cmd+W close active session,
   // Cmd+1..9 switch to local terminal by index.
@@ -5505,20 +5538,7 @@ export function DashboardView() {
           // its saved session, so the turn was lost with no way to resume it. The mouse routes
           // take two clicks. The second press within CONFIRM_MS closes; an idle or waiting lane
           // closes on the first, as before.
-          const armed = closeKeyArmRef.current
-          const action = closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now(), e.repeat)
-          if (action === 'ignore') return
-          if (action === 'arm') {
-            if (armed) dismissToast(armed.toastId)
-            const name = sessionLabel({ session: active, role: roleOf(active), customName: customNames[active.id] })
-            const toastId = pushToast({ text: `Press ⌘W again to close ${name} — it is mid-turn` })
-            closeKeyArmRef.current = { terminalId: active.terminalId, until: Date.now() + CONFIRM_MS, toastId }
-            setTimeout(() => dismissToast(toastId), CONFIRM_MS)
-            return
-          }
-          if (armed) dismissToast(armed.toastId)
-          closeKeyArmRef.current = null
-          handleCloseSession(active)
+          closeOrArmRef.current(active, e.repeat, (name) => `Press ⌘W again to close ${name} — it is mid-turn`)
         }
       } else if (e.key >= '1' && e.key <= '9') {
         const idx = parseInt(e.key, 10) - 1
@@ -6307,7 +6327,7 @@ export function DashboardView() {
         { id: 'panel-diff', group: 'View', label: 'Side panel: Diff', run: () => setPanelOpen(true, { panelTab: 'diff' }) },
         // One patch, so the move out of the main view and the open land together.
         { id: 'panel-preview', group: 'View', label: 'Side panel: Preview', run: () => setPanelOpen(true, { panelTab: 'preview' }) },
-        { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => { void handleCloseSession(activeSession) } },
+        { id: 'close-session', group: 'Session', label: 'Close this session', hint: '⌘W', run: () => closeOrArmRef.current(activeSession, false, (name) => `Choose Close this session again, or press ⌘W, to close ${name} — it is mid-turn`) },
       )
       if (mainView === 'preview' || previewInPanel) {
         actions.push({
@@ -7126,6 +7146,7 @@ export function DashboardView() {
                     stalled={stalledKeys.get(t.key)}
                     onResume={(held) => {
                       wakeFailedRef.current.delete(t.key)
+                      suspendedByHandRef.current.delete(t.key)
                       setStalledKeys((prev) => { if (!prev.has(t.key)) return prev; const n = new Map(prev); n.delete(t.key); return n })
                       heldKeysRef.current.set(t.key, held)
                       void wakeLaneRef.current(t).then((tab) => { if (tab && tab !== 'timed-out') typeHeldKeysInto(t.key, tab.id) })
@@ -7367,6 +7388,9 @@ export function DashboardView() {
           rows={closeGuard.rows}
           onKeep={() => setCloseGuard(null)}
           onEnd={() => { const { projectId } = closeGuard; setCloseGuard(null); void closeProject(projectId) }}
+          // Opened from the rail or gallery ⋯ or the palette, the menu that had focus is gone: the
+          // lane on screen takes it, if one is (review T2).
+          restoreFocus={() => { const id = activationViewRef.current.laneOnScreen; if (id) getTerminal(id)?.focus() }}
         />
       )}
 

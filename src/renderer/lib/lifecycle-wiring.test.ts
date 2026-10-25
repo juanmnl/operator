@@ -72,7 +72,7 @@ describe('project close pushes one true toast and offers Retry (task 2)', () => 
     const end = bodyOf('endProjectLanes')
     expect(end).toContain('lanes.map((s) => handleCloseSessionRef.current(s))')
     const close = bodyOf('handleCloseSession')
-    expect(close).toContain('closes.run(tid, start)')
+    expect(close).toContain('closes.run(tid, start, !!opts?.auto)')
     expect(close).toMatch(/if \(back\) alias\(back\.id\)/)
   })
 
@@ -141,12 +141,15 @@ describe('⌘W arms on a mid-turn lane (task 7)', () => {
     const at = src.indexOf("e.key === 'w' || e.key === 'W'")
     expect(at).toBeGreaterThan(-1)
     const branch = src.slice(at, src.indexOf('} else if', at))
-    expect(branch).toMatch(/const action = closeKeyAction\([^;]*e\.repeat\)/)
-    // An auto-repeat does nothing (review R1), before anything arms or closes.
-    expect(branch).toMatch(/if \(action === 'ignore'\) return[\s\S]*if \(action === 'arm'\)/)
+    expect(branch).toMatch(/closeOrArmRef\.current\(active, e\.repeat,/)
     expect(branch).toContain('Press ⌘W again to close ${name} — it is mid-turn')
-    expect(branch).toContain('until: Date.now() + CONFIRM_MS')
-    expect(branch.indexOf('return')).toBeLessThan(branch.indexOf('handleCloseSession(active)'))
+    // The arm itself, shared with the palette (lifecycle review round 2).
+    const arm = bodyOf('closeOrArm')
+    expect(arm).toMatch(/const action = closeKeyAction\([^;]*repeat\)/)
+    // An auto-repeat does nothing (review R1), before anything arms or closes.
+    expect(arm).toMatch(/if \(action === 'ignore'\) return[\s\S]*if \(action === 'arm'\)/)
+    expect(arm).toContain('until: Date.now() + CONFIRM_MS')
+    expect(arm.lastIndexOf('return')).toBeLessThan(arm.lastIndexOf('handleCloseSession(active)'))
   })
 })
 
@@ -174,7 +177,7 @@ describe('the guard dialog keeps the app\'s keys and gives focus back (review R4
   })
 
   it('restores focus on unmount', () => {
-    expect(DIALOG).toMatch(/const restore = keepFocus\(\)[\s\S]*?return restore/)
+    expect(DIALOG).toMatch(/const restore = keepFocus\(document, \(\) => restoreFocusRef\.current\?\.\(\)\)[\s\S]*?return restore/)
   })
 })
 
@@ -210,5 +213,32 @@ describe('the lane menu: three ways in, one list (lifecycle audit B1, task 5)', 
     expect(bodyOf('suspendByHand')).toContain("threshold: 'now'")
     expect(bodyOf('suspendByHand')).toContain("suspendLaneRef.current(id, 'by hand', eligible, { byHand: true })")
     expect(bodyOf('suspendLane')).toContain('(!!opts?.byHand || terminalId !== activeTerminalIdRef.current)')
+  })
+})
+
+describe('lifecycle review round 2 (2026-10-25)', () => {
+  it('T1: focus does not resume a lane suspended by hand; its pane and a resume clear the mark', () => {
+    expect(src).toMatch(/if \(opts\?\.byHand\) suspendedByHandRef\.current\.add\(tab\.key\)/)
+    expect(src).toMatch(/wakesOnFocus\(tab, wakeFailedRef\.current, suspendedByHandRef\.current\)/)
+    expect(propOf('onResume')).toContain('suspendedByHandRef.current.delete(t.key)')
+    expect(bodyOf('resumeSuspended')).toContain('suspendedByHandRef.current.delete(tab.key)')
+  })
+
+  it('T2: the close dialog gives focus to the lane on screen when nothing else can take it', () => {
+    expect(propOf('restoreFocus')).toContain('activationViewRef.current.laneOnScreen')
+  })
+
+  it('T3: an automatic close is filed as one, so a person\'s close does not just join it', () => {
+    expect(bodyOf('handleCloseSession')).toContain('closes.run(tid, start, !!opts?.auto)')
+    expect(src).toContain("new LaneCloses<CloseOutcome>((r) => r === 'closed')")
+  })
+
+  it('the palette\'s Close this session arms on a mid-turn lane, as ⌘W does', () => {
+    const at = src.indexOf("id: 'close-session'")
+    expect(at).toBeGreaterThan(-1)
+    const line = src.slice(at, src.indexOf('\n', at))
+    expect(line).toContain('closeOrArmRef.current(activeSession, false,')
+    expect(line).not.toContain('handleCloseSession(')
+    expect(bodyOf('closeOrArm')).toContain('closeKeyAction(')
   })
 })

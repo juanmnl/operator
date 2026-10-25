@@ -33,11 +33,25 @@ export function closeKeyAction(
 export class LaneCloses<R> {
   private readonly running = new Map<string, Promise<R>>()
   private readonly aliases = new Map<string, string>()
+  // The running closes Operator started on its own (`auto`), which a person's close does not join.
+  private readonly autos = new Set<Promise<R>>()
+
+  /** `closed`: whether an outcome means the lane is gone. */
+  constructor(private readonly closed: (r: R) => boolean = () => true) {}
 
   /** The close running for `id`, or the one `start` begins, filed under `id` until it settles.
-   *  `start` gets a function that files the same close under another id too. */
-  run(id: string, start: (alias: (other: string) => void) => Promise<R>): Promise<R> {
+   *  `start` gets a function that files the same close under another id too.
+   *
+   *  `auto`: Operator's own close (a released lane's retire), which can decide to leave the lane
+   *  running. A person's close that arrives while one runs waits for it and, if the lane is still
+   *  there, runs its own `start` (review T3, 2026-10-25). Joining it handed the person the auto
+   *  close's outcome, so their ■ could do nothing with no word said. */
+  run(id: string, start: (alias: (other: string) => void) => Promise<R>, auto = false): Promise<R> {
     const found = this.running.get(id)
+    if (found && !auto && this.autos.has(found)) {
+      const again = () => this.run(id, start)
+      return found.then((r) => (this.closed(r) ? r : again()), again)
+    }
     if (found) return found
     const others: string[] = []
     let close!: Promise<R>
@@ -51,7 +65,9 @@ export class LaneCloses<R> {
     close = start(alias)
     for (const other of others) this.running.set(other, close)
     this.running.set(id, close)
+    if (auto) this.autos.add(close)
     const drop = () => {
+      this.autos.delete(close)
       for (const k of [id, ...others]) if (this.running.get(k) === close) this.running.delete(k)
     }
     void close.then(drop, drop)

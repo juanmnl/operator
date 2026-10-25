@@ -23,7 +23,7 @@ export interface GuardRow {
   accent?: string
 }
 
-export function GuardDialog({ id, title, body, rows, overflow, note, hint, safeVerb, dangerVerb, onSafe, onDanger }: {
+export function GuardDialog({ id, title, body, rows, overflow, note, hint, safeVerb, dangerVerb, onSafe, onDanger, restoreFocus }: {
   /** Prefix for the aria ids, so two guards never share one. */
   id: string
   title: string
@@ -38,13 +38,18 @@ export function GuardDialog({ id, title, body, rows, overflow, note, hint, safeV
   dangerVerb: string
   onSafe: () => void
   onDanger: () => void
+  /** Where focus goes on close when the element that had it is gone or was `body` (review T2). */
+  restoreFocus?: () => void
 }) {
   const safeRef = useRef<HTMLButtonElement>(null)
   const dangerRef = useRef<HTMLButtonElement>(null)
 
   // Focus goes back where it was when the dialog closes (lib/guard-keys `keepFocus`, review R5).
+  // Read once, at mount: the dialog's own focus is not where it was.
+  const restoreFocusRef = useRef(restoreFocus)
+  restoreFocusRef.current = restoreFocus
   useEffect(() => {
-    const restore = keepFocus()
+    const restore = keepFocus(document, () => restoreFocusRef.current?.())
     safeRef.current?.focus()
     return restore
   }, [])

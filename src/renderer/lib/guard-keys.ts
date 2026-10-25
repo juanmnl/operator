@@ -17,10 +17,16 @@ export function guardKeyAction(e: { key: string; metaKey: boolean; ctrlKey: bool
 
 /** Remember where focus is and return how to put it back (review R5): when a dialog that took focus
  *  unmounts, focus fell to `body`, and keys typed after Esc went nowhere. Nothing is restored to an
- *  element that has left the document. */
-export function keepFocus(doc: Pick<Document, 'activeElement'> = document): () => void {
+ *  element that has left the document.
+ *
+ *  `fallback` puts focus somewhere stable when there is nothing to go back to (review T2,
+ *  2026-10-25). A dialog opened from a menu item or the palette mounts after that menu has closed,
+ *  so focus is already on `body` when it is read. */
+export function keepFocus(doc: Pick<Document, 'activeElement' | 'body'> = document, fallback?: () => void): () => void {
   const before = doc.activeElement
   return () => {
-    if (before && (before as HTMLElement).isConnected && typeof (before as HTMLElement).focus === 'function') (before as HTMLElement).focus()
+    const el = before as HTMLElement | null
+    if (el && el !== doc.body && el.isConnected && typeof el.focus === 'function') el.focus()
+    else fallback?.()
   }
 }

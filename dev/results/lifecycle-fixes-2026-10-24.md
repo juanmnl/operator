@@ -337,3 +337,66 @@ Results:
 
 - The palette's "Close this session" is still not guarded for a mid-turn lane (unchanged).
 - The `closing…` chip still has no upper time limit (unchanged).
+
+## Fix round 2 (Review r2: `dev/results/lifecycle-fixes-review-r2-2026-10-25.md`)
+
+2026-10-25. Branch `operator/95b180`, on 85e0e80. Not merged. Not GUI-verified.
+
+### T1. A by-hand suspend sticks on the active lane
+
+`suspendLane` with `byHand` adds the lane's key to `suspendedByHandRef` in `markSuspended`, and
+`unmarkSuspended` removes it. The FOCUS RESUMES effect asks `wakesOnFocus(tab, wakeFailed,
+byHand)` (lib/idle-suspend), which refuses a marked key. The mark is cleared by the
+SuspendedOverlay's `onResume`, which covers a click or a key in the pane, and by any resume that
+comes back (`resumeSuspended`), which covers a message or a dispatch. A lane suspended by hand
+from a right-click on another lane keeps the mark too: opening it later shows the overlay, and a
+click or a key resumes it. Focus alone does not.
+
+### T2. Focus after the close dialog opened from a menu or the palette
+
+`keepFocus(doc, fallback)` calls `fallback` when the element that had focus was `body` or has left
+the document. `GuardDialog` takes `restoreFocus` and `ProjectCloseGuard` passes it through.
+DashboardView focuses the xterm of the lane on screen (`activationViewRef.current.laneOnScreen`,
+the same rule the refocus hook uses). When no lane is on screen, focus stays where it falls. I did
+not use the menu's trigger: the rail ⋯ and the gallery ⋯ show only on hover, and the palette has no
+trigger.
+
+### T3. A person's close during an automatic one
+
+`LaneCloses.run(id, start, auto)`. An `auto` close is recorded as one. A close without `auto` that
+arrives while an automatic close runs waits for it. It returns that outcome when the outcome is
+`closed` (the constructor's `closed` predicate: `r === 'closed'`); otherwise, or on a rejection, it
+runs its own `start` with the person's arguments. Two presses during one automatic close share one
+close of their own. An automatic ask still joins a person's close.
+
+### Palette "Close this session" arms like ⌘W
+
+The arm moved out of the ⌘W branch into `closeOrArm(active, repeat, again)`. ⌘W and the palette
+share it and `closeKeyArmRef`, so a second ask from either within CONFIRM_MS closes. Palette toast:
+"Choose Close this session again, or press ⌘W, to close <name> — it is mid-turn". A session with
+no terminal closes at once, as before.
+
+### Tests
+
+- `close-key.test.ts`: T3, the person's close runs its own after `took-work`, two presses share
+  it; takes the auto outcome when it closed; an auto ask joins a person's close.
+- `idle-suspend.test.ts`: `wakesOnFocus`.
+- `guard-keys.test.ts`: `keepFocus` fallback from `body`, from a removed element, and not when
+  the element is still there.
+- `lifecycle-wiring.test.ts`: T1, T2, T3 and the palette wiring pinned. The R2, ⌘W and R5 pins are
+  updated to `closes.run(tid, start, !!opts?.auto)`, `closeOrArm` and `keepFocus(document, …)`.
+
+Results:
+- Root `npx vitest run`: 129 files, **2030 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 56 files, **998 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### GUI check, added steps
+
+- T1: on the active lane, toolbar ⋯ → Suspend. Expected: the overlay stays and nothing resumes.
+  Click the pane: it resumes. Repeat with a right-click on a lane that is not active, then open
+  it from the rail. Expected: the overlay, and a click resumes it.
+- T2: in a lane, rail tile ⋯ → Close project, press Esc, and type. Expected: the keys go to the
+  lane's terminal. Repeat from the palette.
+- Palette: on a mid-turn lane, ⌘K → Close this session → Enter. Expected: the toast, and the lane
+  keeps running. Do it again within the window: the lane closes.

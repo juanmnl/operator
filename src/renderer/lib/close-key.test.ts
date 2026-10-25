@@ -77,4 +77,37 @@ describe('LaneCloses — one close per lane, whoever asks (review R2/R3)', () =>
     closes.forget('t-old')
     expect(closes.closedAs('t-old')).toBeUndefined()
   })
+
+  it('T3: a person\'s close during an automatic one runs its own when the lane was left running', async () => {
+    const closes = new LaneCloses<string>((r) => r === 'closed')
+    const auto = deferred<string>()
+    const asked: string[] = []
+    const a = closes.run('t1', () => { asked.push('auto'); return auto.promise }, true)
+    const b = closes.run('t1', async () => { asked.push('person'); return 'closed' })
+    const c = closes.run('t1', async () => { asked.push('person again'); return 'closed' })
+    expect(b).not.toBe(a)
+    auto.resolve('took-work')
+    expect(await a).toBe('took-work')
+    expect(await b).toBe('closed')
+    expect(await c).toBe('closed')
+    // The two presses share one close of their own.
+    expect(asked).toEqual(['auto', 'person'])
+  })
+
+  it('T3: and takes the automatic close\'s outcome when it did close the lane', async () => {
+    const closes = new LaneCloses<string>((r) => r === 'closed')
+    const auto = deferred<string>()
+    let person = 0
+    closes.run('t1', () => auto.promise, true)
+    const b = closes.run('t1', async () => { person++; return 'closed' })
+    auto.resolve('closed')
+    expect(await b).toBe('closed')
+    expect(person).toBe(0)
+  })
+
+  it('T3: an automatic ask still joins a person\'s close', () => {
+    const closes = new LaneCloses<string>((r) => r === 'closed')
+    const a = closes.run('t1', () => new Promise<string>(() => {}))
+    expect(closes.run('t1', async () => 'auto', true)).toBe(a)
+  })
 })
