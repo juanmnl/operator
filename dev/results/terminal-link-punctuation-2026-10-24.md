@@ -69,3 +69,45 @@ In a lane with Claude Code running (mouse tracking on):
    `…/Foo_(bar)`.
 3. Narrow the pane until a long URL wraps over two rows, then click the second row. The full URL
    should open.
+
+## Fix round 1 (Review: `dev/results/terminal-link-punctuation-review-2026-10-24.md`)
+
+2026-10-25. Branch `operator/ced0c0`, on the delivery-hold tip b72339b; `operator/98a1c0` moved to
+the same tip. Not merged. Not GUI-verified.
+
+### L1. Other languages' closing marks end a URL
+
+`LINK_RE` is built from two character sets (`NOT_URL`, `NOT_LAST` in `lib/terminal.ts`). `NOT_URL`
+adds « » ‹ › and the CJK and fullwidth punctuation 、。，．：；！？（）「」『』【】〈〉《》. A trailing
+`…` is left out, like `.`. CJK letters are still URL characters, because a URL can contain them, so
+`https://x.com/aを参照してください。` still keeps the text up to `。`.
+
+### L4. | { } ^ inside a URL; trailing _ and ~ kept
+
+`| { } ^` are URL characters again, but not as the last one, so
+`…/css?family=Roboto|Open+Sans` resolves whole. `_` and `~` can end a URL, so
+`https://x.com/snake_case_` keeps its `_`. Consequence: `_https://x.y/z_` (markdown emphasis) now
+keeps the closing `_`. The existing test was changed to say so. `\` still ends a URL.
+
+### L2 and L3. Wide characters in the click resolver
+
+The click resolver reads cells (`getCell`: chars and width) instead of `translateToString`.
+`wrappedLineText(rows)` joins the cells of one wrapped line and gives each cell its string index:
+- a width-0 cell maps to the wide character before it;
+- a multi-code-unit grapheme in one cell counts once;
+- a blank last cell before a row that starts with a wide character contributes no text (L2).
+
+`findUrlInWrappedRows(rows, row, col)` takes cells now and looks up the index (L3). The grid
+renderer's single-row resolver (`GridTerminalPane`) still uses the column as an index. It was not
+in scope.
+
+### Tests
+
+`terminal.test.ts`: L1 guillemets, CJK and fullwidth punctuation, ellipsis; L4 `|{}^` inside and at
+the end, trailing `_` and `~`; L3 cell-to-index after `日本語`; L2 the early-wrapped wide character;
+an emoji in one cell. `findUrlInWrappedRows` tests moved to cells.
+
+Results:
+- Root `npx vitest run`: 123 files, **2006 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 57 files, **1002 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.

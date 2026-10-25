@@ -106,16 +106,26 @@ export function detectDevServerPort(
 // on) reads `findUrlAtColumn`. Both get this, so the underline and the opened URL are the same text.
 //
 // Based on the addon's own `strictUrlRegex`: whitespace, straight and curly quotes, backticks, <>,
-// {}, [], |, \ and ^ end a URL, and so does `*`, so markdown bold around a link is not part of it.
-// A URL may not END in sentence punctuation (. , ; : ! ? ~ _): "…/qge," in prose opened with the
-// comma and 404'd (2026-10-24). One change from the addon: a balanced (…) group is kept, anywhere including at the
-// end, so `wiki/Foo_(bar)` resolves whole while the `)` closing "(see https://x.y/z)" does not. An
-// unmatched ( or ) ends the URL. One level of nesting, which is what real URLs use. Read as: any
-// URL character or (…) group, repeated, then a last character that is not punctuation, or a group.
+// [] and \ end a URL, and so does `*`, so markdown bold around a link is not part of it. So do the
+// closing marks of prose in other languages (review L1, 2026-10-25): guillemets, as in
+// «https://…» in Spanish, and CJK and fullwidth punctuation (。、，「」 and the rest), since no space
+// follows a URL in Japanese or Chinese prose.
+//
+// A URL may not END in sentence punctuation (. , ; : ! ? …): "…/qge," in prose opened with the
+// comma and 404'd (2026-10-24). | { } ^ are allowed inside a URL but not as its last character
+// (review L4): Google Fonts' `family=Roboto|Open+Sans` resolves whole. A trailing _ or ~ is kept,
+// since a URL can end in one; markdown `_https://x.y_` therefore keeps the closing `_`.
+//
+// One change from the addon: a balanced (…) group is kept, anywhere including at the end, so
+// `wiki/Foo_(bar)` resolves whole while the `)` closing "(see https://x.y/z)" does not. An unmatched
+// ( or ) ends the URL. One level of nesting, which is what real URLs use. Read as: any URL character
+// or (…) group, repeated, then a last character that is not punctuation, or a group.
 //
 // Not global: the addon builds its own copy with the `g` flag added, and a source that already
 // had it would throw there.
-export const LINK_RE = /https?:\/\/(?:[^\s"'`“”‘’<>(){}\[\]|\\^*]|\([^\s"'`“”‘’<>(){}\[\]|\\^*]*\))*(?:[^\s"'`“”‘’<>(){}\[\]|\\^*.,;:!?~_]|\([^\s"'`“”‘’<>(){}\[\]|\\^*]*\))/
+const NOT_URL = '\\s"\'`“”‘’<>()\\[\\]\\\\*«»‹›、。，．：；！？（）「」『』【】〈〉《》'
+const NOT_LAST = '.,;:!?…|{}^'
+export const LINK_RE = new RegExp(`https?://(?:[^${NOT_URL}]|\\([^${NOT_URL}]*\\))*(?:[^${NOT_URL}${NOT_LAST}]|\\([^${NOT_URL}]*\\))`)
 
 /** The http(s) URL whose run covers `col` in a line of text, or null. */
 export function findUrlAtColumn(text: string, col: number): string | null {
@@ -127,13 +137,41 @@ export function findUrlAtColumn(text: string, col: number): string | null {
   return null
 }
 
-/** The URL under (`row`, `col`) when a long line wraps across terminal rows.
+/** One terminal cell, as xterm's buffer gives it: its text ('' when blank) and its width in columns
+ *  (2 for a wide character, 0 for the cell a wide character's second half takes). */
+export interface RowCell { chars: string; width: number }
+
+/** The text of ONE wrapped line from its rows' cells, top first, and the string index each cell
+ *  starts at (review L2/L3, 2026-10-25).
  *
- *  `rows` are the rows of ONE wrapped line, top first, each untrimmed so its string length is its
- *  width; `row` indexes into them. A URL longer than the terminal is wide is split over rows, and
- *  reading only the clicked row opened the part of it on that row. */
-export function findUrlInWrappedRows(rows: readonly string[], row: number, col: number): string | null {
-  let offset = 0
-  for (let i = 0; i < row; i++) offset += rows[i].length
-  return findUrlAtColumn(rows.join(''), offset + col)
+ *  A column is not a string index. A wide character takes two cells and one or two code units, an
+ *  emoji grapheme takes one or two cells and several code units, and a blank cell is a space. And
+ *  a wide character that does not fit in a row's last column moves to the next row and leaves that
+ *  cell blank, which is no character of the text: read as a space, it cut the URL there while the
+ *  link addon's underline, which skips it, covered all of it. Same walk as the addon's `_mapStrIdx`. */
+export function wrappedLineText(rows: readonly (readonly RowCell[])[]): { text: string; at: (row: number, col: number) => number } {
+  let text = ''
+  const starts: number[][] = []
+  rows.forEach((cells, r) => {
+    const row: number[] = []
+    const last = cells.length - 1
+    cells.forEach((c, x) => {
+      row.push(text.length)
+      if (c.width === 0) { row[x] = row[x - 1] ?? text.length; return }
+      // The cell a wide character left behind when it moved down.
+      if (x === last && !c.chars && (rows[r + 1]?.[0]?.width ?? 0) === 2) return
+      text += c.chars || ' '
+    })
+    starts.push(row)
+  })
+  return { text, at: (row, col) => starts[row]?.[col] ?? -1 }
+}
+
+/** The URL under (`row`, `col`), a cell, when a long line wraps across terminal rows: `rows` are the
+ *  cells of each row of ONE wrapped line, top first. A URL longer than the terminal is wide is
+ *  split over rows, and reading only the clicked row opened the part of it on that row. */
+export function findUrlInWrappedRows(rows: readonly (readonly RowCell[])[], row: number, col: number): string | null {
+  const { text, at } = wrappedLineText(rows)
+  const i = at(row, col)
+  return i < 0 ? null : findUrlAtColumn(text, i)
 }

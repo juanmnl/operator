@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes'
 import '@xterm/xterm/css/xterm.css'
 import type { ITheme } from '@xterm/xterm'
-import { isLightBackground, detectDevServerPort, findUrlInWrappedRows, stripOrnaments, LINK_RE } from '../../lib/terminal'
+import { isLightBackground, detectDevServerPort, findUrlInWrappedRows, stripOrnaments, LINK_RE, type RowCell } from '../../lib/terminal'
 import { applyPaneActivation, buildTerminalOptions, getMacOptionIsMeta, planDeferredFit, shouldFitOnResize } from '../../lib/terminal-options'
 import { registerTerminal, unregisterTerminal } from '../../lib/terminal-registry'
 import { ghostProbeEnabled, installGhostProbe } from '../../lib/ghost-probe'
@@ -590,11 +590,19 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       if (!buf.getLine(y)) return null
       let top = y
       while (top > 0 && y - top < 64 && buf.getLine(top)?.isWrapped) top--
-      const rows: string[] = []
+      // Read cell by cell, not with translateToString: the clicked column is a cell, and wide
+      // characters make cells and string indices differ (lib/terminal `wrappedLineText`).
+      const rows: RowCell[][] = []
+      const cell0 = buf.getNullCell()
       for (let i = top; rows.length < 128; i++) {
         const line = buf.getLine(i)
         if (!line || (i > top && !line.isWrapped)) break
-        rows.push(line.translateToString(false))
+        const cells: RowCell[] = []
+        for (let x = 0; x < line.length; x++) {
+          const c = line.getCell(x, cell0)
+          cells.push({ chars: c?.getChars() ?? '', width: c?.getWidth() ?? 1 })
+        }
+        rows.push(cells)
       }
       return findUrlInWrappedRows(rows, y - top, col)
     }
