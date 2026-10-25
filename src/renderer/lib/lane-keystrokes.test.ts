@@ -202,13 +202,10 @@ describe('unsent input: which / and @ open a suggestion list (review N1, 2026-10
     noteDraftKey(id, { key: 'Escape' }, 200)
   }
 
-  it('opens the command menu only on a draft that starts with / and a command name', () => {
+  it('opens the command menu on a draft that starts with / and a command name', () => {
     expect(listMayBeOpen('/')).toBe(true)
     expect(listMayBeOpen('/rev')).toBe(true)
     expect(listMayBeOpen('/review ')).toBe(true)
-    // Arguments after the name, or a second / (a path), close it.
-    expect(listMayBeOpen('/review 12')).toBe(false)
-    expect(listMayBeOpen('/usr/bin')).toBe(false)
   })
 
   it('opens the mid-draft command list on / after whitespace, as the binary\'s nA does', () => {
@@ -265,7 +262,8 @@ describe('unsent input: which / and @ open a suggestion list (review N1, 2026-10
     expect(listMayBeOpen('\u0000x', true)).toBe(true)
     // A space may still be inside a quoted mention begun in the unseen text; a closed quote and a space end it.
     expect(listMayBeOpen('\u0000x y', true)).toBe(true)
-    expect(listMayBeOpen('\u0000x" y', true)).toBe(false)
+    // The unseen text may also be the start of a draft that begins with /, which holds whatever follows.
+    expect(listMayBeOpen('\u0000x" y', true)).toBe(true)
     expect(listMayBeOpen('\u0000x', false)).toBe(false)
   })
 
@@ -277,5 +275,81 @@ describe('unsent input: which / and @ open a suggestion list (review N1, 2026-10
     noteDraftKey('n7', { key: 'x' }, 0)
     doubleEsc('n7')
     expect(hasUnsentInput('n7')).toBe(false)
+  })
+})
+
+describe('unsent input: the lists the N1 rule missed (pre-merge review P1-P2, 2026-10-25)', () => {
+  const typeKeys = (id: string, text: string) => { for (const key of text) noteDraftKey(id, { key }, 0) }
+  const doubleEsc = (id: string) => {
+    noteDraftKey(id, { key: 'Escape' }, 100)
+    noteDraftKey(id, { key: 'Escape' }, 200)
+  }
+
+  it('P1: a draft that starts with / may have a list open whatever follows the command name', () => {
+    // Argument lists: paths for /add-dir, titles for /resume, a command's getArgumentCompletions.
+    expect(listMayBeOpen('/add-dir src/')).toBe(true)
+    expect(listMayBeOpen('/resume my-sess')).toBe(true)
+    expect(listMayBeOpen('/review 12')).toBe(true)
+    expect(listMayBeOpen('/usr/bin')).toBe(true)
+    expect(listMayBeOpen('/review 12\nand more')).toBe(true)
+    // A / that does not start the draft keeps the N1 rule.
+    expect(listMayBeOpen('see /usr/bin')).toBe(false)
+  })
+
+  it('P1: a double Esc that closes the directory list after /add-dir src/ keeps the draft', () => {
+    typeKeys('p1', '/add-dir src/')
+    doubleEsc('p1')
+    expect(hasUnsentInput('p1')).toBe(true)
+    clearUnsentInput('p1')
+  })
+
+  it('P1: a long / draft cut to its tail keeps the hold', () => {
+    typeKeys('p2', '/review ' + 'x'.repeat(300))
+    doubleEsc('p2')
+    expect(hasUnsentInput('p2')).toBe(true)
+    clearUnsentInput('p2')
+  })
+
+  it('P2: the emoji list opens on : and two name characters after whitespace or at the start', () => {
+    expect(listMayBeOpen(':ho')).toBe(true)
+    expect(listMayBeOpen('nice :ho')).toBe(true)
+    expect(listMayBeOpen('nice :+1')).toBe(true)
+    expect(listMayBeOpen('nice :h')).toBe(false)
+    expect(listMayBeOpen('at 10:30')).toBe(false)
+    expect(listMayBeOpen('nice :house: done')).toBe(false)
+  })
+
+  it('P2: the Slack channel list opens on # and a channel name after whitespace or at the start', () => {
+    expect(listMayBeOpen('#gen')).toBe(true)
+    expect(listMayBeOpen('post in #eng-ops')).toBe(true)
+    expect(listMayBeOpen('post in #')).toBe(false)
+    expect(listMayBeOpen('issue#12')).toBe(false)
+    expect(listMayBeOpen('post in #eng now')).toBe(false)
+  })
+
+  it('P2: a double Esc that closes the emoji or channel list keeps the draft', () => {
+    typeKeys('p3', 'looks good :ho')
+    doubleEsc('p3')
+    expect(hasUnsentInput('p3')).toBe(true)
+    clearUnsentInput('p3')
+    typeKeys('p4', 'post in #gen')
+    doubleEsc('p4')
+    expect(hasUnsentInput('p4')).toBe(true)
+    clearUnsentInput('p4')
+  })
+
+  it('P2: after the cursor moves, a draft that held a : or # may still have a list open', () => {
+    typeKeys('p5', 'a :ho b')
+    noteDraftKey('p5', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('p5', { key: 'x' }, 0)
+    doubleEsc('p5')
+    expect(hasUnsentInput('p5')).toBe(true)
+    clearUnsentInput('p5')
+    typeKeys('p6', 'a #gen b')
+    noteDraftKey('p6', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('p6', { key: 'x' }, 0)
+    doubleEsc('p6')
+    expect(hasUnsentInput('p6')).toBe(true)
+    clearUnsentInput('p6')
   })
 })

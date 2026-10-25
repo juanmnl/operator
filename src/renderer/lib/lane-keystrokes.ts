@@ -50,13 +50,14 @@ const prevKey = new Map<string, { key: string; at: number }>()
 const tail = new Map<string, string>()
 const UNSEEN = '\u0000'
 const TAIL_MAX = 256
-// Lanes where Claude Code's suggestion list may be open: the `@` file picker or the `/` command menu
-// (review S1, 2026-10-25). The composer cannot be read, so this is judged from `tail` after each key
+// Lanes where Claude Code's suggestion list may be open: the `@` file picker, the `/` command menu
+// and its argument lists, the emoji list or the Slack channel list (review S1 and pre-merge review
+// P1-P2, 2026-10-25). The composer cannot be read, so this is judged from `tail` after each key
 // or paste that changes the text (`listMayBeOpen`), set by Tab, and cleared by an Esc, an Enter or a
 // Ctrl+C. Wrong only toward keeping a draft.
 const pickerMaybe = new Set<string>()
-// Lanes whose draft has had an `@` or `/` typed or pasted into it, or a Tab, since it was last
-// empty, or that were restored. Text the keys lost track of may then still hold one before the cursor.
+// Lanes whose draft has had a `/`, `@`, `:` or `#` typed or pasted into it, or a Tab, since it was
+// last empty, or that were restored. Text the keys lost track of may then still hold one before the cursor.
 const triggerSeen = new Set<string>()
 const listeners = new Set<(terminalId: string, on: boolean) => void>()
 
@@ -113,30 +114,40 @@ const CURSOR_KEEPS = new Set(['Escape', 'Enter', 'Backspace', 'Delete', 'Insert'
 
 // When Claude Code 2.1.310 shows a suggestion list, read against the text before the cursor (review
 // N1, 2026-10-25). A `/` or `@` elsewhere, as in a path, a URL or an email address, opens none.
-// The command menu: the draft is `/` and a command name, with at most a space after it (`rA`, and
-// `q$e` closing it once arguments follow).
-const COMMAND_MENU = /^\/[a-zA-Z0-9.:_-]* ?$/
+// A draft that starts with `/`: the command menu while the command name is typed (`rA`), and after
+// it the argument lists, which open with arguments typed (pre-merge review P1, 2026-10-25): paths
+// for the commands in `n2`, titles for `/resume`, and any command's `getArgumentCompletions`. Held
+// whatever follows the name, since which commands complete arguments changes between versions.
+const SLASH_DRAFT = /^\//
 // A command named mid-draft: `/` after whitespace or 。、？！ (`nA`).
 const MID_COMMAND = /[\s\u3002\u3001\uFF1F\uFF01]\/[a-zA-Z0-9._:-]*$/
 // The file picker: `@` at the start or after whitespace or 。、？！, then path characters or a quoted
 // path (`G1t`). The agent list's `CU` takes the same `@` and adds the joiners U+200C and U+200D.
 const AT_MENTION = /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}\u200C\u200D_\-./\\()[\]~:]*|"[^"]*"?)$/u
+// The emoji list (`rce`), on unless `emojiCompletionEnabled` is set false. It opens only when a
+// name matches, which these keys cannot know, so every match is taken as open (review P2).
+const EMOJI = /(^|\s):[a-z0-9_+-]{2,}$/
+// The Slack channel list (`oce`), while a Slack MCP client is connected, which is not known here.
+const CHANNEL = /(^|\s)#[a-z0-9][a-z0-9_-]*$/
 
-const listOpensOn = (text: string) => COMMAND_MENU.test(text) || MID_COMMAND.test(text) || AT_MENTION.test(text)
+const listOpensOn = (text: string) => SLASH_DRAFT.test(text) || MID_COMMAND.test(text) || AT_MENTION.test(text)
+  || EMOJI.test(text) || CHANNEL.test(text)
+
+/** Characters that can start a suggestion list. A draft that has held one may hold it in text these
+ *  keys lost track of. */
+const TRIGGERS = /[/@:#]/
 
 /** May a suggestion list be open with `text` (a lane's `tail`) before the cursor? Pure. When the
- *  draft has held an `@` or `/` (`triggerSeen`), the text these keys could not follow (`UNSEEN`) may
- *  end in the start of a command or a mention, and what was typed since may still belong to it. */
+ *  draft has held a trigger (`triggerSeen`) and part of it is text these keys could not follow
+ *  (`UNSEEN`), the list is taken to be open: the draft may start with `/`, which holds whatever
+ *  follows, or the unseen text may end in the start of a mention, an emoji or a channel. */
 export function listMayBeOpen(text: string, triggerSeen = false): boolean {
   if (listOpensOn(text)) return true
-  const cut = text.lastIndexOf(UNSEEN)
-  if (cut < 0 || !triggerSeen) return false
-  const since = text.slice(cut + 1)
-  return listOpensOn('/' + since) || listOpensOn(' /' + since) || listOpensOn(' @' + since) || listOpensOn(' @"' + since)
+  return triggerSeen && text.includes(UNSEEN)
 }
 
 function judgePicker(terminalId: string, added = ''): void {
-  if (added.includes('@') || added.includes('/')) triggerSeen.add(terminalId)
+  if (TRIGGERS.test(added)) triggerSeen.add(terminalId)
   if (listMayBeOpen(tail.get(terminalId) ?? '', triggerSeen.has(terminalId))) pickerMaybe.add(terminalId)
   else pickerMaybe.delete(terminalId)
 }
