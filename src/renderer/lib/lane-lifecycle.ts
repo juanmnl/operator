@@ -48,6 +48,14 @@ export interface LaneSnapshot {
   /** Queued or running tasks still assigned to this lane. Any open work cancels the close —
    *  the lane is not finished, whatever it reported a moment ago. */
   openWork: number
+  /** A message to it in the submit queue not written yet (held on a draft included) or still
+   *  waiting for its turn (lib/submit-queue `owesSubmission`), or waiting for it to be ready
+   *  (`whenLaneReady`). A reply or an announcement has no task, so `openWork` does not see it. */
+  owed?: boolean
+  /** Text typed into its composer and not sent (lib/lane-keystrokes). Closing the pty loses it. */
+  unsentInput?: boolean
+  /** Dispatches and replies to it that are queued or held (lib/idle-suspend `heldDeliveriesFor`). */
+  heldDeliveries?: number
   /** The lane the user is looking at right now. Never yanked out from under them. */
   focused?: boolean
 }
@@ -95,6 +103,11 @@ export function laneCloseDecision(lane: LaneSnapshot, nowMs: number, policy: Lan
   }
   if (lane.focused) return { close: false, why: 'you are looking at it' }
   if (lane.openWork > 0) return { close: false, why: `${lane.openWork} task(s) still open` }
+  // A report says the lane's task is finished, not that nothing more is on its way to it. Closing
+  // over these loses the message or the person's text, so they hold a suspended lane too.
+  if (lane.owed) return { close: false, why: 'a message to it has not become a turn yet' }
+  if (lane.unsentInput) return { close: false, why: 'it has unsent text in its input' }
+  if ((lane.heldDeliveries ?? 0) > 0) return { close: false, why: 'a dispatch or reply to it is queued or held' }
   if (lane.suspended) return suspendedCloseDecision(lane, nowMs, policy)
   if (!lane.phase) return { close: false, why: 'no tracked session yet' }
   if (BUSY.has(lane.phase)) return { close: false, why: `still ${lane.phase}` }
