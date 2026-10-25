@@ -166,7 +166,7 @@ export function ProjectView({
           <button
             data-project-close
             onClick={onCloseProject}
-            title="End this project’s agents and take it off the rail. Its roster, tasks and notes stay."
+            title={'End this project’s agents and take it off the rail. Its\u00a0roster, tasks and notes stay.'}
             onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg)' }}
             onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--fg-muted)' }}
             onFocus={(e) => { e.currentTarget.style.color = 'var(--fg)' }}

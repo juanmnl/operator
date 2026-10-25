@@ -87,6 +87,9 @@ export interface CloseAttempt<T> {
   settled: boolean
   /** Its pty was already dead when the close began. */
   wasDead: boolean
+  /** Every terminal id the lane had during the close, when that is more than `lane.terminalId`:
+   *  a suspended lane a resume brought back is closed under the new one (review R3). */
+  ids?: readonly string[]
 }
 
 /** The lanes that DID NOT STOP: their pty is still alive after the bound.
@@ -100,11 +103,18 @@ export function stuckAfterClose<T extends { terminalId?: string }>(
   attempts: ReadonlyArray<CloseAttempt<T>>,
   aliveAfter: ReadonlySet<string> | null,
 ): T[] {
-  return attempts
-    .filter((a) => (aliveAfter
-      ? !!a.lane.terminalId && aliveAfter.has(a.lane.terminalId)
-      : !a.settled && !a.wasDead))
-    .map((a) => a.lane)
+  const out: T[] = []
+  for (const a of attempts) {
+    const ids = a.ids ?? (a.lane.terminalId ? [a.lane.terminalId] : [])
+    if (aliveAfter) {
+      // Returned under the id that is alive, so Retry finds the lane as the rail has it now.
+      const alive = ids.find((id) => aliveAfter.has(id))
+      if (alive) out.push(alive === a.lane.terminalId ? a.lane : { ...a.lane, terminalId: alive })
+    } else if (!a.settled && !a.wasDead) {
+      out.push(a.lane)
+    }
+  }
+  return out
 }
 
 /** `Code`, `Code and QA`, `Code, QA and Research`, `Code, QA, Research and 2 more`. */

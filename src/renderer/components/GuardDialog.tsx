@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { StatusWave, type WaveStatus } from './sidebar/StatusWave'
+import { guardKeyAction, keepFocus } from '../lib/guard-keys'
 
 // THE APP'S CONFIRM DIALOG FOR ENDING LANES, shared by the quit guard and the project close guard.
 // The confirm idiom everywhere else is a two-click arm (CardMenu's `confirm`, the rail row's
@@ -41,24 +42,37 @@ export function GuardDialog({ id, title, body, rows, overflow, note, hint, safeV
   const safeRef = useRef<HTMLButtonElement>(null)
   const dangerRef = useRef<HTMLButtonElement>(null)
 
-  useEffect(() => { safeRef.current?.focus() }, [])
+  // Focus goes back where it was when the dialog closes (lib/guard-keys `keepFocus`, review R5).
+  useEffect(() => {
+    const restore = keepFocus()
+    safeRef.current?.focus()
+    return restore
+  }, [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || (e.key === '.' && e.metaKey)) {
+      const action = guardKeyAction(e)
+      if (action === 'safe') {
         e.preventDefault()
         e.stopPropagation()
         onSafe()
         return
       }
+      // The app's chords stop here (lib/guard-keys, review R4). preventDefault too: ⌘W's native
+      // menu item closes the window when nothing takes it.
+      if (action === 'block') {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       // Focus is trapped to the two buttons and nothing else — Tab cycles them.
-      if (e.key === 'Tab') {
+      if (action === 'cycle') {
         e.preventDefault()
         const next = document.activeElement === safeRef.current ? dangerRef.current : safeRef.current
         next?.focus()
       }
     }
-    // Capture, so a chord handler further down (⌘K, ⌘W, ⌘1-9) never sees a key aimed at this.
+    // Capture, so the window's chord handler (⌘K, ⌘W, ⌘N, ⌘1-9) never sees a key while this is up.
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onSafe])

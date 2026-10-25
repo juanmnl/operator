@@ -85,3 +85,43 @@ describe('closeGuardRows', () => {
     expect(rows[0].terminalId).toBe('r')
   })
 })
+
+describe('closeGuardCopy — the body is true for each kind of lane (review R6)', () => {
+  const NB = '\u00a0'
+  const k = (folder: 'worktree' | 'checkout' | 'released', suspended = false) => ({ folder, suspended })
+
+  it('one lane in the main checkout: nothing is removed or committed', () => {
+    expect(closeGuardCopy('web27', 1, 0, [k('checkout')]).body).toBe(
+      `Its CLI stops. It${NB}works in the project folder, so nothing there is removed or committed. Branches,${NB}roster, tasks and notes stay.`)
+  })
+
+  it('one released lane: main keeps the folder if anything is unsaved', () => {
+    expect(closeGuardCopy('web27', 1, 0, [k('released')]).body).toBe(
+      `Its CLI stops. It${NB}released its worktree, so the folder is removed if clean and kept if anything is unsaved. Branches,${NB}roster, tasks and notes stay.`)
+  })
+
+  it('one suspended lane: no CLI to stop', () => {
+    expect(closeGuardCopy('web27', 1, 0, [k('worktree', true)]).body).toBe(
+      `It is suspended, so no CLI is running. Its${NB}worktree folder is removed. Unsaved${NB}changes are committed to its branch first. Branches,${NB}roster, tasks and notes stay.`)
+  })
+
+  it('a mix: counts each kind, and binds every sentence\'s first word', () => {
+    const body = closeGuardCopy('web27', 4, 1, [k('worktree'), k('worktree', true), k('checkout'), k('released')]).body
+    expect(body).toBe([
+      'Each running agent’s CLI stops, and 1 is suspended.',
+      `2${NB}worktree folders are removed, with unsaved changes committed to their branches first.`,
+      `1${NB}works in the project folder, where nothing is removed or committed.`,
+      `1${NB}released its worktree: that folder is removed if clean and kept if anything is unsaved.`,
+      `Branches,${NB}roster, tasks and notes stay.`,
+    ].join(' '))
+  })
+
+  it('all in the main checkout, all suspended', () => {
+    expect(closeGuardCopy('web27', 2, 0, [k('checkout', true), k('checkout', true)]).body).toBe(
+      `They are suspended, so no CLI is running. They${NB}work in the project folder, so nothing there is removed or committed. Branches,${NB}roster, tasks and notes stay.`)
+  })
+
+  it('every lane running in its own worktree: the wording it always had', () => {
+    expect(closeGuardCopy('web27', 2, 0, [k('worktree'), k('worktree')]).body).toBe(closeGuardCopy('web27', 2, 0).body)
+  })
+})

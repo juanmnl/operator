@@ -11,7 +11,7 @@ import { migrateEffort, migrateProjectEfforts, migrateSavedEfforts, settingsEffo
 import { projectActivity, lanesToEnd, closeProjectLabel, type ProjectActivity } from '../lib/project-status'
 import { landingWithLastAgent } from '../lib/project-landing'
 import { shelvingMoves, closePlan, stuckAfterClose, closeToast, isOnRail } from '../lib/project-shelf'
-import { closeKeyAction, type CloseKeyArm } from '../lib/close-key'
+import { closeKeyAction, LaneCloses, type CloseKeyArm } from '../lib/close-key'
 import { reorderByIds } from '../lib/reorder'
 import { reorderRail } from '../lib/project-shelf'
 import { reconcileStaleRunning, liveLaneOf, finishedTurn, type LiveLane } from '../lib/task-lifecycle'
@@ -69,7 +69,7 @@ import { PrefsView } from '../components/prefs/PrefsView'
 import { CommandPalette, PaletteAction } from '../components/CommandPalette'
 import { QuitGuard } from '../components/QuitGuard'
 import { ProjectCloseGuard } from '../components/ProjectCloseGuard'
-import { closeGuardCopy, closeGuardRows, type CloseGuardCopy, type CloseGuardRow } from '../lib/project-close-guard'
+import { closeGuardCopy, closeGuardRows, type CloseGuardCopy, type CloseGuardRow, type CloseGuardLane, type LaneFolder } from '../lib/project-close-guard'
 import { askBeforeQuitEnabled, type LaneIdentity, type QuitRequest } from '../lib/quit-guard'
 import { chatSignal } from '../lib/chat-signal'
 import { ProjectGallery, type GalleryTab } from '../components/dashboard/ProjectGallery'
@@ -1439,10 +1439,10 @@ export function DashboardView() {
     await endProjectLanesRef.current(project, live)
   }, [])
 
-  /** A close per lane already running, by terminal id. Retry waits on the close it finds here
-   *  rather than starting a second one: two closes of one lane would commit and remove its
-   *  worktree twice, and main's kill already answers a second call with the first. */
-  const lanesClosingRef = useRef(new Map<string, Promise<CloseOutcome>>())
+  /** The close running per lane, kept by `handleCloseSession` for every caller (lib/close-key
+   *  `LaneCloses`). Retry, or a ■ pressed meanwhile, joins it rather than starting a second one:
+   *  two closes of one lane would commit and remove its worktree twice. */
+  const laneClosesRef = useRef(new LaneCloses<CloseOutcome>())
 
   /** End these lanes of a project, bounded and in parallel, and push ONE toast that says what
    *  happened. Close project and its Retry both come here. */
@@ -1477,28 +1477,30 @@ export function DashboardView() {
     const aliveBefore = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
     const wasDead = (s: AgentSession) => aliveBefore !== null && !!s.terminalId && !aliveBefore.has(s.terminalId)
 
-    const closing = lanesClosingRef.current
-    const closes = lanes.map((s) => {
-      const tid = s.terminalId!
-      const running = closing.get(tid)
-      if (running) return running
-      const close = handleCloseSessionRef.current(s)
-      closing.set(tid, close)
-      const drop = () => { if (closing.get(tid) === close) closing.delete(tid) }
-      void close.then(drop, drop)
-      return close
-    })
+    // Deduplicated in `handleCloseSession`: Retry, or a ■ pressed meanwhile, joins a close that is
+    // still running instead of starting a second.
+    const keyOf = new Map(lanes.map((s) => [s.terminalId!, terminalsRef.current.find((t) => t.id === s.terminalId)?.key]))
+    const closes = lanes.map((s) => handleCloseSessionRef.current(s))
     const bound = new Promise<false>((resolve) => setTimeout(() => resolve(false), KILL_TIMEOUT_MS))
     const attempts = await Promise.all(lanes.map(async (s, i) => ({
       lane: s,
       settled: await Promise.race([closes[i].then(() => true, () => false), bound]),
       wasDead: wasDead(s),
     })))
+    // EVERY ID THE LANE HAS HAD (review R3). A suspended lane being woken is closed under its new
+    // terminal id, so the old one is dead whatever happens to the new CLI. The id the close
+    // recorded, and the one the lane's tab carries now if it is still on the rail.
+    const withIds = attempts.map((a) => {
+      const tid = a.lane.terminalId!
+      const key = keyOf.get(tid)
+      const now = key ? terminalsRef.current.find((t) => t.key === key)?.id : undefined
+      return { ...a, ids: [tid, laneClosesRef.current.closedAs(tid), now].filter((x): x is string => !!x) }
+    })
     // "DID NOT STOP" MEANS THE PTY IS STILL ALIVE, asked again after the bound. A close that is
     // still running at 4 s has usually killed its pty and is finishing the worktree; it was
     // reported as stuck while it carried on, and the user closed each such lane by hand.
     const aliveAfter = aliveIdsOf(await window.operator.terminalList?.().catch(() => undefined))
-    const stuck = stuckAfterClose(attempts, aliveAfter)
+    const stuck = stuckAfterClose(withIds, aliveAfter)
 
     // Whatever the teardown managed, a tab with no live pty must not keep the project on the rail:
     // `isOnRail` reads `projectActivity.live`, so one tab that never got dropped is the whole
@@ -3971,14 +3973,28 @@ export function DashboardView() {
    *  The gate is held past the close's return, until its WIP snapshot and worktree removal have
    *  settled (lib/idle-suspend `closeUnderGate`, review R3-1): a dispatch let through earlier
    *  resumed the thread on a fresh branch, because the old directory still held the path. */
-  const handleCloseSession = useCallback(async (session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
-    const tab = session.terminalId ? terminalsRef.current.find((t) => t.id === session.terminalId) : undefined
-    if (!tab?.idleSuspendedAt) return closeLane(session, suspend, opts)
-    return closeUnderGate(laneGateRef.current, tab.key, async () => {
-      const waker = wakerRef.current
-      const back = waker?.waking(tab.key) ? await waker.wake(tab.key, tab.id) : null
-      return closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
-    }, () => worktreeRemovalsRef.current.get(tab.key))
+  const handleCloseSession = useCallback((session: AgentSession, suspend?: LaneCloseReason, opts?: { auto?: boolean }): Promise<CloseOutcome> => {
+    // ONE CLOSE PER LANE, whoever asks (lib/close-key `LaneCloses`, review R2). A second ask gets
+    // the first close, with the first one's reason: a lane being suspended is not also forgotten.
+    const tid = session.terminalId
+    const tab = tid ? terminalsRef.current.find((t) => t.id === tid) : undefined
+    const start = (alias: (other: string) => void): Promise<CloseOutcome> => (!tab?.idleSuspendedAt
+      ? closeLane(session, suspend, opts)
+      : closeUnderGate(laneGateRef.current, tab.key, async () => {
+        const waker = wakerRef.current
+        const back = waker?.waking(tab.key) ? await waker.wake(tab.key, tab.id) : null
+        // The lane a resume brought back has a new terminal id. The project close judges whether it
+        // stopped by that one (review R3), and a close asked for under it joins this one.
+        if (back) alias(back.id)
+        return closeLane(back ? { ...session, terminalId: back.id } : session, suspend, opts)
+      }, () => worktreeRemovalsRef.current.get(tab.key)))
+    if (!tid) return start(() => {})
+    const closes = laneClosesRef.current
+    const close = closes.run(tid, start)
+    // The alias is kept a while for the project close's check after its bound, then forgotten.
+    const forget = () => { setTimeout(() => closes.forget(tid), 60_000) }
+    void close.then(forget, forget)
+    return close
   }, [closeLane])
   handleCloseSessionRef.current = handleCloseSession
 
@@ -4920,18 +4936,26 @@ export function DashboardView() {
     const railSessions = sidebarSessionsRef.current
     const plan = closePlan(id, railSessions)
     if (!plan.sessions.length) { void closeProject(id); return }
-    const lanes = railSessions.filter((s) => plan.sessions.includes(s.id)).map((s) => ({
-      terminalId: s.terminalId!,
-      name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
-      phase: s.phase,
-      suspended: !!s.suspended,
-      lastActivityAt: s.lastActivityAt,
-      accent: accentOf(s),
-    }))
+    const lanes = railSessions.filter((s) => plan.sessions.includes(s.id)).map((s): CloseGuardLane => {
+      const tab = terminalsRef.current.find((t) => t.id === s.terminalId)
+      // What `closeLane` will do to its folder, so the dialog says what is true of it (review R6).
+      // The release cache is enough for the copy; the close reads it fresh.
+      const folder: LaneFolder = tab && isReleased(tab, pendingReleasesRef.current) ? 'released'
+        : tab?.worktreeBranch && tab.sourceCwd && tab.cwd !== tab.sourceCwd ? 'worktree' : 'checkout'
+      return {
+        terminalId: s.terminalId!,
+        name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
+        phase: s.phase,
+        suspended: !!s.suspended,
+        lastActivityAt: s.lastActivityAt,
+        accent: accentOf(s),
+        folder,
+      }
+    })
     setCloseGuard({
       projectId: id,
       rows: closeGuardRows(lanes).rows,
-      copy: closeGuardCopy(project.name, plan.sessions.length, plan.running),
+      copy: closeGuardCopy(project.name, plan.sessions.length, plan.running, lanes),
     })
   }, [closeProject, roleOf, customNames, accentOf])
 
@@ -5428,7 +5452,9 @@ export function DashboardView() {
           // take two clicks. The second press within CONFIRM_MS closes; an idle or waiting lane
           // closes on the first, as before.
           const armed = closeKeyArmRef.current
-          if (closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now()) === 'arm') {
+          const action = closeKeyAction({ terminalId: active.terminalId, status: active.status, phase: active.phase }, armed, Date.now(), e.repeat)
+          if (action === 'ignore') return
+          if (action === 'arm') {
             if (armed) dismissToast(armed.toastId)
             const name = sessionLabel({ session: active, role: roleOf(active), customName: customNames[active.id] })
             const toastId = pushToast({ text: `Press ⌘W again to close ${name} — it is mid-turn` })

@@ -19,7 +19,14 @@ export interface CloseGuardLane {
   suspended: boolean
   lastActivityAt: string
   accent?: string
+  /** What the close does to its folder (DashboardView `closeLane`, review R6): `worktree`, its own
+   *  folder is snapshotted and removed; `checkout`, it runs in the project folder and nothing is
+   *  removed or committed; `released`, it called `worktree_done` and main removes the folder only
+   *  if it is clean. Absent reads as `worktree`. */
+  folder?: LaneFolder
 }
+
+export type LaneFolder = 'worktree' | 'checkout' | 'released'
 
 export interface CloseGuardRow {
   terminalId: string
@@ -66,20 +73,80 @@ export interface CloseGuardCopy {
   hint: string
 }
 
+/** Sentences joined with a space, the first word of each after the first bound to the next one
+ *  with a no-break space, so a wrap never leaves it alone after the full stop. */
+function sentences(list: readonly string[]): string {
+  return list.map((x, i) => (i === 0 ? x : x.replace(' ', ' '))).join(' ')
+}
+
+const KEPT = 'Branches, roster, tasks and notes stay.'
+
+/** What Close does to the lanes, true for each kind (review R6, 2026-10-24). It said every lane's
+ *  CLI stops, its worktree folder is removed and unsaved changes are committed first. A lane in the
+ *  main checkout has no folder of its own and nothing is committed; a released lane's folder is
+ *  main's to decide; a suspended lane has no CLI. */
+function closeBody(lanes: readonly Pick<CloseGuardLane, 'suspended' | 'folder'>[]): string {
+  const total = lanes.length
+  const suspended = lanes.filter((l) => l.suspended).length
+  const count = (f: LaneFolder) => lanes.filter((l) => (l.folder ?? 'worktree') === f).length
+  const wt = count('worktree'), co = count('checkout'), rel = count('released')
+  if (total === 1) {
+    const folder: LaneFolder = rel ? 'released' : co ? 'checkout' : 'worktree'
+    if (!suspended && folder === 'worktree') {
+      return sentences(['Its CLI stops and its worktree folder is removed.', 'Unsaved changes are committed to its branch first.', KEPT])
+    }
+    const cli = suspended ? 'It is suspended, so no CLI is running.' : 'Its CLI stops.'
+    const where = folder === 'worktree'
+      ? ['Its worktree folder is removed.', 'Unsaved changes are committed to its branch first.']
+      : folder === 'checkout'
+        ? ['It works in the project folder, so nothing there is removed or committed.']
+        : ['It released its worktree, so the folder is removed if clean and kept if anything is unsaved.']
+    return sentences([cli, ...where, KEPT])
+  }
+  if (!suspended && wt === total) {
+    return sentences(['Each agent’s CLI stops and its worktree folder is removed.', 'Unsaved changes are committed to its branch first.', KEPT])
+  }
+  const cli = suspended === 0
+    ? 'Each agent’s CLI stops.'
+    : suspended === total
+      ? 'They are suspended, so no CLI is running.'
+      : `Each running agent’s CLI stops, and ${suspended} ${suspended === 1 ? 'is' : 'are'} suspended.`
+  let where: string[]
+  if (wt === total) where = ['Each worktree folder is removed.', 'Unsaved changes are committed to its branch first.']
+  else if (co === total) where = ['They work in the project folder, so nothing there is removed or committed.']
+  else if (rel === total) where = ['They released their worktrees, so each folder is removed if clean and kept if anything is unsaved.']
+  else {
+    where = []
+    if (wt) where.push(wt === 1
+      ? '1 worktree folder is removed, with unsaved changes committed to its branch first.'
+      : `${wt} worktree folders are removed, with unsaved changes committed to their branches first.`)
+    if (co) where.push(co === 1
+      ? '1 works in the project folder, where nothing is removed or committed.'
+      : `${co} work in the project folder, where nothing is removed or committed.`)
+    if (rel) where.push(rel === 1
+      ? '1 released its worktree: that folder is removed if clean and kept if anything is unsaved.'
+      : `${rel} released their worktrees: each folder is removed if clean and kept if anything is unsaved.`)
+  }
+  return sentences([cli, ...where, KEPT])
+}
+
 /** Every string in the dialog. `total` and `running` are `closePlan`'s: the lanes Close will end
- *  and how many of them are mid-turn.
+ *  and how many of them are mid-turn. `lanes` says what each is (suspended, which folder); absent,
+ *  every lane is a running one in its own worktree.
  *
  *  The body says what Close does to each lane (lib/project-shelf, DashboardView `closeLane`) and
- *  what it keeps. The first word of every sentence after the first is bound to the next one with a
- *  no-break space, so a wrap never leaves it alone after the full stop. */
-export function closeGuardCopy(projectName: string, total: number, running: number): CloseGuardCopy {
+ *  what it keeps. */
+export function closeGuardCopy(
+  projectName: string,
+  total: number,
+  running: number,
+  lanes: readonly Pick<CloseGuardLane, 'suspended' | 'folder'>[] = Array.from({ length: total }, () => ({ suspended: false })),
+): CloseGuardCopy {
   const one = total === 1
   const more = Math.max(0, total - ROW_CAP)
   return {
     title: one ? `Close ${projectName} and end its agent?` : `Close ${projectName} and end ${total} agents?`,
-    body: one
-      ? 'Its CLI stops and its worktree folder is removed. Unsaved changes are committed to its branch first. Branches, roster, tasks and notes stay.'
-      : 'Each agent’s CLI stops and its worktree folder is removed. Unsaved changes are committed to its branch first. Branches, roster, tasks and notes stay.',
+    body: closeBody(lanes),
     midTurn: running <= 0
       ? null
       : one

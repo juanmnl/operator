@@ -8,6 +8,7 @@ import { ROW_INSET_L } from './rail-metrics'
 import { effortCode } from '../../lib/effort'
 import { LaneMeta, LaneMetaSeam } from './LaneMeta'
 import { laneMetaRows } from '../../lib/lane-meta'
+import { isKeyboardFocus } from '../../lib/keyboard-focus'
 
 interface SessionItemProps {
   session: AgentSession
@@ -125,7 +126,9 @@ export function SessionItem({ session, label, active, effortLevel, labelIsRole, 
       }}
       onMouseEnter={hover.onMouseEnter}
       onMouseLeave={endHover}
-      onFocus={() => setFocusWithin(true)}
+      // Keyboard focus only (review R7): a click focuses the row too, and the ■ stayed after the
+      // pointer left when the click did not move focus into the terminal.
+      onFocus={(e) => setFocusWithin(isKeyboardFocus(e.target))}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false) }}
       style={{
         display: 'flex',

@@ -372,6 +372,14 @@ describe('stuckAfterClose — which lanes did not stop', () => {
     ], null)
     expect(stuck).toEqual([b])
   })
+
+  it('judges a woken suspended lane by the id its close ended, and hands Retry that id (review R3)', () => {
+    const woken = { terminalId: 't-old', name: 'Research' }
+    const stuck = stuckAfterClose([{ lane: woken, settled: false, wasDead: true, ids: ['t-old', 't-new'] }], new Set(['t-new']))
+    expect(stuck).toEqual([{ terminalId: 't-new', name: 'Research' }])
+    // Its new CLI stopped: not stuck, though the old id never was alive.
+    expect(stuckAfterClose([{ lane: woken, settled: true, wasDead: true, ids: ['t-old', 't-new'] }], new Set(['t9']))).toEqual([])
+  })
 })
 
 describe('closeToast — one toast per close, and it is true', () => {
