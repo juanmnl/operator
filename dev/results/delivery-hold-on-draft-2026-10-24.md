@@ -248,3 +248,97 @@ Same setup as above (A = coordinator, B = worker).
     into A, and `$OPERATOR_DIR/logs/announce.log` has a line with
     `skip=unsent text in the composer`. Press Enter or clear it with Esc Esc; within about 5 s of A
     going idle the announcement arrives.
+
+## Fix round 2 (Review r2: `dev/results/delivery-hold-on-draft-review-r2-2026-10-25.md`)
+
+2026-10-25. Branch `operator/ced0c0`, fast-forwarded from `operator/98a1c0` @ 88c0332;
+`operator/98a1c0` moved to the same tip. Not merged. Not GUI-verified.
+
+### S1. Double Esc with a suggestion list open keeps the draft
+
+`lib/lane-keystrokes` keeps a per-lane "a suggestion list may be open" flag. It is set by a typed
+`@` or `/`, a paste that contains either, Tab, and a draft restored after a reload. While it is
+set, the next Esc returns `null` and starts no pair, as `disableEscapeDoublePress` does in the
+2.1.310 binary (`U_=Uf.length>0`; the input's escape case returns before the double-press hook).
+That Esc unsets the flag, so the next two Escapes inside `DOUBLE_ESC_MS` clear. Enter and Ctrl+C
+unset it too.
+
+The picker's real state cannot be read, so the flag stays set after an `@` or `/` even when the
+list has closed on its own: after a space, or when nothing matched. In that case a double Esc
+clears the composer and the flag stays on. Deliveries then wait until the person types and sends,
+or presses Deliver now. This is the safe direction the brief asked for.
+
+Not handled: an Enter that accepts a suggestion instead of sending. That Enter still reads as a
+send and clears the flag. It is the F4 gap that round 1 noted, and it is outside S1.
+
+### S2. `\` + Enter reads the character before the cursor
+
+`draftEffect(e, state, now)` now takes `{ prev, before, picker }`. `before` is the last character
+of a per-lane tail made of the typed characters and the pasted text since the composer was last
+known empty. Backspace removes one character. After `\` + Enter the tail ends in a newline, because
+the binary does `b.backspace().insert(newline)` (checked in 2.1.310). Cursor moves, history, Tab and
+Ctrl/Meta chords make the tail unknown. An unknown character is never `\`, so Enter clears, which is
+the old behaviour. `notePaste(id, text?)` takes the pasted text: TerminalPane passes the
+clipboard's `text/plain`, and the held-keys write passes its text. The tail is capped at 256
+characters.
+
+### S3. Owed announcements after a reload
+
+`SubmitOptions.reports` carries the ids an announce-pass line announces. The queue hands it to the
+ledger only, and DashboardView stores it on the `OwedSubmission`. The restore re-submits such a line
+with the pass's check (`!held && canAnnounceTo(...)`). Once the line is written and confirmed, it
+marks those reports delivered and refreshes the reports. The coordinator is in `announceInFlightRef`
+until then, so the pass does not type the same reports beside it. If a pass is already serving that
+coordinator, the line is not re-submitted: the pass announces those reports itself. An announcement
+owed to a terminal that is gone is dropped and not reported. Its reports are still undelivered in
+artifacts.db.
+
+### S4. Images on the owed record
+
+`OwedSubmission.images`, from `SubmitOptions.images` through the ledger's `owe(id, key, text,
+opts)`. The restore passes them back to `submit`. A wake still carries only the text, the same as
+the live renderer's divert.
+
+### S5. A held record goes back to `sent`
+
+A new `LaneHoldOp` `{ kind: 'held', key, on }` tells main when the draft holds an owed message.
+`OwedSubmission.held` keeps it. The restore re-submits with `SubmitOptions.held`, which starts the
+queue entry as held. Its settle then sends `held(off)` and flips the record back to `sent`, whether
+or not the new queue holds it again, and it is never marked held twice.
+
+### S6. A lane suspended across the reload is woken, not reported ended
+
+`OwedSubmission.laneKey` carries the tab's key. `splitOwed` (lib/dispatch-outcome) sorts the owed
+messages: a running terminal is re-submitted; a gone terminal with a key waits in `owedToWake`; a
+gone terminal with no key is reported ended. Once the suspended tabs are restored
+(`suspendedRestored`), `wakeOrEnded` finds a suspended tab with that key. That lane is woken with the
+message, the same way the divert does it, including the `resume`/`waited` reports when the wake
+fails. Any other lane is reported ended. Messages waiting for a wake count as given back for
+`settleUnreturnedHeld`.
+
+### Tests
+
+- `lane-keystrokes.test.ts`: S1 `@` picker double Esc, then a third Esc clears; `/` and a pasted
+  `@` path; no picker key still clears; Ctrl+C unsets the picker; a restored draft takes a picker to
+  be open. S2: paste ending in `\` then Enter; `\`, `x`, Backspace, Enter; a cursor move and a paste
+  with no text are read as unknown.
+- `submit-queue.test.ts`: the ledger gets images and reports; `held: true` sends `unheld` once at
+  the settle, whether or not the submission is held again.
+- `dispatch-outcome.test.ts`: `splitOwed` and `wakeOrEnded`.
+- `electron/src/main/lane-holds.test.ts`: the `held` op, images and reports kept on the owed entry.
+
+Results:
+- Root `npx vitest run`: 123 files, **1998 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 57 files, **1002 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### GUI check, added steps
+
+12. Picker: in B type `look at @src/`, press Esc twice quickly. The picker closes and the text
+    stays. Cause a message to B. Expected: it waits with the pill. Press Esc twice more: the composer
+    clears and the message is delivered within a second.
+13. Pasted backslash: paste `C:\Users\` into B and press Enter. Expected: a new line in the composer.
+    Cause a message to B. Expected: it waits.
+14. Held then delivered across a reload: type a draft in B, cause a message (record reads `held`),
+    press Enter, and press Cmd+R within a second. Expected after the reload: the record reads
+    `sent` or `delivered`, not `held`.

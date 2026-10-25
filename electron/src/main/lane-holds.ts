@@ -27,6 +27,9 @@ export class LaneHolds {
       while (this.owed.size > OWED_LIMIT) this.owed.delete(this.owed.keys().next().value as string)
     } else if (op.kind === 'settle') {
       this.owed.delete(op.key)
+    } else if (op.kind === 'held') {
+      const e = this.owed.get(op.key)
+      if (e) this.owed.set(op.key, { ...e, held: op.on })
     }
   }
 

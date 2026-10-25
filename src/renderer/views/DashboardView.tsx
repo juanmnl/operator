@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef, useReducer } from 'react'
-import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout } from '../../shared/types'
+import { AgentSession, SavedSession, Project, ProjectPatch, Role, ProjectTask, SessionConfig, TaskDiffStat, DispatchRecord, ArtifactReport, EffortLevel, GoneCheckout, OwedSubmission } from '../../shared/types'
 import { resolveProject } from '../lib/resolve-project'
 import { orchestrationNote, modelFamilyLabel, migrateLegacyCoordinator, migrateStockCharters, presetFor, rolePresets, isCoordinator, reorderRoles } from '../lib/roster'
 import { launchWorkspace, suspendedToResume } from '../lib/lane-workspace'
@@ -33,7 +33,7 @@ import { getIdleSuspendMinutes } from '../lib/tuning'
 import { reducePressure, NORMAL_BANNER, bannerVisible, autoSuspendAllowed, bannerCopy, PRESSURE_RECHECK_MS } from '../lib/memory-pressure'
 import { MemoryBanner, MEMORY_BANNER_H } from '../components/MemoryBanner'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
-import { canDismissDispatch, flipHeld, settleUnreturnedHeld } from '../lib/dispatch-outcome'
+import { canDismissDispatch, flipHeld, settleUnreturnedHeld, splitOwed, wakeOrEnded } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
 import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
 import { laneBusName, projectSlug } from '../lib/bus-name'
@@ -1795,12 +1795,13 @@ export function DashboardView() {
   // and when it is written; the record reads `held` in between. Matched by text, as
   // `reportUndelivered` does, and to the lane's role. Nothing changes when no record matches (an
   // `[Operator]` note or an announcement has none).
-  const markHeldRecord = useCallback((terminalId: string, text: string, on: boolean) => {
-    const tab = terminalsRef.current.find((t) => t.id === terminalId)
+  const markHeldRecord = useCallback((terminalId: string, text: string, on: boolean, lane?: Pick<TerminalTab, 'projectId' | 'roleId'>) => {
+    const tab = lane ?? terminalsRef.current.find((t) => t.id === terminalId)
     const roleId = tab?.roleId
-    if (!tab?.projectId || !roleId) return
+    const projectId = tab?.projectId
+    if (!projectId || !roleId) return
     setProjects((prev) => {
-      const p = prev.find((x) => x.id === tab.projectId)
+      const p = prev.find((x) => x.id === projectId)
       const next = p && flipHeld(p.dispatches ?? [], text, roleId, on)
       return next ? prev.map((x) => (x === p ? { ...x, dispatches: next } : x)) : prev
     })
@@ -1811,12 +1812,22 @@ export function DashboardView() {
   // (electron/src/main/lane-holds.ts) and the next renderer takes them back after the re-attach.
   useEffect(() => {
     onSubmissionLedger({
-      owe: (id, key, text) => {
+      // With what a re-submission after a reload needs: the lane's key for a wake, the images, the
+      // reports an announcement marks, and whether its record reads `held` (review S3-S6).
+      owe: (id, key, text, opts) => {
         const tab = terminalsRef.current.find((t) => t.id === id)
-        window.operator.laneHoldNote?.({ kind: 'owe', entry: { key, terminalId: id, text, at: Date.now(), projectId: tab?.projectId, roleId: tab?.roleId } })
+        window.operator.laneHoldNote?.({ kind: 'owe', entry: {
+          key, terminalId: id, text, at: Date.now(), projectId: tab?.projectId, roleId: tab?.roleId, laneKey: tab?.key,
+          images: opts?.images?.length ? [...opts.images] : undefined,
+          reports: opts?.reports?.length ? [...opts.reports] : undefined,
+          held: opts?.held || undefined,
+        } })
       },
       settle: (_id, key) => window.operator.laneHoldNote?.({ kind: 'settle', key }),
-      held: (id, _key, text, on) => markHeldRecord(id, text, on),
+      held: (id, key, text, on) => {
+        window.operator.laneHoldNote?.({ kind: 'held', key, on })
+        markHeldRecord(id, text, on)
+      },
     })
     return onDraftChange((terminalId, on) => window.operator.laneHoldNote?.({ kind: 'draft', terminalId, on }))
   }, [markHeldRecord])
@@ -3048,19 +3059,45 @@ export function DashboardView() {
   // wait on that draft as before, and ahead of anything main releases next. One whose lane is gone
   // is reported. A `held` record no message came back for (the app quit with it held, so main
   // started empty) never reached its lane: it reads `undelivered`, with a note saying why.
+  //
+  // Each goes back as it was first submitted (review S3-S5, 2026-10-25): with its images, with its
+  // record's `held` mark, and an announce-pass line with the pass's idle check, marking its reports
+  // delivered once written. One whose terminal is gone may be for a lane suspended across the reload
+  // (S6); it waits for the suspended tabs (`owedToWake`) and wakes that lane, as a divert would have.
+  const [owedToWake, setOwedToWake] = useState<OwedSubmission[]>([])
   useEffect(() => {
     if (!reattachDone) return
+    const resubmit = (o: OwedSubmission) => {
+      const reports = o.reports
+      if (!reports?.length) {
+        void submitQueue.submit(o.terminalId, o.text, { images: o.images, held: o.held })
+        return
+      }
+      // A pass already serving this coordinator announces these reports itself: they are undelivered.
+      const inFlight = announceInFlightRef.current
+      if (inFlight.has(o.terminalId)) return
+      inFlight.add(o.terminalId)
+      const stillIdle = (held: boolean) => !held && canAnnounceTo(sessionsRef.current.find((s) => s.terminalId === o.terminalId))
+      void submitQueue.submit(o.terminalId, o.text, { reports, onlyIf: stillIdle })
+        .then(async (ok) => {
+          if (!ok || submitQueue.pending(o.terminalId)?.text === o.text) return
+          for (const id of reports) await window.operator.artifactMarkDelivered?.(id)
+          refreshReports()
+        })
+        .catch(() => {})
+        .finally(() => inFlight.delete(o.terminalId))
+    }
     const restore = async () => {
       const holds = await window.operator.laneHoldsTake?.().catch(() => undefined)
       const live = new Set(terminalsRef.current.filter((t) => !t.ended && !t.selfExited).map((t) => t.id))
+      const split = splitOwed(holds?.owed ?? [], live)
       if (holds) {
         restoreDrafts(holds.drafts.filter((id) => live.has(id)))
-        for (const o of holds.owed) {
-          if (live.has(o.terminalId)) void submitQueue.submit(o.terminalId, o.text)
-          else reportUndeliveredRef.current(o.terminalId, o.text, 'ended', { projectId: o.projectId, roleId: o.roleId })
-        }
+        for (const o of split.resubmit) resubmit(o)
+        for (const o of split.ended) reportUndeliveredRef.current(o.terminalId, o.text, 'ended', { projectId: o.projectId, roleId: o.roleId })
+        if (split.toWake.length) setOwedToWake(split.toWake)
       }
-      const back = (holds?.owed ?? []).filter((o) => live.has(o.terminalId))
+      const back = [...split.resubmit, ...split.toWake]
       setProjects((prev) => {
         let changed = false
         const next = prev.map((p) => {
@@ -5282,7 +5319,7 @@ export function DashboardView() {
     let summarised = ''
     if (stale.length) {
       const line = staleSummary(stale)
-      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle }))) return `stale=${stale.length} outcome=summary not written (draft or turn), left undelivered`
+      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle, reports: stale.map((r) => r.id) }))) return `stale=${stale.length} outcome=summary not written (draft or turn), left undelivered`
       if (submitQueue.pending(tab.id)?.text === line) return `stale=${stale.length} outcome=summary unconfirmed, left undelivered`
       for (const report of stale) await window.operator.artifactMarkDelivered?.(report.id)
       summarised = ` summarised=${stale.map((r) => `#${r.id}`).join(',')}`
@@ -5322,7 +5359,7 @@ export function DashboardView() {
       // alternative — firing all three and marking them — is the mid-turn paste this whole
       // guard exists to prevent.
       const line = announcement(report)
-      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle }))) { stop = ` stopped=#${report.id} not written (draft or turn), left undelivered`; break }
+      if (!(await submitQueue.submit(tab.id, line, { onlyIf: stillIdle, reports: [report.id] }))) { stop = ` stopped=#${report.id} not written (draft or turn), left undelivered`; break }
       if (submitQueue.pending(tab.id)?.text === line) { stop = ` stopped=#${report.id} unconfirmed, left undelivered`; break }
       await window.operator.artifactMarkDelivered?.(report.id)
       announced.push(`#${report.id}`)
@@ -5852,6 +5889,21 @@ export function DashboardView() {
     return () => { live = false }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedHydrated, reattachDone, restoreSettled, suspendedRestored])
+
+  // What the old renderer owed a lane whose terminal is gone (review S6): a lane suspended across
+  // the reload is woken with it, as the suspend's divert would have; any other ended.
+  useEffect(() => {
+    if (!suspendedRestored || !owedToWake.length) return
+    setOwedToWake([])
+    for (const { o, tab } of wakeOrEnded(owedToWake, terminalsRef.current)) {
+      const lane = { projectId: o.projectId, roleId: o.roleId }
+      if (!tab) { reportUndeliveredRef.current(o.terminalId, o.text, 'ended', lane); continue }
+      void wakeLaneRef.current(tab, o.text).then((next) => {
+        if (!next || next === 'timed-out') reportUndeliveredRef.current(tab.id, o.text, next ? 'waited' : 'resume', lane)
+        else if (o.held) markHeldRecord(next.id, o.text, false, lane)
+      })
+    }
+  }, [suspendedRestored, owedToWake, markHeldRecord])
 
   // Main records the suspended set in last-run.json; told whenever it changes, once the restore
   // above has put this run's set together.

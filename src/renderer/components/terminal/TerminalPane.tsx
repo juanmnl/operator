@@ -266,7 +266,8 @@ export function TerminalPane({ terminalId, theme, active = true, replayHistory =
       // Pasting into the lane is a person too, and a paste lands in the same composer — so it
       // disarms for BOTH branches below, not just the image one.
       disarmRescue()
-      notePaste(terminalId)
+      // The text, when there is any: its last character decides what a following Enter does.
+      notePaste(terminalId, e.clipboardData?.getData('text/plain'))
       const images = imageFilesFrom(e.clipboardData)
       if (images.length === 0) return
       e.preventDefault()

@@ -48,7 +48,7 @@ describe('unsent input', () => {
 
 describe('unsent input: the keys Claude Code reads differently (review F4/F5, 2026-10-24)', () => {
   it('reads \\ then Enter as a newline in the draft, not a send', () => {
-    expect(draftEffect({ key: 'Enter' }, { key: '\\', at: 0 }, 10)).toBe('draft')
+    expect(draftEffect({ key: 'Enter' }, { before: '\\' }, 10)).toBe('draft')
     noteDraftKey('k1', { key: 'x' }, 0)
     noteDraftKey('k1', { key: '\\' }, 10)
     // Shift on its own between them changes nothing in the composer.
@@ -112,5 +112,85 @@ describe('unsent input: the keys Claude Code reads differently (review F4/F5, 20
     noteDraftKey('k8', { key: 'z' })
     expect(seen).toEqual([['k8', true], ['k8', false]])
     clearUnsentInput('k8')
+  })
+})
+
+describe('unsent input: suggestion lists and the character before the cursor (review S1/S2, 2026-10-25)', () => {
+  it('S1: an Esc while a suggestion list may be open starts no pair, as with disableEscapeDoublePress', () => {
+    expect(draftEffect({ key: 'Escape' }, { prev: { key: 'Escape', at: 0 }, picker: true }, 10)).toBeNull()
+    // `@src/ren`, then a double Esc: the first closes the picker, the second only says "Esc again".
+    for (const [i, key] of [...'look @src/ren'].entries()) noteDraftKey('s1', { key }, i)
+    noteDraftKey('s1', { key: 'Escape' }, 100)
+    noteDraftKey('s1', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s1')).toBe(true)
+    // A third Esc inside the window is the second of a new pair, and the TUI clears then.
+    noteDraftKey('s1', { key: 'Escape' }, 300)
+    expect(hasUnsentInput('s1')).toBe(false)
+  })
+
+  it('S1: the / command menu counts too, and a pasted @ path', () => {
+    noteDraftKey('s2', { key: '/' }, 0)
+    noteDraftKey('s2', { key: 'e' }, 10)
+    noteDraftKey('s2', { key: 'Escape' }, 100)
+    noteDraftKey('s2', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s2')).toBe(true)
+    notePaste('s3', 'see @docs/plan.md')
+    noteDraftKey('s3', { key: 'Escape' }, 100)
+    noteDraftKey('s3', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s3')).toBe(true)
+    clearUnsentInput('s2')
+    clearUnsentInput('s3')
+  })
+
+  it('S1: with no key that opens a list, a double Esc still clears; after Enter or Ctrl+C the list is gone', () => {
+    noteDraftKey('s4', { key: 'a' }, 0)
+    noteDraftKey('s4', { key: 'Escape' }, 100)
+    noteDraftKey('s4', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s4')).toBe(false)
+    noteDraftKey('s5', { key: '@' }, 0)
+    noteDraftKey('s5', { key: 'c', ctrlKey: true }, 10)
+    noteDraftKey('s5', { key: 'x' }, 20)
+    noteDraftKey('s5', { key: 'Escape' }, 100)
+    noteDraftKey('s5', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s5')).toBe(false)
+  })
+
+  it('S1: a draft restored after a reload takes a list to be open', () => {
+    restoreDrafts(['s6'])
+    noteDraftKey('s6', { key: 'Escape' }, 100)
+    noteDraftKey('s6', { key: 'Escape' }, 200)
+    expect(hasUnsentInput('s6')).toBe(true)
+    clearUnsentInput('s6')
+  })
+
+  it('S2: a paste that ends in \\, then Enter, is a newline', () => {
+    notePaste('b1', 'C:\\Users\\')
+    noteDraftKey('b1', { key: 'Enter' }, 10)
+    expect(hasUnsentInput('b1')).toBe(true)
+    // The TUI replaced the \\ with the newline, so the next Enter sends.
+    noteDraftKey('b1', { key: 'Enter' }, 20)
+    expect(hasUnsentInput('b1')).toBe(false)
+  })
+
+  it('S2: \\, another character, Backspace, Enter is a newline', () => {
+    noteDraftKey('b2', { key: '\\' }, 0)
+    noteDraftKey('b2', { key: 'x' }, 10)
+    noteDraftKey('b2', { key: 'Backspace' }, 20)
+    noteDraftKey('b2', { key: 'Enter' }, 30)
+    expect(hasUnsentInput('b2')).toBe(true)
+    clearUnsentInput('b2')
+  })
+
+  it('S2: a \\ typed before the cursor moved is not read as the one before it', () => {
+    noteDraftKey('b3', { key: '\\' }, 0)
+    noteDraftKey('b3', { key: 'ArrowLeft' }, 10)
+    noteDraftKey('b3', { key: 'Backspace' }, 20)
+    noteDraftKey('b3', { key: 'Enter' }, 30)
+    expect(hasUnsentInput('b3')).toBe(false)
+    // A paste whose text is not known leaves the character unseen, and Enter sends.
+    noteDraftKey('b4', { key: '\\' }, 0)
+    notePaste('b4')
+    noteDraftKey('b4', { key: 'Enter' }, 10)
+    expect(hasUnsentInput('b4')).toBe(false)
   })
 })

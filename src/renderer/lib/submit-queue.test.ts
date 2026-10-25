@@ -1397,4 +1397,28 @@ describe('held on a draft: review fixes (2026-10-24)', () => {
     expect(settled).toHaveLength(2)
     expect(new Set(settled).size).toBe(2)
   })
+
+  it('S3/S4: hands the ledger the images and reports a re-submission needs', async () => {
+    const owed: unknown[] = []
+    const { q } = setup({ ledger: { owe: (_id, _key, _text, opts) => owed.push({ images: opts?.images, reports: opts?.reports }), settle: () => {}, held: () => {} } })
+    await q.submit('t1', 'look here', { images: ['/tmp/a.png'] })
+    await q.submit('t1', 'report #7 ready', { reports: [7], onlyIf: () => true })
+    expect(owed).toEqual([{ images: ['/tmp/a.png'], reports: undefined }, { images: undefined, reports: [7] }])
+  })
+
+  it('S5: a re-submission whose record reads held turns it back at the write, without holding again', async () => {
+    const events: string[] = []
+    const { q } = setup({ ledger: { owe: () => {}, settle: () => events.push('settle'), held: (_id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${text}`) } })
+    await q.submit('t1', 'A', { held: true })
+    expect(events).toEqual(['unheld A', 'settle'])
+  })
+
+  it('S5: one that is held again is not marked held twice', async () => {
+    const events: string[] = []
+    const { clock, drafts, q } = setup({ ledger: { owe: () => {}, settle: () => events.push('settle'), held: (_id, _key, text, on) => events.push(`${on ? 'held' : 'unheld'} ${text}`) } })
+    drafts.add('t1')
+    clock.at(1000, () => drafts.delete('t1'))
+    await q.submit('t1', 'A', { held: true })
+    expect(events).toEqual(['unheld A', 'settle'])
+  })
 })

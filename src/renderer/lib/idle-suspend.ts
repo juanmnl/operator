@@ -615,7 +615,7 @@ export function typeHeldKeys(
 ): Promise<boolean> {
   if (!held.has(key)) return Promise.resolve(false)
   noteKeystroke(terminalId)
-  return held.typeInto(key, ready(), (text) => draft(text, () => notePaste(terminalId)))
+  return held.typeInto(key, ready(), (text) => draft(text, () => notePaste(terminalId, text)))
 }
 
 /** What resuming a suspended lane needs from the view. */

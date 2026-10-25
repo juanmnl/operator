@@ -1314,6 +1314,16 @@ export interface OwedSubmission {
   /** The lane it was for, so it can still be reported once that terminal is gone. */
   projectId?: string
   roleId?: string
+  /** The lane's key, so a lane suspended across the reload (a new placeholder tab, no terminal) can
+   *  still be woken with it (review S6, 2026-10-25). */
+  laneKey?: string
+  /** Image paths pasted with the text (`SubmitOptions.images`, review S4). */
+  images?: string[]
+  /** Set on an announce-pass line: the reports it announces. It goes only into an idle lane that did
+   *  not hold it, and the reports are marked delivered once it is written (review S3). */
+  reports?: number[]
+  /** The person's draft held it, so its dispatch record reads `held` (review S5). */
+  held?: boolean
 }
 
 /** What the renderer tells main about a lane's composer and its owed messages. */
@@ -1321,3 +1331,4 @@ export type LaneHoldOp =
   | { kind: 'draft'; terminalId: string; on: boolean }
   | { kind: 'owe'; entry: OwedSubmission }
   | { kind: 'settle'; key: string }
+  | { kind: 'held'; key: string; on: boolean }

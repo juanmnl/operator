@@ -30,4 +30,12 @@ describe('lane holds (review F1: a held message survives a renderer reload)', ()
     expect(owed).toHaveLength(OWED_LIMIT)
     expect(owed[0].key).toBe('k5')
   })
+
+  it('keeps whether the draft held a message, with its images and reports (review S4/S5)', () => {
+    const h = new LaneHolds()
+    h.apply({ kind: 'owe', entry: { ...entry('a', 10), images: ['/tmp/a.png'], reports: [7] } })
+    h.apply({ kind: 'held', key: 'a', on: true })
+    h.apply({ kind: 'held', key: 'gone', on: true })
+    expect(h.take().owed).toEqual([{ ...entry('a', 10), images: ['/tmp/a.png'], reports: [7], held: true }])
+  })
 })

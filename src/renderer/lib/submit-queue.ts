@@ -220,7 +220,8 @@ export interface SubmitQueueDeps {
  *  write or refused by its `onlyIf`. `held` when the lane's draft starts holding it (`on`) and
  *  again at its settle (`off`), so a dispatch record can read `held` while it waits. */
 export interface SubmissionLedger {
-  owe(id: string, key: string, text: string): void
+  /** `opts` are the submission's own, for the fields a re-submission after a reload needs. */
+  owe(id: string, key: string, text: string, opts?: SubmitOptions): void
   settle(id: string, key: string): void
   held(id: string, key: string, text: string, on: boolean): void
 }
@@ -235,6 +236,12 @@ export interface SubmitOptions {
    *  that must only go into an idle lane (the announce pass, review F6): a person's Enter that
    *  released the hold has just started a turn that the session state does not show yet. */
   onlyIf?: (held: boolean) => boolean
+  /** The reports an announce-pass line announces. The queue only hands them to the ledger, so a
+   *  re-submission after a reload can mark them delivered (review S3, 2026-10-25). */
+  reports?: readonly number[]
+  /** Its dispatch record already reads `held`: a message re-submitted after a reload that the old
+   *  queue held. Its settle turns the record back, as for one this queue held (review S5). */
+  held?: boolean
 }
 
 export interface SubmitQueue {
@@ -492,9 +499,9 @@ export function createSubmitQueue(deps: SubmitQueueDeps, gapMs: number = SUBMIT_
       const seq = (enqueued.get(id) ?? 0) + 1
       enqueued.set(id, seq)
       unwrittenCount.set(id, (unwrittenCount.get(id) ?? 0) + 1)
-      const entry = { key: `${instance}-${id}-${seq}`, text, held: false }
+      const entry = { key: `${instance}-${id}-${seq}`, text, held: !!opts?.held }
       owed.set(id, [...(owed.get(id) ?? []), entry])
-      try { ledger?.owe(id, entry.key, text) } catch { /* the ledger must never break the queue */ }
+      try { ledger?.owe(id, entry.key, text, opts) } catch { /* the ledger must never break the queue */ }
       if (holding.has(id)) { markHeld(id); holdChanged() }
       let settled = false
       // Written, diverted, refused or failed: this submission is no longer owed to the lane.
@@ -743,7 +750,7 @@ export const submitQueue = createSubmitQueue({
   hasUnsentInput,
   clearUnsentInput,
   ledger: {
-    owe: (id, key, text) => ledgerHandler?.owe(id, key, text),
+    owe: (id, key, text, opts) => ledgerHandler?.owe(id, key, text, opts),
     settle: (id, key) => ledgerHandler?.settle(id, key),
     held: (id, key, text, on) => ledgerHandler?.held(id, key, text, on),
   },
