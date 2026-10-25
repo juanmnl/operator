@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput, clearUnsentInput, restoreDrafts, draftUnknown, onDraftChange, DOUBLE_ESC_MS } from './lane-keystrokes'
+import { noteKeystroke, typedWithin, lastKeystrokeAt, draftEffect, noteDraftKey, notePaste, hasUnsentInput, clearUnsentInput, restoreDrafts, draftUnknown, onDraftChange, listMayBeOpen, DOUBLE_ESC_MS } from './lane-keystrokes'
 
 describe('lane keystrokes', () => {
   it('reports typing within the window, per terminal', () => {
@@ -192,5 +192,90 @@ describe('unsent input: suggestion lists and the character before the cursor (re
     notePaste('b4')
     noteDraftKey('b4', { key: 'Enter' }, 10)
     expect(hasUnsentInput('b4')).toBe(false)
+  })
+})
+
+describe('unsent input: which / and @ open a suggestion list (review N1, 2026-10-25)', () => {
+  const typeKeys = (id: string, text: string) => { for (const key of text) noteDraftKey(id, { key }, 0) }
+  const doubleEsc = (id: string) => {
+    noteDraftKey(id, { key: 'Escape' }, 100)
+    noteDraftKey(id, { key: 'Escape' }, 200)
+  }
+
+  it('opens the command menu only on a draft that starts with / and a command name', () => {
+    expect(listMayBeOpen('/')).toBe(true)
+    expect(listMayBeOpen('/rev')).toBe(true)
+    expect(listMayBeOpen('/review ')).toBe(true)
+    // Arguments after the name, or a second / (a path), close it.
+    expect(listMayBeOpen('/review 12')).toBe(false)
+    expect(listMayBeOpen('/usr/bin')).toBe(false)
+  })
+
+  it('opens the mid-draft command list on / after whitespace, as the binary\'s nA does', () => {
+    expect(listMayBeOpen('then /rev')).toBe(true)
+    expect(listMayBeOpen('then\n/rev')).toBe(true)
+    expect(listMayBeOpen('see /usr/bin')).toBe(false)
+    expect(listMayBeOpen('see src/main.ts')).toBe(false)
+    expect(listMayBeOpen('open https://example.com/a')).toBe(false)
+  })
+
+  it('opens the file picker on @ at the start or after whitespace, until the mention ends', () => {
+    expect(listMayBeOpen('@')).toBe(true)
+    expect(listMayBeOpen('look at @src/ren')).toBe(true)
+    expect(listMayBeOpen('文件。@src')).toBe(true)
+    expect(listMayBeOpen('look at @"my docs/pl')).toBe(true)
+    expect(listMayBeOpen('look at @src/main.ts and')).toBe(false)
+    expect(listMayBeOpen('mail me@example.com')).toBe(false)
+  })
+
+  it('a double Esc clears a draft that holds a path, a URL or an email address', () => {
+    typeKeys('n1', 'see /usr/bin and https://example.com/a')
+    doubleEsc('n1')
+    expect(hasUnsentInput('n1')).toBe(false)
+    notePaste('n2', 'fix src/main.ts, ask me@example.com')
+    doubleEsc('n2')
+    expect(hasUnsentInput('n2')).toBe(false)
+  })
+
+  it('a finished @ mention no longer holds the double Esc; Backspace into it opens the list again', () => {
+    typeKeys('n3', 'read @src/main.ts now')
+    doubleEsc('n3')
+    expect(hasUnsentInput('n3')).toBe(false)
+    typeKeys('n4', 'read @src/main.ts ')
+    noteDraftKey('n4', { key: 'Backspace' }, 0)
+    doubleEsc('n4')
+    expect(hasUnsentInput('n4')).toBe(true)
+    clearUnsentInput('n4')
+  })
+
+  it('after the cursor moves, a draft that held an @ or / may still have a list open', () => {
+    // `@src now`, cursor back into the mention, a character typed: the TUI may show the picker.
+    typeKeys('n5', '@src now')
+    noteDraftKey('n5', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n5', { key: 'x' }, 0)
+    doubleEsc('n5')
+    expect(hasUnsentInput('n5')).toBe(true)
+    clearUnsentInput('n5')
+    // A draft with neither does not.
+    typeKeys('n6', 'hello wrld')
+    noteDraftKey('n6', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n6', { key: 'o' }, 0)
+    doubleEsc('n6')
+    expect(hasUnsentInput('n6')).toBe(false)
+    expect(listMayBeOpen('\u0000x', true)).toBe(true)
+    // A space may still be inside a quoted mention begun in the unseen text; a closed quote and a space end it.
+    expect(listMayBeOpen('\u0000x y', true)).toBe(true)
+    expect(listMayBeOpen('\u0000x" y', true)).toBe(false)
+    expect(listMayBeOpen('\u0000x', false)).toBe(false)
+  })
+
+  it('a sent or cleared draft forgets the @ it held', () => {
+    typeKeys('n7', '@src')
+    noteDraftKey('n7', { key: 'Enter' }, 0)
+    typeKeys('n7', 'next')
+    noteDraftKey('n7', { key: 'ArrowLeft' }, 0)
+    noteDraftKey('n7', { key: 'x' }, 0)
+    doubleEsc('n7')
+    expect(hasUnsentInput('n7')).toBe(false)
   })
 })

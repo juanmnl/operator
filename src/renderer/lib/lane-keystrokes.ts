@@ -51,9 +51,13 @@ const tail = new Map<string, string>()
 const UNSEEN = '\u0000'
 const TAIL_MAX = 256
 // Lanes where Claude Code's suggestion list may be open: the `@` file picker or the `/` command menu
-// (review S1, 2026-10-25). The composer cannot be read, so this is set by any key or paste that can
-// open one and stays set until an Esc, an Enter or a Ctrl+C. Wrong only toward keeping a draft.
+// (review S1, 2026-10-25). The composer cannot be read, so this is judged from `tail` after each key
+// or paste that changes the text (`listMayBeOpen`), set by Tab, and cleared by an Esc, an Enter or a
+// Ctrl+C. Wrong only toward keeping a draft.
 const pickerMaybe = new Set<string>()
+// Lanes whose draft has had an `@` or `/` typed or pasted into it, or a Tab, since it was last
+// empty, or that were restored. Text the keys lost track of may then still hold one before the cursor.
+const triggerSeen = new Set<string>()
 const listeners = new Set<(terminalId: string, on: boolean) => void>()
 
 /** Claude Code's double-press window, from the 2.1.310 binary (`var a=800` before the
@@ -106,8 +110,36 @@ function setDraft(terminalId: string, on: boolean): void {
 
 /** Keys that type nothing and leave the cursor where it was, so the character before it stays known. */
 const CURSOR_KEEPS = new Set(['Escape', 'Enter', 'Backspace', 'Delete', 'Insert'])
-// Characters that open a suggestion list: `@` the file picker, `/` the command menu.
-const opensPicker = (text: string) => text.includes('@') || text.includes('/')
+
+// When Claude Code 2.1.310 shows a suggestion list, read against the text before the cursor (review
+// N1, 2026-10-25). A `/` or `@` elsewhere, as in a path, a URL or an email address, opens none.
+// The command menu: the draft is `/` and a command name, with at most a space after it (`rA`, and
+// `q$e` closing it once arguments follow).
+const COMMAND_MENU = /^\/[a-zA-Z0-9.:_-]* ?$/
+// A command named mid-draft: `/` after whitespace or 。、？！ (`nA`).
+const MID_COMMAND = /[\s\u3002\u3001\uFF1F\uFF01]\/[a-zA-Z0-9._:-]*$/
+// The file picker: `@` at the start or after whitespace or 。、？！, then path characters or a quoted
+// path (`G1t`). The agent list's `CU` takes the same `@` and adds the joiners U+200C and U+200D.
+const AT_MENTION = /(^|[\s\u3002\u3001\uFF1F\uFF01])@([\p{L}\p{N}\p{M}\u200C\u200D_\-./\\()[\]~:]*|"[^"]*"?)$/u
+
+const listOpensOn = (text: string) => COMMAND_MENU.test(text) || MID_COMMAND.test(text) || AT_MENTION.test(text)
+
+/** May a suggestion list be open with `text` (a lane's `tail`) before the cursor? Pure. When the
+ *  draft has held an `@` or `/` (`triggerSeen`), the text these keys could not follow (`UNSEEN`) may
+ *  end in the start of a command or a mention, and what was typed since may still belong to it. */
+export function listMayBeOpen(text: string, triggerSeen = false): boolean {
+  if (listOpensOn(text)) return true
+  const cut = text.lastIndexOf(UNSEEN)
+  if (cut < 0 || !triggerSeen) return false
+  const since = text.slice(cut + 1)
+  return listOpensOn('/' + since) || listOpensOn(' /' + since) || listOpensOn(' @' + since) || listOpensOn(' @"' + since)
+}
+
+function judgePicker(terminalId: string, added = ''): void {
+  if (added.includes('@') || added.includes('/')) triggerSeen.add(terminalId)
+  if (listMayBeOpen(tail.get(terminalId) ?? '', triggerSeen.has(terminalId))) pickerMaybe.add(terminalId)
+  else pickerMaybe.delete(terminalId)
+}
 
 function append(terminalId: string, text: string): void {
   const t = (tail.get(terminalId) ?? '') + text
@@ -123,7 +155,7 @@ export function noteDraftKey(terminalId: string, e: DraftKey, now = Date.now()):
   if (e.key === 'Escape' && (effect === 'clear' || picker)) prevKey.delete(terminalId)
   else prevKey.set(terminalId, { key: e.key, at: now })
   if (e.key === 'Escape' || effect === 'clear') pickerMaybe.delete(terminalId)
-  if (effect === 'clear') tail.set(terminalId, '')
+  if (effect === 'clear') { tail.set(terminalId, ''); triggerSeen.delete(terminalId) }
   else if (e.key === 'Enter') {
     pickerMaybe.delete(terminalId)
     // A newline; after `\` the TUI replaces the backslash with it.
@@ -132,28 +164,29 @@ export function noteDraftKey(terminalId: string, e: DraftKey, now = Date.now()):
   } else if (e.key === 'Backspace') {
     const t = tail.get(terminalId) ?? ''
     // What was before the unseen text is still unseen.
-    tail.set(terminalId, t === UNSEEN ? t : t.slice(0, -1))
+    tail.set(terminalId, t.endsWith(UNSEEN) ? t : t.slice(0, -1))
+    judgePicker(terminalId)
   } else if (effect === 'draft' && !e.metaKey) {
     append(terminalId, e.key)
-    if (opensPicker(e.key)) pickerMaybe.add(terminalId)
+    judgePicker(terminalId, e.key)
   } else if (!CURSOR_KEEPS.has(e.key) && !(e.metaKey && (e.key === 'v' || e.key === 'V'))) {
     // Arrows, Home/End, history, Tab completion, Ctrl+A/E/K/U: the cursor or the text moved in a
     // way these keys cannot follow. Tab can also open the file list.
     tail.set(terminalId, UNSEEN)
-    if (e.key === 'Tab') pickerMaybe.add(terminalId)
+    if (e.key === 'Tab') { pickerMaybe.add(terminalId); triggerSeen.add(terminalId) }
   }
   if (effect === 'draft') { unknown.delete(terminalId); setDraft(terminalId, true) }
   else if (effect === 'clear') { unknown.delete(terminalId); setDraft(terminalId, false) }
 }
 
 /** A paste lands in the composer too. `text` is what was pasted, when known: its last character is
- *  then the one before the cursor, and an `@` or `/` in it may open a suggestion list. */
+ *  then the one before the cursor, and it may open or close a suggestion list (`listMayBeOpen`). */
 export function notePaste(terminalId: string, text?: string): void {
   prevKey.delete(terminalId)
   unknown.delete(terminalId)
   if (text) {
     append(terminalId, text.replace(/\r\n?/g, '\n'))
-    if (opensPicker(text)) pickerMaybe.add(terminalId)
+    judgePicker(terminalId, text)
   } else {
     tail.set(terminalId, UNSEEN)
   }
@@ -178,6 +211,7 @@ export function clearUnsentInput(terminalId: string): void {
   prevKey.delete(terminalId)
   tail.delete(terminalId)
   pickerMaybe.delete(terminalId)
+  triggerSeen.delete(terminalId)
   setDraft(terminalId, false)
 }
 
@@ -189,6 +223,7 @@ export function restoreDrafts(terminalIds: Iterable<string>): void {
     unknown.add(id)
     tail.set(id, UNSEEN)
     pickerMaybe.add(id)
+    triggerSeen.add(id)
     setDraft(id, true)
   }
 }
