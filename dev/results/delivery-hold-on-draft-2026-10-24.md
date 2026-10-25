@@ -342,3 +342,65 @@ Results:
 14. Held then delivered across a reload: type a draft in B, cause a message (record reads `held`),
     press Enter, and press Cmd+R within a second. Expected after the reload: the record reads
     `sent` or `delivered`, not `held`.
+
+## Follow-up: review r3 N1 (2026-10-25), commit `da26ae4`
+
+Review: `dev/results/delivery-hold-on-draft-review-r3-2026-10-25.md`, N1.
+
+### What changed
+
+Before, any `@` or `/` typed or pasted set `pickerMaybe`, and it stayed set until Esc, Enter or
+Ctrl+C. A draft holding a path, a URL or an email address that was cleared with Esc Esc kept the
+hold flag. Now `pickerMaybe` is judged again after every typed character, Backspace and paste with
+known text, from `tail` (the text before the cursor), by `listMayBeOpen`
+(`src/renderer/lib/lane-keystrokes.ts`). Tab and a restored draft still set it, and Esc, Enter
+and Ctrl+C still clear it.
+
+The triggers come from the 2.1.310 binary (`~/.local/share/claude/versions/2.1.310`, the
+suggestion hook `pce` and its helpers):
+
+| List | Binary | Rule here |
+|---|---|---|
+| Command menu | `rA`: the draft starts with `/` and the name matches `[a-zA-Z0-9.:\-_]`; `q$e` closes it once text follows the space | `^\/[a-zA-Z0-9.:_-]* ?$` on the whole draft |
+| Mid-draft command list | `nA`: `/` after `[\s。、？！]`, then `[a-zA-Z0-9._:-]*` to the cursor. It shows as a list only when `Bn` is set (`_i()`, which I could not resolve; a fullscreen-mode check is the likely one) | Same regex, always counted |
+| File picker | `ii = text.match(G1t)`, `G1t = (^\|L7)@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*\|"[^"]*"?)$`, `L7 = [\s。、？！]` | Same, with U+200C/U+200D added for the agent list's `CU` |
+
+So the brief's rule ("`/` only at the start of the draft") is widened by one case found in the
+binary: `/name` after whitespace may show the mid-draft command list. `see /usr/bin` does not match
+(the second `/` ends the name), nor does `https://…`, `src/main.ts` or `me@example.com`. A mention
+that has ended with a space (`@src/main.ts now`) no longer holds, and Backspace back into it opens
+it again, as in the TUI.
+
+Text these keys cannot follow (after an arrow, Home/End, history, Tab, or a restore) is the one
+case kept conservative. A new set, `triggerSeen`, records that the draft has held an `@` or `/`, a
+Tab, or was restored. It is cleared when the draft is sent or cleared. When it is set and the tail
+holds unseen text, the unseen text is taken to possibly end in the start of a command or mention,
+and what was typed since is tested as its continuation. Without `triggerSeen`, an arrow key
+followed by typing does not hold, as before.
+
+One line changed in Backspace: a tail that ends in unseen text stays unseen. Before, only a tail
+that was exactly `UNSEEN` stayed; `ab` + unseen + Backspace became `ab`, which read `b` as the
+character before the cursor.
+
+Left out: Enter while a list is open selects the suggestion in the TUI rather than sending. That is
+modelled as before (Enter sends or adds a newline) and is outside N1.
+
+### Tests
+
+`lane-keystrokes.test.ts`, new block "which / and @ open a suggestion list (review N1)": the
+command menu rule, the mid-draft rule, the `@` rule with CJK punctuation and quoted paths, a double
+Esc clearing drafts that hold a path, URL or email (typed and pasted), an ended mention and
+Backspace into it, a cursor move with and without `triggerSeen`, and a sent draft forgetting its
+`@`. The earlier S1 tests pass unchanged.
+
+Results on `da26ae4`:
+- Root `npx vitest run`: 123 files, **2013 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: **1002 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### GUI check, added step
+
+15. Path then double Esc: in B type `see /usr/bin and https://example.com`, press Esc twice
+    quickly. Expected: the composer clears. Cause a message to B. Expected: it is delivered
+    without the pill. Repeat with `then /rev` and confirm whether the mid-draft command list
+    appears in this mode; if it does, the double Esc should only close it and the message waits.
