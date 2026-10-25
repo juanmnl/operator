@@ -404,3 +404,68 @@ Results on `da26ae4`:
     quickly. Expected: the composer clears. Cause a message to B. Expected: it is delivered
     without the pill. Repeat with `then /rev` and confirm whether the mid-draft command list
     appears in this mode; if it does, the double Esc should only close it and the message waits.
+
+## Follow-up: pre-merge review P1-P2 (2026-10-25), commit `58f4101`
+
+Review: `dev/results/delivery-hold-premerge-review-2026-10-25.md` (in the main checkout). Branch
+`operator/b8ce80`, on top of `80f5987` (automatic close respects holds). Not merged. Not
+GUI-verified.
+
+Both findings are lists the first Esc closes, so a double Esc there does not clear the input, while
+`listMayBeOpen` read no list and the flag cleared. Both fixes only widen the hold.
+
+### P1: a draft that starts with `/`
+
+`COMMAND_MENU` (`/` and a command name, at most a space after it) is replaced by `SLASH_DRAFT =
+/^\//`: any draft that starts with `/` may have a list open, whatever follows. The 2.1.310 binary
+opens argument lists there: `directory` for the commands in `n2`, `custom-title` for `/resume`,
+and `command` for any command with `getArgumentCompletions`. Which commands complete arguments
+changes between versions, so the rule does not try to name them. `/usr/bin` and `/review 12` now
+hold too.
+
+### P2: emoji and Slack channel lists
+
+Rules added, copied from the binary next to `G1t` (checked in the installed 2.1.310: both are
+matched against `Wn.substring(0,Ts)`, the text before the cursor, case-sensitive):
+- `EMOJI = /(^|\s):[a-z0-9_+-]{2,}$/` (`rce`). The list is gated on `emojiCompletionEnabled`, on
+  unless set false, and opens only when `A$e` finds a name. That cannot be known here, so every
+  match counts as open.
+- `CHANNEL = /(^|\s)#[a-z0-9][a-z0-9_-]*$/` (`oce`). Opens only while a Slack MCP client is
+  connected, which is not known here either, so every match counts.
+
+`10:30`, `issue#12`, a closed `:house:` and a channel name followed by a space do not match.
+
+### Unseen text
+
+`:` and `#` join `/` and `@` as triggers for `triggerSeen` (`TRIGGERS = /[/@:#]/`). With P1, a
+draft that has held a trigger and whose tail holds unseen text may start with `/`, which holds
+whatever follows. So the fallback in `listMayBeOpen` is now simply `triggerSeen && text includes
+UNSEEN`; the old continuation checks (`'/' + since`, `' @' + since`, …) were all subsumed by it.
+One existing expectation flips for that reason: `listMayBeOpen('\u0000x" y', true)` is now true.
+A draft with no trigger is unchanged: after an arrow key, typing does not hold.
+
+This also covers a long `/` draft cut to its last 256 characters: the cut adds `UNSEEN`, and the
+leading `/` set `triggerSeen`.
+
+Cost of the wider hold: a double Esc does not clear the flag on these drafts. Enter, Ctrl+C and
+Deliver now still do, and the pill says the message is waiting.
+
+### Tests
+
+`lane-keystrokes.test.ts`, new block "the lists the N1 rule missed": P1 rule cases
+(`/add-dir src/`, `/resume my-sess`, multi-line), the review's failure scenario (`/add-dir src/`
+then double Esc keeps the draft), a 300-character `/review` draft; emoji and channel rule cases
+with their non-matches; double Esc on each list keeps the draft; and a cursor move after `:` or `#`
+keeps the hold. The N1 command-menu test lost its two "closed" cases, which are P1 cases now.
+
+Results on `58f4101`:
+- Root `npx vitest run`: 129 files, **2115 passed**. Root `npx tsc --noEmit -p .`: clean.
+- Electron `npx vitest run`: 57 files, **1002 passed**.
+- Electron `npm run typecheck` (main + renderer): clean.
+
+### GUI check, added step
+
+16. In B type `/add-dir src/` and wait for the directory list. Press Esc twice quickly. Expected:
+    the list closes, the text stays, and a message caused to B waits with the pill. Repeat with
+    `looks good :ho` (emoji list). Then type `see /usr/bin`, press Esc twice: the composer
+    clears and a message is delivered without the pill.
