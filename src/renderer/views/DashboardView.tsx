@@ -37,7 +37,9 @@ import { MemoryBanner, MEMORY_BANNER_H } from '../components/MemoryBanner'
 import { isWorkPrompt, replyPrefix } from '../../shared/prompt-kind'
 import { canDismissDispatch, flipHeld, settleUnreturnedHeld, splitOwed, wakeOrEnded } from '../lib/dispatch-outcome'
 import { endedByBackend } from '../lib/terminal-liveness'
-import { joinReattach, tabSessionStatus } from '../lib/session-reattach'
+import { joinReattach } from '../lib/session-reattach'
+import { sidebarSessions, type SidebarEntry } from '../lib/sidebar-sessions'
+import { fingerprint } from '../lib/fingerprint'
 import { laneBusName, projectSlug } from '../lib/bus-name'
 import { useRefocusOnActivate, type ActivationView } from '../lib/use-refocus-on-activate'
 import { checkoutGoneDetail, checkoutGoneLabel, newlyGone } from '../lib/checkout-gone'
@@ -220,6 +222,27 @@ function loadLayouts(): Record<string, SessionLayout> {
   return coerceLayouts(raw)
 }
 
+/** `roleOf` and `accentOf` are built out here, not with `useCallback` in the component. A callback
+ *  made in the component keeps the render that made it, and these two change with `projects`,
+ *  which dispatch and task traffic updates between lane switches: two sets of callbacks recreated
+ *  at different moments hold each other's renders in a chain (renderer leak, see `setPanelOpen`).
+ *  Made here they hold only their arguments, and their identity still changes when those do. */
+function roleLookup(projects: readonly Project[]) {
+  return (session: AgentSession): Role | undefined => {
+    if (!session.roleId) return undefined
+    return projects.find((p) => p.id === session.projectId)?.roster?.find((r) => r.id === session.roleId)
+  }
+}
+function accentLookup(roleOf: (session: AgentSession) => Role | undefined, sessionAccents: Record<string, string>) {
+  // The colour a session actually draws with: its lane's, else its own override. This is
+  // exactly where `role?.accent` used to be read, so every call site keeps its own fallback.
+  return (session: AgentSession): string | undefined => {
+    const role = roleOf(session)
+    if (role?.accent) return role.accent
+    return session.savedKey ? sessionAccents[session.savedKey] : undefined
+  }
+}
+
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
@@ -326,11 +349,15 @@ export function DashboardView() {
   // Reading panel (ConversationPanel) + Canvas surface — now PER SESSION (each
   // session keeps its own open-state and tab). Keyed by session id, persisted.
   const [sessionLayouts, setSessionLayouts] = useState<Record<string, SessionLayout>>(loadLayouts)
+  const sessionLayoutsRef = useRef(sessionLayouts)
+  sessionLayoutsRef.current = sessionLayouts
   const activeSessionIdRef = useRef<string | null>(null)
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
   const activeLayout = activeSessionId ? sessionLayouts[activeSessionId] : undefined
   const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
   const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
+  const panelOpenRef = useRef(panelOpen)
+  panelOpenRef.current = panelOpen
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
@@ -458,19 +485,25 @@ export function DashboardView() {
   }, [layoutMove, activeMove])
   // Open/close the right side panel (Plan / Diff / Preview). Per-session (ref avoids a stale id).
   // The card changes by the panel's docked share of the row, or not at all when it overlays.
+  // SESSION STATE THROUGH REFS, here and in every callback below that reads `sessions`,
+  // `terminals`, `sessionLayouts` or `savedSessions`. A memoised callback keeps the render that
+  // made it alive, and that render's other callbacks keep theirs: one recreated on every session
+  // event and one recreated on a lane switch held each other's renders in a chain that grew for
+  // the life of the window, each link with that moment's sessions and their messages
+  // (dev/results/renderer-leak-live-lanes-2026-10-26.md).
   const setPanelOpen = useCallback((open: boolean, patch: LayoutPatch = {}) => {
     const sid = activeSessionIdRef.current
-    const cur = sid ? (sessionLayouts[sid]?.panelOpen ?? DEFAULT_LAYOUT.panelOpen) : false
+    const cur = sid ? (sessionLayoutsRef.current[sid]?.panelOpen ?? DEFAULT_LAYOUT.panelOpen) : false
     if (sid && cur !== open) {
       const delta = cardWFor(sidebarCollapsed, open) - cardWFor(sidebarCollapsed, cur)
       beginLayoutMove('panel', delta, open ? PANEL_OPEN_SETTLE_FALLBACK_MS : undefined)
     }
     patchLayout({ ...patch, panelOpen: open })
-  }, [patchLayout, sessionLayouts, beginLayoutMove, cardWFor, sidebarCollapsed])
+  }, [patchLayout, beginLayoutMove, cardWFor, sidebarCollapsed])
   const togglePanel = useCallback(() => {
     const sid = activeSessionIdRef.current
-    setPanelOpen(!(sid ? sessionLayouts[sid]?.panelOpen : false))
-  }, [setPanelOpen, sessionLayouts])
+    setPanelOpen(!(sid ? sessionLayoutsRef.current[sid]?.panelOpen : false))
+  }, [setPanelOpen])
   // Scratch terminal (ShellSheet) — opens as a bottom sheet from the main actions
   // footer. `shellStarted` keeps it MOUNTED after first open (so the shell +
   // scrollback survive close→reopen); `shellOpen` slides it up/down.
@@ -569,16 +602,19 @@ export function DashboardView() {
   // ⌘B. A layout move like the panel's: the terminals hold their fit while the content column
   // follows the rail's edge, then fit once on settle. Without the hold the ghostty grid reflowed
   // every frame of the collapse/expand → overprint corruption.
+  // `panelOpen` through a ref, so a panel toggle does not recreate this (renderer leak, see
+  // `setPanelOpen`).
   const toggleSidebar = useCallback(() => {
     // The panel's docked width can change with the rail (`placePanel`), so the card's change is
     // computed from both, not just the rail's 194px.
-    beginLayoutMove('rail', cardWFor(!sidebarCollapsed, panelOpen) - cardWFor(sidebarCollapsed, panelOpen))
+    const open = panelOpenRef.current
+    beginLayoutMove('rail', cardWFor(!sidebarCollapsed, open) - cardWFor(sidebarCollapsed, open))
     setSidebarCollapsed((c) => {
       const next = !c
       try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
-  }, [beginLayoutMove, sidebarCollapsed, cardWFor, panelOpen])
+  }, [beginLayoutMove, sidebarCollapsed, cardWFor])
 
   /** Returns the toast's id, for a caller that has to take it down early (the ⌘W arm). */
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>): string => {
@@ -2740,10 +2776,10 @@ export function DashboardView() {
   // A recent-project click: open its workspace if we already know it as a Project (so you can
   // launch/manage its agents even with nothing live), else fall back to starting fresh there.
   const openProjectOrFolder = useCallback((path: string) => {
-    const proj = projects.find((p) => p.path === path)
+    const proj = projectsRef.current.find((p) => p.path === path)
     if (proj) handleOpenProject(proj.id)
     else handleNewSessionInFolder(path)
-  }, [projects, handleOpenProject, handleNewSessionInFolder])
+  }, [handleOpenProject, handleNewSessionInFolder])
 
   // One-time, non-destructive backfill: derive Projects from existing saved sessions +
   // recent-project paths (mapping each unique source path through resolveProject → canonical
@@ -3573,16 +3609,17 @@ export function DashboardView() {
   launchRoleRef.current = handleLaunchRole // fresh closure every render for the dispatch subscription
 
   // Focus an already-live lane/session (the "View" action — vs "Launch" which spawns a new one).
+  // Reads lanes through refs, like `setPanelOpen` (renderer leak).
   const focusTerminal = useCallback((terminalId: string) => {
-    const tab = terminals.find((t) => t.id === terminalId)
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab) return
     setActiveTerminalId(terminalId)
-    const hook = sessions.find((s) => s.terminalId === terminalId)
+    const hook = sessionsRef.current.find((s) => s.terminalId === terminalId)
     setActiveSessionId(hook?.id ?? `local-${terminalId}`)
     // Focusing a session implies its project scope, so the sidebar always contains what
     // you're looking at (spec §4 rule 1).
     if (tab.projectId) setActiveProjectId(tab.projectId)
-  }, [terminals, sessions])
+  }, [])
   focusTerminalRef.current = focusTerminal
 
   /** OPEN a lane — focus it AND go there. Distinct from `focusTerminal` on purpose.
@@ -3600,19 +3637,19 @@ export function DashboardView() {
    *  caller can fall back instead of silently doing nothing. Added here rather than inside
    *  `focusTerminal` because its other callers rely on focus-without-navigation. */
   const openLaneTerminal = useCallback((terminalId: string): boolean => {
-    const tab = terminals.find((t) => t.id === terminalId)
+    const tab = terminalsRef.current.find((t) => t.id === terminalId)
     if (!tab) return false
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
     setAgentsViewActive(false); setTuningViewActive(false)
     setPrefsViewActive(false)
     setActiveTerminalId(terminalId)
-    const hook = sessions.find((s) => s.terminalId === terminalId)
+    const hook = sessionsRef.current.find((s) => s.terminalId === terminalId)
     setActiveSessionId(hook?.id ?? `local-${terminalId}`)
     if (tab.projectId) setActiveProjectId(tab.projectId)
     selectMainView('terminal')
     return true
-  }, [terminals, sessions, selectMainView])
+  }, [selectMainView])
 
   // Delegation: send a task to a lane. If the lane has a live session, type it into that pty
   // (bracketed paste + CR); otherwise launch the lane with the task. The autonomous
@@ -3644,7 +3681,7 @@ export function DashboardView() {
     // human addressing a lane. Its only callers are Send → on a board card and Start all, both
     // human-initiated; agent→agent delivery goes through `deliverDispatchRef`, never here.
     deliveryStateRef.current = resetChainFor(deliveryStateRef.current, laneKey(project.id, role.id))
-    const liveTab = terminals.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
+    const liveTab = terminalsRef.current.find((tab) => tab.projectId === project.id && tab.roleId === role.id)
     if (liveTab) {
       void submitQueue.submit(liveTab.id, t)
     } else {
@@ -3653,7 +3690,7 @@ export function DashboardView() {
       // whether the lane happened to be running.
       void handleLaunchRole(project, role, t, false, { focus: false })
     }
-  }, [terminals, handleLaunchRole])
+  }, [handleLaunchRole])
 
   // Send one queued task: to a live lane's pty, or (if the lane isn't up) launch it — which
   // picks up the whole queue for that lane, this task included.
@@ -3674,7 +3711,7 @@ export function DashboardView() {
       })
       return
     }
-    const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === role.id)
+    const liveTab = terminalsRef.current.find((t) => t.projectId === project.id && t.roleId === role.id)
     if (liveTab) {
       dispatchToRole(project, role, task.text)
       markTasksRunning(project.id, [task.id], liveTab.id, laneOf(liveTab)) // now running on this lane
@@ -3692,7 +3729,7 @@ export function DashboardView() {
     // still be off screen. Not clickable-to-follow on purpose — a running card already carries
     // the chip that goes there, and one verb per control.
     pushToast({ text: `Sent to ${role.name}`, kind: 'info', detail: task.text.slice(0, 60) })
-  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, pushToast])
+  }, [dispatchToRole, handleLaunchRole, markTasksRunning, pushToast])
 
   // "Start all": dispatch every ASSIGNED, still-QUEUED task, grouped per lane — live lanes get
   // the combined message (→ running), idle lanes launch and pick up their queue.
@@ -3733,7 +3770,7 @@ export function DashboardView() {
           continue
         }
       }
-      const liveTab = terminals.find((t) => t.projectId === project.id && t.roleId === roleId)
+      const liveTab = terminalsRef.current.find((t) => t.projectId === project.id && t.roleId === roleId)
       if (liveTab) {
         const text = tasks.map((t, i) => `${i + 1}. ${t.text}`).join('\n')
         dispatchToRole(project, role, `Please work through these tasks:\n${text}`)
@@ -3742,7 +3779,7 @@ export function DashboardView() {
         void handleLaunchRole(project, role, undefined, false, { focus: false }) // picks up its queue
       }
     }
-  }, [terminals, dispatchToRole, handleLaunchRole, markTasksRunning, updateProject, assignProjectTask, pushToast])
+  }, [dispatchToRole, handleLaunchRole, markTasksRunning, updateProject, assignProjectTask, pushToast])
 
   // The toast actions above re-enter these, and a `useCallback` cannot reference itself in its
   // own initialiser. A ref is the smallest honest way to give "Send anyway" the same code path
@@ -3918,7 +3955,7 @@ export function DashboardView() {
     // Read now, not from the render that built this callback; `handleRestoreSession` checks each
     // lane again before it spawns.
     const liveKeys = new Set(terminalsRef.current.map((t) => t.key))
-    const toRestore = offeredForResume(savedSessions, noTurnIdsRef.current)
+    const toRestore = offeredForResume(savedSessionsRef.current, noTurnIdsRef.current)
       .filter((s) => s.projectId === projectId && !liveKeys.has(s.key))
       .filter((s) => !opts?.skipSuspended || (!s.idleSuspendedAt && !opts.skipKeys?.has(s.key)))
       .sort((a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt)) // oldest first → sidebar keeps its familiar order
@@ -3927,7 +3964,7 @@ export function DashboardView() {
       if (await handleRestoreSession(s, true, { ...opts, quiet: true }) === 'released') finished.push(s.customName || s.roleId || s.key)
     }
     if (finished.length) pushToast({ kind: 'info', text: `${finished.length} finished lane${finished.length > 1 ? 's' : ''} not resumed`, detail: `${finished.join(', ')}: released ${finished.length > 1 ? 'their worktrees' : 'its worktree'} with worktree_done.` })
-  }, [savedSessions, handleRestoreSession, pushToast])
+  }, [handleRestoreSession, pushToast])
 
   const forgetSavedSession = useCallback((key: string) => {
     // The ref says now what the state will say on the next render: a restore that waited on the
@@ -4843,7 +4880,7 @@ export function DashboardView() {
   }, [savedHydrated, reattachDone, pushToast])
 
   const handleSelectSession = useCallback((session: AgentSession) => {
-    const localTerminalIds = new Set(terminals.map((t) => t.id))
+    const localTerminalIds = new Set(terminalsRef.current.map((t) => t.id))
     setActiveSessionId(session.id)
     setActiveFolderPrefs(null)
     setGlobalPrefsActive(false)
@@ -4859,7 +4896,7 @@ export function DashboardView() {
     } else {
       setActiveTerminalId(null)
     }
-  }, [terminals])
+  }, [])
 
   // The toggle swaps mode within the current identity (Mission Control dark ↔
   // Mission Control light), instead of jumping to a different theme.
@@ -4903,52 +4940,12 @@ export function DashboardView() {
   // so nothing arrives without a managed pty.
   const localTerminalIds = new Set(terminals.map((t) => t.id))
 
-  const localSessions: AgentSession[] = terminals.map((t) => {
-    const hookSession = sessions.find((s) => s.terminalId === t.id)
-    // Operator-side fields the transcript observer can't know (it only sees the JSONL):
-    // project/role linkage + the launch model/effort. Overlay them onto the tracked session
-    // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
-    // badge) the moment the observer starts tracking it.
-    // THE TAB'S OWN DEATH IS PART OF ITS IDENTITY HERE, and it was being dropped. `t.ended` is the
-    // reconciled truth (`endedByBackend`, polling the backend's real `try_wait`); the observer's
-    // silence is not, because `get_sessions` returns only sessions it still considers active — so a
-    // lane that exits DISAPPEARS from `sessions` and the synthetic branch below used to resurrect
-    // it as `status: 'active'`, permanently. Everything downstream believed that: the "N running"
-    // label, `projectActivity.live`, `isOnRail` (which is why closing a project left it on the
-    // rail), and `closePlan`. See `tabSessionStatus`.
-    const status = tabSessionStatus(t, hookSession)
-    const operatorFields = { projectId: t.projectId, roleId: t.roleId, savedKey: t.key, model: t.model, effortLevel: t.effortLevel, status, suspended: !!t.idleSuspendedAt || undefined }
-    // Model precedence: the tab's model (launch config / the user's pill pick — updated the
-    // instant they act) wins over the transcript, which lags an assistant turn behind and
-    // would otherwise revert a fresh /model switch. The transcript fills the blank for
-    // account-default launches, and transcript CHANGES are synced into the tab below.
-    // `runningModel` is the transcript's OWN reading (latest assistant message) and is carried
-    // separately on purpose: the `model` merge below prefers the tab, so the observation would
-    // otherwise be erased by the very launch config it is worth comparing against. `<synthetic>`
-    // is the observer's placeholder, not a model — the same value the adopt-changes effect skips.
-    if (hookSession) return {
-      ...hookSession,
-      ...operatorFields,
-      model: t.model ?? hookSession.model,
-      runningModel: hookSession.model && !hookSession.model.startsWith('<') ? hookSession.model : undefined,
-    }
-    return {
-      // A tab restored suspended has no tracked session; its Claude session id keeps its name and
-      // stays the id once it is resumed and tracked again.
-      id: t.idleSuspendedAt && t.resumeSessionId ? t.resumeSessionId : `local-${t.id}`,
-      agentId: 'claude-code',
-      workingDirectory: t.cwd,
-      projectName: t.cwd.split('/').pop() || t.cwd,
-      ...operatorFields,
-      phase: 'idle' as const,
-      activity: [],
-      activeSubagents: 0,
-      lastToolName: null,
-      startedAt: new Date().toISOString(),
-      lastActivityAt: new Date().toISOString(),
-      terminalId: t.id,
-    }
-  })
+  // One entry per lane, built in lib/sidebar-sessions (the tracked session with the tab's
+  // Operator-side fields over it, or a synthetic one). An unchanged lane keeps its entry object.
+  const sidebarEntriesRef = useRef<ReadonlyMap<string, SidebarEntry>>(new Map())
+  const sidebarBuilt = sidebarSessions(terminals, sessions, sidebarEntriesRef.current)
+  sidebarEntriesRef.current = sidebarBuilt.cache
+  const localSessions: AgentSession[] = sidebarBuilt.sessions
 
   const allSidebarSessions = localSessions
 
@@ -5036,24 +5033,21 @@ export function DashboardView() {
   // renders the popover.
   const [laneMenu, setLaneMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
 
-  const roleOf = useCallback((session: AgentSession): Role | undefined => {
-    if (!session.roleId) return undefined
-    return projects.find((p) => p.id === session.projectId)?.roster?.find((r) => r.id === session.roleId)
-  }, [projects])
-
-  // The colour a session actually draws with: its lane's, else its own override. This is
-  // exactly where `role?.accent` used to be read, so every call site keeps its own fallback.
-  const accentOf = useCallback((session: AgentSession): string | undefined => {
-    const role = roleOf(session)
-    if (role?.accent) return role.accent
-    return session.savedKey ? sessionAccents[session.savedKey] : undefined
-  }, [roleOf, sessionAccents])
+  const roleOf = useMemo(() => roleLookup(projects), [projects])
+  const accentOf = useMemo(() => accentLookup(roleOf, sessionAccents), [roleOf, sessionAccents])
+  // For the callbacks that read them when called (renderer leak, see `roleLookup`).
+  const roleOfRef = useRef(roleOf)
+  roleOfRef.current = roleOf
+  const accentOfRef = useRef(accentOf)
+  accentOfRef.current = accentOf
+  const customNamesRef = useRef(customNames)
+  customNamesRef.current = customNames
 
   const setAccentForSession = useCallback((session: AgentSession, accent: string) => {
-    const role = roleOf(session)
+    const role = roleLookup(projectsRef.current)(session)
     if (role) {
       // On a lane → write the ROSTER, so the board, sidebar, rail and dashboard all follow.
-      const project = projects.find((p) => p.id === session.projectId)
+      const project = projectsRef.current.find((p) => p.id === session.projectId)
       if (project?.roster) {
         updateProject(project.id, { roster: project.roster.map((r) => (r.id === role.id ? { ...r, accent } : r)) })
       }
@@ -5066,7 +5060,7 @@ export function DashboardView() {
     // instance shares this localStorage (see saveSessionAccent). Done outside the state
     // updater so the updater stays pure.
     setSessionAccents(saveSessionAccent(session.savedKey, accent))
-  }, [roleOf, projects, updateProject])
+  }, [updateProject])
 
   // --- Quit guard ----------------------------------------------------------------------
   // Rust holds the veto and sends the snapshot; this only renders it. Kept as a frozen
@@ -5125,11 +5119,11 @@ export function DashboardView() {
         : tab?.worktreeBranch && tab.sourceCwd && tab.cwd !== tab.sourceCwd ? 'worktree' : 'checkout'
       return {
         terminalId: s.terminalId!,
-        name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
+        name: sessionLabel({ session: s, role: roleOfRef.current(s), customName: customNamesRef.current[s.id], fallback: project.name }),
         phase: s.phase,
         suspended: !!s.suspended,
         lastActivityAt: s.lastActivityAt,
-        accent: accentOf(s),
+        accent: accentOfRef.current(s),
         folder,
       }
     })
@@ -5138,7 +5132,7 @@ export function DashboardView() {
       rows: closeGuardRows(lanes).rows,
       copy: closeGuardCopy(project.name, plan.sessions.length, plan.running, lanes),
     })
-  }, [closeProject, roleOf, customNames, accentOf])
+  }, [closeProject])
 
   // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
   // hint on a row is the chord that reaches it. Kept as the single source both the hints and
@@ -5207,6 +5201,8 @@ export function DashboardView() {
 
   // Persist open sessions (merged over previously-saved ones) so they survive a
   // restart. Enriched with the live Claude session id to enable resume.
+  // The last write is remembered as a fingerprint (lib/fingerprint), not as its text: the text
+  // lived as long as the renderer, at twice its character count.
   const savedSerRef = useRef<string>('')
   useEffect(() => {
     if (!savedHydrated) return // wait for the durable store so we don't overwrite it
@@ -5244,8 +5240,9 @@ export function DashboardView() {
       const merged = [...prev.filter((s) => !liveByKey.has(s.key)), ...liveByKey.values()]
       // Compare ignoring the volatile timestamp to avoid churning localStorage.
       const ser = JSON.stringify(merged.map(({ lastActiveAt: _omit, ...rest }) => rest))
-      if (ser === savedSerRef.current) return prev
-      savedSerRef.current = ser
+      const fp = fingerprint(ser)
+      if (fp === savedSerRef.current) return prev
+      savedSerRef.current = fp
       try { localStorage.setItem('operator.savedSessions', JSON.stringify(merged)) } catch { /* quota */ }
       window.operator.saveSessions?.(merged) // durable, crash-safe file write
       return merged
@@ -5253,11 +5250,13 @@ export function DashboardView() {
   }, [terminals, sessions, customNames, savedHydrated])
 
   // Persist projects to localStorage + the durable file, mirroring savedSessions. The
-  // JSON-diff (ignoring the volatile lastActiveAt) avoids churning writes on every touch.
+  // JSON-diff (ignoring the volatile lastActiveAt) avoids churning writes on every touch; like
+  // `savedSerRef`, it keeps a fingerprint of the last text, not the text (about 10 MB with a 5 MB
+  // store).
   const projectsSerRef = useRef<string>('')
   useEffect(() => {
     if (!savedHydrated) return // don't clobber projects.json before it's been read
-    const ser = JSON.stringify(projects.map(({ lastActiveAt: _omit, ...rest }) => rest))
+    const ser = fingerprint(JSON.stringify(projects.map(({ lastActiveAt: _omit, ...rest }) => rest)))
     if (ser === projectsSerRef.current) return
     projectsSerRef.current = ser
     try { localStorage.setItem('operator.projects', JSON.stringify(projects)) } catch { /* quota */ }
@@ -5731,8 +5730,12 @@ export function DashboardView() {
   // xterm buffer read-only (the on-screen rows + ~50 lines of scrollback tail) via
   // translateToString and writes it to ~/.operator/terminal-dumps/. If the dumped
   // buffer is clean while the screen is garbled → the corruption is pixel-only.
+  // Ids, not the session object: the object changes with every event of the active lane, and
+  // recreating this callback on each one would link renders the way `setPanelOpen` describes.
+  const activeSessionKey = activeSession?.id
+  const activeSessionTerminalId = activeSession?.terminalId
   const handleDumpBuffer = useCallback(async () => {
-    const tid = activeSession?.terminalId ?? activeTerminalId
+    const tid = activeSessionTerminalId ?? activeTerminalId
     if (!tid) { pushToast({ text: 'No active terminal to dump', kind: 'error' }); return }
     const term = getTerminal(tid)
     if (!term) { pushToast({ text: 'Terminal buffer not available', kind: 'error' }); return }
@@ -5747,7 +5750,7 @@ export function DashboardView() {
     }
 
     const now = new Date()
-    const sid = activeSession?.id ?? tid
+    const sid = activeSessionKey ?? tid
     const short = (s: string, fallback: string) => s.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || fallback
     // BOTH ids in the NAME, not just the body: a garble report is matched against a pty,
     // and terminal ids are what the backend and the heal loop talk about. Two dumps of the
@@ -5773,7 +5776,7 @@ export function DashboardView() {
     } catch (e) {
       pushToast({ text: 'Buffer dump failed', kind: 'error', detail: String(e) })
     }
-  }, [activeSession, activeTerminalId, pushToast])
+  }, [activeSessionKey, activeSessionTerminalId, activeTerminalId, pushToast])
 
   // Adopt transcript-reported model CHANGES into the tab. The first report just fills the
   // blank for account-default launches (handled by the ?? merge in localSessions); a change
@@ -6306,9 +6309,14 @@ export function DashboardView() {
   // The launch restore above runs once and calls this from an older render.
   const runResumeQueueRef = useRef(runResumeQueue)
   runResumeQueueRef.current = runResumeQueue
+  // The offer through a ref: it is rebuilt on every `terminals` change (renderer leak, see
+  // `setPanelOpen`).
+  const resumeOfferRef = useRef(resumeOffer)
+  resumeOfferRef.current = resumeOffer
   const resumePreviousRun = useCallback(async () => {
-    if (resumeOffer) await runResumeQueue(resumeOffer.resumable)
-  }, [resumeOffer, runResumeQueue])
+    const offer = resumeOfferRef.current
+    if (offer) await runResumeQueue(offer.resumable)
+  }, [runResumeQueue])
 
   // THE LAYOUT GRID over the Preview. The spec is per project (`Project.previewGrid`, written
   // through updateProject); whether it is shown is per session (`SessionLayout.tools.grid`). A
