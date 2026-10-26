@@ -16,11 +16,14 @@ export interface SidebarTab {
 }
 
 /** One lane's entry and the inputs it was built from. `seenAt` is when the lane first got an
- *  entry; an untracked lane reads it as its start and its last activity. */
+ *  entry; an untracked lane reads it as its start. `lastActivityAt` is the last tracked session's,
+ *  or `seenAt` for a lane never tracked: a lane the observer stops tracking (it exited) keeps the
+ *  last activity it had, not its launch time. */
 export interface SidebarEntry {
   tab: SidebarTab
   tracked: AgentSession | undefined
   seenAt: string
+  lastActivityAt: string
   session: AgentSession
 }
 
@@ -45,14 +48,15 @@ export function sidebarSessions(
       return last.session
     }
     const seenAt = last?.seenAt ?? now()
-    const session = entryFor(t, hookSession, seenAt)
-    cache.set(t.id, { tab: t, tracked: hookSession, seenAt, session })
+    const lastActivityAt = hookSession?.lastActivityAt ?? last?.lastActivityAt ?? seenAt
+    const session = entryFor(t, hookSession, seenAt, lastActivityAt)
+    cache.set(t.id, { tab: t, tracked: hookSession, seenAt, lastActivityAt, session })
     return session
   })
   return { sessions: out, cache }
 }
 
-function entryFor(t: SidebarTab, hookSession: AgentSession | undefined, seenAt: string): AgentSession {
+function entryFor(t: SidebarTab, hookSession: AgentSession | undefined, seenAt: string, lastActivityAt: string): AgentSession {
   // Operator-side fields the transcript observer can't know (it only sees the JSONL):
   // project/role linkage + the launch model/effort. Overlay them onto the tracked session
   // too — otherwise a session drops its projectId/roleId (→ sidebar group jump, lost lane
@@ -95,7 +99,7 @@ function entryFor(t: SidebarTab, hookSession: AgentSession | undefined, seenAt: 
     // When the lane first got an entry, not the render's clock: a time read per render made the
     // entry a new object every render even when nothing about the lane had changed.
     startedAt: seenAt,
-    lastActivityAt: seenAt,
+    lastActivityAt,
     terminalId: t.id,
   }
 }

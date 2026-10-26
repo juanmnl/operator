@@ -46,6 +46,22 @@ describe('sidebarSessions', () => {
     expect(rebuilt.sessions[0]).toMatchObject({ id: 'claude-old', suspended: true, startedAt: '2026-10-26T12:00:00.000Z' })
   })
 
+  it('keeps a tracked lane\'s last activity once the observer stops tracking it', () => {
+    const now = ticking()
+    const t1 = tab('t1')
+    const live = sidebarSessions([t1], [tracked('t1', { lastActivityAt: '2026-10-26T16:58:00.000Z' })], new Map(), now)
+    // The lane exits: its session leaves `sessions` and the tab is marked ended.
+    const ended = { ...t1, ended: true }
+    const gone = sidebarSessions([ended], [], live.cache, now)
+    expect(gone.sessions[0]).toMatchObject({ status: 'ended', startedAt: '2026-10-26T12:00:00.000Z', lastActivityAt: '2026-10-26T16:58:00.000Z' })
+    // Still one object per render while nothing changes, and the stamp survives a later rebuild.
+    const again = sidebarSessions([ended], [], gone.cache, now)
+    expect(again.sessions[0]).toBe(gone.sessions[0])
+    const renamed = sidebarSessions([{ ...ended, model: 'opus' }], [], again.cache, now)
+    expect(renamed.sessions[0]).not.toBe(again.sessions[0])
+    expect(renamed.sessions[0].lastActivityAt).toBe('2026-10-26T16:58:00.000Z')
+  })
+
   it('rebuilds only the lane whose tracked session changed', () => {
     const terminals = [tab('t1'), tab('t2')]
     const s1 = tracked('t1')
