@@ -79,6 +79,41 @@ describe('callbacks do not change identity with session state', () => {
   })
 })
 
+// The same chain forms between any two sets of callbacks recreated at different moments, session
+// state or not. `projects` changes with dispatch and task traffic, between lane switches.
+const PROJECT_STATE = ['projects', 'roleOf', 'accentOf', 'customNames', 'panelOpen']
+
+describe('callbacks do not change identity with project traffic', () => {
+  const all = callbacks()
+  const byName = new Map(all.map((c) => [c.name, c]))
+
+  for (const name of ['openProjectOrFolder', 'setAccentForSession', 'requestCloseProject', 'toggleSidebar']) {
+    it(`${name} depends on no project state and reads it through refs`, () => {
+      const cb = byName.get(name)
+      expect(cb, `${name} is a useCallback`).toBeDefined()
+      expect(cb!.deps.filter((d) => PROJECT_STATE.includes(d))).toEqual([])
+      expect(PROJECT_STATE.filter((s) => readsDirectly(cb!.body, s))).toEqual([])
+    })
+  }
+
+  it('no callback lists project state in its dependencies, except the quit guard\'s', () => {
+    const offenders = all
+      .filter((c) => c.name !== 'identifyQuitLane')
+      .filter((c) => c.deps.some((d) => PROJECT_STATE.includes(d)))
+      .map((c) => `${c.name} [${c.deps.join(', ')}]`)
+    expect(offenders).toEqual([])
+  })
+
+  it('builds roleOf and accentOf outside the component, so they hold only their inputs', () => {
+    const component = src.indexOf('export function DashboardView(')
+    expect(src.indexOf('function roleLookup(')).toBeGreaterThan(-1)
+    expect(src.indexOf('function roleLookup(')).toBeLessThan(component)
+    expect(src.indexOf('function accentLookup(')).toBeLessThan(component)
+    expect(src).toMatch(/const roleOf = useMemo\(\(\) => roleLookup\(projects\), \[projects\]\)/)
+    expect(src).toMatch(/const accentOf = useMemo\(\(\) => accentLookup\(roleOf, sessionAccents\), \[roleOf, sessionAccents\]\)/)
+  })
+})
+
 describe('what a retained render holds', () => {
   it('builds the sidebar entries through the per-lane cache', () => {
     expect(src).toMatch(/sidebarSessions\(terminals, sessions, sidebarEntriesRef\.current\)/)

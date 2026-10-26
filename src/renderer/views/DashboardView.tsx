@@ -222,6 +222,27 @@ function loadLayouts(): Record<string, SessionLayout> {
   return coerceLayouts(raw)
 }
 
+/** `roleOf` and `accentOf` are built out here, not with `useCallback` in the component. A callback
+ *  made in the component keeps the render that made it, and these two change with `projects`,
+ *  which dispatch and task traffic updates between lane switches: two sets of callbacks recreated
+ *  at different moments hold each other's renders in a chain (renderer leak, see `setPanelOpen`).
+ *  Made here they hold only their arguments, and their identity still changes when those do. */
+function roleLookup(projects: readonly Project[]) {
+  return (session: AgentSession): Role | undefined => {
+    if (!session.roleId) return undefined
+    return projects.find((p) => p.id === session.projectId)?.roster?.find((r) => r.id === session.roleId)
+  }
+}
+function accentLookup(roleOf: (session: AgentSession) => Role | undefined, sessionAccents: Record<string, string>) {
+  // The colour a session actually draws with: its lane's, else its own override. This is
+  // exactly where `role?.accent` used to be read, so every call site keeps its own fallback.
+  return (session: AgentSession): string | undefined => {
+    const role = roleOf(session)
+    if (role?.accent) return role.accent
+    return session.savedKey ? sessionAccents[session.savedKey] : undefined
+  }
+}
+
 export function DashboardView() {
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [terminals, setTerminals] = useState<TerminalTab[]>([])
@@ -335,6 +356,8 @@ export function DashboardView() {
   const activeLayout = activeSessionId ? sessionLayouts[activeSessionId] : undefined
   const mainView: MainView = activeLayout?.mainView ?? DEFAULT_LAYOUT.mainView
   const panelOpen = activeLayout?.panelOpen ?? DEFAULT_LAYOUT.panelOpen
+  const panelOpenRef = useRef(panelOpen)
+  panelOpenRef.current = panelOpen
   const panelTab: PanelTab = activeLayout?.panelTab ?? DEFAULT_LAYOUT.panelTab
   // (Roster + Moodboard are PROJECT-level now — they live in the ProjectView opened from the
   // project title, not per-session here.)
@@ -579,16 +602,19 @@ export function DashboardView() {
   // ⌘B. A layout move like the panel's: the terminals hold their fit while the content column
   // follows the rail's edge, then fit once on settle. Without the hold the ghostty grid reflowed
   // every frame of the collapse/expand → overprint corruption.
+  // `panelOpen` through a ref, so a panel toggle does not recreate this (renderer leak, see
+  // `setPanelOpen`).
   const toggleSidebar = useCallback(() => {
     // The panel's docked width can change with the rail (`placePanel`), so the card's change is
     // computed from both, not just the rail's 194px.
-    beginLayoutMove('rail', cardWFor(!sidebarCollapsed, panelOpen) - cardWFor(sidebarCollapsed, panelOpen))
+    const open = panelOpenRef.current
+    beginLayoutMove('rail', cardWFor(!sidebarCollapsed, open) - cardWFor(sidebarCollapsed, open))
     setSidebarCollapsed((c) => {
       const next = !c
       try { localStorage.setItem('operator.sidebarCollapsed', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
-  }, [beginLayoutMove, sidebarCollapsed, cardWFor, panelOpen])
+  }, [beginLayoutMove, sidebarCollapsed, cardWFor])
 
   /** Returns the toast's id, for a caller that has to take it down early (the ⌘W arm). */
   const pushToast = useCallback((message: Omit<ToastMessage, 'id'>): string => {
@@ -2750,10 +2776,10 @@ export function DashboardView() {
   // A recent-project click: open its workspace if we already know it as a Project (so you can
   // launch/manage its agents even with nothing live), else fall back to starting fresh there.
   const openProjectOrFolder = useCallback((path: string) => {
-    const proj = projects.find((p) => p.path === path)
+    const proj = projectsRef.current.find((p) => p.path === path)
     if (proj) handleOpenProject(proj.id)
     else handleNewSessionInFolder(path)
-  }, [projects, handleOpenProject, handleNewSessionInFolder])
+  }, [handleOpenProject, handleNewSessionInFolder])
 
   // One-time, non-destructive backfill: derive Projects from existing saved sessions +
   // recent-project paths (mapping each unique source path through resolveProject → canonical
@@ -5007,24 +5033,21 @@ export function DashboardView() {
   // renders the popover.
   const [laneMenu, setLaneMenu] = useState<{ projectId: string; top: number; left: number } | null>(null)
 
-  const roleOf = useCallback((session: AgentSession): Role | undefined => {
-    if (!session.roleId) return undefined
-    return projects.find((p) => p.id === session.projectId)?.roster?.find((r) => r.id === session.roleId)
-  }, [projects])
-
-  // The colour a session actually draws with: its lane's, else its own override. This is
-  // exactly where `role?.accent` used to be read, so every call site keeps its own fallback.
-  const accentOf = useCallback((session: AgentSession): string | undefined => {
-    const role = roleOf(session)
-    if (role?.accent) return role.accent
-    return session.savedKey ? sessionAccents[session.savedKey] : undefined
-  }, [roleOf, sessionAccents])
+  const roleOf = useMemo(() => roleLookup(projects), [projects])
+  const accentOf = useMemo(() => accentLookup(roleOf, sessionAccents), [roleOf, sessionAccents])
+  // For the callbacks that read them when called (renderer leak, see `roleLookup`).
+  const roleOfRef = useRef(roleOf)
+  roleOfRef.current = roleOf
+  const accentOfRef = useRef(accentOf)
+  accentOfRef.current = accentOf
+  const customNamesRef = useRef(customNames)
+  customNamesRef.current = customNames
 
   const setAccentForSession = useCallback((session: AgentSession, accent: string) => {
-    const role = roleOf(session)
+    const role = roleLookup(projectsRef.current)(session)
     if (role) {
       // On a lane → write the ROSTER, so the board, sidebar, rail and dashboard all follow.
-      const project = projects.find((p) => p.id === session.projectId)
+      const project = projectsRef.current.find((p) => p.id === session.projectId)
       if (project?.roster) {
         updateProject(project.id, { roster: project.roster.map((r) => (r.id === role.id ? { ...r, accent } : r)) })
       }
@@ -5037,7 +5060,7 @@ export function DashboardView() {
     // instance shares this localStorage (see saveSessionAccent). Done outside the state
     // updater so the updater stays pure.
     setSessionAccents(saveSessionAccent(session.savedKey, accent))
-  }, [roleOf, projects, updateProject])
+  }, [updateProject])
 
   // --- Quit guard ----------------------------------------------------------------------
   // Rust holds the veto and sends the snapshot; this only renders it. Kept as a frozen
@@ -5096,11 +5119,11 @@ export function DashboardView() {
         : tab?.worktreeBranch && tab.sourceCwd && tab.cwd !== tab.sourceCwd ? 'worktree' : 'checkout'
       return {
         terminalId: s.terminalId!,
-        name: sessionLabel({ session: s, role: roleOf(s), customName: customNames[s.id], fallback: project.name }),
+        name: sessionLabel({ session: s, role: roleOfRef.current(s), customName: customNamesRef.current[s.id], fallback: project.name }),
         phase: s.phase,
         suspended: !!s.suspended,
         lastActivityAt: s.lastActivityAt,
-        accent: accentOf(s),
+        accent: accentOfRef.current(s),
         folder,
       }
     })
@@ -5109,7 +5132,7 @@ export function DashboardView() {
       rows: closeGuardRows(lanes).rows,
       copy: closeGuardCopy(project.name, plan.sessions.length, plan.running, lanes),
     })
-  }, [closeProject, roleOf, customNames, accentOf])
+  }, [closeProject])
 
   // ⌘1..9 over the SCOPED list, in the order the sidebar shows it (terminals order), so the
   // hint on a row is the chord that reaches it. Kept as the single source both the hints and
