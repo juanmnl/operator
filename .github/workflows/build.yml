@@ -12,7 +12,7 @@ jobs:
   # npm run build runs first because tsc is part of it AND cargo test compiles
   # tauri-build, which wants the frontend dist present.
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +41,7 @@ jobs:
 
   macos:
     needs: test
-    runs-on: macos-14 # Apple Silicon → aarch64-apple-darwin
+    runs-on: macos-15 # Apple Silicon → aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 

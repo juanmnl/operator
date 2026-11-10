@@ -29,7 +29,7 @@ jobs:
   # Same bar as build.yml's verify job. A preview that ships what the tests would have caught is
   # not a preview, it is a liability.
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,7 +58,7 @@ jobs:
 
   release:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
