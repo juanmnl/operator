@@ -1,50 +1,58 @@
-# Handoff — 2026-10-20
+# Handoff — 2026-11-10
 
-`main` = `2559b99` (pushed), tagged `electron-v0.28.4`. Release run 39475736467 succeeded on the first attempt; v0.28.4 is published on `juanmnl/operator-releases` (not a draft, six assets), and both update feeds (`latest-mac.yml`, `latest.json` with a signature) serve 0.28.4. Not GUI-verified; the auto-update to 0.28.4 on Juan's machine has not been checked yet.
+`main` = `6136990` (pushed), tagged `electron-v0.29.0`. Release run 42746234626 succeeded on the first attempt; v0.29.0 is published on `juanmnl/operator-releases` (not a draft, six assets), and both update feeds (`latest-mac.yml`, `latest.json` with a signature) serve 0.29.0. Not GUI-verified.
 
-## What shipped in 0.28.4 (release notes: `electron/release-notes/0.28.4.md`)
+## What shipped in 0.29.0 (release notes: `electron/release-notes/0.29.0.md`)
 
-- **Idle-lane suspension** (merged 2026-10-16 @ 365142f, six review rounds, QA in the app). Result:
-  `dev/results/suspend-idle-lanes-2026-10-16.md`.
-- **Memory-pressure banner** (branch `operator/897500` @ 58a882b, merged @ 19a1b7a). Main polls
-  `kern.memorystatus_vm_pressure_level`; at warn the banner offers "Suspend N idle lanes", at critical
-  idle lanes are suspended every 30 s unless idle suspension is Off. Review rounds 1-3 and QA with lanes
-  running (on c8d50f5) are clean. Results: `dev/results/memory-pressure-banner-2026-10-16.md`,
-  `-review-2026-10-20.md`, `-review-r2-2026-10-20.md`, `-qa-2026-10-20.md`.
-- **Crash recovery fixed** (branch `fix/render-frame-disposed` @ 8f98791, merged @ 887016e). After a
-  renderer death, `rendererLeaving()` → `previewApi.close()` → `previewFrame()` read `mainFrame` of the
-  dead renderer and threw "Render frame was disposed before WebFrameMain could be accessed". That
-  skipped the crash log, the reload and left dispatches held. Now each step is isolated and the hook is
-  wrapped. Review clean: `dev/results/render-frame-disposed-review-2026-10-20.md`.
-- Window title is "Operator" (2cc08b4).
+- **Lifecycle fixes, lane menu, by-hand suspend** (`operator/95b180`, merged @ 844cc57). Right-click a
+  lane (rail collapsed or expanded) for Close, Suspend, Lane colour, Restart. ProjectCloseGuard dialog,
+  one close toast with Retry, ⌘W arms on mid-turn lanes, Forget blocked while lanes are open.
+  Results: `dev/results/lifecycle-fixes-2026-10-24.md` + review r1-r3.
+- **Delivery hold on draft + terminal links** (`operator/98a1c0`, merged @ ccd2967). Messages to a lane
+  wait while the person has unsent text (DraftHoldNotice pill, "Deliver now"); holds live in main
+  (`lane-holds.ts`) and survive a reload. Links stop before trailing punctuation and resolve across
+  wrapped rows. Results: `delivery-hold-on-draft-2026-10-24.md`, `terminal-link-punctuation-2026-10-24.md`
+  + reviews.
+- **Auto-close respects holds, picker P1/P2** (`operator/b8ce80`, merged @ 4f330e0).
+- **Renderer leak fix** (`operator/39e340`: 61ad42d + 0ac83f5 + 67b7756, merged @ ddbbfa7). DashboardView
+  callbacks read sessions/terminals/projects through refs, so render contexts stop chaining old
+  `allSidebarSessions` copies; per-lane sidebar cache; fingerprint instead of the 10 MB
+  `projectsSerRef`/`savedSerRef` strings. QA 2 h with live lanes: retained contexts flat at 14 (unfixed
+  54 → 77), 0.07-0.08 MB (unfixed 0.75 → 1.10). Review: mergeable. Results:
+  `renderer-leak-measurement-2026-10-25.md`, `renderer-leak-live-lanes-2026-10-26.md`,
+  `renderer-leak-fix-2026-10-26.md`, `renderer-leak-fix-review-2026-10-26.md`, `renderer-leak-fix-qa-2026-10-26.md`.
+- **CI moved to `macos-15`** (b45d472). GitHub retired `macos-14` on 2026-11-02; jobs on it are cancelled
+  in 1 s with "The configuration 'macos-14-arm64-us-default' is not supported".
 
-Tests on `main` @ 19a1b7a: root 1942 passed; electron typecheck clean, 998 passed.
+Tests on `main` @ ddbbfa7: root 2146 passed. Electron 1002 passed on the fix branch.
 
 ## Verification state
 
-- **Not verified against a real renderer crash.** To check: in a dev build, crash the renderer
-  (`kill -TRAP` on the renderer helper) and confirm the window reloads, `~/.operator/logs/renderer-gone.log`
-  gets a line, and a dispatch sent during the gap arrives afterwards.
-- The banner is verified in a dev build with a faked level only, not with a real kernel pressure rise or
-  a packaged build.
+- Nothing in 0.29.0 is GUI-verified. In-app recipes: `lifecycle-fixes-2026-10-24.md` ("In-app checks
+  for QA") and `delivery-hold-on-draft-2026-10-24.md`.
+- **The leak fix is not proven against the field's 30-35 MB/h.** The lab chain grew only 0.2-0.25 MB/h;
+  scaled to 17 lanes about 6 MB/h. Check after a day or two on 0.29.0 (renderer RSS), or take a heap
+  snapshot of a long-running real renderer (needs a CDP port on Juan's app, his call).
 
 ## Open
 
-1. **Renderer memory leak.** Both renderer crashes (10-13, 10-19) are V8 heap OOM after 3.0-4.4 days;
-   the renderer grows about 30-35 MB/h. Cause unknown. Findings: `dev/results/renderer-sigtrap-2026-10-20.md`.
-   Next step proposed, not started (needs Juan's OK, it means running a dev build 12 h+): log
-   `process.getProcessMemoryInfo()` and `performance.memory` hourly, and take heap snapshots at 1 h and
-   12 h through the CDP port, then compare retained sizes by constructor. Only after that choose between
-   a code fix and a planned reload. Also cheap: stop stringifying the whole saved-sessions and projects
-   lists twice on every terminal/session change (DashboardView.tsx ~:4876-4899).
-2. **Banner polish (QA observations, not defects):** the button's eligible count can lag up to 30 s;
-   "Suspended N" is cumulative per episode and can sit next to fresh state; the Off message is hidden once
-   a lane was suspended in the episode. Not dispatched.
-3. **Review test notes on the crash fix (not blocking):** the preview-inspect test throws from the
-   `mainFrame` getter while Electron throws from `.frames`; the per-step isolation in `index.ts` has no
-   unit test.
-4. **Code lane was stuck** "finishing its turn" for over an hour on 2026-10-20; Operator refused
-   dispatches to it twice. The crash fix was done by a subagent in `.claude/worktrees/agent-a491a1b7d0cba4a06`
-   instead (node_modules symlinked there; can be removed).
-5. Idle-suspend follow-ups still open: run mcp-serve as node, staggered crash auto-resume, tailer
-   `findTranscript` ignores `CLAUDE_CONFIG_DIR`, lanes that never had a turn are dropped on relaunch.
+1. Leak gaps: callbacks driven by user actions only (layout, theme, grid) can still add chain links;
+   QA's fix run had board-task traffic only (no real dispatch/status/assign), and no lane reached the
+   80-message cap.
+2. Fingerprint costs about 5 ms per `projects` change on the real 10 MB store (`renderer-leak-fix`
+   write-up). Cheaper option if it matters: per-project fingerprint cached by tasks/dispatches identity.
+3. Not dispatched: a Team-tab launch registers a duplicate project named after the folder; a fresh
+   `OPERATOR_DIR` gets mock-bridge session rows; person-initiated closes (⌘W, lane menu, project close)
+   don't warn about owed messages (optional, Juan's call).
+4. Operator dispatch: twice a dispatch to `code` returned `send` to a lane whose worktree was released;
+   it launched fresh only after that lane called `worktree_done`. Reports #2800/#2801 were never
+   announced. See memory `project_delivery_brakes_stall`, `project_report_routing_untrustworthy`.
+5. Older open items from the 2026-10-20 handoff: crash recovery not verified against a real renderer
+   crash; banner polish notes; idle-suspend follow-ups (mcp-serve as node, staggered crash auto-resume,
+   tailer ignores `CLAUDE_CONFIG_DIR`, never-turned lanes dropped on relaunch).
+
+## Side work this session (other projects)
+
+- **LiteLLM 1.107.0 incident check (2026-10-24):** nothing found locally or in Juan's 55 GitHub repos.
+- **Mantel:** demo redeploy, guide status and an open venue issue are recorded in the Mantel hub note
+  (Obsidian vault), not here: this repo is public.
