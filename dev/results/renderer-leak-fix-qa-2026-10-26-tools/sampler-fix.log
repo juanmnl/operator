@@ -1,0 +1,16 @@
+2026-10-26T15:53:01.450Z sampler start; t0= 2026-10-26T15:53:01.000Z
+2026-10-26T15:53:01.599Z sample elapsed=0m heapUsed=15.4MB total=32.5MB dom=1289 rendererRSS=182MB
+2026-10-26T16:03:02.571Z snapshot fix-10m ok 35MB in 1s
+2026-10-26T16:08:02.744Z sample elapsed=15m heapUsed=19.1MB total=54.3MB dom=1260 rendererRSS=204MB
+2026-10-26T16:13:02.914Z sample elapsed=20m heapUsed=25.4MB total=48.3MB dom=1405 rendererRSS=180MB
+2026-10-26T16:23:03.212Z sample elapsed=30m heapUsed=31.3MB total=59.3MB dom=1439 rendererRSS=178MB
+2026-10-26T16:33:03.534Z sample elapsed=40m heapUsed=29.8MB total=58.6MB dom=1252 rendererRSS=182MB
+2026-10-26T16:43:03.755Z sample elapsed=50m heapUsed=25.5MB total=58.6MB dom=1380 rendererRSS=200MB
+2026-10-26T16:53:04.684Z snapshot fix-1h ok 36MB in 1s
+2026-10-26T16:58:04.819Z sample elapsed=65m heapUsed=20.1MB total=45.8MB dom=1235 rendererRSS=196MB
+2026-10-26T17:03:05.005Z sample elapsed=70m heapUsed=25.0MB total=59.3MB dom=1270 rendererRSS=221MB
+2026-10-26T17:13:05.222Z sample elapsed=80m heapUsed=21.3MB total=62.8MB dom=1283 rendererRSS=218MB
+2026-10-26T17:23:05.474Z sample elapsed=90m heapUsed=30.6MB total=59.1MB dom=1428 rendererRSS=198MB
+2026-10-26T17:33:05.686Z sample elapsed=100m heapUsed=19.6MB total=51.6MB dom=1432 rendererRSS=205MB
+2026-10-26T17:43:05.899Z sample elapsed=110m heapUsed=29.2MB total=41.1MB dom=1443 rendererRSS=171MB
+2026-10-26T17:53:06.794Z snapshot fix-2h ok 34MB in 1s

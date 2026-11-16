@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "appPid": 32046,
+  "appStartedAt": "2026-10-16T17:58:38.906Z",
+  "clean": false,
+  "lanes": [
+    {
+      "key": "43edd33b-3336-406a-9d28-3603470d8ca9",
+      "terminalId": "t2",
+      "cwd": "/private/tmp/claude-501/-Users-juanmnl-Developer-operator/7d37a475-d471-4ea4-a25a-22c9959f59a4/scratchpad/proj1",
+      "claudeSessionId": "53ea92fb-bf08-4e06-bd7d-e3e7c842d3f3",
+      "projectId": "proj1-d273856e",
+      "roleId": "qa",
+      "startedAt": "2026-10-16T18:01:55.833Z"
+    },
+    {
+      "key": "68c3f49f-4ce5-46e8-bcd3-fe89520c35f5",
+      "terminalId": "t3",
+      "cwd": "/private/tmp/claude-501/-Users-juanmnl-Developer-operator/7d37a475-d471-4ea4-a25a-22c9959f59a4/scratchpad/proj1",
+      "claudeSessionId": "113f83fd-afdd-4e81-9508-36ac710eb8bb",
+      "projectId": "proj1-d273856e",
+      "roleId": "research",
+      "startedAt": "2026-10-16T18:04:37.275Z"
+    }
+  ],
+  "released": [],
+  "updatedAt": "2026-10-16T18:04:37.275Z"
+}

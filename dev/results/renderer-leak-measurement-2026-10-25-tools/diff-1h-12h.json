@@ -1,0 +1,8574 @@
+{
+ "summary": {
+  "A": {
+   "file": "snapshots/1h.heapsnapshot",
+   "nodes": 402450,
+   "reachable": 402373,
+   "totalSelf": 69237598,
+   "byType": {
+    "synthetic": 0,
+    "native": 41384049,
+    "string": 15257229,
+    "object shape": 614984,
+    "code": 5633868,
+    "array": 976180,
+    "number": 39036,
+    "symbol": 624,
+    "concatenated string": 56320,
+    "object": 4841996,
+    "closure": 432376,
+    "regexp": 816,
+    "sliced string": 120
+   }
+  },
+  "B": {
+   "file": "snapshots/12h.heapsnapshot",
+   "nodes": 383089,
+   "reachable": 383012,
+   "totalSelf": 60594566,
+   "byType": {
+    "synthetic": 0,
+    "native": 33078465,
+    "string": 15312105,
+    "object shape": 617016,
+    "code": 5759168,
+    "array": 1017652,
+    "number": 38964,
+    "symbol": 624,
+    "concatenated string": 56400,
+    "object": 4247968,
+    "closure": 465268,
+    "sliced string": 120,
+    "regexp": 816
+   }
+  },
+  "newObjects": {
+   "count": 0,
+   "selfBytes": 0
+  }
+ },
+ "topSelf": [
+  {
+   "key": "(compiled code)",
+   "countA": 47655,
+   "countB": 48745,
+   "dCount": 1090,
+   "selfA": 5633868,
+   "selfB": 5759168,
+   "dSelf": 125300,
+   "retA": 8734229,
+   "retB": 8882162,
+   "dRet": 147933
+  },
+  {
+   "key": "system / Context / scope @83407",
+   "countA": 0,
+   "countB": 85,
+   "dCount": 85,
+   "selfA": 0,
+   "selfB": 120700,
+   "dSelf": 120700,
+   "retA": 0,
+   "retB": 515936,
+   "dRet": 515936
+  },
+  {
+   "key": "(native) system / PropertyArray",
+   "countA": 5905,
+   "countB": 6463,
+   "dCount": 558,
+   "selfA": 233076,
+   "selfB": 303376,
+   "dSelf": 70300,
+   "retA": 233076,
+   "retB": 303376,
+   "dRet": 70300
+  },
+  {
+   "key": "(string)",
+   "countA": 76869,
+   "countB": 78843,
+   "dCount": 1974,
+   "selfA": 15313669,
+   "selfB": 15368625,
+   "dSelf": 54956,
+   "retA": 18290151,
+   "retB": 18131623,
+   "dRet": -158528
+  },
+  {
+   "key": "(array)",
+   "countA": 5873,
+   "countB": 6212,
+   "dCount": 339,
+   "selfA": 976180,
+   "selfB": 1017652,
+   "dSelf": 41472,
+   "retA": 1255903,
+   "retB": 1298844,
+   "dRet": 42941
+  },
+  {
+   "key": "(native) system / WeakArrayList",
+   "countA": 1622,
+   "countB": 1702,
+   "dCount": 80,
+   "selfA": 142876,
+   "selfB": 175300,
+   "dSelf": 32424,
+   "retA": 142876,
+   "retB": 175300,
+   "dRet": 32424
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::Collectio",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 113200,
+   "selfB": 144600,
+   "dSelf": 31400,
+   "retA": 187344,
+   "retB": 235072,
+   "dRet": 47728
+  },
+  {
+   "key": "Array",
+   "countA": 3677,
+   "countB": 5139,
+   "dCount": 1462,
+   "selfA": 58832,
+   "selfB": 82224,
+   "dSelf": 23392,
+   "retA": 39576625,
+   "retB": 30953252,
+   "dRet": -8623373
+  },
+  {
+   "key": "system / Context / scope @139179",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 20736,
+   "dSelf": 20736,
+   "retA": 0,
+   "retB": 90888,
+   "dRet": 90888
+  },
+  {
+   "key": "(native) blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCacheEntry",
+   "countA": 176,
+   "countB": 299,
+   "dCount": 123,
+   "selfA": 26752,
+   "selfB": 45448,
+   "dSelf": 18696,
+   "retA": 26752,
+   "retB": 45448,
+   "dRet": 18696
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::BasicMemb",
+   "countA": 205,
+   "countB": 225,
+   "dCount": 20,
+   "selfA": 26536,
+   "selfB": 44840,
+   "dSelf": 18304,
+   "retA": 26776,
+   "retB": 45080,
+   "dRet": 18304
+  },
+  {
+   "key": "(native) system / ArrayList",
+   "countA": 134,
+   "countB": 134,
+   "dCount": 0,
+   "selfA": 63812,
+   "selfB": 80724,
+   "dSelf": 16912,
+   "retA": 81640,
+   "retB": 98312,
+   "dRet": 16672
+  },
+  {
+   "key": "(native) HTMLCollection",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 58880,
+   "selfB": 75208,
+   "dSelf": 16328,
+   "retA": 74144,
+   "retB": 90472,
+   "dRet": 16328
+  },
+  {
+   "key": "system / Context / scope @137791",
+   "countA": 0,
+   "countB": 486,
+   "dCount": 486,
+   "selfA": 0,
+   "selfB": 11664,
+   "dSelf": 11664,
+   "retA": 0,
+   "retB": 23328,
+   "dRet": 23328
+  },
+  {
+   "key": "system / Context / scope @139459",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 11520,
+   "dSelf": 11520,
+   "retA": 0,
+   "retB": 54024,
+   "dRet": 54024
+  },
+  {
+   "key": "(native) blink::NodeListsNodeData",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 40752,
+   "selfB": 52056,
+   "dSelf": 11304,
+   "retA": 228096,
+   "retB": 287128,
+   "dRet": 59032
+  },
+  {
+   "key": "(closure) ",
+   "countA": 5727,
+   "countB": 6064,
+   "dCount": 337,
+   "selfA": 164344,
+   "selfB": 173788,
+   "dSelf": 9444,
+   "retA": 586140,
+   "retB": 610492,
+   "dRet": 24352
+  },
+  {
+   "key": "(native) CanvasRenderingContext2D",
+   "countA": 2,
+   "countB": 7,
+   "dCount": 5,
+   "selfA": 3296,
+   "selfB": 11536,
+   "dSelf": 8240,
+   "retA": 7342,
+   "retB": 26298,
+   "dRet": 18956
+  },
+  {
+   "key": "system / Context / scope @136965",
+   "countA": 0,
+   "countB": 407,
+   "dCount": 407,
+   "selfA": 0,
+   "selfB": 8140,
+   "dSelf": 8140,
+   "retA": 0,
+   "retB": 8140,
+   "dRet": 8140
+  },
+  {
+   "key": "(native) blink::ComputedStyleBase::StyleInheritedData",
+   "countA": 341,
+   "countB": 384,
+   "dCount": 43,
+   "selfA": 46376,
+   "selfB": 52224,
+   "dSelf": 5848,
+   "retA": 63656,
+   "retB": 70368,
+   "dRet": 6712
+  },
+  {
+   "key": "system / Context / scope @83747",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 4384,
+   "dSelf": 4384,
+   "retA": 0,
+   "retB": 312781,
+   "dRet": 312781
+  },
+  {
+   "key": "(native) blink::GeometryMapperClipCache",
+   "countA": 179,
+   "countB": 302,
+   "dCount": 123,
+   "selfA": 5728,
+   "selfB": 9664,
+   "dSelf": 3936,
+   "retA": 32480,
+   "retB": 55112,
+   "dRet": 22632
+  },
+  {
+   "key": "(native) blink::CanvasRenderingContext2DState",
+   "countA": 8,
+   "countB": 13,
+   "dCount": 5,
+   "selfA": 6016,
+   "selfB": 9776,
+   "dSelf": 3760,
+   "retA": 7296,
+   "retB": 11856,
+   "dRet": 4560
+  },
+  {
+   "key": "system / Context / scope @105793",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 3220,
+   "dSelf": 3220,
+   "retA": 0,
+   "retB": 310611,
+   "dRet": 310611
+  },
+  {
+   "key": "(native) blink::ComputedStyleBase::StyleSurroundData",
+   "countA": 138,
+   "countB": 148,
+   "dCount": 10,
+   "selfA": 43056,
+   "selfB": 46176,
+   "dSelf": 3120,
+   "retA": 43056,
+   "retB": 46176,
+   "dRet": 3120
+  },
+  {
+   "key": "(native) <canvas width=\"48\" height=\"48\" style=\"width: 24px; height: 24px; displa",
+   "countA": 1,
+   "countB": 6,
+   "dCount": 5,
+   "selfA": 592,
+   "selfB": 3552,
+   "dSelf": 2960,
+   "retA": 1256,
+   "retB": 7024,
+   "dRet": 5768
+  },
+  {
+   "key": "system / Context / scope @114599",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 2944,
+   "dSelf": 2944,
+   "retA": 0,
+   "retB": 529346,
+   "dRet": 529346
+  },
+  {
+   "key": "system / Context / scope @188855",
+   "countA": 0,
+   "countB": 139,
+   "dCount": 139,
+   "selfA": 0,
+   "selfB": 2780,
+   "dSelf": 2780,
+   "retA": 0,
+   "retB": 2780,
+   "dRet": 2780
+  },
+  {
+   "key": "(object shape)",
+   "countA": 11289,
+   "countB": 11340,
+   "dCount": 51,
+   "selfA": 614984,
+   "selfB": 617016,
+   "dSelf": 2032,
+   "retA": 751361,
+   "retB": 784225,
+   "dRet": 32864
+  },
+  {
+   "key": "system / Context / scope @147553",
+   "countA": 0,
+   "countB": 96,
+   "dCount": 96,
+   "selfA": 0,
+   "selfB": 1920,
+   "dSelf": 1920,
+   "retA": 0,
+   "retB": 1920,
+   "dRet": 1920
+  },
+  {
+   "key": "(native) blink::CachedColor",
+   "countA": 8,
+   "countB": 48,
+   "dCount": 40,
+   "selfA": 384,
+   "selfB": 2304,
+   "dSelf": 1920,
+   "retA": 1022,
+   "retB": 5018,
+   "dRet": 3996
+  },
+  {
+   "key": "(closure) Yt",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 1484,
+   "retB": 3388,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) Ii",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) _d",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) On",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) zt",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) aa",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) la",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) tm",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 1480,
+   "retB": 3600,
+   "dRet": 2120
+  },
+  {
+   "key": "(closure) Mi",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 508,
+   "retB": 2412,
+   "dRet": 1904
+  }
+ ],
+ "topRet": [
+  {
+   "key": "system / Context / scope @114599",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 2944,
+   "dSelf": 2944,
+   "retA": 0,
+   "retB": 529346,
+   "dRet": 529346
+  },
+  {
+   "key": "system / Context / scope @83407",
+   "countA": 0,
+   "countB": 85,
+   "dCount": 85,
+   "selfA": 0,
+   "selfB": 120700,
+   "dSelf": 120700,
+   "retA": 0,
+   "retB": 515936,
+   "dRet": 515936
+  },
+  {
+   "key": "system / Context / scope @83747",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 4384,
+   "dSelf": 4384,
+   "retA": 0,
+   "retB": 312781,
+   "dRet": 312781
+  },
+  {
+   "key": "system / Context / scope @105793",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 3220,
+   "dSelf": 3220,
+   "retA": 0,
+   "retB": 310611,
+   "dRet": 310611
+  },
+  {
+   "key": "(compiled code)",
+   "countA": 47655,
+   "countB": 48745,
+   "dCount": 1090,
+   "selfA": 5633868,
+   "selfB": 5759168,
+   "dSelf": 125300,
+   "retA": 8734229,
+   "retB": 8882162,
+   "dRet": 147933
+  },
+  {
+   "key": "system / Context / scope @139179",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 20736,
+   "dSelf": 20736,
+   "retA": 0,
+   "retB": 90888,
+   "dRet": 90888
+  },
+  {
+   "key": "(native) system / PropertyArray",
+   "countA": 5905,
+   "countB": 6463,
+   "dCount": 558,
+   "selfA": 233076,
+   "selfB": 303376,
+   "dSelf": 70300,
+   "retA": 233076,
+   "retB": 303376,
+   "dRet": 70300
+  },
+  {
+   "key": "(native) blink::NodeListsNodeData",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 40752,
+   "selfB": 52056,
+   "dSelf": 11304,
+   "retA": 228096,
+   "retB": 287128,
+   "dRet": 59032
+  },
+  {
+   "key": "system / Context / scope @139459",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 11520,
+   "dSelf": 11520,
+   "retA": 0,
+   "retB": 54024,
+   "dRet": 54024
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::Collectio",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 113200,
+   "selfB": 144600,
+   "dSelf": 31400,
+   "retA": 187344,
+   "retB": 235072,
+   "dRet": 47728
+  },
+  {
+   "key": "(native) <span>",
+   "countA": 238,
+   "countB": 236,
+   "dCount": -2,
+   "selfA": 24752,
+   "selfB": 24544,
+   "dSelf": -208,
+   "retA": 90084,
+   "retB": 135928,
+   "dRet": 45844
+  },
+  {
+   "key": "(array)",
+   "countA": 5873,
+   "countB": 6212,
+   "dCount": 339,
+   "selfA": 976180,
+   "selfB": 1017652,
+   "dSelf": 41472,
+   "retA": 1255903,
+   "retB": 1298844,
+   "dRet": 42941
+  },
+  {
+   "key": "Ee",
+   "countA": 32,
+   "countB": 32,
+   "dCount": 0,
+   "selfA": 384,
+   "selfB": 384,
+   "dSelf": 0,
+   "retA": 252304,
+   "retB": 293772,
+   "dRet": 41468
+  },
+  {
+   "key": "system / Context / scope @139561",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 32,
+   "dSelf": 32,
+   "retA": 0,
+   "retB": 40414,
+   "dRet": 40414
+  },
+  {
+   "key": "(native) blink::ElementRareDataVector",
+   "countA": 1318,
+   "countB": 1127,
+   "dCount": -191,
+   "selfA": 47360,
+   "selfB": 41280,
+   "dSelf": -6080,
+   "retA": 379344,
+   "retB": 416872,
+   "dRet": 37528
+  },
+  {
+   "key": "(object shape)",
+   "countA": 11289,
+   "countB": 11340,
+   "dCount": 51,
+   "selfA": 614984,
+   "selfB": 617016,
+   "dSelf": 2032,
+   "retA": 751361,
+   "retB": 784225,
+   "dRet": 32864
+  },
+  {
+   "key": "(native) system / WeakArrayList",
+   "countA": 1622,
+   "countB": 1702,
+   "dCount": 80,
+   "selfA": 142876,
+   "selfB": 175300,
+   "dSelf": 32424,
+   "retA": 142876,
+   "retB": 175300,
+   "dRet": 32424
+  },
+  {
+   "key": "(closure) ",
+   "countA": 5727,
+   "countB": 6064,
+   "dCount": 337,
+   "selfA": 164344,
+   "selfB": 173788,
+   "dSelf": 9444,
+   "retA": 586140,
+   "retB": 610492,
+   "dRet": 24352
+  },
+  {
+   "key": "system / Context / scope @137791",
+   "countA": 0,
+   "countB": 486,
+   "dCount": 486,
+   "selfA": 0,
+   "selfB": 11664,
+   "dSelf": 11664,
+   "retA": 0,
+   "retB": 23328,
+   "dRet": 23328
+  },
+  {
+   "key": "(native) blink::ClipPaintPropertyNode",
+   "countA": 314,
+   "countB": 314,
+   "dCount": 0,
+   "selfA": 62800,
+   "selfB": 62800,
+   "dSelf": 0,
+   "retA": 95280,
+   "retB": 117912,
+   "dRet": 22632
+  },
+  {
+   "key": "(native) blink::GeometryMapperClipCache",
+   "countA": 179,
+   "countB": 302,
+   "dCount": 123,
+   "selfA": 5728,
+   "selfB": 9664,
+   "dSelf": 3936,
+   "retA": 32480,
+   "retB": 55112,
+   "dRet": 22632
+  },
+  {
+   "key": "(native) blink::LayoutBlockFlow",
+   "countA": 656,
+   "countB": 656,
+   "dCount": 0,
+   "selfA": 99712,
+   "selfB": 99712,
+   "dSelf": 0,
+   "retA": 388992,
+   "retB": 411576,
+   "dRet": 22584
+  },
+  {
+   "key": "(native) Window / file://",
+   "countA": 1,
+   "countB": 1,
+   "dCount": 0,
+   "selfA": 904,
+   "selfB": 904,
+   "dSelf": 0,
+   "retA": 33468,
+   "retB": 53404,
+   "dRet": 19936
+  },
+  {
+   "key": "(native) CanvasRenderingContext2D",
+   "countA": 2,
+   "countB": 7,
+   "dCount": 5,
+   "selfA": 3296,
+   "selfB": 11536,
+   "dSelf": 8240,
+   "retA": 7342,
+   "retB": 26298,
+   "dRet": 18956
+  },
+  {
+   "key": "(native) blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCacheEntry",
+   "countA": 176,
+   "countB": 299,
+   "dCount": 123,
+   "selfA": 26752,
+   "selfB": 45448,
+   "dSelf": 18696,
+   "retA": 26752,
+   "retB": 45448,
+   "dRet": 18696
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::BasicMemb",
+   "countA": 205,
+   "countB": 225,
+   "dCount": 20,
+   "selfA": 26536,
+   "selfB": 44840,
+   "dSelf": 18304,
+   "retA": 26776,
+   "retB": 45080,
+   "dRet": 18304
+  },
+  {
+   "key": "(native) blink::(anonymous namespace)::DOMTimerCoordinator",
+   "countA": 1,
+   "countB": 1,
+   "dCount": 0,
+   "selfA": 56,
+   "selfB": 56,
+   "dSelf": 0,
+   "retA": 19928,
+   "retB": 37744,
+   "dRet": 17816
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<const char *, blink::KeyVa",
+   "countA": 8,
+   "countB": 8,
+   "dCount": 0,
+   "selfA": 1728,
+   "selfB": 1728,
+   "dSelf": 0,
+   "retA": 29776,
+   "retB": 47592,
+   "dRet": 17816
+  },
+  {
+   "key": "system / Context / scope @285139",
+   "countA": 0,
+   "countB": 22,
+   "dCount": 22,
+   "selfA": 0,
+   "selfB": 528,
+   "dSelf": 528,
+   "retA": 0,
+   "retB": 17732,
+   "dRet": 17732
+  },
+  {
+   "key": "system / Context / scope @144959",
+   "countA": 0,
+   "countB": 6,
+   "dCount": 6,
+   "selfA": 0,
+   "selfB": 216,
+   "dSelf": 216,
+   "retA": 0,
+   "retB": 17088,
+   "dRet": 17088
+  },
+  {
+   "key": "(native) system / ArrayList",
+   "countA": 134,
+   "countB": 134,
+   "dCount": 0,
+   "selfA": 63812,
+   "selfB": 80724,
+   "dSelf": 16912,
+   "retA": 81640,
+   "retB": 98312,
+   "dRet": 16672
+  },
+  {
+   "key": "(native) HTMLCollection",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 58880,
+   "selfB": 75208,
+   "dSelf": 16328,
+   "retA": 74144,
+   "retB": 90472,
+   "dRet": 16328
+  },
+  {
+   "key": "(native) blink::ObjectPaintProperties",
+   "countA": 516,
+   "countB": 331,
+   "dCount": -185,
+   "selfA": 20640,
+   "selfB": 13240,
+   "dSelf": -7400,
+   "retA": 82200,
+   "retB": 97312,
+   "dRet": 15112
+  },
+  {
+   "key": "system / Context / scope @224583",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 212,
+   "dSelf": 212,
+   "retA": 0,
+   "retB": 13596,
+   "dRet": 13596
+  },
+  {
+   "key": "system / Context / scope @298815",
+   "countA": 0,
+   "countB": 1,
+   "dCount": 1,
+   "selfA": 0,
+   "selfB": 28,
+   "dSelf": 28,
+   "retA": 0,
+   "retB": 13568,
+   "dRet": 13568
+  },
+  {
+   "key": "(closure) _updateDimensions",
+   "countA": 2,
+   "countB": 2,
+   "dCount": 0,
+   "selfA": 56,
+   "selfB": 56,
+   "dSelf": 0,
+   "retA": 56,
+   "retB": 13112,
+   "dRet": 13056
+  },
+  {
+   "key": "(native) V8Function",
+   "countA": 26,
+   "countB": 21,
+   "dCount": -5,
+   "selfA": 832,
+   "selfB": 672,
+   "dSelf": -160,
+   "retA": 9380,
+   "retB": 21956,
+   "dRet": 12576
+  },
+  {
+   "key": "(native) blink::TextPaintTimingDetector",
+   "countA": 1,
+   "countB": 1,
+   "dCount": 0,
+   "selfA": 112,
+   "selfB": 112,
+   "dSelf": 0,
+   "retA": 4968,
+   "retB": 17256,
+   "dRet": 12288
+  },
+  {
+   "key": "(native) ScheduledAction",
+   "countA": 26,
+   "countB": 21,
+   "dCount": -5,
+   "selfA": 1456,
+   "selfB": 1176,
+   "dSelf": -280,
+   "retA": 11460,
+   "retB": 23636,
+   "dRet": 12176
+  },
+  {
+   "key": "(closure) _renderRows",
+   "countA": 2,
+   "countB": 2,
+   "dCount": 0,
+   "selfA": 56,
+   "selfB": 56,
+   "dSelf": 0,
+   "retA": 2892,
+   "retB": 14216,
+   "dRet": 11324
+  }
+ ],
+ "topCount": [
+  {
+   "key": "(string)",
+   "countA": 76869,
+   "countB": 78843,
+   "dCount": 1974,
+   "selfA": 15313669,
+   "selfB": 15368625,
+   "dSelf": 54956,
+   "retA": 18290151,
+   "retB": 18131623,
+   "dRet": -158528
+  },
+  {
+   "key": "Array",
+   "countA": 3677,
+   "countB": 5139,
+   "dCount": 1462,
+   "selfA": 58832,
+   "selfB": 82224,
+   "dSelf": 23392,
+   "retA": 39576625,
+   "retB": 30953252,
+   "dRet": -8623373
+  },
+  {
+   "key": "(compiled code)",
+   "countA": 47655,
+   "countB": 48745,
+   "dCount": 1090,
+   "selfA": 5633868,
+   "selfB": 5759168,
+   "dSelf": 125300,
+   "retA": 8734229,
+   "retB": 8882162,
+   "dRet": 147933
+  },
+  {
+   "key": "system / Context / scope @139179",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 20736,
+   "dSelf": 20736,
+   "retA": 0,
+   "retB": 90888,
+   "dRet": 90888
+  },
+  {
+   "key": "system / Context / scope @139459",
+   "countA": 0,
+   "countB": 576,
+   "dCount": 576,
+   "selfA": 0,
+   "selfB": 11520,
+   "dSelf": 11520,
+   "retA": 0,
+   "retB": 54024,
+   "dRet": 54024
+  },
+  {
+   "key": "(native) system / PropertyArray",
+   "countA": 5905,
+   "countB": 6463,
+   "dCount": 558,
+   "selfA": 233076,
+   "selfB": 303376,
+   "dSelf": 70300,
+   "retA": 233076,
+   "retB": 303376,
+   "dRet": 70300
+  },
+  {
+   "key": "system / Context / scope @137791",
+   "countA": 0,
+   "countB": 486,
+   "dCount": 486,
+   "selfA": 0,
+   "selfB": 11664,
+   "dSelf": 11664,
+   "retA": 0,
+   "retB": 23328,
+   "dRet": 23328
+  },
+  {
+   "key": "system / Context / scope @136965",
+   "countA": 0,
+   "countB": 407,
+   "dCount": 407,
+   "selfA": 0,
+   "selfB": 8140,
+   "dSelf": 8140,
+   "retA": 0,
+   "retB": 8140,
+   "dRet": 8140
+  },
+  {
+   "key": "(array)",
+   "countA": 5873,
+   "countB": 6212,
+   "dCount": 339,
+   "selfA": 976180,
+   "selfB": 1017652,
+   "dSelf": 41472,
+   "retA": 1255903,
+   "retB": 1298844,
+   "dRet": 42941
+  },
+  {
+   "key": "(closure) ",
+   "countA": 5727,
+   "countB": 6064,
+   "dCount": 337,
+   "selfA": 164344,
+   "selfB": 173788,
+   "dSelf": 9444,
+   "retA": 586140,
+   "retB": 610492,
+   "dRet": 24352
+  },
+  {
+   "key": "(native) HTMLCollection",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 58880,
+   "selfB": 75208,
+   "dSelf": 16328,
+   "retA": 74144,
+   "retB": 90472,
+   "dRet": 16328
+  },
+  {
+   "key": "(native) blink::NodeListsNodeData",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 40752,
+   "selfB": 52056,
+   "dSelf": 11304,
+   "retA": 228096,
+   "retB": 287128,
+   "dRet": 59032
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::Collectio",
+   "countA": 566,
+   "countB": 723,
+   "dCount": 157,
+   "selfA": 113200,
+   "selfB": 144600,
+   "dSelf": 31400,
+   "retA": 187344,
+   "retB": 235072,
+   "dRet": 47728
+  },
+  {
+   "key": "system / Context / scope @188855",
+   "countA": 0,
+   "countB": 139,
+   "dCount": 139,
+   "selfA": 0,
+   "selfB": 2780,
+   "dSelf": 2780,
+   "retA": 0,
+   "retB": 2780,
+   "dRet": 2780
+  },
+  {
+   "key": "(native) blink::GeometryMapperClipCache",
+   "countA": 179,
+   "countB": 302,
+   "dCount": 123,
+   "selfA": 5728,
+   "selfB": 9664,
+   "dSelf": 3936,
+   "retA": 32480,
+   "retB": 55112,
+   "dRet": 22632
+  },
+  {
+   "key": "(native) blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCacheEntry",
+   "countA": 176,
+   "countB": 299,
+   "dCount": 123,
+   "selfA": 26752,
+   "selfB": 45448,
+   "dSelf": 18696,
+   "retA": 26752,
+   "retB": 45448,
+   "dRet": 18696
+  },
+  {
+   "key": "system / Context / scope @147553",
+   "countA": 0,
+   "countB": 96,
+   "dCount": 96,
+   "selfA": 0,
+   "selfB": 1920,
+   "dSelf": 1920,
+   "retA": 0,
+   "retB": 1920,
+   "dRet": 1920
+  },
+  {
+   "key": "system / Context / scope @266721",
+   "countA": 0,
+   "countB": 88,
+   "dCount": 88,
+   "selfA": 0,
+   "selfB": 1760,
+   "dSelf": 1760,
+   "retA": 0,
+   "retB": 1984,
+   "dRet": 1984
+  },
+  {
+   "key": "system / Context / scope @83407",
+   "countA": 0,
+   "countB": 85,
+   "dCount": 85,
+   "selfA": 0,
+   "selfB": 120700,
+   "dSelf": 120700,
+   "retA": 0,
+   "retB": 515936,
+   "dRet": 515936
+  },
+  {
+   "key": "(native) system / WeakArrayList",
+   "countA": 1622,
+   "countB": 1702,
+   "dCount": 80,
+   "selfA": 142876,
+   "selfB": 175300,
+   "dSelf": 32424,
+   "retA": 142876,
+   "retB": 175300,
+   "dRet": 32424
+  },
+  {
+   "key": "(closure) Yt",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 1484,
+   "retB": 3388,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) Ii",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) _d",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) On",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) zt",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) aa",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) la",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) tm",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 1480,
+   "retB": 3600,
+   "dRet": 2120
+  },
+  {
+   "key": "Set",
+   "countA": 283,
+   "countB": 351,
+   "dCount": 68,
+   "selfA": 4564,
+   "selfB": 5652,
+   "dSelf": 1088,
+   "retA": 159844,
+   "retB": 167852,
+   "dRet": 8008
+  },
+  {
+   "key": "(closure) Mi",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 508,
+   "retB": 2412,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) Ct",
+   "countA": 17,
+   "countB": 85,
+   "dCount": 68,
+   "selfA": 476,
+   "selfB": 2380,
+   "dSelf": 1904,
+   "retA": 476,
+   "retB": 2380,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) dc",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 508,
+   "retB": 2412,
+   "dRet": 1904
+  },
+  {
+   "key": "(closure) nm",
+   "countA": 18,
+   "countB": 86,
+   "dCount": 68,
+   "selfA": 508,
+   "selfB": 2412,
+   "dSelf": 1904,
+   "retA": 508,
+   "retB": 2412,
+   "dRet": 1904
+  },
+  {
+   "key": "system / Context / scope @142615",
+   "countA": 0,
+   "countB": 60,
+   "dCount": 60,
+   "selfA": 0,
+   "selfB": 1200,
+   "dSelf": 1200,
+   "retA": 0,
+   "retB": 1200,
+   "dRet": 1200
+  },
+  {
+   "key": "system / Context / scope @204819",
+   "countA": 0,
+   "countB": 54,
+   "dCount": 54,
+   "selfA": 0,
+   "selfB": 1512,
+   "dSelf": 1512,
+   "retA": 0,
+   "retB": 3144,
+   "dRet": 3144
+  },
+  {
+   "key": "(object shape)",
+   "countA": 11289,
+   "countB": 11340,
+   "dCount": 51,
+   "selfA": 614984,
+   "selfB": 617016,
+   "dSelf": 2032,
+   "retA": 751361,
+   "retB": 784225,
+   "dRet": 32864
+  },
+  {
+   "key": "(native) system / ProtectedFixedArray",
+   "countA": 580,
+   "countB": 627,
+   "dCount": 47,
+   "selfA": 9116,
+   "selfB": 10568,
+   "dSelf": 1452,
+   "retA": 9116,
+   "retB": 10568,
+   "dRet": 1452
+  },
+  {
+   "key": "(native) system / SharedFunctionInfoWrapper",
+   "countA": 579,
+   "countB": 626,
+   "dCount": 47,
+   "selfA": 4632,
+   "selfB": 5008,
+   "dSelf": 376,
+   "retA": 4632,
+   "retB": 5008,
+   "dRet": 376
+  },
+  {
+   "key": "(native) blink::ComputedStyleBase::StyleInheritedData",
+   "countA": 341,
+   "countB": 384,
+   "dCount": 43,
+   "selfA": 46376,
+   "selfB": 52224,
+   "dSelf": 5848,
+   "retA": 63656,
+   "retB": 70368,
+   "dRet": 6712
+  },
+  {
+   "key": "system / Context / scope @529469",
+   "countA": 0,
+   "countB": 42,
+   "dCount": 42,
+   "selfA": 0,
+   "selfB": 840,
+   "dSelf": 840,
+   "retA": 0,
+   "retB": 840,
+   "dRet": 840
+  }
+ ],
+ "topNew": [],
+ "retainers": [
+  {
+   "key": "system / Context / scope @83407",
+   "countA": 0,
+   "countB": 85,
+   "dSelf": 120700,
+   "dRet": 515936,
+   "signatures": [
+    {
+     "sig": "context (int) <- (closure)   |  ic (ctx) <- Context  |  context (int) <- (closure)   |  fn (ctx) <- Context",
+     "countA": 0,
+     "countB": 35,
+     "dCount": 35,
+     "selfB": 49700,
+     "dSelf": 49700,
+     "exRetained": 409052,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::cssvalue::CSSLinearGradientValue",
+       "via": "blink::CSSImageGeneratorValue::CSSImageGeneratorValue(ClassType)@../../third_party/blink/renderer/core/css/css_image_generator_value.cc:74 (int)",
+       "self": 168,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[3]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native <div aria-hidden=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "sibling",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "onTogglePanel",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  fn (ctx) <- Context  |  context (int) <- (closure)   |  ic (ctx) <- Context",
+     "countA": 0,
+     "countB": 34,
+     "dCount": 34,
+     "selfB": 48280,
+     "dSelf": 48280,
+     "exRetained": 417516,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::cssvalue::CSSLinearGradientValue",
+       "via": "blink::CSSImageGeneratorValue::CSSImageGeneratorValue(ClassType)@../../third_party/blink/renderer/core/css/css_image_generator_value.cc:74 (int)",
+       "self": 168,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[3]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native <div aria-hidden=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "sibling",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "onTogglePanel",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  ic (ctx) <- Context  |  context (int) <- (closure) onOpenProject  |  onOpenProject <- Object",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 1420,
+     "dSelf": 1420,
+     "exRetained": 3992,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[39]",
+       "self": 264,
+       "loc": null
+      },
+      {
+       "node": "native <div data-term-focus-zone=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <div data-rail=\"true\">",
+       "via": "[11]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 8,
+        "src": null
+       }
+      },
+      {
+       "node": "object Cb",
+       "via": "return",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 204,
+       "loc": null
+      },
+      {
+       "node": "closure onOpenProject",
+       "via": "onOpenProject",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  fn (ctx) <- Context  |  context (int) <- (closure)   |  current <- Object",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 1420,
+     "dSelf": 1420,
+     "exRetained": 47644,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "Cy (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "ac (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "current",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "(native) system / PropertyArray",
+   "countA": 5905,
+   "countB": 6463,
+   "dSelf": 70300,
+   "dRet": 70300,
+   "signatures": [
+    {
+     "sig": "properties (int) <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 62,
+     "countB": 402,
+     "dCount": 340,
+     "selfB": 45624,
+     "dSelf": 39440,
+     "exRetained": 116,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PropertyArray",
+       "via": "properties (int)",
+       "self": 116,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "properties (int) <- Object  |  [] <- Array  |  e (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 24,
+     "countB": 296,
+     "dCount": 272,
+     "selfB": 27232,
+     "dSelf": 25024,
+     "exRetained": 92,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "e (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PropertyArray",
+       "via": "properties (int)",
+       "self": 92,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "properties (int) <- Object  |  Re (ctx) <- Context  |  context (int) <- (closure)   |  ic (ctx) <- Context",
+     "countA": 3,
+     "countB": 37,
+     "dCount": 34,
+     "selfB": 4292,
+     "dSelf": 3944,
+     "exRetained": 116,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::cssvalue::CSSLinearGradientValue",
+       "via": "blink::CSSImageGeneratorValue::CSSImageGeneratorValue(ClassType)@../../third_party/blink/renderer/core/css/css_image_generator_value.cc:74 (int)",
+       "self": 168,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[3]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native <div aria-hidden=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "sibling",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "onTogglePanel",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "Re (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PropertyArray",
+       "via": "properties (int)",
+       "self": 116,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "properties (int) <- Object  |  Re (ctx) <- Context  |  context (int) <- (closure)   |  fn (ctx) <- Context",
+     "countA": 2,
+     "countB": 36,
+     "dCount": 34,
+     "selfB": 4176,
+     "dSelf": 3944,
+     "exRetained": 116,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::cssvalue::CSSLinearGradientValue",
+       "via": "blink::CSSImageGeneratorValue::CSSImageGeneratorValue(ClassType)@../../third_party/blink/renderer/core/css/css_image_generator_value.cc:74 (int)",
+       "self": 168,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[3]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native <div aria-hidden=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "sibling",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "onTogglePanel",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "Re (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PropertyArray",
+       "via": "properties (int)",
+       "self": 116,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "(string)",
+   "countA": 76869,
+   "countB": 78843,
+   "dSelf": 54956,
+   "dRet": -158528,
+   "signatures": [
+    {
+     "sig": "workingDirectory <- Object  |  [] <- Array  |  e (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 6,
+     "countB": 74,
+     "dCount": 68,
+     "selfB": 9768,
+     "dSelf": 8976,
+     "exRetained": 132,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "e (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[6]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "string /private/tmp/claude-501/-Users-juanmnl-Developer-operator/b15ab",
+       "via": "workingDirectory",
+       "self": 132,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "startedAt <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 27,
+     "countB": 197,
+     "dCount": 170,
+     "selfB": 7092,
+     "dSelf": 6120,
+     "exRetained": 36,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "string 2026-10-26T05:09:29.280Z",
+       "via": "startedAt",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "lastActivityAt <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 22,
+     "countB": 192,
+     "dCount": 170,
+     "selfB": 6912,
+     "dSelf": 6120,
+     "exRetained": 36,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "string 2026-10-26T05:09:29.280Z",
+       "via": "lastActivityAt",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "status <- Object  |  [] <- Array  |  e (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 24,
+     "countB": 296,
+     "dCount": 272,
+     "selfB": 5920,
+     "dSelf": 5440,
+     "exRetained": 20,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "e (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "string active",
+       "via": "status",
+       "self": 20,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "(native) system / WeakArrayList",
+   "countA": 1622,
+   "countB": 1702,
+   "dSelf": 32424,
+   "dRet": 32424,
+   "signatures": [
+    {
+     "sig": "dependent_code (int) <- (object shape)  |  back_pointer (int) <- (object shape)  |  map (int) <- Cb  |  __reactFiber$uhd045nj4ta <- (native) <div aria-hidden=\"true\">",
+     "countA": 22,
+     "countB": 22,
+     "dCount": 0,
+     "selfB": 11472,
+     "dSelf": 5352,
+     "exRetained": 2916,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::cssvalue::CSSLinearGradientValue",
+       "via": "blink::CSSImageGeneratorValue::CSSImageGeneratorValue(ClassType)@../../third_party/blink/renderer/core/css/css_image_generator_value.cc:74 (int)",
+       "self": 168,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::B",
+       "via": "[3]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native <div aria-hidden=\"true\">",
+       "via": "[3]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "map (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native system / WeakArrayList",
+       "via": "dependent_code (int)",
+       "self": 2916,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "dependent_code (int) <- (object shape)  |  back_pointer (int) <- (object shape)  |  map (int) <- Object  |  pendingProps <- Cb",
+     "countA": 160,
+     "countB": 160,
+     "dCount": 0,
+     "selfB": 10880,
+     "dSelf": 3608,
+     "exRetained": 108,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXObjectCacheImpl",
+       "via": "[16]",
+       "self": 936,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyVal",
+       "via": "[2]",
+       "self": 32776,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXNodeObject",
+       "via": "[148]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <span>",
+       "via": "[1]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Cb",
+       "via": "__reactFiber$uhd045nj4ta",
+       "self": 104,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 8,
+        "src": null
+       }
+      },
+      {
+       "node": "object Cb",
+       "via": "sibling",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "pendingProps",
+       "self": 20,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "map (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "back_pointer (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native system / WeakArrayList",
+       "via": "dependent_code (int)",
+       "self": 108,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "dependent_code (int) <- (object shape)  |  initial_array_iterator_map (int) <- (native) system / NativeContext / file://  |  1 / blink::ScriptStateProtectingContext::context_ (int) <- (synthetic) (Global handles)  |  [] <- (synthetic) (GC roots)",
+     "countA": 1,
+     "countB": 1,
+     "dCount": 0,
+     "selfB": 2916,
+     "dSelf": 1620,
+     "exRetained": 2916,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "initial_array_iterator_map (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native system / WeakArrayList",
+       "via": "dependent_code (int)",
+       "self": 2916,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "dependent_code (int) <- (object shape)  |  map (int) <- Object  |  l (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 1296,
+     "dSelf": 1296,
+     "exRetained": 1296,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native Electron / PromiseHandle",
+       "via": "gin_helper::PromiseBase::PromiseBase(v8::Isolate *, v8::Local<v8::Promise::Resolver>)@../../electron/shell/common/gin_helper/promise.cc:72 (int)",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object Promise",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PromiseReaction",
+       "via": "reactions_or_result (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @94111",
+       "via": "context (int)",
+       "self": 44,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "l (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object shape system / Map",
+       "via": "map (int)",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native system / WeakArrayList",
+       "via": "dependent_code (int)",
+       "self": 1296,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "(native) blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::Collectio",
+   "countA": 566,
+   "countB": 723,
+   "dSelf": 31400,
+   "dRet": 47728,
+   "signatures": [
+    {
+     "sig": "[] <- (native) blink::NodeListsNodeData  |  [] <- (native) blink::ElementRareDataVector  |  [] <- (native) <span>  |  [] <- (native) blink::AXNodeObject",
+     "countA": 45,
+     "countB": 197,
+     "dCount": 152,
+     "selfB": 39400,
+     "dSelf": 30400,
+     "exRetained": 336,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXObjectCacheImpl",
+       "via": "[16]",
+       "self": 936,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyVal",
+       "via": "[2]",
+       "self": 32776,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXNodeObject",
+       "via": "[586]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <span>",
+       "via": "[1]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::ElementRareDataVector",
+       "via": "[13]",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native blink::NodeListsNodeData",
+       "via": "[2]",
+       "self": 72,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::C",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::NodeListsNodeData  |  [] <- (native) blink::ElementRareDataVector  |  [] <- (native) <span class=\"xterm-cursor xterm-cursor-outline\">  |  [] <- (native) blink::AXNodeObject",
+     "countA": 0,
+     "countB": 4,
+     "dCount": 4,
+     "selfB": 800,
+     "dSelf": 800,
+     "exRetained": 304,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXObjectCacheImpl",
+       "via": "[16]",
+       "self": 936,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyVal",
+       "via": "[2]",
+       "self": 32776,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXNodeObject",
+       "via": "[1075]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <span class=\"xterm-cursor xterm-cursor-outline\">",
+       "via": "[1]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::ElementRareDataVector",
+       "via": "[10]",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "native blink::NodeListsNodeData",
+       "via": "[1]",
+       "self": 72,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::C",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::NodeListsNodeData  |  [] <- (native) blink::ElementRareDataVector  |  [] <- (native) <span class=\"xterm-char-measure-element\" style=\"font-weight: 400;\">  |  [] <- (native) <div class=\"xterm-width-cache-measure-container\" aria-hidden=\"true\">",
+     "countA": 3,
+     "countB": 6,
+     "dCount": 3,
+     "selfB": 1200,
+     "dSelf": 600,
+     "exRetained": 304,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::WebLocalFrameImpl",
+       "via": "blink::WebLocalFrameImpl::WebLocalFrameImpl(base::PassKey<WebLocalFrameImpl>, mojom::blink::TreeScopeType, WebLocalFrameClient *, blink::InterfaceRegistry *, const LocalFrameToken &)@../../third_party/blink/renderer/core/frame/web_local_frame_impl.cc:2293 (int)",
+       "self": 272,
+       "loc": null
+      },
+      {
+       "node": "native blink::HistoryItem",
+       "via": "[7]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::DocumentState",
+       "via": "[1]",
+       "self": 296,
+       "loc": null
+      },
+      {
+       "node": "native <textarea class=\"xterm-helper-textarea\" aria-label=\"Terminal in",
+       "via": "[3]",
+       "self": 288,
+       "loc": null
+      },
+      {
+       "node": "native <div class=\"xterm-width-cache-measure-container\" aria-hidden=\"t",
+       "via": "[8]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <span class=\"xterm-char-measure-element\" style=\"font-weight: 40",
+       "via": "[5]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::ElementRareDataVector",
+       "via": "[11]",
+       "self": 56,
+       "loc": null
+      },
+      {
+       "node": "native blink::NodeListsNodeData",
+       "via": "[4]",
+       "self": 72,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::C",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::NodeListsNodeData  |  [] <- (native) blink::ElementRareDataVector  |  [] <- (native) <span class=\"xterm-char-measure-element\" style=\"font-weight: 600;\">  |  [] <- (native) blink::AXNodeObject",
+     "countA": 2,
+     "countB": 5,
+     "dCount": 3,
+     "selfB": 1000,
+     "dSelf": 600,
+     "exRetained": 304,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXObjectCacheImpl",
+       "via": "[16]",
+       "self": 936,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyVal",
+       "via": "[2]",
+       "self": 32776,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXNodeObject",
+       "via": "[296]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native <span class=\"xterm-char-measure-element\" style=\"font-weight: 60",
+       "via": "[1]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::ElementRareDataVector",
+       "via": "[10]",
+       "self": 56,
+       "loc": null
+      },
+      {
+       "node": "native blink::NodeListsNodeData",
+       "via": "[4]",
+       "self": 72,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<std::pair<blink::C",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "Array",
+   "countA": 3677,
+   "countB": 5139,
+   "dSelf": 23392,
+   "dRet": -8623373,
+   "signatures": [
+    {
+     "sig": "activity <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 27,
+     "countB": 197,
+     "dCount": 170,
+     "selfB": 3152,
+     "dSelf": 2720,
+     "exRetained": 16,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "activity",
+       "self": 16,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "messages <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 15,
+     "countB": 185,
+     "dCount": 170,
+     "selfB": 2960,
+     "dSelf": 2720,
+     "exRetained": 16,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "messages",
+       "self": 16,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "queued <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 15,
+     "countB": 185,
+     "dCount": 170,
+     "selfB": 2960,
+     "dSelf": 2720,
+     "exRetained": 16,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "queued",
+       "self": 16,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "todos <- Object  |  [] <- Array  |  Ke (ctx) <- Context  |  context (int) <- (closure) ",
+     "countA": 15,
+     "countB": 185,
+     "dCount": 170,
+     "selfB": 2960,
+     "dSelf": 2720,
+     "exRetained": 16,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 36,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "ic (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "fn (ctx)",
+       "self": 28,
+       "loc": {
+        "script": "main-blSWKoDH.js",
+        "line": 250231,
+        "col": 29,
+        "src": null
+       }
+      },
+      {
+       "node": "object system / Context / scope @83407",
+       "via": "context (int)",
+       "self": 1420,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "Ke (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "[4]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object Array",
+       "via": "todos",
+       "self": 16,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "system / Context / scope @139179",
+   "countA": 0,
+   "countB": 576,
+   "dSelf": 20736,
+   "dRet": 90888,
+   "signatures": [
+    {
+     "sig": "context (int) <- (closure)   |  dispose <- Object  |  9 (int) <- (array)  |  table (int) <- Set",
+     "countA": 0,
+     "countB": 42,
+     "dCount": 42,
+     "selfB": 1512,
+     "dSelf": 1512,
+     "exRetained": 160,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "object Map",
+       "via": "o_ (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 132,
+       "loc": null
+      },
+      {
+       "node": "object C3",
+       "via": "11 (int)",
+       "self": 60,
+       "loc": null
+      },
+      {
+       "node": "object g3",
+       "via": "_core",
+       "self": 244,
+       "loc": null
+      },
+      {
+       "node": "object vf",
+       "via": "_bufferService",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object Ux",
+       "via": "buffers",
+       "self": 64,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 44,
+        "src": null
+       }
+      },
+      {
+       "node": "object J1",
+       "via": "_store",
+       "self": 20,
+       "loc": null
+      },
+      {
+       "node": "object Set",
+       "via": "_toDispose",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 60,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "9 (int)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "dispose",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @139179",
+       "via": "context (int)",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  dispose <- Object  |  15 (int) <- (array)  |  table (int) <- Set",
+     "countA": 0,
+     "countB": 30,
+     "dCount": 30,
+     "selfB": 1080,
+     "dSelf": 1080,
+     "exRetained": 160,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "object Map",
+       "via": "o_ (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 132,
+       "loc": null
+      },
+      {
+       "node": "object C3",
+       "via": "17 (int)",
+       "self": 60,
+       "loc": null
+      },
+      {
+       "node": "object g3",
+       "via": "_core",
+       "self": 244,
+       "loc": null
+      },
+      {
+       "node": "object ix",
+       "via": "_coreBrowserService",
+       "self": 88,
+       "loc": null
+      },
+      {
+       "node": "object J1",
+       "via": "_store",
+       "self": 20,
+       "loc": null
+      },
+      {
+       "node": "object Set",
+       "via": "_toDispose",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 100,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "15 (int)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "dispose",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @139179",
+       "via": "context (int)",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  dispose <- Object  |  11 (int) <- (array)  |  table (int) <- Set",
+     "countA": 0,
+     "countB": 30,
+     "dCount": 30,
+     "selfB": 1080,
+     "dSelf": 1080,
+     "exRetained": 160,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "object Map",
+       "via": "o_ (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 132,
+       "loc": null
+      },
+      {
+       "node": "object C3",
+       "via": "8 (int)",
+       "self": 60,
+       "loc": null
+      },
+      {
+       "node": "object g3",
+       "via": "_core",
+       "self": 244,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 46,
+        "src": null
+       }
+      },
+      {
+       "node": "object nf",
+       "via": "_viewport",
+       "self": 88,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 40,
+        "src": null
+       }
+      },
+      {
+       "node": "object WC",
+       "via": "_scrollableElement",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "object J1",
+       "via": "_store",
+       "self": 20,
+       "loc": {
+        "script": "styles-kKVkQzj4.js",
+        "line": 249697,
+        "col": 38,
+        "src": null
+       }
+      },
+      {
+       "node": "object Set",
+       "via": "_toDispose",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 100,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "11 (int)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "dispose",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @139179",
+       "via": "context (int)",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "context (int) <- (closure)   |  dispose <- Object  |  13 (int) <- (array)  |  table (int) <- Set",
+     "countA": 0,
+     "countB": 24,
+     "dCount": 24,
+     "selfB": 864,
+     "dSelf": 864,
+     "exRetained": 160,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "object Map",
+       "via": "o_ (ctx)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 132,
+       "loc": null
+      },
+      {
+       "node": "object C3",
+       "via": "17 (int)",
+       "self": 60,
+       "loc": null
+      },
+      {
+       "node": "object g3",
+       "via": "_core",
+       "self": 244,
+       "loc": null
+      },
+      {
+       "node": "object ix",
+       "via": "_coreBrowserService",
+       "self": 88,
+       "loc": null
+      },
+      {
+       "node": "object J1",
+       "via": "_store",
+       "self": 20,
+       "loc": null
+      },
+      {
+       "node": "object Set",
+       "via": "_toDispose",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "array ",
+       "via": "table (int)",
+       "self": 100,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "13 (int)",
+       "self": 16,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "dispose",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @139179",
+       "via": "context (int)",
+       "self": 36,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "(native) blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCacheEntry",
+   "countA": 176,
+   "countB": 299,
+   "dSelf": 18696,
+   "dRet": 18696,
+   "signatures": [
+    {
+     "sig": "[] <- (native) blink::GeometryMapperClipCache  |  [] <- (native) blink::ClipPaintPropertyNode  |  [] <- (native) blink::ObjectPaintProperties  |  [] <- (native) blink::FragmentData::RareData",
+     "countA": 84,
+     "countB": 207,
+     "dCount": 123,
+     "selfB": 31464,
+     "dSelf": 18696,
+     "exRetained": 152,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native HTMLDocument",
+       "via": "<symbol Window#DocumentCachedAccessor>",
+       "self": 3288,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXObjectCacheImpl",
+       "via": "[16]",
+       "self": 936,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyVal",
+       "via": "[2]",
+       "self": 32776,
+       "loc": null
+      },
+      {
+       "node": "native blink::AXNodeObject",
+       "via": "[499]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutBlockFlow",
+       "via": "[2]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native blink::FragmentDataList",
+       "via": "[10]",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native blink::FragmentData::RareData",
+       "via": "[1]",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "native blink::ObjectPaintProperties",
+       "via": "[2]",
+       "self": 40,
+       "loc": null
+      },
+      {
+       "node": "native blink::ClipPaintPropertyNode",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::GeometryMapperClipCache",
+       "via": "[3]",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCa",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::GeometryMapperClipCache  |  [] <- (native) blink::ClipPaintPropertyNode  |  [] <- (native) blink::HeapVectorBacking<blink::PendingLayer>  |  [] <- (native) blink::PaintArtifactCompositor",
+     "countA": 3,
+     "countB": 8,
+     "dCount": 5,
+     "selfB": 1216,
+     "dSelf": 760,
+     "exRetained": 152,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::WebLocalFrameImpl",
+       "via": "blink::WebLocalFrameImpl::WebLocalFrameImpl(base::PassKey<WebLocalFrameImpl>, mojom::blink::TreeScopeType, WebLocalFrameClient *, blink::InterfaceRegistry *, const LocalFrameToken &)@../../third_party/blink/renderer/core/frame/web_local_frame_impl.cc:2293 (int)",
+       "self": 272,
+       "loc": null
+      },
+      {
+       "node": "native blink::LocalFrame",
+       "via": "[3]",
+       "self": 1504,
+       "loc": null
+      },
+      {
+       "node": "native blink::LocalFrameView",
+       "via": "[10]",
+       "self": 1384,
+       "loc": null
+      },
+      {
+       "node": "native blink::PaintArtifactCompositor",
+       "via": "[13]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::PendingLayer>",
+       "via": "[1]",
+       "self": 2184,
+       "loc": null
+      },
+      {
+       "node": "native blink::ClipPaintPropertyNode",
+       "via": "[32]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::GeometryMapperClipCache",
+       "via": "[3]",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCa",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::GeometryMapperClipCache  |  [] <- (native) blink::ClipPaintPropertyNode  |  [] <- (native) blink::FragmentData::RareData  |  [] <- (native) blink::FragmentDataList",
+     "countA": 6,
+     "countB": 6,
+     "dCount": 0,
+     "selfB": 912,
+     "dSelf": 0,
+     "exRetained": 152,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::WebLocalFrameImpl",
+       "via": "blink::WebLocalFrameImpl::WebLocalFrameImpl(base::PassKey<WebLocalFrameImpl>, mojom::blink::TreeScopeType, WebLocalFrameClient *, blink::InterfaceRegistry *, const LocalFrameToken &)@../../third_party/blink/renderer/core/frame/web_local_frame_impl.cc:2293 (int)",
+       "self": 272,
+       "loc": null
+      },
+      {
+       "node": "native blink::HistoryItem",
+       "via": "[7]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::DocumentState",
+       "via": "[1]",
+       "self": 296,
+       "loc": null
+      },
+      {
+       "node": "native <textarea class=\"xterm-helper-textarea\" aria-label=\"Terminal in",
+       "via": "[6]",
+       "self": 288,
+       "loc": null
+      },
+      {
+       "node": "native blink::LayoutTextControlMultiLine",
+       "via": "[10]",
+       "self": 152,
+       "loc": null
+      },
+      {
+       "node": "native blink::FragmentDataList",
+       "via": "[9]",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "native blink::FragmentData::RareData",
+       "via": "[1]",
+       "self": 96,
+       "loc": null
+      },
+      {
+       "node": "native blink::ClipPaintPropertyNode",
+       "via": "[4]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::GeometryMapperClipCache",
+       "via": "[3]",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCa",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      }
+     ]
+    },
+    {
+     "sig": "[] <- (native) blink::GeometryMapperClipCache  |  [] <- (native) blink::ClipPaintPropertyNode  |  [] <- (native) blink::HeapVectorBacking<blink::PaintArtifactCompositor::SynthesizedCli  |  [] <- (native) blink::PaintArtifactCompositor",
+     "countA": 1,
+     "countB": 1,
+     "dCount": 0,
+     "selfB": 152,
+     "dSelf": 0,
+     "exRetained": 152,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native blink::WebLocalFrameImpl",
+       "via": "blink::WebLocalFrameImpl::WebLocalFrameImpl(base::PassKey<WebLocalFrameImpl>, mojom::blink::TreeScopeType, WebLocalFrameClient *, blink::InterfaceRegistry *, const LocalFrameToken &)@../../third_party/blink/renderer/core/frame/web_local_frame_impl.cc:2293 (int)",
+       "self": 272,
+       "loc": null
+      },
+      {
+       "node": "native blink::LocalFrame",
+       "via": "[3]",
+       "self": 1504,
+       "loc": null
+      },
+      {
+       "node": "native blink::LocalFrameView",
+       "via": "[10]",
+       "self": 1384,
+       "loc": null
+      },
+      {
+       "node": "native blink::PaintArtifactCompositor",
+       "via": "[13]",
+       "self": 136,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::PaintArtifactCompositor::Synthe",
+       "via": "[2]",
+       "self": 104,
+       "loc": null
+      },
+      {
+       "node": "native blink::ClipPaintPropertyNode",
+       "via": "[1]",
+       "self": 200,
+       "loc": null
+      },
+      {
+       "node": "native blink::GeometryMapperClipCache",
+       "via": "[3]",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "native blink::HeapVectorBacking<blink::GeometryMapperClipCache::ClipCa",
+       "via": "[1]",
+       "self": 152,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "system / Context / scope @114599",
+   "countA": 0,
+   "countB": 1,
+   "dSelf": 2944,
+   "dRet": 529346,
+   "signatures": [
+    {
+     "sig": "context (int) <- (closure)   |  createRoot <- Object  |  el (ctx) <- Context  |  previous (int) <- Context",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 2944,
+     "dSelf": 2944,
+     "exRetained": 529346,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      },
+      {
+       "node": "object Object",
+       "via": "el (ctx)",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "createRoot",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @114599",
+       "via": "context (int)",
+       "self": 2944,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "system / Context / scope @83747",
+   "countA": 0,
+   "countB": 1,
+   "dSelf": 4384,
+   "dRet": 312781,
+   "signatures": [
+    {
+     "sig": "previous (int) <- Context  |  context (int) <- (closure)   |  [] <- (native) system / PromiseReaction  |  reactions_or_result (int) <- Promise",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 4384,
+     "dSelf": 4384,
+     "exRetained": 312781,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic C++ Persistent roots",
+       "via": "[29]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native Electron / PromiseHandle",
+       "via": "gin_helper::PromiseBase::PromiseBase(v8::Isolate *, v8::Local<v8::Promise::Resolver>)@../../electron/shell/common/gin_helper/promise.cc:72 (int)",
+       "self": 32,
+       "loc": null
+      },
+      {
+       "node": "object Promise",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "native system / PromiseReaction",
+       "via": "reactions_or_result (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "[2]",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @94111",
+       "via": "context (int)",
+       "self": 44,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @83747",
+       "via": "previous (int)",
+       "self": 4384,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "system / Context / scope @105793",
+   "countA": 0,
+   "countB": 1,
+   "dSelf": 3220,
+   "dRet": 310611,
+   "signatures": [
+    {
+     "sig": "previous (int) <- Context  |  context (int) <- (closure)   |  __mockReply <- Window [JSGlobalObject] / file://  |  global_object (int) <- (native) system / NativeContext / file://",
+     "countA": 0,
+     "countB": 1,
+     "dCount": 1,
+     "selfB": 3220,
+     "dSelf": 3220,
+     "exRetained": 310611,
+     "exLoc": null,
+     "path": [
+      {
+       "node": "synthetic (GC roots)",
+       "via": "[1]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "synthetic (Global handles)",
+       "via": "[10]",
+       "self": 0,
+       "loc": null
+      },
+      {
+       "node": "native system / NativeContext / file://",
+       "via": "1 / blink::ScriptStateProtectingContext::context_ (int)",
+       "self": 1252,
+       "loc": null
+      },
+      {
+       "node": "object Window [JSGlobalObject] / file://",
+       "via": "global_object (int)",
+       "self": 24,
+       "loc": null
+      },
+      {
+       "node": "closure ",
+       "via": "__mockReply",
+       "self": 28,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @298463",
+       "via": "context (int)",
+       "self": 80,
+       "loc": null
+      },
+      {
+       "node": "object system / Context / scope @105793",
+       "via": "previous (int)",
+       "self": 3220,
+       "loc": null
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "bigStrings": [
+  {
+   "len": 1024,
+   "head": "[{\"createdAt\":\"2026-10-25T00:00:00.000Z\",\"id\":\"leakscratch-0001\",\"name\":\"leakscratch\",\"pat",
+   "count": 1,
+   "bytes": 9904384,
+   "maxRet": 9904384
+  },
+  {
+   "len": 1024,
+   "head": "/*! For license information please see sandbox_bundle.js.LICENSE.txt */ try{function ___el",
+   "count": 1,
+   "bytes": 133587,
+   "maxRet": 133587
+  },
+  {
+   "len": 21,
+   "head": "(concatenated string)",
+   "count": 2820,
+   "bytes": 56400,
+   "maxRet": 844
+  },
+  {
+   "len": 4,
+   "head": "done",
+   "count": 2551,
+   "bytes": 40800,
+   "maxRet": 16
+  },
+  {
+   "len": 4,
+   "head": "main",
+   "count": 2550,
+   "bytes": 40800,
+   "maxRet": 16
+  },
+  {
+   "len": 8,
+   "head": "operator",
+   "count": 1398,
+   "bytes": 27988,
+   "maxRet": 72
+  },
+  {
+   "len": 4,
+   "head": "sent",
+   "count": 834,
+   "bytes": 13344,
+   "maxRet": 16
+  },
+  {
+   "len": 1024,
+   "head": "\"use strict\"; // src/preload/index.ts var import_electron = require(\"electron\"); // src/",
+   "count": 1,
+   "bytes": 13096,
+   "maxRet": 13096
+  },
+  {
+   "len": 6,
+   "head": "review",
+   "count": 573,
+   "bytes": 11492,
+   "maxRet": 70
+  },
+  {
+   "len": 6,
+   "head": "design",
+   "count": 555,
+   "bytes": 11132,
+   "maxRet": 70
+  },
+  {
+   "len": 8,
+   "head": "research",
+   "count": 553,
+   "bytes": 11072,
+   "maxRet": 72
+  },
+  {
+   "len": 118,
+   "head": "/private/tmp/claude-501/-Users-juanmnl-Developer-operator/b15ab04d-e9c2-43be-bcb2-39a42367",
+   "count": 86,
+   "bytes": 11040,
+   "maxRet": 182
+  },
+  {
+   "len": 2,
+   "head": "qa",
+   "count": 587,
+   "bytes": 9424,
+   "maxRet": 62
+  },
+  {
+   "len": 4,
+   "head": "code",
+   "count": 586,
+   "bytes": 9360,
+   "maxRet": 16
+  },
+  {
+   "len": 11,
+   "head": "claude-code",
+   "count": 321,
+   "bytes": 7704,
+   "maxRet": 24
+  },
+  {
+   "len": 30,
+   "head": "Reply with the single word: ok",
+   "count": 160,
+   "bytes": 7040,
+   "maxRet": 44
+  },
+  {
+   "len": 9,
+   "head": "proj-fake",
+   "count": 272,
+   "bytes": 6556,
+   "maxRet": 73
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-11",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-10",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-09",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-05",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-04",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-13",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-12",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-08",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  }
+ ],
+ "dupStrings": [
+  {
+   "len": 21,
+   "head": "(concatenated string)",
+   "count": 2820,
+   "bytes": 56400,
+   "maxRet": 844
+  },
+  {
+   "len": 8,
+   "head": "operator",
+   "count": 1398,
+   "bytes": 27988,
+   "maxRet": 72
+  },
+  {
+   "len": 4,
+   "head": "done",
+   "count": 2551,
+   "bytes": 40800,
+   "maxRet": 16
+  },
+  {
+   "len": 4,
+   "head": "main",
+   "count": 2550,
+   "bytes": 40800,
+   "maxRet": 16
+  },
+  {
+   "len": 118,
+   "head": "/private/tmp/claude-501/-Users-juanmnl-Developer-operator/b15ab04d-e9c2-43be-bcb2-39a42367",
+   "count": 86,
+   "bytes": 11040,
+   "maxRet": 182
+  },
+  {
+   "len": 30,
+   "head": "Reply with the single word: ok",
+   "count": 160,
+   "bytes": 7040,
+   "maxRet": 44
+  },
+  {
+   "len": 8,
+   "head": "research",
+   "count": 553,
+   "bytes": 11072,
+   "maxRet": 72
+  },
+  {
+   "len": 820,
+   "head": "[\"[\\\"40ecd230-ab4e-4782-b1a9-85176b0c4487\\\",\\\"proj-fake-a93b37d8\\\"]\",\"[\\\"567a3f68-8a3b-4b2",
+   "count": 6,
+   "bytes": 4992,
+   "maxRet": 832
+  },
+  {
+   "len": 11,
+   "head": "claude-code",
+   "count": 321,
+   "bytes": 7704,
+   "maxRet": 24
+  },
+  {
+   "len": 6,
+   "head": "review",
+   "count": 573,
+   "bytes": 11492,
+   "maxRet": 70
+  },
+  {
+   "len": 4,
+   "head": "sent",
+   "count": 834,
+   "bytes": 13344,
+   "maxRet": 16
+  },
+  {
+   "len": 6,
+   "head": "design",
+   "count": 555,
+   "bytes": 11132,
+   "maxRet": 70
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-11",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-10",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  },
+  {
+   "len": 22,
+   "head": "/nonexistent/filler-09",
+   "count": 151,
+   "bytes": 5436,
+   "maxRet": 36
+  }
+ ],
+ "persisted": [
+  {
+   "len": 1024,
+   "head": "[{\"appPid\":75946,\"claudeSessionId\":\"s-op\",\"cwd\":\"/Users/dev/operator\",\"key\":\"key-t0\",\"mode",
+   "count": 1,
+   "bytes": 4648,
+   "maxRet": 4648
+  },
+  {
+   "len": 15,
+   "head": "claudeSessionId",
+   "count": 1,
+   "bytes": 28,
+   "maxRet": 28
+  }
+ ]
+}

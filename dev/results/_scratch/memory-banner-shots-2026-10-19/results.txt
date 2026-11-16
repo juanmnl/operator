@@ -1,0 +1,14 @@
+ok   dark: hidden at level 1
+ok   dark: shown at level 2
+ok   dark: critical at level 4
+ok   dark: dismissed
+ok   dark: stays dismissed going 4 to 2
+ok   dark: shown again after a new rise from 1
+ok   dark: gone at 1
+ok   light: hidden at level 1
+ok   light: shown at level 2
+ok   light: critical at level 4
+ok   light: dismissed
+ok   light: stays dismissed going 4 to 2
+ok   light: shown again after a new rise from 1
+ok   light: gone at 1
