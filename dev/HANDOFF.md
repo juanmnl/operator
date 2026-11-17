@@ -1,3 +1,12 @@
+# Handoff — 2026-11-17 (addendum)
+
+No code changes since the 2026-11-10 handoff below; `main` is still `3368460` and everything listed
+there is still open. This session only started the Electron dev app (`electron/`, `npm run dev`) with
+`OPERATOR_ELECTRON_PORT=1420 OPERATOR_CDP_PORT=9340` and an isolated `OPERATOR_DIR` in the session
+scratchpad. Vite served 1420 and CDP listened on 9340; the app then quit cleanly (exit 0, quit reaper
+dry run, no error), most likely a closed window. It is not running now. Next session: restart it the
+same way if a live dev app is needed, then pick up "Open" below (first: check renderer RSS on 0.29.0).
+
 # Handoff — 2026-11-10
 
 `main` = `6136990` (pushed), tagged `electron-v0.29.0`. Release run 42746234626 succeeded on the first attempt; v0.29.0 is published on `juanmnl/operator-releases` (not a draft, six assets), and both update feeds (`latest-mac.yml`, `latest.json` with a signature) serve 0.29.0. Not GUI-verified.
